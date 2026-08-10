@@ -28,7 +28,7 @@ from .models import (
 ADDON_ID = "team-addon"
 STATE_DB_FILE = "state.db"
 LEGACY_STATE_FILE = "state.json"
-SQLITE_SCHEMA_VERSION = 52
+SQLITE_SCHEMA_VERSION = 54
 _SQLITE_WAL_ENABLE_TIMEOUT_SECONDS = 5.0
 
 T = TypeVar("T")
@@ -942,7 +942,61 @@ class TeamStateSqliteStore:
                 _ensure_column(
                     connection,
                     table_name="team_dispatches",
+                    column_name="mcp_capability_receipt_json",
+                    definition="TEXT",
+                )
+                _ensure_column(
+                    connection,
+                    table_name="team_blockers",
+                    column_name="mcp_capability_identity_json",
+                    definition="TEXT",
+                )
+                _ensure_column(
+                    connection,
+                    table_name="team_dispatches",
                     column_name="chat_message_ids_json",
+                    definition="TEXT NOT NULL DEFAULT '[]'",
+                )
+                _ensure_column(
+                    connection,
+                    table_name="team_dispatches",
+                    column_name="preparation_expires_at",
+                    definition="TEXT",
+                )
+                _ensure_column(
+                    connection,
+                    table_name="team_dispatches",
+                    column_name="queued_at",
+                    definition="TEXT",
+                )
+                _ensure_column(
+                    connection,
+                    table_name="team_dispatches",
+                    column_name="requested_lease_seconds",
+                    definition="INTEGER NOT NULL DEFAULT 900",
+                )
+                _ensure_column(
+                    connection,
+                    table_name="team_dispatches",
+                    column_name="activation_completed_at",
+                    definition="TEXT",
+                )
+                _ensure_column(
+                    connection,
+                    table_name="team_dispatches",
+                    column_name="session_metadata_mirrored_at",
+                    definition="TEXT",
+                )
+                _ensure_column(
+                    connection,
+                    table_name="team_dispatches",
+                    column_name="role_description_fingerprint",
+                    definition="TEXT",
+                )
+                _ensure_column(
+                    connection,
+                    table_name="team_dispatches",
+                    column_name="action_feedback_dispatch_ids_json",
                     definition="TEXT NOT NULL DEFAULT '[]'",
                 )
                 _ensure_column(
@@ -986,6 +1040,24 @@ class TeamStateSqliteStore:
                     table_name="team_agent_runtimes",
                     column_name="context_clearing_policy",
                     definition="TEXT NOT NULL DEFAULT 'off'",
+                )
+                _ensure_column(
+                    connection,
+                    table_name="team_agent_runtimes",
+                    column_name="context_clearing_idle_grace_seconds",
+                    definition="INTEGER NOT NULL DEFAULT 0",
+                )
+                _ensure_column(
+                    connection,
+                    table_name="team_agent_runtimes",
+                    column_name="context_idle_since_at",
+                    definition="TEXT",
+                )
+                _ensure_column(
+                    connection,
+                    table_name="team_agent_runtimes",
+                    column_name="context_idle_rotation_due_at",
+                    definition="TEXT",
                 )
                 _ensure_column(
                     connection,
@@ -1058,6 +1130,24 @@ class TeamStateSqliteStore:
                     table_name="team_governance_runtimes",
                     column_name="last_blocked_signal_fingerprints_json",
                     definition="TEXT NOT NULL DEFAULT '[]'",
+                )
+                _ensure_column(
+                    connection,
+                    table_name="team_governance_runtimes",
+                    column_name="preparation_expires_at",
+                    definition="TEXT",
+                )
+                _ensure_column(
+                    connection,
+                    table_name="team_governance_runtimes",
+                    column_name="queued_at",
+                    definition="TEXT",
+                )
+                _ensure_column(
+                    connection,
+                    table_name="team_governance_runtimes",
+                    column_name="requested_lease_seconds",
+                    definition="INTEGER NOT NULL DEFAULT 900",
                 )
                 _ensure_column(
                     connection,
@@ -1445,13 +1535,11 @@ class TeamStateSqliteStore:
                     previous_schema_version < SQLITE_SCHEMA_VERSION
                     or previous_state_schema_version < SCHEMA_VERSION
                 ):
-                    affected_deliverable_ids = (
-                        _normalize_rejected_acceptance_override_rows(connection)
+                    affected_deliverable_ids = _normalize_rejected_acceptance_override_rows(
+                        connection
                     )
                     if affected_deliverable_ids:
-                        migrated_state = TeamState.model_validate(
-                            self._read_payload(connection)
-                        )
+                        migrated_state = TeamState.model_validate(self._read_payload(connection))
                         _reconcile_rejected_acceptance_overrides(
                             migrated_state,
                             deliverable_ids=affected_deliverable_ids,
@@ -1507,8 +1595,8 @@ class TeamStateSqliteStore:
                     text = self.legacy_json_path.read_text(encoding="utf-8")
                     payload = json.loads(text)
                     _migrate_legacy_json_outcome_kind_records(payload)
-                    affected_deliverable_ids = (
-                        _normalize_rejected_acceptance_override_payload(payload)
+                    affected_deliverable_ids = _normalize_rejected_acceptance_override_payload(
+                        payload
                     )
                     state = TeamState.model_validate(payload)
                     if affected_deliverable_ids:
@@ -2000,6 +2088,9 @@ class TeamStateSqliteStore:
                 "governance_group_id": row["governance_group_id"],
                 "wake_leased_until": row["wake_leased_until"],
                 "active_dispatch_id": row["active_dispatch_id"],
+                "preparation_expires_at": row["preparation_expires_at"],
+                "queued_at": row["queued_at"],
+                "requested_lease_seconds": row["requested_lease_seconds"],
                 "wake_reason": row["wake_reason"],
                 "last_wake_at": row["last_wake_at"],
                 "next_wake_at": row["next_wake_at"],
@@ -2026,17 +2117,21 @@ class TeamStateSqliteStore:
                 """
                 INSERT INTO team_governance_runtimes(
                     governance_group_id, wake_leased_until, active_dispatch_id,
+                    preparation_expires_at, queued_at, requested_lease_seconds,
                     wake_reason, last_wake_at, next_wake_at,
                     last_cost_signal_fingerprints_json,
                     last_blocked_signal_fingerprints_json,
                     updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     runtime["governance_group_id"],
                     runtime.get("wake_leased_until"),
                     runtime.get("active_dispatch_id"),
+                    runtime.get("preparation_expires_at"),
+                    runtime.get("queued_at"),
+                    runtime.get("requested_lease_seconds", 900),
                     runtime.get("wake_reason"),
                     runtime.get("last_wake_at"),
                     runtime.get("next_wake_at"),
@@ -2337,6 +2432,9 @@ class TeamStateSqliteStore:
                 "low_priority_batch_cycle_count": row["low_priority_batch_cycle_count"],
                 "low_priority_batch_due_after_cycles": row["low_priority_batch_due_after_cycles"],
                 "context_clearing_policy": row["context_clearing_policy"],
+                "context_clearing_idle_grace_seconds": row["context_clearing_idle_grace_seconds"],
+                "context_idle_since_at": row["context_idle_since_at"],
+                "context_idle_rotation_due_at": row["context_idle_rotation_due_at"],
                 "auto_context_clearing_enabled": _bool(row["auto_context_clearing_enabled"]),
                 "context_rotation_pending": _bool(row["context_rotation_pending"]),
                 "context_rotation_requested_by": row["context_rotation_requested_by"],
@@ -2368,7 +2466,8 @@ class TeamStateSqliteStore:
                     last_wake_at, next_wake_at, no_progress_count, last_progress_at,
                     low_priority_batch_started_at, low_priority_batch_cycle_count,
                     low_priority_batch_due_after_cycles,
-                    context_clearing_policy,
+                    context_clearing_policy, context_clearing_idle_grace_seconds,
+                    context_idle_since_at, context_idle_rotation_due_at,
                     auto_context_clearing_enabled, context_rotation_pending,
                     context_rotation_requested_by, context_rotation_requested_at,
                     context_rotation_reason, context_rotation_request_note,
@@ -2377,7 +2476,7 @@ class TeamStateSqliteStore:
                     last_agent_handoff_at, last_context_rotated_at, last_thread_id,
                     last_delivered_role_description_fingerprint, updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     runtime["agent_id"],
@@ -2392,6 +2491,9 @@ class TeamStateSqliteStore:
                     int(runtime.get("low_priority_batch_cycle_count", 0)),
                     runtime.get("low_priority_batch_due_after_cycles"),
                     runtime.get("context_clearing_policy", "off"),
+                    int(runtime.get("context_clearing_idle_grace_seconds", 0)),
+                    runtime.get("context_idle_since_at"),
+                    runtime.get("context_idle_rotation_due_at"),
                     _int_bool(runtime.get("auto_context_clearing_enabled")),
                     _int_bool(runtime.get("context_rotation_pending")),
                     runtime.get("context_rotation_requested_by"),
@@ -3113,6 +3215,9 @@ class TeamStateSqliteStore:
                 "task_id": row["task_id"],
                 "source_kind": row["source_kind"],
                 "source_id": row["source_id"],
+                "mcp_capability_identity": _json_loads(
+                    row["mcp_capability_identity_json"] or "null"
+                ),
                 "reporter_agent_id": row["reporter_agent_id"],
                 "reporter_actor": row["reporter_actor"],
                 "reason_code": row["reason_code"],
@@ -3142,13 +3247,14 @@ class TeamStateSqliteStore:
                 """
                 INSERT INTO team_blockers(
                     id, team_id, project_id, task_id, source_kind, source_id,
+                    mcp_capability_identity_json,
                     reporter_agent_id, reporter_actor, reason_code, resolution_scope,
                     owner_agent_id, delegate_agent_id, state, route,
                     summary, details, priority, escalation_depth, active_dispatch_id,
                     follow_up_at, last_progress_at, terminal_reference_ids_json,
                     created_at, updated_at, resolved_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     blocker["id"],
@@ -3157,6 +3263,7 @@ class TeamStateSqliteStore:
                     blocker.get("task_id"),
                     blocker["source_kind"],
                     blocker["source_id"],
+                    _json_dumps(blocker.get("mcp_capability_identity")),
                     blocker.get("reporter_agent_id"),
                     blocker.get("reporter_actor"),
                     blocker.get("reason_code", "unspecified"),
@@ -4165,8 +4272,18 @@ class TeamStateSqliteStore:
                 "initial_release_decision_deliverable_ids": _json_loads(
                     row["initial_release_decision_deliverable_ids_json"] or "[]"
                 ),
+                "mcp_capability_receipt": _json_loads(row["mcp_capability_receipt_json"] or "null"),
                 "status": row["status"],
                 "created_at": row["created_at"],
+                "preparation_expires_at": row["preparation_expires_at"],
+                "queued_at": row["queued_at"],
+                "requested_lease_seconds": row["requested_lease_seconds"],
+                "activation_completed_at": row["activation_completed_at"],
+                "session_metadata_mirrored_at": row["session_metadata_mirrored_at"],
+                "role_description_fingerprint": row["role_description_fingerprint"],
+                "action_feedback_dispatch_ids": _json_loads(
+                    row["action_feedback_dispatch_ids_json"] or "[]"
+                ),
                 "prepared_at": row["prepared_at"],
                 "leased_at": row["leased_at"],
                 "lease_expires_at": row["lease_expires_at"],
@@ -4186,10 +4303,15 @@ class TeamStateSqliteStore:
                     id, agent_id, session_id, cause_kind, cause_id,
                     chat_message_ids_json,
                     review_routing_authorities_json,
-                    initial_release_decision_deliverable_ids_json, status,
-                    created_at, prepared_at, leased_at, lease_expires_at,
+                    initial_release_decision_deliverable_ids_json,
+                    mcp_capability_receipt_json, status,
+                    created_at, preparation_expires_at, queued_at,
+                    requested_lease_seconds, activation_completed_at,
+                    session_metadata_mirrored_at, role_description_fingerprint,
+                    action_feedback_dispatch_ids_json,
+                    prepared_at, leased_at, lease_expires_at,
                     completed_at, error
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     dispatch["id"],
@@ -4199,11 +4321,17 @@ class TeamStateSqliteStore:
                     dispatch.get("cause_id"),
                     _json_dumps(dispatch.get("chat_message_ids", [])),
                     _json_dumps(dispatch.get("review_routing_authorities", [])),
-                    _json_dumps(
-                        dispatch.get("initial_release_decision_deliverable_ids", [])
-                    ),
+                    _json_dumps(dispatch.get("initial_release_decision_deliverable_ids", [])),
+                    _json_dumps(dispatch.get("mcp_capability_receipt")),
                     dispatch["status"],
                     dispatch["created_at"],
+                    dispatch.get("preparation_expires_at"),
+                    dispatch.get("queued_at"),
+                    dispatch.get("requested_lease_seconds", 900),
+                    dispatch.get("activation_completed_at"),
+                    dispatch.get("session_metadata_mirrored_at"),
+                    dispatch.get("role_description_fingerprint"),
+                    _json_dumps(dispatch.get("action_feedback_dispatch_ids", [])),
                     dispatch.get("prepared_at"),
                     dispatch.get("leased_at"),
                     dispatch.get("lease_expires_at"),
@@ -4441,9 +4569,7 @@ class TeamStateSqliteStore:
                 "base_branch": row["base_branch"],
                 "base_commit_sha": row["base_commit_sha"],
                 "base_tree_hash": row["base_tree_hash"],
-                "dependency_git_sources": _json_loads(
-                    row["dependency_git_sources_json"]
-                ),
+                "dependency_git_sources": _json_loads(row["dependency_git_sources_json"]),
                 "source_fingerprint": row["source_fingerprint"],
                 "preparation_generation": row["preparation_generation"],
                 "failed_dependency_task_id": row["failed_dependency_task_id"],
@@ -4526,9 +4652,7 @@ class TeamStateSqliteStore:
                 "agent_branch": row["agent_branch"],
                 "commit_sha": row["commit_sha"],
                 "dependency_git_sources": _json_loads(row["dependency_git_sources_json"]),
-                "dependency_composition_recovery_id": row[
-                    "dependency_composition_recovery_id"
-                ],
+                "dependency_composition_recovery_id": row["dependency_composition_recovery_id"],
                 "manual_dependency_git_sources": _json_loads(
                     row["manual_dependency_git_sources_json"]
                 ),
@@ -5126,9 +5250,7 @@ def _migrate_worktree_cleanup_evidence(connection: sqlite3.Connection) -> None:
         )
 
 
-_REJECTED_ACCEPTANCE_MIGRATION_ACTOR = (
-    f"system:sqlite-migration:v{SQLITE_SCHEMA_VERSION}"
-)
+_REJECTED_ACCEPTANCE_MIGRATION_ACTOR = f"system:sqlite-migration:v{SQLITE_SCHEMA_VERSION}"
 _REJECTED_ACCEPTANCE_MIGRATION_REASON = (
     "Formal review was attached after the deliverable's authoritative direct rejection; "
     f"the invalid review path was retired during the v{SQLITE_SCHEMA_VERSION} "
@@ -5170,10 +5292,7 @@ def _normalize_rejected_acceptance_override_rows(
         if not _acceptance_decision_is_rejected(decision):
             continue
         deliverable_id = str(row["id"])
-        if (
-            row["state"] == "rejected"
-            and deliverable_id not in current_review_deliverable_ids
-        ):
+        if row["state"] == "rejected" and deliverable_id not in current_review_deliverable_ids:
             continue
         connection.execute(
             "UPDATE team_deliverables SET state = 'rejected' WHERE id = ?",
@@ -5204,9 +5323,7 @@ def _normalize_rejected_acceptance_override_payload(payload: object) -> list[str
     for deliverable_id, raw_deliverable in deliverables.items():
         if not isinstance(raw_deliverable, dict):
             continue
-        if not _acceptance_decision_is_rejected(
-            raw_deliverable.get("acceptance_decision")
-        ):
+        if not _acceptance_decision_is_rejected(raw_deliverable.get("acceptance_decision")):
             continue
         normalized_id = str(deliverable_id)
         state = raw_deliverable.get("state")
@@ -5242,9 +5359,7 @@ def _reconcile_rejected_acceptance_overrides(
     from .services.domain.work_due import _mark_agent_work_due
 
     selected_ids = {
-        deliverable_id
-        for deliverable_id in deliverable_ids
-        if deliverable_id in state.deliverables
+        deliverable_id for deliverable_id in deliverable_ids if deliverable_id in state.deliverables
     }
     if not selected_ids:
         return
@@ -5277,10 +5392,7 @@ def _reconcile_rejected_acceptance_overrides(
                 now=now,
             )
         for finding in deliverable.carried_findings:
-            if (
-                finding.source_review_request_id in invalid_review_ids
-                and finding.state == "open"
-            ):
+            if finding.source_review_request_id in invalid_review_ids and finding.state == "open":
                 finding.state = "resolved"
                 finding.resolution = _REJECTED_ACCEPTANCE_MIGRATION_REASON
                 finding.resolved_at = now
@@ -5355,9 +5467,7 @@ def _reconcile_rejected_acceptance_overrides(
                     "summary": "Superior rejected the deliverable; revise and resubmit.",
                     "reason": decision.reason,
                     "artifact_refs": list(deliverable.artifact_refs),
-                    "migration": (
-                        f"rejected_acceptance_override_v{SQLITE_SCHEMA_VERSION}"
-                    ),
+                    "migration": (f"rejected_acceptance_override_v{SQLITE_SCHEMA_VERSION}"),
                 },
                 created_at=now,
                 updated_at=now,
@@ -5387,8 +5497,7 @@ def _reconcile_rejected_acceptance_overrides(
                     state,
                     project_id=project_id,
                     source_id=(
-                        "rejected-acceptance-terminal-ancestors:"
-                        + ",".join(project_task_ids)
+                        "rejected-acceptance-terminal-ancestors:" + ",".join(project_task_ids)
                     ),
                     summary="Reconcile terminal ancestor tasks after a restored rejection",
                     details=(
@@ -5420,9 +5529,7 @@ def _reconcile_rejected_acceptance_overrides(
                 "a successor from accepted replacement lineage before publication."
             ),
             reference_ids=sorted(
-                set(selected_ids)
-                | {release.id}
-                | set(release.git_promotion_record_ids)
+                set(selected_ids) | {release.id} | set(release.git_promotion_record_ids)
             ),
             now=now,
         )
@@ -5452,9 +5559,7 @@ def _close_invalid_rejection_override_inbox_items(
             continue
         payload = item.payload
         linked_review_ids = {
-            str(value)
-            for value in payload.get("review_request_ids") or []
-            if value is not None
+            str(value) for value in payload.get("review_request_ids") or [] if value is not None
         }
         if payload.get("review_request_id") is not None:
             linked_review_ids.add(str(payload["review_request_id"]))
@@ -5511,12 +5616,9 @@ def _close_stale_task_resolution_inbox_items(
             continue
         payload = item.payload
         kind = payload.get("kind")
-        if (
-            kind in {"root_task_resolution", "candidate_correction_resolution"}
-            and (
-                payload.get("task_id") in invalid_resolution_task_ids
-                or payload.get("deliverable_id") in deliverable_ids
-            )
+        if kind in {"root_task_resolution", "candidate_correction_resolution"} and (
+            payload.get("task_id") in invalid_resolution_task_ids
+            or payload.get("deliverable_id") in deliverable_ids
         ):
             item.state = TeamInboxItemState.HANDLED
             item.updated_at = now
@@ -5524,9 +5626,7 @@ def _close_stale_task_resolution_inbox_items(
         if kind != "parent_task_transition":
             continue
         child_ids = {
-            str(value)
-            for value in payload.get("child_task_ids") or []
-            if value is not None
+            str(value) for value in payload.get("child_task_ids") or [] if value is not None
         }
         invalid_child_ids = child_ids.intersection(invalid_resolution_task_ids)
         if not invalid_child_ids:
@@ -5680,9 +5780,7 @@ def _legacy_correction_release_ids_by_task(
         normalized_task_id = str(task_id or "").strip()
         normalized_release_id = str(release_id or "").strip()
         if normalized_task_id and normalized_release_id:
-            release_ids_by_task.setdefault(normalized_task_id, set()).add(
-                normalized_release_id
-            )
+            release_ids_by_task.setdefault(normalized_task_id, set()).add(normalized_release_id)
 
     request_release_ids = {
         str(row["id"]): str(row["release_package_id"])
@@ -5708,9 +5806,7 @@ def _legacy_correction_release_ids_by_task(
         """
     ):
         _add(row["review_correction_task_id"], row["release_package_id"])
-    for row in connection.execute(
-        "SELECT payload_json FROM team_release_verification_runs"
-    ):
+    for row in connection.execute("SELECT payload_json FROM team_release_verification_runs"):
         payload = _json_loads(row["payload_json"])
         if isinstance(payload, dict):
             _add(payload.get("correction_task_id"), payload.get("release_package_id"))
@@ -5948,9 +6044,7 @@ def _migrate_task_git_base_snapshots(connection: sqlite3.Connection) -> None:
                 """,
                 (release_id,),
             ).fetchone()
-            candidate_branch, _candidate_commit = _legacy_release_candidate_snapshot(
-                linked_release
-            )
+            candidate_branch, _candidate_commit = _legacy_release_candidate_snapshot(linked_release)
             if (
                 linked_release is None
                 or linked_release["project_id"] != task["project_id"]
@@ -6088,9 +6182,7 @@ def _migrate_task_git_base_snapshots(connection: sqlite3.Connection) -> None:
                 )
             }
             correction_deliverables = [
-                row
-                for row in git_deliverables
-                if str(row["id"]) not in inherited_deliverable_ids
+                row for row in git_deliverables if str(row["id"]) not in inherited_deliverable_ids
             ]
             inferred, unresolved = _legacy_deliverable_git_snapshots(
                 connection,
@@ -6104,9 +6196,8 @@ def _migrate_task_git_base_snapshots(connection: sqlite3.Connection) -> None:
                     )
                     continue
                 inferred_branch, inferred_commit = next(iter(inferred))
-                if (
-                    (branch is not None and branch != inferred_branch)
-                    or (commit is not None and commit != inferred_commit)
+                if (branch is not None and branch != inferred_branch) or (
+                    commit is not None and commit != inferred_commit
                 ):
                     _block_legacy_release_git_base_conflict(
                         connection,
@@ -6279,10 +6370,7 @@ def _migrate_release_canonical_base_snapshots(
                         or row["predecessor_candidate"]
                     )
                 else:
-                    canonical_base = (
-                        row["predecessor_canonical_base"]
-                        or row["predecessor_base"]
-                    )
+                    canonical_base = row["predecessor_canonical_base"] or row["predecessor_base"]
             else:
                 canonical_base = row["base_commit_sha"]
             if not canonical_base:
@@ -7492,6 +7580,9 @@ CREATE TABLE IF NOT EXISTS team_governance_runtimes (
     governance_group_id TEXT PRIMARY KEY,
     wake_leased_until TEXT,
     active_dispatch_id TEXT,
+    preparation_expires_at TEXT,
+    queued_at TEXT,
+    requested_lease_seconds INTEGER NOT NULL DEFAULT 900,
     wake_reason TEXT,
     last_wake_at TEXT,
     next_wake_at TEXT,
@@ -7608,6 +7699,9 @@ CREATE TABLE IF NOT EXISTS team_agent_runtimes (
     low_priority_batch_cycle_count INTEGER NOT NULL DEFAULT 0,
     low_priority_batch_due_after_cycles INTEGER,
     context_clearing_policy TEXT NOT NULL DEFAULT 'off',
+    context_clearing_idle_grace_seconds INTEGER NOT NULL DEFAULT 0,
+    context_idle_since_at TEXT,
+    context_idle_rotation_due_at TEXT,
     auto_context_clearing_enabled INTEGER NOT NULL,
     context_rotation_pending INTEGER NOT NULL,
     context_rotation_requested_by TEXT,
@@ -7893,6 +7987,7 @@ CREATE TABLE IF NOT EXISTS team_blockers (
     task_id TEXT,
     source_kind TEXT NOT NULL,
     source_id TEXT NOT NULL,
+    mcp_capability_identity_json TEXT,
     reporter_agent_id TEXT,
     reporter_actor TEXT,
     reason_code TEXT NOT NULL DEFAULT 'unspecified',
@@ -8316,8 +8411,16 @@ CREATE TABLE IF NOT EXISTS team_dispatches (
     chat_message_ids_json TEXT NOT NULL DEFAULT '[]',
     review_routing_authorities_json TEXT NOT NULL DEFAULT '[]',
     initial_release_decision_deliverable_ids_json TEXT NOT NULL DEFAULT '[]',
+    mcp_capability_receipt_json TEXT,
     status TEXT NOT NULL,
     created_at TEXT NOT NULL,
+    preparation_expires_at TEXT,
+    queued_at TEXT,
+    requested_lease_seconds INTEGER NOT NULL DEFAULT 900,
+    activation_completed_at TEXT,
+    session_metadata_mirrored_at TEXT,
+    role_description_fingerprint TEXT,
+    action_feedback_dispatch_ids_json TEXT NOT NULL DEFAULT '[]',
     prepared_at TEXT,
     leased_at TEXT,
     lease_expires_at TEXT,

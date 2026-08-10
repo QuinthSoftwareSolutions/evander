@@ -1032,8 +1032,7 @@ def test_azure_pr_reuse_does_not_confirm_older_matching_iteration(
     previous_commit = "2" * 40
     monkeypatch.setenv("AZURE_DEVOPS_PR_PAT", "test-token")
     monkeypatch.setattr(
-        "evander.admin.services.managed_git_service."
-        "_AZURE_PR_SOURCE_CONFIRMATION_TIMEOUT_SECONDS",
+        "evander.admin.services.managed_git_service._AZURE_PR_SOURCE_CONFIRMATION_TIMEOUT_SECONDS",
         1.0,
     )
     service = _service(tmp_path)
@@ -1110,8 +1109,7 @@ def test_azure_pr_reuse_confirmation_enforces_wall_clock_request_timeout(
     current_commit = "2" * 40
     monkeypatch.setenv("AZURE_DEVOPS_PR_PAT", "test-token")
     monkeypatch.setattr(
-        "evander.admin.services.managed_git_service."
-        "_AZURE_PR_SOURCE_CONFIRMATION_TIMEOUT_SECONDS",
+        "evander.admin.services.managed_git_service._AZURE_PR_SOURCE_CONFIRMATION_TIMEOUT_SECONDS",
         2.0,
     )
     service = _service(tmp_path)
@@ -1203,11 +1201,14 @@ def test_azure_request_json_uses_explicit_timeout(
         _fake_urlopen,
     )
 
-    assert service._azure_request_json(
-        "https://example.invalid/pr",
-        auth="Basic test",
-        timeout_seconds=2.5,
-    ) == {}
+    assert (
+        service._azure_request_json(
+            "https://example.invalid/pr",
+            auth="Basic test",
+            timeout_seconds=2.5,
+        )
+        == {}
+    )
     assert timeouts == [2.5]
 
 
@@ -1599,16 +1600,19 @@ def test_materialize_candidate_checkout_creates_exact_detached_checkout_without_
     }
     assert _run("git", "rev-parse", "HEAD", cwd=target) == commit_sha
     assert _run("git", "rev-parse", "HEAD^{tree}", cwd=target) == tree_hash
-    assert subprocess.run(
-        ["git", "symbolic-ref", "-q", "HEAD"],
-        cwd=target,
-        check=False,
-        capture_output=True,
-        text=True,
-    ).returncode == 1
-    assert _run("git", "remote", "get-url", "origin", cwd=target) == record[
-        "canonical_repository_url"
-    ]
+    assert (
+        subprocess.run(
+            ["git", "symbolic-ref", "-q", "HEAD"],
+            cwd=target,
+            check=False,
+            capture_output=True,
+            text=True,
+        ).returncode
+        == 1
+    )
+    assert (
+        _run("git", "remote", "get-url", "origin", cwd=target) == record["canonical_repository_url"]
+    )
     internal_path = str(_bare_path(service, record["managed_repo_id"]))
     git_metadata = "\n".join(
         path.read_text(encoding="utf-8", errors="ignore")
@@ -2052,12 +2056,15 @@ def test_push_branch_creates_missing_destination_from_reviewed_base(tmp_path: Pa
     assert result["success"] is True
     assert result["previous_commit_sha"] is None
     assert result["expected_destination_commit_sha"] == reviewed_base
-    assert _run(
-        "git",
-        f"--git-dir={upstream}",
-        "rev-parse",
-        "refs/heads/new-release",
-    ) == approved
+    assert (
+        _run(
+            "git",
+            f"--git-dir={upstream}",
+            "rev-parse",
+            "refs/heads/new-release",
+        )
+        == approved
+    )
 
 
 def test_push_branch_rejects_missing_destination_with_unrelated_reviewed_base(
@@ -2281,14 +2288,17 @@ def test_consolidation_merges_pinned_sources_in_managed_worktree(tmp_path: Path)
         "agents/session-2/b",
     ]
     assert result["base_commit_sha"] == base_commit
-    assert _run(
-        "git",
-        f"--git-dir={bare}",
-        "show",
-        "-s",
-        "--format=%s",
-        result["commit_sha"],
-    ) == "Assemble release release-1"
+    assert (
+        _run(
+            "git",
+            f"--git-dir={bare}",
+            "show",
+            "-s",
+            "--format=%s",
+            result["commit_sha"],
+        )
+        == "Assemble release release-1"
+    )
     assert _run(
         "git",
         f"--git-dir={bare}",
@@ -2322,19 +2332,16 @@ def test_consolidation_merges_pinned_sources_in_managed_worktree(tmp_path: Path)
         _run("git", f"--git-dir={bare}", "rev-parse", "refs/heads/team/releases/release-1")
         == result["commit_sha"]
     )
-    assert (
-        _run(
-            "git",
-            f"--git-dir={bare}",
-            "show",
-            "-s",
-            "--format=%an <%ae>|%cn <%ce>",
-            result["commit_sha"],
-        )
-        == (
-            "Jonathan Quinth <operator@example.invalid>"
-            "|Jonathan Quinth <operator@example.invalid>"
-        )
+    assert _run(
+        "git",
+        f"--git-dir={bare}",
+        "show",
+        "-s",
+        "--format=%an <%ae>|%cn <%ce>",
+        result["commit_sha"],
+    ) == (
+        "Jonathan Quinth <operator@example.invalid>"
+        "|Jonathan Quinth <operator@example.invalid>"
     )
     assert (
         _run(
@@ -2370,9 +2377,10 @@ def test_consolidation_fast_forwards_to_single_reviewed_source(tmp_path: Path) -
 
     assert result["success"] is True
     assert result["commit_sha"] == reviewed_commit
-    assert _run(
-        "git", f"--git-dir={bare}", "rev-parse", "refs/heads/team/corrections/release-1"
-    ) == reviewed_commit
+    assert (
+        _run("git", f"--git-dir={bare}", "rev-parse", "refs/heads/team/corrections/release-1")
+        == reviewed_commit
+    )
 
 
 def test_consolidation_fast_forwards_to_dominant_reviewed_source(tmp_path: Path) -> None:
@@ -2451,9 +2459,7 @@ def test_consolidation_rejects_source_outside_required_ancestor(
 
     assert result["success"] is False
     assert result["error_code"] == "scope_mismatch"
-    assert result["non_descendant_source_branches"] == [
-        "agents/session-1/unrelated"
-    ]
+    assert result["non_descendant_source_branches"] == ["agents/session-1/unrelated"]
     assert result["required_source_ancestor_commit_sha"] == base_commit
 
 

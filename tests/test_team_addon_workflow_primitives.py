@@ -165,15 +165,11 @@ def test_team_workflow_provider_registration_includes_review_primitives() -> Non
         is TeamReindexMemoryEffectProvider
     )
     assert (
-        registration.effect_providers[
-            "effect:team:record-human-review-preparation-result"
-        ]
+        registration.effect_providers["effect:team:record-human-review-preparation-result"]
         is TeamRecordHumanReviewPreparationResultEffectProvider
     )
     assert registration.query_providers["query:team:memory"] is TeamMemoryQueryProvider
-    internal_events = {
-        entry.event_type for entry in registration.internal_event_catalog_entries
-    }
+    internal_events = {entry.event_type for entry in registration.internal_event_catalog_entries}
     assert "team.release.human_review_requested" in internal_events
     assert "team.release.human_review_preparation_requested" in internal_events
 
@@ -235,9 +231,7 @@ def test_team_deliverable_created_trigger_suppresses_existing_then_emits_new(
     assert payload["producer_agent_id"] == "implementer"
     assert payload["deliverable"]["summary"] == "Deliverable new-deliverable"
     assert payload["task"]["assessment"]["task_id"] == "task"
-    assert payload["task"]["readiness"] == payload["task"]["assessment"][
-        "readiness"
-    ]
+    assert payload["task"]["readiness"] == payload["task"]["assessment"]["readiness"]
 
     provider.acknowledge_published_event(events[0])
 
@@ -544,9 +538,7 @@ def test_create_review_cohort_effect_retry_preserves_accepted_cohort(
 
     repo.update(_accept_cohort, expected_revision=repo.read().revision)
 
-    replayed = provider.execute(
-        resolved_config={"expected_revision": repo.read().revision}
-    )
+    replayed = provider.execute(resolved_config={"expected_revision": repo.read().revision})
 
     assert replayed["success"] is True
     assert replayed["created"] is False
@@ -591,9 +583,7 @@ def test_create_review_cohort_effect_retry_preserves_rejected_cohort(
 
     repo.update(_reject_cohort, expected_revision=repo.read().revision)
 
-    replayed = provider.execute(
-        resolved_config={"expected_revision": repo.read().revision}
-    )
+    replayed = provider.execute(resolved_config={"expected_revision": repo.read().revision})
 
     assert replayed["success"] is True
     assert replayed["created"] is False

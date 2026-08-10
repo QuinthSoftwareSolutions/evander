@@ -91,17 +91,11 @@ TEAM_SEND_OPERATOR_CHAT_MESSAGE_TOOL = "team_send_operator_chat_message"
 TEAM_ESCALATE_OPERATOR_TOOL = "team_escalate_operator"
 TEAM_REPORT_BLOCKER_TOOL = "team_report_blocker"
 TEAM_UPDATE_BLOCKER_TOOL = "team_update_blocker"
-TEAM_START_DEPENDENCY_COMPOSITION_RECOVERY_TOOL = (
-    "team_start_dependency_composition_recovery"
-)
+TEAM_START_DEPENDENCY_COMPOSITION_RECOVERY_TOOL = "team_start_dependency_composition_recovery"
 TEAM_CREATE_CASE_TOOL = "team_create_case"
 TEAM_UPDATE_CASE_TOOL = "team_update_case"
-TEAM_PROPOSE_HUMAN_FINDING_RESOLUTION_TOOL = (
-    "team_propose_human_finding_resolution"
-)
-TEAM_ROUTE_HUMAN_FINDING_CORRECTION_TOOL = (
-    "team_route_human_finding_correction"
-)
+TEAM_PROPOSE_HUMAN_FINDING_RESOLUTION_TOOL = "team_propose_human_finding_resolution"
+TEAM_ROUTE_HUMAN_FINDING_CORRECTION_TOOL = "team_route_human_finding_correction"
 TEAM_CLOSE_POST_RELEASE_CASE_TOOL = "team_close_post_release_case"
 TEAM_CREATE_TASK_TOOL = "team_create_task"
 TEAM_CREATE_TASKS_TOOL = "team_create_tasks"
@@ -1323,18 +1317,16 @@ def _register_slice6_tools(
             tool_name=TEAM_PROPOSE_HUMAN_FINDING_RESOLUTION_TOOL,
         )
         try:
-            _state, result = (
-                case_commands.propose_human_finding_resolution_command(
-                    session_id=caller.session_id,
-                    finding_id=finding_id,
-                    proposed_resolution=proposed_resolution,
-                    evidence_refs=evidence_refs,
-                    proposed_by_deliverable_ids=proposed_by_deliverable_ids,
-                    request_id=request_id,
-                    handled_inbox_item_ids=handled_inbox_item_ids,
-                    correlation_id=correlation_id,
-                    causation_id=causation_id,
-                )
+            _state, result = case_commands.propose_human_finding_resolution_command(
+                session_id=caller.session_id,
+                finding_id=finding_id,
+                proposed_resolution=proposed_resolution,
+                evidence_refs=evidence_refs,
+                proposed_by_deliverable_ids=proposed_by_deliverable_ids,
+                request_id=request_id,
+                handled_inbox_item_ids=handled_inbox_item_ids,
+                correlation_id=correlation_id,
+                causation_id=causation_id,
             )
         except (TypeError, ValueError) as exc:
             raise ToolError(str(exc)) from exc
@@ -1365,17 +1357,15 @@ def _register_slice6_tools(
             tool_name=TEAM_ROUTE_HUMAN_FINDING_CORRECTION_TOOL,
         )
         try:
-            _state, result = (
-                case_commands.route_human_finding_correction_command(
-                    session_id=caller.session_id,
-                    finding_id=finding_id,
-                    owner_agent_id=owner_agent_id,
-                    request_id=request_id,
-                    target_deliverable_ids=target_deliverable_ids,
-                    handled_inbox_item_ids=handled_inbox_item_ids,
-                    correlation_id=correlation_id,
-                    causation_id=causation_id,
-                )
+            _state, result = case_commands.route_human_finding_correction_command(
+                session_id=caller.session_id,
+                finding_id=finding_id,
+                owner_agent_id=owner_agent_id,
+                request_id=request_id,
+                target_deliverable_ids=target_deliverable_ids,
+                handled_inbox_item_ids=handled_inbox_item_ids,
+                correlation_id=correlation_id,
+                causation_id=causation_id,
             )
         except (TypeError, ValueError) as exc:
             raise ToolError(str(exc)) from exc
@@ -1407,17 +1397,15 @@ def _register_slice6_tools(
             tool_name=TEAM_CLOSE_POST_RELEASE_CASE_TOOL,
         )
         try:
-            _state, result = (
-                case_commands.close_post_release_feedback_case_command(
-                    session_id=caller.session_id,
-                    case_id=case_id,
-                    reason=reason,
-                    evidence_refs=evidence_refs,
-                    request_id=request_id,
-                    handled_inbox_item_ids=handled_inbox_item_ids,
-                    correlation_id=correlation_id,
-                    causation_id=causation_id,
-                )
+            _state, result = case_commands.close_post_release_feedback_case_command(
+                session_id=caller.session_id,
+                case_id=case_id,
+                reason=reason,
+                evidence_refs=evidence_refs,
+                request_id=request_id,
+                handled_inbox_item_ids=handled_inbox_item_ids,
+                correlation_id=correlation_id,
+                causation_id=causation_id,
             )
         except (TypeError, ValueError) as exc:
             raise ToolError(str(exc)) from exc
@@ -1906,16 +1894,14 @@ def _register_slice6_tools(
             tool_name=TEAM_START_DEPENDENCY_COMPOSITION_RECOVERY_TOOL,
         )
         try:
-            _state, result = (
-                blocker_commands.start_dependency_composition_recovery_command(
-                    session_id=caller.session_id,
-                    blocker_id=blocker_id,
-                    resolver_agent_id=resolver_agent_id,
-                    request_id=request_id,
-                    handled_inbox_item_ids=handled_inbox_item_ids,
-                    correlation_id=correlation_id,
-                    causation_id=causation_id,
-                )
+            _state, result = blocker_commands.start_dependency_composition_recovery_command(
+                session_id=caller.session_id,
+                blocker_id=blocker_id,
+                resolver_agent_id=resolver_agent_id,
+                request_id=request_id,
+                handled_inbox_item_ids=handled_inbox_item_ids,
+                correlation_id=correlation_id,
+                causation_id=causation_id,
             )
         except (TypeError, ValueError) as exc:
             raise ToolError(str(exc)) from exc
@@ -2230,17 +2216,15 @@ def _register_slice7_tools(
             tool_name=TEAM_LINK_DELIVERABLE_REPLACEMENT_TOOL,
         )
         try:
-            _state, result = (
-                deliverable_commands.link_deliverable_replacement_command(
-                    session_id=caller.session_id,
-                    predecessor_deliverable_id=predecessor_deliverable_id,
-                    replacement_deliverable_id=replacement_deliverable_id,
-                    reason=reason,
-                    request_id=request_id,
-                    handled_inbox_item_ids=handled_inbox_item_ids,
-                    correlation_id=correlation_id,
-                    causation_id=causation_id,
-                )
+            _state, result = deliverable_commands.link_deliverable_replacement_command(
+                session_id=caller.session_id,
+                predecessor_deliverable_id=predecessor_deliverable_id,
+                replacement_deliverable_id=replacement_deliverable_id,
+                reason=reason,
+                request_id=request_id,
+                handled_inbox_item_ids=handled_inbox_item_ids,
+                correlation_id=correlation_id,
+                causation_id=causation_id,
             )
         except (TypeError, ValueError) as exc:
             raise ToolError(str(exc)) from exc
@@ -2845,10 +2829,7 @@ def _team_mcp_dependency_recovery_commit_verifier(context: AddonContext):
             commit_sha=commit_sha,
             required_ancestor_shas=[
                 recovery.base_commit_sha,
-                *[
-                    source.commit_sha
-                    for source in recovery.dependency_git_sources
-                ],
+                *[source.commit_sha for source in recovery.dependency_git_sources],
             ],
         )
 
@@ -4003,13 +3984,18 @@ def _publish_team_events(context: AddonContext, events: object) -> list[str]:
         payload = event.get("payload")
         if not isinstance(payload, Mapping):
             payload = {}
+        run_at = _optional_event_datetime(event.get("run_at"))
         delay_seconds = _optional_event_float(event.get("delay_seconds"))
-        if delay_seconds is not None and delay_seconds > 0:
+        if run_at is not None or (delay_seconds is not None and delay_seconds > 0):
             scheduled, _created = scheduled_store.schedule_event(
                 event_type=_required_event_text(event.get("event_type"), "event_type"),
                 payload=dict(payload),
                 correlation_key=_optional_event_text(event.get("correlation_key")),
-                run_at=datetime.now(UTC) + timedelta(seconds=delay_seconds),
+                run_at=(
+                    run_at
+                    if run_at is not None
+                    else datetime.now(UTC) + timedelta(seconds=delay_seconds or 0.0)
+                ),
                 idempotency_key=_optional_event_text(event.get("idempotency_key")),
                 source=InternalEventSource(
                     source_type="team-addon",
@@ -4052,6 +4038,19 @@ def _optional_event_float(value: object) -> float | None:
     if isinstance(value, bool):
         raise ValueError("number value is required")
     return float(value)
+
+
+def _optional_event_datetime(value: object) -> datetime | None:
+    text = _optional_event_text(value)
+    if text is None:
+        return None
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise ValueError("run_at must be an ISO 8601 datetime") from exc
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    return parsed.astimezone(UTC)
 
 
 def _register_persistent_placeholder(

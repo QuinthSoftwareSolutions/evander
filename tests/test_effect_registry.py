@@ -89,6 +89,7 @@ from evander.events.provider_models import (
     VmCreateEffectDefinition,
 )
 from evander.host_directories.models import HostDirectoryDirectoryConfig
+from evander.local_inference_capacity import LocalInferenceCapacityStore
 from evander.messaging.agent_prompt_queue import AgentPromptQueueStore
 from evander.managed_git_grants import managed_git_key_name, managed_git_ssh_alias
 from evander.messaging.targets import (
@@ -2468,6 +2469,136 @@ def test_agent_enqueue_prompt_provider_dispatches_immediately_when_idle() -> Non
     ]
 
 
+def test_agent_enqueue_prompt_tracks_same_context_dispatch_without_new_thread_id(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    effect = AgentEnqueuePromptEffectDefinition(
+        id="effect-prompt",
+        display_name="Prompt",
+        type="effect:agent:enqueue-prompt",
+        prompt="continue",
+        session_id="session-42",
+        resume_mode="same_context",
+    )
+    admin_service = _AdminServiceStub(
+        create_vm_calls=[],
+        clone_repo_into_vm_calls=[],
+        bootstrap_python_in_vm_calls=[],
+        bootstrap_frontend_in_vm_calls=[],
+        resume_calls=[],
+    )
+    admin_service.list_vms = lambda include_inactive=True, vm_user="agent": []  # type: ignore[attr-defined]
+
+    def resume_without_new_thread(**kwargs: object) -> VmActionResult:
+        admin_service.resume_calls.append(dict(kwargs))
+        return VmActionResult(
+            success=True,
+            vm_name="vm-42",
+            action="resume_issue_agent",
+            message="started existing context",
+            thread_id=None,
+        )
+
+    monkeypatch.setattr(admin_service, "resume_agent", resume_without_new_thread)
+    provider = EffectProviderFactory(
+        provider_config_resolver=_ResolverStub(),
+        admin_service=admin_service,
+    ).build(effect)
+
+    output = provider.execute()
+
+    assert output["success"] is True
+    assert output["queued"] is False
+    assert output["resume_mode"] == "same_context"
+    assert "thread_id" not in output
+    assert admin_service.resume_calls[0]["resume_mode"] == "same_context"
+
+
+@pytest.mark.parametrize(
+    "effect",
+    [
+        pytest.param(
+            AgentPromptEffectDefinition(
+                id="effect-prompt",
+                display_name="Prompt",
+                type="effect:agent:prompt",
+                prompt="continue",
+                session_id="session-42",
+            ),
+            id="prompt",
+        ),
+        pytest.param(
+            AgentEnqueuePromptEffectDefinition(
+                id="effect-prompt",
+                display_name="Prompt",
+                type="effect:agent:enqueue-prompt",
+                prompt="continue",
+                session_id="session-42",
+                resume_mode="new_context",
+            ),
+            id="enqueue-prompt",
+        ),
+    ],
+)
+def test_threadless_successful_launch_retains_local_capacity(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    effect: AgentPromptEffectDefinition | AgentEnqueuePromptEffectDefinition,
+) -> None:
+    config = GatewayConfig(
+        runtime_dir=tmp_path,
+        model_provider_mode="local_openai",
+        local_openai_api_base_url="http://127.0.0.1:11435/v1",
+        local_openai_max_concurrency=1,
+    )
+    admin_service = _AdminServiceStub(
+        create_vm_calls=[],
+        clone_repo_into_vm_calls=[],
+        bootstrap_python_in_vm_calls=[],
+        bootstrap_frontend_in_vm_calls=[],
+        resume_calls=[],
+    )
+    admin_service.list_vms = lambda include_inactive=True, vm_user="agent": []  # type: ignore[attr-defined]
+
+    def resume_without_thread(**kwargs: object) -> VmActionResult:
+        admin_service.resume_calls.append(dict(kwargs))
+        return VmActionResult(
+            success=True,
+            vm_name="vm-42",
+            action="resume_issue_agent",
+            message="agent started before thread id was observed",
+            thread_id=None,
+        )
+
+    monkeypatch.setattr(admin_service, "resume_agent", resume_without_thread)
+    provider = EffectProviderFactory(
+        provider_config_resolver=_ContainerResolverStub(config),
+        admin_service=admin_service,
+    ).build(effect)
+
+    with pytest.raises(EffectProviderExecutionError):
+        provider.execute()
+
+    capacity_store = LocalInferenceCapacityStore(tmp_path)
+    [lease] = capacity_store.read_all().values()
+    assert lease.status == "running"
+    assert lease.target_name == "vm-42"
+    assert lease.execution_id == "vm-42"
+    denied = capacity_store.claim(
+        max_concurrency=1,
+        owner_id="next-run",
+        model="next-local-model",
+    )
+    assert denied.admitted is False
+    assert (
+        capacity_store.reconcile_running(
+            lambda _lease: False,
+            minimum_age_seconds=0,
+        )
+        == 1
+    )
+
+
 def test_agent_enqueue_prompt_provider_scopes_libvirt_prompt_lock_to_vm(
     tmp_path: Path,
 ) -> None:
@@ -3966,6 +4097,87 @@ def test_agent_enqueue_prompt_provider_queues_when_container_session_is_busy(
     assert queued.metadata["agent_context_retry_target_chars"] == "4096"
 
 
+def test_agent_enqueue_prompt_provider_keeps_same_target_capacity_waits_distinct(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = GatewayConfig(
+        runtime_dir=tmp_path,
+        execution_backend="container_worker_vm",
+        container_worker_base_url="http://worker.test",
+        model_provider_mode="local_openai",
+        local_openai_api_base_url="http://127.0.0.1:11435/v1",
+        local_openai_max_concurrency=1,
+    )
+    session_repository = JsonSessionManifestRepository(config.session_store_path)
+    session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-1",
+            vm_id=None,
+            allowed_tools=[ToolName.LIST_PENDING_AGENT_PROMPTS],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+            vm_provider="container_worker_vm",
+            vm_provider_id="truman",
+            model="local-model",
+            metadata={"execution_backend": "container_worker_vm", "target_name": "truman"},
+        )
+    )
+    admin_service = SimpleNamespace(
+        runtime=SimpleNamespace(
+            session_repository=session_repository,
+            provider_config=_ContainerResolverStub(config),
+        ),
+        list_vms=lambda **_kwargs: [],
+    )
+    backend = _FakeContainerBackend()
+    backend.repository = SimpleNamespace(
+        list_active_by_session=lambda _session_id, _active_statuses: []
+    )
+    monkeypatch.setattr(
+        "evander.effects.providers.agent_enqueue_prompt.container_backend",
+        lambda _context, _config: backend,
+    )
+    capacity_store = LocalInferenceCapacityStore(tmp_path)
+    occupied = capacity_store.claim(
+        max_concurrency=1,
+        owner_id="untracked-local-run",
+        model="other-local-model",
+    )
+    assert capacity_store.mark_running(occupied.slot_id) is True
+    factory = EffectProviderFactory(
+        provider_config_resolver=_ContainerResolverStub(config),
+        admin_service=admin_service,
+    )
+
+    outputs = [
+        factory.build(
+            AgentEnqueuePromptEffectDefinition(
+                id="agent-enqueue",
+                display_name="Enqueue",
+                type="effect:agent:enqueue-prompt",
+                target="session-1",
+                prompt=prompt,
+                dispatch_id=dispatch_id,
+                queue_key="chat:thread-1",
+            )
+        ).execute()
+        for prompt, dispatch_id in (
+            ("first prompt", "caller-dispatch-1"),
+            ("second prompt", "caller-dispatch-2"),
+        )
+    ]
+
+    assert [output["queue_key"] for output in outputs] == [
+        "chat:thread-1:local-inference:caller-dispatch-1",
+        "chat:thread-1:local-inference:caller-dispatch-2",
+    ]
+    queued = AgentPromptQueueStore(tmp_path / "queued-agent-prompts.json").read_all()
+    assert len(queued) == 2
+    assert {record.prompt for record in queued.values()} == {"first prompt", "second prompt"}
+    assert all(record.coalesced_count == 1 for record in queued.values())
+    assert backend.started_specs == []
+
+
 def test_agent_enqueue_prompt_provider_caps_recreated_busy_container_prompt(
     tmp_path,
     monkeypatch: pytest.MonkeyPatch,
@@ -4407,6 +4619,93 @@ def test_agent_prompt_provider_starts_new_thread_when_resume_thread_id_missing()
 
     assert output["thread_id"] == "thread-new-123"
     assert admin_service.resume_calls[0]["resume_thread_id"] is None
+
+
+@pytest.mark.parametrize("execution_backend", ["libvirt_vm", "container_worker_vm"])
+def test_agent_prompt_capacity_queue_preserves_workflow_context(
+    tmp_path: Path,
+    execution_backend: str,
+) -> None:
+    config = GatewayConfig(
+        runtime_dir=tmp_path,
+        execution_backend=execution_backend,
+        container_worker_base_url=(
+            "http://worker.test" if execution_backend == "container_worker_vm" else None
+        ),
+        model_provider_mode="local_openai",
+        local_openai_api_base_url="http://127.0.0.1:11435/v1",
+        local_openai_max_concurrency=1,
+    )
+    if execution_backend == "container_worker_vm":
+        session_id = "session-1"
+        session_repository = JsonSessionManifestRepository(config.session_store_path)
+        session_repository.upsert_session(
+            SessionManifest(
+                session_id=session_id,
+                vm_id=None,
+                allowed_tools=[ToolName.LIST_PENDING_AGENT_PROMPTS],
+                expires_at=datetime.now(UTC) + timedelta(hours=1),
+                vm_provider="container_worker_vm",
+                vm_provider_id="worker-agent",
+                model="local-model",
+                metadata={
+                    "execution_backend": "container_worker_vm",
+                    "target_name": "worker-agent",
+                },
+            )
+        )
+        admin_service: object = SimpleNamespace(
+            runtime=SimpleNamespace(
+                session_repository=session_repository,
+                provider_config=_ContainerResolverStub(config),
+            )
+        )
+    else:
+        session_id = "session-42"
+        admin_service = _AdminServiceStub(
+            create_vm_calls=[],
+            clone_repo_into_vm_calls=[],
+            bootstrap_python_in_vm_calls=[],
+            bootstrap_frontend_in_vm_calls=[],
+            resume_calls=[],
+        )
+    occupied = LocalInferenceCapacityStore(tmp_path).claim(
+        max_concurrency=1,
+        owner_id="active-local-run",
+        model="local-model",
+    )
+    assert occupied.admitted is True
+    provider = EffectProviderFactory(
+        provider_config_resolver=_ContainerResolverStub(config),
+        admin_service=admin_service,
+    ).build(
+        AgentPromptEffectDefinition(
+            id="effect-prompt",
+            display_name="Prompt",
+            type="effect:agent:prompt",
+            prompt="continue",
+            session_id=session_id,
+            model="local-model",
+            mcp_tool_approval_lease_id="lease-1",
+        )
+    )
+
+    output = provider.execute(
+        execution_context={
+            "workflow_run_id": "run-1",
+            "__node_outputs": {"gate-map": {"ticket": {"issue_id": "ISSUE-1"}}},
+            "__for_execution_ids": {"for-1": "event-for-1"},
+        }
+    )
+
+    assert output["queued"] is True
+    [queued] = AgentPromptQueueStore(tmp_path / "queued-agent-prompts.json").read_all().values()
+    assert queued.session_id == session_id
+    assert queued.vm_name == ("vm-42" if execution_backend == "libvirt_vm" else session_id)
+    assert queued.workflow_context == {"gate-map": {"ticket": {"issue_id": "ISSUE-1"}}}
+    assert queued.workflow_for_execution_ids == {"for-1": "event-for-1"}
+    assert queued.metadata["workflow_run_id"] == "run-1"
+    assert queued.metadata["mcp_tool_approval_lease_id"] == "lease-1"
 
 
 def test_agent_prompt_provider_rejects_expired_session_before_resume_agent() -> None:

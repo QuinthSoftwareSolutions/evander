@@ -421,9 +421,7 @@ def test_azure_query_provider_get_pull_request_work_items_skips_detail_lookup_wh
     def handler(request: httpx.Request) -> httpx.Response:
         requests.append(request)
         assert request.method == "GET"
-        assert request.url.path.endswith(
-            "/_apis/git/repositories/repo-1/pullRequests/17/workitems"
-        )
+        assert request.url.path.endswith("/_apis/git/repositories/repo-1/pullRequests/17/workitems")
         return httpx.Response(200, json={"value": []})
 
     patch_httpx_client(monkeypatch, httpx.MockTransport(handler))

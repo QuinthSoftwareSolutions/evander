@@ -3309,7 +3309,7 @@ def test_run_admin_agent_action_prompt_agent_dispatches_via_enqueue_provider(
     assert len(resume_calls) == 1
     assert resume_calls[0]["target"] == "receptionist-session"
     assert resume_calls[0]["prompt"] == "Continue the investigation"
-    assert resume_calls[0]["model"] is None
+    assert resume_calls[0]["model"] == "gpt-5.4"
     assert resume_calls[0]["vm_user"] == "agent"
     assert str(resume_calls[0]["dispatch_id"]).startswith(
         "dispatch-admin-agent-prompt:libvirt_vm:receptionist-session-"
@@ -3420,6 +3420,77 @@ def test_run_admin_agent_action_prompt_agent_queues_when_prompt_lock_held(
     assert queued.prompt == "Continue the investigation"
 
 
+def test_team_dispatch_prompts_use_distinct_queue_keys_when_prompt_lock_is_held(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from evander.messaging.agent_prompt_lock import AgentPromptLockStore, agent_prompt_lock_key
+
+    service = build_admin_runtime(write_config(tmp_path))
+    service.runtime.session_repository.upsert_session(
+        SessionManifest(
+            session_id="receptionist-session",
+            vm_id="evander-receptionist-vm",
+            allowed_tools=[],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        )
+    )
+    monkeypatch.setattr(
+        service.vm_agent_admin,
+        "list_vms",
+        MethodType(
+            lambda self, **kwargs: [
+                VmSummary(
+                    vm_name="evander-receptionist-vm",
+                    power_state="shut off",
+                    agent_state="stopped",
+                    session_ids=["receptionist-session"],
+                )
+            ],
+            service.vm_agent_admin,
+        ),
+    )
+    AgentPromptLockStore(service.config.runtime_dir / "agent-prompt-locks.json").claim(
+        lock_key=agent_prompt_lock_key(
+            target="receptionist-session",
+            vm_name="evander-receptionist-vm",
+            session_id="receptionist-session",
+            execution_backend="libvirt_vm",
+        ),
+        owner_id="workflow-owner",
+        target="receptionist-session",
+        vm_name="evander-receptionist-vm",
+        session_id="receptionist-session",
+        dispatch_id="workflow-dispatch",
+        effect_id="workflow-effect",
+    )
+
+    first = service.vm_agent_admin.run_admin_agent_action(
+        "receptionist-session",
+        "prompt-agent",
+        backend="libvirt_vm",
+        payload={"prompt": "First Team wake", "dispatch_id": "team-dispatch-1"},
+    )
+    second = service.vm_agent_admin.run_admin_agent_action(
+        "receptionist-session",
+        "prompt-agent",
+        backend="libvirt_vm",
+        payload={"prompt": "Second Team wake", "dispatch_id": "team-dispatch-2"},
+    )
+
+    queued = AgentPromptQueueStore(
+        service.config.runtime_dir / "queued-agent-prompts.json"
+    ).read_all()
+    assert first["queue_key"] == (
+        "admin-agent-prompt:libvirt_vm:receptionist-session:dispatch:team-dispatch-1"
+    )
+    assert second["queue_key"] == (
+        "admin-agent-prompt:libvirt_vm:receptionist-session:dispatch:team-dispatch-2"
+    )
+    assert set(queued) == {first["queue_key"], second["queue_key"]}
+    assert queued[first["queue_key"]].prompt == "First Team wake"
+    assert queued[second["queue_key"]].prompt == "Second Team wake"
+
+
 def test_run_admin_agent_action_prompt_agent_records_libvirt_waiting_execution(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -3484,6 +3555,75 @@ def test_run_admin_agent_action_prompt_agent_records_libvirt_waiting_execution(
     assert records[0].resolved_config["execution_backend"] == "libvirt_vm"
     assert records[0].outputs["prompt_lock_key"] == "vm:evander-receptionist-vm"
     assert records[0].outputs["prompt_lock_owner_id"] == result["prompt_lock_owner_id"]
+
+
+def test_run_admin_agent_action_tracks_same_context_dispatch_without_new_thread_id(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service = build_admin_runtime(write_config(tmp_path))
+    service.runtime.session_repository.upsert_session(
+        SessionManifest(
+            session_id="receptionist-session",
+            vm_id="evander-receptionist-vm",
+            allowed_tools=[],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        )
+    )
+    monkeypatch.setattr(
+        service.vm_agent_admin,
+        "list_vms",
+        MethodType(
+            lambda self, **kwargs: [
+                VmSummary(
+                    vm_name="evander-receptionist-vm",
+                    power_state="shut off",
+                    agent_state="stopped",
+                    session_ids=["receptionist-session"],
+                )
+            ],
+            service.vm_agent_admin,
+        ),
+    )
+    resume_modes: list[str] = []
+
+    def fake_resume_agent(self, *args, **kwargs) -> VmActionResult:
+        resume_modes.append(str(kwargs.get("resume_mode")))
+        return VmActionResult(
+            success=True,
+            vm_name="evander-receptionist-vm",
+            action="resume_issue_agent",
+            message="ok",
+            thread_id=None,
+        )
+
+    monkeypatch.setattr(
+        service.vm_agent_admin,
+        "resume_agent",
+        MethodType(fake_resume_agent, service.vm_agent_admin),
+    )
+
+    result = service.vm_agent_admin.run_admin_agent_action(
+        "receptionist-session",
+        "resume-agent",
+        backend="libvirt_vm",
+        payload={"prompt": "Continue in the current conversation"},
+    )
+
+    stores = service.workflow_config_admin._workflow_run_store_paths()
+    if service.workflow_config_admin._workflow_uses_sqlite_store(stores):
+        execution_store = SqliteExecutionStore(Path(stores["orchestration_store_path"]))
+    else:
+        execution_store = JsonExecutionStore(Path(stores["effect_execution_store_path"]))
+    records = list(execution_store.read_all().values())
+
+    assert resume_modes == ["same_context"]
+    assert result["success"] is True
+    assert result["queued"] is False
+    assert result["thread_id"] is None
+    assert len(records) == 1
+    assert records[0].status == "waiting"
+    assert records[0].outputs["dispatch_id"] == result["dispatch_id"]
+    assert records[0].resolved_config["resume_mode"] == "same_context"
 
 
 def test_run_admin_agent_action_prompt_agent_returns_queued_when_dispatch_fails_after_queueing(
@@ -6467,9 +6607,7 @@ def test_get_admin_agent_log_page_container_unthreaded_honors_cursorless_offset(
 
     assert page["offset"] == 3
     assert page["returned_lines"] == 3
-    assert page["text"] == (
-        "execution line 5\nexecution line 6\nexecution line 7\n"
-    )
+    assert page["text"] == ("execution line 5\nexecution line 6\nexecution line 7\n")
     assert page["next_cursor"] is None
     assert fake_backend.calls == [
         (
@@ -6965,8 +7103,7 @@ def test_get_admin_agent_log_page_preserves_legacy_shared_thread_fallback_across
                 worker_job_id=f"job-legacy-shared-{index:03d}",
                 worker_url="http://worker.test",
                 target_name="target-thread-legacy-shared",
-                started_at=datetime(2026, 5, 18, 8, 0, tzinfo=UTC)
-                + timedelta(minutes=index),
+                started_at=datetime(2026, 5, 18, 8, 0, tzinfo=UTC) + timedelta(minutes=index),
                 last_status="removed",
                 directory_path="root",
                 metadata={"effect_type": "effect:agent:prompt"},
@@ -7016,12 +7153,7 @@ def test_get_admin_agent_log_page_preserves_legacy_shared_thread_fallback_across
 
     combined_text = "\n".join(page_texts)
     for index in range(25):
-        assert (
-            combined_text.count(
-                f"fallback body for agent-legacy-shared-{index:03d}"
-            )
-            == 1
-        )
+        assert combined_text.count(f"fallback body for agent-legacy-shared-{index:03d}") == 1
     assert page["has_more_before"] is False
 
 
@@ -7049,11 +7181,9 @@ def test_get_admin_agent_log_page_preserves_mixed_stored_and_legacy_thread_fallb
     )
     for index in range(15):
         started_at = (
-            datetime(2026, 5, 18, 11, 0, tzinfo=UTC)
-            + timedelta(minutes=index)
+            datetime(2026, 5, 18, 11, 0, tzinfo=UTC) + timedelta(minutes=index)
             if index < 5
-            else datetime(2026, 5, 18, 8, 0, tzinfo=UTC)
-            + timedelta(minutes=index)
+            else datetime(2026, 5, 18, 8, 0, tzinfo=UTC) + timedelta(minutes=index)
         )
         repository.put(
             ContainerWorkerExecutionRecord(
@@ -7070,11 +7200,9 @@ def test_get_admin_agent_log_page_preserves_mixed_stored_and_legacy_thread_fallb
         )
     for index in range(10):
         started_at = (
-            datetime(2026, 5, 18, 10, 0, tzinfo=UTC)
-            + timedelta(minutes=index)
+            datetime(2026, 5, 18, 10, 0, tzinfo=UTC) + timedelta(minutes=index)
             if index < 5
-            else datetime(2026, 5, 18, 9, 0, tzinfo=UTC)
-            + timedelta(minutes=index)
+            else datetime(2026, 5, 18, 9, 0, tzinfo=UTC) + timedelta(minutes=index)
         )
         repository.put(
             ContainerWorkerExecutionRecord(
@@ -7139,12 +7267,7 @@ def test_get_admin_agent_log_page_preserves_mixed_stored_and_legacy_thread_fallb
     combined_text = "\n".join(page_texts)
     for prefix, count in (("agent-mixed-legacy", 15), ("agent-mixed-stored", 10)):
         for index in range(count):
-            assert (
-                combined_text.count(
-                    f"fallback body for {prefix}-{index:03d}"
-                )
-                == 1
-            )
+            assert combined_text.count(f"fallback body for {prefix}-{index:03d}") == 1
     assert page["has_more_before"] is False
 
 
@@ -7178,8 +7301,7 @@ def test_get_admin_agent_log_page_emits_legacy_shared_transcript_once(
                 worker_job_id=f"job-legacy-transcript-{index:03d}",
                 worker_url="http://worker.test",
                 target_name="target-thread-legacy-transcript",
-                started_at=datetime(2026, 5, 18, 8, 0, tzinfo=UTC)
-                + timedelta(minutes=index),
+                started_at=datetime(2026, 5, 18, 8, 0, tzinfo=UTC) + timedelta(minutes=index),
                 last_status="removed",
                 directory_path="root",
                 metadata={"effect_type": "effect:agent:prompt"},
@@ -9343,6 +9465,14 @@ def test_workflow_editor_save_updates_selected_pack_in_multi_pack_config(tmp_pat
     pack_a_payload = {
         "pack_id": "pack-a",
         "pack_version": "v1",
+        "graphs": [
+            {
+                "id": "legacy-graph-a",
+                "name": "Legacy Graph A",
+                "directory_path": "root",
+                "node_ids": ["trigger-a", "trigger-a-sibling"],
+            }
+        ],
         "ir": {
             "version": "v1",
             "nodes": [
@@ -9351,7 +9481,13 @@ def test_workflow_editor_save_updates_selected_pack_in_multi_pack_config(tmp_pat
                     "display_name": "Every minute",
                     "type": "trigger:cron",
                     "expression": "* * * * *",
-                }
+                },
+                {
+                    "id": "trigger-a-sibling",
+                    "display_name": "Every five minutes",
+                    "type": "trigger:cron",
+                    "expression": "*/5 * * * *",
+                },
             ],
             "edges": [],
         },

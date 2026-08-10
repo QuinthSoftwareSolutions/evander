@@ -31,9 +31,7 @@ def normalize_ado_organization(value: Any, *, field_name: str = "ado_organizatio
     if not organization:
         return None
     if not _ADO_ORGANIZATION_RE.fullmatch(organization):
-        raise ValueError(
-            f"{field_name} must be an Azure DevOps organization identifier, not a URL"
-        )
+        raise ValueError(f"{field_name} must be an Azure DevOps organization identifier, not a URL")
     return organization
 
 

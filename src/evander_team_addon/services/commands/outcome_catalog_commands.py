@@ -84,8 +84,7 @@ class TeamOutcomeCatalogCommandService(TeamCommandExecutor):
                 )
                 if project.team_id != normalized_team_id:
                     raise ValueError(
-                        f"project {project.id} does not belong to team "
-                        f"{normalized_team_id}"
+                        f"project {project.id} does not belong to team {normalized_team_id}"
                     )
             if any(
                 definition.team_id == normalized_team_id
@@ -275,8 +274,7 @@ class TeamOutcomeCatalogCommandService(TeamCommandExecutor):
                     raise TeamCommandValidationError(
                         code="outcome_kind_in_use",
                         message=(
-                            f"outcome kind {definition.kind} is used by "
-                            + ", ".join(references)
+                            f"outcome kind {definition.kind} is used by " + ", ".join(references)
                         ),
                     )
             definition.archived = bool(archived)

@@ -91,6 +91,7 @@ import {
   normalizeWorkflowSourcePort,
   workflowConnectionRouteOptions,
   workflowEdgeRouteLabel,
+  workflowOutputHandleIds,
   workflowOutputPortsForNode,
   humanizeWorkflowRouteKey,
   workflowRouteClass,
@@ -730,10 +731,10 @@ function WorkflowNodeCard({ data, selected }: NodeProps) {
         <div className="node-id">{nodeData.id}</div>
       </div>
       <Handle type="source" position={Position.Right} className="workflow-handle workflow-technical-handle" />
-      {nodeData.outputPorts.map((port) => (
+      {workflowOutputHandleIds(nodeData.outputPorts).map((portId) => (
         <Handle
-          key={`output-${port.key}`}
-          id={port.key}
+          key={`output-${portId}`}
+          id={portId}
           type="source"
           position={Position.Right}
           className="workflow-handle workflow-technical-handle"

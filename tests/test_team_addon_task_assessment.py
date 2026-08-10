@@ -116,9 +116,7 @@ def _outcome_task(
         state=state,
         task_kind=TeamTaskKind.OUTCOME,
         outcome_contract=TaskOutcomeContract(
-            required_outcome_kinds=(
-                [] if allow_evidenced_noop else ["result"]
-            ),
+            required_outcome_kinds=([] if allow_evidenced_noop else ["result"]),
             allow_evidenced_noop=allow_evidenced_noop,
         ),
         completion=completion,
@@ -237,18 +235,9 @@ def test_accepted_deliverable_rework_unresolves_task_and_terminal_ancestors() ->
 
     assessments = TaskAssessmentService(state).assess_all()
 
-    assert (
-        assessments["child"].resolution_status
-        == TaskResolutionStatus.UNRESOLVED
-    )
-    assert (
-        assessments["child"].resolution_reason
-        == "accepted_deliverable_requires_replacement"
-    )
-    assert (
-        assessments["parent"].resolution_status
-        != TaskResolutionStatus.RESOLVED
-    )
+    assert assessments["child"].resolution_status == TaskResolutionStatus.UNRESOLVED
+    assert assessments["child"].resolution_reason == "accepted_deliverable_requires_replacement"
+    assert assessments["parent"].resolution_status != TaskResolutionStatus.RESOLVED
     assert assessments["parent"].unresolved_descendant_ids == ["child"]
 
 
@@ -336,9 +325,7 @@ def test_task_payload_projects_unique_upstream_blocker_reasons() -> None:
             "last_progress_at": None,
         },
     ]
-    assert [
-        row["blocker_id"] for row in payload["inherited_blockers"]
-    ].count("blocker-shared") == 1
+    assert [row["blocker_id"] for row in payload["inherited_blockers"]].count("blocker-shared") == 1
 
 
 def test_rejected_task_remains_unresolved_for_ancestors_and_dependencies() -> None:
@@ -419,6 +406,57 @@ def test_support_outcome_noop_and_cancellation_have_distinct_valid_resolutions()
     )
 
 
+def test_cancelled_legacy_aggregate_ignores_stale_contribution_coverage() -> None:
+    state = _state()
+    cancelled_payload = _support_task("aggregate").model_dump()
+    cancelled_payload.update(
+        state=TeamTaskState.CANCELLED,
+        cancellation=TaskCancellation(
+            reason_code="operator_release_abandoned",
+            reason="The rejected release no longer needs a correction.",
+            actor_kind="operator",
+            actor_id="operator:test",
+        ),
+    )
+    state.tasks["aggregate"] = AgentTask.model_validate(cancelled_payload)
+    state.tasks["older-child"] = _support_task(
+        "older-child",
+        state=TeamTaskState.FINISHED,
+        parent_task_id="aggregate",
+    )
+    state.tasks["newer-child"] = _support_task(
+        "newer-child",
+        state=TeamTaskState.FINISHED,
+        parent_task_id="aggregate",
+    )
+    older_deliverable = _delivered(
+        state,
+        deliverable_id="deliverable-older-child",
+        task_id="older-child",
+    )
+    _delivered(
+        state,
+        deliverable_id="deliverable-newer-child",
+        task_id="newer-child",
+    )
+    aggregate_deliverable = _delivered(
+        state,
+        deliverable_id="deliverable-aggregate",
+        task_id="aggregate",
+        source_deliverable_ids=[older_deliverable.id],
+    )
+    aggregate_deliverable.rework_requested_at = utc_now()
+    aggregate_deliverable.rework_requested_by_agent_id = "reviewer"
+    aggregate_deliverable.rework_reason = "A later finding requested correction."
+
+    assessment = assess_task(state, "aggregate")
+
+    assert assessment.contribution_coverage["status"] == "incomplete"
+    assert assessment.invalid_reason_codes == []
+    assert assessment.resolution_status == TaskResolutionStatus.RESOLVED
+    assert assessment.resolution_reason == "cancelled_by_authorized_disposition"
+
+
 def test_finish_boundary_assesses_proposed_dependencies() -> None:
     state = _state()
     state.tasks["task"] = _support_task("task")
@@ -432,9 +470,7 @@ def test_finish_boundary_assesses_proposed_dependencies() -> None:
         )
 
     assert raised.value.code == "task_boundary_blocked"
-    assert raised.value.correction_context["unsatisfied_dependency_ids"] == [
-        "dependency"
-    ]
+    assert raised.value.correction_context["unsatisfied_dependency_ids"] == ["dependency"]
 
 
 @pytest.mark.parametrize(
@@ -458,11 +494,7 @@ def test_invalid_legacy_terminal_combinations_remain_readable(
     reason_code: str,
 ) -> None:
     state = _state()
-    task = (
-        _outcome_task("task")
-        if task_kind == TeamTaskKind.OUTCOME
-        else _support_task("task")
-    )
+    task = _outcome_task("task") if task_kind == TeamTaskKind.OUTCOME else _support_task("task")
     # Mutate after model validation to emulate a contradictory historical row.
     task.state = state_value
     state.tasks[task.id] = task
@@ -486,10 +518,7 @@ def test_terminal_parent_with_unresolved_child_is_invalid() -> None:
 
     assert assessment.resolution_status == TaskResolutionStatus.INVALID
     assert assessment.unresolved_descendant_ids == ["child"]
-    assert (
-        "terminal_task_with_unresolved_descendants"
-        in assessment.invalid_reason_codes
-    )
+    assert "terminal_task_with_unresolved_descendants" in assessment.invalid_reason_codes
 
 
 def test_active_direct_acceptance_and_formal_review_have_distinct_readiness() -> None:
@@ -526,15 +555,9 @@ def test_active_direct_acceptance_and_formal_review_have_distinct_readiness() ->
     assessments = TaskAssessmentService(state).assess_all()
 
     assert assessments["direct"].active_acceptance_ids == ["deliverable-direct"]
-    assert (
-        assessments["direct"].readiness
-        == TaskAssessmentReadiness.WAITING_FOR_ACCEPTANCE
-    )
+    assert assessments["direct"].readiness == TaskAssessmentReadiness.WAITING_FOR_ACCEPTANCE
     assert assessments["formal"].active_review_request_ids == ["review-formal"]
-    assert (
-        assessments["formal"].readiness
-        == TaskAssessmentReadiness.WAITING_FOR_REVIEW
-    )
+    assert assessments["formal"].readiness == TaskAssessmentReadiness.WAITING_FOR_REVIEW
 
 
 def test_direct_child_composition_and_recursive_lineage() -> None:
@@ -566,14 +589,10 @@ def test_direct_child_composition_and_recursive_lineage() -> None:
 
     assert root.integration_ready is True
     assert root.contribution_coverage["status"] == "not_submitted"
-    assert root.contribution_coverage["required_source_deliverable_ids"] == [
-        child_deliverable.id
-    ]
+    assert root.contribution_coverage["required_source_deliverable_ids"] == [child_deliverable.id]
     assert exact["complete"] is True
     assert flattened["complete"] is False
-    assert flattened["unexpected_source_deliverable_ids"] == [
-        leaf_deliverable.id
-    ]
+    assert flattened["unexpected_source_deliverable_ids"] == [leaf_deliverable.id]
     assert lineage["valid"] is True
     assert lineage["graph"] == {
         child_deliverable.id: [leaf_deliverable.id],
@@ -656,9 +675,7 @@ def test_acceptance_boundary_rejects_unresolved_descendants() -> None:
         require_deliverable_acceptance(state, parent_deliverable.id)
 
     assert raised.value.code == "task_boundary_blocked"
-    assert raised.value.correction_context["unresolved_descendant_ids"] == [
-        "child"
-    ]
+    assert raised.value.correction_context["unresolved_descendant_ids"] == ["child"]
 
 
 def test_release_scope_accepts_top_level_aggregate_and_rejects_flattened_source() -> None:
@@ -692,12 +709,8 @@ def test_release_scope_accepts_top_level_aggregate_and_rejects_flattened_source(
         )
     assert raised.value.code == "release_scope_invalid"
     context = raised.value.correction_context
-    assert context["redundant_source_deliverable_ids"] == [
-        child_deliverable.id
-    ]
-    assert "release_scope_not_top_level" in context["errors"][
-        child_deliverable.id
-    ]
+    assert context["redundant_source_deliverable_ids"] == [child_deliverable.id]
+    assert "release_scope_not_top_level" in context["errors"][child_deliverable.id]
 
 
 def test_mixed_hierarchy_dependency_cycle_is_invalid_without_recursion_failure() -> None:
@@ -789,9 +802,7 @@ def test_integration_boundary_forbids_direct_finish_and_uses_explicit_dependency
     assert exact["complete"] is True
     assert exact["required_contribution_task_ids"] == [dependency.id]
     assert incidental_child["complete"] is False
-    assert incidental_child["unexpected_source_deliverable_ids"] == [
-        unrelated_deliverable.id
-    ]
+    assert incidental_child["unexpected_source_deliverable_ids"] == [unrelated_deliverable.id]
 
 
 def test_contracted_leaf_forbids_direct_finish_without_becoming_integration_boundary() -> None:
@@ -856,9 +867,7 @@ def test_contracted_leaf_does_not_aggregate_incidental_child_deliverables() -> N
     assert direct["complete"] is True
     assert direct["required_contribution_task_ids"] == []
     assert aggregate["complete"] is False
-    assert aggregate["unexpected_source_deliverable_ids"] == [
-        child_deliverable.id
-    ]
+    assert aggregate["unexpected_source_deliverable_ids"] == [child_deliverable.id]
     with pytest.raises(TaskAssessmentBoundaryError) as raised:
         require_deliverable_submission(
             state,
@@ -960,12 +969,8 @@ def test_scoped_integration_coverage_filters_task_and_deliverable_ids_separately
     )
 
     coverage = payload["assessment"]["contribution_coverage"]
-    assert coverage["required_contribution_task_ids"] == [
-        "visible-contribution"
-    ]
-    assert coverage["missing_contribution_task_ids"] == [
-        "visible-contribution"
-    ]
+    assert coverage["required_contribution_task_ids"] == ["visible-contribution"]
+    assert coverage["missing_contribution_task_ids"] == ["visible-contribution"]
 
 
 def test_integration_boundary_requires_authoritative_pinned_git_provenance() -> None:
@@ -998,9 +1003,7 @@ def test_integration_boundary_requires_authoritative_pinned_git_provenance() -> 
         require_deliverable_acceptance(state, artifact_only.id)
 
     assert raised.value.code == "task_git_deliverable_contract_unsatisfied"
-    assert set(
-        raised.value.correction_context["missing_git_ref_fields"]
-    ) == {
+    assert set(raised.value.correction_context["missing_git_ref_fields"]) == {
         "agent_branch",
         "branch_context_id",
         "commit_sha",
@@ -1036,18 +1039,20 @@ def test_integration_boundary_requires_authoritative_pinned_git_provenance() -> 
 
     with pytest.raises(TaskAssessmentBoundaryError) as abandoned:
         require_deliverable_acceptance(state, git_deliverable.id)
-    assert "branch_context_not_submitted" in abandoned.value.correction_context[
-        "invalid_git_provenance_reasons"
-    ]
+    assert (
+        "branch_context_not_submitted"
+        in abandoned.value.correction_context["invalid_git_provenance_reasons"]
+    )
 
     context = state.git_work_contexts["context-integration"]
     context.state = GitWorkContextState.SUBMITTED
     context.commit_sha = "b" * 40
     with pytest.raises(TaskAssessmentBoundaryError) as mismatched:
         require_deliverable_acceptance(state, git_deliverable.id)
-    assert "branch_context_commit_mismatch" in mismatched.value.correction_context[
-        "invalid_git_provenance_reasons"
-    ]
+    assert (
+        "branch_context_commit_mismatch"
+        in mismatched.value.correction_context["invalid_git_provenance_reasons"]
+    )
 
     context.commit_sha = commit_sha
     require_deliverable_acceptance(state, git_deliverable.id)
@@ -1096,10 +1101,7 @@ def test_integration_boundary_rejects_artifact_only_submission_before_side_effec
             dispatch_id=None,
         )
 
-    assert (
-        raised.value.code
-        == "task_git_deliverable_contract_unsatisfied"
-    )
+    assert raised.value.code == "task_git_deliverable_contract_unsatisfied"
     assert state.deliverables == {}
 
 
@@ -1153,7 +1155,9 @@ def test_ephemeral_acceptance_cannot_synthesize_incomplete_integration_deliverab
     assert assignment.metadata == {}
 
 
-def test_feature_consolidation_acknowledges_success_without_synthesizing_contract_deliverable() -> None:
+def test_feature_consolidation_acknowledges_success_without_synthesizing_contract_deliverable() -> (
+    None
+):
     state = _state()
     task = AgentTask(
         **{
@@ -1276,10 +1280,7 @@ def test_finished_integration_boundary_without_accepted_deliverable_is_invalid()
     assessment = assess_task(state, task.id)
 
     assert assessment.resolution_status == TaskResolutionStatus.INVALID
-    assert (
-        "integration_boundary_missing_accepted_deliverable"
-        in assessment.invalid_reason_codes
-    )
+    assert "integration_boundary_missing_accepted_deliverable" in assessment.invalid_reason_codes
 
 
 def test_task_payload_exposes_invalid_legacy_assessment_without_failing_read() -> None:
@@ -1344,9 +1345,7 @@ def test_submission_normalization_and_acceptance_preserve_evidenced_noop() -> No
     assert deliverable.state == TeamRecordState.ACCEPTED
     assert task.state == TeamTaskState.ACCEPTED
     assert task.completion == deliverable.completion
-    assert assess_task(state, task.id).resolution_reason == (
-        "outcome_evidenced_noop_accepted"
-    )
+    assert assess_task(state, task.id).resolution_reason == ("outcome_evidenced_noop_accepted")
 
 
 def test_support_deliverable_acceptance_finishes_instead_of_accepting_task() -> None:
@@ -1407,9 +1406,7 @@ def test_submission_command_boundary_reports_unresolved_descendants_before_side_
         )
 
     assert raised.value.code == "task_boundary_blocked"
-    assert raised.value.correction_context["unresolved_descendant_ids"] == [
-        "child"
-    ]
+    assert raised.value.correction_context["unresolved_descendant_ids"] == ["child"]
     assert state.deliverables == {}
 
 
@@ -1445,9 +1442,7 @@ def test_formal_review_cascade_defers_aggregate_with_unresolved_descendants() ->
         result=result,
     )
 
-    assert result["deliverable_acceptance_deferred"]["unresolved_descendant_ids"] == [
-        "child"
-    ]
+    assert result["deliverable_acceptance_deferred"]["unresolved_descendant_ids"] == ["child"]
     assert review.state == TeamRecordState.ACCEPTED
     assert review.decision_at is not None
     assert deliverable.state == TeamRecordState.PENDING

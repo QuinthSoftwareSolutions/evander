@@ -1,5 +1,119 @@
 # Changelog
 
+## 2026-08-10 - Local Inference Launch Accounting
+
+- Retained local-inference capacity after a successful VM launch that has not yet emitted its
+  thread identifier, allowing backend termination reconciliation to release the slot instead of
+  admitting overlapping work while the original agent still runs.
+- Heartbeat long-running launch reservations until their blocking launcher returns, release
+  container leases when the worker authoritatively reports a destroyed job, and preserve raw
+  partial-line appends while following container logs.
+
+## 2026-08-09 - Queue-Aware Dispatch Correctness
+
+- Preserved same-context behavior through CLI, immediate libvirt tracking, and queued replay,
+  including successful resumes that do not emit a new thread identifier, and kept CLI log
+  observation following named, session-based, and container-worker targets without dropping
+  bursts larger than the initial tail window.
+- Kept durable Team dispatches distinct in the prompt queue and retained resolved VM identity,
+  workflow and loop context, MCP approval leases, and Team model-usage attribution across delayed
+  delivery.
+- Bounded deferred Team, Team Chat, and governance preparation reservations through durable
+  queueing, discarded queue records that no longer own a reservation before replay, and made full
+  post-delivery activation plus session-metadata mirroring atomic or retryable across worker
+  restarts.
+- Enforced host-global FIFO admission across new arrivals and both local-inference replay backends,
+  while discarding expired-session and removed-effect queue heads so they cannot starve the host
+  indefinitely.
+- Made queued replay restart- and concurrency-safe with stable dispatch identities, atomic
+  in-flight claims and identity-checked deletion, preserving ordinary retry coalescing while
+  repairing each delivered prompt's started branch before terminal reconciliation.
+- Validated root-only local-inference capacity settings before compatibility provider writes can
+  persist a child directory's email-domain changes.
+
+## 2026-08-09 - Local Inference Admission Reliability
+
+- Preserved every capacity-blocked prompt with a dispatch-specific durable queue key, including
+  multiple prompts for the same target, while retaining coalescing for ordinary retry waits.
+- Reconciled persisted running capacity leases against authoritative VM and container state so
+  lost completion monitoring cannot leave the host-global pool permanently exhausted.
+- Routed CLI resumes through queue-aware admission and made queued replay use the current fully
+  resolved provider mode before launching a turn.
+
+## 2026-08-09 - Team Idle Context Grace Reliability
+
+- Cancelled a pending idle-grace rotation when work makes the agent active, including when the
+  expiry wake is processed after its persisted deadline.
+- Enqueued the precise expiry wake for Admin and agent-command idle transitions, and preserved
+  the absolute grace deadline through durable outbox publication and retries.
+
+## 2026-08-09 - Team Idle Context Grace
+
+- Added a per-agent `context_clearing_idle_grace_seconds` setting for the existing `idle`
+  context-clearing policy, preserving the current context when new work arrives during a
+  continuous idle window and using the existing bounded handoff once that window expires.
+- Persisted the idle start and next expiry for reconciliation and operator visibility, scheduled
+  a precise expiry wake with the Team runtime tick as fallback, and kept a zero-second migrated
+  default so existing agents retain their current behavior.
+- Added Admin API and Team UI controls with bounds from zero through seven days; the editor
+  suggests 60 minutes when an agent is newly switched to idle clearing.
+
+## 2026-08-09 - Local Inference Concurrency Admission
+
+- Added an optional root provider setting, `local_openai_max_concurrency`, that limits concurrent
+  agent turns using the fully resolved `local_openai` model provider across VM and container
+  backends; omitting it preserves unlimited concurrency.
+- Queued excess local-inference prompts durably in FIFO order and tied capacity release to the
+  prompt-completion lifecycle, including recovery of abandoned launch reservations.
+- Kept Team Runtime, Team Chat, and governance dispatches unleased while their local-inference
+  prompts wait for capacity, starting the dispatch lease only after prompt delivery is accepted.
+
+## 2026-08-09 - Team Context Reset Usage
+
+- Added reset-bounded input-token totals and the latest completed reset time to selected Team
+  agents, while excluding agents that reset context on every wake.
+- Rebased token boundaries when agents move to another session and report usage as unavailable
+  whenever any post-reset request lacks normalized token counts.
+
+## 2026-08-09 - Review MCP Capability Receipts
+
+- Recorded a compact, persisted proof of the review-decision MCP capability for each review
+  dispatch, using only the required tool, a transport fingerprint, and status rather than a full
+  tool catalogue.
+- Confirmed the dynamic policy grant before resuming a reviewer, retried a verified capability
+  mismatch once without consuming no-progress allowance, and then terminally routed a durable
+  blocker while suppressing further wakes for that review.
+- Kept pre-execution capability failures from completing unrelated blocker or Git scopes, and
+  applied review suppression and capability receipts consistently to manager-fallback dispatches.
+- Stored capability blocker identity structurally so valid delimiter-bearing IDs remain safe, and
+  started transport evidence at the confirmed policy-grant time.
+
+## 2026-08-07 - Trudy Discord Team Chat Bridge
+
+- Added a mutation-capable, author-restricted Discord bridge that queues messages for Trudy through the normal Team Chat lease, scope, transcript, and reply lifecycle.
+
+## 2026-08-07 - Cancelled Aggregate Assessment Reconciliation
+
+- Kept authorized task cancellation resolved when an abandoned historical aggregate deliverable
+  has stale contribution metadata or a pre-cancellation rework request, without rewriting its
+  accepted provenance or creating successor work.
+
+## 2026-08-07 - Legacy Workflow Pack Graph Validation
+
+- Normalized unchanged legacy workflow-pack graph metadata before validating a save to another
+  pack, so unrelated disconnected graphs no longer reject an otherwise valid workflow edit.
+
+## 2026-08-07 - Add-on Workflow Layout Regeneration
+
+- Made Team Runtime add-on materialization supply a complete, validated node layout and replace
+  the layout alongside the pack on refresh, preventing new or stale nodes from falling back into
+  the workflow editor's default overlapping position.
+
+## 2026-08-07 - Workflow Error Route Rendering
+
+- Added a standard canvas handle for each workflow node's runtime error route, so persisted
+  error-path edges render even when their catalog entry has no configurable error output.
+
 ## 2026-08-07 - Safe Batched Team Chat Reply Validation
 
 - Rejected agent chat replies with neither a non-empty `message_ids` batch nor a legacy

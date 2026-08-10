@@ -146,14 +146,10 @@ def _normalize_task_creation_command_payload(
             "git_base_branch": git_base_branch,
             "dependency_task_ids": list(dependency_task_ids or []),
             "task_kind": task_kind,
-            "outcome_contract": (
-                dict(outcome_contract) if outcome_contract is not None else None
-            ),
+            "outcome_contract": (dict(outcome_contract) if outcome_contract is not None else None),
             "integration_boundary": integration_boundary,
             "deliverable_contract": (
-                dict(deliverable_contract)
-                if deliverable_contract is not None
-                else None
+                dict(deliverable_contract) if deliverable_contract is not None else None
             ),
         },
         field_name="task",

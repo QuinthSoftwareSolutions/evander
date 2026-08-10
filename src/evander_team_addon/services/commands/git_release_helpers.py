@@ -83,12 +83,8 @@ def _team_request_release_normalized_payload(
 ) -> dict[str, Any]:
     return {
         "id": _optional_text(release_id),
-        "supersedes_release_package_id": _optional_text(
-            supersedes_release_package_id
-        ),
-        "post_release_feedback_case_id": _optional_text(
-            post_release_feedback_case_id
-        ),
+        "supersedes_release_package_id": _optional_text(supersedes_release_package_id),
+        "post_release_feedback_case_id": _optional_text(post_release_feedback_case_id),
         "project_id": _required_text(project_id, "project_id"),
         "deliverable_ids": _string_list(deliverable_ids, "deliverable_ids"),
         "release_branch": _optional_text(release_branch),
@@ -229,9 +225,7 @@ def _git_command_validation_error(
         waiver_requirements,
         (str, bytes),
     ):
-        correction_context["verification_waiver_requirements"] = list(
-            waiver_requirements
-        )
+        correction_context["verification_waiver_requirements"] = list(waiver_requirements)
     return TeamCommandValidationError(
         code=code,
         message=message,

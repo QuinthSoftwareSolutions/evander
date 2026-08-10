@@ -49,8 +49,14 @@ from evander.messaging.agent_prompt_queue import (
     AgentPromptQueueStore,
     AgentPromptRetryLimitExceeded,
     QueuedAgentPromptRecord,
+    agent_prompt_replay_queue_key,
 )
+from evander.messaging.agent_prompt_enqueue import enqueue_agent_prompt
 from evander.messaging.agent_prompt_lock import AgentPromptLockStore, agent_prompt_lock_key
+from evander.local_inference_capacity import (
+    LOCAL_INFERENCE_QUEUE_REASON,
+    LocalInferenceCapacityStore,
+)
 from evander.model_usage.runtime import model_usage_store
 from evander.orchestration.host_polling import HostFileLockManager
 from evander.events.models import TriggerEvent
@@ -66,7 +72,7 @@ from evander.models import (
 from evander.repositories.orchestration import SqliteWorkflowConfigSnapshotRepository
 from evander.repositories.session_manifests import JsonSessionManifestRepository
 from evander.queries.registry import QueryProviderFactory
-from evander.triggers.queue import TriggerQueueRecord
+from evander.triggers.queue import SqliteTriggerEventQueue, TriggerQueueRecord
 
 
 class _Provider:
@@ -300,6 +306,7 @@ class _AgentPromptDispatchPortStub:
         vm_user: str = "agent",
         dispatch_id: str | None = None,
         resume_thread_id: str | None = None,
+        resume_mode: str = "new_context",
         persist_thread_id: bool = True,
         mcp_gateway_url: str | None = None,
     ) -> object:
@@ -311,6 +318,7 @@ class _AgentPromptDispatchPortStub:
                 "vm_user": vm_user,
                 "dispatch_id": dispatch_id,
                 "resume_thread_id": resume_thread_id,
+                "resume_mode": resume_mode,
                 "persist_thread_id": persist_thread_id,
                 "mcp_gateway_url": mcp_gateway_url,
             }
@@ -373,6 +381,38 @@ def _edge(source_id: str, target_id: str, *, source_port: str | None = None) -> 
     if source_port is not None:
         edge["source_port"] = source_port
     return edge
+
+
+def _queued_prompt_execution_record(
+    record: QueuedAgentPromptRecord,
+    *,
+    status: str,
+) -> EffectExecutionRecord:
+    now = datetime.now(timezone.utc)
+    dispatch_id = str(record.dispatch_id or "")
+    event_id = f"queued-agent-prompt:{record.queue_key}:{dispatch_id}"
+    return EffectExecutionRecord(
+        execution_id=f"exec-{dispatch_id}",
+        idempotency_key=f"{event_id}::{record.effect_id}",
+        event_id=event_id,
+        trace_id=f"queued-agent-prompt:{record.queue_key}",
+        source_node_id=record.effect_id,
+        source_trigger_type="effect:agent:enqueue-prompt",
+        effect_id=record.effect_id,
+        effect_type="effect:agent:enqueue-prompt",
+        status=status,
+        started_at=now,
+        finished_at=now,
+        resolved_config_hash="queued-config-hash",
+        resolved_config={"queue_key": record.queue_key},
+        input_payload={"queue_key": record.queue_key},
+        outputs={
+            "queue_key": record.queue_key,
+            "dispatch_id": dispatch_id,
+            "session_id": record.session_id,
+            "vm_name": record.vm_name,
+        },
+    )
 
 
 def _await_agent_store(worker: EffectOrchestratorWorker):
@@ -4533,6 +4573,295 @@ def test_agent_enqueue_prompt_queues_when_target_agent_is_running(
     assert "vm-1" in queued_payload
 
 
+def test_agent_enqueue_prompt_applies_local_capacity_after_model_resolution(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    config = GatewayConfig(
+        runtime_dir=runtime_dir,
+        model_provider_mode="local_openai",
+        local_openai_api_base_url="http://127.0.0.1:11435/v1",
+        local_openai_max_concurrency=1,
+    )
+    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+        {
+            "runtime_dir": runtime_dir,
+            "poll_interval_seconds": 1,
+            "jitter_seconds": 0,
+            "triggers": [
+                {
+                    "id": "trigger-1",
+                    "display_name": "Tick",
+                    "type": "trigger:cron",
+                    "expression": "* * * * *",
+                }
+            ],
+            "effects": [
+                {
+                    "id": "effect-1",
+                    "display_name": "First local prompt",
+                    "type": "effect:agent:enqueue-prompt",
+                    "vm_name": "vm-1",
+                    "prompt": "first",
+                    "model": "resolved-local-model-a",
+                },
+                {
+                    "id": "effect-2",
+                    "display_name": "Second local prompt",
+                    "type": "effect:agent:enqueue-prompt",
+                    "vm_name": "vm-2",
+                    "prompt": "second",
+                    "model": "resolved-local-model-b",
+                },
+            ],
+            "edges": [
+                _edge("trigger-1", "effect-1"),
+                _edge("trigger-1", "effect-2"),
+            ],
+        }
+    )
+    worker = EffectOrchestratorWorker(config=config, worker_config=worker_config, runtime=None)  # type: ignore[arg-type]
+    worker.provider_factory.admin_service.runtime.provider_config = _ProviderConfigResolver(config)
+    resume_calls: list[dict[str, object]] = []
+    running_vms: set[str] = set()
+
+    monkeypatch.setattr(
+        worker.provider_factory.admin_service.vm_agent_admin,
+        "list_vms",
+        lambda **_kwargs: [
+            VmSummary(
+                vm_name=vm_name,
+                libvirt_state="running",
+                agent_state="running" if vm_name in running_vms else "idle",
+                session_ids=[],
+            )
+            for vm_name in ("vm-1", "vm-2")
+        ],
+    )
+
+    def _resume_agent(**kwargs: object) -> object:
+        resume_calls.append(dict(kwargs))
+        running_vms.add(str(kwargs["target"]))
+        return SimpleNamespace(
+            success=True,
+            thread_id=f"thread-{len(resume_calls)}",
+        )
+
+    monkeypatch.setattr(
+        worker.provider_factory.admin_service.vm_agent_admin,
+        "resume_agent",
+        _resume_agent,
+    )
+    worker.event_queue.publish(
+        TriggerEvent(
+            event_id="event-local-capacity",
+            trigger_id="trigger-1",
+            trigger_type="trigger:cron",
+            occurred_at=datetime(2026, 8, 9, 12, 0, tzinfo=timezone.utc),
+            payload={},
+            trace_id="trace-local-capacity",
+        )
+    )
+
+    for _ in range(4):
+        worker.run_once()
+
+    assert [call["model"] for call in resume_calls] == ["resolved-local-model-a"]
+    executions = worker.execution_store.read_all().values()
+    by_effect = {record.effect_id: record for record in executions}
+    assert by_effect["effect-1"].status == "waiting"
+    assert by_effect["effect-2"].status == "succeeded"
+    assert by_effect["effect-2"].outputs["queued"] is True
+    assert by_effect["effect-2"].outputs["queue_reason"] == LOCAL_INFERENCE_QUEUE_REASON
+    queued_records = worker.queued_agent_prompt_store.read_all()
+    assert len(queued_records) == 1
+    [queued] = queued_records.values()
+    assert queued.queue_key.startswith("vm-2:local-inference:")
+    assert queued.model == "resolved-local-model-b"
+    assert queued.model_provider_mode == "local_openai"
+    assert queued.queue_reason == LOCAL_INFERENCE_QUEUE_REASON
+    assert len(LocalInferenceCapacityStore(runtime_dir).read_all()) == 1
+
+    first_dispatch_id = str(by_effect["effect-1"].outputs["dispatch_id"])
+    running_vms.discard("vm-1")
+    finalized = AgentEnqueuePromptEffectProvider.on_completion_event(
+        worker=worker,
+        queue_record=TriggerQueueRecord(
+            event_id="event-local-capacity-completed",
+            trigger_id="__await-agent-completion__",
+            trigger_type="trigger:agent:run:completed",
+            occurred_at=datetime(2026, 8, 9, 12, 5, tzinfo=timezone.utc),
+            payload={
+                "dispatch_id": first_dispatch_id,
+                "vm_name": "vm-1",
+                "agent_state": "idle",
+            },
+            trace_id="trace-local-capacity",
+        ),
+    )
+    assert finalized == 1
+
+    worker._run_post_completion_dispatch_hooks()
+
+    assert [call["model"] for call in resume_calls] == [
+        "resolved-local-model-a",
+        "resolved-local-model-b",
+    ]
+    assert worker.queued_agent_prompt_store.read_all() == {}
+    slots = LocalInferenceCapacityStore(runtime_dir).read_all()
+    assert len(slots) == 1
+    assert next(iter(slots.values())).model == "resolved-local-model-b"
+
+
+def test_local_capacity_reconciles_terminal_vm_lease_before_new_admission(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    config = GatewayConfig(
+        runtime_dir=runtime_dir,
+        model_provider_mode="local_openai",
+        local_openai_api_base_url="http://127.0.0.1:11435/v1",
+        local_openai_max_concurrency=1,
+    )
+    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+        {
+            "runtime_dir": runtime_dir,
+            "poll_interval_seconds": 1,
+            "jitter_seconds": 0,
+            "triggers": [
+                {
+                    "id": "trigger-1",
+                    "display_name": "Tick",
+                    "type": "trigger:cron",
+                    "expression": "* * * * *",
+                }
+            ],
+            "effects": [
+                {
+                    "id": "effect-1",
+                    "display_name": "Local prompt",
+                    "type": "effect:agent:enqueue-prompt",
+                    "vm_name": "vm-new",
+                    "prompt": "continue",
+                    "model": "resolved-local-model",
+                }
+            ],
+            "edges": [_edge("trigger-1", "effect-1")],
+        }
+    )
+    worker = EffectOrchestratorWorker(config=config, worker_config=worker_config, runtime=None)  # type: ignore[arg-type]
+    worker.provider_factory.admin_service.runtime.provider_config = _ProviderConfigResolver(config)
+    capacity_store = LocalInferenceCapacityStore(runtime_dir)
+    orphaned = capacity_store.claim(
+        max_concurrency=1,
+        owner_id="orphaned-run",
+        model="old-local-model",
+        dispatch_id="old-dispatch",
+        execution_backend="libvirt_vm",
+        target_name="vm-old",
+    )
+    assert (
+        capacity_store.mark_running(
+            orphaned.slot_id,
+            target_name="vm-old",
+            execution_id="vm-old",
+            now=datetime.now(timezone.utc) - timedelta(minutes=1),
+        )
+        is True
+    )
+    monkeypatch.setattr(
+        worker.provider_factory.admin_service.vm_agent_admin,
+        "list_vms",
+        lambda **_kwargs: [
+            VmSummary(
+                vm_name="vm-old",
+                libvirt_state="running",
+                agent_state="idle",
+                session_ids=[],
+            ),
+            VmSummary(
+                vm_name="vm-new",
+                libvirt_state="running",
+                agent_state="idle",
+                session_ids=[],
+            ),
+        ],
+    )
+    resume_calls: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        worker.provider_factory.admin_service.vm_agent_admin,
+        "resume_agent",
+        lambda **kwargs: (
+            resume_calls.append(dict(kwargs))
+            or SimpleNamespace(success=True, thread_id="thread-new")
+        ),
+    )
+    worker.event_queue.publish(
+        TriggerEvent(
+            event_id="event-reconcile-capacity",
+            trigger_id="trigger-1",
+            trigger_type="trigger:cron",
+            occurred_at=datetime(2026, 8, 9, 12, 0, tzinfo=timezone.utc),
+            payload={},
+            trace_id="trace-reconcile-capacity",
+        )
+    )
+
+    for _ in range(3):
+        worker.run_once()
+
+    assert [call["target"] for call in resume_calls] == ["vm-new"]
+    remaining = capacity_store.read_all()
+    assert orphaned.slot_id not in remaining
+    assert len(remaining) == 1
+    assert next(iter(remaining.values())).target_name == "vm-new"
+
+
+def test_queued_dispatch_uses_current_provider_mode_for_capacity_admission(
+    tmp_path: Path,
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    config = GatewayConfig(
+        runtime_dir=runtime_dir,
+        model_provider_mode="local_openai",
+        local_openai_api_base_url="http://127.0.0.1:11435/v1",
+        local_openai_max_concurrency=1,
+    )
+    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+        {"runtime_dir": runtime_dir, "triggers": [], "effects": [], "edges": []}
+    )
+    worker = EffectOrchestratorWorker(config=config, worker_config=worker_config, runtime=None)  # type: ignore[arg-type]
+    capacity_store = LocalInferenceCapacityStore(runtime_dir)
+    occupied = capacity_store.claim(
+        max_concurrency=1,
+        owner_id="active-local-run",
+        model="local-model",
+        execution_backend="container_worker_vm",
+    )
+    assert capacity_store.mark_running(occupied.slot_id) is True
+    record = QueuedAgentPromptRecord(
+        queue_key="vm-1",
+        target="vm-1",
+        vm_name="vm-1",
+        prompt="continue",
+        model="local-model",
+        model_provider_mode="openai_public",
+        effect_id="effect-1",
+    )
+
+    admission = AgentEnqueuePromptQueueDispatchHook()._claim_local_inference_capacity_for_record(
+        worker=worker,
+        record=record,
+        config=config,
+        queue_key=record.queue_key,
+        dispatch_id="queued-dispatch",
+        execution_backend="libvirt_vm",
+    )
+
+    assert admission.enabled is True
+    assert admission.admitted is False
+
+
 def test_agent_enqueue_prompt_queues_racing_prompt_while_dispatch_is_inflight(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -4725,6 +5054,116 @@ def test_agent_prompt_queue_coalescing_keeps_latest_workflow_context(tmp_path: P
     assert stored.prompt == "new prompt"
     assert stored.workflow_context == {"gate-map": {"ticket": {"issue_id": "ISSUE-2"}}}
     assert stored.workflow_for_execution_ids == {"for-1": "event-new"}
+
+
+def test_agent_prompt_enqueue_persists_generated_dispatch_id(tmp_path: Path) -> None:
+    queued = enqueue_agent_prompt(
+        runtime_dir=tmp_path,
+        target="vm-1",
+        vm_name="vm-1",
+        session_id=None,
+        prompt="continue",
+        model=None,
+        vm_user="agent",
+        dispatch_id=None,
+        resume_thread_id=None,
+        effect_id="effect-1",
+    )
+
+    assert str(queued.dispatch_id).startswith("dispatch-queued-")
+    stored = AgentPromptQueueStore(tmp_path / "queued-agent-prompts.json").get(queued.queue_key)
+    assert stored is not None
+    assert stored.dispatch_id == queued.dispatch_id
+
+
+@pytest.mark.parametrize(
+    ("queue_key", "dispatch_id"),
+    [
+        ("scheduled-wake:request-1", "wake-dispatch-1"),
+        ("admin-agent-prompt:libvirt_vm:session-1:dispatch:team-dispatch-1", "team-dispatch-1"),
+        ("wake-prompt:wake-dispatch-2", "wake-dispatch-2"),
+        ("effect-1:local-inference:capacity-dispatch-1", "capacity-dispatch-1"),
+    ],
+)
+def test_agent_prompt_replay_preserves_dispatch_scoped_queue_keys(
+    queue_key: str,
+    dispatch_id: str,
+) -> None:
+    record = QueuedAgentPromptRecord(
+        queue_key=queue_key,
+        target="vm-1",
+        vm_name="vm-1",
+        prompt="continue",
+        dispatch_id=dispatch_id,
+        effect_id="effect-1",
+    )
+
+    assert agent_prompt_replay_queue_key(record) == queue_key
+
+
+def test_agent_prompt_queue_compare_delete_keeps_replacement_dispatch(tmp_path: Path) -> None:
+    queue_store = AgentPromptQueueStore(tmp_path / "queued-agent-prompts.json")
+    queue_store.put(
+        QueuedAgentPromptRecord(
+            queue_key="durable-key",
+            target="vm-1",
+            vm_name="vm-1",
+            prompt="prompt A",
+            dispatch_id="dispatch-a",
+            effect_id="effect-1",
+        )
+    )
+    queue_store.put(
+        QueuedAgentPromptRecord(
+            queue_key="durable-key",
+            target="vm-1",
+            vm_name="vm-1",
+            prompt="prompt B",
+            dispatch_id="dispatch-b",
+            effect_id="effect-1",
+        )
+    )
+
+    assert queue_store.delete_if_dispatch_id("durable-key", "dispatch-a") is False
+    replacement = queue_store.get("durable-key")
+    assert replacement is not None
+    assert replacement.dispatch_id == "dispatch-b"
+    assert replacement.prompt == "prompt B"
+
+
+def test_agent_prompt_queue_replay_claim_preserves_fifo_and_retry_metadata(
+    tmp_path: Path,
+) -> None:
+    queue_store = AgentPromptQueueStore(tmp_path / "queued-agent-prompts.json")
+    created_at = datetime(2026, 8, 10, 9, 0, tzinfo=timezone.utc)
+    original = queue_store.put(
+        QueuedAgentPromptRecord(
+            queue_key="vm-1",
+            target="vm-1",
+            vm_name="vm-1",
+            prompt="prompt A",
+            dispatch_id="dispatch-a",
+            effect_id="effect-1",
+            created_at=created_at,
+            coalesced_count=3,
+        )
+    )
+    claimed_key = agent_prompt_replay_queue_key(original)
+
+    claimed = queue_store.claim_for_replay(
+        "vm-1",
+        "dispatch-a",
+        claimed_queue_key=claimed_key,
+    )
+
+    assert claimed is not None
+    assert claimed.queue_key == claimed_key
+    assert claimed.created_at == created_at
+    assert claimed.coalesced_count == 3
+    assert claimed.retry_key == original.retry_key
+    assert claimed.retry_count == original.retry_count
+    assert claimed.max_retries == original.max_retries
+    assert queue_store.get("vm-1") is None
 
 
 def test_agent_prompt_queue_retry_ledger_caps_recreated_prompt(tmp_path: Path) -> None:
@@ -5172,7 +5611,12 @@ def test_agent_enqueue_prompt_dispatches_queued_prompt_when_target_agent_becomes
             vm_user="agent",
             dispatch_id="caller-dispatch-1",
             resume_thread_id=None,
+            resume_mode="same_context",
             effect_id="effect-1",
+            metadata={
+                "workflow_run_id": "workflow-run-1",
+                "mcp_tool_approval_lease_id": "approval-lease-1",
+            },
         )
     )
     worker.agent_run_status_port = _AgentRunStatusPortStub(
@@ -5195,6 +5639,7 @@ def test_agent_enqueue_prompt_dispatches_queued_prompt_when_target_agent_becomes
     assert len(resume_calls) == 1
     assert resume_calls[0]["target"] == "vm-1"
     assert resume_calls[0]["dispatch_id"] == "caller-dispatch-1"
+    assert resume_calls[0]["resume_mode"] == "same_context"
     queued_store_path = runtime_dir / "queued-agent-prompts.json"
     queued_payload = (
         json.loads(queued_store_path.read_text(encoding="utf-8"))
@@ -5208,6 +5653,15 @@ def test_agent_enqueue_prompt_dispatches_queued_prompt_when_target_agent_becomes
     assert waiting_records[0].effect_type == "effect:agent:enqueue-prompt"
     assert waiting_records[0].outputs["dispatch_id"] == "caller-dispatch-1"
     assert waiting_records[0].outputs["thread_id"] == "thread-queued"
+    assert waiting_records[0].resolved_config["resume_mode"] == "same_context"
+    assert waiting_records[0].input_payload["resume_mode"] == "same_context"
+    for payload in (
+        waiting_records[0].resolved_config,
+        waiting_records[0].input_payload,
+        waiting_records[0].outputs,
+    ):
+        assert payload["workflow_run_id"] == "workflow-run-1"
+        assert payload["mcp_tool_approval_lease_id"] == "approval-lease-1"
 
 
 def test_agent_enqueue_prompt_dispatch_keeps_queued_prompt_when_lock_is_held(
@@ -5281,13 +5735,1097 @@ def test_agent_enqueue_prompt_dispatch_keeps_queued_prompt_when_lock_is_held(
 
     worker._run_post_completion_dispatch_hooks()
 
+    for dispatch_id, prompt in (
+        ("caller-dispatch-2", "follow-up B"),
+        ("caller-dispatch-3", "follow-up C"),
+    ):
+        enqueue_agent_prompt(
+            runtime_dir=runtime_dir,
+            queue_key="vm-1",
+            target="vm-1",
+            vm_name="vm-1",
+            session_id=None,
+            prompt=prompt,
+            model=None,
+            vm_user="agent",
+            dispatch_id=dispatch_id,
+            resume_thread_id=None,
+            effect_id="effect-1",
+        )
+        worker._run_post_completion_dispatch_hooks()
+
     assert claim.claimed is True
     assert resume_calls == []
     queued_payload = json.loads(
         (runtime_dir / "queued-agent-prompts.json").read_text(encoding="utf-8")
     )
-    assert queued_payload["vm-1"]["prompt"] == "hello"
+    assert list(queued_payload) == ["vm-1"]
+    assert queued_payload["vm-1"]["dispatch_id"] == "caller-dispatch-3"
+    assert queued_payload["vm-1"]["prompt"] == "follow-up C"
+    assert queued_payload["vm-1"]["coalesced_count"] == 3
     assert worker.execution_store.read_all() == {}
+
+
+def test_agent_enqueue_prompt_capacity_denial_keeps_one_coalescing_row(
+    tmp_path: Path,
+) -> None:
+    config = GatewayConfig(
+        runtime_dir=tmp_path,
+        model_provider_mode="local_openai",
+        local_openai_api_base_url="http://127.0.0.1:11435/v1",
+        local_openai_max_concurrency=1,
+    )
+    queue_store = AgentPromptQueueStore(tmp_path / "queued-agent-prompts.json")
+    enqueue_agent_prompt(
+        runtime_dir=tmp_path,
+        queue_key="vm-1",
+        target="vm-1",
+        vm_name="vm-1",
+        session_id=None,
+        prompt="prompt A",
+        model="local-model",
+        vm_user="agent",
+        dispatch_id="dispatch-a",
+        resume_thread_id=None,
+        effect_id="effect-1",
+    )
+    occupied = LocalInferenceCapacityStore(tmp_path).claim(
+        max_concurrency=1,
+        owner_id="other-owner",
+        model="local-model",
+    )
+    assert occupied.admitted is True
+    resume_calls: list[dict[str, object]] = []
+    worker = SimpleNamespace(
+        config=config,
+        queued_agent_prompt_store=queue_store,
+        execution_store=JsonExecutionStore(tmp_path / "effect-orchestrator-executions.json"),
+        agent_run_status_port=_AgentRunStatusPortStub(
+            [
+                VmSummary(
+                    vm_name="vm-1",
+                    libvirt_state="running",
+                    agent_state="idle",
+                    session_ids=[],
+                )
+            ]
+        ),
+        agent_prompt_dispatch_port=_AgentPromptDispatchPortStub(
+            resume_calls,
+            SimpleNamespace(success=True, thread_id="unexpected"),
+        ),
+        _build_execution_graph=lambda: SimpleNamespace(
+            effects_by_id={"effect-1": SimpleNamespace(type="effect:agent:enqueue-prompt")}
+        ),
+    )
+    hook = AgentEnqueuePromptQueueDispatchHook()
+
+    assert hook.on_post_completion_dispatch(worker=worker) == 0
+    for dispatch_id, prompt in (("dispatch-b", "prompt B"), ("dispatch-c", "prompt C")):
+        enqueue_agent_prompt(
+            runtime_dir=tmp_path,
+            queue_key="vm-1",
+            target="vm-1",
+            vm_name="vm-1",
+            session_id=None,
+            prompt=prompt,
+            model="local-model",
+            vm_user="agent",
+            dispatch_id=dispatch_id,
+            resume_thread_id=None,
+            effect_id="effect-1",
+        )
+        assert hook.on_post_completion_dispatch(worker=worker) == 0
+
+    assert resume_calls == []
+    assert list(queue_store.read_all()) == ["vm-1"]
+    queued = queue_store.get("vm-1")
+    assert queued is not None
+    assert queued.dispatch_id == "dispatch-c"
+    assert queued.prompt == "prompt C"
+    assert queued.coalesced_count == 3
+
+
+@pytest.mark.parametrize("claim_failure", ["mismatch", "exception"])
+def test_agent_enqueue_prompt_releases_lock_and_capacity_when_replay_cas_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    claim_failure: str,
+) -> None:
+    config = GatewayConfig(
+        runtime_dir=tmp_path,
+        model_provider_mode="local_openai",
+        local_openai_api_base_url="http://127.0.0.1:11435/v1",
+        local_openai_max_concurrency=1,
+    )
+    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+        {
+            "runtime_dir": tmp_path,
+            "poll_interval_seconds": 1,
+            "jitter_seconds": 0,
+            "triggers": [
+                {
+                    "id": "trigger-1",
+                    "display_name": "Tick",
+                    "type": "trigger:cron",
+                    "expression": "* * * * *",
+                }
+            ],
+            "effects": [
+                {
+                    "id": "effect-1",
+                    "display_name": "Enqueue",
+                    "type": "effect:agent:enqueue-prompt",
+                    "vm_name": "vm-1",
+                    "prompt": "prompt A",
+                    "model": "local-model",
+                }
+            ],
+            "edges": [_edge("trigger-1", "effect-1")],
+        }
+    )
+    worker = EffectOrchestratorWorker(config=config, worker_config=worker_config, runtime=None)  # type: ignore[arg-type]
+    worker.provider_factory.admin_service.runtime.provider_config = _ProviderConfigResolver(config)
+    enqueue_agent_prompt(
+        runtime_dir=tmp_path,
+        queue_key="vm-1",
+        target="vm-1",
+        vm_name="vm-1",
+        session_id=None,
+        prompt="prompt A",
+        model="local-model",
+        vm_user="agent",
+        dispatch_id="dispatch-a",
+        resume_thread_id=None,
+        effect_id="effect-1",
+    )
+    worker.agent_run_status_port = _AgentRunStatusPortStub(
+        [
+            VmSummary(
+                vm_name="vm-1",
+                libvirt_state="running",
+                agent_state="idle",
+                session_ids=[],
+            )
+        ]
+    )
+    resume_calls: list[dict[str, object]] = []
+    worker.agent_prompt_dispatch_port = _AgentPromptDispatchPortStub(
+        resume_calls,
+        SimpleNamespace(success=True, thread_id="unexpected"),
+    )
+    original_claim = worker.queued_agent_prompt_store.claim_for_replay
+
+    def lose_replay_claim(queue_key, dispatch_id, *, claimed_queue_key):
+        if claim_failure == "exception":
+            raise OSError("queue store unavailable")
+        enqueue_agent_prompt(
+            runtime_dir=tmp_path,
+            queue_key="vm-1",
+            target="vm-1",
+            vm_name="vm-1",
+            session_id=None,
+            prompt="replacement B",
+            model="local-model",
+            vm_user="agent",
+            dispatch_id="dispatch-b",
+            resume_thread_id=None,
+            effect_id="effect-1",
+        )
+        return original_claim(
+            queue_key,
+            dispatch_id,
+            claimed_queue_key=claimed_queue_key,
+        )
+
+    monkeypatch.setattr(
+        worker.queued_agent_prompt_store,
+        "claim_for_replay",
+        lose_replay_claim,
+    )
+
+    worker._run_post_completion_dispatch_hooks()
+
+    assert resume_calls == []
+    replacement = worker.queued_agent_prompt_store.get("vm-1")
+    assert replacement is not None
+    assert replacement.dispatch_id == (
+        "dispatch-b" if claim_failure == "mismatch" else "dispatch-a"
+    )
+    assert LocalInferenceCapacityStore(tmp_path).read_all() == {}
+    follow_up_lock = worker._agent_prompt_activity.claim_enqueue_prompt(
+        target="vm-1",
+        vm_name="vm-1",
+        session_id=None,
+        owner_id="follow-up-owner",
+        dispatch_id="follow-up-dispatch",
+        effect_id="effect-1",
+    )
+    assert follow_up_lock.claimed is True
+
+
+def test_agent_enqueue_prompt_replay_discards_libvirt_row_after_waiting_record_crash(
+    tmp_path: Path,
+) -> None:
+    queue_store = AgentPromptQueueStore(tmp_path / "queued-agent-prompts.json")
+    queued = QueuedAgentPromptRecord(
+        queue_key="libvirt-crash-window",
+        target="vm-1",
+        vm_name="vm-1",
+        prompt="continue",
+        dispatch_id="dispatch-libvirt-crash",
+        effect_id="effect-libvirt",
+    )
+    queue_store.put(queued)
+    execution_store = JsonExecutionStore(tmp_path / "effect-orchestrator-executions.json")
+    execution_store.put(_queued_prompt_execution_record(queued, status="waiting"))
+    resume_calls: list[dict[str, object]] = []
+    published_started: list[tuple[str | None, str]] = []
+    worker = SimpleNamespace(
+        queued_agent_prompt_store=queue_store,
+        execution_store=execution_store,
+        agent_run_status_port=_AgentRunStatusPortStub(
+            [
+                VmSummary(
+                    vm_name="vm-1",
+                    libvirt_state="running",
+                    agent_state="idle",
+                    session_ids=[],
+                )
+            ]
+        ),
+        agent_prompt_dispatch_port=_AgentPromptDispatchPortStub(
+            resume_calls,
+            SimpleNamespace(success=True, thread_id="duplicate-thread"),
+        ),
+        _publish_completion_event_from_record=(
+            lambda record, outputs, branch_port=None: (
+                published_started.append((branch_port, str(outputs.get("dispatch_id") or "")))
+                or "started-event"
+            )
+        ),
+    )
+
+    dispatched = AgentEnqueuePromptQueueDispatchHook().on_post_completion_dispatch(worker=worker)
+
+    assert dispatched == 0
+    assert resume_calls == []
+    assert published_started == [("started", "dispatch-libvirt-crash")]
+    assert queue_store.get(queued.queue_key) is None
+    assert (
+        execution_store.find_execution_by_idempotency_key(
+            _queued_prompt_execution_record(queued, status="waiting").idempotency_key
+        )
+        is not None
+    )
+
+
+def test_agent_enqueue_prompt_replay_discards_container_row_after_terminal_record_crash(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = GatewayConfig(
+        runtime_dir=tmp_path,
+        execution_backend="container_worker_vm",
+        container_worker_base_url="http://worker.test",
+    )
+    session_repository = JsonSessionManifestRepository(config.session_store_path)
+    session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-1",
+            vm_id=None,
+            allowed_tools=[ToolName.LIST_PENDING_AGENT_PROMPTS],
+            expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
+            vm_provider="container_worker_vm",
+            vm_provider_id="worker-agent",
+            metadata={"execution_backend": "container_worker_vm"},
+        )
+    )
+    queue_store = AgentPromptQueueStore(tmp_path / "queued-agent-prompts.json")
+    queued = QueuedAgentPromptRecord(
+        queue_key="container-crash-window",
+        target="session-1",
+        vm_name="worker-agent",
+        session_id="session-1",
+        prompt="continue",
+        dispatch_id="dispatch-container-crash",
+        effect_id="effect-container",
+    )
+    queue_store.put(queued)
+    execution_store = JsonExecutionStore(tmp_path / "effect-orchestrator-executions.json")
+    execution_store.put(_queued_prompt_execution_record(queued, status="succeeded"))
+    backend_calls: list[object] = []
+    published_started: list[tuple[str | None, str]] = []
+    monkeypatch.setattr(
+        "evander.effects.providers.lifecycle_hooks.build_execution_backend",
+        lambda config, admin_service: backend_calls.append(config),
+    )
+    worker = SimpleNamespace(
+        config=config,
+        queued_agent_prompt_store=queue_store,
+        execution_store=execution_store,
+        agent_prompt_dispatch_port=object(),
+        provider_config_resolver=SimpleNamespace(resolve_for_session_id=lambda _id: config),
+        provider_factory=SimpleNamespace(
+            admin_service=SimpleNamespace(
+                runtime=SimpleNamespace(session_repository=session_repository)
+            )
+        ),
+        _publish_completion_event_from_record=(
+            lambda record, outputs, branch_port=None: (
+                published_started.append((branch_port, str(outputs.get("dispatch_id") or "")))
+                or "started-event"
+            )
+        ),
+    )
+
+    dispatched = AgentEnqueuePromptQueueDispatchHook().on_post_completion_dispatch(worker=worker)
+
+    assert dispatched == 0
+    assert backend_calls == []
+    assert published_started == [("started", "dispatch-container-crash")]
+    assert queue_store.get(queued.queue_key) is None
+
+
+def test_agent_enqueue_prompt_replay_retries_terminal_started_event_before_deleting_row(
+    tmp_path: Path,
+) -> None:
+    queue_store = AgentPromptQueueStore(tmp_path / "queued-agent-prompts.json")
+    queued = QueuedAgentPromptRecord(
+        queue_key="terminal-started-retry",
+        target="vm-1",
+        vm_name="vm-1",
+        prompt="continue",
+        dispatch_id="dispatch-terminal-retry",
+        effect_id="effect-terminal-retry",
+    )
+    queue_store.put(queued)
+    execution_store = JsonExecutionStore(tmp_path / "effect-orchestrator-executions.json")
+    terminal = _queued_prompt_execution_record(queued, status="succeeded")
+    execution_store.put(terminal)
+    publish_attempts: list[str] = []
+
+    def publish_started_event(*, record, outputs, branch_port=None):
+        publish_attempts.append(str(branch_port or ""))
+        if len(publish_attempts) == 1:
+            raise RuntimeError("event queue unavailable")
+        return "started-event"
+
+    worker = SimpleNamespace(
+        queued_agent_prompt_store=queue_store,
+        execution_store=execution_store,
+        agent_run_status_port=_AgentRunStatusPortStub([]),
+        agent_prompt_dispatch_port=object(),
+        _publish_completion_event_from_record=publish_started_event,
+    )
+    hook = AgentEnqueuePromptQueueDispatchHook()
+
+    assert hook.on_post_completion_dispatch(worker=worker) == 0
+    assert queue_store.get(queued.queue_key) is not None
+    unchanged = execution_store.find_execution_by_idempotency_key(terminal.idempotency_key)
+    assert unchanged is not None
+    assert unchanged.status == "succeeded"
+
+    assert hook.on_post_completion_dispatch(worker=worker) == 0
+    assert publish_attempts == ["started", "started"]
+    assert queue_store.get(queued.queue_key) is None
+
+
+def test_agent_enqueue_prompt_reconcile_publishes_queued_started_before_terminal(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    queued = QueuedAgentPromptRecord(
+        queue_key="queued-container-reconcile",
+        target="session-1",
+        vm_name="worker-agent",
+        session_id="session-1",
+        prompt="continue",
+        dispatch_id="dispatch-container-reconcile",
+        effect_id="effect-container-reconcile",
+    )
+    waiting = _queued_prompt_execution_record(queued, status="waiting")
+    waiting.outputs.update(
+        {
+            "dispatched_from_queue": True,
+            "execution_backend": "container_worker_vm",
+            "execution_id": "worker-execution-1",
+        }
+    )
+    execution_store = JsonExecutionStore(tmp_path / "effect-orchestrator-executions.json")
+    execution_store.put(waiting)
+    queue_store = AgentPromptQueueStore(tmp_path / "queued-agent-prompts.json")
+    queue_store.put(queued)
+    publish_attempts: list[str] = []
+    reconciliation_calls: list[str] = []
+
+    def publish_started_event(*, record, outputs, branch_port=None):
+        publish_attempts.append(str(branch_port or ""))
+        if len(publish_attempts) == 1:
+            raise RuntimeError("event queue unavailable")
+        return "started-event"
+
+    def reconcile_container(cls, *, worker, record):
+        reconciliation_calls.append(str(record.outputs.get("dispatch_id") or ""))
+        record.status = "succeeded"
+        worker.execution_store.record_execution(record)
+        return 1
+
+    monkeypatch.setattr(
+        AgentPromptEffectProvider,
+        "_reconcile_container_waiting_record",
+        classmethod(reconcile_container),
+    )
+    worker = SimpleNamespace(
+        execution_store=execution_store,
+        queued_agent_prompt_store=queue_store,
+        _publish_completion_event_from_record=publish_started_event,
+    )
+
+    assert AgentEnqueuePromptEffectProvider.reconcile_waiting(worker=worker) == 0
+    after_failure = execution_store.find_execution_by_idempotency_key(waiting.idempotency_key)
+    assert after_failure is not None
+    assert after_failure.status == "waiting"
+    assert reconciliation_calls == []
+
+    assert AgentEnqueuePromptEffectProvider.reconcile_waiting(worker=worker) == 1
+    assert publish_attempts == ["started", "started"]
+    assert reconciliation_calls == ["dispatch-container-reconcile"]
+    after_success = execution_store.find_execution_by_idempotency_key(waiting.idempotency_key)
+    assert after_success is not None
+    assert after_success.status == "succeeded"
+
+
+def test_agent_enqueue_prompt_restart_repairs_claimed_row_then_respects_retention(
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "orchestration.db"
+    started_event_id = "effect:started:effect-retained:deadbeef0001"
+    event_queue = SqliteTriggerEventQueue(database_path)
+    queue_store = AgentPromptQueueStore(tmp_path / "queued-agent-prompts.json")
+    queued = queue_store.put(
+        QueuedAgentPromptRecord(
+            queue_key="vm-1",
+            target="vm-1",
+            vm_name="vm-1",
+            prompt="prompt A",
+            dispatch_id="dispatch-a",
+            effect_id="effect-1",
+            created_at=datetime.now(timezone.utc) - timedelta(minutes=1),
+        )
+    )
+    claimed_key = agent_prompt_replay_queue_key(queued)
+    claimed = queue_store.claim_for_replay(
+        queued.queue_key,
+        "dispatch-a",
+        claimed_queue_key=claimed_key,
+    )
+    assert claimed is not None
+    for dispatch_id, prompt in (("dispatch-b", "prompt B"), ("dispatch-c", "prompt C")):
+        enqueue_agent_prompt(
+            runtime_dir=tmp_path,
+            queue_key="vm-1",
+            target="vm-1",
+            vm_name="vm-1",
+            session_id=None,
+            prompt=prompt,
+            model=None,
+            vm_user="agent",
+            dispatch_id=dispatch_id,
+            resume_thread_id=None,
+            effect_id="effect-1",
+        )
+
+    waiting = _queued_prompt_execution_record(claimed, status="waiting")
+    waiting.outputs["dispatched_from_queue"] = True
+    execution_store = JsonExecutionStore(tmp_path / "effect-orchestrator-executions.json")
+    execution_store.put(waiting)
+    publish_calls: list[str] = []
+
+    def publish_started_event(*, record, outputs, branch_port=None):
+        publish_calls.append(str(branch_port or ""))
+        event_queue.publish(
+            TriggerEvent(
+                event_id=started_event_id,
+                trigger_id=record.effect_id,
+                trigger_type=record.effect_type,
+                occurred_at=datetime.now(timezone.utc),
+                payload=dict(outputs),
+            ),
+            idempotency_key=f"{record.idempotency_key}:{branch_port}",
+        )
+        return started_event_id
+
+    worker = SimpleNamespace(
+        queued_agent_prompt_store=queue_store,
+        execution_store=execution_store,
+        agent_run_status_port=_AgentRunStatusPortStub(
+            [
+                VmSummary(
+                    vm_name="vm-1",
+                    libvirt_state="running",
+                    agent_state="idle",
+                    session_ids=[],
+                )
+            ]
+        ),
+        agent_prompt_dispatch_port=_AgentPromptDispatchPortStub(
+            [],
+            SimpleNamespace(success=True, thread_id="unexpected"),
+        ),
+        _build_execution_graph=lambda: SimpleNamespace(
+            effects_by_id={"effect-1": SimpleNamespace(type="effect:agent:enqueue-prompt")}
+        ),
+        _publish_completion_event_from_record=publish_started_event,
+    )
+
+    assert AgentEnqueuePromptQueueDispatchHook().on_post_completion_dispatch(worker=worker) == 0
+    assert publish_calls == ["started"]
+    assert event_queue.contains(started_event_id)
+    assert queue_store.get(claimed_key) is None
+    replacement = queue_store.get("vm-1")
+    assert replacement is not None
+    assert replacement.dispatch_id == "dispatch-c"
+
+    assert event_queue.mark_delivered(
+        started_event_id,
+        delivered_at=datetime.now(timezone.utc) - timedelta(days=1),
+    )
+    restarted_event_queue = SqliteTriggerEventQueue(database_path, retention_days=0)
+    assert not restarted_event_queue.contains(started_event_id)
+
+    restarted_worker = SimpleNamespace(
+        execution_store=execution_store,
+        queued_agent_prompt_store=queue_store,
+        agent_run_status_port=_AgentRunStatusPortStub(
+            [
+                VmSummary(
+                    vm_name="vm-1",
+                    libvirt_state="running",
+                    agent_state="running",
+                    session_ids=[],
+                )
+            ]
+        ),
+        _publish_completion_event_from_record=publish_started_event,
+    )
+
+    assert AgentEnqueuePromptEffectProvider.reconcile_waiting(worker=restarted_worker) == 0
+    assert publish_calls == ["started"]
+    assert not restarted_event_queue.contains(started_event_id)
+    assert queue_store.get("vm-1") is not None
+
+
+def test_agent_enqueue_prompt_replay_retains_row_for_different_active_dispatch(
+    tmp_path: Path,
+) -> None:
+    queue_store = AgentPromptQueueStore(tmp_path / "queued-agent-prompts.json")
+    queued = QueuedAgentPromptRecord(
+        queue_key="queued-next",
+        target="session-1",
+        vm_name="vm-1",
+        session_id="session-1",
+        prompt="next prompt",
+        dispatch_id="dispatch-next",
+        effect_id="effect-next",
+    )
+    queue_store.put(queued)
+    active = QueuedAgentPromptRecord(
+        queue_key="already-running",
+        target="session-1",
+        vm_name="vm-1",
+        session_id="session-1",
+        prompt="active prompt",
+        dispatch_id="dispatch-active",
+        effect_id="effect-active",
+    )
+    execution_store = JsonExecutionStore(tmp_path / "effect-orchestrator-executions.json")
+    execution_store.put(_queued_prompt_execution_record(active, status="waiting"))
+    resume_calls: list[dict[str, object]] = []
+    worker = SimpleNamespace(
+        queued_agent_prompt_store=queue_store,
+        execution_store=execution_store,
+        agent_run_status_port=_AgentRunStatusPortStub(
+            [
+                VmSummary(
+                    vm_name="vm-1",
+                    libvirt_state="running",
+                    agent_state="idle",
+                    session_ids=["session-1"],
+                )
+            ]
+        ),
+        agent_prompt_dispatch_port=_AgentPromptDispatchPortStub(
+            resume_calls,
+            SimpleNamespace(success=True, thread_id="duplicate-thread"),
+        ),
+        _build_execution_graph=lambda: SimpleNamespace(
+            effects_by_id={"effect-next": SimpleNamespace(type="effect:agent:enqueue-prompt")}
+        ),
+    )
+
+    dispatched = AgentEnqueuePromptQueueDispatchHook().on_post_completion_dispatch(worker=worker)
+
+    assert dispatched == 0
+    assert resume_calls == []
+    assert queue_store.get(queued.queue_key) is not None
+
+
+def test_agent_enqueue_prompt_libvirt_replay_keeps_prompts_arriving_during_launch(
+    tmp_path: Path,
+) -> None:
+    queue_store = AgentPromptQueueStore(tmp_path / "queued-agent-prompts.json")
+    first = enqueue_agent_prompt(
+        runtime_dir=tmp_path,
+        queue_key="vm-1",
+        target="vm-1",
+        vm_name="vm-1",
+        session_id=None,
+        prompt="prompt A",
+        model=None,
+        vm_user="agent",
+        dispatch_id="dispatch-a",
+        resume_thread_id=None,
+        effect_id="effect-1",
+    )
+    resume_calls: list[dict[str, object]] = []
+
+    class InterleavingDispatchPort(_AgentPromptDispatchPortStub):
+        def dispatch_agent_prompt(self, **kwargs):
+            result = super().dispatch_agent_prompt(**kwargs)
+            for dispatch_id, prompt in (
+                ("dispatch-b", "prompt B"),
+                ("dispatch-c", "prompt C"),
+            ):
+                enqueue_agent_prompt(
+                    runtime_dir=tmp_path,
+                    queue_key="vm-1",
+                    target="vm-1",
+                    vm_name="vm-1",
+                    session_id=None,
+                    prompt=prompt,
+                    model=None,
+                    vm_user="agent",
+                    dispatch_id=dispatch_id,
+                    resume_thread_id=None,
+                    effect_id="effect-1",
+                )
+            return result
+
+    execution_store = JsonExecutionStore(tmp_path / "effect-orchestrator-executions.json")
+    worker = SimpleNamespace(
+        queued_agent_prompt_store=queue_store,
+        execution_store=execution_store,
+        agent_run_status_port=_AgentRunStatusPortStub(
+            [
+                VmSummary(
+                    vm_name="vm-1",
+                    libvirt_state="running",
+                    agent_state="idle",
+                    session_ids=[],
+                )
+            ]
+        ),
+        agent_prompt_dispatch_port=InterleavingDispatchPort(
+            resume_calls,
+            SimpleNamespace(success=True, thread_id="thread-a"),
+        ),
+        _build_execution_graph=lambda: SimpleNamespace(
+            effects_by_id={"effect-1": SimpleNamespace(type="effect:agent:enqueue-prompt")}
+        ),
+        _publish_completion_event_from_record=lambda record, outputs, branch_port=None: (
+            "started-event"
+        ),
+    )
+
+    assert AgentEnqueuePromptQueueDispatchHook().on_post_completion_dispatch(worker=worker) == 1
+
+    assert [call["dispatch_id"] for call in resume_calls] == ["dispatch-a"]
+    replacement = queue_store.get("vm-1")
+    assert replacement is not None
+    assert replacement.dispatch_id == "dispatch-c"
+    assert replacement.prompt == "prompt C"
+    assert replacement.coalesced_count == 2
+    assert replacement.created_at > first.created_at
+    assert queue_store.get("vm-1:replay:dispatch-a") is None
+    [waiting] = execution_store.read_all().values()
+    assert waiting.outputs["queue_key"] == "vm-1:replay:dispatch-a"
+    assert waiting.outputs["dispatch_id"] == "dispatch-a"
+
+
+def test_agent_enqueue_prompt_failed_claimed_replay_keeps_newer_prompts_coalescing(
+    tmp_path: Path,
+) -> None:
+    queue_store = AgentPromptQueueStore(tmp_path / "queued-agent-prompts.json")
+    enqueue_agent_prompt(
+        runtime_dir=tmp_path,
+        queue_key="vm-1",
+        target="vm-1",
+        vm_name="vm-1",
+        session_id=None,
+        prompt="prompt A",
+        model=None,
+        vm_user="agent",
+        dispatch_id="dispatch-a",
+        resume_thread_id=None,
+        effect_id="effect-1",
+    )
+    resume_calls: list[dict[str, object]] = []
+    worker = SimpleNamespace(
+        queued_agent_prompt_store=queue_store,
+        execution_store=JsonExecutionStore(tmp_path / "effect-orchestrator-executions.json"),
+        agent_run_status_port=_AgentRunStatusPortStub(
+            [
+                VmSummary(
+                    vm_name="vm-1",
+                    libvirt_state="running",
+                    agent_state="idle",
+                    session_ids=[],
+                )
+            ]
+        ),
+        agent_prompt_dispatch_port=_AgentPromptDispatchPortStub(
+            resume_calls,
+            SimpleNamespace(success=False, thread_id=None),
+        ),
+        _build_execution_graph=lambda: SimpleNamespace(
+            effects_by_id={"effect-1": SimpleNamespace(type="effect:agent:enqueue-prompt")}
+        ),
+    )
+    hook = AgentEnqueuePromptQueueDispatchHook()
+
+    assert hook.on_post_completion_dispatch(worker=worker) == 0
+    for dispatch_id, prompt in (("dispatch-b", "prompt B"), ("dispatch-c", "prompt C")):
+        enqueue_agent_prompt(
+            runtime_dir=tmp_path,
+            queue_key="vm-1",
+            target="vm-1",
+            vm_name="vm-1",
+            session_id=None,
+            prompt=prompt,
+            model=None,
+            vm_user="agent",
+            dispatch_id=dispatch_id,
+            resume_thread_id=None,
+            effect_id="effect-1",
+        )
+        assert hook.on_post_completion_dispatch(worker=worker) == 0
+
+    assert [call["dispatch_id"] for call in resume_calls] == [
+        "dispatch-a",
+        "dispatch-a",
+        "dispatch-a",
+    ]
+    assert set(queue_store.read_all()) == {"vm-1:replay:dispatch-a", "vm-1"}
+    replacement = queue_store.get("vm-1")
+    assert replacement is not None
+    assert replacement.dispatch_id == "dispatch-c"
+    assert replacement.coalesced_count == 2
+
+
+def test_agent_enqueue_prompt_container_replay_keeps_prompts_arriving_during_launch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = GatewayConfig(
+        runtime_dir=tmp_path,
+        execution_backend="container_worker_vm",
+        container_worker_base_url="http://worker.test",
+    )
+    session_repository = JsonSessionManifestRepository(config.session_store_path)
+    session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-1",
+            vm_id=None,
+            allowed_tools=[ToolName.LIST_PENDING_AGENT_PROMPTS],
+            expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
+            vm_provider="container_worker_vm",
+            vm_provider_id="worker-agent",
+            metadata={"execution_backend": "container_worker_vm"},
+        )
+    )
+    queue_store = AgentPromptQueueStore(tmp_path / "queued-agent-prompts.json")
+    first = enqueue_agent_prompt(
+        runtime_dir=tmp_path,
+        queue_key="session-1",
+        target="session-1",
+        vm_name="worker-agent",
+        session_id="session-1",
+        prompt="prompt A",
+        model=None,
+        vm_user="agent",
+        dispatch_id="dispatch-a",
+        resume_thread_id=None,
+        effect_id="effect-1",
+    )
+    backend = _ContainerDispatchBackendStub()
+    original_start = backend.start
+
+    def interleaving_start(spec):
+        for dispatch_id, prompt in (
+            ("dispatch-b", "prompt B"),
+            ("dispatch-c", "prompt C"),
+        ):
+            enqueue_agent_prompt(
+                runtime_dir=tmp_path,
+                queue_key="session-1",
+                target="session-1",
+                vm_name="worker-agent",
+                session_id="session-1",
+                prompt=prompt,
+                model=None,
+                vm_user="agent",
+                dispatch_id=dispatch_id,
+                resume_thread_id=None,
+                effect_id="effect-1",
+            )
+        return original_start(spec)
+
+    backend.start = interleaving_start
+    monkeypatch.setattr(
+        "evander.effects.providers.lifecycle_hooks.build_execution_backend",
+        lambda config, admin_service: backend,
+    )
+    execution_store = JsonExecutionStore(tmp_path / "effect-orchestrator-executions.json")
+    worker = SimpleNamespace(
+        config=config,
+        queued_agent_prompt_store=queue_store,
+        execution_store=execution_store,
+        agent_prompt_dispatch_port=object(),
+        provider_config_resolver=SimpleNamespace(resolve_for_session_id=lambda _id: config),
+        provider_factory=SimpleNamespace(
+            admin_service=SimpleNamespace(
+                runtime=SimpleNamespace(session_repository=session_repository)
+            )
+        ),
+        _publish_completion_event_from_record=lambda record, outputs, branch_port=None: (
+            "started-event"
+        ),
+    )
+
+    assert AgentEnqueuePromptQueueDispatchHook().on_post_completion_dispatch(worker=worker) == 1
+
+    replacement = queue_store.get("session-1")
+    assert replacement is not None
+    assert replacement.dispatch_id == "dispatch-c"
+    assert replacement.prompt == "prompt C"
+    assert replacement.coalesced_count == 2
+    assert replacement.created_at > first.created_at
+    assert queue_store.get("session-1:replay:dispatch-a") is None
+    [waiting] = execution_store.read_all().values()
+    assert waiting.outputs["queue_key"] == "session-1:replay:dispatch-a"
+    assert waiting.outputs["dispatch_id"] == "dispatch-a"
+
+
+@pytest.mark.parametrize("backend_state", ["unavailable", "busy"])
+def test_agent_enqueue_prompt_container_ineligible_replay_keeps_one_coalescing_row(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    backend_state: str,
+) -> None:
+    config = GatewayConfig(
+        runtime_dir=tmp_path,
+        execution_backend="container_worker_vm",
+        container_worker_base_url="http://worker.test",
+    )
+    session_repository = JsonSessionManifestRepository(config.session_store_path)
+    session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-1",
+            vm_id=None,
+            allowed_tools=[ToolName.LIST_PENDING_AGENT_PROMPTS],
+            expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
+            vm_provider="container_worker_vm",
+            vm_provider_id="worker-agent",
+            metadata={"execution_backend": "container_worker_vm"},
+        )
+    )
+    queue_store = AgentPromptQueueStore(tmp_path / "queued-agent-prompts.json")
+    enqueue_agent_prompt(
+        runtime_dir=tmp_path,
+        queue_key="session-1",
+        target="session-1",
+        vm_name="worker-agent",
+        session_id="session-1",
+        prompt="prompt A",
+        model=None,
+        vm_user="agent",
+        dispatch_id="dispatch-a",
+        resume_thread_id=None,
+        effect_id="effect-1",
+    )
+    backend = _ContainerDispatchBackendStub()
+    if backend_state == "busy":
+        backend.repository = SimpleNamespace(
+            list_active_by_session=lambda _session_id, _statuses: [
+                SimpleNamespace(execution_id="active-execution", last_status="running")
+            ]
+        )
+        backend.status = SimpleNamespace(
+            status=ExecutionStatusKind.RUNNING,
+            message=None,
+            metadata={},
+        )
+
+    def build_backend(config, admin_service):
+        del config, admin_service
+        if backend_state == "unavailable":
+            raise RuntimeError("container backend unavailable")
+        return backend
+
+    monkeypatch.setattr(
+        "evander.effects.providers.lifecycle_hooks.build_execution_backend",
+        build_backend,
+    )
+    worker = SimpleNamespace(
+        config=config,
+        queued_agent_prompt_store=queue_store,
+        execution_store=JsonExecutionStore(tmp_path / "effect-orchestrator-executions.json"),
+        agent_prompt_dispatch_port=object(),
+        provider_config_resolver=SimpleNamespace(resolve_for_session_id=lambda _id: config),
+        provider_factory=SimpleNamespace(
+            admin_service=SimpleNamespace(
+                runtime=SimpleNamespace(session_repository=session_repository)
+            )
+        ),
+    )
+    hook = AgentEnqueuePromptQueueDispatchHook()
+
+    assert hook.on_post_completion_dispatch(worker=worker) == 0
+    for dispatch_id, prompt in (("dispatch-b", "prompt B"), ("dispatch-c", "prompt C")):
+        enqueue_agent_prompt(
+            runtime_dir=tmp_path,
+            queue_key="session-1",
+            target="session-1",
+            vm_name="worker-agent",
+            session_id="session-1",
+            prompt=prompt,
+            model=None,
+            vm_user="agent",
+            dispatch_id=dispatch_id,
+            resume_thread_id=None,
+            effect_id="effect-1",
+        )
+        assert hook.on_post_completion_dispatch(worker=worker) == 0
+
+    assert list(queue_store.read_all()) == ["session-1"]
+    queued = queue_store.get("session-1")
+    assert queued is not None
+    assert queued.dispatch_id == "dispatch-c"
+    assert queued.prompt == "prompt C"
+    assert queued.coalesced_count == 3
+    assert backend.started_specs == []
+
+
+def test_agent_enqueue_prompt_dispatch_keeps_libvirt_behind_older_busy_container_capacity_wait(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    queue_store = AgentPromptQueueStore(tmp_path / "queued-agent-prompts.json")
+    created_at = datetime(2026, 8, 9, 10, 0, tzinfo=timezone.utc)
+    for queue_key, created_delta in (("container-oldest", 0), ("libvirt-newer", 1)):
+        queue_store.put(
+            QueuedAgentPromptRecord(
+                queue_key=queue_key,
+                target=queue_key,
+                vm_name=queue_key,
+                prompt=queue_key,
+                model="local-model",
+                queue_reason=LOCAL_INFERENCE_QUEUE_REASON,
+                effect_id=f"effect-{queue_key}",
+                created_at=created_at + timedelta(seconds=created_delta),
+            )
+        )
+    resume_calls: list[dict[str, object]] = []
+    worker = SimpleNamespace(
+        queued_agent_prompt_store=queue_store,
+        execution_store=JsonExecutionStore(tmp_path / "effect-orchestrator-executions.json"),
+        agent_run_status_port=_AgentRunStatusPortStub(
+            [
+                VmSummary(
+                    vm_name="vm-newer",
+                    libvirt_state="running",
+                    agent_state="idle",
+                    session_ids=[],
+                )
+            ]
+        ),
+        agent_prompt_dispatch_port=_AgentPromptDispatchPortStub(
+            resume_calls,
+            SimpleNamespace(success=True, thread_id="thread-newer"),
+        ),
+        _build_execution_graph=lambda: SimpleNamespace(
+            effects_by_id={
+                "effect-container-oldest": SimpleNamespace(type="effect:agent:enqueue-prompt"),
+                "effect-libvirt-newer": SimpleNamespace(type="effect:agent:enqueue-prompt"),
+            }
+        ),
+    )
+    hook = AgentEnqueuePromptQueueDispatchHook()
+    monkeypatch.setattr(
+        hook,
+        "_container_queue_keys",
+        lambda **_kwargs: {"container-oldest"},
+    )
+    monkeypatch.setattr(
+        hook,
+        "_dispatch_container_record_if_idle",
+        lambda **_kwargs: False,
+    )
+
+    dispatched = hook.on_post_completion_dispatch(worker=worker)
+
+    assert dispatched == 0
+    assert resume_calls == []
+    assert sorted(queue_store.read_all()) == ["container-oldest", "libvirt-newer"]
+
+
+def test_agent_enqueue_prompt_dispatch_prunes_removed_effect_before_capacity_fifo_head(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    queue_store = AgentPromptQueueStore(tmp_path / "queued-agent-prompts.json")
+    created_at = datetime(2026, 8, 9, 10, 0, tzinfo=timezone.utc)
+    for queue_key, effect_id, created_delta in (
+        ("removed-effect", "effect-removed", 0),
+        ("current-effect", "effect-current", 1),
+    ):
+        queue_store.put(
+            QueuedAgentPromptRecord(
+                queue_key=queue_key,
+                target=queue_key,
+                vm_name=queue_key,
+                prompt=queue_key,
+                model="local-model",
+                queue_reason=LOCAL_INFERENCE_QUEUE_REASON,
+                dispatch_id=f"dispatch-{queue_key}",
+                effect_id=effect_id,
+                created_at=created_at + timedelta(seconds=created_delta),
+            )
+        )
+    worker = SimpleNamespace(
+        queued_agent_prompt_store=queue_store,
+        agent_prompt_dispatch_port=object(),
+        agent_run_status_port=_AgentRunStatusPortStub([]),
+        _build_execution_graph=lambda: SimpleNamespace(
+            effects_by_id={"effect-current": SimpleNamespace(type="effect:agent:enqueue-prompt")}
+        ),
+    )
+    hook = AgentEnqueuePromptQueueDispatchHook()
+    monkeypatch.setattr(hook, "_container_queue_keys", lambda **_kwargs: set())
+    monkeypatch.setattr(hook, "_has_waiting_enqueue_prompt_for_record", lambda **_kwargs: True)
+
+    assert hook.on_post_completion_dispatch(worker=worker) == 0
+
+    assert queue_store.get("removed-effect") is None
+    assert queue_store.get("current-effect") is not None
+    admission = LocalInferenceCapacityStore(tmp_path).claim(
+        max_concurrency=1,
+        owner_id="current-replay",
+        model="local-model",
+        queue_key="current-effect",
+    )
+    assert admission.admitted is True
 
 
 def test_agent_enqueue_prompt_dispatch_skips_expired_libvirt_queued_prompt(
@@ -5313,6 +6851,7 @@ def test_agent_enqueue_prompt_dispatch_skips_expired_libvirt_queued_prompt(
             session_id="session-1",
             prompt="hello",
             model=None,
+            queue_reason=LOCAL_INFERENCE_QUEUE_REASON,
             vm_user="agent",
             resume_thread_id=None,
             effect_id="effect-1",
@@ -5354,7 +6893,13 @@ def test_agent_enqueue_prompt_dispatch_skips_expired_libvirt_queued_prompt(
 
     assert dispatched == 0
     assert resume_calls == []
-    assert queue_store.get("vm-1") is not None
+    assert queue_store.get("vm-1") is None
+    admission = LocalInferenceCapacityStore(runtime_dir).claim(
+        max_concurrency=1,
+        owner_id="new-arrival",
+        model="local-model",
+    )
+    assert admission.admitted is True
     assert "queue_key=vm-1" in caplog.text
     assert "session_id=session-1" in caplog.text
     assert "expires_at=" in caplog.text
@@ -5424,7 +6969,7 @@ def test_agent_enqueue_prompt_dispatch_skips_expired_container_queued_prompt(
 
     assert dispatched == 0
     assert backend_calls == []
-    assert queue_store.get("session-1") is not None
+    assert queue_store.get("session-1") is None
     assert "queue_key=session-1" in caplog.text
     assert "session_id=session-1" in caplog.text
     assert "expires_at=" in caplog.text
@@ -6070,7 +7615,11 @@ def test_agent_enqueue_prompt_dispatches_admin_prompt_without_graph_effect(
     assert len(waiting_records) == 1
     assert waiting_records[0].status == "waiting"
     assert waiting_records[0].effect_type == "effect:agent:enqueue-prompt"
-    assert waiting_records[0].outputs["queue_key"] == "admin-agent-prompt:libvirt_vm:session-1"
+    assert (
+        waiting_records[0]
+        .outputs["queue_key"]
+        .startswith("admin-agent-prompt:libvirt_vm:session-1:replay:")
+    )
     assert waiting_records[0].outputs["thread_id"] == "thread-dispatched"
 
 

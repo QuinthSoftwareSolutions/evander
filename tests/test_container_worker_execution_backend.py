@@ -402,6 +402,59 @@ def test_stop_destroy_and_logs_call_expected_endpoints(tmp_path: Path) -> None:
     assert store["exec-1"].cleanup_error is None
 
 
+def test_inspect_returns_destroyed_after_successful_cleanup_without_probing_worker(
+    tmp_path: Path,
+) -> None:
+    client = FakeContainerWorkerClient()
+    backend = _backend(tmp_path, client)
+    handle = backend.start(
+        backend.prepare(
+            ExecutionSpec(
+                backend="container_worker_vm",
+                target_name="exec-1",
+                session_id="session-1",
+                command=["true"],
+            )
+        )
+    )
+    backend.destroy(handle)
+
+    status = backend.inspect(handle)
+
+    assert status.status == ExecutionStatusKind.DESTROYED
+    assert client.got == []
+
+
+def test_inspect_treats_worker_not_found_as_authoritative_destroyed_state(
+    tmp_path: Path,
+) -> None:
+    client = FakeContainerWorkerClient()
+    backend = _backend(tmp_path, client)
+    handle = backend.start(
+        backend.prepare(
+            ExecutionSpec(
+                backend="container_worker_vm",
+                target_name="exec-1",
+                session_id="session-1",
+                command=["true"],
+            )
+        )
+    )
+
+    def missing_job(_: str) -> WorkerJobRecord:
+        raise ContainerWorkerClientError("job not found", status_code=404)
+
+    client.get = missing_job  # type: ignore[method-assign]
+
+    status = backend.inspect(handle)
+
+    assert status.status == ExecutionStatusKind.DESTROYED
+    stored = backend.repository.get("exec-1")
+    assert stored is not None
+    assert stored.last_status == "removed"
+    assert stored.cleanup_status == "cleanup_succeeded"
+
+
 def test_destroy_records_cleanup_failed_tombstone_when_delete_fails(
     tmp_path: Path,
 ) -> None:

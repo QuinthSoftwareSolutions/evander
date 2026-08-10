@@ -129,8 +129,8 @@ def test_gmail_list_messages_translates_filters_and_page_token(
             query = request.url.params["q"]
             assert "in:" not in query
             assert "is:read" in query
-            assert "from:\"vendor@example.com\"" in query
-            assert "subject:\"invoice\"" in query
+            assert 'from:"vendor@example.com"' in query
+            assert 'subject:"invoice"' in query
             assert "has:attachment" in query
             return httpx.Response(200, json={"messages": [{"id": "msg-1"}]}, request=request)
         return httpx.Response(
@@ -219,7 +219,7 @@ def test_graph_list_messages_translates_filters_and_preserves_next_link(
                         "parentFolderId": "Inbox",
                         "from": {"emailAddress": {"address": "sender@example.com"}},
                         "toRecipients": [],
-                    }
+                    },
                 ],
                 "@odata.nextLink": "https://graph.test/v1.0/next-page",
             },
@@ -351,12 +351,8 @@ def test_graph_client_credentials_cache_is_shared_across_provider_rebuilds(
         "oauth_authority_url": "https://login-shared.test",
     }
 
-    first_provider = GraphEmailProvider(
-        account_identifier="first@example.com", **provider_args
-    )
-    rebuilt_provider = GraphEmailProvider(
-        account_identifier="second@example.com", **provider_args
-    )
+    first_provider = GraphEmailProvider(account_identifier="first@example.com", **provider_args)
+    rebuilt_provider = GraphEmailProvider(account_identifier="second@example.com", **provider_args)
 
     assert first_provider._access_token() == "shared-token"
     assert rebuilt_provider._access_token() == "shared-token"

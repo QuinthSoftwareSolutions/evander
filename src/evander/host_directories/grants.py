@@ -41,8 +41,7 @@ def validate_host_directory_grant_mapping(
         if unavailable:
             raise ValueError(
                 f"host directory grant {directory_id!r} for session {session_id!r} "
-                "includes unavailable capabilities: "
-                + ", ".join(unavailable)
+                "includes unavailable capabilities: " + ", ".join(unavailable)
             )
 
 

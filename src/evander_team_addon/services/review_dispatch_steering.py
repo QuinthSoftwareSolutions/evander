@@ -44,9 +44,7 @@ def steer_closed_review_dispatch(
         return {"status": "not_required", "reason": "unsupported_closure_action"}
     runtime = state.agent_runtimes.get(review.reviewer_agent_id)
     dispatch = (
-        state.dispatches.get(runtime.active_dispatch_id or "")
-        if runtime is not None
-        else None
+        state.dispatches.get(runtime.active_dispatch_id or "") if runtime is not None else None
     )
     if (
         dispatch is None
@@ -90,8 +88,7 @@ def steer_closed_review_dispatch(
                     limit=200,
                 )
                 if marker in str(getattr(note, "message", ""))
-                and str(getattr(note, "status", "")).strip().lower()
-                in _ACTIVE_STEERING_NOTE_STATES
+                and str(getattr(note, "status", "")).strip().lower() in _ACTIVE_STEERING_NOTE_STATES
             ),
             None,
         )
@@ -142,11 +139,7 @@ def steer_closed_review_dispatch(
             "error": str(exc).strip() or type(exc).__name__,
         }
 
-    mode = (
-        str(steering.get("mode") or "").strip()
-        if isinstance(steering, Mapping)
-        else ""
-    )
+    mode = str(steering.get("mode") or "").strip() if isinstance(steering, Mapping) else ""
     note = steering.get("note") if isinstance(steering, Mapping) else None
     note_id = str(getattr(note, "note_id", "") or "") or None
     try:

@@ -201,10 +201,7 @@ class VmAgentThreadLogMixin:
                 ),
                 **(
                     {"anchor_record": normalized_anchor_record_id}
-                    if (
-                        normalized_anchor_record_id
-                        := str(anchor_record_id or "").strip()
-                    )
+                    if (normalized_anchor_record_id := str(anchor_record_id or "").strip())
                     else {}
                 ),
             },
@@ -300,9 +297,7 @@ class VmAgentThreadLogMixin:
                 continue
             group_index = group_indexes.get(stored_thread_id)
             if group_index is not None:
-                deferred_grouped_records.setdefault(stored_thread_id, []).append(
-                    execution
-                )
+                deferred_grouped_records.setdefault(stored_thread_id, []).append(execution)
             elif stored_thread_id not in skip_thread_ids:
                 has_more_records = True
         if has_unscanned_legacy_records:
@@ -312,9 +307,7 @@ class VmAgentThreadLogMixin:
                 grouped_records[thread_id].extend(records)
         incomplete_thread_ids = (
             frozenset(
-                thread_id
-                for thread_id, _records, _raw_text in groups
-                if thread_id is not None
+                thread_id for thread_id, _records, _raw_text in groups if thread_id is not None
             )
             if has_unscanned_legacy_records
             else frozenset()
@@ -353,17 +346,13 @@ class VmAgentThreadLogMixin:
                     lines=0,
                 ).rstrip()
             else:
-                execution_chunk, _truncated_before = (
-                    self._container_execution_log_page_chunk(
-                        worker_backend,
-                        first_execution,
-                        body_lines=max(1, body_lines),
-                        mode="execution",
-                    )
+                execution_chunk, _truncated_before = self._container_execution_log_page_chunk(
+                    worker_backend,
+                    first_execution,
+                    body_lines=max(1, body_lines),
+                    mode="execution",
                 )
-                _execution_header, separator, execution_body = (
-                    execution_chunk.partition("\n")
-                )
+                _execution_header, separator, execution_body = execution_chunk.partition("\n")
                 body = (
                     self._container_log_without_session_id_lines(execution_body).rstrip()
                     if separator
@@ -421,9 +410,9 @@ class VmAgentThreadLogMixin:
                 query=None,
                 mode="session",
             )
-            used_session_transcript = not bool(
-                page.get("log_unavailable")
-            ) and bool(str(page.get("text") or "").strip())
+            used_session_transcript = not bool(page.get("log_unavailable")) and bool(
+                str(page.get("text") or "").strip()
+            )
             if not used_session_transcript:
                 page = self._container_thread_fallback_page(
                     worker_backend,
@@ -512,25 +501,20 @@ class VmAgentThreadLogMixin:
             line_offset,
             skip_thread_ids,
             anchor_record_id,
-        ) = (
-            self._container_thread_cursor_state(cursor)
-        )
+        ) = self._container_thread_cursor_state(cursor)
         sorted_records = sorted(
             execution_records,
             key=self._container_execution_sort_key,
             reverse=True,
         )
         if anchor_record_id is None:
-            anchor_record_id = str(
-                getattr(sorted_records[0], "execution_id", "") or ""
-            ).strip()
+            anchor_record_id = str(getattr(sorted_records[0], "execution_id", "") or "").strip()
         else:
             anchor_index = next(
                 (
                     index
                     for index, execution in enumerate(sorted_records)
-                    if str(getattr(execution, "execution_id", "") or "")
-                    == anchor_record_id
+                    if str(getattr(execution, "execution_id", "") or "") == anchor_record_id
                 ),
                 None,
             )
@@ -552,8 +536,7 @@ class VmAgentThreadLogMixin:
         completed_thread_ids = set(skip_thread_ids).union(
             thread_id
             for thread_id, _records, _raw_text in groups
-            if thread_id is not None
-            and thread_id not in incomplete_thread_ids
+            if thread_id is not None and thread_id not in incomplete_thread_ids
         )
         if group_offset >= len(groups):
             next_cursor = (
@@ -612,11 +595,7 @@ class VmAgentThreadLogMixin:
                 offset=next_line_offset,
                 include_header=include_header,
             )
-            if (
-                thread_id is not None
-                and used_session_transcript
-                and not has_more_in_thread
-            ):
+            if thread_id is not None and used_session_transcript and not has_more_in_thread:
                 completed_thread_ids.add(thread_id)
             chunks_newest_first.append(chunk)
             used_lines += len(chunk.splitlines()) + separator_lines
@@ -701,11 +680,7 @@ class VmAgentThreadLogMixin:
                 thread_id=thread_id,
                 records=records,
                 raw_text=raw_text,
-                body_lines=(
-                    None
-                    if normalized_query
-                    else max(1, limit) + max(0, offset)
-                ),
+                body_lines=(None if normalized_query else max(1, limit) + max(0, offset)),
             )
             chunks.append(chunk)
         page = _log_page_from_end(

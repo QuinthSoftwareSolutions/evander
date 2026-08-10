@@ -108,9 +108,7 @@ class VmAgentMutationMixin:
             update["allowed_tools"] = _normalize_allowed_tools(
                 [
                     *update.get("allowed_tools", session.allowed_tools),
-                    *host_directory_tool_names_for_grants(
-                        update["host_directory_grants"]
-                    ),
+                    *host_directory_tool_names_for_grants(update["host_directory_grants"]),
                 ]
             )
         session_policy_fields = {
@@ -424,7 +422,7 @@ class VmAgentMutationMixin:
                 prompt = str(body.get("prompt") or "").strip()
                 if not prompt:
                     raise ValueError("resume-agent requires a non-empty prompt")
-                result = self.resume_agent(
+                result = self.enqueue_agent_prompt(
                     agent_id,
                     prompt,
                     model=str(body.get("model") or "").strip() or None,
@@ -452,6 +450,17 @@ class VmAgentMutationMixin:
                 "provider": result.provider,
                 "provider_operation_id": result.provider_operation_id,
                 "thread_id": result.thread_id,
+                "queued": result.queued,
+                "queue_key": result.queue_key,
+                "queue_reason": result.queue_reason,
+                "dispatch_id": result.dispatch_id,
+                "session_id": result.session_id,
+                "model": result.model,
+                "model_provider_mode": result.model_provider_mode,
+                "local_inference_capacity_enabled": result.local_inference_capacity_enabled,
+                "local_inference_active_count": result.local_inference_active_count,
+                "local_inference_max_concurrency": result.local_inference_max_concurrency,
+                "local_inference_slot_id": result.local_inference_slot_id,
                 "target_dir": result.target_dir,
                 "guest_repo_name": result.guest_repo_name,
                 "remote_url": result.remote_url,

@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-import importlib
 import asyncio
-import json
+import importlib
 import inspect
+import json
 import logging
 import os
 import re
@@ -27,31 +27,29 @@ from evander.admin.services.issue_setup_helpers import (
     resolve_effective_issue_setup_config,
 )
 from evander.audit import AuditEventType, AuditLogger
-from evander.daemons.ado_issue_worker import run_worker_command
 from evander.bootstrap import (
     load_host_bootstrap_config,
     load_runtime_gateway_config,
     resolve_project_dir,
     resolve_runtime_dir,
 )
-from evander.config import GatewayConfig, load_config
 from evander.communication_artifacts import CommunicationArtifactStore
+from evander.config import GatewayConfig, load_config
 from evander.connectors.models import normalize_connector_id
 from evander.connectors.service import ConnectorService, connector_registry_from_addons
-from evander.provider_config import (
-    MODEL_PROVIDER_MODE_METADATA_KEY,
-    normalize_model_provider_mode_override,
-)
-from evander.provider_runtime.adapters import AdminRuntimeProviderAdapter
-from evander.messaging.discord_wake import build_discord_wake_worker
-from evander.directories import DirectoryService
+from evander.daemons.ado_issue_worker import run_worker_command
 from evander.daemons.effect_orchestrator import build_effect_orchestrator_worker
 from evander.daemons.proxy_issue_sync import (
     DEFAULT_PROXY_ISSUE_SYNC_FRESHNESS_SECONDS,
     DEFAULT_PROXY_ISSUE_SYNC_INTERVAL_SECONDS,
-    run_once_from_runtime as run_proxy_issue_sync_once,
     run_proxy_issue_sync_worker,
 )
+from evander.daemons.proxy_issue_sync import (
+    run_once_from_runtime as run_proxy_issue_sync_once,
+)
+from evander.daemons.trigger_orchestrator import build_trigger_orchestrator_worker
+from evander.directories import DirectoryService
+from evander.email.providers import JsonEmailProvider, MultiMailboxEmailProvider
 from evander.execution import (
     ContainerWorkerExecutionRepository,
     ContainerWorkerVmExecutionBackend,
@@ -60,9 +58,9 @@ from evander.execution import (
     ExecutionStatusKind,
     build_execution_backend,
 )
+from evander.messaging.discord_wake import build_discord_wake_worker
 from evander.messaging.scheduled_wake import build_scheduled_wake_worker
-from evander.teams_meeting import TeamsMeetingService
-from evander.daemons.trigger_orchestrator import build_trigger_orchestrator_worker
+from evander.messaging.teams_auth import TeamsAuthError
 from evander.migrations import (
     migrate_ado_worker_env_to_root,
     migrate_directory_ownership_defaults,
@@ -71,46 +69,50 @@ from evander.migrations import (
     migrate_issue_setup_env_to_root,
     migrate_pr_template_to_root,
 )
-from evander.orchestration.migration import migrate_orchestration_store_to_sqlite
-from evander.repositories.audit_index import (
-    ToolCallAuditIndex,
-    audit_index_path_for_log_path,
+from evander.model_usage import (
+    DEFAULT_MODEL_PRICING_FILENAME,
+    seed_default_model_pricing_catalog,
 )
-from evander.email.providers import JsonEmailProvider, MultiMailboxEmailProvider
 from evander.models import (
-    AuditEvent,
     ApprovalStatus,
+    AuditEvent,
     DiscordCommandEnvelope,
     EmailMessage,
     SessionManifest,
     ToolName,
 )
-from evander.pr_tracking import PrMapStore
-from evander.model_usage import (
-    DEFAULT_MODEL_PRICING_FILENAME,
-    seed_default_model_pricing_catalog,
-)
+from evander.orchestration.migration import migrate_orchestration_store_to_sqlite
 from evander.policy_config import EffectivePolicyConfig
+from evander.pr_feedback.store import PrFeedbackStore
+from evander.pr_tracking import PrMapStore
+from evander.provider_config import (
+    MODEL_PROVIDER_MODE_METADATA_KEY,
+    normalize_model_provider_mode_override,
+)
+from evander.provider_runtime.adapters import AdminRuntimeProviderAdapter
+from evander.repositories.audit_index import (
+    ToolCallAuditIndex,
+    audit_index_path_for_log_path,
+)
+from evander.repositories.session_manifests import JsonSessionManifestRepository
 from evander.runtime import build_runtime
 from evander.setup import setup_doctor_payload, setup_plan_payload
 from evander.setup.tui import run_setup_tui
-from evander.repositories.session_manifests import JsonSessionManifestRepository
-from evander.messaging.teams_auth import TeamsAuthError
+from evander.teams_meeting import TeamsMeetingService
 from evander.vm.defaults_config import EffectiveVmDefaultsConfig, VmDefaultsConfigResolver
 from evander.vm_to_container_migration import (
+    build_session_migration_plan,
     copy_vm_session_state,
     create_migration_backup,
     cutover_sessions_to_container,
     default_local_worker_root,
     default_migration_backup_root,
     plan_payload,
-    build_session_migration_plan,
     restore_selected_manifests_from_backup,
     select_sessions_for_migration,
     verify_worker_session_state,
 )
 from evander.workflow.runtime_config import load_trigger_orchestrator_worker_global_config
-from evander.pr_feedback.store import PrFeedbackStore
 
 _COMMAND_PANELS = {
     "Health and State": 0,
@@ -351,10 +353,7 @@ def team_dispatch_tail(
                     detail = payload.get("error_message") or payload.get(
                         "correction_context_summary"
                     )
-                    line = (
-                        f"{occurred_at} {status} {actor} {dispatch} "
-                        f"{payload.get('tool_name')}"
-                    )
+                    line = f"{occurred_at} {status} {actor} {dispatch} {payload.get('tool_name')}"
                     typer.echo(f"{line} - {detail}" if detail else line)
                 seen.add(row.id)
             if not follow:
@@ -3954,15 +3953,12 @@ def logs(
         normalized.startswith("vm-") and normalized[3:].isdigit()
     )
     if is_legacy_issue_target:
-        issue_number = _resolve_issue_number_or_raise(target)
-        script_path = Path(__file__).resolve().parents[2] / "scripts" / "tail_issue_vm_log.sh"
-        cmd = [str(script_path), issue_number, str(lines)]
-        if repo_name is not None:
-            cmd.append(repo_name)
-            cmd.append(vm_user)
-        elif vm_user != "agent":
-            cmd.extend(["", vm_user])
-        _run_subprocess_compat(cmd, check=True, capture_output=False, text=False)
+        _follow_agent_logs(
+            target,
+            lines=lines,
+            repo_name=repo_name,
+            vm_user=vm_user,
+        )
         return
 
     service = build_admin_runtime(config).vm_agent_admin
@@ -3970,6 +3966,102 @@ def logs(
         target, lines=lines, repo_name=repo_name, vm_user=vm_user
     )
     typer.echo(output)
+
+
+def _follow_agent_logs(
+    target: str,
+    *,
+    lines: int,
+    repo_name: str | None,
+    vm_user: str,
+    resolved_vm_name: str | None = None,
+) -> None:
+    normalized = target.strip()
+    script_path = Path(__file__).resolve().parents[2] / "scripts" / "tail_issue_vm_log.sh"
+    if normalized.isdigit() or (normalized.startswith("vm-") and normalized[3:].isdigit()):
+        issue_number = _resolve_issue_number_or_raise(target)
+        cmd = [str(script_path), issue_number, str(lines)]
+    else:
+        vm_name = str(resolved_vm_name or "").strip() or _resolve_vm_name(target)
+        cmd = [str(script_path), "--vm-name", vm_name, str(lines)]
+    if repo_name is not None:
+        cmd.append(repo_name)
+        cmd.append(vm_user)
+    elif vm_user != "agent":
+        cmd.extend(["", vm_user])
+    _run_subprocess_compat(cmd, check=True, capture_output=False, text=False)
+
+
+def _container_log_delta(previous: str, current: str) -> str:
+    if not current or current == previous:
+        return ""
+    if not previous:
+        return current
+    if current.startswith(previous):
+        return current[len(previous) :]
+    previous_lines = previous.splitlines(keepends=True)
+    current_lines = current.splitlines(keepends=True)
+    max_overlap = min(len(previous_lines), len(current_lines))
+    overlap = 0
+    for candidate in range(max_overlap, 0, -1):
+        if previous_lines[-candidate:] == current_lines[:candidate]:
+            overlap = candidate
+            break
+    return "".join(current_lines[overlap:])
+
+
+def _container_log_tail(text: str, *, lines: int) -> str:
+    selected = text.splitlines(keepends=True)[-max(1, int(lines)) :]
+    return "".join(selected)
+
+
+def _observe_container_agent_logs(
+    service: object,
+    *,
+    session_id: str,
+    execution_id: str | None,
+    lines: int,
+    poll_interval_seconds: float = 1.0,
+) -> None:
+    get_snapshot = getattr(service, "get_admin_agent_log_snapshot")
+    get_agent = getattr(service, "get_agent")
+    log_target = execution_id or session_id
+    previous = ""
+    initialized = False
+    while True:
+        # Container snapshots support ``lines=0`` as the full execution log. Keeping
+        # a complete prior snapshot makes following append-only logs lossless even
+        # when more than the requested initial tail arrives between polls.
+        current = str(
+            get_snapshot(
+                log_target,
+                backend="container_worker_vm",
+                view="executions",
+                lines=0,
+            )
+            or ""
+        )
+        delta = (
+            _container_log_delta(previous, current)
+            if initialized
+            else _container_log_tail(current, lines=lines)
+        )
+        if delta:
+            typer.echo(delta, nl=False)
+        previous = current
+        initialized = True
+        agent = get_agent(
+            session_id,
+            backend="container_worker_vm",
+            reconcile_containers=True,
+        )
+        if str(getattr(agent, "status", "") or "").strip().casefold() not in {
+            "preparing",
+            "starting",
+            "running",
+        }:
+            return
+        time.sleep(max(0.05, float(poll_interval_seconds)))
 
 
 def _set_agent_control_state(target: str, *, action: str, vm_user: str, config: Path) -> None:
@@ -4083,33 +4175,11 @@ def resume_agent(
         agent_model = admin.resolve_agent_model_for_target(resolved_session_id)
     except ValueError as exc:
         raise typer.BadParameter(str(exc)) from exc
-    script_path = Path(__file__).resolve().parents[2] / "scripts" / "resume_issue_agent.sh"
     if normalized.isdigit() or (normalized.startswith("vm-") and normalized[3:].isdigit()):
         issue_number = _resolve_issue_number_or_raise(target)
         vm_name = f"vm-{issue_number}"
-        cmd = [
-            str(script_path),
-            message,
-            issue_number,
-            vm_user,
-            "--host-control-state-path",
-            str(cfg.host_agent_control_state_path),
-        ]
     else:
         vm_name = _resolve_vm_name(target)
-        cmd = [
-            str(script_path),
-            "--prompt",
-            message,
-            "--vm-name",
-            vm_name,
-            "--vm-user",
-            vm_user,
-            "--host-control-state-path",
-            str(cfg.host_agent_control_state_path),
-        ]
-    if observe:
-        cmd.extend(["--observe", str(lines)])
 
     runtime.audit.log_decision(
         event_type=AuditEventType.VM_START_ATTEMPTED,
@@ -4125,41 +4195,93 @@ def resume_agent(
         decision="attempted",
         reason="resume-agent-command",
     )
-    if observe:
-        completed = subprocess.run(cmd, check=False, env=os.environ | {"AGENT_MODEL": agent_model})
-    else:
-        completed = subprocess.run(
-            cmd,
-            check=False,
-            capture_output=True,
-            text=True,
-            env=os.environ | {"AGENT_MODEL": agent_model},
+    try:
+        result = admin.enqueue_agent_prompt(
+            resolved_session_id,
+            message,
+            model=agent_model,
+            vm_user=vm_user,
+            resume_mode="same_context",
         )
-    if completed.returncode == 0:
+    except Exception as exc:
+        reason = f"resume-agent-error-{type(exc).__name__}"
+        runtime.audit.log_decision(
+            event_type=AuditEventType.VM_START_FAILED,
+            session_id=resolved_session_id,
+            vm_id=vm_name,
+            decision="failed",
+            reason=reason,
+            args={"error": str(exc)},
+        )
+        runtime.audit.log_decision(
+            event_type=AuditEventType.RESUME_FAILED,
+            session_id=resolved_session_id,
+            vm_id=vm_name,
+            decision="failed",
+            reason=reason,
+            args={"error": str(exc)},
+        )
+        raise
+
+    result_vm_name = str(getattr(result, "vm_name", None) or vm_name)
+    if bool(getattr(result, "queued", False)):
+        queue_key = str(getattr(result, "queue_key", None) or "").strip()
+        result_message = str(getattr(result, "message", None) or "").strip()
+        typer.echo(result_message or f"Queued prompt for {result_vm_name} (queue_key={queue_key})")
+        if observe:
+            typer.echo("Prompt is queued; log observation will be available after dispatch.")
+        return
+
+    if bool(getattr(result, "success", False)):
         runtime.audit.log_decision(
             event_type=AuditEventType.VM_START_SUCCEEDED,
             session_id=resolved_session_id,
-            vm_id=vm_name,
+            vm_id=result_vm_name,
             decision="succeeded",
-            reason="resume-script-success",
+            reason="resume-agent-dispatched",
         )
         runtime.audit.log_decision(
             event_type=AuditEventType.RESUME_SUCCEEDED,
             session_id=resolved_session_id,
-            vm_id=vm_name,
+            vm_id=result_vm_name,
             decision="succeeded",
-            reason="resume-script-success",
+            reason="resume-agent-dispatched",
         )
+        if observe:
+            if str(getattr(result, "provider", "") or "").strip() == "container_worker_vm":
+                provider_details = getattr(result, "provider_details", {})
+                execution_id = (
+                    str(provider_details.get("execution_id") or "").strip()
+                    if isinstance(provider_details, dict)
+                    else ""
+                )
+                _observe_container_agent_logs(
+                    admin,
+                    session_id=(
+                        str(getattr(result, "session_id", None) or resolved_session_id).strip()
+                    ),
+                    execution_id=execution_id or None,
+                    lines=lines,
+                )
+            else:
+                _follow_agent_logs(
+                    target,
+                    repo_name=None,
+                    lines=lines,
+                    vm_user=vm_user,
+                    resolved_vm_name=result_vm_name,
+                )
         return
 
-    reason = f"resume-script-exit-{completed.returncode}"
+    failure_message = str(getattr(result, "message", None) or "Agent resume failed").strip()
+    reason = "resume-agent-dispatch-failed"
     runtime.audit.log_decision(
         event_type=AuditEventType.VM_START_FAILED,
         session_id=resolved_session_id,
         vm_id=vm_name,
         decision="failed",
         reason=reason,
-        args={"stderr": (completed.stderr or "").strip()},
+        args={"error": failure_message},
     )
     runtime.audit.log_decision(
         event_type=AuditEventType.RESUME_FAILED,
@@ -4167,13 +4289,10 @@ def resume_agent(
         vm_id=vm_name,
         decision="failed",
         reason=reason,
-        args={"stderr": (completed.stderr or "").strip()},
+        args={"error": failure_message},
     )
-    if getattr(completed, "stdout", ""):
-        typer.echo(completed.stdout, nl=False)
-    if getattr(completed, "stderr", ""):
-        typer.echo(completed.stderr, err=True, nl=False)
-    raise typer.Exit(code=completed.returncode)
+    typer.echo(failure_message, err=True)
+    raise typer.Exit(code=1)
 
 
 @app.command(

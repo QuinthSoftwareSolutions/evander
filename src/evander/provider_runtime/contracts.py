@@ -31,6 +31,10 @@ class VmFrontendBootstrapper(Protocol):
 class AgentResumer(Protocol):
     def resume_agent(self, **kwargs: Any) -> Any: ...
 
+    def enqueue_agent_prompt(self, **kwargs: Any) -> Any: ...
+
+    def dispatch_agent_prompt(self, **kwargs: Any) -> Any: ...
+
 
 class AgentPromptActivity(Protocol):
     def has_active_enqueue_prompt(

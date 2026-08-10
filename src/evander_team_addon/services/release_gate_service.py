@@ -27,9 +27,7 @@ class TeamReleaseGateService:
         human_review_eligibility_resolver: Callable[[Any], list[str]] | None = None,
     ) -> None:
         self._repository = repository
-        self._human_review_eligibility_resolver = (
-            human_review_eligibility_resolver
-        )
+        self._human_review_eligibility_resolver = human_review_eligibility_resolver
 
     def record_verification_result(
         self,

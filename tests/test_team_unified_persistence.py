@@ -107,8 +107,7 @@ def test_dependency_composition_recovery_round_trips_exact_git_evidence(
 
     repository.update(
         lambda state: (
-            state.dependency_composition_recoveries.__setitem__(recovery.id, recovery)
-            or state
+            state.dependency_composition_recoveries.__setitem__(recovery.id, recovery) or state
         )
     )
 

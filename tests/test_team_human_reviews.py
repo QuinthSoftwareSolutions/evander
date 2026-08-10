@@ -355,8 +355,7 @@ def test_human_gate_creates_pinned_request_before_approval() -> None:
     assert request.candidate_tree_hash == release.candidate_tree_hash
     assert release.approved_commit_sha is None
     assert not any(
-        record.promotion_kind == "canonical_push"
-        for record in state.git_promotions.values()
+        record.promotion_kind == "canonical_push" for record in state.git_promotions.values()
     )
     events = result["events"]
     assert isinstance(events, list)
@@ -401,9 +400,7 @@ def test_expired_preview_blocks_the_same_pinned_request() -> None:
     assert resumed.id == request.id
     assert resumed.state == "pending"
     assert resumed.test_target is None
-    assert (resumed.candidate_commit_sha, resumed.candidate_tree_hash) == (
-        original_candidate
-    )
+    assert (resumed.candidate_commit_sha, resumed.candidate_tree_hash) == (original_candidate)
     assert len(state.human_review_requests) == 1
     assert release.state == TeamRecordState.PENDING
 
@@ -500,22 +497,20 @@ def test_successful_preparation_result_replay_is_transactionally_idempotent(
         "error": None,
     }
 
-    first_state, first_result = (
-        service.record_human_review_preparation_result_with_result(**command)
+    first_state, first_result = service.record_human_review_preparation_result_with_result(
+        **command
     )
     first_request = first_state.human_review_requests[request_id]
     first_revision = first_state.revision
-    first_outbox = repository.list_outbox_records(
-        intent_type="team.release.human_review_requested"
-    )
+    first_outbox = repository.list_outbox_records(intent_type="team.release.human_review_requested")
     assert first_result["idempotent_replay"] is False
     assert first_request.state == "pending"
     assert first_request.test_target is not None
     assert first_request.test_target.alias == "candidate-preview"
     assert len(first_outbox) == 1
 
-    replay_state, replay_result = (
-        service.record_human_review_preparation_result_with_result(**command)
+    replay_state, replay_result = service.record_human_review_preparation_result_with_result(
+        **command
     )
     assert replay_result["idempotent_replay"] is True
     assert replay_state.revision == first_revision
@@ -562,9 +557,7 @@ def test_manual_blocked_review_resumes_same_request_and_candidate() -> None:
     )
     assert resumed.id == request.id
     assert resumed.state == "pending"
-    assert (resumed.candidate_commit_sha, resumed.candidate_tree_hash) == (
-        pinned_candidate
-    )
+    assert (resumed.candidate_commit_sha, resumed.candidate_tree_hash) == (pinned_candidate)
     assert len(state.human_review_requests) == 1
     assert release.state == TeamRecordState.PENDING
 
@@ -641,13 +634,9 @@ def test_changes_requested_rejects_squatted_system_record_ids(
         tmp_path,
         eligible_user_ids=["reviewer"],
     )
-    case_id = (
-        f"human-review-case-"
-        f"{human_review_domain._stable_token(request_id, length=24)}"
-    )
+    case_id = f"human-review-case-{human_review_domain._stable_token(request_id, length=24)}"
     task_id = (
-        f"human-correction-aggregation-"
-        f"{human_review_domain._stable_token(request_id, length=24)}"
+        f"human-correction-aggregation-{human_review_domain._stable_token(request_id, length=24)}"
     )
 
     def _squat(state: TeamState) -> TeamState:
@@ -721,9 +710,7 @@ def test_changes_requested_routes_recursive_contribution_finding_to_owner() -> N
         summary="Recursive source contribution",
         state=TeamRecordState.ACCEPTED,
     )
-    state.deliverables["source-deliverable"].source_deliverable_ids = [
-        "child-deliverable"
-    ]
+    state.deliverables["source-deliverable"].source_deliverable_ids = ["child-deliverable"]
     assert release.manifest is not None
     release.manifest.contribution_graph = {
         "source-deliverable": ["child-deliverable"],
@@ -794,9 +781,7 @@ def test_release_candidate_finding_routes_to_lead_without_ambiguity() -> None:
     finding = next(iter(state.human_review_findings.values()))
     correction = state.tasks[finding.correction_task_id]
     case = state.cases[correction.case_id or ""]
-    assert finding.target_scope == (
-        HumanReviewFindingTargetScope.RELEASE_CANDIDATE
-    )
+    assert finding.target_scope == (HumanReviewFindingTargetScope.RELEASE_CANDIDATE)
     assert finding.target_deliverable_ids == []
     assert correction.owner_agent_id == "lead"
     assert correction.originating_task_id is None
@@ -1055,13 +1040,16 @@ def test_human_approval_queues_exact_candidate_once() -> None:
         result={},
     )
     assert replay.id == decision.id
-    assert len(
-        [
-            record
-            for record in state.git_promotions.values()
-            if record.promotion_kind == "canonical_push"
-        ]
-    ) == 1
+    assert (
+        len(
+            [
+                record
+                for record in state.git_promotions.values()
+                if record.promotion_kind == "canonical_push"
+            ]
+        )
+        == 1
+    )
 
 
 def test_combined_gates_wait_for_agent_acceptance_and_keep_human_snapshot() -> None:
@@ -1136,12 +1124,8 @@ def test_combined_gates_wait_for_agent_acceptance_and_keep_human_snapshot() -> N
 
     assert len(state.review_requests) == 1
     assert state.human_review_requests == {}
-    frozen_requirement = release.manifest.human_review_requirement.model_copy(
-        deep=True
-    )
-    state.projects["project"].release_policy = ProjectReleasePolicy(
-        allow_ungated=True
-    )
+    frozen_requirement = release.manifest.human_review_requirement.model_copy(deep=True)
+    state.projects["project"].release_policy = ProjectReleasePolicy(allow_ungated=True)
     release_review = next(iter(state.review_requests.values()))
     _cascade_review_decision(
         state,
@@ -1157,8 +1141,7 @@ def test_combined_gates_wait_for_agent_acceptance_and_keep_human_snapshot() -> N
     assert request.requirement_snapshot == frozen_requirement
     assert release.approved_commit_sha is None
     assert not any(
-        record.promotion_kind == "canonical_push"
-        for record in state.git_promotions.values()
+        record.promotion_kind == "canonical_push" for record in state.git_promotions.values()
     )
 
     state.projects["project"].release_policy = ProjectReleasePolicy(
@@ -1174,9 +1157,7 @@ def test_combined_gates_wait_for_agent_acceptance_and_keep_human_snapshot() -> N
         result={"events": []},
     )
     assert list(state.human_review_requests) == [request.id]
-    assert state.human_review_requests[request.id].requirement_snapshot == (
-        frozen_requirement
-    )
+    assert state.human_review_requests[request.id].requirement_snapshot == (frozen_requirement)
     assert release.approved_commit_sha is None
 
 
@@ -1253,9 +1234,7 @@ def test_concurrent_admin_terminal_decisions_have_one_atomic_outcome(
         if record.promotion_kind == "canonical_push"
     ]
     correction_cases = [
-        case
-        for case in state.cases.values()
-        if case.source == "human_release_review"
+        case for case in state.cases.values() if case.source == "human_release_review"
     ]
     if request.state == "approved":
         assert len(canonical_promotions) == 1
@@ -1363,27 +1342,22 @@ def test_changes_requested_replay_has_exact_consequences_and_no_publication(
         ],
     }
 
-    first_state, first_result = (
-        service.record_human_review_decision_with_result(**command)
-    )
+    first_state, first_result = service.record_human_review_decision_with_result(**command)
 
     assert first_result["idempotent_replay"] is False
     assert len(first_state.human_review_decisions) == 1
     assert len(first_state.human_review_findings) == 2
     correction_cases = [
-        case
-        for case in first_state.cases.values()
-        if case.source == "human_release_review"
+        case for case in first_state.cases.values() if case.source == "human_release_review"
     ]
     assert len(correction_cases) == 1
     case = correction_cases[0]
     assert len(case.task_ids) == 3
-    aggregation_task_id = case.metadata[
-        "human_correction_aggregation_task_id"
-    ]
-    assert {
-        first_state.tasks[task_id].owner_agent_id for task_id in case.task_ids
-    } == {"lead", "owner"}
+    aggregation_task_id = case.metadata["human_correction_aggregation_task_id"]
+    assert {first_state.tasks[task_id].owner_agent_id for task_id in case.task_ids} == {
+        "lead",
+        "owner",
+    }
     correction_inbox = [
         item
         for item in first_state.inbox.values()
@@ -1391,49 +1365,33 @@ def test_changes_requested_replay_has_exact_consequences_and_no_publication(
     ]
     assert len(correction_inbox) == 2
     assert {item.task_id for item in correction_inbox} == {
-        finding.correction_task_id
-        for finding in first_state.human_review_findings.values()
+        finding.correction_task_id for finding in first_state.human_review_findings.values()
     }
-    assert aggregation_task_id not in {
-        item.task_id for item in correction_inbox
-    }
+    assert aggregation_task_id not in {item.task_id for item in correction_inbox}
     assert set(first_state.agent_runtimes) == {"lead", "owner"}
     assert all(
-        first_state.agent_runtimes[agent_id].next_wake_at is None
-        for agent_id in ("lead", "owner")
+        first_state.agent_runtimes[agent_id].next_wake_at is None for agent_id in ("lead", "owner")
     )
-    wake_records = repository.list_outbox_records(
-        intent_type="team.agent.wake_requested"
-    )
+    wake_records = repository.list_outbox_records(intent_type="team.agent.wake_requested")
     assert len(wake_records) == 2
-    assert {
-        record.payload["payload"]["agent_id"] for record in wake_records
-    } == {"lead", "owner"}
+    assert {record.payload["payload"]["agent_id"] for record in wake_records} == {"lead", "owner"}
     assert not any(
-        record.promotion_kind == "canonical_push"
-        for record in first_state.git_promotions.values()
+        record.promotion_kind == "canonical_push" for record in first_state.git_promotions.values()
     )
     first_revision = first_state.revision
     first_outbox_ids = {record.id for record in wake_records}
 
-    replay_state, replay_result = (
-        service.record_human_review_decision_with_result(**command)
-    )
+    replay_state, replay_result = service.record_human_review_decision_with_result(**command)
 
     assert replay_result["idempotent_replay"] is True
     assert replay_state.revision == first_revision
     assert len(replay_state.human_review_decisions) == 1
     assert len(replay_state.human_review_findings) == 2
-    assert len(
-        [
-            case
-            for case in replay_state.cases.values()
-            if case.source == "human_release_review"
-        ]
-    ) == 1
-    assert {record.id for record in repository.list_outbox_records()} == (
-        first_outbox_ids
+    assert (
+        len([case for case in replay_state.cases.values() if case.source == "human_release_review"])
+        == 1
     )
+    assert {record.id for record in repository.list_outbox_records()} == (first_outbox_ids)
 
 
 def test_empty_assignment_blocks_and_reassignment_resumes_same_request() -> None:
@@ -1455,20 +1413,16 @@ def test_empty_assignment_blocks_and_reassignment_resumes_same_request() -> None
     assert blocker.route == TeamBlockerRoute.OPERATOR
     assert blocker.owner_agent_id == "lead"
     blocker_items = [
-        item
-        for item in state.inbox.values()
-        if item.payload.get("blocker_id") == blocker.id
+        item for item in state.inbox.values() if item.payload.get("blocker_id") == blocker.id
     ]
     assert any(
-        item.state == TeamInboxItemState.HANDLED
-        and item.payload.get("kind") == "blocker_reported"
+        item.state == TeamInboxItemState.HANDLED and item.payload.get("kind") == "blocker_reported"
         for item in blocker_items
     )
     visibility_item = next(
         item
         for item in blocker_items
-        if item.payload.get("kind")
-        == "human_review_operator_recovery_visibility"
+        if item.payload.get("kind") == "human_review_operator_recovery_visibility"
     )
     assert visibility_item.state == TeamInboxItemState.PENDING
     assert visibility_item.recipient_agent_id == "lead"
@@ -1561,9 +1515,7 @@ def test_human_gate_uses_current_directory_eligibility_not_stale_snapshot() -> N
     )
     result: dict[str, object] = {
         "events": [],
-        HUMAN_REVIEW_ELIGIBILITY_RESOLVER_RESULT_KEY: (
-            lambda _requirement: ["current-reviewer"]
-        ),
+        HUMAN_REVIEW_ELIGIBILITY_RESOLVER_RESULT_KEY: (lambda _requirement: ["current-reviewer"]),
     }
 
     advance_release_gates(
@@ -1588,9 +1540,7 @@ def test_human_gate_uses_current_directory_eligibility_not_stale_snapshot() -> N
     )
     empty_result: dict[str, object] = {
         "events": [],
-        HUMAN_REVIEW_ELIGIBILITY_RESOLVER_RESULT_KEY: (
-            lambda _requirement: []
-        ),
+        HUMAN_REVIEW_ELIGIBILITY_RESOLVER_RESULT_KEY: (lambda _requirement: []),
     }
     advance_release_gates(
         empty_state,
@@ -1613,9 +1563,7 @@ def test_changes_requested_is_deterministic_and_preserves_history() -> None:
     )
     request = next(iter(state.human_review_requests.values()))
     original_task = state.tasks["source-task"].model_copy(deep=True)
-    original_deliverable = state.deliverables["source-deliverable"].model_copy(
-        deep=True
-    )
+    original_deliverable = state.deliverables["source-deliverable"].model_copy(deep=True)
     result: dict[str, object] = {"events": []}
 
     decision = record_human_review_decision(
@@ -1650,9 +1598,7 @@ def test_changes_requested_is_deterministic_and_preserves_history() -> None:
     assert finding.target_deliverable_ids == ["source-deliverable"]
     assert correction.title == finding.text
     assert correction.description == finding.text
-    assert correction.parent_task_id == case.metadata[
-        "human_correction_aggregation_task_id"
-    ]
+    assert correction.parent_task_id == case.metadata["human_correction_aggregation_task_id"]
     assert correction.originating_task_id == "source-task"
     assert correction.owner_agent_id == "owner"
     assert case.source_ref == request.id
@@ -1723,9 +1669,7 @@ def test_manifest_only_candidate_branch_pins_human_correction_graph() -> None:
     finding = next(iter(state.human_review_findings.values()))
     correction = state.tasks[finding.correction_task_id]
     case = state.cases[correction.case_id or ""]
-    aggregation = state.tasks[
-        str(case.metadata["human_correction_aggregation_task_id"])
-    ]
+    aggregation = state.tasks[str(case.metadata["human_correction_aggregation_task_id"])]
     assert aggregation.git_base_branch == candidate_branch
     assert correction.git_base_branch == candidate_branch
     assert (
@@ -1785,9 +1729,7 @@ def test_routed_ambiguous_finding_rejects_artifact_only_successor() -> None:
     state, release, promotion = _human_state(eligible_user_ids=["reviewer"])
     state.agents["owner"].status = AgentStatus.PAUSED
     state.deliverables["source-deliverable"].artifact_refs = ["artifact:source"]
-    state.deliverables["source-deliverable"].verification = (
-        DeliverableVerification(status="passed")
-    )
+    state.deliverables["source-deliverable"].verification = DeliverableVerification(status="passed")
     advance_release_gates(
         state,
         release=release,
@@ -1934,9 +1876,7 @@ def test_routes_every_ambiguous_finding_after_legacy_graph_conversion() -> None:
     aggregation_task_id = case.metadata.pop(
         human_review_domain.HUMAN_CORRECTION_AGGREGATION_TASK_ID_KEY
     )
-    case.metadata.pop(
-        human_review_domain.HUMAN_CORRECTION_AMBIGUOUS_FINDING_IDS_KEY
-    )
+    case.metadata.pop(human_review_domain.HUMAN_CORRECTION_AMBIGUOUS_FINDING_IDS_KEY)
     case.metadata.pop("human_correction_graph_version")
     case.task_ids.remove(aggregation_task_id)
     state.tasks.pop(aggregation_task_id)
@@ -1956,9 +1896,9 @@ def test_routes_every_ambiguous_finding_after_legacy_graph_conversion() -> None:
     ]
     assert first.id == findings[0].correction_task_id
     assert first.parent_task_id == converted_aggregation_id
-    assert case.metadata[
-        human_review_domain.HUMAN_CORRECTION_AMBIGUOUS_FINDING_IDS_KEY
-    ] == [findings[1].id]
+    assert case.metadata[human_review_domain.HUMAN_CORRECTION_AMBIGUOUS_FINDING_IDS_KEY] == [
+        findings[1].id
+    ]
 
     second = route_human_finding_correction(
         state,
@@ -1969,9 +1909,7 @@ def test_routes_every_ambiguous_finding_after_legacy_graph_conversion() -> None:
 
     assert second.id == findings[1].correction_task_id
     assert second.parent_task_id == converted_aggregation_id
-    assert case.metadata[
-        human_review_domain.HUMAN_CORRECTION_AMBIGUOUS_FINDING_IDS_KEY
-    ] == []
+    assert case.metadata[human_review_domain.HUMAN_CORRECTION_AMBIGUOUS_FINDING_IDS_KEY] == []
     TeamState.model_validate(state.model_dump(mode="json"))
 
 
@@ -2066,13 +2004,9 @@ def test_preview_result_rejects_secrets_and_blocked_resume_reuses_request() -> N
 
 
 def test_successor_rejects_unrelated_work_and_derives_exact_candidate_baseline() -> None:
-    state, predecessor, promotion = _human_state(
-        eligible_user_ids=["reviewer"]
-    )
+    state, predecessor, promotion = _human_state(eligible_user_ids=["reviewer"])
     state.deliverables["source-deliverable"].artifact_refs = ["artifact:source"]
-    state.deliverables["source-deliverable"].verification = DeliverableVerification(
-        status="passed"
-    )
+    state.deliverables["source-deliverable"].verification = DeliverableVerification(status="passed")
     advance_release_gates(
         state,
         release=predecessor,
@@ -2277,12 +2211,8 @@ def test_successor_rejects_unrelated_work_and_derives_exact_candidate_baseline()
 
 
 def test_post_release_successor_without_findings_follows_current_human_policy() -> None:
-    state, predecessor, _promotion = _human_state(
-        eligible_user_ids=["reviewer"]
-    )
-    state.deliverables["source-deliverable"].verification = (
-        DeliverableVerification(status="passed")
-    )
+    state, predecessor, _promotion = _human_state(eligible_user_ids=["reviewer"])
+    state.deliverables["source-deliverable"].verification = DeliverableVerification(status="passed")
     predecessor.state = TeamRecordState.ACCEPTED
     predecessor.approved_commit_sha = predecessor.candidate_commit_sha
     predecessor.published_commit_sha = predecessor.candidate_commit_sha
@@ -2299,12 +2229,8 @@ def test_post_release_successor_without_findings_follows_current_human_policy() 
 
 
 def test_changes_requested_successor_inherits_review_for_open_findings() -> None:
-    state, predecessor, promotion = _human_state(
-        eligible_user_ids=["reviewer"]
-    )
-    state.deliverables["source-deliverable"].verification = (
-        DeliverableVerification(status="passed")
-    )
+    state, predecessor, promotion = _human_state(eligible_user_ids=["reviewer"])
+    state.deliverables["source-deliverable"].verification = DeliverableVerification(status="passed")
     advance_release_gates(
         state,
         release=predecessor,
@@ -2347,9 +2273,7 @@ def test_changes_requested_successor_inherits_review_for_open_findings() -> None
 
 def test_successor_carries_open_findings_from_the_full_release_lineage() -> None:
     state, predecessor, promotion = _human_state(eligible_user_ids=["reviewer"])
-    state.deliverables["source-deliverable"].verification = DeliverableVerification(
-        status="passed"
-    )
+    state.deliverables["source-deliverable"].verification = DeliverableVerification(status="passed")
     advance_release_gates(
         state,
         release=predecessor,
@@ -2418,9 +2342,7 @@ def test_successor_carries_open_findings_from_the_full_release_lineage() -> None
         release_id="lineage-successor",
     )
 
-    assert {
-        finding.text for finding in successor_manifest.carried_human_findings
-    } == {
+    assert {finding.text for finding in successor_manifest.carried_human_findings} == {
         "The new correction still drops acknowledgements.",
         "The original alarm recovery remains incorrect.",
     }
@@ -2464,19 +2386,14 @@ def test_git_promotion_queues_initial_human_review_intent_in_outbox(
         outputs={"tree_hash": release.candidate_tree_hash},
     )
 
-    assert any(
-        event["event_type"] == event_type
-        for event in result["events"]
-    )
+    assert any(event["event_type"] == event_type for event in result["events"])
     outbox = repository.list_outbox_records(
         status=TeamOutboxStatus.PENDING,
         intent_type=event_type,
     )
     assert len(outbox) == 1
     request = next(iter(repository.read().human_review_requests.values()))
-    assert request.state == (
-        "preparing" if preparation_mode == "workflow" else "pending"
-    )
+    assert request.state == ("preparing" if preparation_mode == "workflow" else "pending")
     if preparation_mode == "workflow":
         assert outbox[0].payload["payload"]["preparation_generation"] == 1
     else:
@@ -2488,16 +2405,16 @@ def test_git_promotion_queues_initial_human_review_intent_in_outbox(
             commit_sha=release.candidate_commit_sha,
             outputs={"tree_hash": release.candidate_tree_hash},
         )
-        assert not any(
-            event["event_type"] == event_type
-            for event in replayed["events"]
-        )
-        assert len(
-            repository.list_outbox_records(
-                status=TeamOutboxStatus.PENDING,
-                intent_type=event_type,
+        assert not any(event["event_type"] == event_type for event in replayed["events"])
+        assert (
+            len(
+                repository.list_outbox_records(
+                    status=TeamOutboxStatus.PENDING,
+                    intent_type=event_type,
+                )
             )
-        ) == 1
+            == 1
+        )
 
 
 @pytest.mark.parametrize(
@@ -2559,19 +2476,14 @@ def test_verification_queues_initial_human_review_intent_in_outbox(
         command_results=command_results,
     )
 
-    assert any(
-        event["event_type"] == event_type
-        for event in result["events"]
-    )
+    assert any(event["event_type"] == event_type for event in result["events"])
     outbox = repository.list_outbox_records(
         status=TeamOutboxStatus.PENDING,
         intent_type=event_type,
     )
     assert len(outbox) == 1
     request = next(iter(repository.read().human_review_requests.values()))
-    assert request.state == (
-        "preparing" if preparation_mode == "workflow" else "pending"
-    )
+    assert request.state == ("preparing" if preparation_mode == "workflow" else "pending")
     if preparation_mode == "workflow":
         _replayed_state, replayed = service.record_verification_result(
             release_package_id=release.id,
@@ -2580,22 +2492,20 @@ def test_verification_queues_initial_human_review_intent_in_outbox(
             verification_state="passed",
             command_results=command_results,
         )
-        assert not any(
-            event["event_type"] == event_type
-            for event in replayed["events"]
-        )
-        assert len(
-            repository.list_outbox_records(
-                status=TeamOutboxStatus.PENDING,
-                intent_type=event_type,
+        assert not any(event["event_type"] == event_type for event in replayed["events"])
+        assert (
+            len(
+                repository.list_outbox_records(
+                    status=TeamOutboxStatus.PENDING,
+                    intent_type=event_type,
+                )
             )
-        ) == 1
+            == 1
+        )
 
 
 def test_successor_rejects_unchanged_predecessor_tree() -> None:
-    state, predecessor, _promotion = _human_state(
-        eligible_user_ids=["reviewer"]
-    )
+    state, predecessor, _promotion = _human_state(eligible_user_ids=["reviewer"])
     predecessor.state = TeamRecordState.REJECTED
     successor = ReleasePackage(
         id="successor",
@@ -2634,17 +2544,13 @@ def test_successor_rejects_unchanged_predecessor_tree() -> None:
 
 
 def test_published_release_successor_requires_explicit_open_feedback_case() -> None:
-    state, predecessor, _promotion = _human_state(
-        eligible_user_ids=["reviewer"]
-    )
+    state, predecessor, _promotion = _human_state(eligible_user_ids=["reviewer"])
     predecessor.state = TeamRecordState.ACCEPTED
     predecessor.approved_commit_sha = predecessor.candidate_commit_sha
     predecessor.published_commit_sha = predecessor.candidate_commit_sha
     predecessor.published_at = datetime.now(tz=UTC)
     state.deliverables["source-deliverable"].artifact_refs = ["artifact:source"]
-    state.deliverables["source-deliverable"].verification = DeliverableVerification(
-        status="passed"
-    )
+    state.deliverables["source-deliverable"].verification = DeliverableVerification(status="passed")
 
     report_result: dict[str, object] = {"events": []}
     case = report_post_release_feedback(
@@ -2712,9 +2618,7 @@ def test_published_release_successor_requires_explicit_open_feedback_case() -> N
         )
         is None
     )
-    assert "post_release_feedback_case_id" in str(
-        missing_authorization_result["errors"]
-    )
+    assert "post_release_feedback_case_id" in str(missing_authorization_result["errors"])
 
     result: dict[str, object] = {
         "errors": [],
@@ -2881,8 +2785,6 @@ def test_post_release_feedback_requires_evidence_and_evidenced_case_closure() ->
 
     assert closed.status.value == "closed"
     assert closed.metadata["evidence_refs"] == ["artifact:regression"]
-    assert closed.metadata["post_release_feedback_resolution"][
-        "evidence_refs"
-    ] == ["test:recovery"]
+    assert closed.metadata["post_release_feedback_resolution"]["evidence_refs"] == ["test:recovery"]
     assert release.state == TeamRecordState.ACCEPTED
     assert release.published_at == original_published_at

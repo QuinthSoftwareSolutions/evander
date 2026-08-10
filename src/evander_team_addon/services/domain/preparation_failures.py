@@ -39,9 +39,7 @@ TASK_EXECUTION_PREPARATION_BLOCKER_REASON_CODES = frozenset(
         "task_execution_preparation_failed",
     }
 )
-INBOX_EXECUTION_PREPARATION_BLOCKER_REASON_CODE = (
-    "inbox_execution_preparation_failed"
-)
+INBOX_EXECUTION_PREPARATION_BLOCKER_REASON_CODE = "inbox_execution_preparation_failed"
 REVIEW_PREPARATION_BLOCKER_REASON_CODE = "review_preparation_failed"
 EXECUTION_PREPARATION_BLOCKER_REASON_CODES = frozenset(
     {
@@ -130,10 +128,7 @@ def _allowlisted_generation_payload(
     if not hasattr(value, "model_dump"):
         raise TypeError("preparation generation records must support model_dump")
     payload = value.model_dump(mode="json")
-    return {
-        field: _semantic_generation_payload(payload.get(field))
-        for field in fields
-    }
+    return {field: _semantic_generation_payload(payload.get(field)) for field in fields}
 
 
 def _task_generation_payload(task: object) -> dict[str, object]:
@@ -142,8 +137,7 @@ def _task_generation_payload(task: object) -> dict[str, object]:
         fields=_TASK_PREPARATION_GENERATION_FIELDS,
     )
     payload["dependency_task_ids"] = sorted(
-        str(item)
-        for item in payload.get("dependency_task_ids") or []
+        str(item) for item in payload.get("dependency_task_ids") or []
     )
     return payload
 
@@ -231,23 +225,13 @@ def _human_correction_generation_payload(
     )
     if not findings:
         return None
-    request_ids = sorted(
-        {
-            finding.source_human_review_request_id
-            for finding in findings
-        }
-    )
+    request_ids = sorted({finding.source_human_review_request_id for finding in findings})
     requests = [
         state.human_review_requests[request_id]
         for request_id in request_ids
         if request_id in state.human_review_requests
     ]
-    release_ids = sorted(
-        {
-            request.release_package_id
-            for request in requests
-        }
-    )
+    release_ids = sorted({request.release_package_id for request in requests})
     releases = [
         state.release_packages[release_id]
         for release_id in release_ids
@@ -263,20 +247,11 @@ def _human_correction_generation_payload(
     )
     return {
         "finding_ids": [finding.id for finding in findings],
-        "findings": [
-            _semantic_generation_payload(finding)
-            for finding in findings
-        ],
+        "findings": [_semantic_generation_payload(finding) for finding in findings],
         "missing_request_ids": sorted(set(request_ids) - set(state.human_review_requests)),
-        "requests": [
-            _semantic_generation_payload(request)
-            for request in requests
-        ],
+        "requests": [_semantic_generation_payload(request) for request in requests],
         "missing_release_ids": sorted(set(release_ids) - set(state.release_packages)),
-        "releases": [
-            _semantic_generation_payload(release)
-            for release in releases
-        ],
+        "releases": [_semantic_generation_payload(release) for release in releases],
         "missing_source_deliverable_ids": sorted(
             set(source_deliverable_ids) - set(state.deliverables)
         ),
@@ -315,9 +290,7 @@ def task_preparation_blocker_is_current(
         # Historical dependency-preparation incidents had no generation. Keep
         # them fail-closed until an authorized actor resolves them.
         return True
-    generation_prefix = (
-        f"{source_prefix}{task_preparation_generation(state, task_id)}:"
-    )
+    generation_prefix = f"{source_prefix}{task_preparation_generation(state, task_id)}:"
     return blocker.source_id.startswith(generation_prefix)
 
 
@@ -328,10 +301,7 @@ def task_has_current_preparation_blocker(
 ) -> bool:
     return any(
         blocker.state == TeamBlockerState.OPEN
-        and (
-            blocker.task_id == task_id
-            or task_id in blocker.affected_task_ids
-        )
+        and (blocker.task_id == task_id or task_id in blocker.affected_task_ids)
         and task_preparation_blocker_is_current(state, blocker)
         for blocker in state.blockers.values()
     )
@@ -348,10 +318,7 @@ def inbox_has_current_preparation_blocker(
     if any(
         blocker.state == TeamBlockerState.OPEN
         and blocker.reporter_agent_id == item.recipient_agent_id
-        and (
-            blocker.task_id in task_ids
-            or bool(set(blocker.affected_task_ids) & task_ids)
-        )
+        and (blocker.task_id in task_ids or bool(set(blocker.affected_task_ids) & task_ids))
         and task_preparation_blocker_is_current(state, blocker)
         for blocker in state.blockers.values()
     ):
@@ -383,15 +350,12 @@ def reconcile_stale_task_preparation_blockers(
         now=effective_now,
     )
     if superseded_recovery_ids:
-        result.setdefault("superseded_dependency_recovery_ids", []).extend(
-            superseded_recovery_ids
-        )
+        result.setdefault("superseded_dependency_recovery_ids", []).extend(superseded_recovery_ids)
     resolved_ids: list[str] = []
     for blocker in sorted(state.blockers.values(), key=lambda item: item.id):
         if (
             blocker.state != TeamBlockerState.OPEN
-            or blocker.reason_code
-            not in TASK_EXECUTION_PREPARATION_BLOCKER_REASON_CODES
+            or blocker.reason_code not in TASK_EXECUTION_PREPARATION_BLOCKER_REASON_CODES
             or blocker.task_id is None
             or task_preparation_blocker_is_current(state, blocker)
         ):
@@ -436,9 +400,7 @@ def record_task_preparation_failure(
     task = state.tasks.get(_required_text(task_id, "task_id"))
     reporter = state.agents.get(_required_text(reporter_agent_id, "reporter_agent_id"))
     if task is None or reporter is None or reporter.team_id is None:
-        raise ValueError(
-            f"cannot record task preparation failure for task {task_id}"
-        )
+        raise ValueError(f"cannot record task preparation failure for task {task_id}")
     generation = task_preparation_generation(state, task.id)
     cause = preparation_cause_fingerprint(error)
     blocker, _created = open_or_get_blocker(
@@ -478,8 +440,7 @@ def create_rejected_candidate_correction_preparation_recovery_inbox(
     """Atomically make a repaired candidate-rooted correction runnable again."""
 
     if (
-        blocker.reason_code
-        not in TASK_EXECUTION_PREPARATION_BLOCKER_REASON_CODES
+        blocker.reason_code not in TASK_EXECUTION_PREPARATION_BLOCKER_REASON_CODES
         or blocker.task_id is None
         or not is_rejected_candidate_correction_task(
             state,
@@ -497,14 +458,10 @@ def create_rejected_candidate_correction_preparation_recovery_inbox(
         return None
     owner = state.agents.get(task.owner_agent_id)
     if owner is None:
-        raise ValueError(
-            f"rejected-candidate correction task {task.id} has no valid owner"
-        )
+        raise ValueError(f"rejected-candidate correction task {task.id} has no valid owner")
     inbox_id = (
         "inbox-preparation-recovery-"
-        + hashlib.sha256(
-            f"{blocker.id}\0{task.id}".encode("utf-8")
-        ).hexdigest()[:24]
+        + hashlib.sha256(f"{blocker.id}\0{task.id}".encode("utf-8")).hexdigest()[:24]
     )
     existing = state.inbox.get(inbox_id)
     if existing is not None:
@@ -545,9 +502,7 @@ def create_rejected_candidate_correction_preparation_recovery_inbox(
             reason="inbox",
             now=effective_now,
             delay_seconds=0,
-            idempotency_suffix=(
-                f"preparation-recovery:{blocker.id}:{task.id}"
-            ),
+            idempotency_suffix=(f"preparation-recovery:{blocker.id}:{task.id}"),
         )
     return item
 
@@ -589,9 +544,7 @@ def record_inbox_preparation_failure(
         or reporter.team_id is None
         or item.recipient_agent_id != reporter.id
     ):
-        raise ValueError(
-            f"cannot record inbox preparation failure for item {inbox_item_id}"
-        )
+        raise ValueError(f"cannot record inbox preparation failure for item {inbox_item_id}")
     cause = preparation_cause_fingerprint(error)
     blocker, _created = open_or_get_blocker(
         state,
@@ -622,17 +575,13 @@ def record_review_preparation_failure(
     from .project_status import _recalculate_project_status
     from .review import _cascade_review_decision, _close_review_inbox_items
 
-    review = state.review_requests.get(
-        _required_text(review_request_id, "review_request_id")
-    )
+    review = state.review_requests.get(_required_text(review_request_id, "review_request_id"))
     if review is None:
         raise ValueError(f"review request {review_request_id} does not exist")
     if review.state == TeamRecordState.BLOCKED:
         return review
     if review.state not in {TeamRecordState.PENDING, TeamRecordState.IN_PROGRESS}:
-        raise ValueError(
-            f"review request {review.id} is not eligible for preparation failure"
-        )
+        raise ValueError(f"review request {review.id} is not eligible for preparation failure")
     message = _required_text(error, "error")
     review.block_kind = ReviewBlockKind.SYSTEM
     project_ids: set[str] = set()
@@ -668,8 +617,7 @@ def record_review_preparation_failure(
         blocker.reason_code = REVIEW_PREPARATION_BLOCKER_REASON_CODE
         blocker.summary = f"Review preparation failed for {review.id}"
         blocker.details = (
-            f"Stable cause fingerprint: {preparation_cause_fingerprint(message)}\n"
-            f"Error: {message}"
+            f"Stable cause fingerprint: {preparation_cause_fingerprint(message)}\nError: {message}"
         )
         for item in state.inbox.values():
             if (
@@ -692,8 +640,7 @@ def dispatch_project_work_ids(
     task_ids = [
         task_id
         for task_id in _text_items(dispatch.get("task_ids"))
-        if (task := state.tasks.get(task_id)) is not None
-        and task.project_id == project_id
+        if (task := state.tasks.get(task_id)) is not None and task.project_id == project_id
     ]
     review_ids = [
         review_id
@@ -715,9 +662,7 @@ def _inbox_targets_blocked_review(
     state: TeamState,
     item: AgentInboxItem,
 ) -> bool:
-    review = state.review_requests.get(
-        str(item.payload.get("review_request_id") or "").strip()
-    )
+    review = state.review_requests.get(str(item.payload.get("review_request_id") or "").strip())
     return bool(
         review is not None
         and review.reviewer_agent_id == item.recipient_agent_id
@@ -733,14 +678,10 @@ def _inbox_task_ids(state: TeamState, item: AgentInboxItem) -> set[str]:
         for raw in (item.task_id, item.payload.get("task_id"))
         if (value := str(raw or "").strip())
     }
-    deliverable = state.deliverables.get(
-        str(item.payload.get("deliverable_id") or "").strip()
-    )
+    deliverable = state.deliverables.get(str(item.payload.get("deliverable_id") or "").strip())
     if deliverable is not None:
         task_ids.add(deliverable.task_id)
-    review = state.review_requests.get(
-        str(item.payload.get("review_request_id") or "").strip()
-    )
+    review = state.review_requests.get(str(item.payload.get("review_request_id") or "").strip())
     if review is not None and review.deliverable_id is not None:
         review_deliverable = state.deliverables.get(review.deliverable_id)
         if review_deliverable is not None:
@@ -751,11 +692,7 @@ def _inbox_task_ids(state: TeamState, item: AgentInboxItem) -> set[str]:
 def _review_project_id(state: TeamState, review: ReviewRequest) -> str | None:
     if review.deliverable_id is not None:
         deliverable = state.deliverables.get(review.deliverable_id)
-        task = (
-            state.tasks.get(deliverable.task_id)
-            if deliverable is not None
-            else None
-        )
+        task = state.tasks.get(deliverable.task_id) if deliverable is not None else None
         return task.project_id if task is not None else None
     release = state.release_packages.get(review.release_package_id or "")
     return release.project_id if release is not None else None
@@ -763,22 +700,16 @@ def _review_project_id(state: TeamState, review: ReviewRequest) -> str | None:
 
 def _inbox_project_ids(state: TeamState, item: AgentInboxItem) -> set[str]:
     project_ids = {
-        value
-        for raw in (item.payload.get("project_id"),)
-        if (value := str(raw or "").strip())
+        value for raw in (item.payload.get("project_id"),) if (value := str(raw or "").strip())
     }
     for task_id in _inbox_task_ids(state, item):
         task = state.tasks.get(task_id)
         if task is not None:
             project_ids.add(task.project_id)
-    review = state.review_requests.get(
-        str(item.payload.get("review_request_id") or "").strip()
-    )
+    review = state.review_requests.get(str(item.payload.get("review_request_id") or "").strip())
     if review is not None and (project_id := _review_project_id(state, review)):
         project_ids.add(project_id)
-    release = state.release_packages.get(
-        str(item.payload.get("release_package_id") or "").strip()
-    )
+    release = state.release_packages.get(str(item.payload.get("release_package_id") or "").strip())
     if release is not None:
         project_ids.add(release.project_id)
     return project_ids
@@ -791,26 +722,16 @@ def _inbox_references_any(
     review_ids: Sequence[str],
 ) -> bool:
     return bool(
-        (
-            item.task_id is not None
-            and item.task_id in task_ids
-        )
+        (item.task_id is not None and item.task_id in task_ids)
         or str(item.payload.get("task_id") or "").strip() in task_ids
-        or str(item.payload.get("review_request_id") or "").strip()
-        in review_ids
+        or str(item.payload.get("review_request_id") or "").strip() in review_ids
     )
 
 
 def _text_items(value: object) -> list[str]:
     if not isinstance(value, (list, tuple, set)):
         return []
-    return sorted(
-        {
-            text
-            for item in value
-            if (text := str(item or "").strip())
-        }
-    )
+    return sorted({text for item in value if (text := str(item or "").strip())})
 
 
 __all__ = [

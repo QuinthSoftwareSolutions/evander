@@ -86,10 +86,7 @@ def _require_predecessor_review_coverage(
 ) -> None:
     if predecessor is None:
         return
-    if (
-        predecessor.review_cohort_id is not None
-        and predecessor.review_cohort_sealed_at is not None
-    ):
+    if predecessor.review_cohort_id is not None and predecessor.review_cohort_sealed_at is not None:
         predecessor_slots = [
             review
             for review_id in predecessor.review_request_ids
@@ -122,9 +119,7 @@ def _require_predecessor_review_coverage(
                 "reviewer_agent_id",
             )
             if profile_id is not None:
-                planned_profile_counts[profile_id] = (
-                    planned_profile_counts.get(profile_id, 0) + 1
-                )
+                planned_profile_counts[profile_id] = planned_profile_counts.get(profile_id, 0) + 1
             else:
                 planned_unprofiled_reviewer_counts[reviewer_id] = (
                     planned_unprofiled_reviewer_counts.get(reviewer_id, 0) + 1
@@ -135,16 +130,9 @@ def _require_predecessor_review_coverage(
             if planned_profile_counts.get(profile_id, 0) < required_count
         }
         missing_unprofiled_reviewer_counts = {
-            reviewer_id: (
-                required_count
-                - planned_unprofiled_reviewer_counts.get(reviewer_id, 0)
-            )
-            for reviewer_id, required_count
-            in required_unprofiled_reviewer_counts.items()
-            if (
-                planned_unprofiled_reviewer_counts.get(reviewer_id, 0)
-                < required_count
-            )
+            reviewer_id: (required_count - planned_unprofiled_reviewer_counts.get(reviewer_id, 0))
+            for reviewer_id, required_count in required_unprofiled_reviewer_counts.items()
+            if (planned_unprofiled_reviewer_counts.get(reviewer_id, 0) < required_count)
         }
         if missing_profile_counts or missing_unprofiled_reviewer_counts:
             error_code = (
@@ -168,22 +156,12 @@ def _require_predecessor_review_coverage(
                     "required_review_profile_counts": required_profile_counts,
                     "planned_review_profile_counts": planned_profile_counts,
                     "missing_review_profile_counts": missing_profile_counts,
-                    "required_unprofiled_reviewer_counts": (
-                        required_unprofiled_reviewer_counts
-                    ),
-                    "planned_unprofiled_reviewer_counts": (
-                        planned_unprofiled_reviewer_counts
-                    ),
-                    "missing_unprofiled_reviewer_counts": (
-                        missing_unprofiled_reviewer_counts
-                    ),
+                    "required_unprofiled_reviewer_counts": (required_unprofiled_reviewer_counts),
+                    "planned_unprofiled_reviewer_counts": (planned_unprofiled_reviewer_counts),
+                    "missing_unprofiled_reviewer_counts": (missing_unprofiled_reviewer_counts),
                     # Preserve the legacy accepted-rework correction shape.
-                    "required_review_profile_ids": sorted(
-                        required_profile_counts
-                    ),
-                    "missing_review_profile_ids": sorted(
-                        missing_profile_counts
-                    ),
+                    "required_review_profile_ids": sorted(required_profile_counts),
+                    "missing_review_profile_ids": sorted(missing_profile_counts),
                     "missing_unprofiled_reviewer_agent_ids": sorted(
                         missing_unprofiled_reviewer_counts
                     ),
@@ -207,8 +185,7 @@ def _require_predecessor_review_coverage(
         }
     )
     planned_review_profile_ids = {
-        _optional_text(review.get("review_profile_id"))
-        for review in planned_reviews
+        _optional_text(review.get("review_profile_id")) for review in planned_reviews
     }
     missing_review_profile_ids = sorted(
         set(required_review_profile_ids) - planned_review_profile_ids
@@ -324,9 +301,7 @@ class TeamDeliverableSubmissionCommandService(TeamCommandExecutor):
                     deliverable_id=deliverable_id,
                     branch=_optional_text(recovery_git_refs.get("agent_branch")) or "",
                     commit_sha=_optional_text(recovery_git_refs.get("commit_sha")) or "",
-                    source_deliverable_ids=normalized_deliverable[
-                        "source_deliverable_ids"
-                    ],
+                    source_deliverable_ids=normalized_deliverable["source_deliverable_ids"],
                     verifier=self.dependency_recovery_commit_verifier,
                     now=utc_now(),
                 )
@@ -339,9 +314,7 @@ class TeamDeliverableSubmissionCommandService(TeamCommandExecutor):
                         "deliverable_id": deliverable_id,
                     },
                 ) from None
-            predecessor_id = _optional_text(
-                normalized_deliverable.get("supersedes_deliverable_id")
-            )
+            predecessor_id = _optional_text(normalized_deliverable.get("supersedes_deliverable_id"))
             predecessor = state.deliverables.get(predecessor_id or "")
             if (
                 predecessor is not None
@@ -405,9 +378,7 @@ class TeamDeliverableSubmissionCommandService(TeamCommandExecutor):
                     ],
                     "task_id": task.id,
                     "task_state": state.tasks[task.id].state.value,
-                    "waiting_reason": task_payload_with_assessment(state, task)[
-                        "waiting_reason"
-                    ],
+                    "waiting_reason": task_payload_with_assessment(state, task)["waiting_reason"],
                     "intent_recorded": True,
                     "async_effect_pending": bool(created_inbox_ids),
                     "verification": normalized_deliverable.get("verification"),
@@ -481,9 +452,7 @@ class TeamDeliverableSubmissionCommandService(TeamCommandExecutor):
             if deliverable is None:
                 raise TeamCommandValidationError(
                     code="deliverable_not_found",
-                    message=(
-                        f"deliverable {normalized_payload['deliverable_id']} does not exist"
-                    ),
+                    message=(f"deliverable {normalized_payload['deliverable_id']} does not exist"),
                 )
             task = state.tasks.get(deliverable.task_id)
             if task is None:
@@ -500,9 +469,7 @@ class TeamDeliverableSubmissionCommandService(TeamCommandExecutor):
                     and item.payload.get("deliverable_id") == deliverable.id
                 }
                 if len(legacy_notice_recipients) == 1:
-                    acceptance_recipient_agent_id = next(
-                        iter(legacy_notice_recipients)
-                    )
+                    acceptance_recipient_agent_id = next(iter(legacy_notice_recipients))
             if acceptance_recipient_agent_id != agent.id:
                 raise TeamCommandValidationError(
                     code="deliverable_decision_forbidden",
@@ -554,8 +521,7 @@ class TeamDeliverableSubmissionCommandService(TeamCommandExecutor):
                 raise TeamCommandValidationError(
                     code="deliverable_not_awaiting_superior",
                     message=(
-                        f"deliverable {deliverable.id} is not awaiting direct "
-                        "superior acceptance"
+                        f"deliverable {deliverable.id} is not awaiting direct superior acceptance"
                     ),
                     correction_context={
                         "deliverable_state": deliverable.state.value,
@@ -704,21 +670,13 @@ class TeamDeliverableSubmissionCommandService(TeamCommandExecutor):
                         side_effects.get("created_inbox_item_ids") or []
                     ),
                     "events": list(side_effects.get("events") or []),
-                    "resolved_blocker_ids": list(
-                        side_effects.get("resolved_blocker_ids") or []
-                    ),
-                    "automatically_handled_inbox_item_ids": (
-                        automatically_handled_inbox_item_ids
-                    ),
+                    "resolved_blocker_ids": list(side_effects.get("resolved_blocker_ids") or []),
+                    "automatically_handled_inbox_item_ids": (automatically_handled_inbox_item_ids),
                     "intent_recorded": True,
-                    "async_effect_pending": bool(
-                        side_effects.get("created_inbox_item_ids")
-                    ),
+                    "async_effect_pending": bool(side_effects.get("created_inbox_item_ids")),
                     "progress_made": True,
                 },
-                created_domain_ids=list(
-                    side_effects.get("created_inbox_item_ids") or []
-                ),
+                created_domain_ids=list(side_effects.get("created_inbox_item_ids") or []),
                 progress_classification="deliverable_decision",
             )
 
@@ -808,9 +766,7 @@ class TeamDeliverableSubmissionCommandService(TeamCommandExecutor):
                     deliverable_id=deliverable_id,
                     branch=_optional_text(recovery_git_refs.get("agent_branch")) or "",
                     commit_sha=_optional_text(recovery_git_refs.get("commit_sha")) or "",
-                    source_deliverable_ids=normalized_deliverable[
-                        "source_deliverable_ids"
-                    ],
+                    source_deliverable_ids=normalized_deliverable["source_deliverable_ids"],
                     verifier=self.dependency_recovery_commit_verifier,
                     now=utc_now(),
                 )
@@ -835,13 +791,9 @@ class TeamDeliverableSubmissionCommandService(TeamCommandExecutor):
                 producer_agent_id=agent.id,
                 summary=normalized_deliverable["summary"],
                 outcomes=normalized_deliverable["outcomes"],
-                source_deliverable_ids=normalized_deliverable[
-                    "source_deliverable_ids"
-                ],
+                source_deliverable_ids=normalized_deliverable["source_deliverable_ids"],
                 completion=normalized_deliverable.get("completion"),
-                supersedes_deliverable_id=normalized_deliverable.get(
-                    "supersedes_deliverable_id"
-                ),
+                supersedes_deliverable_id=normalized_deliverable.get("supersedes_deliverable_id"),
             )
             planned_reviews = _plan_command_review_requests_for_deliverable(
                 state,
@@ -870,35 +822,28 @@ class TeamDeliverableSubmissionCommandService(TeamCommandExecutor):
                     code="duplicate_review_cohort_members",
                     message=(
                         "a sealed review cohort requires one review slot per "
-                        "reviewer; duplicate reviewers: "
-                        + ", ".join(duplicate_reviewer_ids)
+                        "reviewer; duplicate reviewers: " + ", ".join(duplicate_reviewer_ids)
                     ),
                     correction_context={
                         "deliverable_id": deliverable_id,
                         "duplicate_reviewer_agent_ids": duplicate_reviewer_ids,
                     },
                 )
-            delivered_outcome_kinds = {
-                outcome.kind for outcome in provisional_deliverable.outcomes
-            }
+            delivered_outcome_kinds = {outcome.kind for outcome in provisional_deliverable.outcomes}
             for request_payload in planned_reviews:
-                profile_id = _optional_text(
-                    request_payload.get("review_profile_id")
-                )
+                profile_id = _optional_text(request_payload.get("review_profile_id"))
                 profile = state.review_profiles.get(profile_id or "")
                 if profile is None or not profile.required_outcome_kinds:
                     continue
                 missing_outcome_kinds = sorted(
-                    set(profile.required_outcome_kinds)
-                    - delivered_outcome_kinds
+                    set(profile.required_outcome_kinds) - delivered_outcome_kinds
                 )
                 if missing_outcome_kinds:
                     raise TeamCommandValidationError(
                         code="review_profile_outcome_requirements_unsatisfied",
                         message=(
                             f"review profile {profile.id} requires deliverable "
-                            "outcome kinds: "
-                            + ", ".join(missing_outcome_kinds)
+                            "outcome kinds: " + ", ".join(missing_outcome_kinds)
                         ),
                         correction_context={
                             "deliverable_id": deliverable_id,
@@ -906,9 +851,7 @@ class TeamDeliverableSubmissionCommandService(TeamCommandExecutor):
                             "missing_outcome_kinds": missing_outcome_kinds,
                         },
                     )
-            predecessor_id = _optional_text(
-                normalized_deliverable.get("supersedes_deliverable_id")
-            )
+            predecessor_id = _optional_text(normalized_deliverable.get("supersedes_deliverable_id"))
             predecessor = state.deliverables.get(predecessor_id or "")
             _require_predecessor_review_coverage(
                 state,
@@ -995,9 +938,7 @@ class TeamDeliverableSubmissionCommandService(TeamCommandExecutor):
                     ],
                     "task_id": task.id,
                     "task_state": state.tasks[task.id].state.value,
-                    "waiting_reason": task_payload_with_assessment(state, task)[
-                        "waiting_reason"
-                    ],
+                    "waiting_reason": task_payload_with_assessment(state, task)["waiting_reason"],
                     "intent_recorded": True,
                     "async_effect_pending": bool(created_inbox_ids),
                     "verification": normalized_deliverable.get("verification"),
@@ -1070,15 +1011,9 @@ class TeamDeliverableSubmissionCommandService(TeamCommandExecutor):
             state: TeamState,
             resolved: _ResolvedTeamCommandContext,
         ) -> TeamCommandApplyResult:
-            agent = _require_command_agent(
-                resolved, "team_link_deliverable_replacement"
-            )
-            predecessor = state.deliverables.get(
-                normalized_payload["predecessor_deliverable_id"]
-            )
-            replacement = state.deliverables.get(
-                normalized_payload["replacement_deliverable_id"]
-            )
+            agent = _require_command_agent(resolved, "team_link_deliverable_replacement")
+            predecessor = state.deliverables.get(normalized_payload["predecessor_deliverable_id"])
+            replacement = state.deliverables.get(normalized_payload["replacement_deliverable_id"])
             if predecessor is None or replacement is None:
                 missing = (
                     normalized_payload["predecessor_deliverable_id"]
@@ -1143,8 +1078,7 @@ class TeamDeliverableSubmissionCommandService(TeamCommandExecutor):
                 raise TeamCommandValidationError(
                     code="replacement_lineage_already_set",
                     message=(
-                        f"replacement already supersedes "
-                        f"{replacement.supersedes_deliverable_id}"
+                        f"replacement already supersedes {replacement.supersedes_deliverable_id}"
                     ),
                 )
             cursor = predecessor
@@ -1210,9 +1144,7 @@ class TeamDeliverableSubmissionCommandService(TeamCommandExecutor):
                     "predecessor_deliverable_id": predecessor.id,
                     "replacement_deliverable_id": replacement.id,
                     "supersession_reason": normalized_payload["reason"],
-                    "resolved_blocker_ids": list(
-                        side_effects.get("resolved_blocker_ids") or []
-                    ),
+                    "resolved_blocker_ids": list(side_effects.get("resolved_blocker_ids") or []),
                     "progress_made": True,
                 },
                 progress_classification="deliverable_lineage",

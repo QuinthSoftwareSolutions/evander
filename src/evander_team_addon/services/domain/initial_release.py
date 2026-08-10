@@ -60,8 +60,7 @@ def initialize_pending_initial_release_disposition(
 
 def deliverable_has_release_package(state: TeamState, deliverable_id: str) -> bool:
     return any(
-        deliverable_id in release.deliverable_ids
-        for release in state.release_packages.values()
+        deliverable_id in release.deliverable_ids for release in state.release_packages.values()
     )
 
 
@@ -101,11 +100,7 @@ def manager_fallback_initial_release_authority_error(
     deliverable = state.deliverables.get(deliverable_id)
     task = state.tasks.get(deliverable.task_id) if deliverable is not None else None
     project = state.projects.get(task.project_id) if task is not None else None
-    disposition = (
-        deliverable.initial_release_disposition
-        if deliverable is not None
-        else None
-    )
+    disposition = deliverable.initial_release_disposition if deliverable is not None else None
     if manager is None or not _is_team_manager(state, manager):
         return f"agent {manager_agent_id} is no longer a top-level team manager"
     if deliverable is None or task is None or project is None:
@@ -173,15 +168,8 @@ def mark_initial_release_requested(
     updated: list[str] = []
     for deliverable_id in deliverable_ids:
         deliverable = state.deliverables.get(deliverable_id)
-        disposition = (
-            deliverable.initial_release_disposition
-            if deliverable is not None
-            else None
-        )
-        if (
-            disposition is None
-            or disposition.state != InitialReleaseDispositionState.PENDING
-        ):
+        disposition = deliverable.initial_release_disposition if deliverable is not None else None
+        if disposition is None or disposition.state != InitialReleaseDispositionState.PENDING:
             continue
         deliverable.initial_release_disposition = DeliverableInitialReleaseDisposition(
             state=InitialReleaseDispositionState.RELEASE_REQUESTED,
@@ -219,10 +207,7 @@ def mark_initial_release_not_planned(
         if deliverable is None:
             raise ValueError(f"deliverable {deliverable_id} does not exist")
         disposition = deliverable.initial_release_disposition
-        if (
-            disposition is None
-            or disposition.state != InitialReleaseDispositionState.PENDING
-        ):
+        if disposition is None or disposition.state != InitialReleaseDispositionState.PENDING:
             state_name = disposition.state.value if disposition is not None else "untracked"
             raise ValueError(
                 f"deliverable {deliverable.id} initial release disposition is "
@@ -268,10 +253,7 @@ def reopen_initial_release_decisions(
         if deliverable is None:
             raise ValueError(f"deliverable {deliverable_id} does not exist")
         disposition = deliverable.initial_release_disposition
-        if (
-            disposition is None
-            or disposition.state != InitialReleaseDispositionState.NOT_PLANNED
-        ):
+        if disposition is None or disposition.state != InitialReleaseDispositionState.NOT_PLANNED:
             state_name = disposition.state.value if disposition is not None else "untracked"
             raise ValueError(
                 f"deliverable {deliverable.id} initial release disposition is "

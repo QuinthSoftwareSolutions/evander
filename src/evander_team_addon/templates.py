@@ -258,12 +258,8 @@ class TeamTemplate(TemplateModel):
                     )
 
         for profile in self.review_profiles:
-            known_outcome_kinds = {
-                definition.kind for definition in self.outcome_kinds
-            }
-            missing_outcomes = sorted(
-                set(profile.required_outcome_kinds) - known_outcome_kinds
-            )
+            known_outcome_kinds = {definition.kind for definition in self.outcome_kinds}
+            missing_outcomes = sorted(set(profile.required_outcome_kinds) - known_outcome_kinds)
             if missing_outcomes:
                 raise ValueError(
                     f"review profile {profile.id} references missing outcome "
@@ -710,8 +706,7 @@ _ACCOUNTING_DEPARTMENT_TEMPLATE = {
             "kind": "evidence_match",
             "name": "Evidence Match",
             "description": (
-                "A durable source-to-Bokio match or an explicit unmatched or "
-                "blocked disposition."
+                "A durable source-to-Bokio match or an explicit unmatched or blocked disposition."
             ),
             "reference_requirements": (
                 "Reference the source record identifiers and matching Bokio "

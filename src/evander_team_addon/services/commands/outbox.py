@@ -55,6 +55,8 @@ def _team_event_outbox_records(
         }
         if "delay_seconds" in event:
             outbox_payload["delay_seconds"] = event.get("delay_seconds")
+        if "run_at" in event:
+            outbox_payload["run_at"] = event.get("run_at")
         records.append(
             TeamOutboxRecord(
                 id=f"outbox-{uuid4().hex}",

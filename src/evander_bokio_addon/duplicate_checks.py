@@ -104,7 +104,9 @@ class BokioDuplicateCheckStore:
                 (check_id,),
             ).fetchone()
         if row is None:  # pragma: no cover - SQLite insert/read invariant
-            raise BokioDuplicateCheckError("duplicate-check evidence could not be read after insert")
+            raise BokioDuplicateCheckError(
+                "duplicate-check evidence could not be read after insert"
+            )
         return _record_from_row(row)
 
     def get(self, check_id: str) -> dict[str, Any]:
@@ -137,9 +139,7 @@ class BokioDuplicateCheckStore:
             )
             columns = {
                 str(row["name"])
-                for row in connection.execute(
-                    "PRAGMA table_info(duplicate_checks)"
-                ).fetchall()
+                for row in connection.execute("PRAGMA table_info(duplicate_checks)").fetchall()
             }
             if "source_identity_json" not in columns:
                 connection.execute(
@@ -276,11 +276,7 @@ def _entry_matches(entry: Mapping[str, Any], criteria: Mapping[str, Any]) -> boo
     _collect(entry)
     for criterion, expected in criteria.items():
         aliases = _CRITERION_ALIASES[criterion]
-        actual_values = [
-            actual
-            for alias in aliases
-            for actual in values_by_key.get(alias, [])
-        ]
+        actual_values = [actual for alias in aliases for actual in values_by_key.get(alias, [])]
         if expected not in actual_values:
             return False
     return True

@@ -50,11 +50,7 @@ def test_project_blocking_sources_includes_release_level_agent_review() -> None:
 
     rows = project_blocking_sources(state, "project")
 
-    assert [
-        row
-        for row in rows
-        if row["kind"] == "review_request"
-    ] == [
+    assert [row for row in rows if row["kind"] == "review_request"] == [
         {
             "kind": "review_request",
             "id": "release-review",

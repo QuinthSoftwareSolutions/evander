@@ -263,12 +263,8 @@ def test_workflow_editor_catalog_enriches_team_bridge_target_options(
         "read",
         "write or reply",
     ]
-    assert options["bridge-discord"]["metadata"]["thread_id"]["top_level"][
-        "supported"
-    ] is True
-    assert options["bridge-teams-reply"]["metadata"]["thread_id"]["reply"][
-        "supported"
-    ] is True
+    assert options["bridge-discord"]["metadata"]["thread_id"]["top_level"]["supported"] is True
+    assert options["bridge-teams-reply"]["metadata"]["thread_id"]["reply"]["supported"] is True
 
 
 def test_workflow_editor_catalog_uses_loader_settings_when_workflow_config_is_invalid(
@@ -295,25 +291,21 @@ def test_workflow_editor_tool_selectors_include_enabled_addon_tools(tmp_path: Pa
         directory_path="root"
     ).model_dump(mode="json")
     nodes = {node["type"]: node for node in payload["nodes"]}
-    agent_create_fields = {
-        field["key"]: field for field in nodes["effect:agent:create"]["fields"]
-    }
+    agent_create_fields = {field["key"]: field for field in nodes["effect:agent:create"]["fields"]}
     approve_fields = {
-        field["key"]: field
-        for field in nodes["effect:session:approve-mcp-tools-for-run"]["fields"]
+        field["key"]: field for field in nodes["effect:session:approve-mcp-tools-for-run"]["fields"]
     }
     allowed_tools = {
         option["value"]: option for option in agent_create_fields["allowed_tools"]["options"]
     }
-    approval_tools = {
-        option["value"]: option for option in approve_fields["tools"]["options"]
-    }
+    approval_tools = {option["value"]: option for option in approve_fields["tools"]["options"]}
 
     assert allowed_tools["bokio_create_supplier_invoice"]["metadata"] == {
         "tool_group": "Bokio",
         "provider": "bokio-addon",
         "addon_id": "bokio-addon",
     }
-    assert approval_tools["bokio_create_supplier_invoice"] == allowed_tools[
-        "bokio_create_supplier_invoice"
-    ]
+    assert (
+        approval_tools["bokio_create_supplier_invoice"]
+        == allowed_tools["bokio_create_supplier_invoice"]
+    )

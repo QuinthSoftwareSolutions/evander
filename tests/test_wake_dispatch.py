@@ -9,6 +9,10 @@ import pytest
 
 from evander.config import GatewayConfig
 from evander.execution import ExecutionBackendKind, ExecutionStatusKind
+from evander.local_inference_capacity import (
+    LOCAL_INFERENCE_QUEUE_REASON,
+    LocalInferenceCapacityStore,
+)
 from evander.messaging.agent_prompt_queue import AgentPromptQueueStore
 from evander.messaging.wake_dispatch import HostWakeDispatcher, SessionWakeBinding
 from evander.messaging.wake_store import WakeRequestStore
@@ -273,6 +277,127 @@ def test_resume_binding_uses_session_agent_provider_and_default_model_when_model
     assert result.status == "dispatched"
     assert captured["env"]["AGENT_PROVIDER"] == "claude"
     assert captured["env"]["AGENT_MODEL"] == "claude-sonnet-4-6"
+
+
+def test_resume_binding_queues_resolved_local_model_when_global_capacity_is_full(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    dispatcher, config, session_repository, wake_store = _build_dispatcher(tmp_path)
+    session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-local",
+            vm_id="vm-local",
+            directory_path="root/team-a",
+            model="resolved-local-model",
+            allowed_tools=[ToolName.SCHEDULE_RESUME],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        )
+    )
+    resume_script = tmp_path / "resume.sh"
+    resume_script.write_text("#!/usr/bin/env bash\n", encoding="utf-8")
+    worker_config = config.model_copy(
+        update={
+            "host_resume_script_path": resume_script,
+            "model_provider_mode": "local_openai",
+            "local_openai_api_base_url": "http://127.0.0.1:11435/v1",
+            "local_openai_max_concurrency": 1,
+        }
+    )
+    capacity_store = LocalInferenceCapacityStore(tmp_path)
+    occupied = capacity_store.claim(
+        max_concurrency=1,
+        owner_id="another-local-agent",
+        model="other-local-model",
+    )
+    capacity_store.mark_running(occupied.slot_id)
+    monkeypatch.setattr(
+        "evander.messaging.wake_dispatch.subprocess.run",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("resume script must not run before capacity is available")
+        ),
+    )
+
+    result = dispatcher.resume_binding(
+        SessionWakeBinding(
+            session_id="session-local",
+            vm_id="vm-local",
+            source="test",
+            directory_path="root/team-a",
+        ),
+        worker_config=worker_config,
+        prompt="Resume local work.",
+        dispatch_source="scheduled_once",
+        request_id="wake-local",
+    )
+
+    assert result is not None
+    assert result.status == "queued"
+    assert result.metadata["queue_reason"] == LOCAL_INFERENCE_QUEUE_REASON
+    assert result.metadata["local_inference_max_concurrency"] == 1
+    queued = AgentPromptQueueStore(tmp_path / "queued-agent-prompts.json").get(
+        "scheduled-wake:wake-local"
+    )
+    assert queued is not None
+    assert queued.model == "resolved-local-model"
+    assert queued.model_provider_mode == "local_openai"
+    assert queued.queue_reason == LOCAL_INFERENCE_QUEUE_REASON
+    assert wake_store.latest_dispatch_by_request_id()["wake-local"].status == "queued"
+
+
+def test_wake_capacity_claim_reconciles_orphaned_terminal_container_lease(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    dispatcher, config, session_repository, _wake_store = _build_dispatcher(tmp_path)
+    _upsert_container_session(session_repository, session_id="orphaned-session")
+    worker_config = config.model_copy(
+        update={
+            "model_provider_mode": "local_openai",
+            "local_openai_api_base_url": "http://127.0.0.1:11435/v1",
+            "local_openai_max_concurrency": 1,
+        }
+    )
+    capacity_store = LocalInferenceCapacityStore(tmp_path)
+    orphaned = capacity_store.claim(
+        max_concurrency=1,
+        owner_id="orphaned-container-run",
+        model="local-model",
+        session_id="orphaned-session",
+        dispatch_id="orphaned-dispatch",
+        execution_backend="container_worker_vm",
+        target_name="agent-orphaned-session",
+    )
+    assert (
+        capacity_store.mark_running(
+            orphaned.slot_id,
+            target_name="agent-orphaned-session",
+            execution_id="execution:orphaned-session",
+            now=datetime.now(UTC) - timedelta(minutes=1),
+        )
+        is True
+    )
+    monkeypatch.setattr(
+        "evander.messaging.wake_dispatch.build_execution_backend",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            inspect=lambda execution_id: SimpleNamespace(
+                execution_id=execution_id,
+                status=ExecutionStatusKind.STOPPED,
+            )
+        ),
+    )
+
+    admission = dispatcher._claim_local_inference_capacity(
+        config=worker_config,
+        dispatch_id="replacement-dispatch",
+        session_id="replacement-session",
+        model="local-model",
+        execution_backend="libvirt_vm",
+        target_name="vm-replacement",
+    )
+
+    assert admission.admitted is True
+    assert orphaned.slot_id not in capacity_store.read_all()
 
 
 def test_resume_binding_records_failed_dispatch_when_script_is_missing(

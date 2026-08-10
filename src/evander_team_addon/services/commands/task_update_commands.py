@@ -128,9 +128,7 @@ class TeamTaskUpdateCommandService(TeamCommandExecutor):
             if agent is None:
                 raise TeamCommandValidationError(
                     code="invalid_command_scope",
-                    message=(
-                        "team_reopen_task_for_rework requires a persistent Team agent"
-                    ),
+                    message=("team_reopen_task_for_rework requires a persistent Team agent"),
                 )
             task = state.tasks.get(normalized_task_id)
             if task is None:
@@ -165,9 +163,8 @@ class TeamTaskUpdateCommandService(TeamCommandExecutor):
                         "project_id": project.id,
                     },
                 )
-            team_manager_allowed = (
-                agent.team_id == project.team_id
-                and _is_team_manager(state, agent)
+            team_manager_allowed = agent.team_id == project.team_id and _is_team_manager(
+                state, agent
             )
             if not (
                 agent.id == task.owner_agent_id
@@ -207,8 +204,7 @@ class TeamTaskUpdateCommandService(TeamCommandExecutor):
                 raise TeamCommandValidationError(
                     code="task_not_resolved_for_rework",
                     message=(
-                        f"task {task.id} is not currently resolved "
-                        f"({assessment.resolution_reason})"
+                        f"task {task.id} is not currently resolved ({assessment.resolution_reason})"
                     ),
                     correction_context={
                         "task_id": task.id,
@@ -221,15 +217,10 @@ class TeamTaskUpdateCommandService(TeamCommandExecutor):
                     code="deliverable_not_found",
                     message=f"deliverable {normalized_deliverable_id} does not exist",
                 )
-            if (
-                deliverable.task_id != task.id
-                or deliverable.id not in task.deliverable_ids
-            ):
+            if deliverable.task_id != task.id or deliverable.id not in task.deliverable_ids:
                 raise TeamCommandValidationError(
                     code="task_rework_deliverable_mismatch",
-                    message=(
-                        f"deliverable {deliverable.id} does not belong to task {task.id}"
-                    ),
+                    message=(f"deliverable {deliverable.id} does not belong to task {task.id}"),
                     correction_context={
                         "task_id": task.id,
                         "accepted_deliverable_id": deliverable.id,
@@ -249,26 +240,19 @@ class TeamTaskUpdateCommandService(TeamCommandExecutor):
                     correction_context={
                         "deliverable_id": deliverable.id,
                         "deliverable_state": deliverable.state.value,
-                        "superseded_by_deliverable_id": (
-                            deliverable.superseded_by_deliverable_id
-                        ),
+                        "superseded_by_deliverable_id": (deliverable.superseded_by_deliverable_id),
                     },
                 )
             if deliverable.rework_requested_at is not None:
                 raise TeamCommandValidationError(
                     code="deliverable_rework_already_requested",
                     message=(
-                        f"deliverable {deliverable.id} already has an accepted "
-                        "rework request"
+                        f"deliverable {deliverable.id} already has an accepted rework request"
                     ),
                     correction_context={
                         "deliverable_id": deliverable.id,
-                        "rework_requested_by_agent_id": (
-                            deliverable.rework_requested_by_agent_id
-                        ),
-                        "rework_requested_at": (
-                            deliverable.rework_requested_at.isoformat()
-                        ),
+                        "rework_requested_by_agent_id": (deliverable.rework_requested_by_agent_id),
+                        "rework_requested_at": (deliverable.rework_requested_at.isoformat()),
                     },
                 )
 
@@ -316,18 +300,14 @@ class TeamTaskUpdateCommandService(TeamCommandExecutor):
                         f"deliverable.supersedes_deliverable_id={deliverable.id} "
                         "and at least one fresh formal review."
                     ),
-                    "retained_review_request_ids": list(
-                        deliverable.review_request_ids
-                    ),
+                    "retained_review_request_ids": list(deliverable.review_request_ids),
                     "required_review_profile_ids": required_review_profile_ids,
                 },
                 result=side_effects,
                 now=now,
             )
             _recalculate_project_status(state, task.project_id)
-            created_inbox_ids = list(
-                side_effects.get("created_inbox_item_ids") or []
-            )
+            created_inbox_ids = list(side_effects.get("created_inbox_item_ids") or [])
             return TeamCommandApplyResult(
                 response_payload={
                     "task_id": task.id,
@@ -337,9 +317,7 @@ class TeamTaskUpdateCommandService(TeamCommandExecutor):
                     "rework_reason": normalized_reason,
                     "rework_requested_by_agent_id": agent.id,
                     "rework_requested_at": now.isoformat(),
-                    "retained_review_request_ids": list(
-                        deliverable.review_request_ids
-                    ),
+                    "retained_review_request_ids": list(deliverable.review_request_ids),
                     "required_review_profile_ids": required_review_profile_ids,
                     "created_inbox_item_ids": created_inbox_ids,
                     "events": list(side_effects.get("events") or []),
@@ -443,14 +421,11 @@ class TeamTaskUpdateCommandService(TeamCommandExecutor):
                 raise TeamCommandValidationError(
                     code="task_cancellation_unresolved_descendants",
                     message=(
-                        f"task {task.id} cannot be cancelled while descendants remain "
-                        "unresolved"
+                        f"task {task.id} cannot be cancelled while descendants remain unresolved"
                     ),
                     correction_context={
                         "task_id": task.id,
-                        "unresolved_descendant_ids": list(
-                            assessment.unresolved_descendant_ids
-                        ),
+                        "unresolved_descendant_ids": list(assessment.unresolved_descendant_ids),
                     },
                 )
             (
@@ -519,19 +494,15 @@ class TeamTaskUpdateCommandService(TeamCommandExecutor):
                 "git_context_finalization": git_context_finalization,
                 "progress_made": True,
             }
-            released_recovery = (
-                release_dependency_composition_recovery_after_task_cancellation(
-                    state_model,
-                    task_id=task.id,
-                    actor_agent_id=actor.id,
-                    dispatch_id=resolved.dispatch_id,
-                    now=now,
-                )
+            released_recovery = release_dependency_composition_recovery_after_task_cancellation(
+                state_model,
+                task_id=task.id,
+                actor_agent_id=actor.id,
+                dispatch_id=resolved.dispatch_id,
+                now=now,
             )
             if released_recovery is not None:
-                result["released_dependency_composition_recovery_id"] = (
-                    released_recovery.id
-                )
+                result["released_dependency_composition_recovery_id"] = released_recovery.id
             reconcile_task_blockers_after_cancellation(
                 state_model,
                 task_id=task.id,
@@ -557,6 +528,7 @@ class TeamTaskUpdateCommandService(TeamCommandExecutor):
                 state_model,
                 agent_id=task.owner_agent_id,
                 now=now,
+                result=result,
             )
             _recalculate_project_status(state_model, task.project_id)
             return TeamCommandApplyResult(
@@ -659,12 +631,8 @@ class TeamTaskUpdateCommandService(TeamCommandExecutor):
             )
             has_dependency_edit = "dependency_task_ids" in normalized_updates
             has_git_base_edit = "git_base_branch" in normalized_updates
-            has_integration_boundary_edit = (
-                "integration_boundary" in normalized_updates
-            )
-            has_deliverable_contract_edit = (
-                "deliverable_contract" in normalized_updates
-            )
+            has_integration_boundary_edit = "integration_boundary" in normalized_updates
+            has_deliverable_contract_edit = "deliverable_contract" in normalized_updates
             has_deliverable_policy_request = (
                 has_integration_boundary_edit or has_deliverable_contract_edit
             )
@@ -685,9 +653,7 @@ class TeamTaskUpdateCommandService(TeamCommandExecutor):
                     raw_deliverable_contract = None
                 try:
                     next_deliverable_contract = (
-                        TaskDeliverableContract.model_validate(
-                            raw_deliverable_contract
-                        )
+                        TaskDeliverableContract.model_validate(raw_deliverable_contract)
                         if raw_deliverable_contract is not None
                         else None
                     )
@@ -697,13 +663,9 @@ class TeamTaskUpdateCommandService(TeamCommandExecutor):
                         message=str(exc),
                         correction_context={"task_id": task.id},
                     ) from None
-            has_deliverable_policy_edit = (
-                has_deliverable_policy_request
-                and (
-                    next_integration_boundary != task.integration_boundary
-                    or next_deliverable_contract
-                    != task.deliverable_contract
-                )
+            has_deliverable_policy_edit = has_deliverable_policy_request and (
+                next_integration_boundary != task.integration_boundary
+                or next_deliverable_contract != task.deliverable_contract
             )
             has_completion = "completion" in normalized_updates
             subordinate_finish_allowed = (
@@ -721,13 +683,7 @@ class TeamTaskUpdateCommandService(TeamCommandExecutor):
                 )
             )
             if (
-                (
-                    has_state
-                    or has_priority
-                    or has_title
-                    or has_description
-                    or has_completion
-                )
+                (has_state or has_priority or has_title or has_description or has_completion)
                 and not is_owner
                 and not subordinate_finish_allowed
             ):
@@ -765,12 +721,8 @@ class TeamTaskUpdateCommandService(TeamCommandExecutor):
                             "allowed_states": _MCP_TASK_UPDATE_STATE_VALUES,
                         },
                     )
-                if (
-                    next_state == TeamTaskState.BLOCKED
-                    or (
-                        task.state == TeamTaskState.BLOCKED
-                        and next_state != TeamTaskState.BLOCKED
-                    )
+                if next_state == TeamTaskState.BLOCKED or (
+                    task.state == TeamTaskState.BLOCKED and next_state != TeamTaskState.BLOCKED
                 ):
                     raise TeamCommandValidationError(
                         code="task_blocker_command_required",
@@ -928,13 +880,9 @@ class TeamTaskUpdateCommandService(TeamCommandExecutor):
                             message=contract_error,
                             correction_context={
                                 "task_id": task.id,
-                                "integration_boundary": (
-                                    next_integration_boundary
-                                ),
+                                "integration_boundary": (next_integration_boundary),
                                 "deliverable_contract": (
-                                    next_deliverable_contract.model_dump(
-                                        mode="json"
-                                    )
+                                    next_deliverable_contract.model_dump(mode="json")
                                     if next_deliverable_contract is not None
                                     else None
                                 ),
@@ -986,12 +934,15 @@ class TeamTaskUpdateCommandService(TeamCommandExecutor):
                     changed = True
             if has_git_base_edit:
                 try:
-                    changed = _set_task_git_base_branch(
-                        state_model,
-                        task=task,
-                        git_base_branch=normalized_updates.get("git_base_branch"),
-                        git_default_branch_resolver=self.git_default_branch_resolver,
-                    ) or changed
+                    changed = (
+                        _set_task_git_base_branch(
+                            state_model,
+                            task=task,
+                            git_base_branch=normalized_updates.get("git_base_branch"),
+                            git_default_branch_resolver=self.git_default_branch_resolver,
+                        )
+                        or changed
+                    )
                 except TaskGitBaseValidationError as exc:
                     raise TeamCommandValidationError(
                         code=exc.code,
@@ -1020,6 +971,7 @@ class TeamTaskUpdateCommandService(TeamCommandExecutor):
                     state_model,
                     agent_id=old_owner_id,
                     now=now,
+                    result=reconciliation_result,
                 )
                 if task.state in _NON_TERMINAL_TASK_STATES:
                     _mark_agent_work_due(state_model, agent_id=new_owner_id, now=now)
@@ -1040,6 +992,7 @@ class TeamTaskUpdateCommandService(TeamCommandExecutor):
                         state_model,
                         agent_id=task.owner_agent_id,
                         now=now,
+                        result=reconciliation_result,
                     )
                 if next_state is not None or has_owner_reassignment:
                     _recalculate_project_status(state_model, task.project_id)
@@ -1059,16 +1012,10 @@ class TeamTaskUpdateCommandService(TeamCommandExecutor):
                 "updated_task_ids": [task.id] if changed else [],
                 "progress_made": changed,
                 "created_blocker_ids": [],
-                "created_inbox_item_ids": list(
-                    reconciliation_result["created_inbox_item_ids"]
-                ),
+                "created_inbox_item_ids": list(reconciliation_result["created_inbox_item_ids"]),
                 "events": list(reconciliation_result["events"]),
-                "resolved_blocker_ids": list(
-                    reconciliation_result["resolved_blocker_ids"]
-                ),
-                "blocker_event_ids": list(
-                    reconciliation_result["blocker_event_ids"]
-                ),
+                "resolved_blocker_ids": list(reconciliation_result["resolved_blocker_ids"]),
+                "blocker_event_ids": list(reconciliation_result["blocker_event_ids"]),
                 "resolved_blocker_event_ids": [],
                 "automatically_handled_inbox_item_ids": [],
             }
@@ -1251,9 +1198,7 @@ class TeamTaskUpdateCommandService(TeamCommandExecutor):
             handled_inbox_item_ids=normalized_handled_ids,
             apply_command=_apply,
             require_active_dispatch=True,
-            reject_stale_high_priority_inbox=(
-                normalized_state == TeamRecordState.ACCEPTED.value
-            ),
+            reject_stale_high_priority_inbox=(normalized_state == TeamRecordState.ACCEPTED.value),
         )
 
 

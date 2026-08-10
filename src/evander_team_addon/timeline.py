@@ -192,9 +192,7 @@ def _task_entries(state: TeamState) -> list[TimelineEntry]:
                 attention_needed=_task_attention_needed(task.state),
                 subject=task.title,
                 process=(
-                    _process_subject(task.created_by_actor)
-                    if creator_agent_id is None
-                    else None
+                    _process_subject(task.created_by_actor) if creator_agent_id is None else None
                 ),
                 summary=f"Task created: {task.title}",
             )
@@ -233,10 +231,7 @@ def _task_entries(state: TeamState) -> list[TimelineEntry]:
                     after=_humanize_token(task.state.value),
                     before_known=False,
                 )
-                summary = (
-                    f"Task entered {_humanize_token(task.state.value).lower()}: "
-                    f"{task.title}"
-                )
+                summary = f"Task entered {_humanize_token(task.state.value).lower()}: {task.title}"
             entries.append(
                 _entry(
                     id=f"task:{task.id}:{category}",
@@ -292,11 +287,7 @@ def _inbox_entries(state: TeamState) -> list[TimelineEntry]:
                 status=item.state.value,
                 attention_needed=item.state == TeamInboxItemState.PENDING,
                 subject=subject,
-                process=(
-                    _inbox_process(item.payload)
-                    if item.sender_agent_id is None
-                    else None
-                ),
+                process=(_inbox_process(item.payload) if item.sender_agent_id is None else None),
                 summary=f"{item_type} sent: {subject}",
             )
         )
@@ -399,9 +390,7 @@ def _review_entries(state: TeamState) -> list[TimelineEntry]:
         project = state.projects.get(project_id) if project_id is not None else None
         team_id = project.team_id if project is not None else None
         release_related_agent_ids = (
-            _release_related_agent_ids(state, release)
-            if release is not None
-            else []
+            _release_related_agent_ids(state, release) if release is not None else []
         )
         related = _unique_agent_ids(
             [
@@ -573,8 +562,7 @@ def _ephemeral_entries(state: TeamState) -> list[TimelineEntry]:
                     ),
                     reason=assignment.error,
                     summary=(
-                        f"Temporary assignment {assignment_state.lower()}: "
-                        f"{assignment.title}"
+                        f"Temporary assignment {assignment_state.lower()}: {assignment.title}"
                     ),
                 )
             )
@@ -639,9 +627,7 @@ def _git_promotion_entries(state: TeamState) -> list[TimelineEntry]:
                     ),
                     reason=promotion.error,
                     process="Git promotion worker",
-                    summary=(
-                        f"{promotion_process} {promotion_state.lower()}: {subject}"
-                    ),
+                    summary=(f"{promotion_process} {promotion_state.lower()}: {subject}"),
                 )
             )
     return entries
@@ -1014,9 +1000,7 @@ def _release_related_agent_ids(
     project = state.projects.get(release.project_id)
     return _unique_agent_ids(
         [
-            project_lead_agent_id(state, release.project_id)
-            if project is not None
-            else None,
+            project_lead_agent_id(state, release.project_id) if project is not None else None,
             *(
                 state.deliverables[deliverable_id].producer_agent_id
                 for deliverable_id in release.deliverable_ids

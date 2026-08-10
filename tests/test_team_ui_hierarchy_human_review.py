@@ -48,9 +48,9 @@ def test_projects_view_receives_release_evidence_collections() -> None:
 
 
 def test_workspace_excludes_operator_directives_from_attention() -> None:
-    source = (
-        ROOT / "src" / "evander_team_addon" / "ui_static" / "team-ui.js"
-    ).read_text(encoding="utf-8")
+    source = (ROOT / "src" / "evander_team_addon" / "ui_static" / "team-ui.js").read_text(
+        encoding="utf-8"
+    )
 
     assert "function workspaceInboxItemNeedsAttention(item)" in source
     assert 'return text(item.item_type) !== "operator_directive";' in source
@@ -62,12 +62,12 @@ def test_workspace_excludes_operator_directives_from_attention() -> None:
 
 
 def test_workspace_attention_has_pagination_controls() -> None:
-    source = (
-        ROOT / "src" / "evander_team_addon" / "ui_static" / "team-ui.js"
-    ).read_text(encoding="utf-8")
-    stylesheet = (
-        ROOT / "src" / "evander_team_addon" / "ui_static" / "team-ui.css"
-    ).read_text(encoding="utf-8")
+    source = (ROOT / "src" / "evander_team_addon" / "ui_static" / "team-ui.js").read_text(
+        encoding="utf-8"
+    )
+    stylesheet = (ROOT / "src" / "evander_team_addon" / "ui_static" / "team-ui.css").read_text(
+        encoding="utf-8"
+    )
 
     assert "const workspaceAttentionPageSize = 7;" in source
     assert "let workspaceAttentionPage = 1;" in source
@@ -79,9 +79,9 @@ def test_workspace_attention_has_pagination_controls() -> None:
 
 
 def test_workspace_places_delivery_under_current_workload_without_tab_shortcuts() -> None:
-    source = (
-        ROOT / "src" / "evander_team_addon" / "ui_static" / "team-ui.js"
-    ).read_text(encoding="utf-8")
+    source = (ROOT / "src" / "evander_team_addon" / "ui_static" / "team-ui.js").read_text(
+        encoding="utf-8"
+    )
     dashboard_source = source[
         source.index("function renderWorkspaceDashboard()") : source.index(
             "function renderWorkspaceTarget("
@@ -96,14 +96,14 @@ def test_workspace_places_delivery_under_current_workload_without_tab_shortcuts(
 
 
 def test_attention_excludes_retired_or_superseded_delivery_lineage() -> None:
-    source = (
-        ROOT / "src" / "evander_team_addon" / "ui_static" / "team-ui.js"
-    ).read_text(encoding="utf-8")
+    source = (ROOT / "src" / "evander_team_addon" / "ui_static" / "team-ui.js").read_text(
+        encoding="utf-8"
+    )
 
     assert "function isCurrentDeliverable(deliverable)" in source
-    assert 'return !text(deliverable?.superseded_by_deliverable_id);' in source
+    assert "return !text(deliverable?.superseded_by_deliverable_id);" in source
     assert "function isCurrentReviewRequest(review)" in source
-    assert 'return !review?.retired_at && !text(review?.superseded_by_review_request_id);' in source
+    assert "return !review?.retired_at && !text(review?.superseded_by_review_request_id);" in source
     assert ".filter(workspaceReviewNeedsAttention)" in source
     assert "if (!isCurrentDeliverable(row.deliverable))" in source
     assert "const currentReviews = reviews.filter(isCurrentReviewRequest);" in source
@@ -203,9 +203,9 @@ def test_project_repo_guidance_emits_exact_task_worktree_mapping() -> None:
 
 
 def test_task_ui_renders_self_contained_inherited_blocker_reasons() -> None:
-    source = (
-        ROOT / "src" / "evander_team_addon" / "ui_static" / "team-ui.js"
-    ).read_text(encoding="utf-8")
+    source = (ROOT / "src" / "evander_team_addon" / "ui_static" / "team-ui.js").read_text(
+        encoding="utf-8"
+    )
 
     assert "function inheritedTaskBlockers(task)" in source
     assert "function inheritedTaskBlockerLabel(blocker)" in source
@@ -215,9 +215,9 @@ def test_task_ui_renders_self_contained_inherited_blocker_reasons() -> None:
 
 
 def test_task_board_distinguishes_dependency_waits_from_assigned_blockers() -> None:
-    source = (
-        ROOT / "src" / "evander_team_addon" / "ui_static" / "team-ui.js"
-    ).read_text(encoding="utf-8")
+    source = (ROOT / "src" / "evander_team_addon" / "ui_static" / "team-ui.js").read_text(
+        encoding="utf-8"
+    )
 
     assert "function taskBoardWaitsOnDependencies(task)" in source
     assert "function taskBoardBlockedDependencyIds(task)" in source
@@ -233,9 +233,9 @@ def test_task_board_distinguishes_dependency_waits_from_assigned_blockers() -> N
 
 
 def test_project_git_editor_exposes_distinct_agent_commit_identities() -> None:
-    source = (
-        ROOT / "src" / "evander_team_addon" / "ui_static" / "team-ui.js"
-    ).read_text(encoding="utf-8")
+    source = (ROOT / "src" / "evander_team_addon" / "ui_static" / "team-ui.js").read_text(
+        encoding="utf-8"
+    )
 
     for field_name in (
         "agent_author_name",
@@ -245,13 +245,15 @@ def test_project_git_editor_exposes_distinct_agent_commit_identities() -> None:
     ):
         assert f'name="{field_name}"' in source
     assert "git.agent_author_identity = { name: authorName, email: authorEmail };" in source
-    assert "git.agent_committer_identity = { name: committerName, email: committerEmail };" in source
+    assert (
+        "git.agent_committer_identity = { name: committerName, email: committerEmail };" in source
+    )
 
 
 def test_task_board_dependency_wait_labels_handle_mixed_and_resolved_tasks() -> None:
-    source = (
-        ROOT / "src" / "evander_team_addon" / "ui_static" / "team-ui.js"
-    ).read_text(encoding="utf-8")
+    source = (ROOT / "src" / "evander_team_addon" / "ui_static" / "team-ui.js").read_text(
+        encoding="utf-8"
+    )
     helper_source = source[
         source.index("function taskBoardDependencyWaitIds(task)") : source.index(
             "function renderTaskBoardBlockerLine(task)"
@@ -331,9 +333,9 @@ def test_task_board_dependency_wait_labels_handle_mixed_and_resolved_tasks() -> 
 
 
 def test_human_review_findings_require_explicit_release_or_deliverable_scope() -> None:
-    source = (
-        ROOT / "src" / "evander_team_addon" / "ui_static" / "team-ui.js"
-    ).read_text(encoding="utf-8")
+    source = (ROOT / "src" / "evander_team_addon" / "ui_static" / "team-ui.js").read_text(
+        encoding="utf-8"
+    )
     selector_source = source[
         source.index("function renderHumanReviewTargetSelector(") : source.index(
             "function renderHumanReviewFindingRow("
@@ -349,19 +351,18 @@ def test_human_review_findings_require_explicit_release_or_deliverable_scope() -
     assert "human_finding_target_release_candidate" in selector_source
     assert "human_finding_target_deliverable_ids" in selector_source
     assert "(optional)" not in selector_source
-    assert 'target_scope: targetsEntireRelease' in form_source
+    assert "target_scope: targetsEntireRelease" in form_source
     assert '"release_candidate"' in form_source
     assert '"deliverables"' in form_source
     assert (
-        "Select the entire release candidate or at least one affected deliverable."
-        in form_source
+        "Select the entire release candidate or at least one affected deliverable." in form_source
     )
 
 
 def test_task_cleanup_ui_renders_bounded_inventory_evidence() -> None:
-    source = (
-        ROOT / "src" / "evander_team_addon" / "ui_static" / "team-ui.js"
-    ).read_text(encoding="utf-8")
+    source = (ROOT / "src" / "evander_team_addon" / "ui_static" / "team-ui.js").read_text(
+        encoding="utf-8"
+    )
 
     assert "candidate.ignored_file_count" in source
     assert "candidate.ignored_file_inventory_truncated" in source
@@ -370,21 +371,18 @@ def test_task_cleanup_ui_renders_bounded_inventory_evidence() -> None:
 
 
 def test_human_review_non_approval_actions_bypass_required_checklist_validation() -> None:
-    source = (
-        ROOT / "src" / "evander_team_addon" / "ui_static" / "team-ui.js"
-    ).read_text(encoding="utf-8")
+    source = (ROOT / "src" / "evander_team_addon" / "ui_static" / "team-ui.js").read_text(
+        encoding="utf-8"
+    )
     approval_click_source = source[
         source.index("const humanReviewApprove") : source.index("const findingAdd")
     ]
 
     assert 'data-human-review-decision="approved">Approve</button>' in source
     assert (
-        'data-human-review-decision="changes_requested" formnovalidate>'
-        "Request changes</button>"
+        'data-human-review-decision="changes_requested" formnovalidate>Request changes</button>'
     ) in source
-    assert (
-        'data-human-review-decision="blocked" formnovalidate>Blocked</button>'
-    ) in source
+    assert ('data-human-review-decision="blocked" formnovalidate>Blocked</button>') in source
     assert 'name="human_finding_text"' in approval_click_source
     assert 'name="human_finding_target_release_candidate"' in approval_click_source
 
@@ -406,21 +404,18 @@ def test_human_review_card_offers_a_pinned_source_bundle_download() -> None:
 
 
 def test_delivery_workspace_defaults_to_attention_and_exposes_project_focus() -> None:
-    source = (
-        ROOT / "src" / "evander_team_addon" / "ui_static" / "team-ui.js"
-    ).read_text(encoding="utf-8")
-    markup = (
-        ROOT / "src" / "evander_team_addon" / "ui_static" / "index.html"
-    ).read_text(encoding="utf-8")
+    source = (ROOT / "src" / "evander_team_addon" / "ui_static" / "team-ui.js").read_text(
+        encoding="utf-8"
+    )
+    markup = (ROOT / "src" / "evander_team_addon" / "ui_static" / "index.html").read_text(
+        encoding="utf-8"
+    )
 
     assert 'let selectedDeliveryFilter = "attention";' in source
     assert "function deliveryRowNeedsAttention(row)" in source
     assert "currentDeliveryReleasePackages(row.releasePackages).some" in source
     assert '"pending", "in_progress"].includes(text(release.state))' in source
-    assert (
-        "function renderDeliveryWorkspaceControls(allRows, statusRows, visibleRows)"
-        in source
-    )
+    assert "function renderDeliveryWorkspaceControls(allRows, statusRows, visibleRows)" in source
     assert "data-delivery-project-filter" in source
     assert 'data-filter="attention"' in markup
     assert "Needs attention" in markup
@@ -428,9 +423,9 @@ def test_delivery_workspace_defaults_to_attention_and_exposes_project_focus() ->
 
 
 def test_deliverable_drill_down_renders_evidence_backed_release_pipeline() -> None:
-    source = (
-        ROOT / "src" / "evander_team_addon" / "ui_static" / "team-ui.js"
-    ).read_text(encoding="utf-8")
+    source = (ROOT / "src" / "evander_team_addon" / "ui_static" / "team-ui.js").read_text(
+        encoding="utf-8"
+    )
 
     assert "function renderDeliverablePipeline(row)" in source
     assert 'label: "Implementation evidence"' in source
@@ -445,9 +440,9 @@ def test_deliverable_drill_down_renders_evidence_backed_release_pipeline() -> No
 
 
 def test_delivery_view_surfaces_pending_and_audited_initial_release_decisions() -> None:
-    source = (
-        ROOT / "src" / "evander_team_addon" / "ui_static" / "team-ui.js"
-    ).read_text(encoding="utf-8")
+    source = (ROOT / "src" / "evander_team_addon" / "ui_static" / "team-ui.js").read_text(
+        encoding="utf-8"
+    )
 
     assert 'initial_release_disposition?.state) === "pending"' in source
     assert "function renderInitialReleaseDisposition(deliverable)" in source
@@ -458,9 +453,9 @@ def test_delivery_view_surfaces_pending_and_audited_initial_release_decisions() 
 
 
 def test_live_release_verification_retries_after_transient_request_failure() -> None:
-    source = (
-        ROOT / "src" / "evander_team_addon" / "ui_static" / "team-ui.js"
-    ).read_text(encoding="utf-8")
+    source = (ROOT / "src" / "evander_team_addon" / "ui_static" / "team-ui.js").read_text(
+        encoding="utf-8"
+    )
     polling_source = source[
         source.index("function activeReleaseVerificationRun(") : source.index(
             "async function loadMyHumanReviews("
@@ -546,3 +541,55 @@ def test_live_release_verification_retries_after_transient_request_failure() -> 
     )
 
     assert result.returncode == 0, result.stderr
+
+
+def test_selected_agent_runtime_shows_reset_bounded_input_usage() -> None:
+    source = (ROOT / "src" / "evander_team_addon" / "ui_static" / "team-ui.js").read_text(
+        encoding="utf-8"
+    )
+    detail_source = source[
+        source.index("function agentRuntimeDetailRows(details)") : source.index(
+            "function renderAgentOpenTasks(openTasks)"
+        )
+    ]
+    runtime_source = source[
+        source.index("function runtimeSummary(agentId)") : source.index(
+            "function runtimeOperationForAgent(agentId)"
+        )
+    ]
+
+    assert "Latest context reset: no completed context reset yet" in detail_source
+    assert "Input tokens since latest reset" in detail_source
+    assert 'runtime.contextClearingPolicy !== "every_wake"' in detail_source
+    assert "runtime.context_reset_usage?.input_tokens_since_reset" in runtime_source
+    assert 'contextClearingPolicy !== "every_wake"' in runtime_source
+
+
+def test_agent_editor_round_trips_idle_context_grace_minutes() -> None:
+    source = (ROOT / "src" / "evander_team_addon" / "ui_static" / "team-ui.js").read_text(
+        encoding="utf-8"
+    )
+    editor_source = source[
+        source.index(
+            'if (type === "agent") {', source.index("function renderEditFields")
+        ) : source.index('if (type === "role") {', source.index("function renderEditFields"))
+    ]
+    payload_source = source[
+        source.index(
+            'if (type === "agent") {', source.index("function editPayloadForForm")
+        ) : source.index('if (type === "role") {', source.index("function editPayloadForForm"))
+    ]
+    binding_source = source[
+        source.index("function bindAgentEditTeamScopedSelects") : source.index(
+            "function refreshAgentEditTeamScopedSelects"
+        )
+    ]
+
+    assert "contextClearingIdleGraceMinutesForEdit" in editor_source
+    assert 'numberField("Idle grace minutes"' in editor_source
+    assert "max: 10080" in editor_source
+    assert "context_clearing_idle_grace_seconds" in payload_source
+    assert "context_clearing_idle_grace_minutes" in payload_source
+    assert "* 60" in payload_source
+    assert 'select[name="context_clearing_policy"]' in binding_source
+    assert 'graceInput.value = "60"' in binding_source

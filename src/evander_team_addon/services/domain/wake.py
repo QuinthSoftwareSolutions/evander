@@ -365,33 +365,46 @@ def _append_agent_wake_requested_event(
     result: dict[str, Any],
     reason: str,
     now: datetime,
-    delay_seconds: float,
+    delay_seconds: float | None = None,
+    run_at: datetime | None = None,
     idempotency_suffix: str | None = None,
+    payload_extra: Mapping[str, Any] | None = None,
 ) -> None:
     agent = state.agents.get(agent_id)
     if agent is None or agent.status != AgentStatus.ACTIVE or agent.team_id is None:
         return
     normalized_now = _ensure_utc(now)
-    normalized_delay = max(0.0, float(delay_seconds))
+    if (delay_seconds is None) == (run_at is None):
+        raise ValueError("wake request must use exactly one of delay_seconds or run_at")
+    normalized_run_at = _ensure_utc(run_at) if run_at is not None else None
+    normalized_delay = max(0.0, float(delay_seconds or 0.0))
     bucket_seconds = max(1.0, DEFAULT_AGENT_WAKE_REQUEST_DEBOUNCE_SECONDS)
-    bucket = int((normalized_now.timestamp() + normalized_delay) // bucket_seconds)
-    suffix = f":{idempotency_suffix}" if idempotency_suffix else ""
-    result.setdefault("events", []).append(
-        {
-            "event_type": AGENT_WAKE_REQUESTED_EVENT_TYPE,
-            "correlation_key": f"{AGENT_WAKE_REQUESTED_EVENT_TYPE}:{agent.id}",
-            "idempotency_key": (
-                f"team-addon:{AGENT_WAKE_REQUESTED_EVENT_TYPE}:{agent.id}:{bucket}{suffix}"
-            ),
-            "delay_seconds": normalized_delay,
-            "payload": {
-                "team_id": agent.team_id,
-                "agent_id": agent.id,
-                "session_id": agent.session_id,
-                "reason": reason,
-            },
-        }
+    scheduled_timestamp = (
+        normalized_run_at.timestamp()
+        if normalized_run_at is not None
+        else normalized_now.timestamp() + normalized_delay
     )
+    bucket = int(scheduled_timestamp // bucket_seconds)
+    suffix = f":{idempotency_suffix}" if idempotency_suffix else ""
+    event = {
+        "event_type": AGENT_WAKE_REQUESTED_EVENT_TYPE,
+        "correlation_key": f"{AGENT_WAKE_REQUESTED_EVENT_TYPE}:{agent.id}",
+        "idempotency_key": (
+            f"team-addon:{AGENT_WAKE_REQUESTED_EVENT_TYPE}:{agent.id}:{bucket}{suffix}"
+        ),
+        "payload": {
+            "team_id": agent.team_id,
+            "agent_id": agent.id,
+            "session_id": agent.session_id,
+            "reason": reason,
+            **dict(payload_extra or {}),
+        },
+    }
+    if normalized_run_at is not None:
+        event["run_at"] = normalized_run_at.isoformat().replace("+00:00", "Z")
+    else:
+        event["delay_seconds"] = normalized_delay
+    result.setdefault("events", []).append(event)
 
 
 __all__ = [

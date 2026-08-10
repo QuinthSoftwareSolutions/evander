@@ -41,9 +41,7 @@ _CODEX_HOME_CONTAINER_PATH = "/home/agent/.config/evander/codex"
 _CODEX_CONFIG_CONTAINER_PATH = f"{_CODEX_HOME_CONTAINER_PATH}/config.toml"
 _CODEX_LEGACY_CONFIG_CONTAINER_PATH = "/home/agent/.codex/config.toml"
 _CODEX_SUBSCRIPTION_CONFIG_HOST_FILENAME = "codex-subscription-config.toml"
-_CODEX_SUBSCRIPTION_PROJECT_CONFIG_HOST_FILENAME = (
-    "codex-subscription-project-config.toml"
-)
+_CODEX_SUBSCRIPTION_PROJECT_CONFIG_HOST_FILENAME = "codex-subscription-project-config.toml"
 _PIDS_EXHAUSTION_MARKER_SUFFIX = ".pids-limit-exhausted"
 _PIDS_EVENT_POLL_SECONDS = 0.05
 _PIDS_MONITOR_TERMINAL_JOIN_SECONDS = 0.25
@@ -108,9 +106,10 @@ class DockerContainerRuntime:
         exit_code = state.get("ExitCode")
         oom_killed = bool(state.get("OOMKilled"))
         runtime_error = str(state.get("Error") or "").strip() or None
-        terminal = not bool(state.get("Running")) and str(
-            state.get("Status") or ""
-        ).casefold() in {"exited", "dead"}
+        terminal = not bool(state.get("Running")) and str(state.get("Status") or "").casefold() in {
+            "exited",
+            "dead",
+        }
         if terminal:
             self._join_pids_event_monitor(record)
         pids_limit_exhausted = (
@@ -124,9 +123,7 @@ class DockerContainerRuntime:
             "oom_killed": oom_killed,
             "runtime_error": runtime_error,
             "failure_cause": (
-                WorkerFailureCause.PIDS_LIMIT_EXHAUSTED.value
-                if pids_limit_exhausted
-                else None
+                WorkerFailureCause.PIDS_LIMIT_EXHAUSTED.value if pids_limit_exhausted else None
             ),
             "raw_state": {
                 "status": state.get("Status"),
@@ -220,9 +217,7 @@ class DockerContainerRuntime:
         if pid <= 0:
             return None
         try:
-            cgroup_lines = (self.proc_root / str(pid) / "cgroup").read_text(
-                encoding="utf-8"
-            )
+            cgroup_lines = (self.proc_root / str(pid) / "cgroup").read_text(encoding="utf-8")
         except OSError:
             return None
         for line in cgroup_lines.splitlines():
@@ -235,8 +230,7 @@ class DockerContainerRuntime:
                 candidate = self._contained_cgroup_path(relative_path) / "pids.events"
             elif "pids" in controller_set:
                 candidate = (
-                    self._contained_cgroup_path(f"pids/{relative_path.lstrip('/')}")
-                    / "pids.events"
+                    self._contained_cgroup_path(f"pids/{relative_path.lstrip('/')}") / "pids.events"
                 )
             else:
                 continue
@@ -507,9 +501,7 @@ class DockerContainerRuntime:
         """
 
         config_path = paths.root / _CODEX_SUBSCRIPTION_CONFIG_HOST_FILENAME
-        project_config_path = (
-            paths.root / _CODEX_SUBSCRIPTION_PROJECT_CONFIG_HOST_FILENAME
-        )
+        project_config_path = paths.root / _CODEX_SUBSCRIPTION_PROJECT_CONFIG_HOST_FILENAME
         for description, path in (
             ("Codex subscription config", config_path),
             ("Codex subscription project config", project_config_path),

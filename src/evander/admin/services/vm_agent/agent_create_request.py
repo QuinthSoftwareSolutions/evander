@@ -506,10 +506,8 @@ class VmAgentCreateRequestMixin:
             for connector_id, connector in sorted(connector_config.connectors.items())
             if not connector.disabled
         ]
-        host_directory_config = (
-            self.runtime.provider_config.resolve_host_directories_for_directory(
-                normalized_directory
-            )
+        host_directory_config = self.runtime.provider_config.resolve_host_directories_for_directory(
+            normalized_directory
         )
         host_directories = [
             {
@@ -519,9 +517,7 @@ class VmAgentCreateRequestMixin:
                 "capabilities": list(definition.capabilities),
                 "delete_requires_approval": definition.delete_requires_approval,
             }
-            for directory_id, definition in sorted(
-                host_directory_config.host_directories.items()
-            )
+            for directory_id, definition in sorted(host_directory_config.host_directories.items())
             if not definition.disabled
         ]
         allowed_mailbox_ids = set(policy_config.email_mailbox_allowlist)

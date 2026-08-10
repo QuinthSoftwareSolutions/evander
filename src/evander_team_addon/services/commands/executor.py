@@ -88,16 +88,12 @@ class TeamCommandExecutor:
         *,
         git_candidate_commit_resolver: GitCandidateCommitResolver | None = None,
         git_default_branch_resolver: Callable[..., object] | None = None,
-        dependency_recovery_commit_verifier: (
-            DependencyRecoveryCommitVerifier | None
-        ) = None,
+        dependency_recovery_commit_verifier: (DependencyRecoveryCommitVerifier | None) = None,
     ) -> None:
         self._repository = repository
         self._git_candidate_commit_resolver = git_candidate_commit_resolver
         self._git_default_branch_resolver = git_default_branch_resolver
-        self._dependency_recovery_commit_verifier = (
-            dependency_recovery_commit_verifier
-        )
+        self._dependency_recovery_commit_verifier = dependency_recovery_commit_verifier
 
     @property
     def repository(self) -> TeamStateRepository:
@@ -208,9 +204,9 @@ class TeamCommandExecutor:
                     )
                 pending_handled_ids, already_handled_ids = (
                     self._validate_command_handled_inbox_items(
-                    state,
-                    resolved=resolved,
-                    handled_inbox_item_ids=normalized_handled_ids,
+                        state,
+                        resolved=resolved,
+                        handled_inbox_item_ids=normalized_handled_ids,
                     )
                 )
                 dependency_statuses_before = _dependency_status_snapshot(state)
@@ -368,9 +364,7 @@ class TeamCommandExecutor:
             state,
             dispatch=dispatch,
             task_ids=targets["task_ids"],
-            require_actionable=(
-                resolved.context.tool_name not in _DELIVERABLE_SUBMISSION_TOOLS
-            ),
+            require_actionable=(resolved.context.tool_name not in _DELIVERABLE_SUBMISSION_TOOLS),
         )
         _validate_dispatch_blocker_scope(
             state,
@@ -384,24 +378,18 @@ class TeamCommandExecutor:
         )
         request_review_routing_project_ids: set[str] = set()
         if resolved.context.tool_name == "team_request_review":
-            request_review_routing_project_ids = (
-                _validate_request_review_dispatch_scope(
-                    state,
-                    dispatch=dispatch,
-                    payload=normalized_payload,
-                )
+            request_review_routing_project_ids = _validate_request_review_dispatch_scope(
+                state,
+                dispatch=dispatch,
+                payload=normalized_payload,
             )
         _validate_dispatch_project_scope(
             state,
             dispatch=dispatch,
-            project_ids=(
-                targets["project_ids"]
-                - request_review_routing_project_ids
-            ),
+            project_ids=(targets["project_ids"] - request_review_routing_project_ids),
         )
         if (
-            resolved.context.tool_name
-            in {"team_request_release", "team_decide_initial_release"}
+            resolved.context.tool_name in {"team_request_release", "team_decide_initial_release"}
             and dispatch.cause_kind == "manager_fallback"
         ):
             _validate_manager_fallback_initial_release_scope(
@@ -416,15 +404,8 @@ class TeamCommandExecutor:
         if resolved.context.tool_name == "team_decide_deliverable":
             deliverable_id = _optional_text(normalized_payload.get("deliverable_id"))
             deliverable = state.deliverables.get(deliverable_id or "")
-            task = (
-                state.tasks.get(deliverable.task_id)
-                if deliverable is not None
-                else None
-            )
-            if (
-                _is_role_bounded_operator_chat_dispatch(dispatch)
-                and task is not None
-            ):
+            task = state.tasks.get(deliverable.task_id) if deliverable is not None else None
+            if _is_role_bounded_operator_chat_dispatch(dispatch) and task is not None:
                 _validate_dispatch_project_scope(
                     state,
                     dispatch=dispatch,
@@ -443,9 +424,7 @@ class TeamCommandExecutor:
                     raise _dispatch_scope_error(
                         dispatch,
                         scope_kind="inbox item",
-                        requested_ids=[
-                            deliverable_id or "unknown deliverable notice"
-                        ],
+                        requested_ids=[deliverable_id or "unknown deliverable notice"],
                         allowed_ids=dispatch.inbox_item_ids,
                     )
         if resolved.context.tool_name == "team_report_blocker":
@@ -649,9 +628,7 @@ class TeamCommandExecutor:
             )
         active_stand_downs = _active_stand_downs_for_agent(state, agent.id)
         if active_stand_downs and (
-            not require_active_dispatch
-            or runtime is None
-            or runtime.active_dispatch_id is None
+            not require_active_dispatch or runtime is None or runtime.active_dispatch_id is None
         ):
             return resolved, TeamCommandValidationError(
                 code="agent_stood_down",
@@ -687,18 +664,14 @@ class TeamCommandExecutor:
             return resolved, TeamCommandValidationError(
                 code="dispatch_not_found",
                 message=(
-                    f"active Team dispatch {runtime.active_dispatch_id} has no "
-                    "durable scope record"
+                    f"active Team dispatch {runtime.active_dispatch_id} has no durable scope record"
                 ),
                 correction_context={
                     "agent_id": agent.id,
                     "active_dispatch_id": runtime.active_dispatch_id,
                 },
             )
-        if (
-            durable_dispatch.agent_id != agent.id
-            or durable_dispatch.session_id != agent.session_id
-        ):
+        if durable_dispatch.agent_id != agent.id or durable_dispatch.session_id != agent.session_id:
             return resolved, TeamCommandValidationError(
                 code="dispatch_identity_mismatch",
                 message=(
@@ -1088,9 +1061,7 @@ def _command_dispatch_scope_targets(
         if blocker_id is not None:
             targets["blocker_ids"].add(blocker_id)
     if tool_name in _REVIEW_SCOPE_TOOLS:
-        targets["review_request_ids"].update(
-            _existing_review_ids_from_payload(state, payload)
-        )
+        targets["review_request_ids"].update(_existing_review_ids_from_payload(state, payload))
     if tool_name == "team_report_blocker":
         _add_blocker_report_dispatch_scope_targets(
             state,
@@ -1098,9 +1069,7 @@ def _command_dispatch_scope_targets(
             targets=targets,
         )
     if tool_name in _PROJECT_SCOPE_TOOLS:
-        targets["project_ids"].update(
-            _project_ids_from_payload_relationships(state, payload)
-        )
+        targets["project_ids"].update(_project_ids_from_payload_relationships(state, payload))
     targets["managed_repo_ids"].update(
         _values_for_keys(payload, {"managed_repo_id", "managed_repo_ids"})
     )
@@ -1144,9 +1113,7 @@ def _validate_cancel_task_dispatch_scope(
         )
         return
 
-    explicitly_handled_ids = _text_sequence(
-        payload.get("handled_inbox_item_ids")
-    )
+    explicitly_handled_ids = _text_sequence(payload.get("handled_inbox_item_ids"))
     matching_inbox_ids = {
         item.id
         for item in state.inbox.values()
@@ -1154,10 +1121,7 @@ def _validate_cancel_task_dispatch_scope(
         and item.id in explicitly_handled_ids
         and item.recipient_agent_id == dispatch.agent_id
         and item.state == TeamInboxItemState.PENDING
-        and (
-            item.task_id == task_id
-            or _optional_text(item.payload.get("task_id")) == task_id
-        )
+        and (item.task_id == task_id or _optional_text(item.payload.get("task_id")) == task_id)
     }
     if matching_inbox_ids:
         _validate_dispatch_inbox_scope(
@@ -1171,10 +1135,7 @@ def _validate_cancel_task_dispatch_scope(
         blocker.id
         for blocker in state.blockers.values()
         if blocker.id in dispatch.blocker_ids
-        and (
-            blocker.task_id == task_id
-            or task_id in blocker.affected_task_ids
-        )
+        and (blocker.task_id == task_id or task_id in blocker.affected_task_ids)
     }
     if matching_blocker_ids:
         _validate_dispatch_blocker_scope(
@@ -1212,12 +1173,8 @@ def _validate_deliverable_replacement_dispatch_scope(
     replacement_id = _optional_text(payload.get("replacement_deliverable_id"))
     predecessor = state.deliverables.get(predecessor_id or "")
     replacement = state.deliverables.get(replacement_id or "")
-    predecessor_task = (
-        state.tasks.get(predecessor.task_id) if predecessor is not None else None
-    )
-    replacement_task = (
-        state.tasks.get(replacement.task_id) if replacement is not None else None
-    )
+    predecessor_task = state.tasks.get(predecessor.task_id) if predecessor is not None else None
+    replacement_task = state.tasks.get(replacement.task_id) if replacement is not None else None
     if (
         predecessor is None
         or replacement is None
@@ -1248,10 +1205,8 @@ def _validate_deliverable_replacement_dispatch_scope(
         and (
             item.task_id in task_ids
             or _optional_text(item.payload.get("deliverable_id")) in deliverable_ids
-            or _optional_text(item.payload.get("predecessor_deliverable_id"))
-            in deliverable_ids
-            or _optional_text(item.payload.get("replacement_deliverable_id"))
-            in deliverable_ids
+            or _optional_text(item.payload.get("predecessor_deliverable_id")) in deliverable_ids
+            or _optional_text(item.payload.get("replacement_deliverable_id")) in deliverable_ids
         )
     }
     if matching_inbox_ids:
@@ -1301,11 +1256,7 @@ def _validate_request_review_dispatch_scope(
     deliverable_ids = sorted(_values_for_keys(payload, {"deliverable_id"}))
     deliverable_id = deliverable_ids[0] if len(deliverable_ids) == 1 else None
     deliverable = state.deliverables.get(deliverable_id or "")
-    task = (
-        state.tasks.get(deliverable.task_id)
-        if deliverable is not None
-        else None
-    )
+    task = state.tasks.get(deliverable.task_id) if deliverable is not None else None
     if deliverable is None or task is None:
         return set()
     if _is_role_bounded_operator_chat_dispatch(dispatch):
@@ -1363,12 +1314,10 @@ def _validate_request_review_dispatch_scope(
                 and authority.task_id == task.id
                 and authority.project_id == task.project_id
             ):
-                authority_error = (
-                    _manager_fallback_review_routing_authority_error(
-                        state,
-                        dispatch_agent_id=dispatch.agent_id,
-                        authority=authority,
-                    )
+                authority_error = _manager_fallback_review_routing_authority_error(
+                    state,
+                    dispatch_agent_id=dispatch.agent_id,
+                    authority=authority,
                 )
                 if authority_error is not None:
                     raise TeamCommandValidationError(
@@ -1388,18 +1337,14 @@ def _validate_request_review_dispatch_scope(
     raise _dispatch_scope_error(
         dispatch,
         scope_kind=(
-            "task, deliverable handoff inbox item, or manager fallback "
-            "review routing authority"
+            "task, deliverable handoff inbox item, or manager fallback review routing authority"
         ),
         requested_ids=[task.id, deliverable.id],
         allowed_ids=[
             *dispatch.task_ids,
             *dispatch.inbox_item_ids,
             *[
-                (
-                    f"{authority.reviewer_agent_id}:"
-                    f"{authority.deliverable_id}"
-                )
+                (f"{authority.reviewer_agent_id}:{authority.deliverable_id}")
                 for authority in dispatch.review_routing_authorities
             ],
         ],
@@ -1419,11 +1364,7 @@ def _validate_report_blocker_dispatch_scope(
         return
     source_id = _optional_text(payload.get("source_id"))
     deliverable = state.deliverables.get(source_id or "")
-    task = (
-        state.tasks.get(deliverable.task_id)
-        if deliverable is not None
-        else None
-    )
+    task = state.tasks.get(deliverable.task_id) if deliverable is not None else None
     if deliverable is None or task is None:
         # Source validation returns the stable missing-resource error.
         return
@@ -1478,11 +1419,7 @@ def _add_blocker_report_dispatch_scope_targets(
         return
     if source_kind == TeamBlockerSourceKind.DELIVERABLE.value:
         deliverable = state.deliverables.get(source_id or "")
-        task = (
-            state.tasks.get(deliverable.task_id)
-            if deliverable is not None
-            else None
-        )
+        task = state.tasks.get(deliverable.task_id) if deliverable is not None else None
         if task is not None:
             targets["project_ids"].add(task.project_id)
         return
@@ -1591,11 +1528,7 @@ def _project_ids_from_payload_relationships(
         },
     ):
         deliverable = state.deliverables.get(deliverable_id)
-        task = (
-            state.tasks.get(deliverable.task_id)
-            if deliverable is not None
-            else None
-        )
+        task = state.tasks.get(deliverable.task_id) if deliverable is not None else None
         if task is not None:
             project_ids.add(task.project_id)
     for release_id in _values_for_keys(
@@ -1618,11 +1551,7 @@ def _project_ids_from_payload_relationships(
             continue
         if review.deliverable_id is not None:
             deliverable = state.deliverables.get(review.deliverable_id)
-            task = (
-                state.tasks.get(deliverable.task_id)
-                if deliverable is not None
-                else None
-            )
+            task = state.tasks.get(deliverable.task_id) if deliverable is not None else None
             if task is not None:
                 project_ids.add(task.project_id)
         if review.release_package_id is not None:
@@ -1648,13 +1577,9 @@ def _project_ids_from_payload_relationships(
         finding = state.human_review_findings.get(finding_id)
         if finding is None:
             continue
-        request = state.human_review_requests.get(
-            finding.source_human_review_request_id
-        )
+        request = state.human_review_requests.get(finding.source_human_review_request_id)
         release = (
-            state.release_packages.get(request.release_package_id)
-            if request is not None
-            else None
+            state.release_packages.get(request.release_package_id) if request is not None else None
         )
         if release is not None:
             project_ids.add(release.project_id)
@@ -1714,11 +1639,7 @@ def _text_sequence(value: object) -> set[str]:
         (str, bytes, bytearray),
     ):
         return set()
-    return {
-        text
-        for item in value
-        if (text := _optional_text(item)) is not None
-    }
+    return {text for item in value if (text := _optional_text(item)) is not None}
 
 
 def _validate_dispatch_task_scope(
@@ -1737,9 +1658,7 @@ def _validate_dispatch_task_scope(
             and task.project_id in dispatch.project_ids
         )
     }
-    missing = sorted(
-        task_ids - set(dispatch.task_ids) - role_bounded_chat_task_ids
-    )
+    missing = sorted(task_ids - set(dispatch.task_ids) - role_bounded_chat_task_ids)
     if missing:
         raise _dispatch_scope_error(
             dispatch,
@@ -1783,10 +1702,7 @@ def _validate_dispatch_task_scope(
         if assessment.readiness != TaskAssessmentReadiness.ACTIONABLE:
             raise TeamCommandValidationError(
                 code="dispatch_scope_stale",
-                message=(
-                    f"scoped task {task.id} is {assessment.readiness.value}, "
-                    "not actionable"
-                ),
+                message=(f"scoped task {task.id} is {assessment.readiness.value}, not actionable"),
                 correction_context={
                     "dispatch_id": dispatch.id,
                     "task_id": task.id,
@@ -1811,9 +1727,7 @@ def _validate_dispatch_blocker_scope(
             and project_ids <= set(dispatch.project_ids)
         )
     }
-    missing = sorted(
-        blocker_ids - set(dispatch.blocker_ids) - role_bounded_chat_blocker_ids
-    )
+    missing = sorted(blocker_ids - set(dispatch.blocker_ids) - role_bounded_chat_blocker_ids)
     if missing:
         raise _dispatch_scope_error(
             dispatch,
@@ -1833,8 +1747,7 @@ def _validate_dispatch_blocker_scope(
                 and blocker.delegate_agent_id == dispatch.agent_id
             )
             or (
-                blocker.route
-                in {TeamBlockerRoute.OWNED, TeamBlockerRoute.ROUTING_FAILED}
+                blocker.route in {TeamBlockerRoute.OWNED, TeamBlockerRoute.ROUTING_FAILED}
                 and blocker.owner_agent_id == dispatch.agent_id
             )
         )
@@ -1877,9 +1790,7 @@ def _validate_dispatch_review_scope(
         )
     }
     missing = sorted(
-        review_request_ids
-        - set(dispatch.review_request_ids)
-        - role_bounded_chat_review_ids
+        review_request_ids - set(dispatch.review_request_ids) - role_bounded_chat_review_ids
     )
     if missing:
         raise _dispatch_scope_error(
@@ -1897,8 +1808,7 @@ def _validate_dispatch_review_scope(
         if (
             review is None
             or review.reviewer_agent_id != dispatch.agent_id
-            or review.state
-            not in {TeamRecordState.PENDING, TeamRecordState.IN_PROGRESS}
+            or review.state not in {TeamRecordState.PENDING, TeamRecordState.IN_PROGRESS}
             or review.superseded_by_review_request_id is not None
             or review.retired_at is not None
         ):
@@ -1935,9 +1845,7 @@ def _validate_dispatch_inbox_scope(
             )
         )
     }
-    missing = sorted(
-        inbox_item_ids - set(dispatch.inbox_item_ids) - role_bounded_chat_inbox_ids
-    )
+    missing = sorted(inbox_item_ids - set(dispatch.inbox_item_ids) - role_bounded_chat_inbox_ids)
     if missing:
         raise _dispatch_scope_error(
             dispatch,
@@ -1986,23 +1894,13 @@ def _validate_manager_fallback_initial_release_scope(
     stale: list[str] = []
     for deliverable_id in sorted(requested_ids):
         deliverable = state.deliverables.get(deliverable_id)
-        disposition = (
-            deliverable.initial_release_disposition
-            if deliverable is not None
-            else None
-        )
-        if (
-            disposition is None
-            or disposition.state != InitialReleaseDispositionState.PENDING
-        ):
+        disposition = deliverable.initial_release_disposition if deliverable is not None else None
+        if disposition is None or disposition.state != InitialReleaseDispositionState.PENDING:
             stale.append(deliverable_id)
     if stale:
         raise TeamCommandValidationError(
             code="dispatch_scope_stale",
-            message=(
-                "initial release decisions are no longer pending for: "
-                + ", ".join(stale)
-            ),
+            message=("initial release decisions are no longer pending for: " + ", ".join(stale)),
             correction_context={
                 "dispatch_id": dispatch.id,
                 "deliverable_ids": stale,
@@ -2065,8 +1963,7 @@ def _dispatch_scope_error(
     return TeamCommandValidationError(
         code="dispatch_scope_forbidden",
         message=(
-            f"dispatch {dispatch.id} does not authorize {scope_kind} "
-            f"{', '.join(requested_ids)}"
+            f"dispatch {dispatch.id} does not authorize {scope_kind} {', '.join(requested_ids)}"
         ),
         correction_context={
             "dispatch_id": dispatch.id,

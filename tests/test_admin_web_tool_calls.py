@@ -863,7 +863,7 @@ def test_audit_index_trigram_search_keeps_substring_and_literal_quote_semantics(
         direct_only=True,
         created_after=None,
         created_before=None,
-        q="est-\"quoted\"-val",
+        q='est-"quoted"-val',
         limit=10,
     )
     short_query_page = index.query_tool_calls(

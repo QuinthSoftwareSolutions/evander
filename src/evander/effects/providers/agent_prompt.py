@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from collections.abc import Mapping
 import logging
+from collections.abc import Mapping
 from datetime import UTC, datetime
 from typing import Any
 from uuid import uuid4
@@ -16,21 +16,37 @@ from evander.agent_context_retry import (
     context_retry_target_chars,
 )
 from evander.config import GatewayConfig
+from evander.events.models import NODE_OUTPUTS_CONTEXT_KEY
+from evander.events.provider_models import AgentPromptEffectDefinition
 from evander.execution import (
     ExecutionBackendKind,
     ExecutionSpec,
     ExecutionStatusKind,
     build_execution_backend,
 )
-from evander.events.models import NODE_OUTPUTS_CONTEXT_KEY
-from evander.events.provider_models import AgentPromptEffectDefinition
+from evander.local_inference_capacity import (
+    LOCAL_INFERENCE_QUEUE_REASON,
+    LocalInferenceCapacityAdmission,
+    LocalInferenceCapacityLease,
+    local_inference_capacity_store,
+    local_inference_execution_is_active,
+    local_inference_vm_lease_is_active,
+    maintain_local_inference_launch,
+)
+from evander.messaging.agent_prompt_enqueue import (
+    enqueue_agent_prompt,
+    workflow_context_from_sources,
+    workflow_for_execution_ids_from_sources,
+)
 from evander.model_usage.runtime import (
     clear_model_usage_correlation_context,
     register_model_usage_correlation_context,
     resolve_runtime_dir,
 )
-from evander.triggers.queue import TriggerQueueRecord
 from evander.orchestration.effect_extensions import list_vm_summaries_for_agent_reconciliation
+from evander.session_auth import session_mcp_auth_token
+from evander.triggers.queue import TriggerQueueRecord
+from evander.worker.security import sanitize_text
 from evander.workflow.migrations import (
     AGENT_ENQUEUE_PROMPT_EFFECT_TYPE,
     AGENT_PROMPT_COMPLETED_PORT,
@@ -38,8 +54,6 @@ from evander.workflow.migrations import (
     AGENT_PROMPT_STARTED_PORT,
 )
 from evander.workflow.validation import NodeCapability
-from evander.worker.security import sanitize_text
-from evander.session_auth import session_mcp_auth_token
 
 from .agent_session import (
     container_backend,
@@ -62,8 +76,10 @@ from .base import EffectProviderBase, EffectProviderExecutionError
 from .resume_thread_metadata import (
     normalize_resume_thread_metadata_collection,
     resume_thread_id_from_metadata,
-    resume_thread_metadata_key as normalize_resume_thread_metadata_key,
     resume_thread_metadata_patch,
+)
+from .resume_thread_metadata import (
+    resume_thread_metadata_key as normalize_resume_thread_metadata_key,
 )
 
 logger = logging.getLogger(__name__)
@@ -179,6 +195,16 @@ class AgentPromptEffectProvider(EffectProviderBase):
         }
         if resolved_config:
             payload.update(dict(resolved_config))
+        workflow_context = workflow_context_from_sources(
+            execution_context=execution_context,
+            input_payload=payload,
+            context_key=NODE_OUTPUTS_CONTEXT_KEY,
+        )
+        workflow_for_execution_ids = workflow_for_execution_ids_from_sources(
+            execution_context=execution_context,
+            input_payload=payload,
+            context_key=_FOR_EXECUTION_IDS_PAYLOAD_KEY,
+        )
 
         prompt = self._require_string(payload.get("prompt"), field_name="prompt")
         target = self._resolve_target(payload)
@@ -198,6 +224,11 @@ class AgentPromptEffectProvider(EffectProviderBase):
             execution_context=execution_context,
         )
         workflow_run_id = self._workflow_run_id(execution_context)
+        queue_metadata = self._queued_prompt_metadata(
+            payload=payload,
+            workflow_run_id=workflow_run_id,
+            mcp_tool_approval_lease_id=mcp_tool_approval_lease_id,
+        )
 
         execution_backend, config = self._resolve_execution_backend(payload, target=target)
         if execution_backend == ExecutionBackendKind.CONTAINER_WORKER_VM.value:
@@ -213,6 +244,9 @@ class AgentPromptEffectProvider(EffectProviderBase):
                 workflow_run_id=workflow_run_id,
                 mcp_tool_approval_lease_id=mcp_tool_approval_lease_id,
                 execution_context=execution_context,
+                workflow_context=workflow_context,
+                workflow_for_execution_ids=workflow_for_execution_ids,
+                queue_metadata=queue_metadata,
             )
         if execution_backend != ExecutionBackendKind.LIBVIRT_VM.value:
             raise ValueError(f"Unsupported execution_backend: {execution_backend}")
@@ -223,6 +257,24 @@ class AgentPromptEffectProvider(EffectProviderBase):
             config=config,
         )
         session_id = active_session_id or self._resolve_session_id_if_available(target)
+        effective_config = (
+            effective_config_for_session(
+                context,
+                session_id,
+                fallback_directory_path=getattr(active_session, "directory_path", None),
+            )
+            if session_id
+            else config
+        )
+        agent_harness = self._agent_harness_from_session(
+            active_session,
+            config=effective_config,
+        )
+        resolved_model = (
+            model
+            or getattr(active_session, "model", None)
+            or default_agent_model_for_provider(agent_harness, effective_config)
+        )
         if context.agent_resumer is None:
             message = "effect:agent:prompt agent_resumer is not available"
             raise EffectProviderExecutionError(
@@ -244,22 +296,81 @@ class AgentPromptEffectProvider(EffectProviderBase):
             session_id=session_id,
             session=active_session,
         )
-        result = context.agent_resumer.resume_agent(
-            target=target,
-            prompt=prompt,
-            model=model,
-            vm_user=vm_user,
-            dispatch_id=dispatch_id,
-            resume_thread_id=effective_resume_thread_id,
-            persist_thread_id=resume_thread_metadata_key is None,
-            mcp_gateway_url=self._mcp_gateway_url(
-                config=config,
-                target=target,
-                workflow_run_id=workflow_run_id,
-                mcp_tool_approval_lease_id=mcp_tool_approval_lease_id,
-            ),
+        capacity_admission = LocalInferenceCapacityAdmission(enabled=False, admitted=True)
+        runtime_dir = resolve_runtime_dir(context)
+        vm_name = (
+            self._normalize_optional_string(payload.get("vm_name"))
+            or self._normalize_optional_string(getattr(active_session, "vm_id", None))
+            or target
         )
+        if runtime_dir is not None and effective_config.model_provider_mode == "local_openai":
+            capacity_store = local_inference_capacity_store(runtime_dir)
+            self._reconcile_local_inference_capacity(
+                capacity_store=capacity_store,
+                config=effective_config,
+            )
+            capacity_admission = capacity_store.claim(
+                max_concurrency=effective_config.local_openai_max_concurrency,
+                owner_id=self._current_idempotency_key(execution_context) or dispatch_id,
+                model=resolved_model,
+                session_id=session_id,
+                dispatch_id=dispatch_id,
+                effect_id=effect.id,
+                execution_backend=ExecutionBackendKind.LIBVIRT_VM.value,
+                target_name=vm_name,
+            )
+        if not capacity_admission.admitted:
+            record = enqueue_agent_prompt(
+                runtime_dir=runtime_dir,
+                target=target,
+                vm_name=vm_name,
+                session_id=session_id,
+                prompt=prompt,
+                model=resolved_model,
+                model_provider_mode=effective_config.model_provider_mode,
+                queue_reason=LOCAL_INFERENCE_QUEUE_REASON,
+                vm_user=vm_user,
+                dispatch_id=dispatch_id,
+                resume_thread_id=resume_thread_id,
+                resume_thread_metadata_key=resume_thread_metadata_key,
+                resume_thread_metadata_collection=resume_thread_metadata_collection,
+                effect_id=effect.id,
+                queue_key=f"{effect.id}:{dispatch_id}",
+                metadata=queue_metadata,
+                workflow_context=workflow_context,
+                workflow_for_execution_ids=workflow_for_execution_ids,
+                max_retries=effective_config.agent_prompt_queue_max_retries,
+            )
+            return {
+                "dispatch_id": dispatch_id,
+                "success": True,
+                "queued": True,
+                "queue_key": record.queue_key,
+                "queue_reason": LOCAL_INFERENCE_QUEUE_REASON,
+                "session_id": session_id,
+                "model": resolved_model,
+                "model_provider_mode": effective_config.model_provider_mode,
+                **capacity_admission.output_metadata(),
+            }
+        with maintain_local_inference_launch(runtime_dir, capacity_admission.slot_id):
+            result = context.agent_resumer.resume_agent(
+                target=target,
+                prompt=prompt,
+                model=resolved_model,
+                vm_user=vm_user,
+                dispatch_id=dispatch_id,
+                resume_thread_id=effective_resume_thread_id,
+                persist_thread_id=resume_thread_metadata_key is None,
+                mcp_gateway_url=self._mcp_gateway_url(
+                    config=effective_config,
+                    target=target,
+                    workflow_run_id=workflow_run_id,
+                    mcp_tool_approval_lease_id=mcp_tool_approval_lease_id,
+                ),
+            )
         if not bool(getattr(result, "success", False)):
+            if runtime_dir is not None:
+                local_inference_capacity_store(runtime_dir).release(capacity_admission.slot_id)
             result_message = (
                 self._normalize_optional_string(getattr(result, "message", None)) or "<empty>"
             )
@@ -278,8 +389,34 @@ class AgentPromptEffectProvider(EffectProviderBase):
                     vm_name=self._normalize_optional_string(payload.get("vm_name")),
                 ),
             )
+        if bool(getattr(result, "queued", False)):
+            if runtime_dir is not None:
+                local_inference_capacity_store(runtime_dir).release(capacity_admission.slot_id)
+            return {
+                "dispatch_id": getattr(result, "dispatch_id", None) or dispatch_id,
+                "success": True,
+                "queued": True,
+                "queue_key": getattr(result, "queue_key", None),
+                "queue_reason": getattr(result, "queue_reason", None),
+                "session_id": getattr(result, "session_id", None) or session_id,
+                "model": getattr(result, "model", None) or resolved_model,
+                "model_provider_mode": getattr(result, "model_provider_mode", None),
+                "local_inference_capacity_enabled": getattr(
+                    result, "local_inference_capacity_enabled", False
+                ),
+                "local_inference_active_count": getattr(result, "local_inference_active_count", 0),
+                "local_inference_max_concurrency": getattr(
+                    result, "local_inference_max_concurrency", None
+                ),
+            }
         thread_id = self._normalize_optional_string(getattr(result, "thread_id", None))
         if not thread_id:
+            if runtime_dir is not None and capacity_admission.slot_id is not None:
+                local_inference_capacity_store(runtime_dir).mark_running(
+                    capacity_admission.slot_id,
+                    target_name=vm_name,
+                    execution_id=vm_name,
+                )
             message = (
                 "effect:agent:prompt did not receive a thread_id from resume_agent "
                 "(success=True, message=<empty-or-missing-thread-id>)"
@@ -301,7 +438,6 @@ class AgentPromptEffectProvider(EffectProviderBase):
         directory_path = self._normalize_optional_string(getattr(session, "directory_path", None))
         if directory_path is None:
             directory_path = str(self._context().metadata.get("directory_path") or "root")
-        runtime_dir = resolve_runtime_dir(self._context())
         if runtime_dir is not None:
             register_model_usage_correlation_context(
                 runtime_dir=runtime_dir,
@@ -311,10 +447,16 @@ class AgentPromptEffectProvider(EffectProviderBase):
                 effect_id=effect.id,
                 execution_backend=ExecutionBackendKind.LIBVIRT_VM.value,
                 directory_path=directory_path,
-                model=model,
+                model=resolved_model,
                 trace_id=self._trace_id(execution_context),
-                agent_harness=self._agent_harness_from_session(session),
+                agent_harness=agent_harness,
             )
+            if capacity_admission.slot_id is not None:
+                local_inference_capacity_store(runtime_dir).mark_running(
+                    capacity_admission.slot_id,
+                    target_name=vm_name,
+                    execution_id=vm_name,
+                )
         self._persist_resume_thread_metadata_key(
             target=target,
             session_id=session_id,
@@ -326,7 +468,75 @@ class AgentPromptEffectProvider(EffectProviderBase):
             "dispatch_id": dispatch_id,
             "thread_id": thread_id,
             "success": bool(result.success),
+            "queued": False,
+            "session_id": getattr(result, "session_id", None) or session_id,
+            "model": getattr(result, "model", None) or resolved_model,
+            "model_provider_mode": (
+                getattr(result, "model_provider_mode", None) or effective_config.model_provider_mode
+            ),
+            "local_inference_capacity_enabled": getattr(
+                result, "local_inference_capacity_enabled", False
+            )
+            or capacity_admission.enabled,
+            "local_inference_active_count": getattr(result, "local_inference_active_count", 0)
+            or capacity_admission.active_count,
+            "local_inference_max_concurrency": getattr(
+                result, "local_inference_max_concurrency", None
+            )
+            or capacity_admission.max_concurrency,
+            "local_inference_slot_id": (
+                getattr(result, "local_inference_slot_id", None) or capacity_admission.slot_id
+            ),
         }
+
+    def _reconcile_local_inference_capacity(self, *, capacity_store: Any, config: Any) -> None:
+        context = self._context()
+        running_leases = [
+            lease for lease in capacity_store.read_all().values() if lease.status == "running"
+        ]
+        if not running_leases:
+            return
+
+        summaries: list[Any] | None = None
+        if any(
+            lease.execution_backend != ExecutionBackendKind.CONTAINER_WORKER_VM.value
+            for lease in running_leases
+        ):
+            list_vms = getattr(context.vm_inventory, "list_vms", None)
+            if callable(list_vms):
+                try:
+                    summaries = list(list_vms(include_inactive=True, vm_user="agent"))
+                except Exception:
+                    summaries = None
+
+        def is_active(lease: LocalInferenceCapacityLease) -> bool | None:
+            if lease.execution_backend != ExecutionBackendKind.CONTAINER_WORKER_VM.value:
+                if summaries is None:
+                    return None
+                return local_inference_vm_lease_is_active(lease, summaries)
+
+            session_id = str(lease.session_id or "").strip()
+            execution_id = str(lease.execution_id or "").strip()
+            if not execution_id and session_id:
+                execution_id = safe_effect_execution_id("agent", session_id)
+            if not execution_id:
+                return None
+            effective_config = (
+                effective_config_for_session(context, session_id) if session_id else config
+            )
+            backend = container_backend(context, effective_config)
+            return local_inference_execution_is_active(backend.inspect(execution_id))
+
+        capacity_store.reconcile_running(is_active)
+
+    @staticmethod
+    def _current_idempotency_key(
+        execution_context: Mapping[str, Any] | None,
+    ) -> str | None:
+        if not isinstance(execution_context, Mapping):
+            return None
+        value = str(execution_context.get("idempotency_key") or "").strip()
+        return value or None
 
     def _execute_container_prompt(
         self,
@@ -342,6 +552,9 @@ class AgentPromptEffectProvider(EffectProviderBase):
         workflow_run_id: str | None,
         mcp_tool_approval_lease_id: str | None,
         execution_context: Mapping[str, Any] | None,
+        workflow_context: dict[str, dict[str, Any]] | None,
+        workflow_for_execution_ids: dict[str, str] | None,
+        queue_metadata: dict[str, str],
     ) -> dict[str, Any]:
         context = self._context()
         session_id, session = require_container_session_id(
@@ -369,6 +582,57 @@ class AgentPromptEffectProvider(EffectProviderBase):
             session_id=session_id,
             session=session,
         )
+        capacity_admission = LocalInferenceCapacityAdmission(enabled=False, admitted=True)
+        runtime_dir = resolve_runtime_dir(context)
+        if runtime_dir is not None and effective_config.model_provider_mode == "local_openai":
+            capacity_store = local_inference_capacity_store(runtime_dir)
+            self._reconcile_local_inference_capacity(
+                capacity_store=capacity_store,
+                config=effective_config,
+            )
+            capacity_admission = capacity_store.claim(
+                max_concurrency=effective_config.local_openai_max_concurrency,
+                owner_id=self._current_idempotency_key(execution_context) or dispatch_id,
+                model=resolved_model,
+                session_id=session_id,
+                dispatch_id=dispatch_id,
+                effect_id=self._effect().id,
+                execution_backend=ExecutionBackendKind.CONTAINER_WORKER_VM.value,
+                target_name=safe_effect_execution_id("agent", session_id),
+            )
+        if not capacity_admission.admitted:
+            record = enqueue_agent_prompt(
+                runtime_dir=runtime_dir,
+                target=self._normalize_optional_string(payload.get("target")) or session_id,
+                vm_name=session_id,
+                session_id=session_id,
+                prompt=prompt,
+                model=resolved_model,
+                model_provider_mode=effective_config.model_provider_mode,
+                queue_reason=LOCAL_INFERENCE_QUEUE_REASON,
+                vm_user="agent",
+                dispatch_id=dispatch_id,
+                resume_thread_id=resume_thread_id,
+                resume_thread_metadata_key=resume_thread_metadata_key,
+                resume_thread_metadata_collection=resume_thread_metadata_collection,
+                effect_id=self._effect().id,
+                queue_key=f"{self._effect().id}:{dispatch_id}",
+                metadata=queue_metadata,
+                workflow_context=workflow_context,
+                workflow_for_execution_ids=workflow_for_execution_ids,
+                max_retries=effective_config.agent_prompt_queue_max_retries,
+            )
+            return {
+                "dispatch_id": dispatch_id,
+                "success": True,
+                "queued": True,
+                "queue_key": record.queue_key,
+                "queue_reason": LOCAL_INFERENCE_QUEUE_REASON,
+                "session_id": session_id,
+                "model": resolved_model,
+                "model_provider_mode": effective_config.model_provider_mode,
+                **capacity_admission.output_metadata(),
+            }
         backend = container_backend(context, effective_config)
         execution_id = safe_effect_execution_id("agent", session_id)
         mcp_gateway_url = gateway_url_with_session_context(
@@ -399,34 +663,39 @@ class AgentPromptEffectProvider(EffectProviderBase):
             web_search_enabled=bool(getattr(session, "web_search_enabled", False)),
         )
         try:
-            handle = backend.start(
-                backend.prepare(
-                    ExecutionSpec(
-                        backend=ExecutionBackendKind.CONTAINER_WORKER_VM,
-                        target_name=execution_id,
-                        session_id=session_id,
-                        directory_path=session.directory_path if session is not None else "root",
-                        image=container_worker_image_for_session(session, effective_config),
-                        resource_limits=container_worker_resource_limits_for_session(session),
-                        command=command,
-                        codex_turn=codex_turn,
-                        metadata={
-                            "effect_type": self.node_type(),
-                            "dispatch_id": dispatch_id,
-                            "resume_thread_id": effective_resume_thread_id,
-                            "agent_provider": agent_harness,
-                            "model": resolved_model,
-                            "model_provider_mode": effective_config.model_provider_mode,
-                            **(
-                                {"codex_auth_mode": codex_turn.auth_mode.value}
-                                if codex_turn is not None
-                                else {}
+            with maintain_local_inference_launch(runtime_dir, capacity_admission.slot_id):
+                handle = backend.start(
+                    backend.prepare(
+                        ExecutionSpec(
+                            backend=ExecutionBackendKind.CONTAINER_WORKER_VM,
+                            target_name=execution_id,
+                            session_id=session_id,
+                            directory_path=(
+                                session.directory_path if session is not None else "root"
                             ),
-                        },
+                            image=container_worker_image_for_session(session, effective_config),
+                            resource_limits=container_worker_resource_limits_for_session(session),
+                            command=command,
+                            codex_turn=codex_turn,
+                            metadata={
+                                "effect_type": self.node_type(),
+                                "dispatch_id": dispatch_id,
+                                "resume_thread_id": effective_resume_thread_id,
+                                "agent_provider": agent_harness,
+                                "model": resolved_model,
+                                "model_provider_mode": effective_config.model_provider_mode,
+                                **(
+                                    {"codex_auth_mode": codex_turn.auth_mode.value}
+                                    if codex_turn is not None
+                                    else {}
+                                ),
+                            },
+                        )
                     )
                 )
-            )
         except Exception as exc:
+            if runtime_dir is not None:
+                local_inference_capacity_store(runtime_dir).release(capacity_admission.slot_id)
             detail = self._normalize_optional_string(exc) or type(exc).__name__
             message = (
                 "effect:agent:prompt container dispatch failed "
@@ -443,7 +712,6 @@ class AgentPromptEffectProvider(EffectProviderBase):
                     execution_backend=ExecutionBackendKind.CONTAINER_WORKER_VM.value,
                 ),
             ) from exc
-        runtime_dir = resolve_runtime_dir(context)
         if runtime_dir is not None:
             register_model_usage_correlation_context(
                 runtime_dir=runtime_dir,
@@ -457,6 +725,12 @@ class AgentPromptEffectProvider(EffectProviderBase):
                 trace_id=self._trace_id(execution_context),
                 agent_harness=agent_harness,
             )
+            if capacity_admission.slot_id is not None:
+                local_inference_capacity_store(runtime_dir).mark_running(
+                    capacity_admission.slot_id,
+                    target_name=str(getattr(handle, "target_name", None) or handle.execution_id),
+                    execution_id=handle.execution_id,
+                )
         return {
             "dispatch_id": dispatch_id,
             "thread_id": effective_resume_thread_id or dispatch_id,
@@ -464,6 +738,10 @@ class AgentPromptEffectProvider(EffectProviderBase):
             "execution_backend": ExecutionBackendKind.CONTAINER_WORKER_VM.value,
             "execution_id": handle.execution_id,
             "session_id": session_id,
+            "queued": False,
+            "model": resolved_model,
+            "model_provider_mode": effective_config.model_provider_mode,
+            **capacity_admission.output_metadata(),
         }
 
     @classmethod
@@ -472,7 +750,7 @@ class AgentPromptEffectProvider(EffectProviderBase):
         outputs = kwargs.get("outputs")
         if record is None or not isinstance(outputs, Mapping):
             return False
-        if outputs.get("success") is False:
+        if outputs.get("success") is False or outputs.get("queued") is True:
             return False
         return bool(str(outputs.get("dispatch_id") or "").strip())
 
@@ -791,6 +1069,11 @@ class AgentPromptEffectProvider(EffectProviderBase):
         worker.execution_store.put(record)
         worker._update_event_delivery_state(record.event_id)
         cls._release_enqueue_prompt_lock(
+            worker=worker,
+            record=record,
+            outputs=record.outputs,
+        )
+        cls._release_local_inference_capacity(
             worker=worker,
             record=record,
             outputs=record.outputs,
@@ -1127,6 +1410,11 @@ class AgentPromptEffectProvider(EffectProviderBase):
             record=record,
             outputs=merged_outputs,
         )
+        cls._release_local_inference_capacity(
+            worker=worker,
+            record=record,
+            outputs=merged_outputs,
+        )
         wake_dispatch_id = str(queue_record.payload.get("wake_dispatch_id") or "").strip()
         if wake_dispatch_id:
             wake_store = getattr(getattr(worker, "runtime", None), "wake_store", None)
@@ -1202,6 +1490,33 @@ class AgentPromptEffectProvider(EffectProviderBase):
                 "Failed to release enqueue prompt lock lock_key=%s owner_id=%s",
                 lock_key,
                 owner_id,
+                exc_info=True,
+            )
+
+    @classmethod
+    def _release_local_inference_capacity(
+        cls,
+        *,
+        worker: Any,
+        record: Any,
+        outputs: Mapping[str, Any] | None = None,
+    ) -> None:
+        slot_id = cls._record_text_value_from_sources(
+            record=record,
+            outputs=outputs,
+            key="local_inference_slot_id",
+        )
+        if not slot_id:
+            return
+        runtime_dir = resolve_runtime_dir(worker)
+        if runtime_dir is None:
+            return
+        try:
+            local_inference_capacity_store(runtime_dir).release(slot_id)
+        except Exception:
+            logger.warning(
+                "Failed to release local inference capacity slot slot_id=%s",
+                slot_id,
                 exc_info=True,
             )
 
@@ -1585,6 +1900,7 @@ class AgentPromptEffectProvider(EffectProviderBase):
             summary=summary,
             session_id=session_id,
             directory_path=(getattr(summary, "directory_paths", None) or [None])[0],
+            wake_dispatch_id=str(record.outputs.get("wake_dispatch_id") or "").strip() or None,
         )
         return TriggerQueueRecord(
             event_id=completion_event.event_id,
@@ -1756,6 +2072,36 @@ class AgentPromptEffectProvider(EffectProviderBase):
                 if text:
                     return text
         return None
+
+    @classmethod
+    def _queued_prompt_metadata(
+        cls,
+        *,
+        payload: Mapping[str, Any],
+        workflow_run_id: str | None,
+        mcp_tool_approval_lease_id: str | None,
+    ) -> dict[str, str]:
+        metadata = {
+            key: value
+            for key, value in {
+                "workflow_run_id": cls._normalize_optional_string(workflow_run_id),
+                "mcp_tool_approval_lease_id": cls._normalize_optional_string(
+                    mcp_tool_approval_lease_id
+                ),
+            }.items()
+            if value
+        }
+        for key in (
+            "reduced_context_prompt",
+            "context_retry_prompt",
+            "agent_context_retry_enabled",
+            "agent_context_retry_max_attempts",
+            "agent_context_retry_target_chars",
+        ):
+            value = cls._normalize_optional_string(payload.get(key))
+            if value is not None:
+                metadata[key] = value
+        return metadata
 
     def _workflow_run_id(self, execution_context: Mapping[str, Any] | None) -> str | None:
         if not isinstance(execution_context, Mapping):

@@ -31,13 +31,17 @@ from ..models import (
     GovernanceRuntime,
     PersistentAgent,
     TaskAssessmentReadiness,
+    TeamBlockerSourceKind,
     TeamBlockerRoute,
     TeamBlocker,
     TeamBlockerState,
     TeamDispatch,
     TeamDispatchActivityStatus,
     TeamDispatchActivity,
+    TeamDispatchMcpCapabilityReceipt,
+    TeamDispatchMcpCapabilityStatus,
     TeamDispatchStatus,
+    TEAM_DISPATCH_PREPARATION_TIMEOUT_SECONDS,
     TeamInboxPriority,
     TeamInboxItemState,
     TeamRecordState,
@@ -71,6 +75,7 @@ from .domain.blockers import (
     blockers_assigned_to_agent,
     blockers_due_for_agent,
     complete_blocker_dispatches,
+    open_agent_mcp_capability_blocker,
     open_or_update_agent_execution_stall,
     reconcile_unavailable_blocker_assignments,
 )
@@ -155,6 +160,8 @@ from .commands.outbox import _team_event_outbox_records
 
 GIT_WORK_CONTEXT_RETENTION_DAYS = 30
 MAX_AGENT_DISPATCH_LEASE_RENEWAL_SECONDS = 900
+REVIEW_DECISION_MCP_TOOL_NAME = "team_decide_review"
+MAX_REVIEW_MCP_CAPABILITY_ATTEMPTS = 2
 logger = logging.getLogger(__name__)
 
 
@@ -485,6 +492,7 @@ class TeamRuntimeService:
         blocked_teams = set(blocked_team_ids or set())
         leases: list[dict[str, Any]] = []
         blocker_routing_events: list[dict[str, Any]] = []
+        idle_rotation_result: dict[str, Any] = {"events": []}
         if normalized_limit == 0:
             return self._repository.read(), leases
 
@@ -516,6 +524,25 @@ class TeamRuntimeService:
             for agent in sorted(state_model.agents.values(), key=lambda item: item.id):
                 runtime = state_model.agent_runtimes.get(agent.id)
                 if runtime is not None:
+                    preparing_dispatch = state_model.dispatches.get(
+                        _optional_text(runtime.active_dispatch_id) or ""
+                    )
+                    if (
+                        preparing_dispatch is not None
+                        and preparing_dispatch.cause_kind != "team_chat"
+                        and preparing_dispatch.status == TeamDispatchStatus.PREPARING
+                        and preparing_dispatch.preparation_expires_at is not None
+                        and _ensure_utc(preparing_dispatch.preparation_expires_at) <= effective_now
+                    ):
+                        _fail_dispatch_preparation_in_state(
+                            state_model,
+                            dispatch_id=preparing_dispatch.id,
+                            error=(
+                                "dispatch preparation reservation expired before durable "
+                                "prompt delivery"
+                            ),
+                            completed_at=effective_now,
+                        )
                     _clear_completed_chat_dispatch_lease(
                         state_model,
                         runtime,
@@ -575,6 +602,14 @@ class TeamRuntimeService:
                             runtime.context_handoff_preparation_status = "timed_out"
                             runtime.next_wake_at = effective_now
                         runtime.updated_at = effective_now
+                if normalized_agent_id is None or agent.id == normalized_agent_id:
+                    _maybe_mark_idle_context_rotation_due(
+                        state_model,
+                        agent_id=agent.id,
+                        now=effective_now,
+                        result=idle_rotation_result,
+                    )
+                runtime = state_model.agent_runtimes.get(agent.id)
                 if agent.status != AgentStatus.ACTIVE or agent.team_id is None:
                     continue
                 if normalized_team_id is not None and agent.team_id != normalized_team_id:
@@ -583,12 +618,15 @@ class TeamRuntimeService:
                     continue
                 if _active_stand_downs_for_agent(state_model, agent.id):
                     continue
-                if (
-                    runtime is not None
-                    and runtime.wake_leased_until is not None
-                    and _ensure_utc(runtime.wake_leased_until) > effective_now
+                if runtime is not None and (
+                    _runtime_has_active_dispatch_reservation(state_model, runtime)
+                    or (
+                        runtime.wake_leased_until is not None
+                        and _ensure_utc(runtime.wake_leased_until) > effective_now
+                    )
                 ):
                     teams_with_lease.add(agent.team_id)
+            blocker_routing_events.extend(idle_rotation_result.get("events") or [])
             for agent in sorted(state_model.agents.values(), key=lambda item: item.id):
                 if normalized_limit and len(leases) >= normalized_limit:
                     break
@@ -617,7 +655,7 @@ class TeamRuntimeService:
                     runtime,
                     now=effective_now,
                 )
-                if (
+                if _runtime_has_active_dispatch_reservation(state_model, runtime) or (
                     runtime.wake_leased_until is not None
                     and _ensure_utc(runtime.wake_leased_until) > effective_now
                 ):
@@ -631,6 +669,20 @@ class TeamRuntimeService:
                 pending_reviews = actionable_dispatch_reviews(
                     _pending_reviews_for_agent(state_model, agent.id)
                 )
+                blocked_review_ids = _mcp_capability_blocked_review_ids(
+                    state_model,
+                    agent_id=agent.id,
+                )
+                if blocked_review_ids:
+                    pending_inbox = [
+                        item
+                        for item in pending_inbox
+                        if not _inbox_references_review_ids(item, blocked_review_ids)
+                    ]
+                    wake_inbox = _wakeable_inbox_items(pending_inbox)
+                    pending_reviews = [
+                        review for review in pending_reviews if review.id not in blocked_review_ids
+                    ]
                 due_blockers = blockers_due_for_agent(
                     state_model,
                     agent_id=agent.id,
@@ -856,6 +908,37 @@ class TeamRuntimeService:
                     cause_id=cause_id,
                     status=TeamDispatchStatus.PREPARING,
                     created_at=effective_now,
+                    preparation_expires_at=(
+                        effective_now + timedelta(seconds=TEAM_DISPATCH_PREPARATION_TIMEOUT_SECONDS)
+                        if defer_activation
+                        else None
+                    ),
+                    requested_lease_seconds=(
+                        120 if reason == "context_handoff" else max(1, int(lease_seconds))
+                    ),
+                    action_feedback_dispatch_ids=(
+                        [
+                            feedback_dispatch_id
+                            for feedback in action_feedback
+                            if (
+                                feedback_dispatch_id := _optional_text(
+                                    feedback.get("dispatch_id")
+                                    if isinstance(feedback, Mapping)
+                                    else None
+                                )
+                            )
+                            is not None
+                        ]
+                        if reason == "action_feedback"
+                        else []
+                    ),
+                    mcp_capability_receipt=_new_review_mcp_capability_receipt(
+                        state_model,
+                        agent_id=agent.id,
+                        review_request_ids=(
+                            dispatch_scope.review_request_ids if dispatch_scope is not None else ()
+                        ),
+                    ),
                     **(dispatch_scope.model_fields() if dispatch_scope is not None else {}),
                 )
                 state_model.dispatches[dispatch_id] = durable_dispatch
@@ -876,7 +959,9 @@ class TeamRuntimeService:
                 runtime.active_dispatch_id = dispatch_id
                 runtime.wake_reason = reason
                 runtime.last_wake_at = effective_now
-                runtime.wake_leased_until = effective_now + timedelta(seconds=lease_seconds)
+                runtime.wake_leased_until = (
+                    None if defer_activation else effective_now + timedelta(seconds=lease_seconds)
+                )
                 runtime.next_wake_at = effective_now + timedelta(seconds=wake_interval_seconds)
                 runtime.updated_at = effective_now
                 if reservation_scope is not None:
@@ -893,6 +978,7 @@ class TeamRuntimeService:
                 ]
                 agent_payload = _agent_payload(state_model, agent)
                 role_description_fingerprint = agent_role_description_fingerprint(agent_payload)
+                durable_dispatch.role_description_fingerprint = role_description_fingerprint
                 leases.append(
                     {
                         "agent": agent_payload,
@@ -1025,6 +1111,24 @@ class TeamRuntimeService:
                 manager_reviews = actionable_dispatch_reviews(
                     _pending_reviews_for_agent(state_model, manager.id)
                 )
+                manager_blocked_review_ids = _mcp_capability_blocked_review_ids(
+                    state_model,
+                    agent_id=manager.id,
+                )
+                if manager_blocked_review_ids:
+                    manager_inbox = [
+                        item
+                        for item in manager_inbox
+                        if not _inbox_references_review_ids(
+                            item,
+                            manager_blocked_review_ids,
+                        )
+                    ]
+                    manager_reviews = [
+                        review
+                        for review in manager_reviews
+                        if review.id not in manager_blocked_review_ids
+                    ]
                 manager_blockers = blockers_due_for_agent(
                     state_model,
                     agent_id=manager.id,
@@ -1035,6 +1139,7 @@ class TeamRuntimeService:
                     team=team,
                     manager=manager,
                     now=effective_now,
+                    excluded_review_request_ids=manager_blocked_review_ids,
                 )
                 if not _manager_fallback_summary_has_actionable_work(manager_fallback_summary):
                     continue
@@ -1042,10 +1147,8 @@ class TeamRuntimeService:
                     state_model,
                     summary=manager_fallback_summary,
                 )
-                initial_release_decision_ids = (
-                    _manager_fallback_initial_release_decision_ids(
-                        manager_fallback_summary
-                    )
+                initial_release_decision_ids = _manager_fallback_initial_release_decision_ids(
+                    manager_fallback_summary
                 )
                 manager_reservation_scope = build_agent_dispatch_scope(
                     state_model,
@@ -1069,8 +1172,7 @@ class TeamRuntimeService:
                 initial_release_project_ids = {
                     task.project_id
                     for deliverable_id in initial_release_decision_ids
-                    if (deliverable := state_model.deliverables.get(deliverable_id))
-                    is not None
+                    if (deliverable := state_model.deliverables.get(deliverable_id)) is not None
                     if (task := state_model.tasks.get(deliverable.task_id)) is not None
                 }
                 scoped_project_ids = sorted(
@@ -1095,22 +1197,33 @@ class TeamRuntimeService:
                     cause_kind="manager_fallback",
                     status=TeamDispatchStatus.PREPARING,
                     review_routing_authorities=manager_fallback_routing_authorities,
-                    initial_release_decision_deliverable_ids=(
-                        initial_release_decision_ids
-                    ),
+                    initial_release_decision_deliverable_ids=(initial_release_decision_ids),
                     project_ids=scoped_project_ids,
                     managed_repo_ids=scoped_managed_repo_ids,
                     created_at=effective_now,
+                    preparation_expires_at=(
+                        effective_now + timedelta(seconds=TEAM_DISPATCH_PREPARATION_TIMEOUT_SECONDS)
+                        if defer_activation
+                        else None
+                    ),
+                    requested_lease_seconds=max(1, int(lease_seconds)),
                     task_ids=list(manager_scope.task_ids),
                     blocker_ids=list(manager_scope.blocker_ids),
                     review_request_ids=list(manager_scope.review_request_ids),
                     inbox_item_ids=list(manager_scope.inbox_item_ids),
+                    mcp_capability_receipt=_new_review_mcp_capability_receipt(
+                        state_model,
+                        agent_id=manager.id,
+                        review_request_ids=manager_scope.review_request_ids,
+                    ),
                 )
                 state_model.dispatches[dispatch_id] = durable_dispatch
                 manager_runtime.active_dispatch_id = dispatch_id
                 manager_runtime.wake_reason = "manager_fallback"
                 manager_runtime.last_wake_at = effective_now
-                manager_runtime.wake_leased_until = effective_now + timedelta(seconds=lease_seconds)
+                manager_runtime.wake_leased_until = (
+                    None if defer_activation else effective_now + timedelta(seconds=lease_seconds)
+                )
                 manager_runtime.next_wake_at = effective_now + timedelta(
                     seconds=wake_interval_seconds
                 )
@@ -1141,9 +1254,8 @@ class TeamRuntimeService:
                     for blocker_id in durable_dispatch.blocker_ids
                 ]
                 manager_payload = _agent_payload(state_model, manager)
-                role_description_fingerprint = agent_role_description_fingerprint(
-                    manager_payload
-                )
+                role_description_fingerprint = agent_role_description_fingerprint(manager_payload)
+                durable_dispatch.role_description_fingerprint = role_description_fingerprint
                 teams_with_lease.add(team.id)
                 leases.append(
                     {
@@ -1233,6 +1345,232 @@ class TeamRuntimeService:
                 lease["dispatch"] = state.dispatches[lease["dispatch_id"]].model_dump(mode="json")
         return state, leases
 
+    def mark_agent_dispatch_queued(
+        self,
+        *,
+        agent_id: str,
+        dispatch_id: str,
+        now: datetime | None = None,
+    ) -> TeamState:
+        """Record that a PREPARING reservation is backed by a durable prompt."""
+
+        normalized_agent_id = _required_text(agent_id, "agent_id")
+        normalized_dispatch_id = _required_text(dispatch_id, "dispatch_id")
+        effective_now = _ensure_utc(now or utc_now())
+
+        def _mutate(state: TeamState) -> TeamState:
+            dispatch = _require_present(state.dispatches, normalized_dispatch_id, "dispatch")
+            if dispatch.agent_id != normalized_agent_id:
+                raise ValueError(
+                    f"dispatch {dispatch.id} belongs to agent {dispatch.agent_id}, "
+                    f"not {normalized_agent_id}"
+                )
+            if dispatch.status != TeamDispatchStatus.PREPARING:
+                if dispatch.status == TeamDispatchStatus.LEASED:
+                    return state
+                raise ValueError(
+                    f"dispatch {dispatch.id} is {dispatch.status.value}, not preparing"
+                )
+            runtime = _require_present(
+                state.agent_runtimes,
+                normalized_agent_id,
+                "agent runtime",
+            )
+            if runtime.active_dispatch_id != normalized_dispatch_id:
+                raise ValueError(
+                    f"dispatch {dispatch.id} no longer owns the runtime reservation "
+                    f"for agent {normalized_agent_id}"
+                )
+            dispatch.queued_at = dispatch.queued_at or effective_now
+            dispatch.preparation_expires_at = effective_now + timedelta(
+                seconds=TEAM_DISPATCH_PREPARATION_TIMEOUT_SECONDS
+            )
+            runtime.updated_at = effective_now
+            return state
+
+        return self._repository.update(_mutate)
+
+    def activate_delivered_agent_dispatch(
+        self,
+        *,
+        dispatch_id: str,
+        thread_id: str | None = None,
+        now: datetime | None = None,
+    ) -> tuple[TeamState, dict[str, Any]]:
+        """Atomically lease one delivered prompt and apply its durable bookkeeping.
+
+        Reconciliation may call this again after a process restart. A dispatch
+        that was leased by an older worker but lacks ``activation_completed_at``
+        is repaired in the same transaction; a fully activated dispatch is a
+        no-op.
+        """
+
+        # Keep the Chat authorization dependency local to delivered Chat
+        # activation; ordinary Team runtime paths do not otherwise need it.
+        from .chat_service import team_chat_mutation_allowed
+
+        normalized_dispatch_id = _required_text(dispatch_id, "dispatch_id")
+        normalized_thread_id = _optional_text(thread_id)
+        effective_now = _ensure_utc(now or utc_now())
+        preparation_error: list[str] = []
+        activation: dict[str, Any] = {
+            "delivered_action_feedback_dispatch_ids": [],
+            "context_rotation": None,
+            "context_handoff_preparation": None,
+        }
+
+        def _mutate(state: TeamState) -> TeamState:
+            dispatch = _require_present(state.dispatches, normalized_dispatch_id, "dispatch")
+            agent = _require_present(state.agents, dispatch.agent_id, "agent")
+            runtime = _require_present(state.agent_runtimes, dispatch.agent_id, "agent runtime")
+            context_handoff_preparation = dispatch.cause_kind == "context_handoff"
+            activation["delivered_action_feedback_dispatch_ids"] = list(
+                dispatch.action_feedback_dispatch_ids
+            )
+            if context_handoff_preparation:
+                activation["context_handoff_preparation"] = {
+                    "status": "started",
+                    "timeout_seconds": dispatch.requested_lease_seconds,
+                }
+
+            if dispatch.status == TeamDispatchStatus.PREPARING:
+                if runtime.active_dispatch_id != dispatch.id:
+                    error = (
+                        f"dispatch {dispatch.id} no longer owns the runtime reservation "
+                        f"for agent {dispatch.agent_id}"
+                    )
+                    preparation_error.append(error)
+                    _fail_dispatch_preparation_in_state(
+                        state,
+                        dispatch_id=dispatch.id,
+                        error=error,
+                        completed_at=effective_now,
+                    )
+                    return state
+                if dispatch.cause_kind != "team_chat":
+                    stale_errors = _dispatch_staleness_errors(state, dispatch=dispatch)
+                    if stale_errors:
+                        error = "dispatch scope became stale during preparation: " + "; ".join(
+                            stale_errors
+                        )
+                        preparation_error.append(error)
+                        _fail_dispatch_preparation_in_state(
+                            state,
+                            dispatch_id=dispatch.id,
+                            error=error,
+                            completed_at=effective_now,
+                        )
+                        return state
+                lease_expires_at = effective_now + timedelta(
+                    seconds=max(1, int(dispatch.requested_lease_seconds))
+                )
+                dispatch.status = TeamDispatchStatus.LEASED
+                dispatch.preparation_expires_at = None
+                dispatch.prepared_at = effective_now
+                dispatch.leased_at = effective_now
+                dispatch.lease_expires_at = lease_expires_at
+                dispatch.completed_at = None
+                dispatch.error = None
+                runtime.wake_leased_until = lease_expires_at
+            elif dispatch.status != TeamDispatchStatus.LEASED:
+                raise ValueError(f"dispatch {dispatch.id} is {dispatch.status.value}, not active")
+            elif runtime.active_dispatch_id != dispatch.id:
+                raise ValueError(
+                    f"dispatch {dispatch.id} no longer owns the runtime lease "
+                    f"for agent {dispatch.agent_id}"
+                )
+
+            if dispatch.activation_completed_at is not None:
+                return state
+
+            rotation_allowed = not context_handoff_preparation
+            if dispatch.cause_kind == "team_chat":
+                source_message = state.conversation_messages.get(dispatch.cause_id or "")
+                if source_message is None:
+                    source_message = next(
+                        (
+                            state.conversation_messages[message_id]
+                            for message_id in dispatch.chat_message_ids
+                            if message_id in state.conversation_messages
+                        ),
+                        None,
+                    )
+                mutation_allowed = bool(
+                    source_message is not None
+                    and team_chat_mutation_allowed(source_message, dispatch)
+                )
+                rotation_allowed = mutation_allowed
+                for message_id in dispatch.chat_message_ids:
+                    message = state.conversation_messages.get(message_id)
+                    if message is None:
+                        continue
+                    if message.status == "dispatching":
+                        message.status = "running"
+                    if mutation_allowed:
+                        message.metadata["ordinary_context_seeded"] = True
+                    message.updated_at = effective_now
+                if mutation_allowed:
+                    role_fingerprint = dispatch.role_description_fingerprint or (
+                        agent_role_description_fingerprint(_agent_payload(state, agent))
+                    )
+                    runtime.last_delivered_role_description_fingerprint = role_fingerprint
+            else:
+                if not context_handoff_preparation:
+                    role_fingerprint = dispatch.role_description_fingerprint or (
+                        agent_role_description_fingerprint(_agent_payload(state, agent))
+                    )
+                    runtime.last_delivered_role_description_fingerprint = role_fingerprint
+                for source_dispatch_id in dispatch.action_feedback_dispatch_ids:
+                    for record in state.action_records.values():
+                        if (
+                            record.agent_id == dispatch.agent_id
+                            and record.dispatch_id == source_dispatch_id
+                            and not record.success
+                            and record.feedback_delivered_at is None
+                        ):
+                            record.feedback_delivered_at = effective_now
+                            record.feedback_delivered_by_dispatch_id = dispatch.id
+
+            if runtime.context_rotation_pending and rotation_allowed:
+                context_rotation_reason = runtime.context_rotation_reason
+                runtime.context_rotation_pending = False
+                runtime.last_context_rotated_at = effective_now
+                if normalized_thread_id is not None:
+                    runtime.last_thread_id = normalized_thread_id
+                activation["context_rotation"] = {
+                    "rotated": True,
+                    "reason": context_rotation_reason,
+                }
+
+            dispatch.activation_completed_at = effective_now
+            runtime.updated_at = effective_now
+            return state
+
+        state = self._repository.update(_mutate)
+        if preparation_error:
+            raise RuntimeError(preparation_error[0])
+        return state, activation
+
+    def mark_agent_dispatch_session_metadata_mirrored(
+        self,
+        *,
+        dispatch_id: str,
+        now: datetime | None = None,
+    ) -> TeamState:
+        """Acknowledge an idempotent external session-metadata mirror."""
+
+        normalized_dispatch_id = _required_text(dispatch_id, "dispatch_id")
+        effective_now = _ensure_utc(now or utc_now())
+
+        def _mutate(state: TeamState) -> TeamState:
+            dispatch = _require_present(state.dispatches, normalized_dispatch_id, "dispatch")
+            if dispatch.activation_completed_at is None:
+                raise ValueError(f"dispatch {dispatch.id} activation bookkeeping is not complete")
+            dispatch.session_metadata_mirrored_at = effective_now
+            return state
+
+        return self._repository.update(_mutate)
+
     def mark_agent_dispatch_leased(
         self,
         *,
@@ -1294,6 +1632,7 @@ class TeamRuntimeService:
                 )
                 return state
             dispatch.status = TeamDispatchStatus.LEASED
+            dispatch.preparation_expires_at = None
             dispatch.prepared_at = effective_now
             dispatch.leased_at = effective_now
             dispatch.lease_expires_at = effective_now + timedelta(seconds=normalized_lease_seconds)
@@ -1307,6 +1646,63 @@ class TeamRuntimeService:
         if preparation_error:
             raise RuntimeError(preparation_error[0])
         return state
+
+    def confirm_agent_dispatch_mcp_capability_grant(
+        self,
+        *,
+        agent_id: str,
+        dispatch_id: str,
+        granted_tool_names: list[str] | tuple[str, ...],
+        now: datetime | None = None,
+    ) -> TeamState:
+        """Open the evidence window only after the policy grant is confirmed."""
+
+        normalized_agent_id = _required_text(agent_id, "agent_id")
+        normalized_dispatch_id = _required_text(dispatch_id, "dispatch_id")
+        normalized_granted_tools = {
+            _required_text(tool_name, "granted_tool_names") for tool_name in granted_tool_names
+        }
+        effective_now = _ensure_utc(now or utc_now())
+
+        def _mutate(state: TeamState) -> TeamState:
+            dispatch = _require_present(
+                state.dispatches,
+                normalized_dispatch_id,
+                "dispatch",
+            )
+            if dispatch.agent_id != normalized_agent_id:
+                raise ValueError(
+                    f"dispatch {dispatch.id} belongs to agent {dispatch.agent_id}, "
+                    f"not {normalized_agent_id}"
+                )
+            if dispatch.status not in {
+                TeamDispatchStatus.PREPARING,
+                TeamDispatchStatus.LEASED,
+            }:
+                raise ValueError(f"dispatch {dispatch.id} is {dispatch.status.value}, not active")
+            runtime = _require_present(
+                state.agent_runtimes,
+                normalized_agent_id,
+                "agent runtime",
+            )
+            if runtime.active_dispatch_id != normalized_dispatch_id:
+                raise ValueError(
+                    f"dispatch {dispatch.id} no longer owns the runtime reservation "
+                    f"for agent {normalized_agent_id}"
+                )
+            receipt = dispatch.mcp_capability_receipt
+            if receipt is None:
+                return state
+            missing_tools = sorted(set(receipt.required_tool_names) - normalized_granted_tools)
+            if missing_tools:
+                raise ValueError(
+                    "confirmed MCP policy grant omitted required tool(s): "
+                    + ", ".join(missing_tools)
+                )
+            receipt.grant_confirmed_at = effective_now
+            return state
+
+        return self._repository.update(_mutate)
 
     def record_agent_role_description_delivered(
         self,
@@ -1449,6 +1845,136 @@ class TeamRuntimeService:
 
         return self._repository.update(_mutate)
 
+    def record_agent_mcp_capability_preparation_failure(
+        self,
+        *,
+        session_id: str,
+        dispatch_id: str,
+        agent_id: str | None = None,
+        diagnostic: str,
+        expected_revision: int | None = None,
+        now: datetime | None = None,
+    ) -> tuple[TeamState, dict[str, Any]]:
+        """Fail a pre-execution capability check without completing dispatch scope."""
+
+        normalized_session_id = _required_text(session_id, "session_id")
+        normalized_dispatch_id = _required_text(dispatch_id, "dispatch_id")
+        normalized_agent_id = _optional_text(agent_id)
+        normalized_diagnostic = _required_text(diagnostic, "diagnostic")
+        effective_now = _ensure_utc(now or utc_now())
+        result: dict[str, Any] = {}
+
+        def _mutate(
+            state: TeamState,
+            tx: TeamStateSqliteCommandTransaction,
+        ) -> TeamState:
+            agent = _agent_for_session(state, session_id=normalized_session_id)
+            if normalized_agent_id is not None and agent.id != normalized_agent_id:
+                raise ValueError(
+                    f"session {normalized_session_id} belongs to agent {agent.id}, "
+                    f"not {normalized_agent_id}"
+                )
+            dispatch = _require_present(
+                state.dispatches,
+                normalized_dispatch_id,
+                "dispatch",
+            )
+            if dispatch.agent_id != agent.id:
+                raise ValueError(
+                    f"dispatch {dispatch.id} belongs to agent {dispatch.agent_id}, not {agent.id}"
+                )
+            if dispatch.status not in {
+                TeamDispatchStatus.PREPARING,
+                TeamDispatchStatus.LEASED,
+            }:
+                raise ValueError(f"dispatch {dispatch.id} is {dispatch.status.value}, not active")
+            runtime = _require_present(
+                state.agent_runtimes,
+                agent.id,
+                "agent runtime",
+            )
+            if runtime.active_dispatch_id != dispatch.id:
+                raise ValueError(
+                    f"dispatch {dispatch.id} no longer owns the runtime reservation "
+                    f"for agent {agent.id}"
+                )
+            receipt = dispatch.mcp_capability_receipt
+            if receipt is None:
+                raise ValueError(f"dispatch {dispatch.id} has no MCP capability receipt")
+
+            receipt.verification_status = TeamDispatchMcpCapabilityStatus.MISSING
+            receipt.missing_tool_names = list(receipt.required_tool_names)
+            receipt.diagnostic = normalized_diagnostic
+            dispatch.mcp_capability_receipt = receipt
+            error = "Required review MCP tool unavailable: " + ", ".join(
+                receipt.required_tool_names
+            )
+
+            # This dispatch never executed. Release only its reservations; do
+            # not complete blocker scope or submit/abandon Git work contexts.
+            _release_blocker_dispatch_reservations(
+                state,
+                dispatch_id=dispatch.id,
+                now=effective_now,
+            )
+            _mark_dispatch_terminal(
+                state,
+                dispatch_id=dispatch.id,
+                status=TeamDispatchStatus.FAILED,
+                completed_at=effective_now,
+                error=error,
+            )
+            runtime.active_dispatch_id = None
+            runtime.wake_leased_until = None
+            runtime.wake_reason = None
+            runtime.next_wake_at = None
+            runtime.updated_at = effective_now
+
+            result.update(
+                {
+                    "success": True,
+                    "finalized": True,
+                    "applied": True,
+                    "progress_made": False,
+                    "pre_execution_failure": True,
+                    "session_id": normalized_session_id,
+                    "agent_id": agent.id,
+                    "dispatch_id": dispatch.id,
+                    "activity_count": 0,
+                    "successful_activity_count": 0,
+                    "failed_activity_count": 0,
+                    "context_activity": False,
+                    "mcp_capability_receipt": receipt.model_dump(mode="json"),
+                    "events": [],
+                    "errors": [],
+                }
+            )
+            _route_or_retry_review_mcp_capability_failure(
+                state,
+                agent_id=agent.id,
+                dispatch=dispatch,
+                receipt=receipt,
+                diagnostic=normalized_diagnostic,
+                result=result,
+                now=effective_now,
+            )
+            stored_outbox_records = [
+                tx.enqueue_outbox_record(record)
+                for record in _team_event_outbox_records(result.get("events") or [])
+            ]
+            if stored_outbox_records:
+                result["outbox_record_ids"] = [record.id for record in stored_outbox_records]
+            state.revision += 1
+            return state
+
+        state = self._repository.update_with_command_transaction(
+            _mutate,
+            expected_revision=expected_revision,
+        )
+        result["revision"] = state.revision
+        result["no_progress_count"] = state.agent_runtimes[result["agent_id"]].no_progress_count
+        return state, result
+
     def lease_due_governance_managers(
         self,
         *,
@@ -1459,6 +1985,7 @@ class TeamRuntimeService:
         governance_group_id: str | None = None,
         cost_payload: Mapping[str, Any] | None = None,
         cost_warning_ratio: Decimal | str | float = Decimal("0.8"),
+        defer_activation: bool = False,
     ) -> tuple[TeamState, list[dict[str, Any]]]:
         effective_now = _ensure_utc(now or utc_now())
         normalized_group_id = _optional_text(governance_group_id)
@@ -1478,10 +2005,15 @@ class TeamRuntimeService:
                 if manager is None or manager.status != AgentStatus.ACTIVE:
                     continue
                 manager_runtime = state_model.agent_runtimes.get(manager.id)
-                if (
-                    manager_runtime is not None
-                    and manager_runtime.wake_leased_until is not None
-                    and _ensure_utc(manager_runtime.wake_leased_until) > effective_now
+                if manager_runtime is not None and (
+                    _runtime_has_active_dispatch_reservation(
+                        state_model,
+                        manager_runtime,
+                    )
+                    or (
+                        manager_runtime.wake_leased_until is not None
+                        and _ensure_utc(manager_runtime.wake_leased_until) > effective_now
+                    )
                 ):
                     continue
                 runtime = state_model.governance_runtimes.setdefault(
@@ -1489,6 +2021,17 @@ class TeamRuntimeService:
                     GovernanceRuntime(governance_group_id=group.id),
                 )
                 if (
+                    runtime.active_dispatch_id is not None
+                    and runtime.preparation_expires_at is not None
+                    and _ensure_utc(runtime.preparation_expires_at) <= effective_now
+                ):
+                    runtime.active_dispatch_id = None
+                    runtime.preparation_expires_at = None
+                    runtime.wake_leased_until = None
+                    runtime.wake_reason = None
+                    runtime.next_wake_at = None
+                    runtime.updated_at = effective_now
+                if runtime.active_dispatch_id is not None or (
                     runtime.wake_leased_until is not None
                     and _ensure_utc(runtime.wake_leased_until) > effective_now
                 ):
@@ -1547,9 +2090,18 @@ class TeamRuntimeService:
 
                 dispatch_id = f"team-governance-dispatch-{uuid4().hex}"
                 runtime.active_dispatch_id = dispatch_id
+                runtime.preparation_expires_at = (
+                    effective_now + timedelta(seconds=TEAM_DISPATCH_PREPARATION_TIMEOUT_SECONDS)
+                    if defer_activation
+                    else None
+                )
+                runtime.queued_at = None
+                runtime.requested_lease_seconds = max(1, int(lease_seconds))
                 runtime.wake_reason = reason
                 runtime.last_wake_at = effective_now
-                runtime.wake_leased_until = effective_now + timedelta(seconds=lease_seconds)
+                runtime.wake_leased_until = (
+                    None if defer_activation else effective_now + timedelta(seconds=lease_seconds)
+                )
                 runtime.next_wake_at = effective_now + timedelta(seconds=wake_interval_seconds)
                 runtime.last_cost_signal_fingerprints = cost_signal_fingerprints
                 runtime.last_blocked_signal_fingerprints = blocked_signal_fingerprints
@@ -1582,6 +2134,69 @@ class TeamRuntimeService:
         state = self._repository.update(_mutate)
         return state, leases
 
+    def mark_governance_dispatch_queued(
+        self,
+        *,
+        governance_group_id: str,
+        dispatch_id: str,
+        now: datetime | None = None,
+    ) -> TeamState:
+        normalized_group_id = _required_text(governance_group_id, "governance_group_id")
+        normalized_dispatch_id = _required_text(dispatch_id, "dispatch_id")
+        effective_now = _ensure_utc(now or utc_now())
+
+        def _mutate(state: TeamState) -> TeamState:
+            runtime = _require_present(
+                state.governance_runtimes,
+                normalized_group_id,
+                "governance runtime",
+            )
+            if runtime.active_dispatch_id != normalized_dispatch_id:
+                raise ValueError(
+                    f"governance dispatch {normalized_dispatch_id} no longer owns its reservation"
+                )
+            runtime.queued_at = runtime.queued_at or effective_now
+            runtime.preparation_expires_at = effective_now + timedelta(
+                seconds=TEAM_DISPATCH_PREPARATION_TIMEOUT_SECONDS
+            )
+            runtime.updated_at = effective_now
+            return state
+
+        return self._repository.update(_mutate)
+
+    def activate_governance_dispatch(
+        self,
+        *,
+        governance_group_id: str,
+        dispatch_id: str,
+        lease_seconds: int | None = None,
+        now: datetime | None = None,
+    ) -> TeamState:
+        normalized_group_id = _required_text(governance_group_id, "governance_group_id")
+        normalized_dispatch_id = _required_text(dispatch_id, "dispatch_id")
+        effective_now = _ensure_utc(now or utc_now())
+
+        def _mutate(state: TeamState) -> TeamState:
+            runtime = _require_present(
+                state.governance_runtimes,
+                normalized_group_id,
+                "governance runtime",
+            )
+            if runtime.active_dispatch_id != normalized_dispatch_id:
+                raise ValueError(
+                    f"governance dispatch {normalized_dispatch_id} no longer owns its reservation"
+                )
+            effective_lease_seconds = max(
+                1,
+                int(runtime.requested_lease_seconds if lease_seconds is None else lease_seconds),
+            )
+            runtime.preparation_expires_at = None
+            runtime.wake_leased_until = effective_now + timedelta(seconds=effective_lease_seconds)
+            runtime.updated_at = effective_now
+            return state
+
+        return self._repository.update(_mutate)
+
     def complete_governance_dispatch(
         self,
         *,
@@ -1597,6 +2212,8 @@ class TeamRuntimeService:
             if runtime is None or runtime.active_dispatch_id != normalized_dispatch_id:
                 return state
             runtime.active_dispatch_id = None
+            runtime.preparation_expires_at = None
+            runtime.queued_at = None
             runtime.wake_leased_until = None
             runtime.updated_at = utc_now()
             return state
@@ -1681,10 +2298,16 @@ class TeamRuntimeService:
         dispatch_id: str,
         agent_id: str | None = None,
         expected_revision: int | None = None,
+        mcp_capability_observation: Mapping[str, Any] | None = None,
     ) -> tuple[TeamState, dict[str, Any]]:
         normalized_session_id = _required_text(session_id, "session_id")
         normalized_dispatch_id = _required_text(dispatch_id, "dispatch_id")
         normalized_agent_id = _optional_text(agent_id)
+        normalized_mcp_capability_observation = (
+            dict(mcp_capability_observation)
+            if isinstance(mcp_capability_observation, Mapping)
+            else None
+        )
 
         def _failure(
             state: TeamState,
@@ -1811,6 +2434,38 @@ class TeamRuntimeService:
                 "errors": [],
             }
 
+            capability_missing = False
+            capability_error: str | None = None
+            receipt = (
+                durable_dispatch.mcp_capability_receipt if durable_dispatch is not None else None
+            )
+            if receipt is not None and normalized_mcp_capability_observation is not None:
+                receipt_payload = receipt.model_dump(mode="json")
+                receipt_payload.update(
+                    {
+                        key: normalized_mcp_capability_observation[key]
+                        for key in (
+                            "verification_status",
+                            "observed_transport_session_id",
+                            "observed_at",
+                            "observed_tool_fingerprint",
+                            "missing_tool_names",
+                            "diagnostic",
+                        )
+                        if key in normalized_mcp_capability_observation
+                    }
+                )
+                receipt = TeamDispatchMcpCapabilityReceipt.model_validate(receipt_payload)
+                durable_dispatch.mcp_capability_receipt = receipt
+                result["mcp_capability_receipt"] = receipt.model_dump(mode="json")
+                capability_missing = (
+                    receipt.verification_status == TeamDispatchMcpCapabilityStatus.MISSING
+                )
+                if capability_missing:
+                    capability_error = "Required review MCP tool unavailable: " + ", ".join(
+                        receipt.missing_tool_names or receipt.required_tool_names
+                    )
+
             chat_dispatch = runtime.wake_reason == "team_chat" or normalized_dispatch_id.startswith(
                 "team-chat:"
             )
@@ -1857,11 +2512,11 @@ class TeamRuntimeService:
                 dispatch_id=normalized_dispatch_id,
                 status=(
                     TeamDispatchStatus.FAILED
-                    if chat_terminal_error is not None
+                    if chat_terminal_error is not None or capability_error is not None
                     else TeamDispatchStatus.COMPLETED
                 ),
                 completed_at=completed_at,
-                error=chat_terminal_error,
+                error=chat_terminal_error or capability_error,
             )
             runtime.active_dispatch_id = None
             runtime.wake_leased_until = None
@@ -1874,14 +2529,15 @@ class TeamRuntimeService:
                 runtime.context_handoff_preparation_pending = False
                 runtime.context_handoff_preparation_status = "failed"
                 runtime.next_wake_at = completed_at
-            if progress_made:
-                if not _agent_has_open_execution_stall(
-                    state,
-                    agent_id=agent.id,
-                ):
-                    runtime.no_progress_count = 0
-            else:
-                runtime.no_progress_count += 1
+            if not capability_missing:
+                if progress_made:
+                    if not _agent_has_open_execution_stall(
+                        state,
+                        agent_id=agent.id,
+                    ):
+                        runtime.no_progress_count = 0
+                else:
+                    runtime.no_progress_count += 1
             if context_activity:
                 runtime.last_progress_at = completed_at
             runtime.updated_at = completed_at
@@ -1889,6 +2545,7 @@ class TeamRuntimeService:
                 state,
                 agent_id=agent.id,
                 now=runtime.updated_at,
+                result=result,
             )
             _append_pending_chat_message_queued_event_for_agent(
                 state,
@@ -1896,14 +2553,25 @@ class TeamRuntimeService:
                 completed_dispatch_id=normalized_dispatch_id,
                 result=result,
             )
-            _append_follow_up_agent_wake_requested_event(
-                state,
-                agent_id=agent.id,
-                result=result,
-                now=completed_at,
-                completed_dispatch_id=normalized_dispatch_id,
-                progress_made=progress_made,
-            )
+            if capability_missing and receipt is not None:
+                _route_or_retry_review_mcp_capability_failure(
+                    state,
+                    agent_id=agent.id,
+                    dispatch=durable_dispatch,
+                    receipt=receipt,
+                    diagnostic=receipt.diagnostic or capability_error or "",
+                    result=result,
+                    now=completed_at,
+                )
+            else:
+                _append_follow_up_agent_wake_requested_event(
+                    state,
+                    agent_id=agent.id,
+                    result=result,
+                    now=completed_at,
+                    completed_dispatch_id=normalized_dispatch_id,
+                    progress_made=progress_made,
+                )
             stored_outbox_records = [
                 tx.enqueue_outbox_record(record)
                 for record in _team_event_outbox_records(result.get("events") or [])
@@ -1984,6 +2652,14 @@ class TeamRuntimeService:
                     runtime.context_clearing_policy.value
                     if runtime is not None
                     else AgentContextClearingPolicy.OFF.value
+                ),
+                "context_clearing_idle_grace_seconds": (
+                    runtime.context_clearing_idle_grace_seconds if runtime is not None else 0
+                ),
+                "context_idle_rotation_due_at": (
+                    runtime.context_idle_rotation_due_at.isoformat()
+                    if runtime is not None and runtime.context_idle_rotation_due_at is not None
+                    else None
                 ),
                 "auto_context_clearing_enabled": (
                     runtime.auto_context_clearing_enabled if runtime is not None else False
@@ -2130,6 +2806,134 @@ def _mark_dispatch_terminal(
     dispatch.error = error if status == TeamDispatchStatus.FAILED else None
 
 
+def _review_mcp_capability_attempt(
+    state: TeamState,
+    *,
+    agent_id: str,
+    review_request_ids: tuple[str, ...],
+) -> int:
+    """Continue exactly one retry only for the same unresolved review scope."""
+
+    normalized_review_ids = sorted(set(review_request_ids))
+    if not normalized_review_ids:
+        return 1
+    previous_attempt = 0
+    for dispatch in state.dispatches.values():
+        receipt = dispatch.mcp_capability_receipt
+        if (
+            dispatch.agent_id != agent_id
+            or sorted(dispatch.review_request_ids) != normalized_review_ids
+            or receipt is None
+            or receipt.verification_status != TeamDispatchMcpCapabilityStatus.MISSING
+        ):
+            continue
+        previous_attempt = max(previous_attempt, receipt.attempt)
+    return min(previous_attempt + 1, MAX_REVIEW_MCP_CAPABILITY_ATTEMPTS)
+
+
+def _new_review_mcp_capability_receipt(
+    state: TeamState,
+    *,
+    agent_id: str,
+    review_request_ids: tuple[str, ...] | list[str],
+) -> TeamDispatchMcpCapabilityReceipt | None:
+    if not review_request_ids:
+        return None
+    return TeamDispatchMcpCapabilityReceipt(
+        required_tool_names=[REVIEW_DECISION_MCP_TOOL_NAME],
+        attempt=_review_mcp_capability_attempt(
+            state,
+            agent_id=agent_id,
+            review_request_ids=tuple(review_request_ids),
+        ),
+    )
+
+
+def _mcp_capability_blocked_review_ids(
+    state: TeamState,
+    *,
+    agent_id: str,
+) -> set[str]:
+    blocked_review_ids: set[str] = set()
+    for blocker in state.blockers.values():
+        if (
+            blocker.state != TeamBlockerState.OPEN
+            or blocker.source_kind != TeamBlockerSourceKind.MCP_CAPABILITY
+        ):
+            continue
+        identity = blocker.mcp_capability_identity
+        if identity is not None:
+            if identity.agent_id == agent_id:
+                blocked_review_ids.update(identity.review_request_ids)
+            continue
+        # Compatibility for blockers created before capability identity was
+        # stored structurally.
+        prefix = f"{agent_id}:"
+        if blocker.source_id.startswith(prefix):
+            blocked_review_ids.update(
+                review_id for review_id in blocker.source_id[len(prefix) :].split("|") if review_id
+            )
+    return blocked_review_ids
+
+
+def _inbox_references_review_ids(item: AgentInboxItem, review_request_ids: set[str]) -> bool:
+    """Return whether an inbox item is only the already-blocked review notice."""
+
+    if not review_request_ids:
+        return False
+    payload = item.payload if isinstance(item.payload, Mapping) else {}
+    review_id = _optional_text(payload.get("review_request_id"))
+    return review_id in review_request_ids
+
+
+def _review_dispatch_task_ids(state: TeamState, dispatch: TeamDispatch) -> list[str]:
+    task_ids: set[str] = set()
+    for review_id in dispatch.review_request_ids:
+        review = state.review_requests.get(review_id)
+        if review is None:
+            continue
+        deliverable = state.deliverables.get(review.deliverable_id)
+        if deliverable is not None:
+            task_ids.add(deliverable.task_id)
+    return sorted(task_ids)
+
+
+def _route_or_retry_review_mcp_capability_failure(
+    state: TeamState,
+    *,
+    agent_id: str,
+    dispatch: TeamDispatch,
+    receipt: TeamDispatchMcpCapabilityReceipt,
+    diagnostic: str,
+    result: dict[str, Any],
+    now: datetime,
+) -> None:
+    if receipt.attempt < MAX_REVIEW_MCP_CAPABILITY_ATTEMPTS:
+        _append_agent_wake_requested_event(
+            state,
+            agent_id=agent_id,
+            result=result,
+            reason="review_capability_retry",
+            now=now,
+            delay_seconds=0,
+            idempotency_suffix=f"review-capability-retry:{dispatch.id}",
+        )
+        result["mcp_capability_retry_scheduled"] = True
+        return
+    open_agent_mcp_capability_blocker(
+        state,
+        agent_id=agent_id,
+        review_request_ids=dispatch.review_request_ids,
+        affected_task_ids=_review_dispatch_task_ids(state, dispatch),
+        dispatch_id=dispatch.id,
+        required_tool_names=receipt.required_tool_names,
+        diagnostic=diagnostic,
+        result=result,
+        now=now,
+    )
+    result["mcp_capability_retry_scheduled"] = False
+
+
 def _fail_dispatch_preparation_in_state(
     state: TeamState,
     *,
@@ -2174,6 +2978,20 @@ def _fail_dispatch_preparation_in_state(
         completed_at=completed_at,
         error=error,
     )
+
+
+def _runtime_has_active_dispatch_reservation(
+    state: TeamState,
+    runtime: AgentRuntime,
+) -> bool:
+    dispatch_id = _optional_text(runtime.active_dispatch_id)
+    if dispatch_id is None:
+        return False
+    dispatch = state.dispatches.get(dispatch_id)
+    return dispatch is not None and dispatch.status in {
+        TeamDispatchStatus.PREPARING,
+        TeamDispatchStatus.LEASED,
+    }
 
 
 def _dispatch_staleness_errors(

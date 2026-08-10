@@ -76,14 +76,18 @@ def _write_admin_addon_module(
     *,
     module_name: str = "admin_addon",
     runtime_workflow_pack: bool = False,
+    runtime_workflow_layout: bool = False,
 ) -> str:
     module_root = tmp_path / "plugins"
     module_root.mkdir()
-    metadata = (
-        f'"metadata": {{"runtime_workflow_pack": "{module_name}.runtime_pack_v1"}},'
-        if runtime_workflow_pack
-        else ""
-    )
+    metadata_entries: list[str] = []
+    if runtime_workflow_pack:
+        metadata_entries.append(f'"runtime_workflow_pack": "{module_name}.runtime_pack_v1"')
+    if runtime_workflow_layout:
+        metadata_entries.append(
+            f'"runtime_workflow_pack_layout": "{module_name}.runtime_pack_layout_v1"'
+        )
+    metadata = f'"metadata": {{{", ".join(metadata_entries)}}},' if metadata_entries else ""
     runtime_pack_source = (
         """
 def runtime_pack_v1():
@@ -118,6 +122,18 @@ def runtime_pack_v1():
         if runtime_workflow_pack
         else ""
     )
+    runtime_layout_source = (
+        """
+def runtime_pack_layout_v1():
+    return {
+        "nodes": {
+            "team-cron": {"x": 240, "y": 120},
+        }
+    }
+"""
+        if runtime_workflow_layout
+        else ""
+    )
     (module_root / f"{module_name}.py").write_text(
         f"""
 from starlette.responses import HTMLResponse, JSONResponse
@@ -144,6 +160,7 @@ def register_addon():
         {metadata}
     }}
 {runtime_pack_source}
+{runtime_layout_source}
 """,
         encoding="utf-8",
     )
@@ -675,7 +692,11 @@ def test_admin_web_addon_management_discovers_root_addon_packages_without_config
 def test_admin_web_addon_management_materializes_runtime_workflow_pack_on_enable(
     tmp_path: Path, monkeypatch
 ) -> None:
-    module_root = _write_admin_addon_module(tmp_path, runtime_workflow_pack=True)
+    module_root = _write_admin_addon_module(
+        tmp_path,
+        runtime_workflow_pack=True,
+        runtime_workflow_layout=True,
+    )
     _write_disabled_addon_configs(tmp_path)
     monkeypatch.syspath_prepend(module_root)
     importlib.invalidate_caches()
@@ -716,6 +737,10 @@ def test_admin_web_addon_management_materializes_runtime_workflow_pack_on_enable
     )
     assert pack_payload["pack_id"] == "team-runtime"
     assert pack_payload["description"] == "Runtime pack from add-on."
+    layout_payload = json.loads(
+        (tmp_path / "config" / "workflow-packs" / "team-runtime.v1.layout.json").read_text()
+    )
+    assert layout_payload == {"nodes": {"team-cron": {"x": 240.0, "y": 120.0}}}
 
 
 def test_admin_web_addon_management_unlists_runtime_workflow_pack_on_disable(
@@ -845,7 +870,11 @@ def test_admin_web_addon_runtime_workflow_pack_refresh_rejects_disabled_addon(
 def test_admin_web_addon_runtime_workflow_pack_refresh_overwrites_existing_pack(
     tmp_path: Path, monkeypatch
 ) -> None:
-    module_root = _write_admin_addon_module(tmp_path, runtime_workflow_pack=True)
+    module_root = _write_admin_addon_module(
+        tmp_path,
+        runtime_workflow_pack=True,
+        runtime_workflow_layout=True,
+    )
     _write_disabled_addon_configs(tmp_path)
     packs_dir = tmp_path / "config" / "workflow-packs"
     packs_dir.mkdir(parents=True, exist_ok=True)
@@ -858,6 +887,10 @@ def test_admin_web_addon_runtime_workflow_pack_refresh_overwrites_existing_pack(
                 "ir": {"version": "v1", "nodes": [], "edges": []},
             }
         ),
+        encoding="utf-8",
+    )
+    (packs_dir / "team-runtime.v1.layout.json").write_text(
+        json.dumps({"nodes": {"operator-position": {"x": 1, "y": 2}}}),
         encoding="utf-8",
     )
     monkeypatch.syspath_prepend(module_root)
@@ -894,6 +927,8 @@ def test_admin_web_addon_runtime_workflow_pack_refresh_overwrites_existing_pack(
     pack_payload = json.loads((packs_dir / "team-runtime.v1.json").read_text())
     assert pack_payload["description"] == "Runtime pack from add-on."
     assert pack_payload["graphs"][0]["id"] == "team-runtime"
+    layout_payload = json.loads((packs_dir / "team-runtime.v1.layout.json").read_text())
+    assert layout_payload == {"nodes": {"team-cron": {"x": 240.0, "y": 120.0}}}
     trigger_config = json.loads(
         (tmp_path / "config" / "trigger-orchestrator" / "config.json").read_text()
     )

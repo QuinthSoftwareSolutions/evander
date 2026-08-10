@@ -323,8 +323,7 @@ class TeamRecordHumanReviewPreparationResultEffectDefinition(EffectDefinition):
         if value is None or isinstance(value, (Mapping, str)):
             return value
         raise ValueError(
-            "effect:team:record-human-review-preparation-result target "
-            "must be a JSON object"
+            "effect:team:record-human-review-preparation-result target must be a JSON object"
         )
 
 

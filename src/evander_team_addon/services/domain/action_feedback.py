@@ -91,11 +91,10 @@ def _mark_action_failure(
         now=completed_at,
     )
     dispatch = state.dispatches.get(runtime.active_dispatch_id or dispatch_id)
-    if (
-        dispatch is not None
-        and dispatch.status
-        in {TeamDispatchStatus.PREPARING, TeamDispatchStatus.LEASED}
-    ):
+    if dispatch is not None and dispatch.status in {
+        TeamDispatchStatus.PREPARING,
+        TeamDispatchStatus.LEASED,
+    }:
         dispatch.status = TeamDispatchStatus.FAILED
         dispatch.completed_at = completed_at
         dispatch.error = error
@@ -104,7 +103,12 @@ def _mark_action_failure(
     runtime.wake_reason = None
     runtime.no_progress_count += 1
     runtime.updated_at = completed_at
-    _maybe_mark_idle_context_rotation_due(state, agent_id=agent_id, now=runtime.updated_at)
+    _maybe_mark_idle_context_rotation_due(
+        state,
+        agent_id=agent_id,
+        now=runtime.updated_at,
+        result=result,
+    )
     state.action_records[action_id] = AgentActionRecord(
         id=action_id,
         agent_id=agent_id,

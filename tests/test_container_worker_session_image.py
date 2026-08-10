@@ -173,9 +173,7 @@ def test_release_verification_session_partial_limits_keep_fallbacks() -> None:
 def test_session_rejects_invalid_container_worker_resource_limits(
     resource_limits: object,
 ) -> None:
-    session = SimpleNamespace(
-        metadata={"container_worker_resource_limits": resource_limits}
-    )
+    session = SimpleNamespace(metadata={"container_worker_resource_limits": resource_limits})
 
     with pytest.raises(ValueError):
         container_worker_resource_limits_for_session(session)

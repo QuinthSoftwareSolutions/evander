@@ -11,11 +11,11 @@ from urllib.parse import quote
 import httpx
 
 from evander.worker.models import (
-    WorkerFileWriteRequest,
     WorkerFileWriteRecord,
+    WorkerFileWriteRequest,
+    WorkerGitKeyDeleteRecord,
     WorkerGitWriteKeyRecord,
     WorkerGitWriteKeyRequest,
-    WorkerGitKeyDeleteRecord,
     WorkerJobRecord,
     WorkerJobRequest,
     WorkerMssqlDatabaseDeleteRecord,
@@ -38,9 +38,16 @@ logger = logging.getLogger(__name__)
 
 
 class ContainerWorkerClientError(RuntimeError):
-    def __init__(self, message: str, *, payload: dict[str, Any] | None = None) -> None:
+    def __init__(
+        self,
+        message: str,
+        *,
+        payload: dict[str, Any] | None = None,
+        status_code: int | None = None,
+    ) -> None:
         super().__init__(message)
         self.payload = dict(payload) if payload is not None else None
+        self.status_code = status_code
 
 
 class ContainerWorkerClient:
@@ -367,6 +374,7 @@ class ContainerWorkerClient:
                 f"{response.status_code}: "
                 f"{self._safe_response_text(response)}",
                 payload=error_payload if isinstance(error_payload, dict) else None,
+                status_code=response.status_code,
             )
         return response
 

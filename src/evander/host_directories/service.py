@@ -41,13 +41,9 @@ _DIRECTORY_OPEN_FLAGS = (
     | getattr(os, "O_CLOEXEC", 0)
     | getattr(os, "O_NOFOLLOW", 0)
 )
-_FILE_OPEN_FLAGS = (
-    os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
-)
+_FILE_OPEN_FLAGS = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
 _PATH_OPEN_FLAGS = (
-    getattr(os, "O_PATH", os.O_RDONLY)
-    | getattr(os, "O_CLOEXEC", 0)
-    | getattr(os, "O_NOFOLLOW", 0)
+    getattr(os, "O_PATH", os.O_RDONLY) | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
 )
 _QUARANTINE_METADATA_NAME = "metadata.json"
 _QUARANTINE_SCOPE_NAME = "scope.json"
@@ -84,9 +80,7 @@ def _rename_noreplace(
     destination_name: str,
 ) -> None:
     if _RENAMEAT2 is None:
-        raise HostDirectoryError(
-            "atomic no-replace restore is unavailable on this host"
-        )
+        raise HostDirectoryError("atomic no-replace restore is unavailable on this host")
     result = _RENAMEAT2(
         source_directory_fd,
         os.fsencode(source_name),
@@ -124,9 +118,7 @@ def _same_file_state_after_rename(
 
 def _mount_id(file_descriptor: int) -> int:
     try:
-        content = Path(f"/proc/self/fdinfo/{file_descriptor}").read_text(
-            encoding="utf-8"
-        )
+        content = Path(f"/proc/self/fdinfo/{file_descriptor}").read_text(encoding="utf-8")
     except OSError as exc:
         raise HostDirectoryError(
             "host directory mount-boundary verification is unavailable"
@@ -138,9 +130,7 @@ def _mount_id(file_descriptor: int) -> int:
                 return int(value.strip())
             except ValueError:
                 break
-    raise HostDirectoryError(
-        "host directory mount-boundary verification is unavailable"
-    )
+    raise HostDirectoryError("host directory mount-boundary verification is unavailable")
 
 
 def _require_same_mount(
@@ -193,9 +183,7 @@ class _ListCursorCodec:
         self._secret = secrets.token_bytes(32)
 
     @staticmethod
-    def _query_digest(
-        *, directory_id: str, path: str, recursive: bool, limit: int
-    ) -> str:
+    def _query_digest(*, directory_id: str, path: str, recursive: bool, limit: int) -> str:
         payload = json.dumps(
             {
                 "directory_id": directory_id,
@@ -256,9 +244,7 @@ class _ListCursorCodec:
             if not hmac.compare_digest(signature, expected):
                 raise ValueError("invalid host directory cursor")
             padding = "=" * (-len(encoded) % 4)
-            payload = json.loads(
-                base64.urlsafe_b64decode(f"{encoded}{padding}").decode("utf-8")
-            )
+            payload = json.loads(base64.urlsafe_b64decode(f"{encoded}{padding}").decode("utf-8"))
         except (UnicodeDecodeError, ValueError, json.JSONDecodeError) as exc:
             raise ValueError("invalid host directory cursor") from exc
         if (
@@ -638,9 +624,7 @@ class HostDirectoryService:
             "deleted_at": deleted_at.isoformat(),
         }
 
-    def delete_requires_approval(
-        self, session: SessionManifest, directory_id: str
-    ) -> bool:
+    def delete_requires_approval(self, session: SessionManifest, directory_id: str) -> bool:
         return self.require_capability(
             session, directory_id, "delete"
         ).definition.delete_requires_approval
@@ -720,9 +704,7 @@ class HostDirectoryService:
                 "error_class": type(exc).__name__,
             }
 
-    def list_quarantine(
-        self, *, directory_path: str, directory_id: str
-    ) -> list[dict[str, Any]]:
+    def list_quarantine(self, *, directory_path: str, directory_id: str) -> list[dict[str, Any]]:
         normalized_id, definition = self._definition_for_directory(
             directory_path,
             directory_id,
@@ -770,10 +752,8 @@ class HostDirectoryService:
                         )
                         owner = scope or metadata
                         if owner is None:
-                            remove_stale_empty = (
-                                self._reconcile_stale_unowned_quarantine(
-                                    recovery_fd
-                                )
+                            remove_stale_empty = self._reconcile_stale_unowned_quarantine(
+                                recovery_fd
                             )
                         elif (
                             owner.get("directory_id") == normalized_id
@@ -788,11 +768,7 @@ class HostDirectoryService:
                             payload_status = self._quarantine_payload_status(
                                 recovery_fd,
                             )
-                            status = (
-                                payload_status
-                                if metadata_valid
-                                else "corrupt_metadata"
-                            )
+                            status = payload_status if metadata_valid else "corrupt_metadata"
                             record = dict(metadata if metadata_valid else owner)
                             record.update(
                                 {
@@ -834,21 +810,15 @@ class HostDirectoryService:
                 root_fd, (HOST_DIRECTORY_TRASH_NAME,), root_dev=root_dev
             )
             try:
-                recovery_fd = os.open(
-                    safe_recovery_id, _DIRECTORY_OPEN_FLAGS, dir_fd=trash_fd
-                )
+                recovery_fd = os.open(safe_recovery_id, _DIRECTORY_OPEN_FLAGS, dir_fd=trash_fd)
                 try:
                     _require_same_mount(
                         trash_fd,
                         recovery_fd,
                         message="quarantine record crosses a filesystem boundary",
                     )
-                    scope = self._read_optional_json_at(
-                        recovery_fd, _QUARANTINE_SCOPE_NAME
-                    )
-                    metadata = self._read_optional_json_at(
-                        recovery_fd, _QUARANTINE_METADATA_NAME
-                    )
+                    scope = self._read_optional_json_at(recovery_fd, _QUARANTINE_SCOPE_NAME)
+                    metadata = self._read_optional_json_at(recovery_fd, _QUARANTINE_METADATA_NAME)
                     owner = scope or metadata
                     if (
                         owner is None
@@ -878,9 +848,7 @@ class HostDirectoryService:
                     parts = normalize_relative_host_path(
                         metadata.get("original_path"), allow_empty=False
                     )
-                    parent_fd = self._open_directory_parts(
-                        root_fd, parts[:-1], root_dev=root_dev
-                    )
+                    parent_fd = self._open_directory_parts(root_fd, parts[:-1], root_dev=root_dev)
                     try:
                         _rename_noreplace(
                             source_directory_fd=recovery_fd,
@@ -925,21 +893,15 @@ class HostDirectoryService:
                 root_fd, (HOST_DIRECTORY_TRASH_NAME,), root_dev=root_dev
             )
             try:
-                recovery_fd = os.open(
-                    safe_recovery_id, _DIRECTORY_OPEN_FLAGS, dir_fd=trash_fd
-                )
+                recovery_fd = os.open(safe_recovery_id, _DIRECTORY_OPEN_FLAGS, dir_fd=trash_fd)
                 try:
                     _require_same_mount(
                         trash_fd,
                         recovery_fd,
                         message="quarantine record crosses a filesystem boundary",
                     )
-                    scope = self._read_optional_json_at(
-                        recovery_fd, _QUARANTINE_SCOPE_NAME
-                    )
-                    metadata = self._read_optional_json_at(
-                        recovery_fd, _QUARANTINE_METADATA_NAME
-                    )
+                    scope = self._read_optional_json_at(recovery_fd, _QUARANTINE_SCOPE_NAME)
+                    metadata = self._read_optional_json_at(recovery_fd, _QUARANTINE_METADATA_NAME)
                     owner = scope or metadata
                     if (
                         owner is None
@@ -986,9 +948,7 @@ class HostDirectoryService:
         return normalized, definition
 
     @contextmanager
-    def _open_root(
-        self, definition: HostDirectoryDefinition
-    ) -> Iterator[tuple[int, int]]:
+    def _open_root(self, definition: HostDirectoryDefinition) -> Iterator[tuple[int, int]]:
         root = definition.root
         try:
             info = root.lstat()
@@ -1019,9 +979,7 @@ class HostDirectoryService:
                 child_info = os.fstat(child_fd)
                 if child_info.st_dev != root_dev:
                     os.close(child_fd)
-                    raise HostDirectoryError(
-                        "host directory path crosses a filesystem boundary"
-                    )
+                    raise HostDirectoryError("host directory path crosses a filesystem boundary")
                 try:
                     _require_same_mount(root_fd, child_fd)
                 except Exception:
@@ -1072,10 +1030,7 @@ class HostDirectoryService:
                 entry_fd = os.open(child.name, _PATH_OPEN_FLAGS, dir_fd=fd)
                 try:
                     info = os.fstat(entry_fd)
-                    if (
-                        info.st_dev != root_dev
-                        or _mount_id(entry_fd) != root_mount_id
-                    ):
+                    if info.st_dev != root_dev or _mount_id(entry_fd) != root_mount_id:
                         raise HostDirectoryError(
                             "host directory listing crosses a filesystem boundary"
                         )
@@ -1097,9 +1052,7 @@ class HostDirectoryService:
                         name=child.name,
                         kind=kind,
                         size=size,
-                        modified_at=datetime.fromtimestamp(
-                            info.st_mtime, tz=UTC
-                        ).isoformat(),
+                        modified_at=datetime.fromtimestamp(info.st_mtime, tz=UTC).isoformat(),
                         revision=host_directory_revision(info),
                     )
                 )
@@ -1151,9 +1104,7 @@ class HostDirectoryService:
         opened_root = os.fstat(directory_fd)
         if not _same_file_state_after_rename(root_info, opened_root):
             os.close(directory_fd)
-            raise HostDirectoryError(
-                "host directory changed while it was being inspected"
-            )
+            raise HostDirectoryError("host directory changed while it was being inspected")
         root_mount_id = _mount_id(directory_fd)
 
         def visit(fd: int, relative_prefix: tuple[str, ...]) -> None:
@@ -1162,10 +1113,7 @@ class HostDirectoryService:
                 entry_fd = os.open(child.name, _PATH_OPEN_FLAGS, dir_fd=fd)
                 try:
                     info = os.fstat(entry_fd)
-                    if (
-                        info.st_dev != root_dev
-                        or _mount_id(entry_fd) != root_mount_id
-                    ):
+                    if info.st_dev != root_dev or _mount_id(entry_fd) != root_mount_id:
                         raise HostDirectoryError(
                             "host directory tree crosses a filesystem boundary"
                         )
@@ -1212,13 +1160,9 @@ class HostDirectoryService:
                         "host directory tree contains a symlink or unsupported entry"
                     )
                 if len(result) > max_entries:
-                    raise HostDirectoryError(
-                        f"host directory tree exceeded {max_entries} entries"
-                    )
+                    raise HostDirectoryError(f"host directory tree exceeded {max_entries} entries")
                 if max_bytes is not None and total_bytes > max_bytes:
-                    raise HostDirectoryError(
-                        f"host directory import exceeded {max_bytes} bytes"
-                    )
+                    raise HostDirectoryError(f"host directory import exceeded {max_bytes} bytes")
 
         try:
             visit(directory_fd, ())
@@ -1238,14 +1182,10 @@ class HostDirectoryService:
         buffer = io.BytesIO()
         top_name = parts[-1]
         with gzip.GzipFile(fileobj=buffer, mode="wb", mtime=0) as gzip_file:
-            with tarfile.open(
-                fileobj=gzip_file, mode="w", format=tarfile.PAX_FORMAT
-            ) as archive:
+            with tarfile.open(fileobj=gzip_file, mode="w", format=tarfile.PAX_FORMAT) as archive:
                 for entry in snapshot:
                     archive_name = (
-                        top_name
-                        if not entry.relative_path
-                        else f"{top_name}/{entry.relative_path}"
+                        top_name if not entry.relative_path else f"{top_name}/{entry.relative_path}"
                     )
                     tar_info = tarfile.TarInfo(archive_name)
                     tar_info.uid = 0
@@ -1295,15 +1235,11 @@ class HostDirectoryService:
             ):
                 raise HostDirectoryError("host directory file changed while it was being read")
             if before.st_size > max_bytes:
-                raise HostDirectoryError(
-                    f"host directory import exceeded {max_bytes} bytes"
-                )
+                raise HostDirectoryError(f"host directory import exceeded {max_bytes} bytes")
             with os.fdopen(os.dup(fd), "rb") as handle:
                 content = handle.read(max_bytes + 1)
             if len(content) > max_bytes:
-                raise HostDirectoryError(
-                    f"host directory import exceeded {max_bytes} bytes"
-                )
+                raise HostDirectoryError(f"host directory import exceeded {max_bytes} bytes")
             after = os.fstat(fd)
             if host_directory_revision(after) != expected_revision:
                 raise HostDirectoryError("host directory file changed while it was being read")
@@ -1343,9 +1279,7 @@ class HostDirectoryService:
         )
         fd = os.open(name, flags, 0o600, dir_fd=directory_fd)
         try:
-            encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode(
-                "utf-8"
-            )
+            encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
             remaining = memoryview(encoded)
             while remaining:
                 written = os.write(fd, remaining)
@@ -1463,26 +1397,18 @@ class HostDirectoryService:
         entry_fd = os.open(name, _PATH_OPEN_FLAGS, dir_fd=parent_fd)
         try:
             info = os.fstat(entry_fd)
-            if (
-                info.st_dev != root_dev
-                or _mount_id(entry_fd) != _mount_id(parent_fd)
-            ):
-                raise HostDirectoryError(
-                    "quarantine entry crosses a filesystem boundary"
-                )
+            if info.st_dev != root_dev or _mount_id(entry_fd) != _mount_id(parent_fd):
+                raise HostDirectoryError("quarantine entry crosses a filesystem boundary")
         finally:
             os.close(entry_fd)
         if stat.S_ISDIR(info.st_mode):
             child_fd = os.open(name, _DIRECTORY_OPEN_FLAGS, dir_fd=parent_fd)
             try:
                 opened = os.fstat(child_fd)
-                if (
-                    not _same_file_state_after_rename(info, opened)
-                    or _mount_id(child_fd) != _mount_id(parent_fd)
-                ):
-                    raise HostDirectoryError(
-                        "quarantine entry changed during purge"
-                    )
+                if not _same_file_state_after_rename(info, opened) or _mount_id(
+                    child_fd
+                ) != _mount_id(parent_fd):
+                    raise HostDirectoryError("quarantine entry changed during purge")
                 for child in list(os.scandir(child_fd)):
                     self._remove_entry_at(child_fd, child.name, root_dev=root_dev)
             finally:

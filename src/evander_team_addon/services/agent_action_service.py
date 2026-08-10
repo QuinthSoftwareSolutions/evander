@@ -150,9 +150,7 @@ class TeamAgentActionService:
         git_default_branch_resolver: Callable[..., object] | None = None,
     ) -> None:
         self._repository = repository
-        self._human_review_eligibility_resolver = (
-            human_review_eligibility_resolver
-        )
+        self._human_review_eligibility_resolver = human_review_eligibility_resolver
         self._git_default_branch_resolver = git_default_branch_resolver
 
     @property
@@ -476,6 +474,7 @@ class TeamAgentActionService:
                             state_model,
                             agent_id=old_owner_id,
                             now=now,
+                            result=result,
                         )
                         if task.state in _NON_TERMINAL_TASK_STATES:
                             _mark_agent_work_due(
@@ -506,15 +505,11 @@ class TeamAgentActionService:
                                 result=result,
                                 now=now,
                             )
-                        if (
-                            previous_task_state != task.state
-                            and task.state
-                            in {
-                                TeamTaskState.ACCEPTED,
-                                TeamTaskState.CANCELLED,
-                                TeamTaskState.FINISHED,
-                            }
-                        ):
+                        if previous_task_state != task.state and task.state in {
+                            TeamTaskState.ACCEPTED,
+                            TeamTaskState.CANCELLED,
+                            TeamTaskState.FINISHED,
+                        }:
                             queue_parent_resolution_transitions(
                                 state_model,
                                 child_task_id=task.id,
@@ -561,9 +556,7 @@ class TeamAgentActionService:
                 task_creation_plans = _resolve_task_creation_plan_git_bases(
                     state_model,
                     task_creation_plans,
-                    git_default_branch_resolver=(
-                        self._git_default_branch_resolver
-                    ),
+                    git_default_branch_resolver=(self._git_default_branch_resolver),
                 )
             except ValueError as exc:
                 result["errors"].append(f"task_creations: {exc}")
@@ -880,8 +873,7 @@ class TeamAgentActionService:
                     if (
                         superseded_deliverable is not None
                         and superseded_deliverable.review_cohort_id is not None
-                        and superseded_deliverable.review_cohort_sealed_at
-                        is not None
+                        and superseded_deliverable.review_cohort_sealed_at is not None
                     ):
                         raise ValueError(
                             f"replacement for sealed-cohort deliverable "
@@ -910,9 +902,7 @@ class TeamAgentActionService:
                     state_model.deliverables[deliverable.id] = deliverable
                     if superseded_deliverable is not None:
                         superseded_deliverable.superseded_by_deliverable_id = deliverable.id
-                        superseded_deliverable.supersession_reason = (
-                            "Rework deliverable submitted."
-                        )
+                        superseded_deliverable.supersession_reason = "Rework deliverable submitted."
                         superseded_deliverable.superseded_at = deliverable.created_at
                         superseded_deliverable.superseded_by_actor = f"agent:{agent.id}"
                     task.deliverable_ids = _append_unique(task.deliverable_ids, deliverable.id)
@@ -934,9 +924,7 @@ class TeamAgentActionService:
                             "deliverable_id": deliverable.id,
                             "task_id": task.id,
                             "producer_agent_id": agent.id,
-                            "acceptance_recipient_agent_id": (
-                                acceptance_recipient_agent_id
-                            ),
+                            "acceptance_recipient_agent_id": (acceptance_recipient_agent_id),
                             "summary": deliverable.summary,
                             "artifact_refs": list(deliverable.artifact_refs),
                         }
@@ -969,8 +957,7 @@ class TeamAgentActionService:
                         )
                     if (
                         parent_task is not None
-                        and acceptance_recipient_agent_id
-                        != parent_task.owner_agent_id
+                        and acceptance_recipient_agent_id != parent_task.owner_agent_id
                     ):
                         queue_parent_task_transition(
                             state_model,
@@ -1216,14 +1203,10 @@ class TeamAgentActionService:
             durable_dispatch = state_model.dispatches.get(
                 effective_dispatch_id or record.dispatch_id
             )
-            if (
-                durable_dispatch is not None
-                and durable_dispatch.status
-                in {
-                    TeamDispatchStatus.PREPARING,
-                    TeamDispatchStatus.LEASED,
-                }
-            ):
+            if durable_dispatch is not None and durable_dispatch.status in {
+                TeamDispatchStatus.PREPARING,
+                TeamDispatchStatus.LEASED,
+            }:
                 durable_dispatch.status = TeamDispatchStatus.COMPLETED
                 durable_dispatch.completed_at = completed_at
                 durable_dispatch.error = None
@@ -1245,6 +1228,7 @@ class TeamAgentActionService:
                 state_model,
                 agent_id=agent.id,
                 now=runtime.updated_at,
+                result=result,
             )
             _append_pending_chat_message_queued_event_for_agent(
                 state_model,

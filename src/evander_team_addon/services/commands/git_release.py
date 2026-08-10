@@ -417,12 +417,8 @@ class TeamGitReleaseCommandService(TeamCommandExecutor):
         normalized_request_id = _required_text(request_id, "request_id")
         normalized_project_id = _required_text(project_id, "project_id")
         normalized_release_id = _optional_text(id)
-        normalized_predecessor_id = _optional_text(
-            supersedes_release_package_id
-        )
-        normalized_post_release_case_id = _optional_text(
-            post_release_feedback_case_id
-        )
+        normalized_predecessor_id = _optional_text(supersedes_release_package_id)
+        normalized_post_release_case_id = _optional_text(post_release_feedback_case_id)
         normalized_deliverable_ids = _string_list(
             deliverable_ids,
             "deliverable_ids",
@@ -498,9 +494,7 @@ class TeamGitReleaseCommandService(TeamCommandExecutor):
                 request={
                     "id": normalized_release_id,
                     "supersedes_release_package_id": normalized_predecessor_id,
-                    "post_release_feedback_case_id": (
-                        normalized_post_release_case_id
-                    ),
+                    "post_release_feedback_case_id": (normalized_post_release_case_id),
                     "project_id": normalized_project_id,
                     "deliverable_ids": list(normalized_deliverable_ids),
                     "release_branch": normalized_release_branch,

@@ -1,34 +1,45 @@
 from __future__ import annotations
 
-import json
+import logging
 from collections.abc import Mapping
 from typing import Any
 from uuid import uuid4
 
+from evander.events.provider_models import AgentEnqueuePromptEffectDefinition
 from evander.execution import ExecutionBackendKind, ExecutionSpec, ExecutionStatusKind
-from evander.messaging.agent_prompt_enqueue import enqueue_agent_prompt
+from evander.local_inference_capacity import (
+    LOCAL_INFERENCE_QUEUE_REASON,
+    LocalInferenceCapacityAdmission,
+    LocalInferenceCapacityLease,
+    local_inference_capacity_store,
+    local_inference_execution_is_active,
+    local_inference_vm_lease_is_active,
+    maintain_local_inference_launch,
+)
+from evander.messaging.agent_prompt_enqueue import (
+    enqueue_agent_prompt,
+    workflow_context_from_sources,
+    workflow_for_execution_ids_from_sources,
+)
+from evander.messaging.agent_prompt_lock import prompt_lock_metadata
 from evander.messaging.agent_prompt_queue import (
     AgentPromptRetryLimitExceeded,
     QueuedAgentPromptRecord,
+    queued_agent_prompt_dispatch_id,
 )
-from evander.messaging.agent_prompt_lock import prompt_lock_metadata
-from evander.events.provider_models import AgentEnqueuePromptEffectDefinition
 from evander.model_usage.runtime import (
     register_model_usage_correlation_context,
     resolve_runtime_dir,
 )
-from evander.session_auth import session_mcp_auth_token
 from evander.orchestration.effect_extensions import (
     list_vm_summaries_for_agent_reconciliation,
 )
+from evander.session_auth import session_mcp_auth_token
+from evander.workflow.contracts import FOR_EXECUTION_IDS_CONTEXT_KEY, NODE_OUTPUTS_CONTEXT_KEY
 from evander.workflow.migrations import (
     AGENT_PROMPT_COMPLETED_PORT,
     AGENT_PROMPT_ERROR_PORT,
     AGENT_PROMPT_STARTED_PORT,
-)
-from evander.workflow.contracts import (
-    FOR_EXECUTION_IDS_CONTEXT_KEY,
-    NODE_OUTPUTS_CONTEXT_KEY,
 )
 from evander.workflow.validation import NodeCapability
 
@@ -56,8 +67,10 @@ from .lifecycle_hooks import (
 from .resume_thread_metadata import (
     normalize_resume_thread_metadata_collection,
     resume_thread_id_from_metadata,
-    resume_thread_metadata_key as normalize_resume_thread_metadata_key,
     resume_thread_metadata_patch,
+)
+from .resume_thread_metadata import (
+    resume_thread_metadata_key as normalize_resume_thread_metadata_key,
 )
 
 _ACTIVE_CONTAINER_STATUSES = {
@@ -76,6 +89,8 @@ _CONTEXT_RETRY_METADATA_KEYS = (
     "agent_context_retry_max_attempts",
     "agent_context_retry_target_chars",
 )
+
+logger = logging.getLogger(__name__)
 
 
 class _DeniedPromptLockClaim:
@@ -146,13 +161,15 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
         }
         if resolved_config:
             payload.update(dict(resolved_config))
-        workflow_context = self._workflow_context_from_sources(
+        workflow_context = workflow_context_from_sources(
             execution_context=execution_context,
             input_payload=payload,
+            context_key=NODE_OUTPUTS_CONTEXT_KEY,
         )
-        workflow_for_execution_ids = self._workflow_for_execution_ids_from_sources(
+        workflow_for_execution_ids = workflow_for_execution_ids_from_sources(
             execution_context=execution_context,
             input_payload=payload,
+            context_key=FOR_EXECUTION_IDS_CONTEXT_KEY,
         )
 
         prompt = self._require_string(payload.get("prompt"), field_name="prompt")
@@ -217,6 +234,24 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
             config=config,
         )
         effective_session_id = active_session_id or session_id
+        effective_config = (
+            effective_config_for_session(
+                context,
+                effective_session_id,
+                fallback_directory_path=getattr(active_session, "directory_path", None),
+            )
+            if effective_session_id
+            else config
+        )
+        agent_harness = AgentPromptEffectProvider._agent_harness_from_session(
+            active_session,
+            config=effective_config,
+        )
+        resolved_model = (
+            model
+            or getattr(active_session, "model", None)
+            or default_agent_model_for_provider(agent_harness, effective_config)
+        )
         effective_resume_thread_id = self._effective_resume_thread_id(
             resume_thread_id=resume_thread_id,
             resume_thread_metadata_key=resume_thread_metadata_key,
@@ -243,7 +278,7 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
                 vm_name=vm_name,
                 session_id=effective_session_id,
                 prompt=prompt,
-                model=model,
+                model=resolved_model,
                 vm_user=vm_user,
                 dispatch_id=dispatch_id,
                 resume_thread_id=resume_thread_id,
@@ -257,6 +292,7 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
                 workflow_run_id=workflow_run_id,
                 mcp_tool_approval_lease_id=mcp_tool_approval_lease_id,
                 context_retry_metadata=payload,
+                model_provider_mode=effective_config.model_provider_mode,
             )
             return {
                 "success": True,
@@ -284,7 +320,7 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
                 vm_name=vm_name,
                 session_id=effective_session_id,
                 prompt=prompt,
-                model=model,
+                model=resolved_model,
                 vm_user=vm_user,
                 dispatch_id=dispatch_id,
                 resume_thread_id=resume_thread_id,
@@ -298,6 +334,7 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
                 workflow_run_id=workflow_run_id,
                 mcp_tool_approval_lease_id=mcp_tool_approval_lease_id,
                 context_retry_metadata=payload,
+                model_provider_mode=effective_config.model_provider_mode,
             )
             return {
                 "success": True,
@@ -310,30 +347,91 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
                 "max_retries": record.max_retries,
             }
 
-        result = context.agent_resumer.resume_agent(
-            target=target,
-            prompt=prompt,
-            model=model,
-            vm_user=vm_user,
+        capacity_admission = self._claim_local_inference_capacity(
+            config=effective_config,
+            owner_id=owner_id,
+            model=resolved_model,
+            session_id=effective_session_id,
             dispatch_id=dispatch_id,
-            resume_thread_id=effective_resume_thread_id,
-            resume_mode=resume_mode or "new_context",
-            persist_thread_id=resume_thread_metadata_key is None,
-            mcp_gateway_url=self._mcp_gateway_url(
-                config=config,
-                target=target,
-                workflow_run_id=workflow_run_id,
-                mcp_tool_approval_lease_id=mcp_tool_approval_lease_id,
-            ),
+            effect_id=effect.id,
+            execution_backend=ExecutionBackendKind.LIBVIRT_VM.value,
+            target_name=vm_name,
         )
-        if not bool(getattr(result, "success", False)):
+        if not capacity_admission.admitted:
             self._release_enqueue_prompt(prompt_lock_claim)
             record = self._queue_prompt(
                 target=target,
                 vm_name=vm_name,
                 session_id=effective_session_id,
                 prompt=prompt,
-                model=model,
+                model=resolved_model,
+                vm_user=vm_user,
+                dispatch_id=dispatch_id,
+                resume_thread_id=resume_thread_id,
+                resume_mode=resume_mode,
+                resume_thread_metadata_key=resume_thread_metadata_key,
+                resume_thread_metadata_collection=resume_thread_metadata_collection,
+                effect_id=effect.id,
+                queue_key=self._local_inference_capacity_queue_key(
+                    queue_key=queue_key,
+                    fallback=vm_name,
+                    dispatch_id=dispatch_id,
+                ),
+                workflow_context=workflow_context,
+                workflow_for_execution_ids=workflow_for_execution_ids,
+                workflow_run_id=workflow_run_id,
+                mcp_tool_approval_lease_id=mcp_tool_approval_lease_id,
+                context_retry_metadata=payload,
+                model_provider_mode=effective_config.model_provider_mode,
+                queue_reason=LOCAL_INFERENCE_QUEUE_REASON,
+            )
+            return {
+                "success": True,
+                "queued": True,
+                "queue_reason": LOCAL_INFERENCE_QUEUE_REASON,
+                "queue_key": record.queue_key,
+                "vm_name": vm_name,
+                "session_id": effective_session_id,
+                "model": resolved_model,
+                "model_provider_mode": effective_config.model_provider_mode,
+                "coalesced_count": record.coalesced_count,
+                "retry_count": record.retry_count,
+                "max_retries": record.max_retries,
+                **capacity_admission.output_metadata(),
+            }
+
+        dispatch_method = getattr(context.agent_resumer, "dispatch_agent_prompt", None)
+        if not callable(dispatch_method):
+            dispatch_method = context.agent_resumer.resume_agent
+        with maintain_local_inference_launch(
+            resolve_runtime_dir(context),
+            capacity_admission.slot_id,
+        ):
+            result = dispatch_method(
+                target=target,
+                prompt=prompt,
+                model=resolved_model,
+                vm_user=vm_user,
+                dispatch_id=dispatch_id,
+                resume_thread_id=effective_resume_thread_id,
+                resume_mode=resume_mode or "new_context",
+                persist_thread_id=resume_thread_metadata_key is None,
+                mcp_gateway_url=self._mcp_gateway_url(
+                    config=effective_config,
+                    target=target,
+                    workflow_run_id=workflow_run_id,
+                    mcp_tool_approval_lease_id=mcp_tool_approval_lease_id,
+                ),
+            )
+        if not bool(getattr(result, "success", False)):
+            self._release_local_inference_capacity(capacity_admission)
+            self._release_enqueue_prompt(prompt_lock_claim)
+            record = self._queue_prompt(
+                target=target,
+                vm_name=vm_name,
+                session_id=effective_session_id,
+                prompt=prompt,
+                model=resolved_model,
                 vm_user=vm_user,
                 dispatch_id=dispatch_id,
                 resume_thread_id=resume_thread_id,
@@ -347,6 +445,7 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
                 workflow_run_id=workflow_run_id,
                 mcp_tool_approval_lease_id=mcp_tool_approval_lease_id,
                 context_retry_metadata=payload,
+                model_provider_mode=effective_config.model_provider_mode,
             )
             message = self._normalize_optional_string(getattr(result, "message", None)) or "<empty>"
             error_message = (
@@ -371,7 +470,13 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
                 ),
             )
         thread_id = self._normalize_optional_string(getattr(result, "thread_id", None))
-        if not thread_id:
+        effective_resume_mode = resume_mode or "new_context"
+        if not thread_id and effective_resume_mode != "same_context":
+            self._mark_local_inference_running(
+                capacity_admission,
+                target_name=vm_name,
+                execution_id=vm_name,
+            )
             self._release_enqueue_prompt(prompt_lock_claim)
             message = "effect:agent:enqueue-prompt did not receive a thread_id from resume_agent"
             raise EffectProviderExecutionError(
@@ -400,31 +505,44 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
                 effect_id=effect.id,
                 execution_backend=ExecutionBackendKind.LIBVIRT_VM.value,
                 directory_path=directory_path,
-                model=model,
+                model=resolved_model,
                 trace_id=self._trace_id(execution_context),
+                agent_harness=agent_harness,
             )
-        self._persist_chat_assistant_thread_id(
-            session_id=effective_session_id,
-            thread_id=thread_id,
-            queue_key=queue_key,
-            backend=ExecutionBackendKind.LIBVIRT_VM.value,
+        self._mark_local_inference_running(
+            capacity_admission,
+            target_name=vm_name,
+            execution_id=vm_name,
         )
-        self._persist_resume_thread_metadata_key(
-            target=target,
-            session_id=effective_session_id,
-            resume_thread_metadata_key=resume_thread_metadata_key,
-            resume_thread_metadata_collection=resume_thread_metadata_collection,
-            thread_id=thread_id,
-        )
-        return {
+        if thread_id is not None:
+            self._persist_chat_assistant_thread_id(
+                session_id=effective_session_id,
+                thread_id=thread_id,
+                queue_key=queue_key,
+                backend=ExecutionBackendKind.LIBVIRT_VM.value,
+            )
+            self._persist_resume_thread_metadata_key(
+                target=target,
+                session_id=effective_session_id,
+                resume_thread_metadata_key=resume_thread_metadata_key,
+                resume_thread_metadata_collection=resume_thread_metadata_collection,
+                thread_id=thread_id,
+            )
+        outputs = {
             "dispatch_id": dispatch_id,
-            "thread_id": thread_id,
+            "resume_mode": effective_resume_mode,
             "success": bool(result.success),
             "queued": False,
             "vm_name": vm_name,
             "session_id": effective_session_id,
+            "model": resolved_model,
+            "model_provider_mode": effective_config.model_provider_mode,
+            **capacity_admission.output_metadata(),
             **self._prompt_lock_metadata(prompt_lock_claim),
         }
+        if thread_id is not None:
+            outputs["thread_id"] = thread_id
+        return outputs
 
     def _execute_container(
         self,
@@ -461,6 +579,15 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
         )
         target_name = self._container_target_name(session=session, session_id=session_id)
         target = self._normalize_optional_string(payload.get("target")) or session_id
+        agent_harness = AgentPromptEffectProvider._agent_harness_from_session(
+            session,
+            config=effective_config,
+        )
+        resolved_model = (
+            model
+            or getattr(session, "model", None)
+            or default_agent_model_for_provider(agent_harness, effective_config)
+        )
         effective_resume_thread_id = self._effective_resume_thread_id(
             resume_thread_id=resume_thread_id,
             resume_thread_metadata_key=resume_thread_metadata_key,
@@ -482,7 +609,7 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
                 vm_name=target_name,
                 session_id=session_id,
                 prompt=prompt,
-                model=model,
+                model=resolved_model,
                 vm_user=vm_user,
                 dispatch_id=dispatch_id,
                 resume_thread_id=resume_thread_id,
@@ -496,6 +623,7 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
                 workflow_run_id=workflow_run_id,
                 mcp_tool_approval_lease_id=mcp_tool_approval_lease_id,
                 context_retry_metadata=payload,
+                model_provider_mode=effective_config.model_provider_mode,
             )
             return {
                 "success": True,
@@ -524,7 +652,7 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
                 vm_name=target_name,
                 session_id=session_id,
                 prompt=prompt,
-                model=model,
+                model=resolved_model,
                 vm_user=vm_user,
                 dispatch_id=dispatch_id,
                 resume_thread_id=resume_thread_id,
@@ -538,6 +666,7 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
                 workflow_run_id=workflow_run_id,
                 mcp_tool_approval_lease_id=mcp_tool_approval_lease_id,
                 context_retry_metadata=payload,
+                model_provider_mode=effective_config.model_provider_mode,
             )
             return {
                 "success": True,
@@ -551,15 +680,59 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
                 "execution_backend": ExecutionBackendKind.CONTAINER_WORKER_VM.value,
             }
 
-        agent_harness = AgentPromptEffectProvider._agent_harness_from_session(
-            session,
+        capacity_admission = self._claim_local_inference_capacity(
             config=effective_config,
+            owner_id=owner_id,
+            model=resolved_model,
+            session_id=session_id,
+            dispatch_id=dispatch_id,
+            effect_id=effect_id,
+            execution_backend=ExecutionBackendKind.CONTAINER_WORKER_VM.value,
+            target_name=target_name,
         )
-        resolved_model = (
-            model
-            or getattr(session, "model", None)
-            or default_agent_model_for_provider(agent_harness, effective_config)
-        )
+        if not capacity_admission.admitted:
+            self._release_enqueue_prompt(prompt_lock_claim)
+            record = self._queue_prompt(
+                target=target,
+                vm_name=target_name,
+                session_id=session_id,
+                prompt=prompt,
+                model=resolved_model,
+                vm_user=vm_user,
+                dispatch_id=dispatch_id,
+                resume_thread_id=resume_thread_id,
+                resume_mode=resume_mode,
+                resume_thread_metadata_key=resume_thread_metadata_key,
+                resume_thread_metadata_collection=resume_thread_metadata_collection,
+                effect_id=effect_id,
+                queue_key=self._local_inference_capacity_queue_key(
+                    queue_key=queue_key,
+                    fallback=session_id,
+                    dispatch_id=dispatch_id,
+                ),
+                workflow_context=workflow_context,
+                workflow_for_execution_ids=workflow_for_execution_ids,
+                workflow_run_id=workflow_run_id,
+                mcp_tool_approval_lease_id=mcp_tool_approval_lease_id,
+                context_retry_metadata=payload,
+                model_provider_mode=effective_config.model_provider_mode,
+                queue_reason=LOCAL_INFERENCE_QUEUE_REASON,
+            )
+            return {
+                "success": True,
+                "queued": True,
+                "queue_reason": LOCAL_INFERENCE_QUEUE_REASON,
+                "queue_key": record.queue_key,
+                "vm_name": target_name,
+                "session_id": session_id,
+                "model": resolved_model,
+                "model_provider_mode": effective_config.model_provider_mode,
+                "coalesced_count": record.coalesced_count,
+                "retry_count": record.retry_count,
+                "max_retries": record.max_retries,
+                "execution_backend": ExecutionBackendKind.CONTAINER_WORKER_VM.value,
+                **capacity_admission.output_metadata(),
+            }
         backend = container_backend(context, effective_config)
         execution_id = safe_effect_execution_id("agent", session_id)
         mcp_gateway_url = gateway_url_with_session_context(
@@ -581,53 +754,60 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
             web_search_enabled=bool(getattr(session, "web_search_enabled", False)),
         )
         try:
-            handle = backend.start(
-                backend.prepare(
-                    ExecutionSpec(
-                        backend=ExecutionBackendKind.CONTAINER_WORKER_VM,
-                        target_name=execution_id,
-                        session_id=session_id,
-                        directory_path=getattr(session, "directory_path", None) or "root",
-                        image=container_worker_image_for_session(
-                            session,
-                            effective_config,
-                        ),
-                        resource_limits=container_worker_resource_limits_for_session(session),
-                        command=container_prompt_command(
-                            prompt=prompt,
-                            model=resolved_model,
-                            resume_thread_id=effective_resume_thread_id,
-                            session=session,
-                            agent_provider=agent_harness,
-                            resume_mode=resume_mode,
-                            mcp_gateway_url=mcp_gateway_url,
-                            web_search_enabled=bool(getattr(session, "web_search_enabled", False)),
-                        ),
-                        codex_turn=codex_turn,
-                        metadata={
-                            "effect_type": self.node_type(),
-                            "dispatch_id": dispatch_id,
-                            "resume_thread_id": effective_resume_thread_id,
-                            "agent_provider": agent_harness,
-                            "model": resolved_model,
-                            "model_provider_mode": effective_config.model_provider_mode,
-                            **(
-                                {"codex_auth_mode": codex_turn.auth_mode.value}
-                                if codex_turn is not None
-                                else {}
+            with maintain_local_inference_launch(
+                resolve_runtime_dir(context),
+                capacity_admission.slot_id,
+            ):
+                handle = backend.start(
+                    backend.prepare(
+                        ExecutionSpec(
+                            backend=ExecutionBackendKind.CONTAINER_WORKER_VM,
+                            target_name=execution_id,
+                            session_id=session_id,
+                            directory_path=getattr(session, "directory_path", None) or "root",
+                            image=container_worker_image_for_session(
+                                session,
+                                effective_config,
                             ),
-                        },
+                            resource_limits=container_worker_resource_limits_for_session(session),
+                            command=container_prompt_command(
+                                prompt=prompt,
+                                model=resolved_model,
+                                resume_thread_id=effective_resume_thread_id,
+                                session=session,
+                                agent_provider=agent_harness,
+                                resume_mode=resume_mode,
+                                mcp_gateway_url=mcp_gateway_url,
+                                web_search_enabled=bool(
+                                    getattr(session, "web_search_enabled", False)
+                                ),
+                            ),
+                            codex_turn=codex_turn,
+                            metadata={
+                                "effect_type": self.node_type(),
+                                "dispatch_id": dispatch_id,
+                                "resume_thread_id": effective_resume_thread_id,
+                                "agent_provider": agent_harness,
+                                "model": resolved_model,
+                                "model_provider_mode": effective_config.model_provider_mode,
+                                **(
+                                    {"codex_auth_mode": codex_turn.auth_mode.value}
+                                    if codex_turn is not None
+                                    else {}
+                                ),
+                            },
+                        )
                     )
                 )
-            )
         except Exception as exc:
+            self._release_local_inference_capacity(capacity_admission)
             self._release_enqueue_prompt(prompt_lock_claim)
             record = self._queue_prompt(
                 target=target,
                 vm_name=target_name,
                 session_id=session_id,
                 prompt=prompt,
-                model=model,
+                model=resolved_model,
                 vm_user=vm_user,
                 dispatch_id=dispatch_id,
                 resume_thread_id=resume_thread_id,
@@ -641,6 +821,7 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
                 workflow_run_id=workflow_run_id,
                 mcp_tool_approval_lease_id=mcp_tool_approval_lease_id,
                 context_retry_metadata=payload,
+                model_provider_mode=effective_config.model_provider_mode,
             )
             message = self._normalize_optional_string(exc) or type(exc).__name__
             error_message = (
@@ -679,6 +860,11 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
                 trace_id=self._trace_id(execution_context),
                 agent_harness=agent_harness,
             )
+        self._mark_local_inference_running(
+            capacity_admission,
+            target_name=target_name,
+            execution_id=handle.execution_id,
+        )
         return {
             "dispatch_id": dispatch_id,
             "thread_id": effective_resume_thread_id or dispatch_id,
@@ -689,6 +875,9 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
             "session_id": session_id,
             "execution_backend": ExecutionBackendKind.CONTAINER_WORKER_VM.value,
             "execution_id": handle.execution_id,
+            "model": resolved_model,
+            "model_provider_mode": effective_config.model_provider_mode,
+            **capacity_admission.output_metadata(),
             **self._prompt_lock_metadata(prompt_lock_claim),
         }
 
@@ -755,6 +944,11 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
         completed = 0
         vm_records: list[Any] = []
         for record in _waiting_execution_records(worker, cls.node_type()):
+            if not cls._publish_queued_started_event_before_reconciliation(
+                worker=worker,
+                record=record,
+            ):
+                continue
             if (
                 str(record.outputs.get("execution_backend") or "").strip()
                 == ExecutionBackendKind.CONTAINER_WORKER_VM.value
@@ -786,6 +980,55 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
                 )
                 completed += 1
         return completed
+
+    @staticmethod
+    def _publish_queued_started_event_before_reconciliation(
+        *,
+        worker: Any,
+        record: Any,
+    ) -> bool:
+        outputs = getattr(record, "outputs", {})
+        if not isinstance(outputs, Mapping) or outputs.get("dispatched_from_queue") is not True:
+            return True
+        queue_key = str(outputs.get("queue_key") or "").strip()
+        dispatch_id = str(outputs.get("dispatch_id") or "").strip()
+        queue_store = getattr(worker, "queued_agent_prompt_store", None)
+        get_queued_record = getattr(queue_store, "get", None)
+        if not queue_key or not dispatch_id or not callable(get_queued_record):
+            return True
+        try:
+            queued_record = get_queued_record(queue_key)
+        except Exception:  # noqa: BLE001
+            logger.exception(
+                "AgentEnqueuePromptEffectProvider deferred queued terminal reconciliation "
+                "because its durable queue row could not be read queue_key=%s dispatch_id=%s",
+                queue_key,
+                dispatch_id,
+            )
+            return False
+        if queued_record is None:
+            return True
+        queued_dispatch_id = queued_agent_prompt_dispatch_id(queued_record)
+        if queued_dispatch_id != dispatch_id:
+            return True
+        publish = getattr(worker, "_publish_completion_event_from_record", None)
+        if not callable(publish):
+            return False
+        try:
+            publish(
+                record=record,
+                outputs=dict(outputs),
+                branch_port=AGENT_PROMPT_STARTED_PORT,
+            )
+        except Exception:  # noqa: BLE001
+            logger.exception(
+                "AgentEnqueuePromptEffectProvider deferred terminal reconciliation until "
+                "the queued dispatch started event can be published event_id=%s dispatch_id=%s",
+                getattr(record, "event_id", None),
+                outputs.get("dispatch_id"),
+            )
+            return False
+        return True
 
     @classmethod
     def node_type(cls) -> str:
@@ -1171,6 +1414,8 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
         context_retry_metadata: Mapping[str, Any] | None = None,
         resume_thread_metadata_key: str | None = None,
         resume_thread_metadata_collection: str | None = None,
+        model_provider_mode: str | None = None,
+        queue_reason: str | None = None,
     ) -> QueuedAgentPromptRecord:
         context = self._context()
         metadata = {
@@ -1194,6 +1439,13 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
                 session_id=session_id,
                 prompt=prompt,
                 model=model,
+                model_provider_mode=(
+                    model_provider_mode
+                    or self._normalize_optional_string(
+                        getattr(context.resolved_config, "model_provider_mode", None)
+                    )
+                ),
+                queue_reason=queue_reason,
                 vm_user=vm_user,
                 dispatch_id=dispatch_id,
                 resume_thread_id=resume_thread_id,
@@ -1223,6 +1475,110 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
                 ),
             ) from exc
 
+    def _claim_local_inference_capacity(
+        self,
+        *,
+        config: Any,
+        owner_id: str,
+        model: str,
+        session_id: str | None,
+        dispatch_id: str,
+        effect_id: str,
+        execution_backend: str,
+        target_name: str,
+    ) -> LocalInferenceCapacityAdmission:
+        if str(getattr(config, "model_provider_mode", "") or "").strip() != "local_openai":
+            return LocalInferenceCapacityAdmission(enabled=False, admitted=True)
+        runtime_dir = resolve_runtime_dir(self._context())
+        if runtime_dir is None:
+            return LocalInferenceCapacityAdmission(enabled=False, admitted=True)
+        capacity_store = local_inference_capacity_store(runtime_dir)
+        self._reconcile_local_inference_capacity(capacity_store=capacity_store, config=config)
+        return capacity_store.claim(
+            max_concurrency=getattr(config, "local_openai_max_concurrency", None),
+            owner_id=owner_id,
+            model=model,
+            session_id=session_id,
+            dispatch_id=dispatch_id,
+            effect_id=effect_id,
+            execution_backend=execution_backend,
+            target_name=target_name,
+        )
+
+    def _reconcile_local_inference_capacity(self, *, capacity_store: Any, config: Any) -> None:
+        context = self._context()
+        running_leases = [
+            lease for lease in capacity_store.read_all().values() if lease.status == "running"
+        ]
+        if not running_leases:
+            return
+
+        summaries: list[Any] | None = None
+        if any(
+            lease.execution_backend != ExecutionBackendKind.CONTAINER_WORKER_VM.value
+            for lease in running_leases
+        ):
+            list_vms = getattr(context.vm_inventory, "list_vms", None)
+            if callable(list_vms):
+                try:
+                    summaries = list(list_vms(include_inactive=True, vm_user="agent"))
+                except Exception:
+                    summaries = None
+
+        def is_active(lease: LocalInferenceCapacityLease) -> bool | None:
+            if lease.execution_backend != ExecutionBackendKind.CONTAINER_WORKER_VM.value:
+                if summaries is None:
+                    return None
+                return local_inference_vm_lease_is_active(lease, summaries)
+
+            session_id = str(lease.session_id or "").strip()
+            execution_id = str(lease.execution_id or "").strip()
+            if not execution_id and session_id:
+                execution_id = safe_effect_execution_id("agent", session_id)
+            if not execution_id:
+                return None
+            effective_config = (
+                effective_config_for_session(context, session_id) if session_id else config
+            )
+            backend = container_backend(context, effective_config)
+            return local_inference_execution_is_active(backend.inspect(execution_id))
+
+        capacity_store.reconcile_running(is_active)
+
+    def _mark_local_inference_running(
+        self,
+        admission: LocalInferenceCapacityAdmission,
+        *,
+        target_name: str,
+        execution_id: str,
+    ) -> None:
+        if admission.slot_id is None:
+            return
+        runtime_dir = resolve_runtime_dir(self._context())
+        if runtime_dir is not None:
+            local_inference_capacity_store(runtime_dir).mark_running(
+                admission.slot_id,
+                target_name=target_name,
+                execution_id=execution_id,
+            )
+
+    @staticmethod
+    def _local_inference_capacity_queue_key(
+        *,
+        queue_key: str | None,
+        fallback: str,
+        dispatch_id: str,
+    ) -> str:
+        base = str(queue_key or fallback).strip() or fallback
+        return f"{base}:local-inference:{dispatch_id}"
+
+    def _release_local_inference_capacity(self, admission: LocalInferenceCapacityAdmission) -> None:
+        if admission.slot_id is None:
+            return
+        runtime_dir = resolve_runtime_dir(self._context())
+        if runtime_dir is not None:
+            local_inference_capacity_store(runtime_dir).release(admission.slot_id)
+
     @classmethod
     def _context_retry_metadata(cls, payload: Mapping[str, Any] | None) -> dict[str, str]:
         if not isinstance(payload, Mapping):
@@ -1243,84 +1599,6 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
             return max(1, int(value))
         except (TypeError, ValueError):
             return 3
-
-    @classmethod
-    def _workflow_context_from_sources(
-        cls,
-        *,
-        execution_context: Mapping[str, Any] | None,
-        input_payload: Mapping[str, Any] | None,
-    ) -> dict[str, dict[str, Any]] | None:
-        for source in (execution_context, input_payload):
-            if not isinstance(source, Mapping):
-                continue
-            workflow_context = cls._copy_workflow_context(source.get(NODE_OUTPUTS_CONTEXT_KEY))
-            if workflow_context:
-                return workflow_context
-            nested_input = source.get("input_payload")
-            if isinstance(nested_input, Mapping):
-                workflow_context = cls._copy_workflow_context(
-                    nested_input.get(NODE_OUTPUTS_CONTEXT_KEY)
-                )
-                if workflow_context:
-                    return workflow_context
-        return None
-
-    @classmethod
-    def _workflow_for_execution_ids_from_sources(
-        cls,
-        *,
-        execution_context: Mapping[str, Any] | None,
-        input_payload: Mapping[str, Any] | None,
-    ) -> dict[str, str] | None:
-        for source in (execution_context, input_payload):
-            if not isinstance(source, Mapping):
-                continue
-            workflow_for_execution_ids = cls._copy_workflow_for_execution_ids(
-                source.get(FOR_EXECUTION_IDS_CONTEXT_KEY)
-            )
-            if workflow_for_execution_ids:
-                return workflow_for_execution_ids
-            nested_input = source.get("input_payload")
-            if isinstance(nested_input, Mapping):
-                workflow_for_execution_ids = cls._copy_workflow_for_execution_ids(
-                    nested_input.get(FOR_EXECUTION_IDS_CONTEXT_KEY)
-                )
-                if workflow_for_execution_ids:
-                    return workflow_for_execution_ids
-        return None
-
-    @staticmethod
-    def _copy_workflow_for_execution_ids(raw_value: Any) -> dict[str, str] | None:
-        if not isinstance(raw_value, Mapping):
-            return None
-        workflow_for_execution_ids: dict[str, str] = {}
-        for gate_id, execution_id in raw_value.items():
-            if not isinstance(gate_id, str):
-                continue
-            gate_text = gate_id.strip()
-            execution_text = str(execution_id).strip() if execution_id is not None else ""
-            if gate_text and execution_text:
-                workflow_for_execution_ids[gate_text] = execution_text
-        return workflow_for_execution_ids or None
-
-    @staticmethod
-    def _copy_workflow_context(raw_context: Any) -> dict[str, dict[str, Any]] | None:
-        if not isinstance(raw_context, Mapping):
-            return None
-        workflow_context: dict[str, dict[str, Any]] = {}
-        for node_id, node_payload in raw_context.items():
-            if not isinstance(node_id, str) or not isinstance(node_payload, Mapping):
-                continue
-            if not all(isinstance(key, str) for key in node_payload):
-                continue
-            try:
-                copied_payload = json.loads(json.dumps(dict(node_payload)))
-            except (TypeError, ValueError):
-                continue
-            if isinstance(copied_payload, dict):
-                workflow_context[node_id] = copied_payload
-        return workflow_context or None
 
     @classmethod
     def _usable_resume_thread_id(cls, value: Any) -> str | None:

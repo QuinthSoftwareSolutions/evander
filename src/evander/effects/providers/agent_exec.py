@@ -139,9 +139,7 @@ class AgentExecEffectProvider(VmExecEffectProvider):
         failure_kind = None
         failure_cause = None
         if isinstance(status_metadata, Mapping):
-            failure_cause = normalize_optional_string(
-                status_metadata.get("worker_failure_cause")
-            )
+            failure_cause = normalize_optional_string(status_metadata.get("worker_failure_cause"))
         if not success:
             failure_kind = (
                 "command"

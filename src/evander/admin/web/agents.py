@@ -357,9 +357,7 @@ def agent_routes(
                 "items": [
                     _compact_agent_record_payload(
                         record,
-                        include_codex_usage=not (
-                            dashboard_request and dashboard_agent_inventory
-                        ),
+                        include_codex_usage=not (dashboard_request and dashboard_agent_inventory),
                     )
                     if summary_only
                     else _jsonable(record)

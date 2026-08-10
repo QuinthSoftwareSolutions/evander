@@ -291,13 +291,10 @@ def container_worker_resource_limits_for_session(
         if raw_limits is not None:
             if not isinstance(raw_limits, Mapping):
                 raise ValueError("container_worker_resource_limits must be an object")
-            explicit_limits = WorkerResourceLimits.model_validate(
-                dict(raw_limits)
-            ).model_dump(mode="json", exclude_none=True)
-    if (
-        isinstance(metadata, Mapping)
-        and metadata.get("team_release_verification") is True
-    ):
+            explicit_limits = WorkerResourceLimits.model_validate(dict(raw_limits)).model_dump(
+                mode="json", exclude_none=True
+            )
+    if isinstance(metadata, Mapping) and metadata.get("team_release_verification") is True:
         limits: dict[str, str | int | float] = {
             "cpus": TEAM_RELEASE_VERIFICATION_CONTAINER_JOB_CPUS,
             "pids_limit": TEAM_RELEASE_VERIFICATION_CONTAINER_JOB_PIDS_LIMIT,

@@ -633,9 +633,7 @@ def _attach_promotion_success(
         )
         if resolved_deliverable_blocker_ids:
             deliverable.state = (
-                TeamRecordState.PENDING
-                if kind == "review"
-                else TeamRecordState.ACCEPTED
+                TeamRecordState.PENDING if kind == "review" else TeamRecordState.ACCEPTED
             )
     resolve_active_blockers_for_source(
         state,
@@ -657,17 +655,11 @@ def _attach_promotion_success(
                 refs.reviewed_commit_sha = refs.reviewed_commit_sha or commit_sha
         elif kind == "feature":
             raw_manifests = promotion.outputs.get("source_manifests")
-            source_manifests = (
-                raw_manifests if isinstance(raw_manifests, dict) else {}
-            )
+            source_manifests = raw_manifests if isinstance(raw_manifests, dict) else {}
             source_branch = refs.review_branch or refs.agent_branch
-            raw_manifest = (
-                source_manifests.get(source_branch) if source_branch else None
-            )
+            raw_manifest = source_manifests.get(source_branch) if source_branch else None
             if isinstance(raw_manifest, dict):
-                deliverable.review_manifest = DeliverableReviewManifest.model_validate(
-                    raw_manifest
-                )
+                deliverable.review_manifest = DeliverableReviewManifest.model_validate(raw_manifest)
             refs.feature_branch = promotion.target_branch
             if commit_sha is not None:
                 refs.feature_commit_sha = commit_sha
@@ -809,23 +801,15 @@ def _attach_correction_aggregate_manifests(
     release = state.release_packages.get(promotion.release_package_id or "")
     if release is None:
         return f"correction aggregate {promotion.id} has no release package"
-    predecessor = state.release_packages.get(
-        release.supersedes_release_package_id or ""
-    )
-    rejected_candidate = (
-        predecessor.candidate_commit_sha if predecessor is not None else None
-    )
+    predecessor = state.release_packages.get(release.supersedes_release_package_id or "")
+    rejected_candidate = predecessor.candidate_commit_sha if predecessor is not None else None
     if rejected_candidate is None:
-        return (
-            f"correction aggregate {promotion.id} has no immutable rejected "
-            "candidate base"
-        )
+        return f"correction aggregate {promotion.id} has no immutable rejected candidate base"
     raw_manifests = promotion.outputs.get("source_manifests")
     if not isinstance(raw_manifests, dict):
         return f"correction aggregate {promotion.id} returned no source manifests"
     expected_sources = {
-        source.source_branch: source.expected_commit_sha
-        for source in promotion.sources
+        source.source_branch: source.expected_commit_sha for source in promotion.sources
     }
     if set(raw_manifests) != set(expected_sources):
         return _validate_recovered_correction_aggregate_manifest(
@@ -841,10 +825,7 @@ def _attach_correction_aggregate_manifests(
         if str(item).strip()
     ]
     if len(deliverable_ids) != len(promotion.sources):
-        return (
-            f"correction aggregate {promotion.id} has inconsistent deliverable "
-            "source provenance"
-        )
+        return f"correction aggregate {promotion.id} has inconsistent deliverable source provenance"
     for deliverable_id, source in zip(
         deliverable_ids,
         promotion.sources,
@@ -852,10 +833,7 @@ def _attach_correction_aggregate_manifests(
     ):
         raw_manifest = raw_manifests.get(source.source_branch)
         if not isinstance(raw_manifest, dict):
-            return (
-                f"correction aggregate {promotion.id} has no manifest for "
-                f"{source.source_branch}"
-            )
+            return f"correction aggregate {promotion.id} has no manifest for {source.source_branch}"
         try:
             manifest = DeliverableReviewManifest.model_validate(raw_manifest)
         except ValueError as exc:
@@ -910,42 +888,30 @@ def _validate_recovered_correction_aggregate_manifest(
     """Validate the one resolved aggregate submitted after a merge conflict."""
 
     if len(raw_manifests) != 1:
-        return (
-            f"correction aggregate {promotion.id} returned manifests for a "
-            "different source set"
-        )
+        return f"correction aggregate {promotion.id} returned manifests for a different source set"
     raw_manifest = next(iter(raw_manifests.values()))
     if not isinstance(raw_manifest, dict):
         return f"correction aggregate {promotion.id} returned an invalid recovery manifest"
     try:
         manifest = DeliverableReviewManifest.model_validate(raw_manifest)
     except ValueError as exc:
-        return (
-            f"correction aggregate {promotion.id} returned an invalid recovery "
-            f"manifest: {exc}"
-        )
+        return f"correction aggregate {promotion.id} returned an invalid recovery manifest: {exc}"
     if manifest.base_commit_sha != predecessor_commit_sha:
         return (
             f"correction aggregate {promotion.id} recovery is not rooted at "
             f"rejected candidate {predecessor_commit_sha}"
         )
     allowed_paths: set[str] = set()
-    predecessor = state.release_packages.get(
-        release.supersedes_release_package_id or ""
-    )
+    predecessor = state.release_packages.get(release.supersedes_release_package_id or "")
     predecessor_ids = set(predecessor.deliverable_ids if predecessor is not None else [])
     correction_deliverables = [
         state.deliverables[deliverable_id]
         for deliverable_id in release.deliverable_ids
-        if deliverable_id not in predecessor_ids
-        and deliverable_id in state.deliverables
+        if deliverable_id not in predecessor_ids and deliverable_id in state.deliverables
     ]
     for deliverable in correction_deliverables:
         reviewed_manifest = deliverable.review_manifest
-        if (
-            reviewed_manifest is None
-            or reviewed_manifest.base_commit_sha != predecessor_commit_sha
-        ):
+        if reviewed_manifest is None or reviewed_manifest.base_commit_sha != predecessor_commit_sha:
             return (
                 f"correction aggregate {promotion.id} recovery lacks trusted "
                 f"rejected-candidate scope for deliverable {deliverable.id}"
@@ -956,8 +922,7 @@ def _validate_recovered_correction_aggregate_manifest(
     if unexpected:
         return (
             f"correction aggregate {promotion.id} recovery changes paths outside "
-            "the reviewed correction manifests: "
-            + ", ".join(unexpected)
+            "the reviewed correction manifests: " + ", ".join(unexpected)
         )
     return None
 
@@ -966,7 +931,7 @@ def _manifest_path_names(rows: list[str]) -> set[str]:
     paths: set[str] = set()
     for row in rows:
         fields = row.split("\t")
-        for value in (fields[1:] if len(fields) > 1 else fields):
+        for value in fields[1:] if len(fields) > 1 else fields:
             if value:
                 paths.add(value)
     return paths
@@ -1098,9 +1063,7 @@ def _queue_canonical_push_after_release_success(
     canonical_base_commit_sha = _optional_text(release.canonical_base_commit_sha)
     if canonical_base_commit_sha is None:
         release.state = TeamRecordState.BLOCKED
-        release.error = (
-            "release has no immutable canonical destination base commit for publication"
-        )
+        release.error = "release has no immutable canonical destination base commit for publication"
         result["error"] = release.error
         open_release_blocker(
             state,
@@ -1227,15 +1190,11 @@ def _attach_promotion_failure(
         if promotion.release_package_id is not None
         else None
     )
-    release_was_recoverable = (
-        release is not None
-        and release.state
-        in {
-            TeamRecordState.PENDING,
-            TeamRecordState.IN_PROGRESS,
-            TeamRecordState.BLOCKED,
-        }
-    )
+    release_was_recoverable = release is not None and release.state in {
+        TeamRecordState.PENDING,
+        TeamRecordState.IN_PROGRESS,
+        TeamRecordState.BLOCKED,
+    }
     if release_was_recoverable and promotion.promotion_kind == "correction_aggregate":
         manifest_error = _attach_correction_aggregate_manifests(
             state,
@@ -1288,13 +1247,9 @@ def _attach_promotion_failure(
             details=details,
             reporter_agent_id=promotion.actor_agent_id,
             initial_owner_agent_id=(
-                merge_recovery_assignment[1]
-                if merge_recovery_assignment is not None
-                else None
+                merge_recovery_assignment[1] if merge_recovery_assignment is not None else None
             ),
-            route_initial_owner_even_if_unavailable=(
-                merge_recovery_assignment is not None
-            ),
+            route_initial_owner_even_if_unavailable=(merge_recovery_assignment is not None),
             wake_owner=(
                 merge_recovery_assignment is None
                 or not _active_stand_downs_for_agent(
@@ -1355,8 +1310,7 @@ def _materialize_merge_recovery_task(
     boundary_kind = (
         failed_promotions[0].promotion_kind
         if len({promotion.promotion_kind for promotion in failed_promotions}) == 1
-        and failed_promotions[0].promotion_kind
-        in {"correction_aggregate", "release"}
+        and failed_promotions[0].promotion_kind in {"correction_aggregate", "release"}
         else None
     )
     task_id = _merge_recovery_task_id(
@@ -1392,10 +1346,7 @@ def _materialize_merge_recovery_task(
         state.tasks[task.id] = task
         result.setdefault("created_task_ids", []).append(task.id)
     else:
-        if (
-            task.state == TeamTaskState.PENDING
-            and task.owner_agent_id != owner_agent_id
-        ):
+        if task.state == TeamTaskState.PENDING and task.owner_agent_id != owner_agent_id:
             task.owner_agent_id = owner_agent_id
         if task.description != description:
             task.description = description
@@ -1439,8 +1390,7 @@ def _merge_recovery_assignment(
     promotion: GitPromotionRecord,
 ) -> tuple[list[GitPromotionRecord], str, str] | None:
     if (
-        promotion.promotion_kind
-        not in {"feature", "correction_aggregate", "release"}
+        promotion.promotion_kind not in {"feature", "correction_aggregate", "release"}
         or _optional_text(promotion.outputs.get("error_code")) != "merge_conflict"
     ):
         return None
@@ -1469,13 +1419,9 @@ def _release_merge_conflict_promotions(
         candidate
         for candidate in state.git_promotions.values()
         if candidate.state == "failed"
-        and candidate.promotion_kind
-        in {"feature", "correction_aggregate", "release"}
+        and candidate.promotion_kind in {"feature", "correction_aggregate", "release"}
         and _optional_text(candidate.outputs.get("error_code")) == "merge_conflict"
-        and (
-            candidate.release_package_id == release.id
-            or candidate.id in linked_ids
-        )
+        and (candidate.release_package_id == release.id or candidate.id in linked_ids)
     ]
     rows.sort(key=lambda candidate: (candidate.created_at, candidate.id))
     return rows
@@ -1496,11 +1442,7 @@ def _merge_recovery_owner(
         for promotion in promotions
     ]
     unique_owner_ids = set().union(*owner_sets) if owner_sets else set()
-    if (
-        owner_sets
-        and all(owner_ids for owner_ids in owner_sets)
-        and len(unique_owner_ids) == 1
-    ):
+    if owner_sets and all(owner_ids for owner_ids in owner_sets) and len(unique_owner_ids) == 1:
         owner_agent_id = next(iter(unique_owner_ids))
         if _eligible_merge_recovery_owner(
             state,
@@ -1557,11 +1499,7 @@ def _promotion_source_owner_ids(
     if deliverable is not None:
         return {deliverable.producer_agent_id}
 
-    task = (
-        state.tasks.get(promotion.task_id)
-        if promotion.task_id is not None
-        else None
-    )
+    task = state.tasks.get(promotion.task_id) if promotion.task_id is not None else None
     if task is not None and task.project_id == release.project_id:
         return {task.owner_agent_id}
     return set()
@@ -1589,9 +1527,7 @@ def _eligible_team_merge_recovery_owner(
 ) -> bool:
     agent = state.agents.get(agent_id)
     return bool(
-        agent is not None
-        and agent.status == AgentStatus.ACTIVE
-        and agent.team_id == team_id
+        agent is not None and agent.status == AgentStatus.ACTIVE and agent.team_id == team_id
     )
 
 
@@ -1601,9 +1537,7 @@ def _merge_recovery_task_id(
     boundary_kind: str | None = None,
 ) -> str:
     identity = (
-        f"{release_package_id}:{boundary_kind}"
-        if boundary_kind is not None
-        else release_package_id
+        f"{release_package_id}:{boundary_kind}" if boundary_kind is not None else release_package_id
     )
     token = sha256(identity.encode("utf-8")).hexdigest()[:24]
     return f"git-merge-recovery-{token}"

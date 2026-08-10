@@ -5,7 +5,7 @@ from datetime import datetime
 from typing import Any
 from uuid import uuid4
 
-from evander.models import utc_now
+from evander.models import digest_payload, utc_now
 
 from ...models import (
     AgentInboxItem,
@@ -22,6 +22,7 @@ from ...models import (
     TeamBlockerRoute,
     TeamBlockerSourceKind,
     TeamBlockerState,
+    TeamMcpCapabilityBlockerIdentity,
     TeamInboxItemState,
     TeamInboxItemType,
     TeamInboxPriority,
@@ -83,9 +84,7 @@ def open_or_get_blocker(
         else TeamBlockerResolutionScope(str(resolution_scope))
     )
     effective_now = _ensure_utc(now or utc_now())
-    reporter = (
-        state.agents.get(reporter_agent_id) if _optional_text(reporter_agent_id) else None
-    )
+    reporter = state.agents.get(reporter_agent_id) if _optional_text(reporter_agent_id) else None
     normalized_team_id = _optional_text(team_id) or (reporter.team_id if reporter else None)
     if normalized_team_id is None:
         raise ValueError("blocker requires team_id or a team-bound reporter")
@@ -127,9 +126,7 @@ def open_or_get_blocker(
             start_agent_id=initial_owner_agent_id,
             team_id=team.id,
         )
-    elif parent_owner_id is not None and (
-        reporter is None or parent_owner_id != reporter.id
-    ):
+    elif parent_owner_id is not None and (reporter is None or parent_owner_id != reporter.id):
         owner, skipped_agent_ids = nearest_available_agent(
             state,
             start_agent_id=parent_owner_id,
@@ -265,8 +262,7 @@ def open_or_update_agent_execution_stall(
     if (
         blocker.state == TeamBlockerState.OPEN
         and blocker.owner_agent_id == agent.id
-        and blocker.route
-        in {TeamBlockerRoute.OWNED, TeamBlockerRoute.DELEGATED}
+        and blocker.route in {TeamBlockerRoute.OWNED, TeamBlockerRoute.DELEGATED}
     ):
         route_blocker_terminal(
             state,
@@ -355,9 +351,7 @@ def open_or_update_agent_execution_stall(
             now=effective_now,
         )
         notice.payload["accountable_parent_task_ids"] = sorted(parent_task_ids)
-        notice.payload["affected_child_task_ids"] = sorted(
-            affected_children_by_owner[owner_id]
-        )
+        notice.payload["affected_child_task_ids"] = sorted(affected_children_by_owner[owner_id])
         exhausted_ids = {
             str(value)
             for value in notice.payload.get("exhausted_dispatch_ids") or []
@@ -367,6 +361,91 @@ def open_or_update_agent_execution_stall(
             exhausted_ids.add(normalized_dispatch_id)
         notice.payload["exhausted_dispatch_ids"] = sorted(exhausted_ids)
         notice.updated_at = effective_now
+    return blocker
+
+
+def open_agent_mcp_capability_blocker(
+    state: TeamState,
+    *,
+    agent_id: str,
+    review_request_ids: Sequence[str],
+    affected_task_ids: Sequence[str],
+    dispatch_id: str,
+    required_tool_names: Sequence[str],
+    diagnostic: str,
+    result: dict[str, Any],
+    now: datetime | None = None,
+) -> TeamBlocker:
+    """Route a durable incident when a required Team MCP tool is unavailable."""
+
+    effective_now = _ensure_utc(now or utc_now())
+    agent = state.agents.get(_required_text(agent_id, "agent_id"))
+    if agent is None or agent.team_id is None:
+        raise ValueError(f"agent {agent_id} is not assigned to a Team")
+    normalized_review_ids = sorted(
+        {
+            review_id
+            for raw_review_id in review_request_ids
+            if (review_id := _optional_text(raw_review_id)) is not None
+        }
+    )
+    if not normalized_review_ids:
+        raise ValueError("MCP capability blocker requires review_request_ids")
+    normalized_tools = sorted(
+        {
+            tool_name
+            for raw_tool_name in required_tool_names
+            if (tool_name := _optional_text(raw_tool_name)) is not None
+        }
+    )
+    if not normalized_tools:
+        raise ValueError("MCP capability blocker requires required_tool_names")
+    current_task_ids = sorted(
+        {
+            task_id
+            for raw_task_id in affected_task_ids
+            if (task_id := _optional_text(raw_task_id)) is not None and task_id in state.tasks
+        }
+    )
+    identity = TeamMcpCapabilityBlockerIdentity(
+        agent_id=agent.id,
+        review_request_ids=normalized_review_ids,
+    )
+    source_digest = digest_payload(identity.model_dump(mode="json"))
+    blocker, _created = open_or_get_blocker(
+        state,
+        source_kind=TeamBlockerSourceKind.MCP_CAPABILITY,
+        source_id=f"mcp-capability:{source_digest}",
+        reason_code="required_review_tool_unavailable",
+        summary=f"Agent {agent.id} cannot access a required review MCP tool",
+        details=(
+            f"Dispatch {dispatch_id} could not verify required review tool(s) "
+            f"{', '.join(normalized_tools)} after one retry. {diagnostic}"
+        ),
+        priority=TeamInboxPriority.HIGH,
+        reporter_agent_id=agent.id,
+        team_id=agent.team_id,
+        affected_task_ids=current_task_ids,
+        result=result,
+        now=effective_now,
+    )
+    blocker.mcp_capability_identity = identity
+    if blocker.state == TeamBlockerState.OPEN and blocker.route in {
+        TeamBlockerRoute.OWNED,
+        TeamBlockerRoute.DELEGATED,
+    }:
+        route_blocker_terminal(
+            state,
+            blocker=blocker,
+            actor_agent_id=agent.id,
+            dispatch_id=dispatch_id,
+            reason=(
+                "A required review MCP tool remained unavailable after one retry; "
+                "route the capability failure to the configured terminal authority."
+            ),
+            result=result,
+            now=effective_now,
+        )
     return blocker
 
 
@@ -522,11 +601,7 @@ def blocker_resolution_line_agent_ids(
             break
         agent_ids.append(agent.id)
         next_id = _optional_text(agent.reports_to_agent_id)
-        if (
-            next_id is None
-            and team is not None
-            and team.manager_agent_id != agent.id
-        ):
+        if next_id is None and team is not None and team.manager_agent_id != agent.id:
             next_id = team.manager_agent_id
         current_id = next_id
     return agent_ids
@@ -625,9 +700,7 @@ def create_blocker_inbox(
     item = AgentInboxItem(
         id=f"inbox-{uuid4().hex}",
         recipient_agent_id=recipient_agent_id,
-        sender_agent_id=(
-            sender_agent_id if sender_agent_id in state.agents else None
-        ),
+        sender_agent_id=(sender_agent_id if sender_agent_id in state.agents else None),
         task_id=blocker.task_id,
         item_type=TeamInboxItemType.STATUS_REQUEST,
         response_requested=True,
@@ -712,9 +785,7 @@ def assign_blocker_owner(
     effective_now = _ensure_utc(now or utc_now())
     owner = state.agents.get(_required_text(owner_agent_id, "owner_agent_id"))
     if owner is None or owner.team_id != blocker.team_id or owner.status != AgentStatus.ACTIVE:
-        raise ValueError(
-            f"blocker {blocker.id} owner {owner_agent_id} is not an active team agent"
-        )
+        raise ValueError(f"blocker {blocker.id} owner {owner_agent_id} is not an active team agent")
     previous_owner_id = blocker.owner_agent_id
     route_changed = (
         blocker.owner_agent_id != owner.id
@@ -814,7 +885,9 @@ def blockers_due_for_agent(
             and item.payload.get("blocker_id") == blocker.id
             for item in state.inbox.values()
         )
-        follow_up_due = blocker.follow_up_at is None or _ensure_utc(blocker.follow_up_at) <= effective_now
+        follow_up_due = (
+            blocker.follow_up_at is None or _ensure_utc(blocker.follow_up_at) <= effective_now
+        )
         if has_pending_inbox or follow_up_due:
             rows.append(blocker)
     return sorted(rows, key=lambda item: (item.created_at, item.id))
@@ -838,13 +911,9 @@ def blockers_assigned_to_agent(
         for blocker in state.blockers.values()
         if blocker.state == TeamBlockerState.OPEN
         and (
-            (
-                blocker.route == TeamBlockerRoute.DELEGATED
-                and blocker.delegate_agent_id == agent_id
-            )
+            (blocker.route == TeamBlockerRoute.DELEGATED and blocker.delegate_agent_id == agent_id)
             or (
-                blocker.route
-                in {TeamBlockerRoute.OWNED, TeamBlockerRoute.ROUTING_FAILED}
+                blocker.route in {TeamBlockerRoute.OWNED, TeamBlockerRoute.ROUTING_FAILED}
                 and blocker.owner_agent_id == agent_id
             )
         )
@@ -873,16 +942,11 @@ def assign_blockers_to_dispatch(
                     and blocker.delegate_agent_id == agent_id
                 )
                 or (
-                    blocker.route
-                    in {TeamBlockerRoute.OWNED, TeamBlockerRoute.ROUTING_FAILED}
+                    blocker.route in {TeamBlockerRoute.OWNED, TeamBlockerRoute.ROUTING_FAILED}
                     and blocker.owner_agent_id == agent_id
                 )
             )
-            if (
-                blocker is None
-                or blocker.state != TeamBlockerState.OPEN
-                or not assigned
-            ):
+            if blocker is None or blocker.state != TeamBlockerState.OPEN or not assigned:
                 raise ValueError(
                     f"blocker {blocker_id} is not open and assigned to agent {agent_id}"
                 )
@@ -907,8 +971,7 @@ def complete_blocker_dispatches(
         [
             blocker
             for blocker in state.blockers.values()
-            if blocker.state == TeamBlockerState.OPEN
-            and blocker.active_dispatch_id == dispatch_id
+            if blocker.state == TeamBlockerState.OPEN and blocker.active_dispatch_id == dispatch_id
         ],
         key=lambda blocker: blocker.id,
     )
@@ -924,10 +987,7 @@ def complete_blocker_dispatches(
         if progressed:
             processed.append(blocker.id)
             continue
-        if (
-            blocker.route == TeamBlockerRoute.DELEGATED
-            and blocker.delegate_agent_id == agent_id
-        ):
+        if blocker.route == TeamBlockerRoute.DELEGATED and blocker.delegate_agent_id == agent_id:
             delegate_id = blocker.delegate_agent_id
             handle_blocker_inbox_for_agent(
                 state,
@@ -1160,9 +1220,7 @@ def route_blocker_terminal(
                 result.setdefault("events", []).append(
                     {
                         "event_type": GOVERNANCE_WAKE_REQUESTED_EVENT_TYPE,
-                        "correlation_key": (
-                            f"{GOVERNANCE_WAKE_REQUESTED_EVENT_TYPE}:{group.id}"
-                        ),
+                        "correlation_key": (f"{GOVERNANCE_WAKE_REQUESTED_EVENT_TYPE}:{group.id}"),
                         "idempotency_key": (
                             "team-addon:team.governance.wake_requested:"
                             f"{group.id}:blocker:{blocker.id}:{blocker.escalation_depth}"
@@ -1432,9 +1490,7 @@ def reconcile_task_blockers_after_cancellation(
 
         if shared_link:
             blocker.affected_task_ids = [
-                affected_id
-                for affected_id in blocker.affected_task_ids
-                if affected_id != task_id
+                affected_id for affected_id in blocker.affected_task_ids if affected_id != task_id
             ]
             blocker.updated_at = effective_now
             _refresh_pending_blocker_inbox_payloads(
@@ -1517,12 +1573,10 @@ def reconcile_task_blockers_after_reassignment(
         if blocker.source_kind == TeamBlockerSourceKind.AGENT_EXECUTION_STALL:
             membership_changed = False
             removed_from_old_stall = (
-                blocker.source_id == old_owner_agent_id
-                and task_id in blocker.affected_task_ids
+                blocker.source_id == old_owner_agent_id and task_id in blocker.affected_task_ids
             )
             added_to_new_stall = (
-                blocker.source_id == new_owner_agent_id
-                and task_id not in blocker.affected_task_ids
+                blocker.source_id == new_owner_agent_id and task_id not in blocker.affected_task_ids
             )
             if removed_from_old_stall:
                 blocker.affected_task_ids = [
@@ -1532,9 +1586,7 @@ def reconcile_task_blockers_after_reassignment(
                 ]
                 membership_changed = True
             if added_to_new_stall:
-                blocker.affected_task_ids = sorted(
-                    {*blocker.affected_task_ids, task_id}
-                )
+                blocker.affected_task_ids = sorted({*blocker.affected_task_ids, task_id})
                 membership_changed = True
             if membership_changed:
                 blocker.updated_at = effective_now
@@ -1629,9 +1681,7 @@ def reconcile_task_blockers_after_reassignment(
             next_owner, skipped = nearest_available_superior(state, new_owner)
         blocker.owner_agent_id = next_owner.id if next_owner is not None else None
         blocker.route = (
-            TeamBlockerRoute.OWNED
-            if next_owner is not None
-            else TeamBlockerRoute.ROUTING_FAILED
+            TeamBlockerRoute.OWNED if next_owner is not None else TeamBlockerRoute.ROUTING_FAILED
         )
         blocker.updated_at = effective_now
         event = append_blocker_event(
@@ -1684,18 +1734,13 @@ def _blocker_local_task_ids(
     elif blocker.source_kind == TeamBlockerSourceKind.REVIEW_REQUEST:
         review = state.review_requests.get(blocker.source_id)
         deliverable = (
-            state.deliverables.get(review.deliverable_id or "")
-            if review is not None
-            else None
+            state.deliverables.get(review.deliverable_id or "") if review is not None else None
         )
         if deliverable is not None:
             task_ids.add(deliverable.task_id)
             if blocker.task_id is not None:
                 task_ids.add(blocker.task_id)
-    elif (
-        blocker.source_kind == TeamBlockerSourceKind.EXPLICIT
-        and blocker.task_id is not None
-    ):
+    elif blocker.source_kind == TeamBlockerSourceKind.EXPLICIT and blocker.task_id is not None:
         task_ids.add(blocker.task_id)
     return task_ids
 
@@ -1724,11 +1769,7 @@ def _retire_cancelled_task_blocker_source(
         return
     if review.retired_at is None and review.superseded_by_review_request_id is None:
         cancellation = state.tasks.get(task_id)
-        cancellation_actor = (
-            cancellation.cancellation
-            if cancellation is not None
-            else None
-        )
+        cancellation_actor = cancellation.cancellation if cancellation is not None else None
         review.retired_at = now
         review.retired_by = (
             f"agent:{actor_agent_id}"
@@ -1739,10 +1780,7 @@ def _retire_cancelled_task_blocker_source(
                 else "operator:task-cancellation"
             )
         )
-        review.retirement_reason = (
-            f"Task {task_id} was cancelled by an "
-            "authorized disposition."
-        )
+        review.retirement_reason = f"Task {task_id} was cancelled by an authorized disposition."
         for item in state.inbox.values():
             if (
                 item.state == TeamInboxItemState.PENDING
@@ -1766,10 +1804,7 @@ def _refresh_pending_blocker_inbox_payloads(
     now: datetime,
 ) -> None:
     for item in state.inbox.values():
-        if (
-            item.state != TeamInboxItemState.PENDING
-            or item.payload.get("blocker_id") != blocker.id
-        ):
+        if item.state != TeamInboxItemState.PENDING or item.payload.get("blocker_id") != blocker.id:
             continue
         item.payload["affected_task_ids"] = list(blocker.affected_task_ids)
         item.payload["owner_agent_id"] = blocker.owner_agent_id
@@ -1855,9 +1890,7 @@ def open_release_blocker(
             if initial_owner_agent_id is not None
             else (project.lead_agent_id if reporter_agent_id is None else None)
         ),
-        route_initial_owner_even_if_unavailable=(
-            route_initial_owner_even_if_unavailable
-        ),
+        route_initial_owner_even_if_unavailable=(route_initial_owner_even_if_unavailable),
         wake_owner=wake_owner,
         team_id=project.team_id,
         project_id=project.id,
@@ -1917,6 +1950,7 @@ __all__ = [
     "handle_blocker_inbox_for_agent",
     "nearest_available_agent",
     "nearest_available_superior",
+    "open_agent_mcp_capability_blocker",
     "open_or_update_agent_execution_stall",
     "open_or_get_blocker",
     "open_deliverable_blocker",

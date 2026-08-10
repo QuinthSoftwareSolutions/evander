@@ -329,10 +329,65 @@ class ModelUsageStore:
             rows = connection.execute(query, params).fetchall()
         return [ModelInferenceUsageEvent.model_validate_json(row["payload_json"]) for row in rows]
 
+    def sum_input_tokens(
+        self,
+        *,
+        session_id: object,
+        occurred_after: datetime,
+    ) -> int | None:
+        """Return exact input tokens after a boundary, or ``None`` when any are unknown."""
+        normalized_session_id = _storage_optional_text(session_id)
+        if normalized_session_id is None:
+            return 0
+        with self._lock, self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT
+                    COALESCE(SUM(input_tokens), 0) AS total_input_tokens,
+                    COALESCE(
+                        SUM(
+                            CASE
+                                WHEN normalized_usage_status != 'available'
+                                    OR input_tokens IS NULL
+                                THEN 1
+                                ELSE 0
+                            END
+                        ),
+                        0
+                    ) AS unknown_input_token_events
+                FROM model_usage_events
+                WHERE session_id = ? AND occurred_at > ?
+                """,
+                (normalized_session_id, _storage_datetime(occurred_after)),
+            ).fetchone()
+        if row is not None and int(row["unknown_input_token_events"] or 0) > 0:
+            return None
+        return int(row["total_input_tokens"] or 0) if row is not None else 0
+
     def upsert_correlation_context(self, context: ModelUsageCorrelationContext) -> None:
         validated = ModelUsageCorrelationContext.model_validate(context)
         with self._lock, self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
+            existing_row = connection.execute(
+                """
+                SELECT payload_json
+                FROM model_usage_correlation_contexts
+                WHERE dispatch_id = ?
+                """,
+                (validated.dispatch_id,),
+            ).fetchone()
+            if existing_row is not None:
+                existing = ModelUsageCorrelationContext.model_validate_json(
+                    existing_row["payload_json"]
+                )
+                validated = validated.model_copy(
+                    update={
+                        field_name: getattr(existing, field_name)
+                        for field_name in ("team_id", "project_id", "agent_id")
+                        if getattr(validated, field_name) is None
+                        and getattr(existing, field_name) is not None
+                    }
+                )
             connection.execute(
                 """
                 INSERT INTO model_usage_correlation_contexts(

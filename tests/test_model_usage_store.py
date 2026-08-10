@@ -153,6 +153,64 @@ def test_model_usage_store_upserts_queries_and_filters_events(tmp_path: Path) ->
     assert store.list_events(limit=1)[0].event_id == "event-1"
 
 
+def test_model_usage_store_sum_input_tokens_preserves_unknown_usage(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    boundary = datetime(2026, 6, 16, 12, 0, tzinfo=UTC)
+
+    def _record(
+        *,
+        event_id: str,
+        session_id: str,
+        occurred_at: datetime,
+        input_tokens: int | None,
+    ) -> None:
+        store.upsert_event(
+            ModelInferenceUsageEvent(
+                event_id=event_id,
+                occurred_at=occurred_at,
+                provider="openai",
+                provider_endpoint_identifier="responses",
+                input_tokens=input_tokens,
+                request_status="success",
+                normalized_usage_status=(
+                    "available" if input_tokens is not None else "usage_unavailable"
+                ),
+                raw_usage_metadata={},
+                session_id=session_id,
+            )
+        )
+
+    assert store.sum_input_tokens(session_id="empty", occurred_after=boundary) == 0
+    _record(
+        event_id="known",
+        session_id="known",
+        occurred_at=boundary + timedelta(seconds=1),
+        input_tokens=7,
+    )
+    _record(
+        event_id="mixed-known",
+        session_id="mixed",
+        occurred_at=boundary + timedelta(seconds=1),
+        input_tokens=11,
+    )
+    _record(
+        event_id="mixed-unknown",
+        session_id="mixed",
+        occurred_at=boundary + timedelta(seconds=2),
+        input_tokens=None,
+    )
+    _record(
+        event_id="unknown",
+        session_id="unknown",
+        occurred_at=boundary + timedelta(seconds=1),
+        input_tokens=None,
+    )
+
+    assert store.sum_input_tokens(session_id="known", occurred_after=boundary) == 7
+    assert store.sum_input_tokens(session_id="mixed", occurred_after=boundary) is None
+    assert store.sum_input_tokens(session_id="unknown", occurred_after=boundary) is None
+
+
 def test_model_usage_store_manages_expiring_correlation_contexts(tmp_path: Path) -> None:
     store = _store(tmp_path)
     now = datetime(2026, 5, 24, 12, 0, tzinfo=UTC)
@@ -231,3 +289,47 @@ def test_model_usage_store_manages_expiring_correlation_contexts(tmp_path: Path)
     )
 
     assert store.prune_expired_correlation_contexts(now_utc=now) == 1
+
+
+def test_model_usage_store_upsert_preserves_existing_team_attribution(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    now = datetime(2026, 5, 24, 12, 0, tzinfo=UTC)
+    store.upsert_correlation_context(
+        ModelUsageCorrelationContext(
+            session_id="session-1",
+            dispatch_id="team-dispatch-1",
+            workflow_run_id="workflow-1",
+            effect_id="team-wake",
+            node_id="team-wake",
+            agent_harness="codex",
+            team_id="team-a",
+            project_id="project-a",
+            agent_id="agent-a",
+            started_at=now,
+            expires_at=now + timedelta(minutes=15),
+        )
+    )
+
+    store.upsert_correlation_context(
+        ModelUsageCorrelationContext(
+            session_id="session-1",
+            dispatch_id="team-dispatch-1",
+            workflow_run_id="workflow-1",
+            effect_id="generic-agent-prompt",
+            node_id="generic-agent-prompt",
+            agent_harness="codex",
+            execution_backend="libvirt_vm",
+            model="gpt-5.2-codex",
+            started_at=now + timedelta(seconds=1),
+            expires_at=now + timedelta(minutes=16),
+        )
+    )
+
+    merged = store.get_correlation_context("team-dispatch-1")
+    assert merged is not None
+    assert merged.effect_id == "generic-agent-prompt"
+    assert merged.execution_backend == "libvirt_vm"
+    assert merged.model == "gpt-5.2-codex"
+    assert merged.team_id == "team-a"
+    assert merged.project_id == "project-a"
+    assert merged.agent_id == "agent-a"

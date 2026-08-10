@@ -5,6 +5,7 @@ import {
   normalizeWorkflowSourcePort,
   workflowConnectionRouteOptions,
   workflowEdgeRouteLabel,
+  workflowOutputHandleIds,
   workflowOutputPortsForNode,
   workflowRouteClass,
 } from "../src/workflowRoutes.ts";
@@ -44,6 +45,17 @@ test("error routes are always labeled", () => {
   ];
   assert.equal(workflowEdgeRouteLabel("completed", ports), undefined);
   assert.equal(workflowEdgeRouteLabel("error", ports), "Error");
+});
+
+test("every workflow node has a renderable error output handle", () => {
+  assert.deepEqual(workflowOutputHandleIds([]), ["error"]);
+  assert.deepEqual(
+    workflowOutputHandleIds([
+      { key: "started", label: "Started" },
+      { key: "error", label: "Error" },
+    ]),
+    ["started", "error"],
+  );
 });
 
 test("unknown non-default routes fall back to a humanized label", () => {

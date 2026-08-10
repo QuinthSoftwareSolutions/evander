@@ -59,9 +59,7 @@ class TeamGitReleaseService:
         human_review_eligibility_resolver: Callable[[Any], list[str]] | None = None,
     ) -> None:
         self._repository = repository
-        self._human_review_eligibility_resolver = (
-            human_review_eligibility_resolver
-        )
+        self._human_review_eligibility_resolver = human_review_eligibility_resolver
 
     @property
     def repository(self) -> TeamStateRepository:
@@ -283,12 +281,10 @@ class TeamGitReleaseService:
                 normalized_release_id,
                 "release package",
             )
-            missing_manifest_ids = (
-                _repair_release_review_manifests_from_promotion_evidence(
-                    state_model,
-                    release=release,
-                    result=result,
-                )
+            missing_manifest_ids = _repair_release_review_manifests_from_promotion_evidence(
+                state_model,
+                release=release,
+                result=result,
             )
             result["missing_review_manifest_ids"] = missing_manifest_ids
             result["applied"] = bool(result["repaired_review_manifest_ids"])
@@ -517,16 +513,11 @@ def _release_publication_validation_error(
             allowed_parent_task_ids=allowed_release_parent_task_ids(
                 state,
                 project_id=release.project_id,
-                predecessor_release_package_id=(
-                    release.supersedes_release_package_id
-                ),
+                predecessor_release_package_id=(release.supersedes_release_package_id),
             ),
         )
     except TaskAssessmentBoundaryError as exc:
-        return (
-            "release publication scope is no longer valid: "
-            f"{exc.message}"
-        )
+        return f"release publication scope is no longer valid: {exc.message}"
 
     candidate_commit_sha = _optional_text(getattr(release, "candidate_commit_sha", None))
     approved_commit_sha = _optional_text(getattr(release, "approved_commit_sha", None))
@@ -577,8 +568,7 @@ def _release_publication_validation_error(
             continue
         if any(
             _optional_text(getattr(source, "source_branch", None)) == release_branch
-            and _optional_text(getattr(source, "expected_commit_sha", None))
-            == approved_commit_sha
+            and _optional_text(getattr(source, "expected_commit_sha", None)) == approved_commit_sha
             for source in (getattr(promotion, "sources", ()) or ())
         ):
             return None
@@ -596,14 +586,10 @@ def _human_review_publication_validation_error(
 ) -> str | None:
     manifest = getattr(release, "manifest", None)
     human_requirement = (
-        getattr(manifest, "human_review_requirement", None)
-        if manifest is not None
-        else None
+        getattr(manifest, "human_review_requirement", None) if manifest is not None else None
     )
     carried_findings = (
-        getattr(manifest, "carried_human_findings", None)
-        if manifest is not None
-        else None
+        getattr(manifest, "carried_human_findings", None) if manifest is not None else None
     )
     requests = _record_collection_values(state, "human_review_requests")
     linked_requests = [
@@ -612,9 +598,7 @@ def _human_review_publication_validation_error(
         if _optional_text(getattr(request, "release_package_id", None)) == release.id
     ]
     has_human_obligation = (
-        human_requirement is not None
-        or bool(carried_findings)
-        or bool(linked_requests)
+        human_requirement is not None or bool(carried_findings) or bool(linked_requests)
     )
     if not has_human_obligation:
         return None
@@ -644,8 +628,7 @@ def _human_review_publication_validation_error(
         for decision in _record_collection_values(state, "human_review_decisions")
         if _optional_text(getattr(decision, "human_review_request_id", None))
         == _optional_text(getattr(request, "id", None))
-        and str(getattr(decision, "decision", "") or "").strip().lower()
-        == "approved"
+        and str(getattr(decision, "decision", "") or "").strip().lower() == "approved"
     ]
     if len(approved_decisions) != 1:
         return (
@@ -654,12 +637,8 @@ def _human_review_publication_validation_error(
         )
 
     if manifest is not None:
-        manifest_commit_sha = _optional_text(
-            getattr(manifest, "candidate_commit_sha", None)
-        )
-        manifest_tree_hash = _optional_text(
-            getattr(manifest, "candidate_tree_hash", None)
-        )
+        manifest_commit_sha = _optional_text(getattr(manifest, "candidate_commit_sha", None))
+        manifest_tree_hash = _optional_text(getattr(manifest, "candidate_tree_hash", None))
         if manifest_commit_sha is not None and manifest_commit_sha != candidate_commit_sha:
             return f"release manifest for {release.id} does not match candidate commit"
         if manifest_tree_hash is not None and manifest_tree_hash != candidate_tree_hash:
@@ -669,8 +648,7 @@ def _human_review_publication_validation_error(
             for finding in (getattr(manifest, "carried_human_findings", None) or ())
             if (
                 finding_id := _optional_text(
-                    getattr(finding, "finding_id", None)
-                    or getattr(finding, "id", None)
+                    getattr(finding, "finding_id", None) or getattr(finding, "id", None)
                 )
             )
             is not None

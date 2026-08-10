@@ -140,8 +140,10 @@ from .domain.common import (
     _unique_id_from_base,
 )
 from .domain.context_rotation import (
+    _context_clearing_idle_grace_seconds_from_value,
     _maybe_mark_idle_context_rotation_due,
     _resolved_context_clearing_policy,
+    _set_context_clearing_idle_grace_seconds,
     _set_context_clearing_policy,
 )
 from .domain.deliverables import (
@@ -220,21 +222,13 @@ def _default_memory_scope(project_id: str | None, agent_id: str | None) -> str:
 def _validate_resolved_human_release_policy(
     release_policy: ProjectReleasePolicy | None,
 ) -> None:
-    requirement = (
-        release_policy.human_review_requirement
-        if release_policy is not None
-        else None
-    )
+    requirement = release_policy.human_review_requirement if release_policy is not None else None
     if requirement is None:
         return
     if requirement.directory_path is None:
-        raise ValueError(
-            "human review policy must be resolved to an Admin directory"
-        )
+        raise ValueError("human review policy must be resolved to an Admin directory")
     if not requirement.resolved_reviewer_user_ids:
-        raise ValueError(
-            "human review policy must resolve at least one decision-eligible reviewer"
-        )
+        raise ValueError("human review policy must resolve at least one decision-eligible reviewer")
 
 
 def _validate_admin_memory_scope(
@@ -341,9 +335,7 @@ class TeamAdminService:
     ) -> None:
         self._repository = repository
         self._managed_git_admin = managed_git_admin
-        self._human_review_eligibility_resolver = (
-            human_review_eligibility_resolver
-        )
+        self._human_review_eligibility_resolver = human_review_eligibility_resolver
 
     @property
     def repository(self) -> TeamStateRepository:
@@ -368,9 +360,7 @@ class TeamAdminService:
         normalized_scope_kind = _required_text(scope_kind, "scope_kind")
         normalized_scope_id = _required_text(scope_id, "scope_id")
         normalized_request_id = _required_text(request_id, "request_id")
-        payload_digest = self._repository.normalized_payload_digest(
-            dict(normalized_payload)
-        )
+        payload_digest = self._repository.normalized_payload_digest(dict(normalized_payload))
 
         def _transaction(raw_state: dict[str, Any], tx: Any):
             state = TeamState.model_validate(raw_state)
@@ -395,10 +385,7 @@ class TeamAdminService:
                 response = dict(replay.response_payload)
                 response["idempotent_replay"] = True
                 return state, response
-            if (
-                expected_state_revision is not None
-                and state.revision != expected_state_revision
-            ):
+            if expected_state_revision is not None and state.revision != expected_state_revision:
                 raise TeamStateConflictError(
                     expected_revision=expected_state_revision,
                     current_revision=state.revision,
@@ -415,23 +402,17 @@ class TeamAdminService:
                 update={"revision": state.revision + 1, "updated_at": now},
                 deep=True,
             )
-            validated = TeamState.model_validate(
-                next_state.model_dump(mode="json")
-            )
+            validated = TeamState.model_validate(next_state.model_dump(mode="json"))
             raw_state.clear()
             raw_state.update(validated.model_dump(mode="json"))
 
             outbox_records = [
                 tx.enqueue_outbox_record(record)
-                for record in _team_event_outbox_records(
-                    result.get("events") or []
-                )
+                for record in _team_event_outbox_records(result.get("events") or [])
             ]
             result["success"] = True
             result["revision"] = validated.revision
-            result["outbox_record_ids"] = [
-                record.id for record in outbox_records
-            ]
+            result["outbox_record_ids"] = [record.id for record in outbox_records]
             created_domain_ids = _human_command_created_domain_ids(result)
             for record in outbox_records:
                 if record.id not in created_domain_ids:
@@ -451,9 +432,7 @@ class TeamAdminService:
             )
             return validated, result
 
-        return self._repository.store.update_object_with_command_transaction(
-            _transaction
-        )
+        return self._repository.store.update_object_with_command_transaction(_transaction)
 
     def _project_repository_binding_exists(
         self,
@@ -697,10 +676,7 @@ class TeamAdminService:
                     f"/human-review-requests/{blocker.source_id}/{recovery_action}; "
                     "generic blocker resolution cannot bypass the human-review lifecycle"
                 )
-            if (
-                blocker.source_kind
-                == TeamBlockerSourceKind.CANDIDATE_CORRECTION_SUCCESSOR
-            ):
+            if blocker.source_kind == TeamBlockerSourceKind.CANDIDATE_CORRECTION_SUCCESSOR:
                 raise ValueError(
                     f"blocker {blocker.id} belongs to candidate-correction successor "
                     f"recovery; use POST /candidate-correction-recoveries/{blocker.id} "
@@ -737,9 +713,7 @@ class TeamAdminService:
 
         state = self._repository.update_with_outbox(
             _mutate,
-            outbox_records=lambda: _team_event_outbox_records(
-                result.get("events") or []
-            ),
+            outbox_records=lambda: _team_event_outbox_records(result.get("events") or []),
             expected_revision=expected_revision,
         )
         result["revision"] = state.revision
@@ -755,12 +729,8 @@ class TeamAdminService:
         expected_revision: int | None = None,
     ) -> tuple[TeamState, dict[str, Any]]:
         normalized_blocker_id = _required_text(blocker_id, "blocker_id")
-        normalized_resolver_id = _required_text(
-            resolver_agent_id, "resolver_agent_id"
-        )
-        normalized_operator_id = _required_text(
-            operator_actor_id, "operator_actor_id"
-        )
+        normalized_resolver_id = _required_text(resolver_agent_id, "resolver_agent_id")
+        normalized_operator_id = _required_text(operator_actor_id, "operator_actor_id")
         result: dict[str, Any] = {
             "success": False,
             "blocker_id": normalized_blocker_id,
@@ -773,12 +743,8 @@ class TeamAdminService:
         }
 
         def _mutate(state: TeamState) -> TeamState:
-            blocker = _require_present(
-                state.blockers, normalized_blocker_id, "blocker"
-            )
-            resolver = _require_present(
-                state.agents, normalized_resolver_id, "resolver agent"
-            )
+            blocker = _require_present(state.blockers, normalized_blocker_id, "blocker")
+            resolver = _require_present(state.agents, normalized_resolver_id, "resolver agent")
             recoveries = [
                 recovery
                 for recovery in state.dependency_composition_recoveries.values()
@@ -817,9 +783,7 @@ class TeamAdminService:
 
         state = self._repository.update_with_outbox(
             _mutate,
-            outbox_records=lambda: _team_event_outbox_records(
-                result.get("events") or []
-            ),
+            outbox_records=lambda: _team_event_outbox_records(result.get("events") or []),
             expected_revision=expected_revision,
         )
         result["revision"] = state.revision
@@ -843,25 +807,18 @@ class TeamAdminService:
             "create_verified_replacement",
             "authorize_verification_waiver",
         }:
-            raise ValueError(
-                f"unsupported candidate correction recovery action {action!r}"
-            )
+            raise ValueError(f"unsupported candidate correction recovery action {action!r}")
         normalized_actor_id = _required_text(operator_actor_id, "operator_actor_id")
         normalized_reason = _optional_text(reason)
         normalized_instruction = _optional_text(instruction)
         normalized_owner_id = _optional_text(owner_agent_id)
-        if (
-            normalized_action == "authorize_verification_waiver"
-            and normalized_reason is None
-        ):
+        if normalized_action == "authorize_verification_waiver" and normalized_reason is None:
             raise ValueError("authorize_verification_waiver requires reason")
         if (
             normalized_instruction is not None
             and normalized_action != "create_verified_replacement"
         ):
-            raise ValueError(
-                "instruction is supported only when creating a verified replacement"
-            )
+            raise ValueError("instruction is supported only when creating a verified replacement")
         result: dict[str, Any] = {
             "success": False,
             "action": normalized_action,
@@ -885,24 +842,17 @@ class TeamAdminService:
 
         state = self._repository.update_with_outbox(
             _mutate,
-            outbox_records=lambda: _team_event_outbox_records(
-                result.get("events") or []
-            ),
+            outbox_records=lambda: _team_event_outbox_records(result.get("events") or []),
             expected_revision=expected_revision,
         )
         result["revision"] = state.revision
-        result["blocker"] = state.blockers[normalized_blocker_id].model_dump(
-            mode="json"
-        )
+        result["blocker"] = state.blockers[normalized_blocker_id].model_dump(mode="json")
         if recovery_task_id := result.get("recovery_task_id"):
-            result["recovery_task"] = state.tasks[recovery_task_id].model_dump(
-                mode="json"
-            )
+            result["recovery_task"] = state.tasks[recovery_task_id].model_dump(mode="json")
         if release_id := result.get("release_package_id"):
-            result["release_package"] = state.release_packages[release_id].model_dump(
-                mode="json"
-            )
+            result["release_package"] = state.release_packages[release_id].model_dump(mode="json")
         return state, result
+
     def mark_action_feedback_delivered(
         self,
         *,
@@ -1729,12 +1679,9 @@ class TeamAdminService:
         commit_sha: str | None = None,
         dispatch_id: str | None = None,
         worktree_path: str | None = None,
-        dependency_git_sources: Sequence[Mapping[str, object] | DependencyGitSource]
-        | None = None,
+        dependency_git_sources: Sequence[Mapping[str, object] | DependencyGitSource] | None = None,
         dependency_composition_recovery_id: str | None = None,
-        manual_dependency_git_sources: Sequence[
-            Mapping[str, object] | DependencyGitSource
-        ]
+        manual_dependency_git_sources: Sequence[Mapping[str, object] | DependencyGitSource]
         | None = None,
         expected_revision: int | None = None,
     ) -> tuple[TeamState, str]:
@@ -1793,9 +1740,7 @@ class TeamAdminService:
                     explicit_git_base_branch=effective_base_branch,
                     parent_task_id=task.parent_task_id,
                     case_id=task.case_id,
-                    git_default_branch_resolver=(
-                        self._resolve_managed_git_default_branch
-                    ),
+                    git_default_branch_resolver=(self._resolve_managed_git_default_branch),
                 )
             if effective_base_branch is None:
                 effective_base_branch = task.git_base_branch
@@ -1830,12 +1775,8 @@ class TeamAdminService:
                 dispatch_id=normalized_dispatch_id,
                 worktree_path=normalized_worktree_path,
                 dependency_git_sources=normalized_dependency_git_sources,
-                dependency_composition_recovery_id=(
-                    normalized_dependency_composition_recovery_id
-                ),
-                manual_dependency_git_sources=(
-                    normalized_manual_dependency_git_sources
-                ),
+                dependency_composition_recovery_id=(normalized_dependency_composition_recovery_id),
+                manual_dependency_git_sources=(normalized_manual_dependency_git_sources),
                 base_branch=effective_base_branch,
                 base_commit=normalized_base_commit,
                 agent_branch=normalized_agent_branch,
@@ -2087,6 +2028,8 @@ class TeamAdminService:
         set_voice_profile: bool = False,
         context_clearing_policy: AgentContextClearingPolicy | str | None = None,
         set_context_clearing_policy: bool = False,
+        context_clearing_idle_grace_seconds: int | None = None,
+        set_context_clearing_idle_grace_seconds: bool = False,
         auto_context_clearing_enabled: bool | None = None,
         set_auto_context_clearing_enabled: bool = False,
         expected_revision: int | None = None,
@@ -2102,6 +2045,12 @@ class TeamAdminService:
             auto_context_clearing_enabled=auto_context_clearing_enabled,
             set_auto_context_clearing_enabled=set_auto_context_clearing_enabled,
         )
+        normalized_context_clearing_idle_grace_seconds = (
+            _context_clearing_idle_grace_seconds_from_value(context_clearing_idle_grace_seconds)
+            if set_context_clearing_idle_grace_seconds
+            else None
+        )
+        idle_rotation_result: dict[str, Any] = {"events": []}
 
         def _mutate(state: TeamState) -> TeamState:
             now = utc_now()
@@ -2201,7 +2150,15 @@ class TeamAdminService:
                             assignment.role_id = role.id
                             assignment.updated_at = now
             if session_id is not None:
+                session_changed = session_id != agent.session_id
                 agent.session_id = session_id
+                if session_changed:
+                    runtime = state.agent_runtimes.setdefault(
+                        agent.id,
+                        AgentRuntime(agent_id=agent.id),
+                    )
+                    runtime.last_context_rotated_at = now
+                    runtime.updated_at = now
             if set_display_name:
                 agent.display_name = display_name
             if ephemeral_policy is not None:
@@ -2214,17 +2171,31 @@ class TeamAdminService:
                     if voice_profile is not None and voice_profile.configured
                     else None
                 )
-            if normalized_context_clearing_policy is not None:
+            if (
+                normalized_context_clearing_policy is not None
+                or normalized_context_clearing_idle_grace_seconds is not None
+            ):
                 runtime = state.agent_runtimes.setdefault(
                     agent.id,
                     AgentRuntime(agent_id=agent.id),
                 )
+                if normalized_context_clearing_idle_grace_seconds is not None:
+                    _set_context_clearing_idle_grace_seconds(
+                        state,
+                        agent=agent,
+                        runtime=runtime,
+                        grace_seconds=normalized_context_clearing_idle_grace_seconds,
+                        now=now,
+                        result=idle_rotation_result,
+                    )
+            if normalized_context_clearing_policy is not None:
                 _set_context_clearing_policy(
                     state,
                     agent=agent,
                     runtime=runtime,
                     policy=normalized_context_clearing_policy,
                     now=now,
+                    result=idle_rotation_result,
                 )
             if set_reports_to_agent_id and not detached_from_team:
                 old_superior_id = agent.reports_to_agent_id
@@ -2270,7 +2241,13 @@ class TeamAdminService:
                 )
             return state
 
-        return self._repository.update(_mutate, expected_revision=expected_revision)
+        return self._repository.update_with_outbox(
+            _mutate,
+            outbox_records=lambda: _team_event_outbox_records(
+                idle_rotation_result.get("events") or []
+            ),
+            expected_revision=expected_revision,
+        )
 
     def set_agent_avatar(
         self,
@@ -2655,15 +2632,12 @@ class TeamAdminService:
         normalized_originating_task_id = _optional_text(originating_task_id)
         normalized_git_base_branch = _optional_text(git_base_branch)
         if normalized_git_base_branch is not None:
-            normalized_git_base_branch = validate_branch_name(
-                normalized_git_base_branch
-            )
+            normalized_git_base_branch = validate_branch_name(normalized_git_base_branch)
         normalized_git_base_commit_sha = _optional_text(git_base_commit_sha)
         if normalized_git_base_commit_sha is not None:
             normalized_git_base_commit_sha = normalized_git_base_commit_sha.casefold()
             if len(normalized_git_base_commit_sha) not in {40, 64} or any(
-                char not in "0123456789abcdef"
-                for char in normalized_git_base_commit_sha
+                char not in "0123456789abcdef" for char in normalized_git_base_commit_sha
             ):
                 raise ValueError("git_base_commit_sha must be a full Git object ID")
         normalized_dependency_task_ids = (
@@ -2688,13 +2662,9 @@ class TeamAdminService:
                 f"Admin task state {state.value} requires its dedicated "
                 "acceptance or cancellation lifecycle"
             )
-        if (
-            state == TeamTaskState.FINISHED
-            and effective_requested_kind == TeamTaskKind.OUTCOME
-        ):
+        if state == TeamTaskState.FINISHED and effective_requested_kind == TeamTaskKind.OUTCOME:
             raise ValueError(
-                "outcome tasks must resolve through an accepted deliverable, "
-                "not direct finish"
+                "outcome tasks must resolve through an accepted deliverable, not direct finish"
             )
         if state == TeamTaskState.FINISHED and integration_boundary:
             raise ValueError(
@@ -2765,18 +2735,12 @@ class TeamAdminService:
                 else:
                     proposed_deliverable_contract = (
                         normalized_deliverable_contract
-                        if set_deliverable_contract
-                        or deliverable_contract is not None
+                        if set_deliverable_contract or deliverable_contract is not None
                         else task.deliverable_contract
                     )
-                deliverable_policy_edit = (
-                    deliverable_policy_request
-                    and (
-                        proposed_integration_boundary
-                        != task.integration_boundary
-                        or proposed_deliverable_contract
-                        != task.deliverable_contract
-                    )
+                deliverable_policy_edit = deliverable_policy_request and (
+                    proposed_integration_boundary != task.integration_boundary
+                    or proposed_deliverable_contract != task.deliverable_contract
                 )
                 graph_error = _task_graph_edit_error(
                     state_model,
@@ -2841,9 +2805,7 @@ class TeamAdminService:
                         state_model,
                         task=task,
                         git_base_branch=normalized_git_base_branch,
-                        git_default_branch_resolver=(
-                            self._resolve_managed_git_default_branch
-                        ),
+                        git_default_branch_resolver=(self._resolve_managed_git_default_branch),
                     )
                 elif (
                     case_link_changed
@@ -2857,9 +2819,7 @@ class TeamAdminService:
                         state_model,
                         task=task,
                         git_base_branch=None,
-                        git_default_branch_resolver=(
-                            self._resolve_managed_git_default_branch
-                        ),
+                        git_default_branch_resolver=(self._resolve_managed_git_default_branch),
                     )
                 task.updated_at = now
                 if task.state in _NON_TERMINAL_TASK_STATES:
@@ -2873,6 +2833,7 @@ class TeamAdminService:
                         state_model,
                         agent_id=task.owner_agent_id,
                         now=now,
+                        result=blocker_result,
                     )
                 return state_model
             effective_task_id = normalized_task_id or _generated_id(
@@ -2946,9 +2907,7 @@ class TeamAdminService:
                     explicit_git_base_branch=normalized_git_base_branch,
                     parent_task_id=normalized_parent_task_id,
                     case_id=normalized_case_id,
-                    git_default_branch_resolver=(
-                        self._resolve_managed_git_default_branch
-                    ),
+                    git_default_branch_resolver=(self._resolve_managed_git_default_branch),
                 ),
                 git_base_commit_sha=normalized_git_base_commit_sha,
                 dependency_task_ids=normalized_dependency_task_ids or [],
@@ -2992,14 +2951,13 @@ class TeamAdminService:
                     state_model,
                     agent_id=normalized_owner_agent_id,
                     now=now,
+                    result=blocker_result,
                 )
             return state_model
 
         state_model = self._repository.update_with_outbox(
             _mutate,
-            outbox_records=lambda: _team_event_outbox_records(
-                blocker_result.get("events") or []
-            ),
+            outbox_records=lambda: _team_event_outbox_records(blocker_result.get("events") or []),
             expected_revision=expected_revision,
         )
         if effective_task_id is None:
@@ -3034,9 +2992,7 @@ class TeamAdminService:
         normalized_parent_task_id = _optional_text(parent_task_id)
         normalized_git_base_branch = _optional_text(git_base_branch)
         if normalized_git_base_branch is not None:
-            normalized_git_base_branch = validate_branch_name(
-                normalized_git_base_branch
-            )
+            normalized_git_base_branch = validate_branch_name(normalized_git_base_branch)
         normalized_dependency_task_ids = (
             _unique_text_list(dependency_task_ids, "dependency_task_ids")
             if dependency_task_ids is not None
@@ -3062,14 +3018,10 @@ class TeamAdminService:
             crosses_blocked_boundary = (
                 state is not None
                 and state != previous_state
-                and (
-                    state == TeamTaskState.BLOCKED
-                    or previous_state == TeamTaskState.BLOCKED
-                )
+                and (state == TeamTaskState.BLOCKED or previous_state == TeamTaskState.BLOCKED)
             )
             if crosses_blocked_boundary and (
-                normalized_repair_reason is None
-                or normalized_repair_actor is None
+                normalized_repair_reason is None or normalized_repair_actor is None
             ):
                 raise ValueError(
                     "direct task state edits into or out of blocked are disabled; "
@@ -3089,9 +3041,7 @@ class TeamAdminService:
                     task_id=task.id,
                     project_id=task.project_id,
                     parent_task_id=(
-                        normalized_parent_task_id
-                        if set_parent_task_id
-                        else task.parent_task_id
+                        normalized_parent_task_id if set_parent_task_id else task.parent_task_id
                     ),
                     dependency_task_ids=(
                         normalized_dependency_task_ids
@@ -3119,15 +3069,12 @@ class TeamAdminService:
                 else:
                     proposed_deliverable_contract = (
                         normalized_deliverable_contract
-                        if set_deliverable_contract
-                        or deliverable_contract is not None
+                        if set_deliverable_contract or deliverable_contract is not None
                         else task.deliverable_contract
                     )
                 deliverable_policy_edit = (
-                    proposed_integration_boundary
-                    != task.integration_boundary
-                    or proposed_deliverable_contract
-                    != task.deliverable_contract
+                    proposed_integration_boundary != task.integration_boundary
+                    or proposed_deliverable_contract != task.deliverable_contract
                 )
             if deliverable_policy_edit:
                 if task.state not in _NON_TERMINAL_TASK_STATES:
@@ -3210,9 +3157,7 @@ class TeamAdminService:
                     state_model,
                     task=task,
                     git_base_branch=normalized_git_base_branch,
-                    git_default_branch_resolver=(
-                        self._resolve_managed_git_default_branch
-                    ),
+                    git_default_branch_resolver=(self._resolve_managed_git_default_branch),
                 )
             elif (
                 case_link_changed
@@ -3226,9 +3171,7 @@ class TeamAdminService:
                     state_model,
                     task=task,
                     git_base_branch=None,
-                    git_default_branch_resolver=(
-                        self._resolve_managed_git_default_branch
-                    ),
+                    git_default_branch_resolver=(self._resolve_managed_git_default_branch),
                 )
             task.updated_at = now
             if previous_state != TeamTaskState.BLOCKED and task.state == TeamTaskState.BLOCKED:
@@ -3240,9 +3183,7 @@ class TeamAdminService:
                     summary=f"Task blocked: {task.title}",
                     details=normalized_repair_reason or task.description,
                     reason_code=(
-                        "operator_repair"
-                        if normalized_repair_reason is not None
-                        else "unspecified"
+                        "operator_repair" if normalized_repair_reason is not None else "unspecified"
                     ),
                     reporter_agent_id=task.owner_agent_id,
                     reporter_actor=normalized_repair_actor,
@@ -3288,10 +3229,7 @@ class TeamAdminService:
                         blocker=blocker,
                         actor_agent_id=None,
                         dispatch_id=None,
-                        note=(
-                            normalized_repair_reason
-                            or f"Task moved to {task.state.value}."
-                        ),
+                        note=(normalized_repair_reason or f"Task moved to {task.state.value}."),
                         reference_ids=[
                             task.id,
                             *normalized_repair_reference_ids,
@@ -3313,16 +3251,13 @@ class TeamAdminService:
                     state_model,
                     agent_id=task.owner_agent_id,
                     now=task.updated_at,
+                    result=blocker_result,
                 )
-            if (
-                previous_state != task.state
-                and task.state
-                in {
-                    TeamTaskState.ACCEPTED,
-                    TeamTaskState.CANCELLED,
-                    TeamTaskState.FINISHED,
-                }
-            ):
+            if previous_state != task.state and task.state in {
+                TeamTaskState.ACCEPTED,
+                TeamTaskState.CANCELLED,
+                TeamTaskState.FINISHED,
+            }:
                 queue_parent_resolution_transitions(
                     state_model,
                     child_task_id=task.id,
@@ -3333,9 +3268,7 @@ class TeamAdminService:
 
         return self._repository.update_with_outbox(
             _mutate,
-            outbox_records=lambda: _team_event_outbox_records(
-                blocker_result.get("events") or []
-            ),
+            outbox_records=lambda: _team_event_outbox_records(blocker_result.get("events") or []),
             expected_revision=expected_revision,
         )
 
@@ -3373,6 +3306,7 @@ class TeamAdminService:
         normalized_reason = _required_text(reason, "reason")
         normalized_actor_id = _required_text(actor_id, "actor_id")
         normalized_successor_id = _optional_text(successor_task_id)
+        idle_rotation_result: dict[str, Any] = {"events": []}
 
         def _mutate(state_model: TeamState) -> TeamState:
             task = _require_present(state_model.tasks, normalized_task_id, "task")
@@ -3395,9 +3329,7 @@ class TeamAdminService:
                 acceptance_ids=assessment.active_acceptance_ids,
                 review_request_ids=assessment.active_review_request_ids,
             )
-            blocking_handoff_ids = sorted(
-                {*blocking_acceptance_ids, *blocking_review_request_ids}
-            )
+            blocking_handoff_ids = sorted({*blocking_acceptance_ids, *blocking_review_request_ids})
             if blocking_handoff_ids:
                 raise ValueError(
                     f"task {task.id} cannot be cancelled while acceptance or review "
@@ -3455,12 +3387,16 @@ class TeamAdminService:
                 state_model,
                 agent_id=task.owner_agent_id,
                 now=now,
+                result=idle_rotation_result,
             )
             _recalculate_project_status(state_model, task.project_id)
             return state_model
 
-        return self._repository.update(
+        return self._repository.update_with_outbox(
             _mutate,
+            outbox_records=lambda: _team_event_outbox_records(
+                idle_rotation_result.get("events") or []
+            ),
             expected_revision=expected_revision,
         )
 
@@ -3611,9 +3547,7 @@ class TeamAdminService:
             "source_deliverable_ids",
         )
         normalized_completion = (
-            TaskCompletion.model_validate(completion)
-            if completion is not None
-            else None
+            TaskCompletion.model_validate(completion) if completion is not None else None
         )
 
         def _mutate(state_model: TeamState) -> TeamState:
@@ -3695,13 +3629,9 @@ class TeamAdminService:
             state_model.deliverables[deliverable.id] = deliverable
             if superseded_deliverable is not None:
                 superseded_deliverable.superseded_by_deliverable_id = deliverable.id
-                superseded_deliverable.supersession_reason = (
-                    "Rework deliverable submitted."
-                )
+                superseded_deliverable.supersession_reason = "Rework deliverable submitted."
                 superseded_deliverable.superseded_at = deliverable.created_at
-                superseded_deliverable.superseded_by_actor = (
-                    f"agent:{normalized_producer_agent_id}"
-                )
+                superseded_deliverable.superseded_by_actor = f"agent:{normalized_producer_agent_id}"
             task.deliverable_ids = _append_unique(task.deliverable_ids, deliverable.id)
             task.updated_at = utc_now()
             return state_model
@@ -3737,8 +3667,7 @@ class TeamAdminService:
                 )
                 if project.team_id != normalized_team_id:
                     raise ValueError(
-                        f"project {project.id} does not belong to team "
-                        f"{normalized_team_id}"
+                        f"project {project.id} does not belong to team {normalized_team_id}"
                     )
             for existing in state.outcome_kind_definitions.values():
                 if (
@@ -3806,8 +3735,7 @@ class TeamAdminService:
                 )
                 if references:
                     raise ValueError(
-                        f"outcome kind {definition.kind} is used by "
-                        + ", ".join(references)
+                        f"outcome kind {definition.kind} is used by " + ", ".join(references)
                     )
             if name is not None:
                 definition.name = _required_text(name, "name")
@@ -4073,8 +4001,7 @@ class TeamAdminService:
             "agent_ids": {key: value["agent_id"] for key, value in role_inputs.items()},
             "goal_ids": [goal_ids[goal.id] for goal in template.project_goals],
             "outcome_kind_definition_ids": [
-                outcome_kind_ids[definition.kind]
-                for definition in template.outcome_kinds
+                outcome_kind_ids[definition.kind] for definition in template.outcome_kinds
             ],
             "review_profile_ids": [
                 review_profile_ids[profile.id] for profile in template.review_profiles
@@ -4226,20 +4153,12 @@ class TeamAdminService:
                 definition = OutcomeKindDefinition(
                     id=outcome_kind_ids[definition_template.kind],
                     team_id=team_id,
-                    project_id=(
-                        project_id
-                        if definition_template.project_scoped
-                        else None
-                    ),
+                    project_id=(project_id if definition_template.project_scoped else None),
                     kind=definition_template.kind,
                     name=definition_template.name,
                     description=definition_template.description,
-                    reference_requirements=(
-                        definition_template.reference_requirements
-                    ),
-                    evidence_requirements=(
-                        definition_template.evidence_requirements
-                    ),
+                    reference_requirements=(definition_template.reference_requirements),
+                    evidence_requirements=(definition_template.evidence_requirements),
                     created_at=now,
                     updated_at=now,
                 )
@@ -4258,9 +4177,7 @@ class TeamAdminService:
                     criteria=[
                         criterion.model_copy(deep=True) for criterion in profile_template.criteria
                     ],
-                    required_outcome_kinds=list(
-                        profile_template.required_outcome_kinds
-                    ),
+                    required_outcome_kinds=list(profile_template.required_outcome_kinds),
                     created_at=now,
                     updated_at=now,
                 )
@@ -4270,9 +4187,7 @@ class TeamAdminService:
                 _resolve_new_task_git_base_branch(
                     state,
                     project_id=project_id,
-                    git_default_branch_resolver=(
-                        self._resolve_managed_git_default_branch
-                    ),
+                    git_default_branch_resolver=(self._resolve_managed_git_default_branch),
                 )
                 if template.tasks
                 else None
@@ -4373,9 +4288,7 @@ class TeamAdminService:
             if profile_error is not None:
                 raise ValueError(profile_error)
             if profile is not None and profile.required_outcome_kinds:
-                delivered_outcome_kinds = {
-                    outcome.kind for outcome in deliverable.outcomes
-                }
+                delivered_outcome_kinds = {outcome.kind for outcome in deliverable.outcomes}
                 missing_outcome_kinds = sorted(
                     set(profile.required_outcome_kinds) - delivered_outcome_kinds
                 )
@@ -4458,9 +4371,7 @@ class TeamAdminService:
 
         return self._repository.update_with_outbox(
             _mutate,
-            outbox_records=lambda: _team_event_outbox_records(
-                blocker_result.get("events") or []
-            ),
+            outbox_records=lambda: _team_event_outbox_records(blocker_result.get("events") or []),
             expected_revision=expected_revision,
         )
 
@@ -4495,14 +4406,8 @@ class TeamAdminService:
         def _mutate(state_model: TeamState) -> TeamState:
             review = _require_present(state_model.review_requests, normalized_id, "review request")
             if review.retired_at is not None:
-                action = (
-                    "withdrawn"
-                    if review.state == TeamRecordState.PENDING
-                    else "retired"
-                )
-                raise ValueError(
-                    f"review {review.id} was {action} and cannot receive a decision"
-                )
+                action = "withdrawn" if review.state == TeamRecordState.PENDING else "retired"
+                raise ValueError(f"review {review.id} was {action} and cannot receive a decision")
             effective_criteria = (
                 criterion_results if criterion_results is not None else list(review.criteria)
             )
@@ -4545,14 +4450,13 @@ class TeamAdminService:
                 state_model,
                 agent_id=review.reviewer_agent_id,
                 now=utc_now(),
+                result=blocker_result,
             )
             return state_model
 
         updated_state = self._repository.update_with_outbox(
             _mutate,
-            outbox_records=lambda: _team_event_outbox_records(
-                blocker_result.get("events") or []
-            ),
+            outbox_records=lambda: _team_event_outbox_records(blocker_result.get("events") or []),
             expected_revision=expected_revision,
         )
         blocker_result.pop(HUMAN_REVIEW_ELIGIBILITY_RESOLVER_RESULT_KEY, None)
@@ -4650,9 +4554,7 @@ class TeamAdminService:
 
         return self._repository.update_with_outbox(
             _mutate,
-            outbox_records=lambda: _team_event_outbox_records(
-                closure_result.get("events") or []
-            ),
+            outbox_records=lambda: _team_event_outbox_records(closure_result.get("events") or []),
             expected_revision=expected_revision,
         )
 
@@ -4737,12 +4639,7 @@ class TeamAdminService:
             assigned_by_user_id,
             "assigned_by_user_id",
         )
-        normalized_user_ids = sorted(
-            {
-                _required_text(user_id, "user_ids")
-                for user_id in user_ids
-            }
-        )
+        normalized_user_ids = sorted({_required_text(user_id, "user_ids") for user_id in user_ids})
 
         def _apply(state: TeamState, result: dict[str, Any]) -> None:
             human_request = _require_present(
@@ -4922,9 +4819,7 @@ class TeamAdminService:
             proposed_resolution,
             "proposed_resolution",
         )
-        normalized_evidence_refs = sorted(
-            _unique_text_list(evidence_refs, "evidence_refs")
-        )
+        normalized_evidence_refs = sorted(_unique_text_list(evidence_refs, "evidence_refs"))
         normalized_deliverable_ids = sorted(
             _unique_text_list(
                 proposed_by_deliverable_ids,
@@ -5026,9 +4921,7 @@ class TeamAdminService:
     ) -> tuple[TeamState, dict[str, Any]]:
         normalized_case_id = _required_text(case_id, "case_id")
         normalized_reason = _required_text(reason, "reason")
-        normalized_evidence_refs = sorted(
-            _unique_text_list(evidence_refs, "evidence_refs")
-        )
+        normalized_evidence_refs = sorted(_unique_text_list(evidence_refs, "evidence_refs"))
         normalized_actor = _required_text(
             closed_by_user_id,
             "closed_by_user_id",
@@ -5082,9 +4975,7 @@ class TeamAdminService:
             "reporter_user_id",
         )
         normalized_report = _required_text(report, "report")
-        normalized_evidence_refs = sorted(
-            _unique_text_list(evidence_refs, "evidence_refs")
-        )
+        normalized_evidence_refs = sorted(_unique_text_list(evidence_refs, "evidence_refs"))
         if not normalized_evidence_refs:
             raise ValueError("evidence_refs must contain at least one reference")
 
@@ -5094,21 +4985,16 @@ class TeamAdminService:
                 (
                     case
                     for case in state.cases.values()
-                    if case.source == "post_release_feedback"
-                    and case.source_ref == source_ref
+                    if case.source == "post_release_feedback" and case.source_ref == source_ref
                 ),
                 None,
             )
             if existing is not None and (
                 existing.description != normalized_report
-                or existing.metadata.get("reporter_user_id")
-                != normalized_reporter
-                or list(existing.metadata.get("evidence_refs") or [])
-                != normalized_evidence_refs
+                or existing.metadata.get("reporter_user_id") != normalized_reporter
+                or list(existing.metadata.get("evidence_refs") or []) != normalized_evidence_refs
             ):
-                raise ValueError(
-                    "post-release report request_id was reused with different inputs"
-                )
+                raise ValueError("post-release report request_id was reused with different inputs")
             case = report_post_release_feedback(
                 state,
                 release_package_id=normalized_release_id,
@@ -5184,12 +5070,8 @@ class TeamAdminService:
         normalized_project_id = _required_text(project_id, "project_id")
         request = {
             "id": _optional_text(release_id),
-            "supersedes_release_package_id": _optional_text(
-                supersedes_release_package_id
-            ),
-            "post_release_feedback_case_id": _optional_text(
-                post_release_feedback_case_id
-            ),
+            "supersedes_release_package_id": _optional_text(supersedes_release_package_id),
+            "post_release_feedback_case_id": _optional_text(post_release_feedback_case_id),
             "project_id": normalized_project_id,
             "deliverable_ids": list(deliverable_ids),
             "release_branch": _optional_text(release_branch),

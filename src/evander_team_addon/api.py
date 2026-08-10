@@ -58,6 +58,7 @@ from evander.execution.container_worker_client import (
 )
 from evander.email.http_utils import ProviderRequestError
 from evander.models import utc_now
+from evander.model_usage.runtime import MODEL_USAGE_STORE_FILENAME, model_usage_store
 from evander.orchestration.host_polling import notify_wake_socket_for_lock
 from evander.voice_sessions import (
     OpenAIRealtimeClientSecretService,
@@ -126,6 +127,9 @@ from .repository import TeamStateConflictError, TeamStateRepository
 from .sqlite_store import TeamIdempotencyConflictError
 from .services.domain.chat import CHAT_MESSAGE_QUEUED_EVENT_TYPE
 from .services.domain.case_task import TaskGitBaseValidationError
+from .services.domain.context_rotation import (
+    _append_idle_context_rotation_wake_requested_event,
+)
 from .services.domain.release_packages import ReleasePackageValidationError
 from .services.domain.git_common import GIT_PROMOTION_EVENT_TYPE
 from .services.domain.task_assessment import task_payload_with_assessment
@@ -457,6 +461,7 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
             context.auth,
             request,
             state,
+            runtime_dir=context.runtime_dir,
             session_records=_session_records_by_id(_session_repository_from_context(context)),
             agent_execution_records=_agent_execution_records_by_session(context.service),
         )
@@ -597,16 +602,13 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
                 "dispatch_id": row.dispatch_id,
                 "agent_id": row.agent_id,
                 "agent_display_name": (
-                    (agent.display_name or agent.id)
-                    if agent is not None
-                    else row.agent_id
+                    (agent.display_name or agent.id) if agent is not None else row.agent_id
                 ),
                 "team_id": agent.team_id if agent is not None else None,
                 "kind": kind,
                 "tool_name": (
                     None
-                    if row.tool_name
-                    in {"team_dispatch_started", "team_dispatch_finished"}
+                    if row.tool_name in {"team_dispatch_started", "team_dispatch_finished"}
                     else row.tool_name
                 ),
                 "status": row.status.value,
@@ -653,6 +655,7 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
                 request,
                 state,
                 view=view,
+                runtime_dir=context.runtime_dir,
                 session_repository=_session_repository_from_context(context),
             )
         )
@@ -805,11 +808,7 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
     async def patch_governance_group(request: Request) -> JSONResponse:
         payload = await _read_payload(request)
         raw_archived = payload.get("archived")
-        goals = (
-            list(_optional_list(payload, "goals"))
-            if "goals" in payload
-            else None
-        )
+        goals = list(_optional_list(payload, "goals")) if "goals" in payload else None
         governance_group_id = request.path_params["governance_group_id"]
         state, rebased_from_revision = _run_ui_rebasable_mutation(
             payload,
@@ -882,9 +881,7 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
         release_policy = _resolved_release_policy_for_admin(
             context.auth,
             payload,
-            directory_path=(
-                git_config.directory_path if git_config is not None else "root"
-            ),
+            directory_path=(git_config.directory_path if git_config is not None else "root"),
         )
         lead_agent_id = _optional(payload, "lead_agent_id")
         lead_session_id = _optional(payload, "lead_session_id")
@@ -946,16 +943,12 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
         if re_resolve_existing_release_policy:
             release_policy_payload = {
                 **payload,
-                "release_policy": current_project.release_policy.model_dump(
-                    mode="python"
-                ),
+                "release_policy": current_project.release_policy.model_dump(mode="python"),
             }
         release_policy = _resolved_release_policy_for_admin(
             context.auth,
             release_policy_payload,
-            directory_path=(
-                effective_git.directory_path if effective_git is not None else "root"
-            ),
+            directory_path=(effective_git.directory_path if effective_git is not None else "root"),
         )
         state, rebased_from_revision = _run_ui_rebasable_mutation(
             payload,
@@ -965,9 +958,7 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
                 git=git_config,
                 set_git=has_git,
                 release_policy=release_policy,
-                set_release_policy=(
-                    has_release_policy or re_resolve_existing_release_policy
-                ),
+                set_release_policy=(has_release_policy or re_resolve_existing_release_policy),
                 goals=goals,
                 status=ProjectStatus(raw_status) if raw_status else None,
                 expected_revision=expected_revision,
@@ -1141,6 +1132,13 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
                 set_voice_profile="voice_profile" in payload,
                 context_clearing_policy=_optional(payload, "context_clearing_policy"),
                 set_context_clearing_policy="context_clearing_policy" in payload,
+                context_clearing_idle_grace_seconds=_optional(
+                    payload,
+                    "context_clearing_idle_grace_seconds",
+                ),
+                set_context_clearing_idle_grace_seconds=(
+                    "context_clearing_idle_grace_seconds" in payload
+                ),
                 auto_context_clearing_enabled=_optional_bool(
                     payload,
                     "auto_context_clearing_enabled",
@@ -1151,7 +1149,28 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
             target_collection="agents",
             target_id=agent_id,
         )
-        return _state_response(request, state, rebased_from_revision=rebased_from_revision)
+        idle_wake_result: dict[str, Any] = {"events": []}
+        if (
+            "context_clearing_policy" in payload
+            or "context_clearing_idle_grace_seconds" in payload
+            or "auto_context_clearing_enabled" in payload
+        ):
+            _append_idle_context_rotation_wake_requested_event(
+                state,
+                agent_id=agent_id,
+                result=idle_wake_result,
+                now=datetime.now(UTC),
+            )
+        published_event_ids = _publish_team_events(
+            context,
+            idle_wake_result.get("events"),
+        )
+        return _state_response(
+            request,
+            state,
+            rebased_from_revision=rebased_from_revision,
+            extra=({"published_event_ids": published_event_ids} if published_event_ids else None),
+        )
 
     async def create_avatar_preview(request: Request) -> JSONResponse:
         payload = await _read_payload(request)
@@ -1341,8 +1360,7 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
                             conversation,
                             principal_id=scope["current_operator"]["user_id"],
                         ).mode
-                        if conversation.operator_user_id
-                        == scope["current_operator"]["user_id"]
+                        if conversation.operator_user_id == scope["current_operator"]["user_id"]
                         else "reply_only"
                     ),
                 ),
@@ -2233,12 +2251,13 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
         payload = await _read_payload(request)
         raw_state = _optional(payload, "state")
         created_by_agent_id = _optional(payload, "created_by_agent_id")
+        owner_agent_id = _required(payload, "owner_agent_id")
         task_id = _optional(payload, "id") or _optional(payload, "task_id")
         state, rebased_from_revision = _run_ui_rebasable_mutation(
             payload,
             lambda expected_revision: admin_service.create_or_reprioritize_task(
                 task_id=task_id,
-                owner_agent_id=_required(payload, "owner_agent_id"),
+                owner_agent_id=owner_agent_id,
                 project_id=_required(payload, "project_id"),
                 case_id=_optional(payload, "case_id"),
                 set_case_id="case_id" in payload,
@@ -2281,6 +2300,11 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
             state,
             status_code=201,
             rebased_from_revision=rebased_from_revision,
+            extra=_idle_context_rotation_outbox_publication_extra(
+                context,
+                state=state,
+                agent_id=owner_agent_id,
+            ),
         )
 
     async def patch_task(request: Request) -> JSONResponse:
@@ -2316,7 +2340,21 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
             target_collection="tasks",
             target_id=task_id,
         )
-        return _state_response(request, state, rebased_from_revision=rebased_from_revision)
+        task = state.tasks.get(task_id)
+        return _state_response(
+            request,
+            state,
+            rebased_from_revision=rebased_from_revision,
+            extra=(
+                _idle_context_rotation_outbox_publication_extra(
+                    context,
+                    state=state,
+                    agent_id=task.owner_agent_id,
+                )
+                if task is not None
+                else None
+            ),
+        )
 
     async def cancel_task(request: Request) -> JSONResponse:
         payload = await _read_payload(request)
@@ -2338,6 +2376,15 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
             request,
             state,
             rebased_from_revision=rebased_from_revision,
+            extra=(
+                _idle_context_rotation_outbox_publication_extra(
+                    context,
+                    state=state,
+                    agent_id=state.tasks[task_id].owner_agent_id,
+                )
+                if task_id in state.tasks
+                else None
+            ),
         )
 
     async def repair_task_state(request: Request) -> JSONResponse:
@@ -2356,10 +2403,20 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
             target_collection="tasks",
             target_id=task_id,
         )
+        task = state.tasks.get(task_id)
         return _state_response(
             request,
             state,
             rebased_from_revision=rebased_from_revision,
+            extra=(
+                _idle_context_rotation_outbox_publication_extra(
+                    context,
+                    state=state,
+                    agent_id=task.owner_agent_id,
+                )
+                if task is not None
+                else None
+            ),
         )
 
     async def record_deliverable(request: Request) -> JSONResponse:
@@ -2454,7 +2511,21 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
             target_collection="review_requests",
             target_id=review_request_id,
         )
-        return _state_response(request, state, rebased_from_revision=rebased_from_revision)
+        review = state.review_requests.get(review_request_id)
+        return _state_response(
+            request,
+            state,
+            rebased_from_revision=rebased_from_revision,
+            extra=(
+                _idle_context_rotation_outbox_publication_extra(
+                    context,
+                    state=state,
+                    agent_id=review.reviewer_agent_id,
+                )
+                if review is not None
+                else None
+            ),
+        )
 
     async def retire_review_request(request: Request) -> JSONResponse:
         payload = await _read_payload(request)
@@ -2594,25 +2665,21 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
     ) -> JSONResponse:
         payload = await _read_payload(request)
         blocker_id = request.path_params["blocker_id"]
-        state, result = (
-            admin_service.recover_candidate_correction_successor_as_operator(
-                blocker_id=blocker_id,
-                action=_required(payload, "action"),
-                reason=_optional(payload, "reason"),
-                instruction=_optional(payload, "instruction"),
-                owner_agent_id=_optional(payload, "owner_agent_id"),
-                operator_actor_id=_operator_actor_from_request(
-                    context.auth,
-                    request,
-                ),
-                expected_revision=_expected_revision(payload),
-            )
+        state, result = admin_service.recover_candidate_correction_successor_as_operator(
+            blocker_id=blocker_id,
+            action=_required(payload, "action"),
+            reason=_optional(payload, "reason"),
+            instruction=_optional(payload, "instruction"),
+            owner_agent_id=_optional(payload, "owner_agent_id"),
+            operator_actor_id=_operator_actor_from_request(
+                context.auth,
+                request,
+            ),
+            expected_revision=_expected_revision(payload),
         )
         result["outbox_publication_wake"] = _request_team_outbox_publication(
             context,
-            correlation_key=(
-                f"candidate-correction-recovery:{blocker_id}:{state.revision}"
-            ),
+            correlation_key=(f"candidate-correction-recovery:{blocker_id}:{state.revision}"),
         )
         return _state_response(
             request,
@@ -2625,16 +2692,14 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
     ) -> JSONResponse:
         payload = await _read_payload(request)
         blocker_id = request.path_params["blocker_id"]
-        state, result = (
-            admin_service.start_dependency_composition_recovery_as_operator(
-                blocker_id=blocker_id,
-                resolver_agent_id=_required(payload, "resolver_agent_id"),
-                operator_actor_id=_operator_actor_from_request(
-                    context.auth,
-                    request,
-                ),
-                expected_revision=_expected_revision(payload),
-            )
+        state, result = admin_service.start_dependency_composition_recovery_as_operator(
+            blocker_id=blocker_id,
+            resolver_agent_id=_required(payload, "resolver_agent_id"),
+            operator_actor_id=_operator_actor_from_request(
+                context.auth,
+                request,
+            ),
+            expected_revision=_expected_revision(payload),
         )
         return _state_response(
             request,
@@ -2660,12 +2725,8 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
                 kind=_required(payload, "kind"),
                 name=_required(payload, "name"),
                 description=_optional(payload, "description") or "",
-                reference_requirements=(
-                    _optional(payload, "reference_requirements") or ""
-                ),
-                evidence_requirements=(
-                    _optional(payload, "evidence_requirements") or ""
-                ),
+                reference_requirements=(_optional(payload, "reference_requirements") or ""),
+                evidence_requirements=(_optional(payload, "evidence_requirements") or ""),
                 expected_revision=expected_revision,
             ),
             create_collection="outcome_kind_definitions",
@@ -2728,9 +2789,7 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
         request: Request,
     ) -> JSONResponse:
         state = repository.read()
-        definition = state.outcome_kind_definitions.get(
-            request.path_params["definition_id"]
-        )
+        definition = state.outcome_kind_definitions.get(request.path_params["definition_id"])
         if definition is None:
             return JSONResponse(
                 {"error": "outcome kind definition not found"},
@@ -2846,9 +2905,7 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
         }
         unknown_states = states - allowed_states
         if unknown_states:
-            raise ValueError(
-                f"unknown human review state: {', '.join(sorted(unknown_states))}"
-            )
+            raise ValueError(f"unknown human review state: {', '.join(sorted(unknown_states))}")
         state = repository.read()
         rows = []
         for human_request in sorted(
@@ -2871,9 +2928,7 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
                 identity=identity,
             ):
                 continue
-            rows.append(
-                human_review_request_detail_payload(state, human_request)
-            )
+            rows.append(human_review_request_detail_payload(state, human_request))
         return JSONResponse(
             {
                 "revision": state.revision,
@@ -2899,9 +2954,7 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
             identity=identity,
         ):
             raise PermissionError("Human review request is not assigned to this user")
-        return JSONResponse(
-            human_review_request_detail_payload(state, human_request)
-        )
+        return JSONResponse(human_review_request_detail_payload(state, human_request))
 
     async def download_human_review_bundle(request: Request) -> FileResponse | JSONResponse:
         identity = _strict_human_identity_from_request(context.auth, request)
@@ -3037,9 +3090,7 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
             request_id=_mutation_request_id(request, payload),
             expected_request_revision=_expected_revision(payload),
             checklist_results=_optional_object(payload, "checklist_results"),
-            confirmed_finding_ids=(
-                _optional_string_list(payload, "confirmed_finding_ids") or []
-            ),
+            confirmed_finding_ids=(_optional_string_list(payload, "confirmed_finding_ids") or []),
             summary=_optional(payload, "summary") or "",
             evidence_refs=_optional_string_list(payload, "evidence_refs") or [],
             findings=_optional_mapping_list(payload, "findings"),
@@ -3183,21 +3234,19 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
             raise ValueError(
                 "human review assignment is unavailable; audited reassignment is required"
             )
-        state, result = (
-            admin_service.record_human_review_preparation_result_with_result(
-                human_review_request_id=human_request.id,
-                recorded_by_user_id=identity["user_id"],
-                request_id=_mutation_request_id(request, payload),
-                expected_request_revision=_expected_revision(payload),
-                candidate_commit_sha=_required(payload, "candidate_commit_sha"),
-                candidate_tree_hash=_required(payload, "candidate_tree_hash"),
-                preparation_generation=_required_int(
-                    payload,
-                    "preparation_generation",
-                ),
-                target=target,
-                error=error,
-            )
+        state, result = admin_service.record_human_review_preparation_result_with_result(
+            human_review_request_id=human_request.id,
+            recorded_by_user_id=identity["user_id"],
+            request_id=_mutation_request_id(request, payload),
+            expected_request_revision=_expected_revision(payload),
+            candidate_commit_sha=_required(payload, "candidate_commit_sha"),
+            candidate_tree_hash=_required(payload, "candidate_tree_hash"),
+            preparation_generation=_required_int(
+                payload,
+                "preparation_generation",
+            ),
+            target=target,
+            error=error,
         )
         return JSONResponse(
             {
@@ -3247,35 +3296,31 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
                 {"error": "human review finding not found"},
                 status_code=404,
             )
-        state, result = (
-            admin_service.record_human_finding_resolution_proposal_with_result(
-                finding_id=finding_id,
-                proposed_resolution=_required(payload, "proposed_resolution"),
-                evidence_refs=(
-                    _optional_string_list(payload, "evidence_refs") or []
-                ),
-                proposed_by_deliverable_ids=(
-                    _optional_string_list(
-                        payload,
-                        "proposed_by_deliverable_ids",
-                    )
-                    or []
-                ),
-                proposed_by_user_id=_operator_actor_from_request(
-                    context.auth,
-                    request,
-                ),
-                request_id=_mutation_request_id(request, payload),
-                expected_state_revision=_expected_revision(payload),
-            )
+        state, result = admin_service.record_human_finding_resolution_proposal_with_result(
+            finding_id=finding_id,
+            proposed_resolution=_required(payload, "proposed_resolution"),
+            evidence_refs=(_optional_string_list(payload, "evidence_refs") or []),
+            proposed_by_deliverable_ids=(
+                _optional_string_list(
+                    payload,
+                    "proposed_by_deliverable_ids",
+                )
+                or []
+            ),
+            proposed_by_user_id=_operator_actor_from_request(
+                context.auth,
+                request,
+            ),
+            request_id=_mutation_request_id(request, payload),
+            expected_state_revision=_expected_revision(payload),
         )
         return JSONResponse(
             {
                 "revision": state.revision,
                 "result": result,
-                "human_review_finding": state.human_review_findings[
-                    finding_id
-                ].model_dump(mode="json"),
+                "human_review_finding": state.human_review_findings[finding_id].model_dump(
+                    mode="json"
+                ),
             }
         )
 
@@ -3291,30 +3336,28 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
                 {"error": "human review finding not found"},
                 status_code=404,
             )
-        state, result = (
-            admin_service.route_human_finding_correction_with_result(
-                finding_id=finding_id,
-                owner_agent_id=_required(payload, "owner_agent_id"),
-                target_deliverable_ids=_optional_string_list(
-                    payload,
-                    "target_deliverable_ids",
-                ),
-                routed_by_user_id=_operator_actor_from_request(
-                    context.auth,
-                    request,
-                ),
-                request_id=_mutation_request_id(request, payload),
-                expected_state_revision=_expected_revision(payload),
-            )
+        state, result = admin_service.route_human_finding_correction_with_result(
+            finding_id=finding_id,
+            owner_agent_id=_required(payload, "owner_agent_id"),
+            target_deliverable_ids=_optional_string_list(
+                payload,
+                "target_deliverable_ids",
+            ),
+            routed_by_user_id=_operator_actor_from_request(
+                context.auth,
+                request,
+            ),
+            request_id=_mutation_request_id(request, payload),
+            expected_state_revision=_expected_revision(payload),
         )
         correction_task_id = str(result["correction_task_id"])
         return JSONResponse(
             {
                 "revision": state.revision,
                 "result": result,
-                "human_review_finding": state.human_review_findings[
-                    finding_id
-                ].model_dump(mode="json"),
+                "human_review_finding": state.human_review_findings[finding_id].model_dump(
+                    mode="json"
+                ),
                 "correction_task": task_payload_with_assessment(
                     state,
                     state.tasks[correction_task_id],
@@ -3331,20 +3374,16 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
         state = repository.read()
         if case_id not in state.cases:
             return JSONResponse({"error": "case not found"}, status_code=404)
-        state, result = (
-            admin_service.close_post_release_feedback_case_with_result(
-                case_id=case_id,
-                reason=_required(payload, "reason"),
-                evidence_refs=(
-                    _optional_string_list(payload, "evidence_refs") or []
-                ),
-                closed_by_user_id=_operator_actor_from_request(
-                    context.auth,
-                    request,
-                ),
-                request_id=_mutation_request_id(request, payload),
-                expected_state_revision=_expected_revision(payload),
-            )
+        state, result = admin_service.close_post_release_feedback_case_with_result(
+            case_id=case_id,
+            reason=_required(payload, "reason"),
+            evidence_refs=(_optional_string_list(payload, "evidence_refs") or []),
+            closed_by_user_id=_operator_actor_from_request(
+                context.auth,
+                request,
+            ),
+            request_id=_mutation_request_id(request, payload),
+            expected_state_revision=_expected_revision(payload),
         )
         return JSONResponse(
             {
@@ -4359,9 +4398,7 @@ def _release_verification_live_payload(
             raise ValueError("container worker is not configured")
         worker_client = ContainerWorkerClient(
             base_url=worker_url,
-            token_env=str(
-                getattr(config, "container_worker_token_env", "EVANDER_WORKER_TOKEN")
-            ),
+            token_env=str(getattr(config, "container_worker_token_env", "EVANDER_WORKER_TOKEN")),
             timeout_seconds=float(
                 getattr(config, "container_worker_request_timeout_seconds", 30.0)
             ),
@@ -4397,6 +4434,7 @@ def _team_state_payload_for_request(
     request: Request,
     state: TeamState,
     *,
+    runtime_dir: Path | None = None,
     session_records: Mapping[str, Any] | None = None,
     agent_execution_records: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
@@ -4415,6 +4453,8 @@ def _team_state_payload_for_request(
             )
     apply_compact_human_review_projection(payload, state)
     _add_team_resource_tokens(payload, state)
+    if runtime_dir is not None:
+        _add_context_reset_usage(payload, state, runtime_dir=runtime_dir)
     if not _can_view_all_team_chats(auth, request):
         identity = _operator_identity_from_request(auth, request)
         allowed_conversation_ids = {
@@ -4526,6 +4566,7 @@ def _view_payload_for_request(
     state: TeamState,
     *,
     view: str,
+    runtime_dir: Path | None = None,
     session_records: Mapping[str, Any] | None = None,
     agent_execution_records: Mapping[str, Any] | None = None,
     session_repository: Any | None = None,
@@ -4595,6 +4636,7 @@ def _view_payload_for_request(
             state,
             collections=collections,
             ids_by_collection=ids_by_collection,
+            runtime_dir=runtime_dir,
             session_records=session_records,
             agent_execution_records=agent_execution_records,
             session_repository=session_repository,
@@ -4840,9 +4882,7 @@ def _view_ids_by_collection(state: TeamState, view: str) -> dict[str, set[str]]:
             record.id for record in current_failed_action_records(state)
         }
         open_blocker_ids = {
-            blocker.id
-            for blocker in state.blockers.values()
-            if blocker.state.value == "open"
+            blocker.id for blocker in state.blockers.values() if blocker.state.value == "open"
         }
         ids_by_collection["blockers"] = open_blocker_ids
         ids_by_collection["blocker_events"] = {
@@ -4865,6 +4905,7 @@ def _state_slice_payload_for_request(
     *,
     collections: set[str],
     ids_by_collection: Mapping[str, set[str]] | None = None,
+    runtime_dir: Path | None = None,
     session_records: Mapping[str, Any] | None = None,
     agent_execution_records: Mapping[str, Any] | None = None,
     session_repository: Any | None = None,
@@ -4909,6 +4950,8 @@ def _state_slice_payload_for_request(
         agent_payload = payload.get("agents", {}).get(agent_id)
         if isinstance(agent_payload, dict):
             agent_payload["activity_summary"] = summary
+    if runtime_dir is not None:
+        _add_context_reset_usage(payload, state, runtime_dir=runtime_dir)
     _add_team_resource_tokens_for_collections(
         payload,
         state,
@@ -4921,6 +4964,58 @@ def _state_slice_payload_for_request(
         history_limit=_query_state_history_limit(request),
     )
     return payload
+
+
+def _add_context_reset_usage(
+    payload: dict[str, Any],
+    state: TeamState,
+    *,
+    runtime_dir: Path,
+) -> None:
+    """Attach reset-bounded input-token totals to eligible runtime payloads."""
+    runtime_payloads = payload.get("agent_runtimes")
+    if not isinstance(runtime_payloads, dict):
+        return
+
+    usage_store = None
+    usage_store_unavailable = False
+    if (Path(runtime_dir) / MODEL_USAGE_STORE_FILENAME).is_file():
+        try:
+            usage_store = model_usage_store(runtime_dir)
+        except Exception:
+            usage_store_unavailable = True
+
+    for agent_id, runtime_payload in runtime_payloads.items():
+        if not isinstance(runtime_payload, dict):
+            continue
+        runtime = state.agent_runtimes.get(agent_id)
+        agent = state.agents.get(agent_id)
+        if runtime is None or agent is None:
+            continue
+        policy = str(
+            getattr(runtime.context_clearing_policy, "value", runtime.context_clearing_policy)
+            or "off"
+        )
+        if policy == "every_wake":
+            continue
+
+        input_tokens_since_reset: int | None = None
+        if runtime.last_context_rotated_at is not None:
+            if usage_store_unavailable:
+                input_tokens_since_reset = None
+            elif usage_store is None:
+                input_tokens_since_reset = 0
+            else:
+                try:
+                    input_tokens_since_reset = usage_store.sum_input_tokens(
+                        session_id=agent.session_id,
+                        occurred_after=runtime.last_context_rotated_at,
+                    )
+                except Exception:
+                    input_tokens_since_reset = None
+        runtime_payload["context_reset_usage"] = {
+            "input_tokens_since_reset": input_tokens_since_reset,
+        }
 
 
 def _state_collection_slice_payload(
@@ -5259,6 +5354,9 @@ def _team_resource_value_for_token(
                     runtime.context_clearing_policy,
                 ),
                 "auto_context_clearing_enabled": runtime.auto_context_clearing_enabled,
+                "context_clearing_idle_grace_seconds": (
+                    runtime.context_clearing_idle_grace_seconds
+                ),
             }
             if runtime is not None
             else None
@@ -5566,9 +5664,7 @@ def _require_human_review_decision_identity(
     assignment = getattr(human_request, "current_assignment", None)
     explicitly_assigned = {
         str(value).strip().casefold()
-        for value in (
-            getattr(assignment, "explicitly_assigned_user_ids", None) or ()
-        )
+        for value in (getattr(assignment, "explicitly_assigned_user_ids", None) or ())
         if str(value).strip()
     }
     if user_id not in explicitly_assigned and not _is_current_configured_human_reviewer(
@@ -5577,15 +5673,11 @@ def _require_human_review_decision_identity(
         user_id=user_id,
         directory_path=directory_path,
     ):
-        raise PermissionError(
-            "Human reviewer is no longer a member of an assigned reviewer group"
-        )
+        raise PermissionError("Human reviewer is no longer a member of an assigned reviewer group")
 
     require_permission = getattr(auth, "require_permission", None)
     if not callable(require_permission):
-        raise PermissionError(
-            f"Permission required: {TEAM_HUMAN_REVIEWS_DECIDE_PERMISSION}"
-        )
+        raise PermissionError(f"Permission required: {TEAM_HUMAN_REVIEWS_DECIDE_PERMISSION}")
     require_permission(
         request,
         TEAM_HUMAN_REVIEWS_DECIDE_PERMISSION,
@@ -5702,16 +5794,12 @@ def _current_human_review_decision_eligible_user_ids(
     assignment = getattr(human_request, "current_assignment", None)
     assigned_user_ids = {
         normalized
-        for value in (
-            getattr(assignment, "eligible_user_ids", None) or ()
-        )
+        for value in (getattr(assignment, "eligible_user_ids", None) or ())
         if (normalized := normalize_admin_web_login(value)) is not None
     }
     explicit_user_ids = {
         normalized
-        for value in (
-            getattr(assignment, "explicitly_assigned_user_ids", None) or ()
-        )
+        for value in (getattr(assignment, "explicitly_assigned_user_ids", None) or ())
         if (normalized := normalize_admin_web_login(value)) is not None
     }
     user_store = getattr(auth, "user_store", None)
@@ -5767,8 +5855,7 @@ def _reconcile_human_review_request_assignment(
         "can",
     )
     if user_store is None or any(
-        not callable(getattr(user_store, method_name, None))
-        for method_name in required_methods
+        not callable(getattr(user_store, method_name, None)) for method_name in required_methods
     ):
         raise PermissionError("Admin Web user directory is unavailable")
     return reconcile_current_human_review_assignments(
@@ -5882,8 +5969,7 @@ def _is_current_configured_human_reviewer(
     except Exception:
         return False
     return any(
-        str(getattr(assignment, "group_id", "") or "").strip().casefold()
-        in configured_group_ids
+        str(getattr(assignment, "group_id", "") or "").strip().casefold() in configured_group_ids
         and scope_matches(
             getattr(assignment, "directory_path", None),
             directory_path,
@@ -5940,9 +6026,7 @@ def _release_candidate_checkout_metadata(
         return None
     if not isinstance(repository, Mapping):
         return None
-    canonical_identity = str(
-        repository.get("canonical_repository_identity") or ""
-    ).strip()
+    canonical_identity = str(repository.get("canonical_repository_identity") or "").strip()
     if not canonical_identity:
         return None
     release_ref = (
@@ -6642,6 +6726,14 @@ def _build_agent_voice_projection(
             "context_clearing_policy": _enum_value(
                 getattr(runtime, "context_clearing_policy", "off")
             ),
+            "context_clearing_idle_grace_seconds": getattr(
+                runtime,
+                "context_clearing_idle_grace_seconds",
+                0,
+            ),
+            "context_idle_rotation_due_at": _datetime_text(
+                getattr(runtime, "context_idle_rotation_due_at", None)
+            ),
             "auto_context_clearing_enabled": getattr(
                 runtime,
                 "auto_context_clearing_enabled",
@@ -6913,9 +7005,7 @@ def _browser_voice_reconciliation_context(
     return build_voice_reconciliation_context(
         state,
         agent_id=agent_id,
-        session_records=_session_records_by_id(
-            getattr(runtime, "session_repository", None)
-        ),
+        session_records=_session_records_by_id(getattr(runtime, "session_repository", None)),
     )
 
 
@@ -6989,13 +7079,18 @@ def _publish_team_events(context: AddonContext, events: object) -> list[str]:
         payload = event.get("payload")
         if not isinstance(payload, Mapping):
             payload = {}
+        run_at = _optional_event_datetime(event.get("run_at"))
         delay_seconds = _optional_event_float(event.get("delay_seconds"))
-        if delay_seconds is not None and delay_seconds > 0:
+        if run_at is not None or (delay_seconds is not None and delay_seconds > 0):
             scheduled, _created = scheduled_store.schedule_event(
                 event_type=_required_event_text(event.get("event_type"), "event_type"),
                 payload=dict(payload),
                 correlation_key=_optional_event_text(event.get("correlation_key")),
-                run_at=datetime.now(UTC) + timedelta(seconds=delay_seconds),
+                run_at=(
+                    run_at
+                    if run_at is not None
+                    else datetime.now(UTC) + timedelta(seconds=delay_seconds or 0.0)
+                ),
                 idempotency_key=_optional_event_text(event.get("idempotency_key")),
                 source=InternalEventSource(
                     source_type="team-addon",
@@ -7051,9 +7146,7 @@ def _request_team_outbox_publication(
             event_type=TEAM_OUTBOX_PUBLISH_REQUESTED_EVENT_TYPE,
             payload={},
             correlation_key=correlation_key,
-            idempotency_key=(
-                f"{TEAM_OUTBOX_PUBLISH_REQUESTED_EVENT_TYPE}:{correlation_key}"
-            ),
+            idempotency_key=(f"{TEAM_OUTBOX_PUBLISH_REQUESTED_EVENT_TYPE}:{correlation_key}"),
             source=InternalEventSource(
                 source_type="team-addon",
                 source_name="team-addon",
@@ -7069,6 +7162,27 @@ def _request_team_outbox_publication(
     return {
         "event_ids": [event.event_id],
         "wake_notified": wake_notified,
+    }
+
+
+def _idle_context_rotation_outbox_publication_extra(
+    context: AddonContext,
+    *,
+    state: TeamState,
+    agent_id: str,
+) -> dict[str, object] | None:
+    runtime = state.agent_runtimes.get(agent_id)
+    if runtime is None or runtime.context_idle_rotation_due_at is None:
+        return None
+    due_at = runtime.context_idle_rotation_due_at
+    if due_at.tzinfo is None:
+        due_at = due_at.replace(tzinfo=UTC)
+    due_key = int(due_at.astimezone(UTC).timestamp() * 1_000_000)
+    return {
+        "outbox_publication_wake": _request_team_outbox_publication(
+            context,
+            correlation_key=f"idle-context-rotation:{agent_id}:{due_key}",
+        )
     }
 
 
@@ -7092,6 +7206,19 @@ def _optional_event_float(value: object) -> float | None:
     if isinstance(value, bool):
         raise ValueError("number value is required")
     return float(value)
+
+
+def _optional_event_datetime(value: object) -> datetime | None:
+    text = _optional_event_text(value)
+    if text is None:
+        return None
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise ValueError("run_at must be an ISO 8601 datetime") from exc
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    return parsed.astimezone(UTC)
 
 
 async def _read_payload(request: Request) -> Mapping[str, Any]:
@@ -7136,8 +7263,7 @@ def _mutation_request_id(
     body_values = {
         str(payload[field_name]).strip()
         for field_name in ("request_id", "idempotency_key")
-        if payload.get(field_name) is not None
-        and str(payload[field_name]).strip()
+        if payload.get(field_name) is not None and str(payload[field_name]).strip()
     }
     values = body_values | ({header_value} if header_value else set())
     if not values:
@@ -7308,21 +7434,14 @@ def _resolved_release_policy_for_admin(
     list_assignments = getattr(user_store, "list_user_group_assignments", None)
     get_user = getattr(user_store, "get_user", None)
     can = getattr(user_store, "can", None)
-    if not all(
-        callable(method)
-        for method in (get_group, list_assignments, get_user, can)
-    ):
+    if not all(callable(method) for method in (get_group, list_assignments, get_user, can)):
         raise ValueError(
-            "Admin Web user directory is unavailable; human review policy "
-            "cannot be configured"
+            "Admin Web user directory is unavailable; human review policy cannot be configured"
         )
-    missing_group_ids = [
-        group_id for group_id in group_ids if get_group(group_id) is None
-    ]
+    missing_group_ids = [group_id for group_id in group_ids if get_group(group_id) is None]
     if missing_group_ids:
         raise ValueError(
-            "human review policy references missing Admin groups: "
-            + ", ".join(missing_group_ids)
+            "human review policy references missing Admin groups: " + ", ".join(missing_group_ids)
         )
     try:
         assignments = list_assignments()
@@ -7330,9 +7449,7 @@ def _resolved_release_policy_for_admin(
         raise ValueError("Admin Web user directory is unavailable") from exc
     eligible_user_ids: list[str] = []
     for assignment in assignments:
-        assignment_group_id = normalize_admin_web_group_id(
-            getattr(assignment, "group_id", None)
-        )
+        assignment_group_id = normalize_admin_web_group_id(getattr(assignment, "group_id", None))
         if assignment_group_id not in group_ids or not scope_matches(
             getattr(assignment, "directory_path", None),
             normalized_directory,

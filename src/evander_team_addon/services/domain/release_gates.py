@@ -65,11 +65,7 @@ def _candidate_correction_git_base(release: ReleasePackage) -> str | None:
     manifest_release_branch = (
         release.manifest.release_branch if release.manifest is not None else None
     )
-    return (
-        release.release_branch
-        or manifest_release_branch
-        or release.git_base_branch
-    )
+    return release.release_branch or manifest_release_branch or release.git_base_branch
 
 
 def _reconcile_candidate_correction_task_git_base(
@@ -260,20 +256,11 @@ def begin_release_gates(
 
     release.candidate_commit_sha = candidate_commit_sha
     release.candidate_tree_hash = candidate_tree_hash
-    predecessor = state.release_packages.get(
-        release.supersedes_release_package_id or ""
-    )
-    if (
-        predecessor is not None
-        and (
-            (
-                candidate_tree_hash is not None
-                and candidate_tree_hash == predecessor.candidate_tree_hash
-            )
-            or (
-                candidate_tree_hash is None
-                and candidate_commit_sha == predecessor.candidate_commit_sha
-            )
+    predecessor = state.release_packages.get(release.supersedes_release_package_id or "")
+    if predecessor is not None and (
+        (candidate_tree_hash is not None and candidate_tree_hash == predecessor.candidate_tree_hash)
+        or (
+            candidate_tree_hash is None and candidate_commit_sha == predecessor.candidate_commit_sha
         )
     ):
         _reject_release(
@@ -281,10 +268,7 @@ def begin_release_gates(
             release,
             stage="human_review",
             kind="candidate",
-            error=(
-                f"successor release candidate is unchanged from predecessor "
-                f"{predecessor.id}"
-            ),
+            error=(f"successor release candidate is unchanged from predecessor {predecessor.id}"),
             result=result,
         )
         return
@@ -514,10 +498,12 @@ def record_release_verification_command_progress(
             f"release verification command {command_index} is {existing.name!r}, not "
             f"{command_result.name!r}"
         )
-    if existing.state in {"passed", "failed", "timed_out"} and existing.state != command_result.state:
+    if (
+        existing.state in {"passed", "failed", "timed_out"}
+        and existing.state != command_result.state
+    ):
         raise ValueError(
-            f"release verification command {command_index} is already terminal "
-            f"({existing.state})"
+            f"release verification command {command_index} is already terminal ({existing.state})"
         )
     run.state = "running"
     run.command_results[command_index] = command_result
@@ -645,9 +631,7 @@ def _materialize_candidate_verification_correction(
             "candidate_tree_hash": release.candidate_tree_hash,
             "release_branch": release.release_branch,
             "assignment_reason": assignment_reason,
-            "summary": (
-                "Correct the failed verification on the exact rejected release candidate."
-            ),
+            "summary": ("Correct the failed verification on the exact rejected release candidate."),
             "error": error,
             "failed_command_results": failed_command_results,
             "next_action": (
@@ -681,18 +665,22 @@ def _candidate_verification_correction_owner(
     if project is None:
         return None, "project_missing"
 
-    failure_text = "\n".join(
-        value
-        for value in [
-            error,
-            *(
-                command_result.log_excerpt or ""
-                for command_result in run.command_results
-                if command_result.state in {"failed", "timed_out"}
-            ),
-        ]
-        if value
-    ).replace("\\", "/").casefold()
+    failure_text = (
+        "\n".join(
+            value
+            for value in [
+                error,
+                *(
+                    command_result.log_excerpt or ""
+                    for command_result in run.command_results
+                    if command_result.state in {"failed", "timed_out"}
+                ),
+            ]
+            if value
+        )
+        .replace("\\", "/")
+        .casefold()
+    )
     source_owner_ids: set[str] = set()
     manifest = release.manifest
     if manifest is not None and failure_text:
@@ -700,9 +688,7 @@ def _candidate_verification_correction_owner(
             review_manifest = evidence.review_manifest
             if review_manifest is None:
                 continue
-            changed_paths = _verification_manifest_path_names(
-                review_manifest.changed_paths
-            )
+            changed_paths = _verification_manifest_path_names(review_manifest.changed_paths)
             if not any(path.casefold() in failure_text for path in changed_paths):
                 continue
             deliverable = state.deliverables.get(evidence.deliverable_id)
@@ -735,11 +721,7 @@ def _candidate_verification_correction_owner(
 
     team = state.teams.get(project.team_id)
     manager_agent_id = team.manager_agent_id if team is not None else None
-    manager = (
-        state.agents.get(manager_agent_id)
-        if manager_agent_id is not None
-        else None
-    )
+    manager = state.agents.get(manager_agent_id) if manager_agent_id is not None else None
     if (
         manager is not None
         and manager.status == AgentStatus.ACTIVE
@@ -810,9 +792,7 @@ def _candidate_verification_correction_task_id(
     release_package_id: str,
     verification_run_id: str,
 ) -> str:
-    token = sha256(
-        f"{release_package_id}:{verification_run_id}".encode("utf-8")
-    ).hexdigest()[:24]
+    token = sha256(f"{release_package_id}:{verification_run_id}".encode("utf-8")).hexdigest()[:24]
     return f"release-verification-correction-{token}"
 
 
@@ -889,9 +869,7 @@ def materialize_release_review_rejection_correction(
     """
 
     if review.release_package_id != release.id:
-        raise ValueError(
-            f"release review {review.id} does not belong to release {release.id}"
-        )
+        raise ValueError(f"release review {review.id} does not belong to release {release.id}")
     if review.candidate_commit_sha != release.candidate_commit_sha:
         raise ValueError(
             f"release review {review.id} is not pinned to release {release.id} candidate"
@@ -912,6 +890,7 @@ def materialize_release_review_rejection_correction(
     cohort_review_order = {
         review_id: index for index, review_id in enumerate(release.review_request_ids)
     }
+
     def rejected_review_sort_key(candidate: ReviewRequest) -> tuple[int, datetime, str]:
         if release.review_cohort_id is not None:
             return (
@@ -924,6 +903,7 @@ def materialize_release_review_rejection_correction(
             candidate.decision_at or candidate.created_at or now,
             candidate.id,
         )
+
     rejected_reviews = sorted(
         (
             candidate
@@ -939,18 +919,12 @@ def materialize_release_review_rejection_correction(
     if not any(candidate.id == review.id for candidate in rejected_reviews):
         rejected_reviews.append(review)
     findings_by_review_id = {
-        candidate.id: (
-            list(findings)
-            if candidate.id == review.id
-            else list(candidate.findings)
-        )
+        candidate.id: (list(findings) if candidate.id == review.id else list(candidate.findings))
         for candidate in rejected_reviews
     }
     rejected_review_ids = [candidate.id for candidate in rejected_reviews]
     aggregated_findings = [
-        finding
-        for candidate in rejected_reviews
-        for finding in findings_by_review_id[candidate.id]
+        finding for candidate in rejected_reviews for finding in findings_by_review_id[candidate.id]
     ]
     description = _release_review_correction_description(
         release=release,
@@ -984,9 +958,7 @@ def materialize_release_review_rejection_correction(
         task.project_id != release.project_id
         or task.created_by_actor != "system:release-review-correction"
     ):
-        raise ValueError(
-            f"reserved release review correction task id {task_id} is already in use"
-        )
+        raise ValueError(f"reserved release review correction task id {task_id} is already in use")
     else:
         if task.state not in _TERMINAL_CANDIDATE_CORRECTION_TASK_STATES:
             _reconcile_candidate_correction_task_git_base(
@@ -1002,10 +974,10 @@ def materialize_release_review_rejection_correction(
 
     late_rework_deliverable_ids: list[str] = []
     review_decision_at = review.decision_at or now
-    if (
-        release.review_cohort_id is None
-        and task.state in {TeamTaskState.FINISHED, TeamTaskState.ACCEPTED}
-    ):
+    if release.review_cohort_id is None and task.state in {
+        TeamTaskState.FINISHED,
+        TeamTaskState.ACCEPTED,
+    }:
         for deliverable_id in task.deliverable_ids:
             deliverable = state.deliverables.get(deliverable_id)
             if (
@@ -1082,8 +1054,7 @@ def materialize_release_review_rejection_correction(
                     "branch into this correction. Fix the release-review finding and submit "
                     "the changed Git work as the correction deliverable"
                     + (
-                        ", superseding "
-                        + ", ".join(late_rework_deliverable_ids)
+                        ", superseding " + ", ".join(late_rework_deliverable_ids)
                         if late_rework_deliverable_ids
                         else ""
                     )
@@ -1155,17 +1126,12 @@ def _release_review_correction_description(
         (
             f"- {review.id} (reviewer {review.reviewer_agent_id}):\n"
             + (
-                "\n".join(
-                    f"  - {finding}"
-                    for finding in findings_by_review_id[review.id]
-                )
+                "\n".join(f"  - {finding}" for finding in findings_by_review_id[review.id])
                 or "  - Rejected without a textual finding."
             )
         )
         for review in reviews
-    ) or (
-        "- The release was rejected without a current release-review record."
-    )
+    ) or ("- The release was rejected without a current release-review record.")
     return (
         "An agent release review rejected a pinned candidate. Correct the finding without "
         "moving backward across the release boundary.\n\n"
@@ -1399,10 +1365,7 @@ def create_release_reviews_or_approve(
             )
 
     current_reviews = _current_release_reviews(state, release)
-    if any(
-        review.state != TeamRecordState.ACCEPTED
-        for review in current_reviews
-    ):
+    if any(review.state != TeamRecordState.ACCEPTED for review in current_reviews):
         release.updated_at = utc_now()
         return
     human_request = ensure_human_review_request(
@@ -1459,8 +1422,7 @@ def approve_release_candidate(
             or not decisions
         ):
             raise ValueError(
-                f"release {release.id} cannot be approved before its pinned "
-                "human review accepts"
+                f"release {release.id} cannot be approved before its pinned human review accepts"
             )
     release.gate_failure = None
     release.approved_commit_sha = candidate
@@ -1674,9 +1636,7 @@ def _candidate_manifest(
         allowed_parent_task_ids=allowed_release_parent_task_ids(
             state,
             project_id=release.project_id,
-            predecessor_release_package_id=(
-                release.supersedes_release_package_id
-            ),
+            predecessor_release_package_id=(release.supersedes_release_package_id),
         ),
     )
     waivers = {waiver.deliverable_id: waiver for waiver in release.verification_waivers}
@@ -1729,9 +1689,7 @@ def _candidate_manifest(
                 feature_commit_sha=deliverable.git_refs.feature_commit_sha,
             )
         )
-    predecessor = state.release_packages.get(
-        release.supersedes_release_package_id or ""
-    )
+    predecessor = state.release_packages.get(release.supersedes_release_package_id or "")
     predecessor_manifest = predecessor.manifest if predecessor is not None else None
     human_requirement = policy.human_review_requirement
     human_snapshot = (
@@ -1741,13 +1699,8 @@ def _candidate_manifest(
                 or (project.git.directory_path if project.git is not None else "root")
             ),
             configured_group_ids=list(human_requirement.reviewer_group_ids),
-            initially_eligible_user_ids=list(
-                human_requirement.resolved_reviewer_user_ids
-            ),
-            checklist=[
-                item.model_copy(deep=True)
-                for item in human_requirement.checklist
-            ],
+            initially_eligible_user_ids=list(human_requirement.resolved_reviewer_user_ids),
+            checklist=[item.model_copy(deep=True) for item in human_requirement.checklist],
             test_instructions=human_requirement.test_instructions,
             preparation_mode=human_requirement.preparation_mode,
         )
@@ -1778,9 +1731,7 @@ def _candidate_manifest(
             correction_task_id=finding.correction_task_id,
             proposed_resolution=finding.proposed_resolution,
             resolution_evidence_refs=list(finding.resolution_evidence_refs),
-            proposed_by_deliverable_ids=list(
-                finding.proposed_by_deliverable_ids
-            ),
+            proposed_by_deliverable_ids=list(finding.proposed_by_deliverable_ids),
         )
         for finding in sorted(
             state.human_review_findings.values(),
@@ -1793,13 +1744,9 @@ def _candidate_manifest(
         if predecessor_manifest is not None and (
             predecessor_manifest.human_review_requirement is not None
         ):
-            human_snapshot = (
-                predecessor_manifest.human_review_requirement.model_copy(deep=True)
-            )
+            human_snapshot = predecessor_manifest.human_review_requirement.model_copy(deep=True)
         elif predecessor_requests:
-            human_snapshot = predecessor_requests[-1].requirement_snapshot.model_copy(
-                deep=True
-            )
+            human_snapshot = predecessor_requests[-1].requirement_snapshot.model_copy(deep=True)
     lineage = deliverable_source_lineage(state, release.deliverable_ids)
     if not lineage["valid"]:
         raise ValueError("release candidate contribution graph is invalid")

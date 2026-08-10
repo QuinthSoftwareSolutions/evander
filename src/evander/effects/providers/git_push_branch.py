@@ -54,9 +54,7 @@ class GitPushBranchEffectProvider(EffectProviderBase):
         output.setdefault("source_ref", source_ref)
         output.setdefault("expected_commit_sha", expected_commit_sha)
         if expected_destination_commit_sha is not None:
-            output.setdefault(
-                "expected_destination_commit_sha", expected_destination_commit_sha
-            )
+            output.setdefault("expected_destination_commit_sha", expected_destination_commit_sha)
         output.setdefault("destination_branch", destination_branch)
         if output["success"] is False and not self._normalize_optional_string(output.get("error")):
             message = self._normalize_optional_string(output.get("message"))

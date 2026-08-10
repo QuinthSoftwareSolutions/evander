@@ -153,9 +153,7 @@ def _normalize_deliverable_submission_mapping(
     }
     completion = payload.get("completion")
     if completion is not None:
-        normalized["completion"] = TaskCompletion.model_validate(completion).model_dump(
-            mode="json"
-        )
+        normalized["completion"] = TaskCompletion.model_validate(completion).model_dump(mode="json")
     verification = _normalize_deliverable_verification_mapping(
         payload.get("verification"),
         field_name=f"{field_name}.verification",
@@ -521,9 +519,7 @@ def _validate_command_deliverable_submission_pre_publication(
         task=task,
     )
     if open_rework_deliverables:
-        required_predecessor_ids = [
-            predecessor.id for predecessor in open_rework_deliverables
-        ]
+        required_predecessor_ids = [predecessor.id for predecessor in open_rework_deliverables]
         if supersedes_deliverable_id not in required_predecessor_ids:
             raise TeamCommandValidationError(
                 code="accepted_deliverable_rework_requires_replacement",
@@ -573,9 +569,7 @@ def _validate_command_deliverable_submission_pre_publication(
             dispatch_id=dispatch_id,
             candidate_commit_resolver=candidate_commit_resolver,
         )
-        git_refs = _deliverable_git_refs_from_payload(
-            deliverable.get("git_refs")
-        )
+        git_refs = _deliverable_git_refs_from_payload(deliverable.get("git_refs"))
         require_task_deliverable_contract_provenance(
             state,
             task_id=task.id,
@@ -834,12 +828,8 @@ def _apply_command_deliverable_submission(
             agent_id=acceptance_recipient_agent_id,
             now=now,
         )
-    if (
-        parent_task is not None
-        and (
-            suppress_superior_notice
-            or acceptance_recipient_agent_id != parent_task.owner_agent_id
-        )
+    if parent_task is not None and (
+        suppress_superior_notice or acceptance_recipient_agent_id != parent_task.owner_agent_id
     ):
         parent_notice = queue_parent_task_transition(
             state,
@@ -882,11 +872,7 @@ def _review_decision_correction_context(
     return {
         "review": review.model_dump(mode="json") if review is not None else None,
         "deliverable": (deliverable.model_dump(mode="json") if deliverable is not None else None),
-        "task": (
-            task_payload_with_assessment(state, task)
-            if task is not None
-            else None
-        ),
+        "task": (task_payload_with_assessment(state, task) if task is not None else None),
         "reviewer": (
             reviewer.model_dump(mode="json", exclude=AGENT_OPERATOR_ONLY_FIELDS)
             if reviewer is not None

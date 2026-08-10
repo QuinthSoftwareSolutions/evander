@@ -152,29 +152,19 @@ def _validate_deliverable_outcomes_against_task_contract(
     contract = task.outcome_contract
     if completion is not None:
         if task.task_kind != TeamTaskKind.OUTCOME or contract is None:
-            raise ValueError(
-                "evidenced-noop completion is only valid for an outcome task"
-            )
+            raise ValueError("evidenced-noop completion is only valid for an outcome task")
         if completion.kind != TaskCompletionKind.EVIDENCED_NOOP:
-            raise ValueError(
-                "deliverable completion currently supports evidenced_noop only"
-            )
+            raise ValueError("deliverable completion currently supports evidenced_noop only")
         if not contract.allow_evidenced_noop:
-            raise ValueError(
-                f"outcome task {task.id} does not allow an evidenced no-op"
-            )
+            raise ValueError(f"outcome task {task.id} does not allow an evidenced no-op")
         if outcomes:
-            raise ValueError(
-                "evidenced-noop deliverable cannot also declare delivered outcomes"
-            )
+            raise ValueError("evidenced-noop deliverable cannot also declare delivered outcomes")
         return
     if contract is None:
         return
 
     outcome_kinds = {outcome.kind for outcome in outcomes}
-    forbidden = sorted(
-        outcome_kinds.intersection(contract.forbidden_outcome_kinds)
-    )
+    forbidden = sorted(outcome_kinds.intersection(contract.forbidden_outcome_kinds))
     if forbidden:
         raise ValueError("deliverable includes forbidden outcome kinds: " + ", ".join(forbidden))
 
@@ -231,10 +221,7 @@ def _superseded_deliverable_for_rework(
             f"{deliverable.producer_agent_id}; only that producer or current "
             f"task owner {task.owner_agent_id} may supersede it"
         )
-    if (
-        deliverable.review_cohort_id is not None
-        and deliverable.review_cohort_sealed_at is not None
-    ):
+    if deliverable.review_cohort_id is not None and deliverable.review_cohort_sealed_at is not None:
         unresolved_cohort_review_ids = sorted(
             review.id
             for review_id in deliverable.review_request_ids
@@ -256,16 +243,12 @@ def _superseded_deliverable_for_rework(
                 "review slots; complete or retry the cohort before replacing "
                 f"the deliverable: {', '.join(unresolved_cohort_review_ids)}"
             )
-    if (
-        deliverable.state
-        not in {
-            TeamRecordState.REJECTED,
-            TeamRecordState.BLOCKED,
-        }
-        and not (
-            deliverable.state == TeamRecordState.ACCEPTED
-            and deliverable.rework_requested_at is not None
-        )
+    if deliverable.state not in {
+        TeamRecordState.REJECTED,
+        TeamRecordState.BLOCKED,
+    } and not (
+        deliverable.state == TeamRecordState.ACCEPTED
+        and deliverable.rework_requested_at is not None
     ):
         raise ValueError(
             f"supersedes_deliverable_id {deliverable.id} is not rejected, blocked, "
@@ -352,9 +335,7 @@ def _accept_deliverable_and_maybe_task(
         return False
     if task.task_kind == TeamTaskKind.OUTCOME:
         noop_completions = [
-            item.completion
-            for item in task_deliverables
-            if item.completion is not None
+            item.completion for item in task_deliverables if item.completion is not None
         ]
         if noop_completions:
             if len(noop_completions) != len(task_deliverables):

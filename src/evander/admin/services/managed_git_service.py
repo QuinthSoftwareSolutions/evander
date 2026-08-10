@@ -829,8 +829,7 @@ class ManagedGitAdminService:
                 self._require_commit(bare_path, ancestor)
                 if not self._is_ancestor(bare_path, ancestor, expected_commit):
                     raise ValueError(
-                        f"commit {expected_commit} does not contain required ancestor "
-                        f"{ancestor}"
+                        f"commit {expected_commit} does not contain required ancestor {ancestor}"
                     )
         return {
             "managed_repo_id": managed_repo_id,
@@ -866,9 +865,7 @@ class ManagedGitAdminService:
             def update(payload: dict[str, Any]) -> dict[str, Any]:
                 current = payload["repositories"].get(managed_repo_id)
                 if not isinstance(current, dict):
-                    raise ManagedGitNotFoundError(
-                        f"Unknown managed repository: {managed_repo_id}"
-                    )
+                    raise ManagedGitNotFoundError(f"Unknown managed repository: {managed_repo_id}")
                 current["host_commit_identity"] = dict(identity)
                 current["updated_at"] = now
                 return dict(current)
@@ -1062,9 +1059,7 @@ class ManagedGitAdminService:
         )
         expected = _normalize_object_id(commit_sha, field_name="commit_sha") if commit_sha else None
         expected_tree = (
-            _normalize_object_id(tree_hash, field_name="tree_hash")
-            if tree_hash
-            else None
+            _normalize_object_id(tree_hash, field_name="tree_hash") if tree_hash else None
         )
         with self._repo_lock(managed_repo_id, exclusive=False):
             resolved = self._resolve_ref(bare_path, normalized_ref) if normalized_ref else expected
@@ -1083,15 +1078,19 @@ class ManagedGitAdminService:
                     },
                 )
             self._require_commit(bare_path, resolved)
-            resolved_tree = self._git_output(
-                [
-                    "git",
-                    "--git-dir",
-                    str(bare_path),
-                    "rev-parse",
-                    f"{resolved}^{{tree}}",
-                ]
-            ).strip().lower()
+            resolved_tree = (
+                self._git_output(
+                    [
+                        "git",
+                        "--git-dir",
+                        str(bare_path),
+                        "rev-parse",
+                        f"{resolved}^{{tree}}",
+                    ]
+                )
+                .strip()
+                .lower()
+            )
             if expected_tree is not None and resolved_tree != expected_tree:
                 raise ManagedGitConflictError(
                     f"Source commit {resolved} has tree {resolved_tree}, "
@@ -1160,15 +1159,19 @@ class ManagedGitAdminService:
                 purpose=purpose,
             ) as source_worktree:
                 safe_env = self._safe_worktree_environment()
-                actual_tree = self._git_output(
-                    [
-                        "git",
-                        "-C",
-                        str(source_worktree),
-                        "rev-parse",
-                        f"{expected_commit}^{{tree}}",
-                    ]
-                ).strip().lower()
+                actual_tree = (
+                    self._git_output(
+                        [
+                            "git",
+                            "-C",
+                            str(source_worktree),
+                            "rev-parse",
+                            f"{expected_commit}^{{tree}}",
+                        ]
+                    )
+                    .strip()
+                    .lower()
+                )
                 if actual_tree != expected_tree:
                     raise ManagedGitConflictError(
                         f"Candidate tree is {actual_tree}, not the pinned tree {expected_tree}"
@@ -1219,12 +1222,16 @@ class ManagedGitAdminService:
                         ],
                         env=safe_env,
                     )
-                checked_out_commit = self._git_output(
-                    ["git", "-C", str(target), "rev-parse", "HEAD"]
-                ).strip().lower()
-                checked_out_tree = self._git_output(
-                    ["git", "-C", str(target), "rev-parse", "HEAD^{tree}"]
-                ).strip().lower()
+                checked_out_commit = (
+                    self._git_output(["git", "-C", str(target), "rev-parse", "HEAD"])
+                    .strip()
+                    .lower()
+                )
+                checked_out_tree = (
+                    self._git_output(["git", "-C", str(target), "rev-parse", "HEAD^{tree}"])
+                    .strip()
+                    .lower()
+                )
                 if checked_out_commit != expected_commit or checked_out_tree != expected_tree:
                     raise ManagedGitConflictError(
                         "Materialized checkout does not match the pinned candidate"
@@ -2363,9 +2370,7 @@ class ManagedGitAdminService:
         pr_id = str(pr.get("pullRequestId") or "").strip()
         if not pr_id:
             raise RuntimeError("Azure DevOps PR API returned no pull request ID")
-        iterations_url = (
-            f"{api_root}/{quote(pr_id, safe='')}/iterations?api-version=7.1"
-        )
+        iterations_url = f"{api_root}/{quote(pr_id, safe='')}/iterations?api-version=7.1"
         deadline = time.monotonic() + _AZURE_PR_SOURCE_CONFIRMATION_TIMEOUT_SECONDS
         while True:
             remaining_seconds = deadline - time.monotonic()
@@ -3002,15 +3007,9 @@ class ManagedGitAdminService:
                 merge_env = self._safe_worktree_environment()
                 merge_env.update(
                     {
-                        "GIT_AUTHOR_NAME": str(
-                            identity.get("name") or DEFAULT_HOST_COMMIT_NAME
-                        ),
-                        "GIT_AUTHOR_EMAIL": str(
-                            identity.get("email") or DEFAULT_HOST_COMMIT_EMAIL
-                        ),
-                        "GIT_COMMITTER_NAME": str(
-                            identity.get("name") or DEFAULT_HOST_COMMIT_NAME
-                        ),
+                        "GIT_AUTHOR_NAME": str(identity.get("name") or DEFAULT_HOST_COMMIT_NAME),
+                        "GIT_AUTHOR_EMAIL": str(identity.get("email") or DEFAULT_HOST_COMMIT_EMAIL),
+                        "GIT_COMMITTER_NAME": str(identity.get("name") or DEFAULT_HOST_COMMIT_NAME),
                         "GIT_COMMITTER_EMAIL": str(
                             identity.get("email") or DEFAULT_HOST_COMMIT_EMAIL
                         ),

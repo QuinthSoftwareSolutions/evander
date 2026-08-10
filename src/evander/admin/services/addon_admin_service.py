@@ -43,6 +43,7 @@ class RuntimeWorkflowPackPayload:
     source: str
     reference: str
     payload: dict[str, object]
+    layout: dict[str, object] | None
 
 
 class AddonAdminService:
@@ -261,6 +262,7 @@ class AddonAdminService:
                     self.workflow_config_admin.ensure_workflow_pack_payload_unlocked(
                         raw_config=next_worker_config,
                         pack_payload=runtime_pack.payload,
+                        layout_payload=runtime_pack.layout,
                         overwrite_existing=False,
                         operation=(
                             "runtime_pack_configure"
@@ -337,6 +339,7 @@ class AddonAdminService:
                 self.workflow_config_admin.ensure_workflow_pack_payload_unlocked(
                     raw_config=dict(worker_payload.config),
                     pack_payload=runtime_pack.payload,
+                    layout_payload=runtime_pack.layout,
                     overwrite_existing=True,
                     operation="runtime_pack_refresh",
                     actor=actor,
@@ -474,9 +477,28 @@ class AddonAdminService:
         return getattr(value, name, None)
 
     def _runtime_workflow_pack_source(self, registration: AddonRegistration | None) -> str | None:
+        return self._runtime_workflow_metadata_source(
+            registration,
+            metadata_key="runtime_workflow_pack",
+        )
+
+    def _runtime_workflow_pack_layout_source(
+        self, registration: AddonRegistration | None
+    ) -> str | None:
+        return self._runtime_workflow_metadata_source(
+            registration,
+            metadata_key="runtime_workflow_pack_layout",
+        )
+
+    def _runtime_workflow_metadata_source(
+        self,
+        registration: AddonRegistration | None,
+        *,
+        metadata_key: str,
+    ) -> str | None:
         if registration is None:
             return None
-        source = registration.metadata.get("runtime_workflow_pack")
+        source = registration.metadata.get(metadata_key)
         if source is None:
             return None
         if callable(source):
@@ -490,7 +512,12 @@ class AddonAdminService:
         source = self._runtime_workflow_pack_source(registration)
         if source is None:
             return None
-        factory = self._runtime_workflow_pack_factory(registration, source)
+        factory = self._runtime_workflow_metadata_factory(
+            registration,
+            source,
+            metadata_key="runtime_workflow_pack",
+            source_label="runtime workflow pack",
+        )
         payload = factory()
         if not isinstance(payload, dict):
             raise ValueError(f"runtime workflow pack {source} must return a JSON object")
@@ -499,30 +526,47 @@ class AddonAdminService:
             pack_id=pack.pack_id,
             pack_version=pack.pack_version,
         )
+        layout: dict[str, object] | None = None
+        layout_source = self._runtime_workflow_pack_layout_source(registration)
+        if layout_source is not None:
+            layout_factory = self._runtime_workflow_metadata_factory(
+                registration,
+                layout_source,
+                metadata_key="runtime_workflow_pack_layout",
+                source_label="runtime workflow pack layout",
+            )
+            layout_payload = layout_factory()
+            if not isinstance(layout_payload, dict):
+                raise ValueError(
+                    f"runtime workflow pack layout {layout_source} must return a JSON object"
+                )
+            layout = layout_payload
         return RuntimeWorkflowPackPayload(
             source=source,
             reference=reference,
             payload=pack.model_dump(mode="json"),
+            layout=layout,
         )
 
-    def _runtime_workflow_pack_factory(
+    def _runtime_workflow_metadata_factory(
         self,
         registration: AddonRegistration | None,
         source: str,
+        *,
+        metadata_key: str,
+        source_label: str,
     ):
-        raw_source = registration.metadata.get("runtime_workflow_pack") if registration else None
+        raw_source = registration.metadata.get(metadata_key) if registration else None
         if callable(raw_source):
             return raw_source
         module_name, separator, attribute_name = source.rpartition(".")
         if not separator or not module_name or not attribute_name:
-            raise ValueError(
-                f"runtime workflow pack source {source!r} must be a dotted callable path"
-            )
+            raise ValueError(f"{source_label} source {source!r} must be a dotted callable path")
         value: object = import_module(module_name)
         for part in attribute_name.split("."):
             value = getattr(value, part)
         if not callable(value):
-            raise ValueError(f"runtime workflow pack source {source!r} is not callable")
+            raise ValueError(f"{source_label} source {source!r} is not callable")
         return value
 
     def _runtime_workflow_pack_status(

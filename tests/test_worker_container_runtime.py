@@ -226,17 +226,9 @@ def test_subscription_app_server_gets_only_restricted_proxy_configuration(
     assert f"{paths.logs}/codex-turns:/run/evander/codex-turns:ro" in run_args
     assert "/home/agent/.evander/codex-turns" not in " ".join(run_args)
     subscription_config = paths.root / "codex-subscription-config.toml"
-    subscription_project_config = (
-        paths.root / "codex-subscription-project-config.toml"
-    )
-    assert (
-        f"{subscription_config}:/home/agent/.config/evander/codex/config.toml:ro"
-        in run_args
-    )
-    assert (
-        f"{subscription_project_config}:/home/agent/.codex/config.toml:ro"
-        in run_args
-    )
+    subscription_project_config = paths.root / "codex-subscription-project-config.toml"
+    assert f"{subscription_config}:/home/agent/.config/evander/codex/config.toml:ro" in run_args
+    assert f"{subscription_project_config}:/home/agent/.codex/config.toml:ro" in run_args
     subscription_config_text = subscription_config.read_text(encoding="utf-8")
     assert 'forced_login_method = "chatgpt"' in subscription_config_text
     assert 'model_reasoning_effort = "high"' in subscription_config_text

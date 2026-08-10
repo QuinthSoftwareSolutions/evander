@@ -44,9 +44,7 @@ class VmCloneRepoEffectProvider(VmTargetingMixin, EffectProviderBase):
             vm_user=self._normalize_optional_string(payload.get("vm_user")) or "agent",
             directory_path=str(context.metadata.get("directory_path") or "root"),
             git_access_mode=normalize_git_access_mode(payload.get("git_access_mode")),
-            git_access_lifetime=normalize_git_access_lifetime(
-                payload.get("git_access_lifetime")
-            ),
+            git_access_lifetime=normalize_git_access_lifetime(payload.get("git_access_lifetime")),
         )
         return {
             "success": bool(result.success),

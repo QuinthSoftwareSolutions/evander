@@ -915,6 +915,14 @@ Storage layout for directory config:
   }
   ```
 
+- To protect a shared local backend, set `local_openai_max_concurrency` in the root
+  `providers.json`, for example `"local_openai_max_concurrency": 1`. This is one host-global pool
+  across libvirt and container-worker agents; child directories cannot override it. Evander first
+  resolves the prompt's final model and provider mode, then durably queues excess local turns in
+  FIFO order. Omit the field to keep unlimited local concurrency. A queued Team dispatch remains
+  reserved but unleased until its prompt is accepted for delivery, so queue time does not consume
+  the dispatch lease.
+
 - To mix public OpenAI and local OpenAI Codex agents in the same directory, keep
   the directory `providers.json` populated with both the public OpenAI settings
   and the local OpenAI endpoint settings, then set `model_provider_mode` on the

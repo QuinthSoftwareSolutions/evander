@@ -1115,6 +1115,20 @@ def test_agent_runtime_maps_legacy_auto_context_clearing_to_idle_policy() -> Non
     assert runtime.context_clearing_policy == AgentContextClearingPolicy.IDLE
     assert runtime.auto_context_clearing_enabled is True
     assert runtime.model_dump(mode="json")["context_clearing_policy"] == "idle"
+    assert runtime.context_clearing_idle_grace_seconds == 0
+
+
+def test_agent_runtime_validates_idle_context_grace_bounds() -> None:
+    runtime = AgentRuntime(
+        agent_id="backend",
+        context_clearing_idle_grace_seconds=604800,
+    )
+
+    assert runtime.model_dump(mode="json")["context_clearing_idle_grace_seconds"] == 604800
+    with pytest.raises(ValidationError):
+        AgentRuntime(agent_id="backend", context_clearing_idle_grace_seconds=-1)
+    with pytest.raises(ValidationError):
+        AgentRuntime(agent_id="backend", context_clearing_idle_grace_seconds=604801)
 
 
 def test_team_state_payload_includes_derived_task_fields() -> None:
@@ -1486,9 +1500,7 @@ def test_runtime_attention_derives_age_links_and_terminal_reconciliation() -> No
     )
 
     payload = runtime_operations_payload(state, now=now)
-    inbox_row = next(
-        row for row in payload["attention"] if row.get("inbox_item_id") == "inbox-1"
-    )
+    inbox_row = next(row for row in payload["attention"] if row.get("inbox_item_id") == "inbox-1")
     passive_row = next(
         row for row in payload["attention"] if row.get("inbox_item_id") == "passive-note"
     )
@@ -1558,15 +1570,12 @@ def test_runtime_attention_reconciles_pending_inbox_from_its_primary_target() ->
         now=datetime(2026, 8, 1, 12, tzinfo=UTC),
     )
     row = next(
-        item
-        for item in payload["attention"]
-        if item.get("inbox_item_id") == "release-review-inbox"
+        item for item in payload["attention"] if item.get("inbox_item_id") == "release-review-inbox"
     )
 
     assert row["links"]["deliverable_ids"] == ["deliverable"]
     assert {
-        (context["kind"], context["id"], context["state"])
-        for context in row["terminal_context"]
+        (context["kind"], context["id"], context["state"]) for context in row["terminal_context"]
     } == {("deliverable", "deliverable", "accepted")}
     assert row["attention_group"] == "active_obligation"
     assert row["attention_reason"] == "awaiting_response"
@@ -1632,8 +1641,7 @@ def test_runtime_attention_retains_superseded_review_and_resolved_blocker_escala
     rows = {
         row["inbox_item_id"]: row
         for row in payload["attention"]
-        if row.get("inbox_item_id")
-        in {"blocked-review-escalation", "resolved-blocker-escalation"}
+        if row.get("inbox_item_id") in {"blocked-review-escalation", "resolved-blocker-escalation"}
     }
 
     blocked_review = rows["blocked-review-escalation"]

@@ -260,6 +260,7 @@ class TeamBlockerSourceKind(str, Enum):
     RELEASE_PACKAGE = "release_package"
     HUMAN_REVIEW_REQUEST = "human_review_request"
     AGENT_EXECUTION_STALL = "agent_execution_stall"
+    MCP_CAPABILITY = "mcp_capability"
     CANDIDATE_CORRECTION_SUCCESSOR = "candidate_correction_successor"
     EXPLICIT = "explicit"
 
@@ -577,6 +578,9 @@ class GovernanceRuntime(TeamModel):
     governance_group_id: str
     wake_leased_until: datetime | None = None
     active_dispatch_id: str | None = None
+    preparation_expires_at: datetime | None = None
+    queued_at: datetime | None = None
+    requested_lease_seconds: int = Field(default=900, ge=1)
     wake_reason: str | None = None
     last_wake_at: datetime | None = None
     next_wake_at: datetime | None = None
@@ -946,6 +950,9 @@ class AgentRuntime(TeamModel):
     low_priority_batch_cycle_count: int = Field(default=0, ge=0)
     low_priority_batch_due_after_cycles: int | None = Field(default=None, ge=0)
     context_clearing_policy: AgentContextClearingPolicy = AgentContextClearingPolicy.OFF
+    context_clearing_idle_grace_seconds: int = Field(default=0, ge=0, le=604800)
+    context_idle_since_at: datetime | None = None
+    context_idle_rotation_due_at: datetime | None = None
     auto_context_clearing_enabled: bool = False
     context_rotation_pending: bool = False
     context_rotation_requested_by: str | None = None
@@ -1867,9 +1874,7 @@ class DependencyCompositionRecovery(TeamModel):
                 "dependency composition recovery verification requires deliverable and commit"
             )
         if bool(self.verified_deliverable_id) != bool(self.verified_at):
-            raise ValueError(
-                "dependency composition recovery verification requires verified_at"
-            )
+            raise ValueError("dependency composition recovery verification requires verified_at")
         return self
 
 
@@ -2093,6 +2098,26 @@ class AgentInboxItem(TeamModel):
         return _optional_text(value)
 
 
+class TeamMcpCapabilityBlockerIdentity(TeamModel):
+    """Unambiguous identity for a review MCP capability incident."""
+
+    agent_id: str
+    review_request_ids: list[str] = Field(default_factory=list)
+
+    @field_validator("agent_id", mode="before")
+    @classmethod
+    def _agent_id(cls, value: object) -> str:
+        return _required_text(value, "agent_id")
+
+    @field_validator("review_request_ids", mode="before")
+    @classmethod
+    def _review_request_ids(cls, value: object) -> list[str]:
+        review_request_ids = _unique_text_list(value or [], "review_request_ids")
+        if not review_request_ids:
+            raise ValueError("review_request_ids must not be empty")
+        return review_request_ids
+
+
 class TeamBlocker(TeamModel):
     id: str
     team_id: str
@@ -2100,6 +2125,7 @@ class TeamBlocker(TeamModel):
     task_id: str | None = None
     source_kind: TeamBlockerSourceKind
     source_id: str
+    mcp_capability_identity: TeamMcpCapabilityBlockerIdentity | None = None
     reason_code: str = "unspecified"
     reporter_agent_id: str | None = None
     reporter_actor: str | None = None
@@ -2165,13 +2191,10 @@ class TeamBlocker(TeamModel):
     @model_validator(mode="after")
     def _validate_route(self) -> "TeamBlocker":
         if (
-            self.source_kind
-            == TeamBlockerSourceKind.CANDIDATE_CORRECTION_SUCCESSOR
+            self.source_kind == TeamBlockerSourceKind.CANDIDATE_CORRECTION_SUCCESSOR
             and self.resolution_scope != TeamBlockerResolutionScope.DOWNSTREAM
         ):
-            raise ValueError(
-                "candidate correction successor blocker must use downstream scope"
-            )
+            raise ValueError("candidate correction successor blocker must use downstream scope")
         if self.route == TeamBlockerRoute.DELEGATED and self.delegate_agent_id is None:
             raise ValueError("delegated blocker requires delegate_agent_id")
         if self.route != TeamBlockerRoute.DELEGATED and self.delegate_agent_id is not None:
@@ -2339,11 +2362,49 @@ class TeamDispatchStatus(str, Enum):
     FAILED = "failed"
 
 
+TEAM_DISPATCH_PREPARATION_TIMEOUT_SECONDS = 300
+
+
+class TeamDispatchMcpCapabilityStatus(str, Enum):
+    PENDING = "pending"
+    VERIFIED = "verified"
+    MISSING = "missing"
+
+
 class WorktreeCleanupState(str, Enum):
     PENDING = "pending"
     PROCESSING = "processing"
     SUCCEEDED = "succeeded"
     RECOVERY_REQUIRED = "recovery_required"
+
+
+class TeamDispatchMcpCapabilityReceipt(TeamModel):
+    """Compact evidence for MCP capabilities required by one Team dispatch."""
+
+    required_tool_names: list[str] = Field(default_factory=list)
+    attempt: int = Field(default=1, ge=1)
+    grant_confirmed_at: datetime | None = None
+    verification_status: TeamDispatchMcpCapabilityStatus = TeamDispatchMcpCapabilityStatus.PENDING
+    observed_transport_session_id: str | None = None
+    observed_at: datetime | None = None
+    observed_tool_fingerprint: str | None = None
+    missing_tool_names: list[str] = Field(default_factory=list)
+    diagnostic: str | None = Field(default=None, max_length=1_000)
+
+    @field_validator("required_tool_names", "missing_tool_names", mode="before")
+    @classmethod
+    def _tool_names(cls, value: object, info) -> list[str]:
+        return _unique_text_list(value or [], info.field_name)
+
+    @field_validator(
+        "observed_transport_session_id",
+        "observed_tool_fingerprint",
+        "diagnostic",
+        mode="before",
+    )
+    @classmethod
+    def _optional_text(cls, value: object) -> str | None:
+        return _optional_text(value)
 
 
 class TeamDispatchReviewRoutingAuthority(TeamModel):
@@ -2398,8 +2459,16 @@ class TeamDispatch(TeamModel):
         default_factory=list
     )
     initial_release_decision_deliverable_ids: list[str] = Field(default_factory=list)
+    mcp_capability_receipt: TeamDispatchMcpCapabilityReceipt | None = None
     status: TeamDispatchStatus = TeamDispatchStatus.PREPARING
     created_at: datetime = Field(default_factory=utc_now)
+    preparation_expires_at: datetime | None = None
+    queued_at: datetime | None = None
+    requested_lease_seconds: int = Field(default=900, ge=1)
+    activation_completed_at: datetime | None = None
+    session_metadata_mirrored_at: datetime | None = None
+    role_description_fingerprint: str | None = None
+    action_feedback_dispatch_ids: list[str] = Field(default_factory=list)
     prepared_at: datetime | None = None
     leased_at: datetime | None = None
     lease_expires_at: datetime | None = None
@@ -2411,7 +2480,7 @@ class TeamDispatch(TeamModel):
     def _required_text(cls, value: object, info) -> str:
         return _required_text(value, info.field_name)
 
-    @field_validator("cause_id", "error", mode="before")
+    @field_validator("cause_id", "error", "role_description_fingerprint", mode="before")
     @classmethod
     def _optional_text(cls, value: object) -> str | None:
         return _optional_text(value)
@@ -2424,6 +2493,7 @@ class TeamDispatch(TeamModel):
         "project_ids",
         "managed_repo_ids",
         "chat_message_ids",
+        "action_feedback_dispatch_ids",
         "initial_release_decision_deliverable_ids",
         mode="before",
     )
@@ -2443,13 +2513,8 @@ class TeamDispatch(TeamModel):
             raise ValueError("dispatch review routing authorities must be unique")
         if self.review_routing_authorities and self.cause_kind != "manager_fallback":
             raise ValueError("dispatch review routing authorities require manager_fallback cause")
-        if (
-            self.initial_release_decision_deliverable_ids
-            and self.cause_kind != "manager_fallback"
-        ):
-            raise ValueError(
-                "dispatch initial release decisions require manager_fallback cause"
-            )
+        if self.initial_release_decision_deliverable_ids and self.cause_kind != "manager_fallback":
+            raise ValueError("dispatch initial release decisions require manager_fallback cause")
         if self.status == TeamDispatchStatus.LEASED:
             if self.leased_at is None or self.lease_expires_at is None:
                 raise ValueError("leased dispatch requires leased_at and lease_expires_at")
@@ -3334,9 +3399,7 @@ class HumanReviewTestTarget(TeamModel):
 class HumanReviewFindingSnapshot(TeamModel):
     finding_id: str
     text: str
-    target_scope: HumanReviewFindingTargetScope = (
-        HumanReviewFindingTargetScope.LEGACY_UNSPECIFIED
-    )
+    target_scope: HumanReviewFindingTargetScope = HumanReviewFindingTargetScope.LEGACY_UNSPECIFIED
     target_deliverable_ids: list[str] = Field(default_factory=list)
     correction_task_id: str | None = None
     proposed_resolution: str | None = None
@@ -3370,9 +3433,7 @@ class HumanReviewFindingSnapshot(TeamModel):
             return value
         normalized = dict(value)
         if normalized.get("target_deliverable_ids"):
-            normalized["target_scope"] = (
-                HumanReviewFindingTargetScope.DELIVERABLES
-            )
+            normalized["target_scope"] = HumanReviewFindingTargetScope.DELIVERABLES
         return normalized
 
     @model_validator(mode="after")
@@ -3381,16 +3442,12 @@ class HumanReviewFindingSnapshot(TeamModel):
             self.target_scope == HumanReviewFindingTargetScope.RELEASE_CANDIDATE
             and self.target_deliverable_ids
         ):
-            raise ValueError(
-                "release-candidate human findings cannot target deliverables"
-            )
+            raise ValueError("release-candidate human findings cannot target deliverables")
         if (
             self.target_scope == HumanReviewFindingTargetScope.DELIVERABLES
             and not self.target_deliverable_ids
         ):
-            raise ValueError(
-                "deliverable-scoped human findings require target deliverables"
-            )
+            raise ValueError("deliverable-scoped human findings require target deliverables")
         return self
 
 
@@ -3479,9 +3536,7 @@ class HumanReviewFinding(TeamModel):
     id: str
     source_human_review_request_id: str
     text: str
-    target_scope: HumanReviewFindingTargetScope = (
-        HumanReviewFindingTargetScope.LEGACY_UNSPECIFIED
-    )
+    target_scope: HumanReviewFindingTargetScope = HumanReviewFindingTargetScope.LEGACY_UNSPECIFIED
     target_deliverable_ids: list[str] = Field(default_factory=list)
     evidence_refs: list[str] = Field(default_factory=list)
     correction_task_id: str
@@ -3531,9 +3586,7 @@ class HumanReviewFinding(TeamModel):
             return value
         normalized = dict(value)
         if normalized.get("target_deliverable_ids"):
-            normalized["target_scope"] = (
-                HumanReviewFindingTargetScope.DELIVERABLES
-            )
+            normalized["target_scope"] = HumanReviewFindingTargetScope.DELIVERABLES
         return normalized
 
     @model_validator(mode="after")
@@ -3542,16 +3595,12 @@ class HumanReviewFinding(TeamModel):
             self.target_scope == HumanReviewFindingTargetScope.RELEASE_CANDIDATE
             and self.target_deliverable_ids
         ):
-            raise ValueError(
-                "release-candidate human findings cannot target deliverables"
-            )
+            raise ValueError("release-candidate human findings cannot target deliverables")
         if (
             self.target_scope == HumanReviewFindingTargetScope.DELIVERABLES
             and not self.target_deliverable_ids
         ):
-            raise ValueError(
-                "deliverable-scoped human findings require target deliverables"
-            )
+            raise ValueError("deliverable-scoped human findings require target deliverables")
         return self
 
     @model_validator(mode="after")
@@ -4758,8 +4807,7 @@ class TeamState(TeamModel):
             disposition = deliverable.initial_release_disposition
             if (
                 disposition is not None
-                and disposition.state
-                == InitialReleaseDispositionState.RELEASE_REQUESTED
+                and disposition.state == InitialReleaseDispositionState.RELEASE_REQUESTED
             ):
                 release = self.release_packages.get(disposition.release_package_id or "")
                 if release is None:
@@ -5209,11 +5257,34 @@ class TeamState(TeamModel):
                 TeamBlockerSourceKind.HUMAN_REVIEW_REQUEST: blocker.source_id
                 in self.human_review_requests,
                 TeamBlockerSourceKind.AGENT_EXECUTION_STALL: blocker.source_id in self.agents,
+                TeamBlockerSourceKind.MCP_CAPABILITY: (
+                    (
+                        blocker.mcp_capability_identity is not None
+                        and blocker.mcp_capability_identity.agent_id in self.agents
+                        and all(
+                            review_id in self.review_requests
+                            for review_id in blocker.mcp_capability_identity.review_request_ids
+                        )
+                    )
+                    or (
+                        # Compatibility for blockers persisted before capability
+                        # identity received dedicated structured storage.
+                        blocker.mcp_capability_identity is None
+                        and ":" in blocker.source_id
+                        and blocker.source_id.split(":", 1)[0] in self.agents
+                        and any(
+                            review_id for review_id in blocker.source_id.split(":", 1)[1].split("|")
+                        )
+                        and all(
+                            review_id in self.review_requests
+                            for review_id in blocker.source_id.split(":", 1)[1].split("|")
+                            if review_id
+                        )
+                    )
+                ),
                 TeamBlockerSourceKind.CANDIDATE_CORRECTION_SUCCESSOR: (
                     blocker.source_id.startswith("candidate-correction-successor:")
-                    and blocker.source_id.removeprefix(
-                        "candidate-correction-successor:"
-                    )
+                    and blocker.source_id.removeprefix("candidate-correction-successor:")
                     in self.release_packages
                 ),
                 TeamBlockerSourceKind.EXPLICIT: True,
@@ -5391,9 +5462,7 @@ class TeamState(TeamModel):
                     )
                 chat_conversation_ids.add(message.conversation_id)
             if len(chat_conversation_ids) > 1:
-                errors.append(
-                    f"dispatch {dispatch.id} chat messages span multiple conversations"
-                )
+                errors.append(f"dispatch {dispatch.id} chat messages span multiple conversations")
 
     def _validate_external_chat_bridge(self, errors: list[str]) -> None:
         ingress_keys: set[tuple[str, str, str]] = set()
@@ -6795,6 +6864,7 @@ def team_state_payload(
             TeamBlockerSourceKind.RELEASE_PACKAGE: "release_packages",
             TeamBlockerSourceKind.HUMAN_REVIEW_REQUEST: "human_review_requests",
             TeamBlockerSourceKind.AGENT_EXECUTION_STALL: "agents",
+            TeamBlockerSourceKind.MCP_CAPABILITY: None,
             TeamBlockerSourceKind.CANDIDATE_CORRECTION_SUCCESSOR: None,
             TeamBlockerSourceKind.EXPLICIT: None,
         }[blocker.source_kind]
@@ -6859,8 +6929,7 @@ def release_package_payload_with_derived(
             if review_id in state.review_requests
             and state.review_requests[review_id].superseded_by_review_request_id is None
             and state.review_requests[review_id].retired_at is None
-            and state.review_requests[review_id].review_cohort_id
-            == release.review_cohort_id
+            and state.review_requests[review_id].review_cohort_id == release.review_cohort_id
         ]
         blocked_ids = [
             review.id for review in cohort_reviews if review.state == TeamRecordState.BLOCKED
@@ -6932,16 +7001,13 @@ def _release_next_action_hint(state: TeamState, release: ReleasePackage) -> str 
             if review_id in state.review_requests
             and state.review_requests[review_id].superseded_by_review_request_id is None
             and state.review_requests[review_id].retired_at is None
-            and state.review_requests[review_id].review_cohort_id
-            == release.review_cohort_id
+            and state.review_requests[review_id].review_cohort_id == release.review_cohort_id
         ]
         pending_count = sum(
             review.state in {TeamRecordState.PENDING, TeamRecordState.IN_PROGRESS}
             for review in current_reviews
         )
-        rejected_count = sum(
-            review.state == TeamRecordState.REJECTED for review in current_reviews
-        )
+        rejected_count = sum(review.state == TeamRecordState.REJECTED for review in current_reviews)
         if pending_count:
             return (
                 f"Wait for the remaining {pending_count} release review cohort slot(s). "
@@ -7371,6 +7437,15 @@ def _runtime_agent_payload(
             if runtime is not None
             else AgentContextClearingPolicy.OFF.value
         ),
+        "context_clearing_idle_grace_seconds": (
+            runtime.context_clearing_idle_grace_seconds if runtime is not None else 0
+        ),
+        "context_idle_since_at": _json_datetime(
+            runtime.context_idle_since_at if runtime is not None else None
+        ),
+        "context_idle_rotation_due_at": _json_datetime(
+            runtime.context_idle_rotation_due_at if runtime is not None else None
+        ),
         "auto_context_clearing_enabled": (
             runtime.auto_context_clearing_enabled if runtime is not None else False
         ),
@@ -7790,13 +7865,10 @@ def _blocker_rows(state: TeamState) -> list[dict[str, Any]]:
         elif blocker.source_kind == TeamBlockerSourceKind.RELEASE_PACKAGE:
             release_package_id = blocker.source_id
         elif (
-            blocker.source_kind
-            == TeamBlockerSourceKind.CANDIDATE_CORRECTION_SUCCESSOR
+            blocker.source_kind == TeamBlockerSourceKind.CANDIDATE_CORRECTION_SUCCESSOR
             and blocker.source_id.startswith("candidate-correction-successor:")
         ):
-            release_package_id = blocker.source_id.removeprefix(
-                "candidate-correction-successor:"
-            )
+            release_package_id = blocker.source_id.removeprefix("candidate-correction-successor:")
         detail_parts = [
             f"source {blocker.source_kind.value} {blocker.source_id}",
             f"route {blocker.route.value}",
@@ -8390,17 +8462,12 @@ def _runtime_attention_links(
             elif blocker.source_kind == TeamBlockerSourceKind.RELEASE_PACKAGE:
                 add("release_package_ids", blocker.source_id)
             elif (
-                blocker.source_kind
-                == TeamBlockerSourceKind.CANDIDATE_CORRECTION_SUCCESSOR
-                and blocker.source_id.startswith(
-                    "candidate-correction-successor:"
-                )
+                blocker.source_kind == TeamBlockerSourceKind.CANDIDATE_CORRECTION_SUCCESSOR
+                and blocker.source_id.startswith("candidate-correction-successor:")
             ):
                 add(
                     "release_package_ids",
-                    blocker.source_id.removeprefix(
-                        "candidate-correction-successor:"
-                    ),
+                    blocker.source_id.removeprefix("candidate-correction-successor:"),
                 )
         for promotion_id in list(links.get("promotion_ids", ())):
             promotion = state.git_promotions.get(promotion_id)

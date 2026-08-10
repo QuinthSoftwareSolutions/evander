@@ -11,6 +11,14 @@ from ...models import (
 from .chat import _clear_completed_chat_dispatch_lease
 
 
+def _clear_idle_context_tracking(runtime: AgentRuntime) -> None:
+    idle_due_at = runtime.context_idle_rotation_due_at
+    runtime.context_idle_since_at = None
+    runtime.context_idle_rotation_due_at = None
+    if idle_due_at is not None and runtime.next_wake_at == idle_due_at:
+        runtime.next_wake_at = None
+
+
 def _mark_agent_work_due(
     state: TeamState,
     *,
@@ -21,6 +29,7 @@ def _mark_agent_work_due(
     _clear_completed_chat_dispatch_lease(state, runtime, now=now)
     if not _agent_has_open_execution_stall(state, agent_id=agent_id):
         runtime.no_progress_count = 0
+    _clear_idle_context_tracking(runtime)
     runtime.next_wake_at = None
     _clear_low_priority_batch(runtime)
     runtime.updated_at = now
@@ -61,6 +70,7 @@ def _advance_low_priority_batch(
 
 __all__ = [
     "_mark_agent_work_due",
+    "_clear_idle_context_tracking",
     "_clear_low_priority_batch",
     "_advance_low_priority_batch",
     "_agent_has_open_execution_stall",

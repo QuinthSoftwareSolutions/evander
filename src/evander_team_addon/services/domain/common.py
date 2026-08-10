@@ -66,9 +66,7 @@ def _release_candidate_branch(release: ReleasePackage) -> str | None:
     """Return the branch containing a release's immutable candidate."""
 
     manifest = release.manifest
-    return release.release_branch or (
-        manifest.release_branch if manifest is not None else None
-    )
+    return release.release_branch or (manifest.release_branch if manifest is not None else None)
 
 
 def _set_task_state(task: AgentTask, state: TeamTaskState, *, now: datetime | None = None) -> bool:

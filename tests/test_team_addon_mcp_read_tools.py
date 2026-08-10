@@ -499,12 +499,10 @@ def test_current_dispatch_context_hydrates_only_exact_dispatch_git_rows(
     _assert_read_success(result)
     record = _item(result)
     assert record["dispatch"]["id"] == "alpha-current-dispatch"
-    assert [row["id"] for row in record["git_work_contexts"]] == [
+    assert [row["id"] for row in record["git_work_contexts"]] == ["alpha-current-context"]
+    assert [row["id"] for row in record["tasks"][0]["git_work_contexts"]] == [
         "alpha-current-context"
     ]
-    assert [
-        row["id"] for row in record["tasks"][0]["git_work_contexts"]
-    ] == ["alpha-current-context"]
     assert "alpha-context" not in json.dumps(record, sort_keys=True)
 
 
@@ -679,11 +677,7 @@ def test_runtime_attention_read_tool_exposes_visible_failed_promotion_commit(
     )
 
     _assert_read_success(result)
-    row = next(
-        record
-        for record in _items(result)
-        if record["id"] == "alpha-promotion-failed"
-    )
+    row = next(record for record in _items(result) if record["id"] == "alpha-promotion-failed")
     assert row["promotion_id"] == "alpha-promotion-failed"
     assert row["commit_sha"] == "failed-commit-sha"
 
@@ -705,8 +699,7 @@ def test_runtime_attention_read_tool_redacts_hidden_session_ids_from_narrative(
                     "severity": "critical",
                     "title": "Expired session for alpha-lead",
                     "detail": (
-                        "agent alpha-lead; session session-alpha-lead "
-                        f"expired at {expires_at}"
+                        f"agent alpha-lead; session session-alpha-lead expired at {expires_at}"
                     ),
                     "state": "expired",
                     "agent_id": "alpha-lead",
@@ -723,8 +716,7 @@ def test_runtime_attention_read_tool_redacts_hidden_session_ids_from_narrative(
                     "severity": "critical",
                     "title": "Expired session for alpha-dev",
                     "detail": (
-                        "agent alpha-dev; session session-alpha-dev "
-                        f"expired at {expires_at}"
+                        f"agent alpha-dev; session session-alpha-dev expired at {expires_at}"
                     ),
                     "state": "expired",
                     "agent_id": "alpha-dev",
@@ -756,9 +748,7 @@ def test_runtime_attention_read_tool_redacts_hidden_session_ids_from_narrative(
     assert "session_id" not in hidden
     assert "session_ids" not in hidden["links"]
     assert "session-alpha-lead" not in json.dumps(hidden, sort_keys=True)
-    assert hidden["detail"] == (
-        f"agent alpha-lead; session [not visible] expired at {expires_at}"
-    )
+    assert hidden["detail"] == (f"agent alpha-lead; session [not visible] expired at {expires_at}")
 
     own = rows["alpha-dev:expired-session"]
     assert own["session_id"] == "session-alpha-dev"
@@ -839,9 +829,7 @@ def test_runtime_attention_read_service_filters_payload_links_to_actor_scope(
     assert "project_id" not in row
     assert "beta-" not in json.dumps(row, sort_keys=True)
 
-    task_row = next(
-        record for record in result["records"] if record["id"] == "unassigned-task"
-    )
+    task_row = next(record for record in result["records"] if record["id"] == "unassigned-task")
     assert task_row["blocked_by_task_ids"] == []
     assert task_row["links"]["task_ids"] == ["unassigned-task"]
     assert "session-beta-lead" not in json.dumps(result, sort_keys=True)
@@ -852,9 +840,9 @@ def test_runtime_attention_read_service_filters_payload_links_to_actor_scope(
         "failed_attempt": 1,
         "retained_history": 2,
     }
-    assert [
+    assert [group_ranks[record["attention_group"]] for record in result["records"]] == sorted(
         group_ranks[record["attention_group"]] for record in result["records"]
-    ] == sorted(group_ranks[record["attention_group"]] for record in result["records"])
+    )
 
 
 def test_team_import_artifact_allows_same_team_artifact_without_deliverable_handoff(
@@ -868,9 +856,7 @@ def test_team_import_artifact_allows_same_team_artifact_without_deliverable_hand
     recipient_session = context.session_repository.get_session("session-alpha-dev")
     assert recipient_session is not None
     context.session_repository.upsert_session(
-        recipient_session.model_copy(
-            update={"vm_id": "vm-alpha-dev", "vm_provider": "libvirt_vm"}
-        )
+        recipient_session.model_copy(update={"vm_id": "vm-alpha-dev", "vm_provider": "libvirt_vm"})
     )
     repo = _seed_read_tool_state(context.config.runtime_dir)
     artifact_space_path = "/teams/alpha/projects/alpha-project/deliverables/1930-export"
@@ -904,9 +890,7 @@ def test_team_import_artifact_allows_same_team_artifact_without_deliverable_hand
 
     assert repo.read().agent_runtimes["alpha-dev"].active_dispatch_id is None
     ref_hash = hashlib.sha256(artifact_space_path.encode("utf-8")).hexdigest()[:16]
-    expected_destination = (
-        f"team-artifact-imports/bundle/ref-{ref_hash}-{artifact_version.id}"
-    )
+    expected_destination = f"team-artifact-imports/bundle/ref-{ref_hash}-{artifact_version.id}"
     copy_requests: list[dict[str, Any]] = []
     exec_requests: list[dict[str, Any]] = []
 
@@ -966,9 +950,7 @@ def test_team_import_artifact_allows_same_team_artifact_without_deliverable_hand
     assert result["artifact_space_version_id"] == artifact_version.id
     assert result["artifact_space_version"] == artifact_version.version
     assert result["artifact_path"] == f"/artifacts/{expected_destination}"
-    assert result["imported_paths"] == [
-        f"{result['artifact_path']}/operator-1930-export/1930.csv"
-    ]
+    assert result["imported_paths"] == [f"{result['artifact_path']}/operator-1930-export/1930.csv"]
     assert result["imported_file_count"] == 1
     assert result["archive_sha256"] == artifact_record.sha256
     assert copy_requests[0]["target"] == "vm-alpha-dev"
@@ -1416,7 +1398,5 @@ def test_team_addon_read_tool_lists_are_compact_and_paginated(
     assert {"id", "item_type", "state", "priority", "recipient_agent_id"}.issubset(inbox_row)
     assert inbox_row["id"] == "alpha-inbox"
     assert "payload" not in inbox_row
-    blocker_row = next(
-        row for row in _items(inbox_result) if row["item_type"] == "status_request"
-    )
+    blocker_row = next(row for row in _items(inbox_result) if row["item_type"] == "status_request")
     assert blocker_row["message"] == "Task blocked: Alpha task c"

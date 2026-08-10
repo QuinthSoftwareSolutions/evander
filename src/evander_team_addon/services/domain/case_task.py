@@ -139,8 +139,7 @@ def _project_default_task_git_base_branch(
         raise TaskGitBaseValidationError(
             code="git_base_unavailable",
             message=(
-                f"managed repository {project.git.managed_repo_id} has no "
-                "concrete default branch"
+                f"managed repository {project.git.managed_repo_id} has no concrete default branch"
             ),
         )
     return resolved
@@ -182,10 +181,7 @@ def _task_git_base_branch_locked(state: TeamState, *, task: AgentTask) -> bool:
         return True
     return any(
         promotion.task_id == task.id
-        or (
-            promotion.deliverable_id is not None
-            and promotion.deliverable_id in deliverable_ids
-        )
+        or (promotion.deliverable_id is not None and promotion.deliverable_id in deliverable_ids)
         for promotion in state.git_promotions.values()
     )
 
@@ -214,11 +210,7 @@ def _set_task_git_base_branch(
             )
         normalized = correction_base
     elif normalized is None and project.git is not None:
-        parent = (
-            state.tasks.get(task.parent_task_id)
-            if task.parent_task_id is not None
-            else None
-        )
+        parent = state.tasks.get(task.parent_task_id) if task.parent_task_id is not None else None
         normalized = (
             _normalized_task_git_base_branch(parent.git_base_branch)
             if parent is not None and parent.git_base_branch is not None
@@ -358,22 +350,17 @@ def _validate_case_status_transition(
     if (
         source == _POST_RELEASE_FEEDBACK_SOURCE
         and next_status != current_status
-        and (
-            next_status in terminal_statuses
-            or current_status in terminal_statuses
-        )
+        and (next_status in terminal_statuses or current_status in terminal_statuses)
     ):
         raise ValueError(
-            "post-release feedback cases require the evidence-backed "
-            "post-release close operation"
+            "post-release feedback cases require the evidence-backed post-release close operation"
         )
 
 
 def _validate_generic_case_source(source: str | None) -> None:
     if source == _POST_RELEASE_FEEDBACK_SOURCE:
         raise ValueError(
-            "post-release feedback case source is reserved for the "
-            "evidence-backed report operation"
+            "post-release feedback case source is reserved for the evidence-backed report operation"
         )
 
 
@@ -404,9 +391,7 @@ def _validate_protected_case_update(
         if "post_release_feedback_resolution" in case.metadata:
             protected_keys.add("post_release_feedback_resolution")
         changed_keys = sorted(
-            key
-            for key in protected_keys
-            if candidate_metadata.get(key) != case.metadata.get(key)
+            key for key in protected_keys if candidate_metadata.get(key) != case.metadata.get(key)
         )
         if changed_keys:
             raise ValueError(
@@ -421,8 +406,7 @@ def _validate_protected_case_update(
         if task_id not in next_task_ids
         and (
             task_id not in state.tasks
-            or assess_task(state, task_id).resolution_status
-            != TaskResolutionStatus.RESOLVED
+            or assess_task(state, task_id).resolution_status != TaskResolutionStatus.RESOLVED
         )
     )
     if unresolved_removed_task_ids:
@@ -565,19 +549,13 @@ def _apply_case_update(
         if "source" in update:
             next_source = _optional_text(update.get("source"))
         next_source_ref = (
-            _optional_text(update.get("source_ref"))
-            if "source_ref" in update
-            else case.source_ref
+            _optional_text(update.get("source_ref")) if "source_ref" in update else case.source_ref
         )
         next_metadata = (
-            _mapping(update.get("metadata") or {}, "metadata")
-            if "metadata" in update
-            else None
+            _mapping(update.get("metadata") or {}, "metadata") if "metadata" in update else None
         )
         next_task_ids = (
-            _unique_text_list(update.get("task_ids"), "task_ids")
-            if "task_ids" in update
-            else None
+            _unique_text_list(update.get("task_ids"), "task_ids") if "task_ids" in update else None
         )
         _validate_case_scope(
             state,
@@ -604,9 +582,7 @@ def _apply_case_update(
             case.project_id = next_project_id
         if "status" in update:
             previous_status = case.status
-            next_status = TeamCaseStatus(
-                _required_text(update.get("status"), "status")
-            )
+            next_status = TeamCaseStatus(_required_text(update.get("status"), "status"))
             _validate_case_status_transition(
                 source=case.source,
                 current_status=previous_status,
@@ -881,9 +857,7 @@ def _plan_task_creation(
         return None
     parent_task_id = _optional_text(creation.get("parent_task_id"))
     try:
-        git_base_branch = _normalized_task_git_base_branch(
-            creation.get("git_base_branch")
-        )
+        git_base_branch = _normalized_task_git_base_branch(creation.get("git_base_branch"))
     except ValueError as exc:
         result["errors"].append(f"task creation has invalid git_base_branch: {exc}")
         return None
@@ -951,9 +925,7 @@ def _plan_task_creation(
         )
         raw_contract = creation.get("outcome_contract")
         outcome_contract = (
-            TaskOutcomeContract.model_validate(raw_contract)
-            if raw_contract is not None
-            else None
+            TaskOutcomeContract.model_validate(raw_contract) if raw_contract is not None else None
         )
         if task_kind == TeamTaskKind.OUTCOME and outcome_contract is None:
             raise ValueError("outcome task requires outcome_contract")
@@ -969,24 +941,18 @@ def _plan_task_creation(
             else None
         )
         if integration_boundary and deliverable_contract is None:
-            raise ValueError(
-                "integration boundary task requires deliverable_contract"
-            )
+            raise ValueError("integration boundary task requires deliverable_contract")
         if (
             not integration_boundary
             and deliverable_contract is not None
             and deliverable_contract.required_contribution_task_ids
         ):
-            raise ValueError(
-                "leaf deliverable_contract cannot require contribution tasks"
-            )
+            raise ValueError("leaf deliverable_contract cannot require contribution tasks")
         if (
             deliverable_contract is not None
             and task_id in deliverable_contract.required_contribution_task_ids
         ):
-            raise ValueError(
-                "task cannot require itself as a deliverable contribution"
-            )
+            raise ValueError("task cannot require itself as a deliverable contribution")
     except ValueError as exc:
         result["errors"].append(str(exc))
         return None
@@ -1117,12 +1083,10 @@ def _task_creation_batch_graph_errors(
         task_states = {task_id: task.state for task_id, task in state.tasks.items()}
         parent_map = {task_id: task.parent_task_id for task_id, task in state.tasks.items()}
         integration_boundary_map = {
-            task_id: task.integration_boundary
-            for task_id, task in state.tasks.items()
+            task_id: task.integration_boundary for task_id, task in state.tasks.items()
         }
         deliverable_contract_map = {
-            task_id: task.deliverable_contract
-            for task_id, task in state.tasks.items()
+            task_id: task.deliverable_contract for task_id, task in state.tasks.items()
         }
         dependency_map = {
             task_id: list(task.dependency_task_ids) for task_id, task in state.tasks.items()
@@ -1243,9 +1207,7 @@ def _task_creation_plan_graph_error(
         if dependency_project_id != plan.project_id:
             return f"task dependency {dependency_id} belongs to project {dependency_project_id}"
     if plan.deliverable_contract is not None:
-        for contribution_task_id in (
-            plan.deliverable_contract.required_contribution_task_ids
-        ):
+        for contribution_task_id in plan.deliverable_contract.required_contribution_task_ids:
             contribution_project_id = task_projects.get(contribution_task_id)
             if contribution_project_id is None:
                 return (
@@ -1281,10 +1243,7 @@ def _task_creation_plan_graph_error(
             target_task_id=plan.task_id,
         ):
             return f"task dependency cycle includes {plan.task_id}"
-    wait_map = {
-        task_id: list(dependencies)
-        for task_id, dependencies in dependency_map.items()
-    }
+    wait_map = {task_id: list(dependencies) for task_id, dependencies in dependency_map.items()}
     for task_id, parent_task_id in parent_map.items():
         if parent_task_id is not None:
             wait_map.setdefault(parent_task_id, []).append(task_id)
@@ -1367,10 +1326,7 @@ def _task_graph_edit_error(
                 or dependency_task_ids != existing_task.dependency_task_ids
             )
         ):
-            return (
-                f"terminal task {task_id} cannot change its parent or "
-                "dependency task IDs"
-            )
+            return f"terminal task {task_id} cannot change its parent or dependency task IDs"
         if parent_task_id == task_id:
             return "task cannot be its own parent"
         if task_id in dependency_task_ids:
@@ -1382,8 +1338,7 @@ def _task_graph_edit_error(
         if parent.project_id != project_id:
             return f"task parent {parent_task_id} belongs to project {parent.project_id}"
         parent_edge_changed = (
-            existing_task is None
-            or existing_task.parent_task_id != parent_task_id
+            existing_task is None or existing_task.parent_task_id != parent_task_id
         )
         if parent_edge_changed:
             contracted_leaf_error = _contracted_leaf_child_error(
@@ -1393,12 +1348,8 @@ def _task_graph_edit_error(
             )
             if contracted_leaf_error is not None:
                 return contracted_leaf_error
-        if (
-            parent.state not in _NON_TERMINAL_TASK_STATES
-            and (
-                existing_task is None
-                or existing_task.parent_task_id != parent_task_id
-            )
+        if parent.state not in _NON_TERMINAL_TASK_STATES and (
+            existing_task is None or existing_task.parent_task_id != parent_task_id
         ):
             return f"task parent {parent_task_id} is not active"
     for dependency_id in dependency_task_ids:
@@ -1422,16 +1373,11 @@ def _task_graph_edit_error(
         contract = integration_task.deliverable_contract
         if contract is None:
             continue
-        effective_dependency_ids = set(
-            proposed_dependency_map.get(integration_task.id, ())
-        )
-        for contribution_task_id in (
-            contract.required_contribution_task_ids
-        ):
+        effective_dependency_ids = set(proposed_dependency_map.get(integration_task.id, ()))
+        for contribution_task_id in contract.required_contribution_task_ids:
             if (
                 contribution_task_id not in effective_dependency_ids
-                and proposed_parent_map.get(contribution_task_id)
-                != integration_task.id
+                and proposed_parent_map.get(contribution_task_id) != integration_task.id
             ):
                 return (
                     f"deliverable contribution task {contribution_task_id} must "
@@ -1459,8 +1405,7 @@ def _task_graph_edit_error(
         if _has_dependency_cycle(dependency_map):
             return f"task dependency cycle includes {task_id}"
         wait_map = {
-            existing_id: list(dependencies)
-            for existing_id, dependencies in dependency_map.items()
+            existing_id: list(dependencies) for existing_id, dependencies in dependency_map.items()
         }
         for existing_id, existing_task in state.tasks.items():
             effective_parent_id = (
@@ -1510,19 +1455,14 @@ def _task_deliverable_contract_scope_error(
     if task_id in deliverable_contract.required_contribution_task_ids:
         return "task cannot require itself as a deliverable contribution"
     direct_child_ids = {
-        candidate.id
-        for candidate in state.tasks.values()
-        if candidate.parent_task_id == task_id
+        candidate.id for candidate in state.tasks.values() if candidate.parent_task_id == task_id
     }
     dependency_ids = set(dependency_task_ids)
-    for contribution_task_id in (
-        deliverable_contract.required_contribution_task_ids
-    ):
+    for contribution_task_id in deliverable_contract.required_contribution_task_ids:
         contribution_task = state.tasks.get(contribution_task_id)
         if contribution_task is None:
             return (
-                "deliverable contract references missing contribution task "
-                f"{contribution_task_id}"
+                f"deliverable contract references missing contribution task {contribution_task_id}"
             )
         if contribution_task.project_id != project_id:
             return (
