@@ -26,7 +26,8 @@ from evander_team_addon.git_naming import (
     validate_branch_name,
 )
 
-SCHEMA_VERSION = 11
+SCHEMA_VERSION = 12
+DEFAULT_TEAM_COST_WARNING_RATIO = Decimal("0.8")
 WORKTREE_CLEANUP_INVENTORY_SAMPLE_LIMIT = 200
 TEAM_CHAT_ATTACHMENT_DEFAULT_MIME_TYPES = (
     "text/plain",
@@ -618,6 +619,11 @@ class Team(TeamModel):
     manager_agent_id: str
     operator_communication_target_id: str | None = None
     max_cost_usd: Decimal | None = Field(default=None, ge=Decimal("0"))
+    cost_warning_ratio: Decimal = Field(
+        default=DEFAULT_TEAM_COST_WARNING_RATIO,
+        gt=Decimal("0"),
+        le=Decimal("1"),
+    )
     escalate_to_governance: bool = False
     project_ids: list[str] = Field(default_factory=list)
     created_at: datetime = Field(default_factory=utc_now)
@@ -648,9 +654,27 @@ class Team(TeamModel):
             raise ValueError("max_cost_usd must be a non-negative decimal")
         return amount
 
+    @field_validator("cost_warning_ratio", mode="before")
+    @classmethod
+    def _cost_warning_ratio(cls, value: object) -> Decimal:
+        text = _optional_text(value)
+        if text is None:
+            raise ValueError("cost_warning_ratio must be greater than 0 and no more than 1")
+        try:
+            ratio = Decimal(text)
+        except (InvalidOperation, ValueError):
+            raise ValueError("cost_warning_ratio must be greater than 0 and no more than 1") from None
+        if ratio <= 0 or ratio > 1:
+            raise ValueError("cost_warning_ratio must be greater than 0 and no more than 1")
+        return ratio
+
     @field_serializer("max_cost_usd", when_used="json")
     def _serialize_max_cost_usd(self, value: Decimal | None) -> float | None:
         return float(value) if value is not None else None
+
+    @field_serializer("cost_warning_ratio", when_used="json")
+    def _serialize_cost_warning_ratio(self, value: Decimal) -> float:
+        return float(value)
 
     @field_validator("project_ids", mode="before")
     @classmethod

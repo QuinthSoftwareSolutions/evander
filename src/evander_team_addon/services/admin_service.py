@@ -121,6 +121,7 @@ from .domain.blockers import (
 from .domain.common import (
     _NON_TERMINAL_TASK_STATES,
     _append_unique,
+    _cost_warning_ratio,
     _generated_id,
     _mapping,
     _materialize_role_inputs,
@@ -1033,6 +1034,7 @@ class TeamAdminService:
         manager_role_name: str | None = None,
         operator_communication_target_id: str | None = None,
         max_cost_usd: object | None = None,
+        cost_warning_ratio: object | None = None,
         escalate_to_governance: bool = False,
         expected_revision: int | None = None,
     ) -> TeamState:
@@ -1112,6 +1114,7 @@ class TeamAdminService:
                 manager_agent_id=manager.id,
                 operator_communication_target_id=normalized_operator_target,
                 max_cost_usd=max_cost_usd,
+                cost_warning_ratio=_cost_warning_ratio(cost_warning_ratio),
                 escalate_to_governance=escalate_to_governance,
                 created_at=now,
                 updated_at=now,
@@ -1130,6 +1133,8 @@ class TeamAdminService:
         set_operator_communication_target_id: bool = False,
         max_cost_usd: object | None = None,
         set_max_cost_usd: bool = False,
+        cost_warning_ratio: object | None = None,
+        set_cost_warning_ratio: bool = False,
         escalate_to_governance: bool | None = None,
         archived: bool | None = None,
         expected_revision: int | None = None,
@@ -1241,6 +1246,8 @@ class TeamAdminService:
                 team.operator_communication_target_id = operator_communication_target_id
             if set_max_cost_usd:
                 team.max_cost_usd = _optional_cost_limit(max_cost_usd)
+            if set_cost_warning_ratio:
+                team.cost_warning_ratio = _cost_warning_ratio(cost_warning_ratio)
             if escalate_to_governance is not None:
                 team.escalate_to_governance = bool(escalate_to_governance)
             if archived is not None:
@@ -3893,6 +3900,7 @@ class TeamAdminService:
             "team.escalate_to_governance",
         )
         max_cost_usd = team_input.get("max_cost_usd") if "max_cost_usd" in team_input else None
+        cost_warning_ratio = _cost_warning_ratio(team_input.get("cost_warning_ratio"))
         project_name = _required_text(project_input.get("name"), "project.name")
         git = _project_git_config(project_input.get("git"))
 
@@ -4069,6 +4077,7 @@ class TeamAdminService:
                 operator_communication_target_id=operator_communication_target_id,
                 escalate_to_governance=escalate_to_governance or False,
                 max_cost_usd=max_cost_usd,
+                cost_warning_ratio=cost_warning_ratio,
                 created_at=now,
                 updated_at=now,
             )

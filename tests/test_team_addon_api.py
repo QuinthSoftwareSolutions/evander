@@ -7249,31 +7249,36 @@ def test_team_addon_admin_api_operator_target_and_git_config(tmp_path: Path) -> 
             "manager_session_id": "session-manager",
             "operator_communication_target_id": "ops-channel",
             "max_cost_usd": 10.5,
+            "cost_warning_ratio": 0.55,
             "expected_revision": 0,
         },
     )
     assert response.status_code == 201
     assert response.json()["teams"]["team"]["operator_communication_target_id"] == "ops-channel"
     assert response.json()["teams"]["team"]["max_cost_usd"] == 10.5
+    assert response.json()["teams"]["team"]["cost_warning_ratio"] == 0.55
 
     response = client.patch(
         "/api/addons/team-addon/teams/team",
         json={
             "operator_communication_target_id": "ops-channel-2",
             "max_cost_usd": 12.25,
+            "cost_warning_ratio": 0.65,
             "expected_revision": 1,
         },
     )
     assert response.status_code == 200
     assert response.json()["teams"]["team"]["operator_communication_target_id"] == "ops-channel-2"
     assert response.json()["teams"]["team"]["max_cost_usd"] == 12.25
+    assert response.json()["teams"]["team"]["cost_warning_ratio"] == 0.65
 
     response = client.patch(
         "/api/addons/team-addon/teams/team",
-        json={"max_cost_usd": None, "expected_revision": 2},
+        json={"max_cost_usd": None, "cost_warning_ratio": None, "expected_revision": 2},
     )
     assert response.status_code == 200
     assert response.json()["teams"]["team"]["max_cost_usd"] is None
+    assert response.json()["teams"]["team"]["cost_warning_ratio"] == 0.8
 
     response = client.post(
         "/api/addons/team-addon/projects",

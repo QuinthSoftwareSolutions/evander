@@ -13,6 +13,7 @@ from decimal import (
 )
 from typing import Any
 from ...models import (
+    DEFAULT_TEAM_COST_WARNING_RATIO,
     AgentTask,
     ProjectGitConfig,
     ProjectGoal,
@@ -352,6 +353,19 @@ def _optional_cost_limit(value: object) -> Decimal | None:
     return amount
 
 
+def _cost_warning_ratio(value: object) -> Decimal:
+    text = _optional_text(value)
+    if text is None:
+        return DEFAULT_TEAM_COST_WARNING_RATIO
+    try:
+        ratio = Decimal(text)
+    except (InvalidOperation, ValueError):
+        raise ValueError("cost_warning_ratio must be greater than 0 and no more than 1") from None
+    if ratio <= 0 or ratio > 1:
+        raise ValueError("cost_warning_ratio must be greater than 0 and no more than 1")
+    return ratio
+
+
 def _optional_bool(value: object, field_name: str) -> bool | None:
     if value is None:
         return None
@@ -457,6 +471,7 @@ __all__ = [
     "_operator_display_name_for_user",
     "_optional_text",
     "_optional_cost_limit",
+    "_cost_warning_ratio",
     "_optional_bool",
     "_ensure_utc",
     "_list_of_mappings",

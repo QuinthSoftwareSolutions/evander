@@ -744,6 +744,9 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
                     _optional_bool(payload, "escalate_to_governance") or False
                 ),
                 max_cost_usd=payload.get("max_cost_usd") if "max_cost_usd" in payload else None,
+                cost_warning_ratio=(
+                    payload.get("cost_warning_ratio") if "cost_warning_ratio" in payload else None
+                ),
                 expected_revision=expected_revision,
             ),
             create_collection="teams",
@@ -773,6 +776,10 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
                 escalate_to_governance=_optional_bool(payload, "escalate_to_governance"),
                 max_cost_usd=payload.get("max_cost_usd") if "max_cost_usd" in payload else None,
                 set_max_cost_usd="max_cost_usd" in payload,
+                cost_warning_ratio=(
+                    payload.get("cost_warning_ratio") if "cost_warning_ratio" in payload else None
+                ),
+                set_cost_warning_ratio="cost_warning_ratio" in payload,
                 archived=raw_archived if isinstance(raw_archived, bool) else None,
                 expected_revision=expected_revision,
             ),

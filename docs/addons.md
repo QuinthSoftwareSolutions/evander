@@ -2114,6 +2114,14 @@ pricing catalog, and optional Claude transcript backfill. Cost payloads expose
 coverage as a reason to inspect the underlying usage data before making spend
 promises.
 
+Each Team also stores its own `cost_warning_ratio`, which defaults to `0.8`.
+When a governed Team reaches that portion of its own `max_cost_usd`, the
+governance manager receives a `cost_cap_warning`; reaching the cap produces
+`cost_cap_reached`. This is Team policy rather than workflow-pack configuration,
+so refreshing the Team Runtime pack cannot change it. The ratio must be greater
+than zero and no more than one; clearing it through the Team API resets it to
+the default.
+
 ### Bundled Team Add-on Enablement
 
 Use this checklist when enabling the bundled Team Add-on on a deployment:

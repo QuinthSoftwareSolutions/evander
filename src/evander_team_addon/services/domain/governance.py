@@ -221,7 +221,6 @@ def _governance_cost_signals(
     *,
     group: GovernanceGroup,
     cost_payload: Mapping[str, Any] | None,
-    warning_ratio: Decimal,
 ) -> list[dict[str, Any]]:
     team_costs = _mapping_or_empty((cost_payload or {}).get("team_costs"))
     signals: list[dict[str, Any]] = []
@@ -240,7 +239,7 @@ def _governance_cost_signals(
         usage_ratio = estimated / max_cost
         if bool(cost.get("cost_limit_reached")) or estimated >= max_cost:
             signal_type = GovernanceAgendaItemType.COST_CAP_REACHED.value
-        elif usage_ratio >= warning_ratio:
+        elif usage_ratio >= team.cost_warning_ratio:
             signal_type = GovernanceAgendaItemType.COST_CAP_WARNING.value
         else:
             continue

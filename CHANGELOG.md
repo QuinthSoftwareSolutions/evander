@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-08-10 - Per-Team Governance Cost Warnings
+
+- Moved governance cost-warning policy out of the generated Team Runtime pack and into each
+  Team's durable configuration. Teams default to an 80% warning ratio, may set an individual
+  ratio greater than zero and no more than one, and retain that policy across runtime-pack
+  refreshes.
+
 ## 2026-08-10 - Local Inference Launch Accounting
 
 - Retained local-inference capacity after a successful VM launch that has not yet emitted its

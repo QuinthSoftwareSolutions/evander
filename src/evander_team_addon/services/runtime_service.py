@@ -3,7 +3,6 @@ from __future__ import annotations
 import logging
 from collections.abc import Mapping
 from datetime import datetime, timedelta
-from decimal import Decimal
 from typing import Any, Callable, Literal
 from uuid import uuid4
 
@@ -80,7 +79,6 @@ from .domain.blockers import (
     reconcile_unavailable_blocker_assignments,
 )
 from .domain.common import (
-    _decimal_or_zero,
     _ensure_utc,
     _optional_text,
     _require_present,
@@ -1984,13 +1982,11 @@ class TeamRuntimeService:
         wake_interval_seconds: int = 3600,
         governance_group_id: str | None = None,
         cost_payload: Mapping[str, Any] | None = None,
-        cost_warning_ratio: Decimal | str | float = Decimal("0.8"),
         defer_activation: bool = False,
     ) -> tuple[TeamState, list[dict[str, Any]]]:
         effective_now = _ensure_utc(now or utc_now())
         normalized_group_id = _optional_text(governance_group_id)
         normalized_limit = max(0, int(limit))
-        warning_ratio = _decimal_or_zero(cost_warning_ratio)
         leases: list[dict[str, Any]] = []
 
         def _mutate(state_model: TeamState) -> TeamState:
@@ -2045,7 +2041,6 @@ class TeamRuntimeService:
                     state_model,
                     group=group,
                     cost_payload=cost_payload,
-                    warning_ratio=warning_ratio,
                 )
                 blocked_team_signals = _governance_blocked_team_signals(
                     state_model,

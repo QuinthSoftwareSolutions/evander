@@ -9459,6 +9459,8 @@ def test_repository_updates_team_project_and_agent_records(tmp_path: Path) -> No
         set_operator_communication_target_id=True,
         max_cost_usd="123.45",
         set_max_cost_usd=True,
+        cost_warning_ratio="0.65",
+        set_cost_warning_ratio=True,
         archived=True,
         expected_revision=repo.read().revision,
     )
@@ -9468,6 +9470,7 @@ def test_repository_updates_team_project_and_agent_records(tmp_path: Path) -> No
     assert team.name == "Renamed Team"
     assert team.operator_communication_target_id is None
     assert str(team.max_cost_usd) == "123.45"
+    assert str(team.cost_warning_ratio) == "0.65"
     assert team.archived is True
     assert {
         agent.id for agent in state.agents.values() if agent.status is AgentStatus.ARCHIVED
@@ -9531,8 +9534,14 @@ def test_repository_updates_team_project_and_agent_records(tmp_path: Path) -> No
         team_id="team",
         max_cost_usd=None,
         set_max_cost_usd=True,
+        cost_warning_ratio=None,
+        set_cost_warning_ratio=True,
     )
     assert state.teams["team"].max_cost_usd is None
+    assert str(state.teams["team"].cost_warning_ratio) == "0.8"
+
+    reloaded = TeamStateRepository(tmp_path).read()
+    assert str(reloaded.teams["team"].cost_warning_ratio) == "0.8"
 
     try:
         _team_admin_service(repo).update_team(
@@ -9544,6 +9553,14 @@ def test_repository_updates_team_project_and_agent_records(tmp_path: Path) -> No
         assert "max_cost_usd" in str(exc)
     else:  # pragma: no cover - assertion guard
         raise AssertionError("negative team max cost should be rejected")
+
+    for invalid_ratio in ("0", "1.01"):
+        with pytest.raises(ValueError, match="cost_warning_ratio"):
+            _team_admin_service(repo).update_team(
+                team_id="team",
+                cost_warning_ratio=invalid_ratio,
+                set_cost_warning_ratio=True,
+            )
 
 
 def test_repository_rejects_agent_update_reporting_cycle_without_writing(tmp_path: Path) -> None:
@@ -11139,6 +11156,56 @@ def test_governance_cost_signal_wakes_only_on_status_change(tmp_path: Path) -> N
 
     assert len(leases) == 1
     assert leases[0]["reason"] == "cost_cap_reached"
+
+
+def test_governance_cost_warning_uses_each_member_teams_ratio(tmp_path: Path) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    admin = _team_admin_service(repo)
+    admin.update_team(
+        team_id="team",
+        cost_warning_ratio="0.9",
+        set_cost_warning_ratio=True,
+        expected_revision=repo.read().revision,
+    )
+    admin.create_team(
+        team_id="other",
+        name="Other Team",
+        manager_agent_id="other-manager",
+        manager_session_id="session-other-manager",
+        cost_warning_ratio="0.6",
+        expected_revision=repo.read().revision,
+    )
+    admin.create_governance_group(
+        governance_group_id="portfolio",
+        name="Portfolio",
+        manager_agent_id="manager",
+        member_team_ids=["team", "other"],
+        expected_revision=repo.read().revision,
+    )
+    cost_payload = {
+        "team_costs": {
+            "team": {
+                "estimated_cost": 80,
+                "max_cost_usd": 100,
+                "cost_limit_reached": False,
+            },
+            "other": {
+                "estimated_cost": 70,
+                "max_cost_usd": 100,
+                "cost_limit_reached": False,
+            },
+        }
+    }
+
+    _state, leases = _team_runtime_service(repo).lease_due_governance_managers(
+        now=datetime(2026, 1, 1, tzinfo=UTC),
+        cost_payload=cost_payload,
+    )
+
+    assert len(leases) == 1
+    assert leases[0]["reason"] == "cost_cap_warning"
+    assert [signal["team_id"] for signal in leases[0]["cost_signals"]] == ["other"]
+    assert leases[0]["cost_signals"][0]["usage_ratio"] == 0.7
 
 
 def test_governance_blocked_signal_wakes_only_on_blocker_change(tmp_path: Path) -> None:

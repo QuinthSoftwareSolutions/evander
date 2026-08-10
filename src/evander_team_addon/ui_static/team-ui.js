@@ -471,6 +471,7 @@ const fieldTooltips = {
   "setup-template-form:operator_communication_target_id": "Optional external target for manager escalations, such as a chat channel or operator contact.",
   "setup-template-form:escalate_to_governance": "Route manager escalations to governance agenda instead of operator escalation.",
   "setup-template-form:max_cost_usd": "Optional estimated lifetime USD cap for this team. Team wakes stop when estimated accrued cost reaches the cap.",
+  "setup-template-form:cost_warning_ratio": "Governance wakes when this team's estimated cost reaches this fraction of its cap. 0.8 means 80%.",
   "setup-template-form:project_name": "Human-readable project name shown in project cards and filters.",
 
   "create-team-form:name": "Human-readable team name shown throughout the Team Add-on UI.",
@@ -481,6 +482,7 @@ const fieldTooltips = {
   "create-team-form:operator_communication_target_id": "Optional external target for escalations raised by this team's manager.",
   "create-team-form:escalate_to_governance": "Route manager escalations to governance agenda instead of operator escalation.",
   "create-team-form:max_cost_usd": "Optional estimated lifetime USD cap for this team. Team wakes stop when estimated accrued cost reaches the cap.",
+  "create-team-form:cost_warning_ratio": "Governance wakes when this team's estimated cost reaches this fraction of its cap. 0.8 means 80%.",
 
   "create-governance-group-form:name": "Human-readable portfolio or governance group name.",
   "create-governance-group-form:manager_agent_id": "Existing persistent agent that wakes for governance agenda, cost, and blocker signals.",
@@ -595,6 +597,7 @@ const fieldTooltips = {
   "edit:team:operator_communication_target_id": "Set or clear the external target used for operator escalations.",
   "edit:team:escalate_to_governance": "Route manager escalations to governance instead of operator escalation when true.",
   "edit:team:max_cost_usd": "Set or clear the estimated lifetime USD cap that suspends future Team wakes when reached.",
+  "edit:team:cost_warning_ratio": "Set the portion of this team's cap that produces a governance warning. 0.8 means 80%; clearing resets it to 0.8.",
   "edit:team:archived": "Archived teams stay in state; archiving a team also archives its agents.",
   "edit:governance-group:name": "Rename the governance group without changing its immutable ID.",
   "edit:governance-group:manager_agent_id": "Persistent agent responsible for governance agenda and portfolio signals. Options lead with display name and role.",
@@ -1461,6 +1464,7 @@ function openOrgCreateTeamDialog() {
           <input name="escalate_to_governance" type="checkbox" /> Escalate team escalations to governance
         </label>
         <label>Estimated max cost USD <input name="max_cost_usd" type="number" min="0" step="0.01" /></label>
+        <label>Governance cost warning threshold <input name="cost_warning_ratio" type="number" min="0.01" max="1" step="0.01" value="0.8" /></label>
         <div class="org-action-form-actions">
           <button type="submit">Create team</button>
           <button type="button" class="secondary" data-org-action-close>Cancel</button>
@@ -9190,6 +9194,7 @@ function renderTeamRecordDetailContent(team) {
         ${renderAgentDetailField("Escalate to governance", Boolean(team.escalate_to_governance) ? "Enabled" : "Disabled")}
         ${renderAgentDetailField("Operator communication target", text(team.operator_communication_target_id) || "None")}
         ${renderAgentDetailField("Estimated max cost USD", text(team.max_cost_usd) || "None")}
+        ${renderAgentDetailField("Governance cost warning", `${Math.round((numberOrNull(team.cost_warning_ratio) ?? 0.8) * 100)}% of cap`)}
       </div>
       <section class="agent-detail-section">
         <h3>Team cost</h3>
@@ -22209,6 +22214,10 @@ function payloadForForm(form, data = formData(form)) {
     if (maxCost !== null) {
       payload.team.max_cost_usd = maxCost;
     }
+    const costWarningRatio = numberOrNull(data.cost_warning_ratio);
+    if (costWarningRatio !== null) {
+      payload.team.cost_warning_ratio = costWarningRatio;
+    }
     if (templateUsesGit(template)) {
       const git = gitConfigForForm(data);
       if (git) {
@@ -22240,6 +22249,10 @@ function payloadForForm(form, data = formData(form)) {
     const maxCost = numberOrNull(data.max_cost_usd);
     if (maxCost !== null) {
       payload.max_cost_usd = maxCost;
+    }
+    const costWarningRatio = numberOrNull(data.cost_warning_ratio);
+    if (costWarningRatio !== null) {
+      payload.cost_warning_ratio = costWarningRatio;
     }
     return payload;
   }
@@ -23112,6 +23125,7 @@ function renderEditFields(type, record) {
       ${textField("Operator communication target id", "operator_communication_target_id", record.operator_communication_target_id || "")}
       ${checkboxField("Escalate manager escalations to governance", "escalate_to_governance", Boolean(record.escalate_to_governance))}
       ${numberField("Estimated max cost USD", "max_cost_usd", record.max_cost_usd ?? "", { min: 0, step: "0.01" })}
+      ${numberField("Governance cost warning threshold", "cost_warning_ratio", record.cost_warning_ratio ?? 0.8, { min: 0.01, max: 1, step: "0.01" })}
       ${checkboxField("Archived", "archived", Boolean(record.archived))}
     `;
   }
@@ -23359,6 +23373,7 @@ function editPayloadForForm(type, form) {
       operator_communication_target_id: text(data.operator_communication_target_id) || null,
       escalate_to_governance: Boolean(form.elements.escalate_to_governance?.checked),
       max_cost_usd: numberOrNull(data.max_cost_usd),
+      cost_warning_ratio: numberOrNull(data.cost_warning_ratio),
       archived: Boolean(form.elements.archived?.checked),
     };
   }

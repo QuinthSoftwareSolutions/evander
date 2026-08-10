@@ -630,14 +630,6 @@ _TEAM_WORKFLOW_EDITOR_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
                 placeholder="3600",
             ),
             _catalog_field(
-                "cost_warning_ratio",
-                "Cost warning ratio",
-                "number",
-                description="Member-team cap usage ratio that should wake governance before the cap is reached.",
-                default_value=0.8,
-                placeholder="0.8",
-            ),
-            _catalog_field(
                 "resume_mode",
                 "Resume mode",
                 "string",
@@ -3226,7 +3218,6 @@ class TeamWakeGovernanceManagersEffectProvider(EffectProviderBase):
             "limit",
             "lease_seconds",
             "wake_interval_seconds",
-            "cost_warning_ratio",
             "resume_mode",
         )
         if resolved_config:
@@ -3251,7 +3242,6 @@ class TeamWakeGovernanceManagersEffectProvider(EffectProviderBase):
                 payload.get("wake_interval_seconds"),
                 default=3600,
             ),
-            cost_warning_ratio=_optional_text(payload.get("cost_warning_ratio")) or "0.8",
             cost_payload=cost_payload,
             defer_activation=True,
         )

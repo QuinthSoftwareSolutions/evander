@@ -214,6 +214,18 @@ def test_team_runtime_pack_layout_positions_every_runtime_node() -> None:
     assert nodes["team-record-release-recovery-promotion"] == {"x": 720.0, "y": 1940.0}
 
 
+def test_team_runtime_pack_leaves_governance_warning_policy_to_teams() -> None:
+    pack = WorkflowPack.model_validate(team_runtime_v1())
+    governance_effects = [
+        node.node.model_dump(mode="json")
+        for node in pack.ir.nodes
+        if node.node.id in {"team-wake-governance-managers", "team-wake-requested-governance"}
+    ]
+
+    assert len(governance_effects) == 2
+    assert all("cost_warning_ratio" not in effect.get("config", {}) for effect in governance_effects)
+
+
 def test_project_git_identity_defaults_to_evander_bot() -> None:
     identity = _resolved_project_git_identity(None)
 

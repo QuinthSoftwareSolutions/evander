@@ -46,6 +46,8 @@ class TeamWakeGovernanceManagersEffectDefinition(EffectDefinition):
     limit: ConfigValue | None = None
     lease_seconds: ConfigValue | None = None
     wake_interval_seconds: ConfigValue | None = None
+    # Accepted only so a persisted pre-v12 runtime pack can continue to load. Governance
+    # resolves the threshold from each member Team's durable configuration.
     cost_warning_ratio: ConfigValue | None = None
     resume_mode: ConfigValue | None = None
 
