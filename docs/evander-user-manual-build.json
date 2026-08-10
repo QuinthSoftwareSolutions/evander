@@ -1,15 +1,15 @@
 {
   "edition": "1.0",
-  "generated_at": "2026-08-09T08:08:24.288376+00:00",
+  "generated_at": "2026-08-10T08:05:18.547335+00:00",
   "outputs": {
-    "docs/evander-user-manual.docx": "8a99783739e4db866c4036a7ff34aa0e5c6ae3db9b2cfafa9b0a00c083f4df9d",
-    "docs/evander-user-manual.html": "b1adc59b8c78fef999014151bddc97503b28c6116fa24f28d4852bc8f20b3444",
-    "docs/evander-user-manual.md": "2e2bb8370c01431138c3361448da32b9f0b87f21514bb8a2a2fe50ef6fa7dd51",
-    "docs/evander-user-manual.pdf": "73be9f3441ccd780c8a7294fde19baf728c1a58fe0557b446de1d83ae62b86ba"
+    "docs/evander-user-manual.docx": "d04e792129bd2f57a5551f4da0c05e1667032b9d45caae39c11d7588caa8fd49",
+    "docs/evander-user-manual.html": "db281c69e7b5523fa07b832f4f050b8fe4319299d666ec7e5a5be0f6dbedc6f9",
+    "docs/evander-user-manual.md": "7d4207b04e5b5539bbf1440708d754bff9372a3fabb7f0951656e1b9e7edd729",
+    "docs/evander-user-manual.pdf": "84c2db0db7e8bf28a88fe942524304e88d90ee82b0ff594acdbe7d9fa543648b"
   },
   "project_version": "0.3.1",
   "schema_version": 1,
-  "source_fingerprint": "be940f3ec8cfea49e2d00ea82145a1141779feefeb47151f9c8f999a991cfa83",
+  "source_fingerprint": "ffe03c23309d0915f8d7282e878886a48fdccf4deb50a981c982328660c2ea01",
   "sources": {
     "docs/assets/evander-user-manual/diagrams/01-system-context.png": "88b5f56516d2fb85a84d3489717a4d48e14aa4192a1b5e51af64e4abb4a75ed9",
     "docs/assets/evander-user-manual/diagrams/01-system-context.svg": "18d491c26e0ce3a23714ed59cbbd78c14a912c2c209dfd906eebcece38c470de",
@@ -84,7 +84,7 @@
     "docs/evander-user-manual/chapters/22-team-delivery-review.md": "80ecbe0a86f02987fef60246059a462fca58bf8f9ec09922406d7ac195317f9d",
     "docs/evander-user-manual/chapters/23-team-ephemeral-delegation.md": "33d43370b60e4367e5d9a45e666d37e13ee9a74ca70e24d403d65a8783d77202",
     "docs/evander-user-manual/chapters/24-team-git-releases.md": "9128da41e119243d6fdd9e9f5de822d4a8d6b9c9a4df4fbe74305fe3372eb88a",
-    "docs/evander-user-manual/chapters/25-team-governance-memory-cost-internals.md": "4071dacfe3f597dcfb906087434554391d4e3ff3188a1afee475690029d14e0d",
+    "docs/evander-user-manual/chapters/25-team-governance-memory-cost-internals.md": "b0d38d525c436728cb0a224926706e3ef589bd54e4c3428d50d681c9c4c8381f",
     "docs/evander-user-manual/chapters/26-engineering-extension.md": "c39a9d57c8e7bd7ecbf8d2c560fa036c0c0f7fc4e6bb0f32f71a9b5906f1b653",
     "docs/evander-user-manual/chapters/27-design-history.md": "9dead6bb912e52ffd0539a4034898273d91be7c10831e6563a958aac142823a6",
     "docs/evander-user-manual/chapters/28-system-reference.md": "09d18148a57c0529030cc98628a92c937fea45f1dbb1fee8f8f955a69fd740fd",

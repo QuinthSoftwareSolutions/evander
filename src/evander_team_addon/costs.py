@@ -322,14 +322,25 @@ class TeamCostService:
         self._context_cache: dict[str, ModelUsageCorrelationContext | None] = {}
         self._request_attribution_cache: dict[tuple[str, str], TeamCostAttribution] = {}
 
-    def costs_payload(self, *, backfill_transcripts: bool = False) -> dict[str, Any]:
+    def costs_payload(
+        self,
+        *,
+        backfill_transcripts: bool = False,
+        now: datetime | None = None,
+    ) -> dict[str, Any]:
         backfill_result = self.backfill_claude_transcripts() if backfill_transcripts else None
         raw_events = self.usage_store.list_events()
         self._request_attribution_cache = self._request_attributions(raw_events)
         events = _dedupe_cost_events(raw_events)
         catalog = self._load_pricing_catalog()
+        effective_now = _ensure_utc(now or utc_now())
+        team_budget_windows = {
+            team_id: _current_team_budget_window(team, now=effective_now)
+            for team_id, team in self.state.teams.items()
+        }
 
         team_buckets: dict[str, dict[str, Any]] = {}
+        team_budget_window_buckets: dict[str, dict[str, Any]] = {}
         project_buckets: dict[str, dict[str, Any]] = {}
         unattributed_bucket = _new_bucket()
         root_bucket = _new_bucket()
@@ -343,6 +354,20 @@ class TeamCostService:
             if attribution.team_id:
                 team_bucket = team_buckets.setdefault(attribution.team_id, _new_bucket())
                 _add_event_to_bucket(team_bucket, event, estimate, source=source)
+                budget_window = team_budget_windows.get(attribution.team_id)
+                if (
+                    budget_window is not None
+                    and _ensure_utc(event.occurred_at) >= budget_window["started_at"]
+                    and (
+                        budget_window.get("ends_at") is None
+                        or _ensure_utc(event.occurred_at) < budget_window["ends_at"]
+                    )
+                ):
+                    budget_bucket = team_budget_window_buckets.setdefault(
+                        attribution.team_id,
+                        _new_bucket(),
+                    )
+                    _add_event_to_bucket(budget_bucket, event, estimate, source=source)
                 if attribution.project_id and attribution.project_confident:
                     project_bucket = project_buckets.setdefault(
                         attribution.project_id,
@@ -386,6 +411,8 @@ class TeamCostService:
             team_id: _finalize_team_bucket(
                 bucket,
                 team=self.state.teams.get(team_id),
+                budget_window=team_budget_windows.get(team_id),
+                budget_window_bucket=team_budget_window_buckets.get(team_id),
             )
             for team_id, bucket in sorted(team_buckets.items())
         }
@@ -1347,17 +1374,81 @@ def _finalize_bucket(bucket: dict[str, Any]) -> dict[str, Any]:
     return finalized
 
 
-def _finalize_team_bucket(bucket: dict[str, Any], *, team: Any | None) -> dict[str, Any]:
+def _finalize_team_bucket(
+    bucket: dict[str, Any],
+    *,
+    team: Any | None,
+    budget_window: dict[str, Any] | None = None,
+    budget_window_bucket: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     finalized = _finalize_bucket(bucket)
     max_cost = _optional_decimal(getattr(team, "max_cost_usd", None))
-    estimated = _optional_decimal(finalized.get("estimated_cost")) or Decimal("0")
+    lifetime_estimated = _optional_decimal(finalized.get("estimated_cost")) or Decimal("0")
+    window_finalized = (
+        _finalize_bucket(budget_window_bucket or _new_bucket())
+        if budget_window is not None
+        else finalized
+    )
+    budget_window_estimated = (
+        _optional_decimal(window_finalized.get("estimated_cost")) or Decimal("0")
+    )
+    capped_estimated = budget_window_estimated if budget_window is not None else lifetime_estimated
     finalized["max_cost_usd"] = _decimal_to_float(max_cost)
     finalized["remaining_cost_usd"] = (
-        _decimal_to_float(max(max_cost - estimated, Decimal("0"))) if max_cost is not None else None
+        _decimal_to_float(max(max_cost - capped_estimated, Decimal("0")))
+        if max_cost is not None
+        else None
     )
-    finalized["cost_limit_reached"] = bool(max_cost is not None and estimated >= max_cost)
-    finalized["cost_limit_basis"] = "lifetime"
+    finalized["cost_limit_reached"] = bool(max_cost is not None and capped_estimated >= max_cost)
+    finalized["cost_limit_basis"] = "budget_window" if budget_window is not None else "lifetime"
+    finalized["lifetime_estimated_cost"] = _decimal_to_float(lifetime_estimated)
+    finalized["budget_window_estimated_cost"] = _decimal_to_float(budget_window_estimated)
+    finalized["budget_window_events_count"] = int(window_finalized.get("events_count") or 0)
+    finalized["budget_window_started_at"] = (
+        _json_datetime(budget_window["started_at"]) if budget_window is not None else None
+    )
+    finalized["budget_window_ends_at"] = (
+        _json_datetime(budget_window.get("ends_at")) if budget_window is not None else None
+    )
+    finalized["budget_window_renewal_mode"] = (
+        budget_window.get("renewal_mode") if budget_window is not None else None
+    )
     return finalized
+
+
+def _current_team_budget_window(team: Any | None, *, now: datetime) -> dict[str, Any] | None:
+    if team is None:
+        return None
+    active = next(
+        (
+            window
+            for window in getattr(team, "cost_budget_windows", [])
+            if getattr(window, "ended_at", None) is None
+        ),
+        None,
+    )
+    if active is None:
+        return None
+    started_at = _ensure_utc(active.started_at)
+    raw_renewal_mode = getattr(team, "cost_budget_renewal_mode", "manual")
+    renewal_mode = str(getattr(raw_renewal_mode, "value", raw_renewal_mode))
+    if renewal_mode == "monthly_utc":
+        ends_at = _next_utc_month_start(started_at)
+        monthly_renewal_not_before = getattr(active, "monthly_renewal_not_before", None)
+        if monthly_renewal_not_before is not None:
+            ends_at = max(ends_at, _ensure_utc(monthly_renewal_not_before))
+        effective_now = _ensure_utc(now)
+        while ends_at <= effective_now:
+            started_at = ends_at
+            ends_at = _next_utc_month_start(started_at)
+    else:
+        ends_at = None
+        renewal_mode = "manual"
+    return {
+        "started_at": started_at,
+        "ends_at": ends_at,
+        "renewal_mode": renewal_mode,
+    }
 
 
 def _governance_group_costs(
@@ -1405,8 +1496,18 @@ def _governance_group_costs(
                 continue
             max_cost = _optional_decimal(team_cost.get("max_cost_usd"))
             if max_cost is not None and max_cost > 0:
-                team_estimated = _optional_decimal(team_cost.get("estimated_cost")) or Decimal("0")
-                if team_estimated / max_cost >= Decimal("0.8"):
+                window_estimated = _optional_decimal(
+                    team_cost.get("budget_window_estimated_cost")
+                )
+                team_estimated = (
+                    window_estimated
+                    if window_estimated is not None
+                    else _optional_decimal(team_cost.get("estimated_cost")) or Decimal("0")
+                )
+                warning_ratio = _optional_decimal(
+                    getattr(state.teams.get(team_id), "cost_warning_ratio", None)
+                ) or Decimal("0.8")
+                if team_estimated / max_cost >= warning_ratio:
                     cap_warning_team_ids.append(team_id)
 
         max_cost = _optional_decimal(getattr(group, "max_cost_usd", None))
@@ -1684,6 +1785,23 @@ def _first_text(*values: Any) -> str | None:
         if text is not None:
             return text
     return None
+
+
+def _ensure_utc(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        return value.replace(tzinfo=UTC)
+    return value.astimezone(UTC)
+
+
+def _json_datetime(value: datetime | None) -> str | None:
+    return _ensure_utc(value).isoformat().replace("+00:00", "Z") if value is not None else None
+
+
+def _next_utc_month_start(value: datetime) -> datetime:
+    normalized = _ensure_utc(value)
+    if normalized.month == 12:
+        return datetime(normalized.year + 1, 1, 1, tzinfo=UTC)
+    return datetime(normalized.year, normalized.month + 1, 1, tzinfo=UTC)
 
 
 def _optional_text(value: Any) -> str | None:

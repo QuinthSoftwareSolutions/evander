@@ -6,6 +6,8 @@ import threading
 from datetime import UTC, datetime
 from pathlib import Path
 
+import pytest
+
 from evander.daemons.effect_orchestrator import (
     EffectExecutionRecord,
     GateExecutionRecord,
@@ -633,6 +635,72 @@ def test_execution_repositories_list_waiting_and_completion_pending_records(
         assert [
             record.execution_id for record in execution_store.list_completion_pending_records()
         ] == [pending.execution_id]
+
+
+def test_execution_repositories_list_records_by_node_type_and_statuses(
+    tmp_path: Path,
+) -> None:
+    stores = [
+        JsonExecutionStore(tmp_path / "effect-executions.json"),
+        SqliteExecutionStore(tmp_path / "orchestration.db"),
+    ]
+    for index, execution_store in enumerate(stores):
+        succeeded_target = _effect_record(
+            execution_id=f"exec-succeeded-target-{index}",
+            idempotency_key=f"idem-succeeded-target-{index}",
+        )
+        succeeded_target.status = "succeeded"
+        succeeded_target.effect_type = "effect:agent:enqueue-prompt"
+        failed_target = _effect_record(
+            execution_id=f"exec-failed-target-{index}",
+            idempotency_key=f"idem-failed-target-{index}",
+        )
+        failed_target.status = "failed"
+        failed_target.effect_type = "effect:agent:enqueue-prompt"
+        skipped_target = _effect_record(
+            execution_id=f"exec-skipped-target-{index}",
+            idempotency_key=f"idem-skipped-target-{index}",
+        )
+        skipped_target.status = "skipped"
+        skipped_target.effect_type = "effect:agent:enqueue-prompt"
+        succeeded_other = _effect_record(
+            execution_id=f"exec-succeeded-other-{index}",
+            idempotency_key=f"idem-succeeded-other-{index}",
+        )
+        succeeded_other.status = "succeeded"
+        succeeded_other.effect_type = "effect:other"
+
+        for record in (succeeded_target, failed_target, skipped_target, succeeded_other):
+            execution_store.record_execution(record)
+
+        assert {
+            record.execution_id
+            for record in execution_store.list_records_by_node_type_and_statuses(
+                node_type="effect:agent:enqueue-prompt",
+                statuses={"succeeded", "failed"},
+            )
+        } == {succeeded_target.execution_id, failed_target.execution_id}
+
+
+def test_sqlite_execution_repository_filtered_query_does_not_read_all(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    execution_store = SqliteExecutionStore(tmp_path / "orchestration.db")
+    record = _effect_record(execution_id="exec-target", idempotency_key="idem-target")
+    record.status = "succeeded"
+    record.effect_type = "effect:agent:enqueue-prompt"
+    execution_store.record_execution(record)
+
+    def fail_read_all(*_args: object, **_kwargs: object) -> object:
+        raise AssertionError("filtered execution query must not deserialize all records")
+
+    monkeypatch.setattr(execution_store, "read_all", fail_read_all)
+
+    assert execution_store.list_records_by_node_type_and_statuses(
+        node_type="effect:agent:enqueue-prompt",
+        statuses={"succeeded", "failed"},
+    ) == [record]
 
 
 def test_gate_execution_repositories_list_waiting_and_completion_pending_records(

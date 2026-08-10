@@ -470,7 +470,8 @@ const fieldTooltips = {
   "setup-template-form:template_session_id": "Session ID used when this template-created agent is woken or resumed.",
   "setup-template-form:operator_communication_target_id": "Optional external target for manager escalations, such as a chat channel or operator contact.",
   "setup-template-form:escalate_to_governance": "Route manager escalations to governance agenda instead of operator escalation.",
-  "setup-template-form:max_cost_usd": "Optional estimated lifetime USD cap for this team. Team wakes stop when estimated accrued cost reaches the cap.",
+  "setup-template-form:max_cost_usd": "Optional estimated USD cap for each Team budget window. Team wakes stop when the active window reaches the cap.",
+  "setup-template-form:cost_warning_ratio": "Governance wakes when this team's estimated cost reaches this fraction of its cap. 0.8 means 80%.",
   "setup-template-form:project_name": "Human-readable project name shown in project cards and filters.",
 
   "create-team-form:name": "Human-readable team name shown throughout the Team Add-on UI.",
@@ -480,7 +481,9 @@ const fieldTooltips = {
   "create-team-form:manager_role_name": "Human-readable role name for the manager role.",
   "create-team-form:operator_communication_target_id": "Optional external target for escalations raised by this team's manager.",
   "create-team-form:escalate_to_governance": "Route manager escalations to governance agenda instead of operator escalation.",
-  "create-team-form:max_cost_usd": "Optional estimated lifetime USD cap for this team. Team wakes stop when estimated accrued cost reaches the cap.",
+  "create-team-form:max_cost_usd": "Optional estimated USD cap for each Team budget window. Team wakes stop when the active window reaches the cap.",
+  "create-team-form:cost_warning_ratio": "Governance wakes when this team's estimated cost reaches this fraction of its cap. 0.8 means 80%.",
+  "create-team-form:cost_budget_renewal_mode": "Manual budgets require an operator reset. Monthly budgets renew at 00:00 UTC on the first day of each month without carryover.",
 
   "create-governance-group-form:name": "Human-readable portfolio or governance group name.",
   "create-governance-group-form:manager_agent_id": "Existing persistent agent that wakes for governance agenda, cost, and blocker signals.",
@@ -594,7 +597,9 @@ const fieldTooltips = {
   "edit:team:name": "Rename the team without changing its immutable ID.",
   "edit:team:operator_communication_target_id": "Set or clear the external target used for operator escalations.",
   "edit:team:escalate_to_governance": "Route manager escalations to governance instead of operator escalation when true.",
-  "edit:team:max_cost_usd": "Set or clear the estimated lifetime USD cap that suspends future Team wakes when reached.",
+  "edit:team:max_cost_usd": "Set or clear the estimated USD cap that suspends future Team wakes when the active budget window reaches it.",
+  "edit:team:cost_warning_ratio": "Set the portion of this team's cap that produces a governance warning. 0.8 means 80%; clearing resets it to 0.8.",
+  "edit:team:cost_budget_renewal_mode": "Choose manual reset or an automatic monthly UTC renewal. Changing this setting does not reset the current budget window.",
   "edit:team:archived": "Archived teams stay in state; archiving a team also archives its agents.",
   "edit:governance-group:name": "Rename the governance group without changing its immutable ID.",
   "edit:governance-group:manager_agent_id": "Persistent agent responsible for governance agenda and portfolio signals. Options lead with display name and role.",
@@ -605,6 +610,7 @@ const fieldTooltips = {
   "edit:governance-group:max_cost_usd": "Optional advisory lifetime USD cap for the governed portfolio.",
   "edit:governance-group:archived": "Archived governance groups remain retained but leave active views.",
   "edit:project:name": "Rename the project without changing its immutable ID.",
+  "edit:project:lead_agent_id": "Transfer project-lead authority to an existing agent in this team. The former lead remains a project member.",
   "edit:project:status": "Manual project status override. Later workflow actions may update this again.",
   "edit:project:goals": "Replace project goals using id | description | state rows.",
   "edit:project:human_review_enabled": "Require an authenticated, assigned Admin Web reviewer to decide the pinned release candidate.",
@@ -1461,6 +1467,8 @@ function openOrgCreateTeamDialog() {
           <input name="escalate_to_governance" type="checkbox" /> Escalate team escalations to governance
         </label>
         <label>Estimated max cost USD <input name="max_cost_usd" type="number" min="0" step="0.01" /></label>
+        <label>Governance cost warning threshold <input name="cost_warning_ratio" type="number" min="0.01" max="1" step="0.01" value="0.8" /></label>
+        <label>Budget renewal <select name="cost_budget_renewal_mode"><option value="manual">Manual reset</option><option value="monthly_utc">Monthly (UTC)</option></select></label>
         <div class="org-action-form-actions">
           <button type="submit">Create team</button>
           <button type="button" class="secondary" data-org-action-close>Cancel</button>
@@ -1787,6 +1795,23 @@ function bindForms() {
       return;
     }
     void retryReleaseGate(button, text(reason));
+  });
+
+  document.addEventListener("click", (event) => {
+    const button = event.target?.closest?.("[data-team-cost-budget-reset]");
+    if (!button) {
+      return;
+    }
+    event.preventDefault();
+    if (!guardTeamMutation("reset a team cost budget")) {
+      return;
+    }
+    const reason = window.prompt("Why is a new budget window authorized?", "");
+    if (!text(reason)) {
+      setStatus("A budget reset reason is required.", "error");
+      return;
+    }
+    void resetTeamCostBudget(button, text(button.dataset.teamCostBudgetReset), text(reason));
   });
 
   document.addEventListener("click", (event) => {
@@ -2452,6 +2477,13 @@ function bindRecordEditing() {
         governanceAgendaHandleButton,
         governanceAgendaHandleButton.dataset.governanceAgendaHandleId,
       );
+      return;
+    }
+
+    const transferProjectLeadButton = event.target.closest("[data-transfer-project-lead]");
+    if (transferProjectLeadButton) {
+      event.preventDefault();
+      void transferProjectLead(transferProjectLeadButton.form);
       return;
     }
 
@@ -3161,12 +3193,10 @@ function bindAgentEditTeamScopedSelects() {
     if (
       contextPolicySelect?.form === elements.editForm
       && text(elements.editForm?.dataset.editType) === "agent"
-      && text(contextPolicySelect.value) === "idle"
     ) {
-      const graceInput = contextPolicySelect.form.elements.context_clearing_idle_grace_minutes;
-      if (graceInput && numberOrZero(graceInput.value) === 0) {
-        graceInput.value = "60";
-      }
+      syncAgentEditContextIdleGraceField(contextPolicySelect.form, {
+        suggestDefaultGrace: true,
+      });
     }
     const teamSelect = event.target?.closest?.('select[name="team_id"]');
     if (!teamSelect || teamSelect.form !== elements.editForm) {
@@ -3177,6 +3207,23 @@ function bindAgentEditTeamScopedSelects() {
     }
     refreshAgentEditTeamScopedSelects(teamSelect.form);
   });
+}
+
+function syncAgentEditContextIdleGraceField(form, { suggestDefaultGrace = false } = {}) {
+  const contextPolicySelect = form?.elements?.context_clearing_policy;
+  const idleGraceField = form?.querySelector?.("[data-agent-context-idle-grace]");
+  if (!contextPolicySelect || !idleGraceField) {
+    return;
+  }
+  const isIdle = text(contextPolicySelect.value) === "idle";
+  idleGraceField.hidden = !isIdle;
+  if (!isIdle || !suggestDefaultGrace) {
+    return;
+  }
+  const graceInput = form.elements.context_clearing_idle_grace_minutes;
+  if (graceInput && numberOrZero(graceInput.value) === 0) {
+    graceInput.value = "60";
+  }
 }
 
 function refreshAgentEditTeamScopedSelects(form) {
@@ -6047,7 +6094,7 @@ function renderTeamCostBlockedPill(teamId) {
     return "";
   }
   return `
-    <span class="state-pill warning team-cost-blocked-pill" title="Team wakes are suspended until the estimated cap is raised or cleared.">
+    <span class="state-pill warning team-cost-blocked-pill" title="Team wakes are suspended until this budget is reset, renewed, raised, or cleared.">
       cost blocked
     </span>
   `;
@@ -6065,7 +6112,7 @@ function renderTeamCostBlockedNotice(teamId) {
   return `
     <div class="team-cost-blocked-notice" role="status">
       <strong>Blocked: estimated cost cap reached</strong>
-      <span>Team wakes are suspended until the estimated cap is raised or cleared. ${escapeHtml(formatUsd(cost.estimated_cost))} estimated used of ${escapeHtml(capLabel)} lifetime cap.${escapeHtml(coverageNote)}</span>
+      <span>Team wakes are suspended until this budget is reset, renewed, raised, or cleared. ${escapeHtml(formatUsd(cost.budget_window_estimated_cost ?? cost.estimated_cost))} estimated used of ${escapeHtml(capLabel)} ${escapeHtml(text(cost.cost_limit_basis) === "budget_window" ? "budget window" : "lifetime cap")}.${escapeHtml(coverageNote)}</span>
     </div>
   `;
 }
@@ -6283,6 +6330,8 @@ function renderCostCounter(
       : "cost-counter cost-counter--warning";
   const parts = [];
   const maxCost = numberOrNull(cost.max_cost_usd);
+  const budgetWindowCost = numberOrNull(cost.budget_window_estimated_cost);
+  const displayedCost = budgetWindowCost === null ? numberOrZero(cost.estimated_cost) : budgetWindowCost;
   if (maxCost !== null) {
     parts.push(
       limitReached
@@ -6292,6 +6341,9 @@ function renderCostCounter(
   }
   if (events) {
     parts.push(`${formatCount(events)} event${events === 1 ? "" : "s"}`);
+  }
+  if (budgetWindowCost !== null && numberOrNull(cost.estimated_cost) !== null) {
+    parts.push(`lifetime ${formatUsd(cost.estimated_cost)}`);
   }
   if (unpriced) {
     parts.push(`${formatCount(unpriced)} unpriced`);
@@ -6306,7 +6358,7 @@ function renderCostCounter(
   return `
     <div class="${className}${compact ? " cost-counter--compact" : ""}${aggregate ? " cost-counter--aggregate" : ""}">
       <span>${escapeHtml(label || "Cost")}</span>
-      <strong>${escapeHtml(formatUsd(cost.estimated_cost))}</strong>
+      <strong>${escapeHtml(formatUsd(displayedCost))}</strong>
       ${context ? `<small class="cost-counter-context">${escapeHtml(context)}</small>` : ""}
       ${parts.length ? `<small>${escapeHtml(parts.join(" - "))}</small>` : ""}
     </div>
@@ -9167,6 +9219,17 @@ function renderTeamRecordDetailContent(team) {
     projects: values(state.projects).filter((project) => isVisibleProject(project) && text(project.team_id) === text(team.id)),
     roles: values(state.roles).filter((role) => isVisibleRole(role) && text(role.team_id) === text(team.id)),
   });
+  const teamCost = teamCostForTeam(team.id);
+  const renewalLabel = text(team.cost_budget_renewal_mode) === "monthly_utc"
+    ? "Monthly at 00:00 UTC"
+    : "Manual reset";
+  const budgetWindows = Array.isArray(team.cost_budget_windows) ? team.cost_budget_windows : [];
+  const budgetWindowHistory = budgetWindows.length
+    ? `<ul class="record-list">${[...budgetWindows]
+      .sort((left, right) => text(right.started_at).localeCompare(text(left.started_at)))
+      .map((window) => `<li><strong>${escapeHtml(humanizeToken(window.kind) || "budget window")}</strong> ${escapeHtml(formatChatTimestamp(window.started_at))} — ${escapeHtml(text(window.reason) || "No reason recorded")} <span class="meta-line">${escapeHtml(text(window.actor) || "unknown actor")}</span></li>`)
+      .join("")}</ul>`
+    : `<p class="empty-state">This Team retains its legacy lifetime cap until an operator resets its budget.</p>`;
   return `
     <div class="agent-detail team-record-detail">
       <div class="agent-detail-header">
@@ -9181,6 +9244,7 @@ function renderTeamRecordDetailContent(team) {
       </div>
       <div class="record-actions agent-detail-actions">
         ${editButton("team", team.id)}
+        ${team.max_cost_usd !== null && team.max_cost_usd !== undefined ? `<button type="button" class="record-action" data-team-cost-budget-reset="${escapeAttr(team.id)}">Reset budget</button>` : ""}
       </div>
       <div class="agent-detail-grid">
         ${renderAgentDetailField("Manager", manager ? `${agentLabel(manager)} (${manager.id})` : text(team.manager_agent_id) || "None")}
@@ -9190,11 +9254,18 @@ function renderTeamRecordDetailContent(team) {
         ${renderAgentDetailField("Escalate to governance", Boolean(team.escalate_to_governance) ? "Enabled" : "Disabled")}
         ${renderAgentDetailField("Operator communication target", text(team.operator_communication_target_id) || "None")}
         ${renderAgentDetailField("Estimated max cost USD", text(team.max_cost_usd) || "None")}
+        ${renderAgentDetailField("Governance cost warning", `${Math.round((numberOrNull(team.cost_warning_ratio) ?? 0.8) * 100)}% of cap`)}
+        ${renderAgentDetailField("Budget renewal", renewalLabel)}
+        ${renderAgentDetailField("Budget window start", teamCost?.budget_window_started_at ? formatChatTimestamp(teamCost.budget_window_started_at) : "Lifetime legacy cap")}
       </div>
       <section class="agent-detail-section">
         <h3>Team cost</h3>
         ${renderTeamCostCounter(team.id) || "<p class=\"empty-state\">No cost estimate available.</p>"}
         ${renderCostBackfillControl()}
+      </section>
+      <section class="agent-detail-section">
+        <h3>Budget history</h3>
+        ${budgetWindowHistory}
       </section>
     </div>
   `;
@@ -20099,6 +20170,10 @@ function buildSelectOptionSets() {
     "record-states": recordStates.map((item) => [item, item]),
     "agent-statuses": agentStatuses.map((item) => [item, item]),
     "context-clearing-policies": contextClearingPolicies,
+    "cost-budget-renewal-modes": [
+      ["manual", "Manual reset"],
+      ["monthly_utc", "Monthly (UTC)"],
+    ],
     "realtime-voices": realtimeVoiceOptions,
     "project-statuses": projectStatuses.map((item) => [item, item]),
     "decision-states": decisionStates.map((item) => [item, item]),
@@ -20198,7 +20273,8 @@ function agentEditSuperiorOptions(select) {
 }
 
 function projectLeadAgentOptions(select) {
-  const teamId = text(select.form?.elements?.team_id?.value);
+  const project = state.projects?.[text(select.form?.dataset?.editId)] || null;
+  const teamId = text(select.form?.elements?.team_id?.value) || text(project?.team_id);
   return projectLeadAgentOptionsForTeam(teamId);
 }
 
@@ -20500,6 +20576,48 @@ function setGitImportStatus(element, message) {
   element.textContent = message || "";
 }
 
+async function resetTeamCostBudget(button, teamId, reason) {
+  if (!teamId) {
+    setStatus("Team budget reset target is unavailable.", "error");
+    return;
+  }
+  button.disabled = true;
+  setStatus("Resetting cost budget.", "loading");
+  try {
+    const response = await teamFetch(
+      `${API_BASE}/teams/${encodeURIComponent(teamId)}/cost-budget/reset`,
+      {
+        method: "POST",
+        headers: {
+          Accept: "application/json",
+          "Content-Type": "application/json",
+          "X-Team-Addon-Response-Scope": "view",
+        },
+        body: JSON.stringify({ reason, expected_revision: state.revision }),
+      },
+    );
+    if (response.status === 409) {
+      const conflict = await response.json().catch(() => ({}));
+      await reloadActiveTeamView();
+      setStatus(
+        `Revision conflict. Reloaded revision ${conflict.current_revision ?? state.revision}; verify the budget and retry.`,
+        "warning",
+      );
+      return;
+    }
+    if (!response.ok) {
+      throw new Error(await responseText(response));
+    }
+    await applyMutationResultPayload(await response.json());
+    await loadCosts();
+    setStatus("Started a new team cost budget window.", "ok");
+  } catch (error) {
+    setStatus(error instanceof Error ? error.message : "Budget reset failed.", "error");
+  } finally {
+    button.disabled = false;
+  }
+}
+
 async function submitMutation(form, endpoint, method, payload, { resetOnSuccess = true, detailedResult = false } = {}) {
   if (!guardTeamMutation("save changes")) {
     return submitMutationResult(false, "locked", detailedResult);
@@ -20656,6 +20774,7 @@ function mutationResourceContext(endpoint, method, payload = {}) {
     [/^\/governance-groups\/([^/]+)$/, "governance_groups"],
     [/^\/governance-agenda\/([^/]+)\/handle$/, "governance_agenda"],
     [/^\/projects\/([^/]+)$/, "projects"],
+    [/^\/projects\/([^/]+)\/lead$/, "projects"],
     [/^\/roles\/([^/]+)$/, "roles"],
     [/^\/agents\/([^/]+)$/, "agents"],
     [/^\/agents\/([^/]+)\/context-rotation$/, "agents"],
@@ -22209,6 +22328,11 @@ function payloadForForm(form, data = formData(form)) {
     if (maxCost !== null) {
       payload.team.max_cost_usd = maxCost;
     }
+    const costWarningRatio = numberOrNull(data.cost_warning_ratio);
+    if (costWarningRatio !== null) {
+      payload.team.cost_warning_ratio = costWarningRatio;
+    }
+    payload.team.cost_budget_renewal_mode = text(data.cost_budget_renewal_mode) || "manual";
     if (templateUsesGit(template)) {
       const git = gitConfigForForm(data);
       if (git) {
@@ -22241,6 +22365,11 @@ function payloadForForm(form, data = formData(form)) {
     if (maxCost !== null) {
       payload.max_cost_usd = maxCost;
     }
+    const costWarningRatio = numberOrNull(data.cost_warning_ratio);
+    if (costWarningRatio !== null) {
+      payload.cost_warning_ratio = costWarningRatio;
+    }
+    payload.cost_budget_renewal_mode = text(data.cost_budget_renewal_mode) || "manual";
     return payload;
   }
   if (formId === "create-governance-group-form") {
@@ -23059,6 +23188,34 @@ async function submitEditForm(form) {
   }
 }
 
+async function transferProjectLead(form) {
+  if (!guardTeamMutation("transfer project leads")) {
+    return;
+  }
+  const projectId = text(form?.dataset?.editId);
+  const project = state.projects?.[projectId];
+  const leadAgentId = text(form?.elements?.lead_agent_id?.value);
+  if (!project || !leadAgentId) {
+    setStatus("Select a project lead to transfer authority.", "error");
+    return;
+  }
+  if (leadAgentId === text(project.lead_agent_id)) {
+    setStatus("That agent is already the project lead.", "warning");
+    return;
+  }
+  const transferred = await submitMutation(
+    form,
+    `/projects/${encodeURIComponent(projectId)}/lead`,
+    "POST",
+    { lead_agent_id: leadAgentId },
+    { resetOnSuccess: false },
+  );
+  if (transferred) {
+    clearFormDraft(form);
+    closeEditDialog();
+  }
+}
+
 function recordForEdit(type, id) {
   if (type === "team") return state.teams[id] || null;
   if (type === "governance-group") return state.governance_groups[id] || null;
@@ -23112,6 +23269,8 @@ function renderEditFields(type, record) {
       ${textField("Operator communication target id", "operator_communication_target_id", record.operator_communication_target_id || "")}
       ${checkboxField("Escalate manager escalations to governance", "escalate_to_governance", Boolean(record.escalate_to_governance))}
       ${numberField("Estimated max cost USD", "max_cost_usd", record.max_cost_usd ?? "", { min: 0, step: "0.01" })}
+      ${numberField("Governance cost warning threshold", "cost_warning_ratio", record.cost_warning_ratio ?? 0.8, { min: 0.01, max: 1, step: "0.01" })}
+      ${selectField("Budget renewal", "cost_budget_renewal_mode", "cost-budget-renewal-modes", record.cost_budget_renewal_mode || "manual")}
       ${checkboxField("Archived", "archived", Boolean(record.archived))}
     `;
   }
@@ -23141,6 +23300,14 @@ function renderEditFields(type, record) {
         rows: 4,
         placeholder: "id | description | state",
       })}
+      <fieldset>
+        <legend>Project lead handoff</legend>
+        ${selectField("Project lead", "lead_agent_id", "project-lead-agents", record.lead_agent_id || "", { required: true, placeholder: "Select team agent" })}
+        <p class="field-help">Transfer authority separately from other project edits. The former lead remains a project member.</p>
+        <div class="record-actions">
+          <button type="button" data-transfer-project-lead>Transfer project lead</button>
+        </div>
+      </fieldset>
       <p class="subheading">Git config</p>
       ${textField("Repository source", "repo_source", "", {
         placeholder: "Git URL or local checkout",
@@ -23184,7 +23351,9 @@ function renderEditFields(type, record) {
       ${numberField("Max ephemeral agents", "max_concurrent", ephemeralCapacity(record), { min: 0 })}
       ${selectField("Status", "status", "agent-statuses", record.status || "active", { required: true })}
       ${selectField("Context clearing", "context_clearing_policy", "context-clearing-policies", contextPolicy, { required: true })}
-      ${numberField("Idle grace minutes", "context_clearing_idle_grace_minutes", contextIdleGraceMinutes, { min: 0, max: 10080, step: "any", required: true })}
+      <div data-agent-context-idle-grace${contextPolicy === "idle" ? "" : " hidden"}>
+        ${numberField("Idle grace minutes", "context_clearing_idle_grace_minutes", contextIdleGraceMinutes, { min: 0, max: 10080, step: "any", required: true })}
+      </div>
     `;
   }
   if (type === "role") {
@@ -23359,6 +23528,8 @@ function editPayloadForForm(type, form) {
       operator_communication_target_id: text(data.operator_communication_target_id) || null,
       escalate_to_governance: Boolean(form.elements.escalate_to_governance?.checked),
       max_cost_usd: numberOrNull(data.max_cost_usd),
+      cost_warning_ratio: numberOrNull(data.cost_warning_ratio),
+      cost_budget_renewal_mode: text(data.cost_budget_renewal_mode) || "manual",
       archived: Boolean(form.elements.archived?.checked),
     };
   }
@@ -23387,6 +23558,7 @@ function editPayloadForForm(type, form) {
     const currentProjectId = currentRecord ? agentEditProjectId(currentRecord) : "";
     const requestedTeamId = text(data.team_id);
     const normalizedTeamId = requestedTeamId === noTeamRecordId ? null : requestedTeamId || null;
+    const contextClearingPolicy = text(data.context_clearing_policy) || "off";
     const payload = {
       team_id: normalizedTeamId,
       role_id: text(data.role_id) || null,
@@ -23399,11 +23571,13 @@ function editPayloadForForm(type, form) {
       },
       ephemeral_policy: { max_concurrent: numberOrZero(data.max_concurrent) },
       status: text(data.status),
-      context_clearing_policy: text(data.context_clearing_policy) || "off",
-      context_clearing_idle_grace_seconds: Math.round(
-        numberOrZero(data.context_clearing_idle_grace_minutes) * 60,
-      ),
+      context_clearing_policy: contextClearingPolicy,
     };
+    if (contextClearingPolicy === "idle") {
+      payload.context_clearing_idle_grace_seconds = Math.round(
+        numberOrZero(data.context_clearing_idle_grace_minutes) * 60,
+      );
+    }
     if (selectedProjectId !== currentProjectId) {
       payload.project_id = selectedProjectId || null;
     }

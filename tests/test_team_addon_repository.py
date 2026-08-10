@@ -10,6 +10,8 @@ import pytest
 from pydantic import ValidationError
 
 import evander_team_addon.services.domain.common as team_domain_common
+import evander_team_addon.services.admin_service as admin_service_module
+import evander_team_addon.costs as costs_module
 from evander_team_addon.models import (
     AgentTask,
     AgentAvatar,
@@ -4296,6 +4298,125 @@ def test_assigned_blocker_dispatch_scopes_only_owned_source_task_for_recovery(
     assert owned["errors"][0]["code"] == "task_boundary_blocked"
 
 
+def test_resolving_task_blocker_restores_owner_work_and_enqueues_wake(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _seed_task(repo, task_id="task-blocker-recovery", owner_agent_id="worker")
+    now = datetime(2026, 1, 1, tzinfo=UTC)
+
+    def _seed_blocked_task(state):
+        task = state.tasks["task-blocker-recovery"]
+        task.state = TeamTaskState.BLOCKED
+        task.state_entered_at = now
+        task.updated_at = now
+        state.agent_runtimes["worker"].next_wake_at = now + timedelta(minutes=15)
+        state.blockers["blocker-task-recovery"] = TeamBlocker(
+            id="blocker-task-recovery",
+            team_id="team",
+            project_id="project",
+            task_id=task.id,
+            source_kind=TeamBlockerSourceKind.TASK,
+            source_id=task.id,
+            owner_agent_id="backend",
+            route=TeamBlockerRoute.OWNED,
+            summary="Recover the blocked task.",
+            created_at=now,
+            updated_at=now,
+        )
+        return state
+
+    repo.update(_seed_blocked_task)
+    _lease_agent_dispatch(repo, agent_id="backend", dispatch_id="dispatch-resolve-task-blocker")
+
+    state, result = _command_service(repo).update_blocker_command(
+        session_id="session-backend",
+        blocker_id="blocker-task-recovery",
+        action="resolve",
+        note="The source input is available again.",
+        request_id="request-resolve-task-blocker",
+    )
+
+    assert result["success"] is True
+    assert result["async_effect_pending"] is True
+    assert state.tasks["task-blocker-recovery"].state == TeamTaskState.IN_PROGRESS
+    assert state.agent_runtimes["worker"].next_wake_at is None
+    wake_events = [
+        event
+        for event in result["events"]
+        if event["event_type"] == AGENT_WAKE_REQUESTED_EVENT_TYPE
+    ]
+    assert len(wake_events) == 1
+    assert wake_events[0]["payload"]["agent_id"] == "worker"
+    assert wake_events[0]["payload"]["reason"] == "task_ready"
+    assert wake_events[0]["delay_seconds"] == DEFAULT_AGENT_WAKE_REQUEST_DEBOUNCE_SECONDS
+    wake_outbox_records = repo.list_outbox_records(
+        intent_type=AGENT_WAKE_REQUESTED_EVENT_TYPE,
+    )
+    assert [record.id for record in wake_outbox_records] == result["outbox_record_ids"]
+    assert wake_outbox_records[0].payload["payload"]["agent_id"] == "worker"
+    _state, immediate_leases = _team_runtime_service(repo).lease_due_agents(
+        agent_id="worker",
+        respect_wake_interval=False,
+    )
+    assert [lease["agent"]["id"] for lease in immediate_leases] == ["worker"]
+
+
+def test_operator_resolving_task_blocker_restores_owner_work_and_enqueues_wake(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _seed_task(repo, task_id="operator-task-blocker-recovery", owner_agent_id="worker")
+    now = datetime(2026, 1, 1, tzinfo=UTC)
+
+    def _seed_blocked_task(state):
+        task = state.tasks["operator-task-blocker-recovery"]
+        task.state = TeamTaskState.BLOCKED
+        task.state_entered_at = now
+        task.updated_at = now
+        state.agent_runtimes["worker"].next_wake_at = now + timedelta(minutes=15)
+        state.blockers["blocker-operator-task-recovery"] = TeamBlocker(
+            id="blocker-operator-task-recovery",
+            team_id="team",
+            project_id="project",
+            task_id=task.id,
+            source_kind=TeamBlockerSourceKind.TASK,
+            source_id=task.id,
+            owner_agent_id="lead",
+            route=TeamBlockerRoute.OPERATOR,
+            summary="Recover the blocked task as operator.",
+            created_at=now,
+            updated_at=now,
+        )
+        return state
+
+    repo.update(_seed_blocked_task)
+
+    state, result = _team_admin_service(repo).resolve_terminal_blocker_as_operator(
+        blocker_id="blocker-operator-task-recovery",
+        note="The source input is available again.",
+        operator_actor_id="operator:recovery-test",
+    )
+
+    assert result["success"] is True
+    assert state.tasks["operator-task-blocker-recovery"].state == TeamTaskState.IN_PROGRESS
+    assert state.agent_runtimes["worker"].next_wake_at is None
+    wake_events = [
+        event
+        for event in result["events"]
+        if event["event_type"] == AGENT_WAKE_REQUESTED_EVENT_TYPE
+    ]
+    assert len(wake_events) == 1
+    assert wake_events[0]["payload"]["agent_id"] == "worker"
+    assert wake_events[0]["payload"]["reason"] == "task_ready"
+    assert wake_events[0]["delay_seconds"] == DEFAULT_AGENT_WAKE_REQUEST_DEBOUNCE_SECONDS
+    wake_outbox_records = repo.list_outbox_records(
+        intent_type=AGENT_WAKE_REQUESTED_EVENT_TYPE,
+    )
+    assert len(wake_outbox_records) == 1
+    assert wake_outbox_records[0].payload["payload"]["agent_id"] == "worker"
+
+
 def test_blocker_specific_progress_keeps_owner_and_sets_follow_up(tmp_path: Path) -> None:
     repo = _seed_hierarchy(tmp_path)
     blocker_id = _report_explicit_blocker(
@@ -7350,6 +7471,7 @@ def test_repository_migrates_action_feedback_inbox_and_low_priority_columns(
 
     assert repo.read().action_records == {}
     with sqlite3.connect(db_path) as connection:
+        team_columns = {str(row[1]) for row in connection.execute("PRAGMA table_info(team_teams)")}
         action_columns = {
             str(row[1]) for row in connection.execute("PRAGMA table_info(team_action_records)")
         }
@@ -7381,6 +7503,7 @@ def test_repository_migrates_action_feedback_inbox_and_low_priority_columns(
             for row in connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
         }
         metadata = dict(connection.execute("SELECT key, value FROM team_state_metadata").fetchall())
+    assert {"cost_budget_renewal_mode", "cost_budget_windows_json"} <= team_columns
     assert "feedback_delivered_at" in action_columns
     assert "feedback_delivered_by_dispatch_id" in action_columns
     assert "response_requested" in inbox_columns
@@ -9011,6 +9134,45 @@ def test_create_project_can_assign_manager_as_project_lead_overlay(tmp_path: Pat
     assert state.roles["project__project-lead"].permissions == [RolePermission.CREATE_ROOT_TASK]
 
 
+def test_transfer_project_lead_promotes_existing_manager_overlay(tmp_path: Path) -> None:
+    repo = TeamStateRepository(tmp_path)
+    state = _team_admin_service(repo).create_team(
+        team_id="team",
+        name="Team",
+        manager_agent_id="manager",
+        manager_session_id="session-manager",
+        expected_revision=0,
+    )
+    state = _team_admin_service(repo).create_project(
+        project_id="project",
+        team_id="team",
+        name="Project",
+        lead_agent_id="lead",
+        lead_session_id="session-lead",
+        expected_revision=state.revision,
+    )
+
+    state = _team_admin_service(repo).transfer_project_lead(
+        project_id="project",
+        lead_agent_id="manager",
+        expected_revision=state.revision,
+    )
+
+    assert state.projects["project"].lead_agent_id == "manager"
+    assert project_lead_agent_id(state, "project") == "manager"
+    assert agent_project_ids(state, "manager") == ["project"]
+    assert agent_project_ids(state, "lead") == ["project"]
+    assignments = {
+        assignment.agent_id: assignment
+        for assignment in state.project_assignments.values()
+        if assignment.project_id == "project"
+    }
+    assert assignments["manager"].kind.value == "project_lead"
+    assert assignments["manager"].role_id == "team__manager"
+    assert assignments["lead"].kind.value == "project_member"
+    assert assignments["lead"].role_id == "project__project-lead"
+
+
 def test_create_project_existing_project_lead_is_assignment_overlay(
     tmp_path: Path,
 ) -> None:
@@ -9459,6 +9621,8 @@ def test_repository_updates_team_project_and_agent_records(tmp_path: Path) -> No
         set_operator_communication_target_id=True,
         max_cost_usd="123.45",
         set_max_cost_usd=True,
+        cost_warning_ratio="0.65",
+        set_cost_warning_ratio=True,
         archived=True,
         expected_revision=repo.read().revision,
     )
@@ -9468,6 +9632,7 @@ def test_repository_updates_team_project_and_agent_records(tmp_path: Path) -> No
     assert team.name == "Renamed Team"
     assert team.operator_communication_target_id is None
     assert str(team.max_cost_usd) == "123.45"
+    assert str(team.cost_warning_ratio) == "0.65"
     assert team.archived is True
     assert {
         agent.id for agent in state.agents.values() if agent.status is AgentStatus.ARCHIVED
@@ -9531,8 +9696,14 @@ def test_repository_updates_team_project_and_agent_records(tmp_path: Path) -> No
         team_id="team",
         max_cost_usd=None,
         set_max_cost_usd=True,
+        cost_warning_ratio=None,
+        set_cost_warning_ratio=True,
     )
     assert state.teams["team"].max_cost_usd is None
+    assert str(state.teams["team"].cost_warning_ratio) == "0.8"
+
+    reloaded = TeamStateRepository(tmp_path).read()
+    assert str(reloaded.teams["team"].cost_warning_ratio) == "0.8"
 
     try:
         _team_admin_service(repo).update_team(
@@ -9544,6 +9715,126 @@ def test_repository_updates_team_project_and_agent_records(tmp_path: Path) -> No
         assert "max_cost_usd" in str(exc)
     else:  # pragma: no cover - assertion guard
         raise AssertionError("negative team max cost should be rejected")
+
+    for invalid_ratio in ("0", "1.01"):
+        with pytest.raises(ValueError, match="cost_warning_ratio"):
+            _team_admin_service(repo).update_team(
+                team_id="team",
+                cost_warning_ratio=invalid_ratio,
+                set_cost_warning_ratio=True,
+            )
+
+
+def test_team_cost_budget_windows_persist_resets_and_monthly_renewals(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    admin = _team_admin_service(repo)
+    admin.update_team(
+        team_id="team",
+        max_cost_usd="10.00",
+        set_max_cost_usd=True,
+        cost_budget_renewal_mode="monthly_utc",
+        set_cost_budget_renewal_mode=True,
+        expected_revision=repo.read().revision,
+    )
+    configured = repo.read().teams["team"].cost_budget_windows[-1]
+    assert configured.kind.value == "configured"
+    assert configured.max_cost_usd == 10
+
+    admin.reset_team_cost_budget(
+        team_id="team",
+        reason="Approved continuation after the first milestone.",
+        operator_actor_id="operator:jonathan",
+        expected_revision=repo.read().revision,
+    )
+    reset_team = repo.read().teams["team"]
+    reset_window = reset_team.cost_budget_windows[-1]
+    assert reset_team.cost_budget_windows[-2].ended_at == reset_window.started_at
+    assert reset_window.kind.value == "manual_reset"
+    assert reset_window.actor == "operator:jonathan"
+
+    def _backdate_window(state):
+        team = state.teams["team"]
+        team.cost_budget_windows[-1].started_at = datetime(2026, 1, 15, tzinfo=UTC)
+        return state
+
+    repo.update(_backdate_window)
+    state = admin.advance_team_cost_budget_windows(now=datetime(2026, 3, 2, tzinfo=UTC))
+    windows = state.teams["team"].cost_budget_windows
+    assert [window.started_at for window in windows[-3:]] == [
+        datetime(2026, 1, 15, tzinfo=UTC),
+        datetime(2026, 2, 1, tzinfo=UTC),
+        datetime(2026, 3, 1, tzinfo=UTC),
+    ]
+    assert [window.kind.value for window in windows[-2:]] == [
+        "monthly_renewal",
+        "monthly_renewal",
+    ]
+    reloaded = TeamStateRepository(tmp_path).read().teams["team"]
+    assert reloaded.cost_budget_windows[-1].reason == "UTC monthly cost budget renewal."
+
+
+def test_switching_an_active_budget_to_monthly_waits_for_a_future_boundary(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    configured_at = datetime(2026, 7, 15, tzinfo=UTC)
+    switched_at = datetime(2026, 8, 10, tzinfo=UTC)
+    monkeypatch.setattr(admin_service_module, "utc_now", lambda: configured_at)
+    repo = _seed_hierarchy(tmp_path)
+    admin = _team_admin_service(repo)
+    admin.update_team(team_id="team", max_cost_usd="10.00", set_max_cost_usd=True)
+
+    monkeypatch.setattr(admin_service_module, "utc_now", lambda: switched_at)
+    admin.update_team(
+        team_id="team",
+        cost_budget_renewal_mode="monthly_utc",
+        set_cost_budget_renewal_mode=True,
+    )
+    admin.advance_team_cost_budget_windows(now=switched_at)
+
+    team = repo.read().teams["team"]
+    active_window = team.cost_budget_windows[-1]
+    assert active_window.started_at == configured_at
+    assert active_window.ended_at is None
+    assert active_window.monthly_renewal_not_before == datetime(2026, 9, 1, tzinfo=UTC)
+    assert costs_module._current_team_budget_window(team, now=switched_at)["started_at"] == configured_at
+
+
+def test_team_budget_mutation_rolls_an_overdue_monthly_window_first(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    configured_at = datetime(2026, 1, 15, tzinfo=UTC)
+    mutated_at = datetime(2026, 3, 2, tzinfo=UTC)
+    monkeypatch.setattr(admin_service_module, "utc_now", lambda: configured_at)
+    repo = _seed_hierarchy(tmp_path)
+    admin = _team_admin_service(repo)
+    admin.update_team(
+        team_id="team",
+        max_cost_usd="10.00",
+        set_max_cost_usd=True,
+        cost_budget_renewal_mode="monthly_utc",
+        set_cost_budget_renewal_mode=True,
+    )
+
+    monkeypatch.setattr(admin_service_module, "utc_now", lambda: mutated_at)
+    state = admin.update_team(
+        team_id="team",
+        max_cost_usd="12.00",
+        set_max_cost_usd=True,
+        expected_revision=repo.read().revision,
+    )
+
+    windows = state.teams["team"].cost_budget_windows
+    assert [window.started_at for window in windows] == [
+        configured_at,
+        datetime(2026, 2, 1, tzinfo=UTC),
+        datetime(2026, 3, 1, tzinfo=UTC),
+    ]
+    assert windows[-1].ended_at is None
+    assert state.teams["team"].max_cost_usd == 12
 
 
 def test_repository_rejects_agent_update_reporting_cycle_without_writing(tmp_path: Path) -> None:
@@ -11139,6 +11430,56 @@ def test_governance_cost_signal_wakes_only_on_status_change(tmp_path: Path) -> N
 
     assert len(leases) == 1
     assert leases[0]["reason"] == "cost_cap_reached"
+
+
+def test_governance_cost_warning_uses_each_member_teams_ratio(tmp_path: Path) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    admin = _team_admin_service(repo)
+    admin.update_team(
+        team_id="team",
+        cost_warning_ratio="0.9",
+        set_cost_warning_ratio=True,
+        expected_revision=repo.read().revision,
+    )
+    admin.create_team(
+        team_id="other",
+        name="Other Team",
+        manager_agent_id="other-manager",
+        manager_session_id="session-other-manager",
+        cost_warning_ratio="0.6",
+        expected_revision=repo.read().revision,
+    )
+    admin.create_governance_group(
+        governance_group_id="portfolio",
+        name="Portfolio",
+        manager_agent_id="manager",
+        member_team_ids=["team", "other"],
+        expected_revision=repo.read().revision,
+    )
+    cost_payload = {
+        "team_costs": {
+            "team": {
+                "estimated_cost": 80,
+                "max_cost_usd": 100,
+                "cost_limit_reached": False,
+            },
+            "other": {
+                "estimated_cost": 70,
+                "max_cost_usd": 100,
+                "cost_limit_reached": False,
+            },
+        }
+    }
+
+    _state, leases = _team_runtime_service(repo).lease_due_governance_managers(
+        now=datetime(2026, 1, 1, tzinfo=UTC),
+        cost_payload=cost_payload,
+    )
+
+    assert len(leases) == 1
+    assert leases[0]["reason"] == "cost_cap_warning"
+    assert [signal["team_id"] for signal in leases[0]["cost_signals"]] == ["other"]
+    assert leases[0]["cost_signals"][0]["usage_ratio"] == 0.7
 
 
 def test_governance_blocked_signal_wakes_only_on_blocker_change(tmp_path: Path) -> None:

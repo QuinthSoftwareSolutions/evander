@@ -30,6 +30,8 @@ from evander.model_usage.store import ModelUsageStore
 from evander.models import SessionManifest
 from evander.repositories.session_manifests import JsonSessionManifestRepository
 from evander_team_addon import api as team_addon_api
+import evander_team_addon.costs as team_costs_module
+import evander_team_addon.services.admin_service as admin_service_module
 from evander_team_addon.api import (
     _bootstrap_payload_for_request,
     _conversation_snapshot_events,
@@ -2850,6 +2852,7 @@ def test_team_addon_admin_api_conversation_queues_without_inline_dispatch_and_re
 
     assert sent.status_code == 202
     sent_payload = sent.json()
+    assert sent_payload["revision"] == created.json()["revision"] + 1
     assert sent_payload["dispatch"]["success"] is False
     assert sent_payload["dispatch"]["queued"] is True
     assert sent_payload["dispatch"]["dispatch_id"].startswith("team-chat:")
@@ -5419,6 +5422,33 @@ def test_team_addon_admin_api_generates_missing_operator_ids(tmp_path: Path) -> 
     assert "explicit-manager-role" in body["roles"]
 
 
+def test_team_addon_admin_api_transfers_project_lead_with_revision_check(
+    tmp_path: Path,
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    repo = _seed_runtime_operations_state(runtime_dir)
+    client = _client(tmp_path)
+    initial_revision = repo.read().revision
+
+    response = client.post(
+        "/api/addons/team-addon/projects/project/lead",
+        json={"lead_agent_id": "backend", "expected_revision": initial_revision},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["projects"]["project"]["lead_agent_id"] == "backend"
+    assert body["agents"]["backend"]["lead_project_ids"] == ["project"]
+    assert body["agents"]["lead"]["lead_project_ids"] == []
+    assert body["agents"]["lead"]["project_ids"] == ["project"]
+
+    stale = client.post(
+        "/api/addons/team-addon/projects/project/lead",
+        json={"lead_agent_id": "manager", "expected_revision": initial_revision},
+    )
+    assert stale.status_code == 409
+
+
 def test_team_addon_admin_api_runtime_operations_smoke(tmp_path: Path) -> None:
     runtime_dir = tmp_path / "runtime"
     _seed_runtime_operations_state(runtime_dir)
@@ -5690,6 +5720,58 @@ def test_team_addon_admin_api_costs_default_skips_backfill_and_uses_threadpool(
         {"func": "_team_costs_payload", "kwargs": {"backfill_transcripts": False}}
     ]
     assert "backfill" not in response.json()
+
+
+def test_team_addon_admin_api_cost_read_advances_stale_monthly_window(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    repo = _seed_runtime_operations_state(runtime_dir)
+    _team_admin_service(repo).update_team(
+        team_id="team",
+        max_cost_usd="10.00",
+        set_max_cost_usd=True,
+        cost_budget_renewal_mode="monthly_utc",
+        set_cost_budget_renewal_mode=True,
+    )
+
+    def _backdate_window(state):
+        state.teams["team"].cost_budget_windows[-1].started_at = datetime(
+            2026, 1, 15, tzinfo=UTC
+        )
+        return state
+
+    repo.update(_backdate_window)
+    ModelUsageStore(runtime_dir / "model-usage.db").upsert_event(
+        ModelInferenceUsageEvent(
+            event_id="march-usage",
+            occurred_at=datetime(2026, 3, 2, tzinfo=UTC),
+            provider="openai",
+            provider_endpoint_identifier="responses",
+            model="gpt-5.2-codex",
+            input_tokens=1000,
+            output_tokens=500,
+            total_tokens=1500,
+            request_status="success",
+            normalized_usage_status="available",
+            raw_usage_metadata={},
+            session_id="session-backend",
+        )
+    )
+    now = datetime(2026, 3, 15, tzinfo=UTC)
+    monkeypatch.setattr(admin_service_module, "utc_now", lambda: now)
+    monkeypatch.setattr(team_costs_module, "utc_now", lambda: now)
+
+    response = _client(tmp_path).get("/api/addons/team-addon/costs?backfill=false")
+
+    assert response.status_code == 200
+    cost = response.json()["team_costs"]["team"]
+    assert cost["budget_window_events_count"] == 1
+    assert cost["budget_window_started_at"] == "2026-03-01T00:00:00Z"
+    active_window = repo.read().teams["team"].cost_budget_windows[-1]
+    assert active_window.started_at == datetime(2026, 3, 1, tzinfo=UTC)
+    assert active_window.ended_at is None
 
 
 def test_team_addon_admin_api_costs_get_backfill_requires_privileged_unlock(
@@ -7249,31 +7331,52 @@ def test_team_addon_admin_api_operator_target_and_git_config(tmp_path: Path) -> 
             "manager_session_id": "session-manager",
             "operator_communication_target_id": "ops-channel",
             "max_cost_usd": 10.5,
+            "cost_warning_ratio": 0.55,
+            "cost_budget_renewal_mode": "monthly_utc",
             "expected_revision": 0,
         },
     )
     assert response.status_code == 201
     assert response.json()["teams"]["team"]["operator_communication_target_id"] == "ops-channel"
     assert response.json()["teams"]["team"]["max_cost_usd"] == 10.5
+    assert response.json()["teams"]["team"]["cost_warning_ratio"] == 0.55
+    assert response.json()["teams"]["team"]["cost_budget_renewal_mode"] == "monthly_utc"
+    assert len(response.json()["teams"]["team"]["cost_budget_windows"]) == 1
 
     response = client.patch(
         "/api/addons/team-addon/teams/team",
         json={
             "operator_communication_target_id": "ops-channel-2",
             "max_cost_usd": 12.25,
+            "cost_warning_ratio": 0.65,
+            "cost_budget_renewal_mode": "manual",
             "expected_revision": 1,
         },
     )
     assert response.status_code == 200
     assert response.json()["teams"]["team"]["operator_communication_target_id"] == "ops-channel-2"
     assert response.json()["teams"]["team"]["max_cost_usd"] == 12.25
+    assert response.json()["teams"]["team"]["cost_warning_ratio"] == 0.65
+    assert response.json()["teams"]["team"]["cost_budget_renewal_mode"] == "manual"
+
+    response = client.post(
+        "/api/addons/team-addon/teams/team/cost-budget/reset",
+        json={"reason": "Authorized follow-up work.", "expected_revision": 2},
+    )
+    assert response.status_code == 200
+    windows = response.json()["teams"]["team"]["cost_budget_windows"]
+    assert len(windows) == 2
+    assert windows[-1]["kind"] == "manual_reset"
+    assert windows[-1]["actor"] == "operator:admin"
+    assert windows[-1]["reason"] == "Authorized follow-up work."
 
     response = client.patch(
         "/api/addons/team-addon/teams/team",
-        json={"max_cost_usd": None, "expected_revision": 2},
+        json={"max_cost_usd": None, "cost_warning_ratio": None, "expected_revision": 3},
     )
     assert response.status_code == 200
     assert response.json()["teams"]["team"]["max_cost_usd"] is None
+    assert response.json()["teams"]["team"]["cost_warning_ratio"] == 0.8
 
     response = client.post(
         "/api/addons/team-addon/projects",
@@ -7302,7 +7405,7 @@ def test_team_addon_admin_api_operator_target_and_git_config(tmp_path: Path) -> 
                     "pids_limit": 1536,
                 },
             },
-            "expected_revision": 3,
+            "expected_revision": 4,
         },
     )
     assert response.status_code == 201
@@ -7334,7 +7437,7 @@ def test_team_addon_admin_api_operator_target_and_git_config(tmp_path: Path) -> 
                     "email": "evander@quinth.se",
                 },
             },
-            "expected_revision": 4,
+            "expected_revision": 5,
         },
     )
     assert response.status_code == 200
@@ -7361,7 +7464,7 @@ def test_team_addon_admin_api_operator_target_and_git_config(tmp_path: Path) -> 
             "title": "Snapshot the default",
             "description": "Exercise task Git-base API projection.",
             "created_by_agent_id": "lead",
-            "expected_revision": 5,
+            "expected_revision": 6,
         },
     )
     assert response.status_code == 201
@@ -7371,7 +7474,7 @@ def test_team_addon_admin_api_operator_target_and_git_config(tmp_path: Path) -> 
         "/api/addons/team-addon/tasks/task",
         json={
             "git_base_branch": "feature/foo",
-            "expected_revision": 6,
+            "expected_revision": 7,
         },
     )
     assert response.status_code == 200
@@ -7388,7 +7491,7 @@ def test_team_addon_admin_api_operator_target_and_git_config(tmp_path: Path) -> 
             "git": {
                 "managed_repo_id": "legacy-repo",
             },
-            "expected_revision": 7,
+            "expected_revision": 8,
         },
     )
     assert response.status_code == 400

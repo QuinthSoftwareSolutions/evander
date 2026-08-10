@@ -630,14 +630,6 @@ _TEAM_WORKFLOW_EDITOR_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
                 placeholder="3600",
             ),
             _catalog_field(
-                "cost_warning_ratio",
-                "Cost warning ratio",
-                "number",
-                description="Member-team cap usage ratio that should wake governance before the cap is reached.",
-                default_value=0.8,
-                placeholder="0.8",
-            ),
-            _catalog_field(
                 "resume_mode",
                 "Resume mode",
                 "string",
@@ -2279,6 +2271,7 @@ class TeamWakeDueAgentsEffectProvider(EffectProviderBase):
                 )
             except Exception as exc:  # cleanup must not suppress unrelated Team wakes
                 worktree_cleanup_error = str(exc) or exc.__class__.__name__
+        TeamAdminService(repo).advance_team_cost_budget_windows()
         current_state = repo.read()
         session_records = _session_records_by_id(_session_repository_from_context(context))
         cost_guard_blocked_teams = _cost_guard_blocked_teams(
@@ -3226,7 +3219,6 @@ class TeamWakeGovernanceManagersEffectProvider(EffectProviderBase):
             "limit",
             "lease_seconds",
             "wake_interval_seconds",
-            "cost_warning_ratio",
             "resume_mode",
         )
         if resolved_config:
@@ -3237,6 +3229,7 @@ class TeamWakeGovernanceManagersEffectProvider(EffectProviderBase):
             raise RuntimeError("effect:team:wake-governance-managers requires agent_resumer")
 
         repo = TeamStateRepository(_runtime_dir(context))
+        TeamAdminService(repo).advance_team_cost_budget_windows()
         current_state = repo.read()
         cost_payload = TeamCostService(
             runtime_dir=_runtime_dir(context),
@@ -3251,7 +3244,6 @@ class TeamWakeGovernanceManagersEffectProvider(EffectProviderBase):
                 payload.get("wake_interval_seconds"),
                 default=3600,
             ),
-            cost_warning_ratio=_optional_text(payload.get("cost_warning_ratio")) or "0.8",
             cost_payload=cost_payload,
             defer_activation=True,
         )
@@ -4447,9 +4439,10 @@ class TeamAgentPromptCompletionFinalizeHook(EffectLifecycleHookBase):
             state=state,
             now=datetime.now(UTC),
         )
+        completed_records = _completed_agent_prompt_records(worker)
         delivered_records = [
             *_waiting_agent_prompt_records(worker),
-            *_completed_agent_prompt_records(worker),
+            *completed_records,
         ]
         pending_governance = {
             runtime.active_dispatch_id: group_id
@@ -4518,7 +4511,7 @@ class TeamAgentPromptCompletionFinalizeHook(EffectLifecycleHookBase):
             and (dispatch_id.startswith("team-dispatch-") or dispatch_id.startswith("team-chat:"))
         }
         finalized_count = 0
-        for record in _completed_agent_prompt_records(worker):
+        for record in completed_records:
             dispatch_id = _optional_text(_record_outputs(record).get("dispatch_id"))
             if dispatch_id is None or dispatch_id not in active_dispatches:
                 continue
@@ -9662,7 +9655,13 @@ def _cost_guard_blocked_teams(
             max_cost = _number_or_none(getattr(team, "max_cost_usd", None))
         if max_cost is None:
             continue
-        estimated_cost = _number_or_zero(cost.get("estimated_cost"))
+        lifetime_estimated_cost = _number_or_zero(cost.get("estimated_cost"))
+        budget_window_estimated_cost = _number_or_none(cost.get("budget_window_estimated_cost"))
+        estimated_cost = (
+            budget_window_estimated_cost
+            if budget_window_estimated_cost is not None
+            else lifetime_estimated_cost
+        )
         limit_reached = bool(cost.get("cost_limit_reached"))
         if not limit_reached:
             limit_reached = estimated_cost >= max_cost
@@ -9673,6 +9672,7 @@ def _cost_guard_blocked_teams(
                 "team_id": blocked_team_id,
                 "team_name": getattr(team, "name", blocked_team_id),
                 "estimated_cost": estimated_cost,
+                "lifetime_estimated_cost": lifetime_estimated_cost,
                 "max_cost_usd": max_cost,
                 "remaining_cost_usd": _number_or_none(cost.get("remaining_cost_usd")),
                 "cost_limit_basis": cost.get("cost_limit_basis") or "lifetime",
@@ -11044,6 +11044,23 @@ def _completed_agent_prompt_records(worker: Any) -> list[Any]:
     if execution_store is None:
         return []
     records: list[Any] = []
+    list_by_type_and_statuses = getattr(
+        execution_store,
+        "list_records_by_node_type_and_statuses",
+        None,
+    )
+    if callable(list_by_type_and_statuses):
+        try:
+            records = list(
+                list_by_type_and_statuses(
+                    node_type="effect:agent:enqueue-prompt",
+                    statuses={"succeeded", "failed"},
+                )
+            )
+        except Exception:
+            records = []
+        else:
+            return _completed_agent_prompt_records_from_records(records)
     list_executions = getattr(execution_store, "list_executions", None)
     if callable(list_executions):
         try:
@@ -11058,6 +11075,10 @@ def _completed_agent_prompt_records(worker: Any) -> list[Any]:
                 records = list(raw.values()) if isinstance(raw, Mapping) else []
             except Exception:
                 records = []
+    return _completed_agent_prompt_records_from_records(records)
+
+
+def _completed_agent_prompt_records_from_records(records: list[Any]) -> list[Any]:
     candidates = [
         record
         for record in records

@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import subprocess
 from datetime import UTC, datetime, timedelta
+from decimal import Decimal
 from pathlib import Path
 
 from evander.model_usage.models import (
@@ -316,8 +317,15 @@ def test_team_costs_include_lifetime_cost_guard_metadata(tmp_path: Path) -> None
         max_cost_usd="2.50",
         set_max_cost_usd=True,
     )
+    window_start = repo.read().teams["team"].cost_budget_windows[-1].started_at
     store = ModelUsageStore(runtime_dir / "model-usage.db")
-    store.upsert_event(_usage_event("manager", session_id="session-manager"))
+    store.upsert_event(
+        _usage_event(
+            "manager",
+            session_id="session-manager",
+            occurred_at=window_start,
+        )
+    )
 
     payload = TeamCostService(
         runtime_dir=runtime_dir,
@@ -331,7 +339,9 @@ def test_team_costs_include_lifetime_cost_guard_metadata(tmp_path: Path) -> None
     assert team_cost["max_cost_usd"] == 2.5
     assert team_cost["remaining_cost_usd"] == 1.5
     assert team_cost["cost_limit_reached"] is False
-    assert team_cost["cost_limit_basis"] == "lifetime"
+    assert team_cost["cost_limit_basis"] == "budget_window"
+    assert team_cost["lifetime_estimated_cost"] == 1.0
+    assert team_cost["budget_window_estimated_cost"] == 1.0
 
     _team_admin_service(repo).update_team(
         team_id="team",
@@ -350,6 +360,163 @@ def test_team_costs_include_lifetime_cost_guard_metadata(tmp_path: Path) -> None
     assert team_cost["cost_limit_reached"] is True
 
 
+def test_team_costs_derive_the_current_month_from_a_stale_active_window(tmp_path: Path) -> None:
+    runtime_dir = tmp_path / "runtime"
+    repo = _seed_team(runtime_dir)
+    _team_admin_service(repo).update_team(
+        team_id="team",
+        max_cost_usd="2.50",
+        set_max_cost_usd=True,
+        cost_budget_renewal_mode="monthly_utc",
+        set_cost_budget_renewal_mode=True,
+    )
+
+    def _backdate_window(state):
+        state.teams["team"].cost_budget_windows[-1].started_at = datetime(
+            2026, 1, 15, tzinfo=UTC
+        )
+        return state
+
+    repo.update(_backdate_window)
+    store = ModelUsageStore(runtime_dir / "model-usage.db")
+    store.upsert_event(
+        _usage_event(
+            "january",
+            session_id="session-manager",
+            occurred_at=datetime(2026, 1, 20, tzinfo=UTC),
+        )
+    )
+    store.upsert_event(
+        _usage_event(
+            "march",
+            session_id="session-manager",
+            occurred_at=datetime(2026, 3, 2, tzinfo=UTC),
+        )
+    )
+
+    payload = TeamCostService(
+        runtime_dir=runtime_dir,
+        state=repo.read(),
+        usage_store=store,
+        pricing_catalog=_pricing_catalog(),
+    ).costs_payload(
+        backfill_transcripts=False,
+        now=datetime(2026, 3, 15, tzinfo=UTC),
+    )
+
+    team_cost = payload["team_costs"]["team"]
+    assert team_cost["lifetime_estimated_cost"] == 2.0
+    assert team_cost["budget_window_estimated_cost"] == 1.0
+    assert team_cost["budget_window_events_count"] == 1
+    assert team_cost["budget_window_started_at"] == "2026-03-01T00:00:00Z"
+    assert team_cost["budget_window_ends_at"] == "2026-04-01T00:00:00Z"
+
+
+def test_team_cost_budget_reset_preserves_lifetime_cost_but_reopens_the_cap(
+    tmp_path: Path,
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    repo = _seed_team(runtime_dir)
+    admin = _team_admin_service(repo)
+    admin.update_team(team_id="team", max_cost_usd="1.00", set_max_cost_usd=True)
+    first_window_start = repo.read().teams["team"].cost_budget_windows[-1].started_at
+    store = ModelUsageStore(runtime_dir / "model-usage.db")
+    store.upsert_event(
+        _usage_event("first", session_id="session-manager", occurred_at=first_window_start)
+    )
+
+    before_reset = TeamCostService(
+        runtime_dir=runtime_dir,
+        state=repo.read(),
+        usage_store=store,
+        pricing_catalog=_pricing_catalog(),
+    ).costs_payload(backfill_transcripts=False)
+    assert before_reset["team_costs"]["team"]["cost_limit_reached"] is True
+
+    admin.reset_team_cost_budget(
+        team_id="team",
+        reason="Approved the next unit of work.",
+        operator_actor_id="operator:jonathan",
+        expected_revision=repo.read().revision,
+    )
+    team = repo.read().teams["team"]
+    assert len(team.cost_budget_windows) == 2
+    assert team.cost_budget_windows[0].ended_at is not None
+    assert team.cost_budget_windows[1].reason == "Approved the next unit of work."
+
+    after_reset = TeamCostService(
+        runtime_dir=runtime_dir,
+        state=repo.read(),
+        usage_store=store,
+        pricing_catalog=_pricing_catalog(),
+    ).costs_payload(backfill_transcripts=False)
+    cost = after_reset["team_costs"]["team"]
+    assert cost["estimated_cost"] == 1.0
+    assert cost["budget_window_estimated_cost"] == 0.0
+    assert cost["remaining_cost_usd"] == 1.0
+    assert cost["cost_limit_reached"] is False
+
+
+def test_governance_cost_warning_uses_an_empty_reset_window_over_lifetime_spend(
+    tmp_path: Path,
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    repo = _seed_team(runtime_dir)
+    admin = _team_admin_service(repo)
+    admin.update_team(team_id="team", max_cost_usd="1.00", set_max_cost_usd=True)
+    window_start = repo.read().teams["team"].cost_budget_windows[-1].started_at
+    admin.create_governance_group(
+        governance_group_id="portfolio",
+        name="Portfolio",
+        manager_agent_id="manager",
+        member_team_ids=["team"],
+    )
+    store = ModelUsageStore(runtime_dir / "model-usage.db")
+    store.upsert_event(
+        _usage_event("first", session_id="session-manager", occurred_at=window_start)
+    )
+    admin.reset_team_cost_budget(
+        team_id="team",
+        reason="Approved the next unit of work.",
+        operator_actor_id="operator:jonathan",
+    )
+
+    payload = TeamCostService(
+        runtime_dir=runtime_dir,
+        state=repo.read(),
+        usage_store=store,
+        pricing_catalog=_pricing_catalog(),
+    ).costs_payload(backfill_transcripts=False)
+
+    assert payload["team_costs"]["team"]["budget_window_estimated_cost"] == 0.0
+    assert payload["governance_group_costs"]["portfolio"]["member_team_cap_warning_ids"] == []
+
+
+def test_legacy_team_cap_stays_lifetime_based_until_its_first_reset(tmp_path: Path) -> None:
+    runtime_dir = tmp_path / "runtime"
+    repo = _seed_team(runtime_dir)
+
+    def _configure_legacy_cap(state):
+        state.teams["team"].max_cost_usd = Decimal("1.00")
+        return state
+
+    repo.update(_configure_legacy_cap)
+    store = ModelUsageStore(runtime_dir / "model-usage.db")
+    store.upsert_event(_usage_event("legacy", session_id="session-manager"))
+
+    cost = TeamCostService(
+        runtime_dir=runtime_dir,
+        state=repo.read(),
+        usage_store=store,
+        pricing_catalog=_pricing_catalog(),
+    ).costs_payload(backfill_transcripts=False)["team_costs"]["team"]
+
+    assert cost["cost_limit_basis"] == "lifetime"
+    assert cost["budget_window_started_at"] is None
+    assert cost["budget_window_estimated_cost"] == 1.0
+    assert cost["cost_limit_reached"] is True
+
+
 def test_governance_group_costs_roll_up_member_team_costs(tmp_path: Path) -> None:
     runtime_dir = tmp_path / "runtime"
     repo = _seed_team(runtime_dir)
@@ -358,6 +525,7 @@ def test_governance_group_costs_roll_up_member_team_costs(tmp_path: Path) -> Non
         max_cost_usd="2.00",
         set_max_cost_usd=True,
     )
+    window_start = repo.read().teams["team"].cost_budget_windows[-1].started_at
     _team_admin_service(repo).create_governance_group(
         governance_group_id="portfolio",
         name="Portfolio",
@@ -367,8 +535,20 @@ def test_governance_group_costs_roll_up_member_team_costs(tmp_path: Path) -> Non
         expected_revision=repo.read().revision,
     )
     store = ModelUsageStore(runtime_dir / "model-usage.db")
-    store.upsert_event(_usage_event("manager", session_id="session-manager"))
-    store.upsert_event(_usage_event("backend", session_id="session-backend"))
+    store.upsert_event(
+        _usage_event(
+            "manager",
+            session_id="session-manager",
+            occurred_at=window_start,
+        )
+    )
+    store.upsert_event(
+        _usage_event(
+            "backend",
+            session_id="session-backend",
+            occurred_at=window_start,
+        )
+    )
 
     payload = TeamCostService(
         runtime_dir=runtime_dir,

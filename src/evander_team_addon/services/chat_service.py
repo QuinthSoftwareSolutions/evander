@@ -145,6 +145,115 @@ def _attachment_preview(count: int) -> str:
 TEAM_CHAT_MUTATION_AUTHORIZATION_METADATA_KEY = "team_mutation_authorization"
 
 
+def _record_operator_chat_message_in_state(
+    state: TeamState,
+    *,
+    conversation_id: str,
+    body: str | None,
+    attachments: Sequence[PreparedChatAttachment],
+    created_by: str | None,
+    mutation_authorization: TeamChatMutationAuthorization | None,
+) -> TeamConversationMessage:
+    conversation = _require_present(
+        state.conversations,
+        conversation_id,
+        "conversation",
+    )
+    agent = _require_present(state.agents, conversation.agent_id, "agent")
+    _require_agent_chat_dispatch_eligibility(state, agent)
+    now = utc_now()
+    message_id = f"chatmsg-{uuid4().hex}"
+    metadata = {
+        key: value
+        for key, value in {
+            "sender_kind": "human_operator",
+            "operator_user_id": conversation.operator_user_id,
+            "operator_display_name": conversation.operator_display_name,
+            "created_by": created_by,
+        }.items()
+        if value
+    }
+    effective_authorization = mutation_authorization or reply_only_team_chat_authorization(
+        source="internal",
+        principal_id=conversation.operator_user_id,
+        reason="mutation_authorization_missing",
+    )
+    metadata[TEAM_CHAT_MUTATION_AUTHORIZATION_METADATA_KEY] = (
+        effective_authorization.model_dump(mode="json")
+    )
+    metadata["allow_team_mutations"] = effective_authorization.mode == "project_scoped"
+    message = TeamConversationMessage(
+        id=message_id,
+        conversation_id=conversation.id,
+        sender="operator",
+        message_type="text",
+        body=body,
+        attachment_ids=[attachment.id for attachment in attachments],
+        status="created",
+        metadata=metadata,
+        created_at=now,
+        updated_at=now,
+    )
+    state.conversation_messages[message_id] = message
+    for attachment in attachments:
+        state.chat_attachments[attachment.id] = TeamChatAttachment(
+            **attachment.payload(),
+            message_id=message_id,
+            conversation_id=conversation.id,
+            sender="operator",
+            created_at=now,
+        )
+    _touch_conversation(
+        conversation,
+        now=now,
+        preview=(
+            _chat_preview(body)
+            if body is not None
+            else _attachment_preview(len(attachments))
+        ),
+    )
+    return message
+
+
+def _queue_operator_chat_message_in_state(
+    state: TeamState,
+    *,
+    message_id: str,
+    dispatch_id: str,
+    reason: str | None,
+) -> TeamConversationMessage:
+    message = _require_present(
+        state.conversation_messages,
+        message_id,
+        "conversation message",
+    )
+    conversation = _require_present(
+        state.conversations,
+        message.conversation_id,
+        "conversation",
+    )
+    agent = _require_present(state.agents, conversation.agent_id, "agent")
+    _require_agent_chat_dispatch_eligibility(state, agent)
+    if message.sender != "operator":
+        raise ValueError(f"message {message.id} is not an operator message")
+    now = utc_now()
+    metadata = dict(message.metadata)
+    metadata["queued_at"] = now.isoformat()
+    if reason is not None:
+        metadata["queued_reason"] = reason
+    message.status = "queued"
+    message.dispatch_id = dispatch_id
+    message.error = None
+    message.metadata = metadata
+    message.updated_at = now
+    _touch_conversation(
+        conversation,
+        now=now,
+        preview=f"Queued: {_chat_preview(message.body)}",
+    )
+    return message
+
+
 def reply_only_team_chat_authorization(
     *,
     source: str,
@@ -706,69 +815,69 @@ class TeamChatService:
 
         def _mutate(state: TeamState) -> TeamState:
             nonlocal message_id
-            conversation = _require_present(
-                state.conversations,
-                normalized_conversation_id,
-                "conversation",
-            )
-            agent = _require_present(state.agents, conversation.agent_id, "agent")
-            _require_agent_chat_dispatch_eligibility(state, agent)
-            now = utc_now()
-            message_id = f"chatmsg-{uuid4().hex}"
-            metadata = {
-                key: value
-                for key, value in {
-                    "sender_kind": "human_operator",
-                    "operator_user_id": conversation.operator_user_id,
-                    "operator_display_name": conversation.operator_display_name,
-                    "created_by": normalized_created_by,
-                }.items()
-                if value
-            }
-            effective_authorization = mutation_authorization or reply_only_team_chat_authorization(
-                source="internal",
-                principal_id=conversation.operator_user_id,
-                reason="mutation_authorization_missing",
-            )
-            metadata[TEAM_CHAT_MUTATION_AUTHORIZATION_METADATA_KEY] = (
-                effective_authorization.model_dump(mode="json")
-            )
-            metadata["allow_team_mutations"] = effective_authorization.mode == "project_scoped"
-            state.conversation_messages[message_id] = TeamConversationMessage(
-                id=message_id,
-                conversation_id=conversation.id,
-                sender="operator",
-                message_type="text",
+            message = _record_operator_chat_message_in_state(
+                state,
+                conversation_id=normalized_conversation_id,
                 body=normalized_body,
-                attachment_ids=[attachment.id for attachment in prepared_attachments],
-                status="created",
-                metadata=metadata,
-                created_at=now,
-                updated_at=now,
+                attachments=prepared_attachments,
+                created_by=normalized_created_by,
+                mutation_authorization=mutation_authorization,
             )
-            for attachment in prepared_attachments:
-                state.chat_attachments[attachment.id] = TeamChatAttachment(
-                    **attachment.payload(),
-                    message_id=message_id,
-                    conversation_id=conversation.id,
-                    sender="operator",
-                    created_at=now,
-                )
-            _touch_conversation(
-                conversation,
-                now=now,
-                preview=(
-                    _chat_preview(normalized_body)
-                    if normalized_body is not None
-                    else _attachment_preview(len(prepared_attachments))
-                ),
-            )
+            message_id = message.id
             return state
 
         state = self._repository.update(_mutate, expected_revision=expected_revision)
         if message_id is None:  # pragma: no cover - defensive guard
             raise RuntimeError("conversation message was not created")
         return state, state.conversation_messages[message_id]
+
+    def record_and_queue_operator_chat_message(
+        self,
+        *,
+        conversation_id: str,
+        body: str | None,
+        attachments: Sequence[PreparedChatAttachment] = (),
+        created_by: str | None = None,
+        mutation_authorization: TeamChatMutationAuthorization | None = None,
+        reason: str | None = None,
+        expected_revision: int | None = None,
+    ) -> tuple[TeamState, TeamConversationMessage, str]:
+        """Persist an operator message and its asynchronous dispatch in one update."""
+
+        normalized_conversation_id = _required_text(conversation_id, "conversation_id")
+        normalized_body = _optional_text(body)
+        prepared_attachments = list(attachments)
+        if normalized_body is None and not prepared_attachments:
+            raise ValueError("body or at least one attachment is required")
+        normalized_created_by = _optional_text(created_by)
+        normalized_reason = _optional_text(reason)
+        message_id: str | None = None
+        dispatch_id: str | None = None
+
+        def _mutate(state: TeamState) -> TeamState:
+            nonlocal message_id, dispatch_id
+            message = _record_operator_chat_message_in_state(
+                state,
+                conversation_id=normalized_conversation_id,
+                body=normalized_body,
+                attachments=prepared_attachments,
+                created_by=normalized_created_by,
+                mutation_authorization=mutation_authorization,
+            )
+            message_id = message.id
+            dispatch_id = f"team-chat:{message.id}"
+            _queue_operator_chat_message_in_state(
+                state,
+                message_id=message.id,
+                dispatch_id=dispatch_id,
+                reason=normalized_reason,
+            )
+            return state
+
+        state = self._repository.update(_mutate, expected_revision=expected_revision)
+        if message_id is None or dispatch_id is None:  # pragma: no cover - defensive guard
+            raise RuntimeError("conversation message dispatch was not queued")
+        return state, state.conversation_messages[message_id], dispatch_id
 
     def begin_chat_message_dispatch(
         self,
@@ -879,34 +988,11 @@ class TeamChatService:
 
         def _mutate(state: TeamState) -> TeamState:
             nonlocal resolved_message_id
-            message = _require_present(
-                state.conversation_messages,
-                normalized_message_id,
-                "conversation message",
-            )
-            conversation = _require_present(
-                state.conversations,
-                message.conversation_id,
-                "conversation",
-            )
-            agent = _require_present(state.agents, conversation.agent_id, "agent")
-            _require_agent_chat_dispatch_eligibility(state, agent)
-            if message.sender != "operator":
-                raise ValueError(f"message {message.id} is not an operator message")
-            now = utc_now()
-            metadata = dict(message.metadata)
-            metadata["queued_at"] = now.isoformat()
-            if normalized_reason is not None:
-                metadata["queued_reason"] = normalized_reason
-            message.status = "queued"
-            message.dispatch_id = normalized_dispatch_id
-            message.error = None
-            message.metadata = metadata
-            message.updated_at = now
-            _touch_conversation(
-                conversation,
-                now=now,
-                preview=f"Queued: {_chat_preview(message.body)}",
+            message = _queue_operator_chat_message_in_state(
+                state,
+                message_id=normalized_message_id,
+                dispatch_id=normalized_dispatch_id,
+                reason=normalized_reason,
             )
             resolved_message_id = message.id
             return state

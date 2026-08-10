@@ -40,6 +40,10 @@ class EffectExecutionRepository(Protocol):
 
     def list_waiting_records(self, node_type: str | None = None) -> list[Any]: ...
 
+    def list_records_by_node_type_and_statuses(
+        self, *, node_type: str, statuses: set[str]
+    ) -> list[Any]: ...
+
     def list_completion_pending_records(self) -> list[Any]: ...
 
     def put(self, record: Any) -> None: ...
@@ -340,6 +344,26 @@ class JsonExecutionRepository(Generic[TRecord]):
     def list_executions(self) -> list[TRecord]:
         return list(self.read_all().values())
 
+    def list_records_by_node_type_and_statuses(
+        self, *, node_type: str, statuses: set[str]
+    ) -> list[TRecord]:
+        normalized_type = str(node_type or "").strip()
+        normalized_statuses = {
+            str(status or "").strip() for status in statuses if str(status or "").strip()
+        }
+        if not normalized_type or not normalized_statuses:
+            return []
+        return [
+            record
+            for record in self.read_all().values()
+            if str(getattr(record, "status", "") or "").strip() in normalized_statuses
+            and normalized_type
+            in {
+                str(getattr(record, "effect_type", "") or "").strip(),
+                str(getattr(record, "gate_type", "") or "").strip(),
+            }
+        ]
+
     def list_waiting_records(self, node_type: str | None = None) -> list[TRecord]:
         normalized_type = str(node_type or "").strip()
         records = []
@@ -441,6 +465,29 @@ class SqliteExecutionRepository(Generic[TRecord]):
 
     def list_executions(self) -> list[TRecord]:
         return list(self.read_all().values())
+
+    def list_records_by_node_type_and_statuses(
+        self, *, node_type: str, statuses: set[str]
+    ) -> list[TRecord]:
+        normalized_type = str(node_type or "").strip()
+        normalized_statuses = sorted(
+            {str(status or "").strip() for status in statuses if str(status or "").strip()}
+        )
+        if not normalized_type or not normalized_statuses:
+            return []
+        placeholders = ", ".join("?" for _ in normalized_statuses)
+        with self._lock, connect_orchestration_db(self.path) as connection:
+            rows = connection.execute(
+                f"""
+                SELECT payload_json
+                FROM {self.table_name}
+                WHERE {self.node_type_field} = ?
+                  AND status IN ({placeholders})
+                ORDER BY COALESCE(finished_at, started_at) ASC, execution_id ASC
+                """,
+                [normalized_type, *normalized_statuses],
+            ).fetchall()
+        return [self._record_from_row(row) for row in rows]
 
     def list_waiting_records(self, node_type: str | None = None) -> list[TRecord]:
         params: list[Any] = []

@@ -250,6 +250,18 @@ def test_project_git_editor_exposes_distinct_agent_commit_identities() -> None:
     )
 
 
+def test_project_editor_exposes_revision_safe_lead_handoff() -> None:
+    source = (ROOT / "src" / "evander_team_addon" / "ui_static" / "team-ui.js").read_text(
+        encoding="utf-8"
+    )
+
+    assert 'selectField("Project lead", "lead_agent_id", "project-lead-agents"' in source
+    assert "data-transfer-project-lead" in source
+    assert "async function transferProjectLead(form)" in source
+    assert "`/projects/${encodeURIComponent(projectId)}/lead`" in source
+    assert '[/^\\/projects\\/([^/]+)\\/lead$/, "projects"]' in source
+
+
 def test_task_board_dependency_wait_labels_handle_mixed_and_resolved_tasks() -> None:
     source = (ROOT / "src" / "evander_team_addon" / "ui_static" / "team-ui.js").read_text(
         encoding="utf-8"
@@ -587,9 +599,13 @@ def test_agent_editor_round_trips_idle_context_grace_minutes() -> None:
 
     assert "contextClearingIdleGraceMinutesForEdit" in editor_source
     assert 'numberField("Idle grace minutes"' in editor_source
+    assert 'data-agent-context-idle-grace${contextPolicy === "idle" ? "" : " hidden"}' in editor_source
     assert "max: 10080" in editor_source
     assert "context_clearing_idle_grace_seconds" in payload_source
     assert "context_clearing_idle_grace_minutes" in payload_source
     assert "* 60" in payload_source
+    assert 'if (contextClearingPolicy === "idle")' in payload_source
     assert 'select[name="context_clearing_policy"]' in binding_source
-    assert 'graceInput.value = "60"' in binding_source
+    assert "syncAgentEditContextIdleGraceField" in binding_source
+    assert 'graceInput.value = "60"' in source
+    assert "idleGraceField.hidden = !isIdle;" in source

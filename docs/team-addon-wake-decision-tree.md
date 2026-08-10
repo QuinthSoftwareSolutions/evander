@@ -419,7 +419,7 @@ flowchart LR
     end
 
     subgraph Cost["Cost signals"]
-        warning["Member Team estimated cost<br/>at warning ratio"]
+        warning["Member Team estimated cost<br/>at its warning ratio"]
         reached["Member Team estimated cost<br/>at or over max_cost_usd"]
     end
 

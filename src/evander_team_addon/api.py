@@ -432,6 +432,7 @@ def _team_costs_payload(
     *,
     backfill_transcripts: bool,
 ) -> dict[str, Any]:
+    TeamAdminService(repository).advance_team_cost_budget_windows()
     state = repository.read()
     service = TeamCostService(
         runtime_dir=context.runtime_dir,
@@ -744,6 +745,14 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
                     _optional_bool(payload, "escalate_to_governance") or False
                 ),
                 max_cost_usd=payload.get("max_cost_usd") if "max_cost_usd" in payload else None,
+                cost_warning_ratio=(
+                    payload.get("cost_warning_ratio") if "cost_warning_ratio" in payload else None
+                ),
+                cost_budget_renewal_mode=(
+                    payload.get("cost_budget_renewal_mode")
+                    if "cost_budget_renewal_mode" in payload
+                    else None
+                ),
                 expected_revision=expected_revision,
             ),
             create_collection="teams",
@@ -773,6 +782,16 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
                 escalate_to_governance=_optional_bool(payload, "escalate_to_governance"),
                 max_cost_usd=payload.get("max_cost_usd") if "max_cost_usd" in payload else None,
                 set_max_cost_usd="max_cost_usd" in payload,
+                cost_warning_ratio=(
+                    payload.get("cost_warning_ratio") if "cost_warning_ratio" in payload else None
+                ),
+                set_cost_warning_ratio="cost_warning_ratio" in payload,
+                cost_budget_renewal_mode=(
+                    payload.get("cost_budget_renewal_mode")
+                    if "cost_budget_renewal_mode" in payload
+                    else None
+                ),
+                set_cost_budget_renewal_mode="cost_budget_renewal_mode" in payload,
                 archived=raw_archived if isinstance(raw_archived, bool) else None,
                 expected_revision=expected_revision,
             ),
@@ -780,6 +799,16 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
             target_id=team_id,
         )
         return _state_response(request, state, rebased_from_revision=rebased_from_revision)
+
+    async def reset_team_cost_budget(request: Request) -> JSONResponse:
+        payload = await _read_payload(request)
+        state = admin_service.reset_team_cost_budget(
+            team_id=request.path_params["team_id"],
+            reason=_required(payload, "reason"),
+            operator_actor_id=_operator_actor_from_request(context.auth, request),
+            expected_revision=_expected_revision(payload),
+        )
+        return _state_response(request, state)
 
     async def create_governance_group(request: Request) -> JSONResponse:
         payload = await _read_payload(request)
@@ -961,6 +990,21 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
                 set_release_policy=(has_release_policy or re_resolve_existing_release_policy),
                 goals=goals,
                 status=ProjectStatus(raw_status) if raw_status else None,
+                expected_revision=expected_revision,
+            ),
+            target_collection="projects",
+            target_id=project_id,
+        )
+        return _state_response(request, state, rebased_from_revision=rebased_from_revision)
+
+    async def transfer_project_lead(request: Request) -> JSONResponse:
+        payload = await _read_payload(request)
+        project_id = request.path_params["project_id"]
+        state, rebased_from_revision = _run_ui_rebasable_mutation(
+            payload,
+            lambda expected_revision: admin_service.transfer_project_lead(
+                project_id=project_id,
+                lead_agent_id=_required(payload, "lead_agent_id"),
                 expected_revision=expected_revision,
             ),
             target_collection="projects",
@@ -1488,28 +1532,23 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
         else:
             payload = await _read_payload(request)
             body = _optional(payload, "body")
-        # Chat messages are append-only. The service validates the current
-        # conversation and agent state, so a stale global revision must not block a send.
+        # Chat messages are append-only. Persist the message and its queued dispatch in one
+        # update, so a send does not need two full Team-state transactions. The service validates
+        # the current conversation and agent state, so a stale global revision must not block it.
         try:
-            state, message = chat_service.record_operator_chat_message(
+            state, message, dispatch_id = chat_service.record_and_queue_operator_chat_message(
                 conversation_id=conversation_id,
                 body=body,
                 attachments=prepared_attachments,
                 created_by=identity["actor"],
                 mutation_authorization=mutation_authorization,
+                reason="queued by Team chat API for asynchronous dispatch",
             )
         except Exception:
             chat_attachment_storage.delete_prepared(
                 attachment.id for attachment in prepared_attachments
             )
             raise
-        conversation = state.conversations[conversation_id]
-        dispatch_id = f"team-chat:{message.id}"
-        state, message = chat_service.queue_chat_message_dispatch(
-            message_id=message.id,
-            dispatch_id=dispatch_id,
-            reason="queued by Team chat API for asynchronous dispatch",
-        )
         dispatch_payload: dict[str, Any] = {
             "success": False,
             "queued": True,
@@ -3731,6 +3770,7 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
         route("/costs/backfill", backfill_costs, methods=["POST"]),
         route("/teams", create_team, methods=["POST"]),
         route("/teams/{team_id}", patch_team, methods=["PATCH"]),
+        route("/teams/{team_id}/cost-budget/reset", reset_team_cost_budget, methods=["POST"]),
         route("/governance-groups", create_governance_group, methods=["POST"]),
         route(
             "/governance-groups/{governance_group_id}",
@@ -3749,6 +3789,7 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
         ),
         route("/projects", create_project, methods=["POST"]),
         route("/projects/git/import", import_project_git_repo, methods=["POST"]),
+        route("/projects/{project_id}/lead", transfer_project_lead, methods=["POST"]),
         route("/projects/{project_id}", patch_project, methods=["PATCH"]),
         route("/roles", create_role, methods=["POST"]),
         route("/roles", list_roles, methods=["GET"]),

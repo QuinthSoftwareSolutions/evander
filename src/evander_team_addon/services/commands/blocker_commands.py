@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from datetime import timedelta
+from datetime import datetime, timedelta
 from typing import Any
 
 from evander.models import utc_now
@@ -31,6 +31,7 @@ from ..domain.blockers import (
     transfer_blocker_up,
 )
 from ..domain.common import _ensure_utc, _optional_text, _required_text
+from ..domain.common import DEFAULT_AGENT_WAKE_REQUEST_DEBOUNCE_SECONDS
 from ..domain.preparation_failures import (
     create_rejected_candidate_correction_preparation_recovery_inbox,
 )
@@ -39,6 +40,8 @@ from ..domain.dependency_composition_recovery import (
 )
 from ...models import DependencyCompositionRecoveryState
 from ..domain.stand_down import _active_stand_downs_for_agent
+from ..domain.wake import _append_agent_wake_requested_event
+from ..domain.work_due import _mark_agent_work_due
 from .executor import TeamCommandExecutor
 from .types import (
     TeamCommandApplyResult,
@@ -672,9 +675,10 @@ class TeamBlockerCommandService(TeamCommandExecutor):
                         if event_id not in before_event_ids
                     )
                 else:
-                    _prepare_blocker_source_for_resolution(
+                    restored_task_owner_id = _prepare_blocker_source_for_resolution(
                         state,
                         blocker=blocker,
+                        now=now,
                     )
                     event = resolve_blocker(
                         state,
@@ -686,6 +690,20 @@ class TeamBlockerCommandService(TeamCommandExecutor):
                         now=now,
                     )
                     event_ids.append(event.id)
+                    if restored_task_owner_id is not None:
+                        _mark_agent_work_due(
+                            state,
+                            agent_id=restored_task_owner_id,
+                            now=now,
+                        )
+                        _append_agent_wake_requested_event(
+                            state,
+                            agent_id=restored_task_owner_id,
+                            result=result,
+                            reason="task_ready",
+                            now=now,
+                            delay_seconds=DEFAULT_AGENT_WAKE_REQUEST_DEBOUNCE_SECONDS,
+                        )
                     create_rejected_candidate_correction_preparation_recovery_inbox(
                         state,
                         blocker=blocker,
@@ -746,7 +764,8 @@ def _prepare_blocker_source_for_resolution(
     state: TeamState,
     *,
     blocker: TeamBlocker,
-) -> None:
+    now: datetime | None = None,
+) -> str | None:
     """Restore the source lifecycle instead of blindly resolving its blocker."""
 
     active_dependency_recoveries = [
@@ -798,14 +817,15 @@ def _prepare_blocker_source_for_resolution(
         task = state.tasks.get(blocker.source_id)
         if task is not None and task.state == TeamTaskState.BLOCKED:
             task.state = TeamTaskState.IN_PROGRESS
-            task.state_entered_at = utc_now()
+            task.state_entered_at = now or utc_now()
             task.updated_at = task.state_entered_at
-        return
+            return task.owner_agent_id
+        return None
     if blocker.source_kind == TeamBlockerSourceKind.DELIVERABLE:
         deliverable = state.deliverables.get(blocker.source_id)
         if deliverable is not None and deliverable.state == TeamRecordState.BLOCKED:
             deliverable.state = TeamRecordState.PENDING
-        return
+        return None
     if blocker.source_kind == TeamBlockerSourceKind.REVIEW_REQUEST:
         review = state.review_requests.get(blocker.source_id)
         if (
@@ -847,7 +867,7 @@ def _prepare_blocker_source_for_resolution(
             )
         if review is not None and review.state == TeamRecordState.BLOCKED:
             review.state = TeamRecordState.PENDING
-        return
+        return None
     if blocker.source_kind == TeamBlockerSourceKind.RELEASE_PACKAGE:
         raise TeamCommandValidationError(
             code="release_recovery_command_required",

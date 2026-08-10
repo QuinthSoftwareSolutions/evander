@@ -263,6 +263,24 @@ class TeamsMeetingStore:
             events = [event for event in events if event.sequence > since_sequence]
         return events[:limit]
 
+    def max_event_sequence(self, meeting_id: str) -> int:
+        """Return the latest durable event sequence for one meeting."""
+        normalized = str(meeting_id or "").strip()
+        if not normalized:
+            raise ValueError("meeting_id is required")
+        with self._lock:
+            raw_events = list(_ensure_list(self._read_raw(), "events", normalized))
+        return max(
+            (
+                int(raw_event["sequence"])
+                for raw_event in raw_events
+                if isinstance(raw_event, dict)
+                and isinstance(raw_event.get("sequence"), int)
+                and int(raw_event["sequence"]) >= 0
+            ),
+            default=0,
+        )
+
     def _require_binding(self, payload: dict[str, Any], meeting_id: str) -> TeamsMeetingBinding:
         raw = _ensure_mapping(payload, "bindings").get(meeting_id)
         if not isinstance(raw, dict):

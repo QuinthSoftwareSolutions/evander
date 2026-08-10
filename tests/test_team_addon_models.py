@@ -502,6 +502,27 @@ def test_team_state_accepts_legacy_agents_without_display_name() -> None:
     assert validated.agents["lead"].display_name is None
 
 
+def test_team_cost_warning_ratio_defaults_and_is_bounded() -> None:
+    team = Team(id="team", name="Team", manager_agent_id="manager")
+
+    assert str(team.cost_warning_ratio) == "0.8"
+    assert Team(
+        id="team",
+        name="Team",
+        manager_agent_id="manager",
+        cost_warning_ratio="0.65",
+    ).model_dump(mode="json")["cost_warning_ratio"] == 0.65
+
+    for invalid_ratio in (None, "0", "1.01", "not-a-ratio"):
+        with pytest.raises(ValidationError, match="cost_warning_ratio"):
+            Team(
+                id="team",
+                name="Team",
+                manager_agent_id="manager",
+                cost_warning_ratio=invalid_ratio,
+            )
+
+
 def test_team_state_rejects_missing_manager() -> None:
     with pytest.raises(ValidationError, match="missing manager"):
         TeamState(

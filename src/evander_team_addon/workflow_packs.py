@@ -335,7 +335,6 @@ _TEAM_RUNTIME_V1_LEGACY: dict[str, Any] = {
                 "limit": 10,
                 "lease_seconds": 900,
                 "wake_interval_seconds": 3600,
-                "cost_warning_ratio": 0.8,
                 "resume_mode": "same_context",
             },
             {
@@ -348,7 +347,6 @@ _TEAM_RUNTIME_V1_LEGACY: dict[str, Any] = {
                 "limit": 1,
                 "lease_seconds": 900,
                 "wake_interval_seconds": 3600,
-                "cost_warning_ratio": 0.8,
                 "resume_mode": "same_context",
             },
             {

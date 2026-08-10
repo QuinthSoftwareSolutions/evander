@@ -1,5 +1,70 @@
 # Changelog
 
+## 2026-08-10 - Team Agent Context Editor
+
+- Show Idle grace minutes only when an agent uses idle context clearing, update it immediately
+  when the policy changes, and leave the stored grace unchanged for other policies.
+
+## 2026-08-10 - Team Project-Lead Handoff
+
+- Added a revision-safe Team admin handoff for an existing project's lead overlay, preserving the
+  former lead as a project member so their later retirement can be validated without orphaning the
+  project's lead or assignment records.
+- Exposed that handoff through a revision-aware Admin API endpoint and a dedicated project editor
+  action, so operators can transfer lead authority without combining it with unrelated edits.
+
+## 2026-08-10 - Team Chat Dispatch Latency
+
+- Made Team prompt-completion reconciliation query only terminal prompt effects and reuse that
+  result within a cycle, rather than deserializing the full effect-execution history before chat
+  dispatches can be leased.
+
+## 2026-08-10 - Team Blocker Recovery Wake
+
+- Restored a task owner's immediate durable wake whenever a task-backed blocker is resolved,
+  including manager and operator resolution paths, so recovery does not wait for the periodic
+  Team scheduler tick.
+
+## 2026-08-10 - Team Chat Send Latency
+
+- Persisted a direct operator chat message and its queued asynchronous dispatch in one Team-state
+  transaction, avoiding a second complete state read, validation, and write before returning the
+  chat API response.
+
+## 2026-08-10 - Team Cost Budget Window Corrections
+
+- Kept an active manual cost window intact when an operator changes it to UTC-monthly renewal;
+  the first automatic renewal now occurs only at a later UTC month boundary.
+- Treated a zero-valued active budget window as authoritative for governance warnings, preventing
+  lifetime spend from producing a stale warning after a reset or renewal.
+- Roll overdue UTC-monthly windows forward before cost reads and inside budget mutations, so
+  reporting and cap status reflect the current month even when no Team wake has run.
+
+## 2026-08-10 - Graph Email Trigger Reliability
+
+- Used Microsoft Graph's supported message-delta date filter for fallback polling and kept the
+  unread check client-side, allowing unread email workflow triggers to poll successfully.
+- Baseline newly registered communication, email, Discord, Teams, and Teams-transcript triggers in
+  the shared trigger-orchestrator config writer, including trigger type changes, so every supported
+  configuration path avoids replaying message history.
+- Filter Teams meeting transcripts by the saved registration time as well as the host sequence, so
+  a pre-registration bridge transcript that reaches the ingest store late is not replayed.
+
+## 2026-08-10 - Resettable Team Cost Budgets
+
+- Changed Team cost-cap enforcement from a lifetime-only guard to audited budget windows. Teams
+  can start a new window with a required operator reason or opt into no-carryover UTC-monthly
+  renewal, while lifetime spend remains visible for reporting.
+- Preserved existing caps as lifetime-based until their first explicit reset, avoiding an upgrade
+  that would silently authorize additional Team wakes.
+
+## 2026-08-10 - Per-Team Governance Cost Warnings
+
+- Moved governance cost-warning policy out of the generated Team Runtime pack and into each
+  Team's durable configuration. Teams default to an 80% warning ratio, may set an individual
+  ratio greater than zero and no more than one, and retain that policy across runtime-pack
+  refreshes.
+
 ## 2026-08-10 - Local Inference Launch Accounting
 
 - Retained local-inference capacity after a successful VM launch that has not yet emitted its
