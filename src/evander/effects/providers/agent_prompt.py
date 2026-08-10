@@ -409,8 +409,12 @@ class AgentPromptEffectProvider(EffectProviderBase):
             }
         thread_id = self._normalize_optional_string(getattr(result, "thread_id", None))
         if not thread_id:
-            if runtime_dir is not None:
-                local_inference_capacity_store(runtime_dir).release(capacity_admission.slot_id)
+            if runtime_dir is not None and capacity_admission.slot_id is not None:
+                local_inference_capacity_store(runtime_dir).mark_running(
+                    capacity_admission.slot_id,
+                    target_name=vm_name,
+                    execution_id=vm_name,
+                )
             message = (
                 "effect:agent:prompt did not receive a thread_id from resume_agent "
                 "(success=True, message=<empty-or-missing-thread-id>)"

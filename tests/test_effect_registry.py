@@ -2514,6 +2514,91 @@ def test_agent_enqueue_prompt_tracks_same_context_dispatch_without_new_thread_id
     assert admin_service.resume_calls[0]["resume_mode"] == "same_context"
 
 
+@pytest.mark.parametrize(
+    "effect",
+    [
+        pytest.param(
+            AgentPromptEffectDefinition(
+                id="effect-prompt",
+                display_name="Prompt",
+                type="effect:agent:prompt",
+                prompt="continue",
+                session_id="session-42",
+            ),
+            id="prompt",
+        ),
+        pytest.param(
+            AgentEnqueuePromptEffectDefinition(
+                id="effect-prompt",
+                display_name="Prompt",
+                type="effect:agent:enqueue-prompt",
+                prompt="continue",
+                session_id="session-42",
+                resume_mode="new_context",
+            ),
+            id="enqueue-prompt",
+        ),
+    ],
+)
+def test_threadless_successful_launch_retains_local_capacity(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    effect: AgentPromptEffectDefinition | AgentEnqueuePromptEffectDefinition,
+) -> None:
+    config = GatewayConfig(
+        runtime_dir=tmp_path,
+        model_provider_mode="local_openai",
+        local_openai_api_base_url="http://127.0.0.1:11435/v1",
+        local_openai_max_concurrency=1,
+    )
+    admin_service = _AdminServiceStub(
+        create_vm_calls=[],
+        clone_repo_into_vm_calls=[],
+        bootstrap_python_in_vm_calls=[],
+        bootstrap_frontend_in_vm_calls=[],
+        resume_calls=[],
+    )
+    admin_service.list_vms = lambda include_inactive=True, vm_user="agent": []  # type: ignore[attr-defined]
+
+    def resume_without_thread(**kwargs: object) -> VmActionResult:
+        admin_service.resume_calls.append(dict(kwargs))
+        return VmActionResult(
+            success=True,
+            vm_name="vm-42",
+            action="resume_issue_agent",
+            message="agent started before thread id was observed",
+            thread_id=None,
+        )
+
+    monkeypatch.setattr(admin_service, "resume_agent", resume_without_thread)
+    provider = EffectProviderFactory(
+        provider_config_resolver=_ContainerResolverStub(config),
+        admin_service=admin_service,
+    ).build(effect)
+
+    with pytest.raises(EffectProviderExecutionError):
+        provider.execute()
+
+    capacity_store = LocalInferenceCapacityStore(tmp_path)
+    [lease] = capacity_store.read_all().values()
+    assert lease.status == "running"
+    assert lease.target_name == "vm-42"
+    assert lease.execution_id == "vm-42"
+    denied = capacity_store.claim(
+        max_concurrency=1,
+        owner_id="next-run",
+        model="next-local-model",
+    )
+    assert denied.admitted is False
+    assert (
+        capacity_store.reconcile_running(
+            lambda _lease: False,
+            minimum_age_seconds=0,
+        )
+        == 1
+    )
+
+
 def test_agent_enqueue_prompt_provider_scopes_libvirt_prompt_lock_to_vm(
     tmp_path: Path,
 ) -> None:

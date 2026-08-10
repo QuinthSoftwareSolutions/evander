@@ -465,7 +465,11 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
         thread_id = self._normalize_optional_string(getattr(result, "thread_id", None))
         effective_resume_mode = resume_mode or "new_context"
         if not thread_id and effective_resume_mode != "same_context":
-            self._release_local_inference_capacity(capacity_admission)
+            self._mark_local_inference_running(
+                capacity_admission,
+                target_name=vm_name,
+                execution_id=vm_name,
+            )
             self._release_enqueue_prompt(prompt_lock_claim)
             message = "effect:agent:enqueue-prompt did not receive a thread_id from resume_agent"
             raise EffectProviderExecutionError(

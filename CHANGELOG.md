@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-08-10 - Local Inference Launch Accounting
+
+- Retained local-inference capacity after a successful VM launch that has not yet emitted its
+  thread identifier, allowing backend termination reconciliation to release the slot instead of
+  admitting overlapping work while the original agent still runs.
+
 ## 2026-08-09 - Queue-Aware Dispatch Correctness
 
 - Preserved same-context behavior through CLI, immediate libvirt tracking, and queued replay,
