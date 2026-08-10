@@ -1878,6 +1878,8 @@ def test_repository_coalesces_external_chat_messages_with_one_return_path(
         if event["event_type"] == "team.chat.external_reply_requested"
     )
     assert event["payload"]["operator_message_ids"] == claims[0]["message_ids"]
+    assert event["payload"]["agent_id"] == "backend"
+    assert event["payload"]["sender_session_id"] == "session-backend"
 
 
 def test_external_chat_reply_creates_delivery_event_and_records_failure(

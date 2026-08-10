@@ -24,6 +24,7 @@ from evander.email.providers import JsonEmailProvider, MultiMailboxEmailProvider
 from evander.policy import PolicyEngine
 from evander.policy_config import PolicyConfigResolver
 from evander.provider_config import ProviderConfigResolver
+from evander.messaging.targets import CommunicationTargetCapability
 from evander.host_config import HostConfig
 from evander.retell_phone import RetellPhoneCallService, RetellPhoneCallStore
 from evander.reviews.request_service import (
@@ -555,6 +556,7 @@ def _build_discord_service(
     policy_config: PolicyConfigResolver,
     *,
     session_id: str | None = None,
+    capability: CommunicationTargetCapability = "read",
 ) -> DiscordService:
     if config.discord_backend == "stub":
         return StubDiscordService(
@@ -587,6 +589,7 @@ def _build_discord_service(
                 config,
                 policy_config=policy_config,
                 session_id=session_id,
+                capability=capability,
             ),
             operator_user_ids_provider=(
                 policy_config.operator_user_ids_for_active_sessions
@@ -792,16 +795,20 @@ def _resolve_allowed_discord_channel_ids(
     *,
     policy_config: PolicyConfigResolver | None = None,
     session_id: str | None = None,
+    capability: CommunicationTargetCapability = "read",
 ) -> list[str]:
     session_store = as_session_manifest_repository(session_store)
     if session_id is not None:
         if policy_config is not None:
-            return policy_config.allowed_discord_channel_ids_for_session_id(session_id)
+            return policy_config.allowed_discord_channel_ids_for_session_id(
+                session_id,
+                capability=capability,
+            )
         session = session_store.get_session(session_id)
         if session is None:
             raise ValueError(f"unknown session: {session_id}")
         channel_ids = set(config.discord_operator_channel_allowlist)
-        if ToolName.DISCORD_GET_COMMANDS in session.allowed_tools:
+        if capability != "read" or ToolName.DISCORD_GET_COMMANDS in session.allowed_tools:
             channel_ids.update(session.discord_channel_allowlist)
         return sorted(channel_id.strip() for channel_id in channel_ids if channel_id.strip())
 

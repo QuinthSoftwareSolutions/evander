@@ -45,7 +45,11 @@ import {
   resolveConfiguredEmailMailboxEntries,
 } from "./EmailMailboxConfiguration";
 import { ConfigurationNavigator } from "./ConfigurationNavigator";
-import type { ConfigurationDraftFieldState } from "./configurationDraftState";
+import {
+  communicationTargetSenderIdentityFromValue,
+  type CommunicationTargetSenderIdentity,
+  type ConfigurationDraftFieldState,
+} from "./configurationDraftState";
 import {
   configurationDestinationsForTab,
   configurationFieldDomId,
@@ -204,7 +208,7 @@ type CommunicationTargetDraftEntry = {
   address: string;
   capabilities: string[];
   authProfileRef: string;
-  senderIdentity: "platform" | "resolved";
+  senderIdentity: CommunicationTargetSenderIdentity;
 };
 
 type CommunicationTargetDraftParseResult = {
@@ -513,7 +517,7 @@ function communicationTargetEntriesFromConfig(value: unknown): CommunicationTarg
       address: String(target.address ?? ""),
       capabilities: draftCapabilities.length ? draftCapabilities : policyCapabilities,
       authProfileRef: String(target.authProfileRef ?? policy.auth_profile_ref ?? ""),
-      senderIdentity: policy.sender_identity === "resolved" ? "resolved" : "platform",
+      senderIdentity: communicationTargetSenderIdentityFromValue(target),
     };
   });
 }
@@ -595,7 +599,7 @@ function communicationTargetDraftEntriesToConfig(entries: CommunicationTargetDra
     const policy: {
       capabilities: string[];
       auth_profile_ref?: string;
-      sender_identity?: "platform" | "resolved";
+      sender_identity?: CommunicationTargetSenderIdentity;
     } = { capabilities };
     const authProfileRef = entry.authProfileRef.trim();
     if (provider === "email" && authProfileRef) {

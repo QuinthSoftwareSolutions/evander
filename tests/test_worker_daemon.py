@@ -744,6 +744,16 @@ def test_worker_prepares_and_reuses_task_scoped_worktree(tmp_path: Path) -> None
     assert reused.created is False
     assert created.commit_sha == clone.commit_sha
     assert reused.target_dir == "/home/agent/worktrees/repo/task-a-1234"
+    assert (
+        subprocess.run(
+            ["git", "rev-parse", "refs/heads/agents/session-1/tasks/task-a-1234"],
+            cwd=source,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+        == clone.commit_sha
+    )
 
 
 def test_worker_composes_exact_dependency_git_source_before_task_work(
@@ -815,6 +825,16 @@ def test_worker_composes_exact_dependency_git_source_before_task_work(
 
     assert prepared.created is True
     assert prepared.base_commit_sha == prepared.commit_sha
+    assert (
+        subprocess.run(
+            ["git", "rev-parse", "refs/heads/agents/session-1/tasks/task-ui-1234"],
+            cwd=source,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+        == prepared.commit_sha
+    )
     assert (target / "domain.txt").read_text(encoding="utf-8") == "accepted dependency\n"
     assert (
         subprocess.run(

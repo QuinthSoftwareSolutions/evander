@@ -3393,6 +3393,14 @@ def test_team_chat_prompt_deduplicates_current_body_and_caps_history() -> None:
     assert prompt.count(current_body) == 1
     assert historical_body not in prompt
     assert ("h" * 1199) + "…" in prompt
+    assert "Resolve `replyToolName` from ALL_TOOLS" in prompt
+    assert "`tools[replyToolName](...)`" in prompt
+    assert '`conversation_id="conversation"`' in prompt
+    assert '`message_ids=["message-current"]`' in prompt
+    assert "Do not use dotted access" in prompt
+    assert "Mandatory hydration retry" in prompt
+    assert "repeat the lookup, and make the tool call" in prompt
+    assert "only a successful tool result completes this chat reply" in prompt
 
 
 def test_wake_due_agents_provider_retries_queued_chat_attachment_from_relative_runtime(
@@ -7415,6 +7423,8 @@ def test_libvirt_dependency_git_composition_command_is_valid_shell() -> None:
     assert syntax.returncode == 0, syntax.stderr
     assert "export GIT_AUTHOR_NAME='Jonathan Quinth'" in command
     assert "export GIT_AUTHOR_EMAIL=operator@example.invalid" in command
+    assert 'ls-remote --exit-code --heads origin "refs/heads/$branch"' in command
+    assert 'push origin "HEAD:refs/heads/$branch"' in command
     assert "export GIT_COMMITTER_NAME='Evander Team Dependency Composer'" in command
     assert "export GIT_COMMITTER_EMAIL=team-dependencies@evander.invalid" in command
     assert command.index("dependency_branch_0") < command.index("dependency_branch_1")
@@ -11216,6 +11226,9 @@ def test_team_runtime_pack_routes_operator_escalation_to_communication() -> None
         "team-record-external-chat-delivery",
     ) in edges
     assert effects["team-send-external-chat-reply"]["type"] == ("effect:communication:send-message")
+    assert effects["team-send-external-chat-reply"]["sender_session_id"] == (
+        "${{team-external-chat-reply-requested.payload.sender_session_id ?? null}}"
+    )
     assert effects["team-record-external-chat-delivery"]["type"] == (
         "effect:team:record-external-chat-delivery"
     )

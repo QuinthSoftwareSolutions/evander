@@ -295,6 +295,9 @@ _TEAM_RUNTIME_V1_LEGACY: dict[str, Any] = {
                 "thread_id": (
                     "${{team-external-chat-reply-requested.payload.source_thread_id ?? null}}"
                 ),
+                "sender_session_id": (
+                    "${{team-external-chat-reply-requested.payload.sender_session_id ?? null}}"
+                ),
             },
             {
                 "id": "team-record-external-chat-delivery",

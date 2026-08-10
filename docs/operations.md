@@ -1637,6 +1637,10 @@ Audit/result behavior:
   `policy.sender_identity = "resolved"`; the default is `"platform"`. Raw channel-ID sends retain
   the bot identity. Identity providers are add-on extensions: Team Add-on resolves the persistent
   agent attached to the sending session and returns that agent's display name and avatar.
+- Workflow `effect:communication:send-message` nodes may bind `sender_session_id` when the selected
+  target should resolve an agent identity. The Team Runtime external-chat reply graph binds the
+  replying agent's session automatically; older or generic workflow sends without that field keep
+  the platform identity fallback.
 - Resolved identities use host-created incoming webhooks scoped to the destination channel and
   avatar digest. The avatar is installed as Discord-hosted webhook image data and the display name
   is overridden per message, so no public Evander avatar URL, Discord persona registration, or

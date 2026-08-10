@@ -319,7 +319,7 @@ Type-specific keys:
 | `trigger:remote-issue-comment-created` | `provider` | Same filters as `trigger:remote-issue-matching`, plus `comment_contains`, `comment_contains_any`, `comment_author_exclude_names`, `comment_author_exclude_ids`, `comment_case_sensitive`, `include_existing` |
 | `trigger:script-run-request` | — | — |
 | `trigger:discord:new-message` | `discord_bot_token_env` | `channel_ids`, `user_ids` |
-| `trigger:communication:new-message` | `communication_target_ids` | `directory_path`, `author_ids`, `content_contains`, `case_sensitive` |
+| `trigger:communication:new-message` | `communication_target_ids` | `directory_path`, `author_ids`, `content_contains`, `content_starts_with`, `case_sensitive` |
 | `trigger:teams:new-message` | `targets` | `user_ids` |
 | `trigger:teams:direct-message` | `sender_user_ids` | `message_filter` |
 | `trigger:email:new-message` | `mailbox_ids` | `folder` |
@@ -490,7 +490,8 @@ name at least one target from the selected `directory_path` (default `root`); om
 not subscribe to all targets. Version 1 accepts only Teams channel/chat and Discord channel targets
 with the `read` capability, rejects Teams `user:` targets, and intentionally excludes email. The
 optional `author_ids` list filters by provider-native author/user ID, `content_contains` applies a
-substring filter to message content, and `case_sensitive` defaults to `false`. Host-side Teams and
+substring filter, `content_starts_with` applies a prefix filter, and `case_sensitive` defaults to
+`false`. When both content filters are configured, both must match. Host-side Teams and
 Discord ingest workers observe the declared targets and feed the inbox stores that the trigger
 reads. The trigger emits `provider`,
 `communication_target_id`, `message_id`, `thread_id`, `content`, `author_id`, `author_name`,

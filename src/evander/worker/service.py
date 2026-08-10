@@ -1313,14 +1313,48 @@ class WorkerDaemon:
         helper_target = target_dir / ".evander"
         if helper_source.is_dir() and not helper_target.exists():
             shutil.copytree(helper_source, helper_target)
+        commit_sha = self._git_commit_sha(target_dir, paths.agent_home)
+        if base_commit_sha is not None and commit_sha.casefold() == base_commit_sha.casefold():
+            self._publish_initial_task_branch(
+                target_dir=target_dir,
+                branch=request.branch,
+                env=env,
+            )
         return WorkerTaskWorktreeRecord(
             session_id=paths.session_id,
             repo_name=request.repo_name,
             target_dir=(f"/home/agent/worktrees/{request.repo_name}/{request.worktree_name}"),
             branch=request.branch,
-            commit_sha=self._git_commit_sha(target_dir, paths.agent_home),
+            commit_sha=commit_sha,
             base_commit_sha=base_commit_sha,
             created=created,
+        )
+
+    @staticmethod
+    def _publish_initial_task_branch(
+        *,
+        target_dir: Path,
+        branch: str,
+        env: dict[str, str],
+    ) -> None:
+        remote_ref = f"refs/heads/{branch}"
+        remote = subprocess.run(
+            ["git", "ls-remote", "--heads", "origin", remote_ref],
+            cwd=target_dir,
+            env=env,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        if remote.stdout.strip():
+            return
+        subprocess.run(
+            ["git", "push", "origin", f"HEAD:{remote_ref}"],
+            cwd=target_dir,
+            env=env,
+            check=True,
+            capture_output=True,
+            text=True,
         )
 
     @staticmethod

@@ -307,7 +307,7 @@ from .services.worktree_cleanup_service import (
 
 logger = logging.getLogger(__name__)
 
-TEAM_AGENT_GUIDANCE_VERSION = 30
+TEAM_AGENT_GUIDANCE_VERSION = 33
 TEAM_AGENT_GUIDANCE_PATH = "/home/agent/AGENTS.md"
 TEAM_AGENT_GUIDANCE_SECTION_ID = "evander-team-addon"
 LEGACY_TEAM_AGENT_GUIDANCE_SECTION_IDS = ("truman-team-addon",)
@@ -6759,8 +6759,23 @@ def _team_agent_guidance_content(*, agent: Mapping[str, Any]) -> str:
         "- A blocker dispatch that ends without blocker-specific progress transfers "
         "one reporting level. Unrelated Team actions do not count as blocker progress.\n"
         "- Team Chat messages are direct conversations with human operators, not "
-        f"agent-to-agent inbox items. Use {TEAM_REPLY_TO_CHAT_TOOL} only during a "
-        f"Team Chat wake. Use {TEAM_SEND_OPERATOR_CHAT_MESSAGE_TOOL} only for "
+        f"agent-to-agent inbox items. Every Team Chat wake must end with one successful "
+        f"{TEAM_REPLY_TO_CHAT_TOOL} call for the current operator message or coalesced "
+        "message batch, even when only acknowledging it. Your ordinary final response is "
+        "not delivered to the operator; do not replace the tool call with plain assistant "
+        "output or claim the tool is unavailable without calling it. In Codex code mode, "
+        "Team MCP tools can be deferred: resolve the callable name from ALL_TOOLS by "
+        f"matching {TEAM_REPLY_TO_CHAT_TOOL} or a name ending in "
+        f"__{TEAM_REPLY_TO_CHAT_TOOL}, then invoke it with computed bracket access as "
+        "tools[replyToolName](...). Do not use tools.team_reply_to_chat or another dotted "
+        "property form; a deferred tool can be listed while dotted access is undefined. "
+        "The first code-mode execution can omit the deferred reply tool from ALL_TOOLS while "
+        "that literal lookup hydrates it for the next model step. If the first lookup has no "
+        "match, emit a short text diagnostic and start another code-mode execution that repeats "
+        "the lookup and call. A missing first snapshot is not a terminal failure: do not throw, "
+        "send the reply as plain assistant output, or finish before the tool call succeeds. Use "
+        f"{TEAM_REPLY_TO_CHAT_TOOL} only during a Team Chat wake. Use "
+        f"{TEAM_SEND_OPERATOR_CHAT_MESSAGE_TOOL} only for "
         "operators in your own direct Team Chat conversations listed in the current "
         "Team context. "
         "Each wake's operator_chat_participants list replaces every prior wake's list; "
@@ -7282,6 +7297,20 @@ def _build_team_chat_prompt(
         f"Conversation ID: {conversation_id}\n"
         f"Human operator message IDs: {', '.join(message_ids)}\n"
         f"Reply once with {TEAM_REPLY_TO_CHAT_TOOL}, passing message_ids for this full batch.\n\n"
+        "Codex code-mode invocation: Team tools may be deferred even when ALL_TOOLS lists "
+        "them. Resolve `replyToolName` from ALL_TOOLS by matching the exact logical name "
+        f"`{TEAM_REPLY_TO_CHAT_TOOL}` or a name ending in "
+        f"`__{TEAM_REPLY_TO_CHAT_TOOL}`, then call `tools[replyToolName](...)` with "
+        f"`conversation_id={json.dumps(conversation_id)}`, "
+        f"`message_ids={json.dumps(message_ids)}`, `body`, and a unique `request_id`. "
+        "Do not use dotted access such as `tools.team_reply_to_chat(...)` or "
+        "`tools.evander__team_reply_to_chat(...)`; deferred dotted access can be undefined. "
+        "Mandatory hydration retry: the first code-mode execution can find no match while its "
+        "literal lookup makes the deferred tool available to the next model step. In that case "
+        "use `text(\"team_reply_to_chat hydration requested; repeat the lookup next\")`, then "
+        "start a new code-mode execution, repeat the lookup, and make the tool call. Do not throw, "
+        "write the intended reply as plain assistant output, or end the turn after the first miss; "
+        "only a successful tool result completes this chat reply.\n\n"
         f"{ordinary_context_section}"
         f"{rotation_section}\n"
         "Recent conversation:\n"
@@ -9010,8 +9039,13 @@ def _prepare_project_repo_task_worktree(
             'base_commit="$(git -C "$target" config --worktree --get '
             'evander.baseCommit || git -C "$target" rev-parse HEAD)"'
         ),
+        'head_commit="$(git -C "$target" rev-parse HEAD)"',
+        'if [ "$head_commit" = "$base_commit" ] && ! git -C "$target" ls-remote '
+        '--exit-code --heads origin "refs/heads/$branch" >/dev/null 2>&1; then',
+        '  git -C "$target" push origin "HEAD:refs/heads/$branch"',
+        "fi",
         'echo "EVANDER_BASE_COMMIT=$base_commit"',
-        'git -C "$target" rev-parse HEAD',
+        'printf "%s\\n" "$head_commit"',
     ]
     command = "\n".join(command_lines)
     provider = AgentExecEffectProvider()

@@ -2466,6 +2466,37 @@ def test_discord_session_allowlist_resolves_communication_target_refs(tmp_path: 
     ]
 
 
+def test_discord_session_write_allowlist_does_not_require_inbox_tool(tmp_path: Path) -> None:
+    engine = make_engine(tmp_path)
+    write_root_communication_targets(
+        engine.config,
+        [
+            {
+                "id": "discord-outbound",
+                "provider": "discord",
+                "kind": "discord",
+                "address": "234567890123456789",
+                "policy": {"capabilities": ["write"]},
+            }
+        ],
+    )
+    session = SessionManifest(
+        session_id="session-outbound",
+        allowed_tools=[],
+        communication_target_ids=["discord-outbound"],
+        expires_at=datetime.now(UTC) + timedelta(hours=1),
+    )
+    engine.session_store.upsert_session(session)
+
+    assert engine.policy_config.allowed_discord_channel_ids_for_session_id(
+        "session-outbound",
+        capability="write",
+    ) == ["234567890123456789"]
+    assert engine.policy_config.allowed_discord_channel_ids_for_session_id(
+        "session-outbound"
+    ) == []
+
+
 def test_canonical_session_target_ids_do_not_fall_back_to_raw_destinations(
     tmp_path: Path,
 ) -> None:

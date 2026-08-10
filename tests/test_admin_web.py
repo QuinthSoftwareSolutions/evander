@@ -907,6 +907,7 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
         "communication_target_id",
         "message",
         "thread_id",
+        "sender_session_id",
     ]
     assert (
         next(

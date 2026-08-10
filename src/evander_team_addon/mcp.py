@@ -397,6 +397,7 @@ MCP_TOOL_CATALOG = tuple(
 
 def register_mcp_tools(server: FastMCP, context: AddonContext) -> tuple[str, ...]:
     repo = TeamStateRepository(context.runtime_dir)
+    managed_git = _team_mcp_managed_git_admin(context)
     note_commands = TeamNoteCommandService(repo)
     memory_commands = TeamMemoryCommandService(repo)
     agent_message_commands = TeamAgentMessageCommandService(repo)
@@ -404,7 +405,10 @@ def register_mcp_tools(server: FastMCP, context: AddonContext) -> tuple[str, ...
     operator_escalation_commands = TeamOperatorEscalationCommandService(repo)
     blocker_commands = TeamBlockerCommandService(repo)
     case_commands = TeamCaseCommandService(repo)
-    git_default_branch_resolver = _team_mcp_git_default_branch_resolver(context)
+    git_default_branch_resolver = _team_mcp_git_default_branch_resolver(
+        context,
+        managed_git=managed_git,
+    )
     task_creation_commands = TeamTaskCreationCommandService(
         repo,
         git_default_branch_resolver=git_default_branch_resolver,
@@ -418,9 +422,15 @@ def register_mcp_tools(server: FastMCP, context: AddonContext) -> tuple[str, ...
     governance_commands = TeamGovernanceCommandService(repo)
     deliverable_submission_commands = TeamDeliverableSubmissionCommandService(
         repo,
-        git_candidate_commit_resolver=_team_mcp_git_candidate_commit_resolver(context),
+        git_candidate_commit_resolver=_team_mcp_git_candidate_commit_resolver(
+            context,
+            managed_git=managed_git,
+        ),
         dependency_recovery_commit_verifier=(
-            _team_mcp_dependency_recovery_commit_verifier(context)
+            _team_mcp_dependency_recovery_commit_verifier(
+                context,
+                managed_git=managed_git,
+            )
         ),
     )
     review_commands = TeamReviewCommandService(
@@ -428,7 +438,10 @@ def register_mcp_tools(server: FastMCP, context: AddonContext) -> tuple[str, ...
         human_review_eligibility_resolver=human_review_eligibility_resolver(
             getattr(context.auth, "user_store", None)
         ),
-        git_candidate_commit_resolver=_team_mcp_git_candidate_commit_resolver(context),
+        git_candidate_commit_resolver=_team_mcp_git_candidate_commit_resolver(
+            context,
+            managed_git=managed_git,
+        ),
         review_dispatch_steering=lambda **kwargs: steer_closed_review_dispatch(
             runtime_dir=context.runtime_dir,
             **kwargs,
@@ -2756,8 +2769,22 @@ def _team_mcp_deliverable_artifact_publisher(context: AddonContext):
     return _publish
 
 
-def _team_mcp_git_candidate_commit_resolver(context: AddonContext):
+def _team_mcp_managed_git_admin(context: AddonContext):
     managed_git = getattr(context.service, "managed_git_admin", None)
+    if managed_git is None:
+        from evander.admin.composition import build_admin_runtime
+
+        managed_git = build_admin_runtime(context.runtime_dir).managed_git_admin
+    return managed_git
+
+
+def _team_mcp_git_candidate_commit_resolver(
+    context: AddonContext,
+    *,
+    managed_git=None,
+):
+    if managed_git is None:
+        managed_git = _team_mcp_managed_git_admin(context)
 
     def _resolve(
         *,
@@ -2765,11 +2792,6 @@ def _team_mcp_git_candidate_commit_resolver(context: AddonContext):
         directory_path: str,
         agent_branch: str,
     ) -> str | None:
-        nonlocal managed_git
-        if managed_git is None:
-            from evander.admin.composition import build_admin_runtime
-
-            managed_git = build_admin_runtime(context.runtime_dir).managed_git_admin
         resolve_branch_commit = getattr(managed_git, "resolve_branch_commit", None)
         if not callable(resolve_branch_commit):
             raise RuntimeError("managed Git branch resolution is unavailable")
@@ -2782,19 +2804,19 @@ def _team_mcp_git_candidate_commit_resolver(context: AddonContext):
     return _resolve
 
 
-def _team_mcp_git_default_branch_resolver(context: AddonContext):
-    managed_git = getattr(context.service, "managed_git_admin", None)
+def _team_mcp_git_default_branch_resolver(
+    context: AddonContext,
+    *,
+    managed_git=None,
+):
+    if managed_git is None:
+        managed_git = _team_mcp_managed_git_admin(context)
 
     def _resolve(
         *,
         managed_repo_id: str,
         directory_path: str,
     ) -> object:
-        nonlocal managed_git
-        if managed_git is None:
-            from evander.admin.composition import build_admin_runtime
-
-            managed_git = build_admin_runtime(context.runtime_dir).managed_git_admin
         get_repository = getattr(managed_git, "get_repository", None)
         if not callable(get_repository):
             raise RuntimeError("managed Git repository lookup is unavailable")
@@ -2809,16 +2831,16 @@ def _team_mcp_git_default_branch_resolver(context: AddonContext):
     return _resolve
 
 
-def _team_mcp_dependency_recovery_commit_verifier(context: AddonContext):
-    managed_git = getattr(context.service, "managed_git_admin", None)
+def _team_mcp_dependency_recovery_commit_verifier(
+    context: AddonContext,
+    *,
+    managed_git=None,
+):
+    if managed_git is None:
+        managed_git = _team_mcp_managed_git_admin(context)
 
     def _verify(recovery, deliverable_id: str, branch: str, commit_sha: str) -> None:
         del deliverable_id
-        nonlocal managed_git
-        if managed_git is None:
-            from evander.admin.composition import build_admin_runtime
-
-            managed_git = build_admin_runtime(context.runtime_dir).managed_git_admin
         verify_ancestry = getattr(managed_git, "verify_branch_commit_ancestry", None)
         if not callable(verify_ancestry):
             raise RuntimeError("managed Git ancestry verification is unavailable")

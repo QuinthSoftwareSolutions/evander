@@ -1,5 +1,15 @@
 # Changelog
 
+## 2026-08-10 - APP Dev Team Discord Routing
+
+- Added a `content_starts_with` filter to provider-neutral communication-message triggers, enabling a shared Discord channel to route only explicit, leading agent-address messages into the durable Team Chat lifecycle.
+- Fixed session-scoped Discord replies so outbound Team Chat delivery checks the replying agent's `write` grant instead of an unrelated inbox-read allowlist.
+- Strengthened and versioned Team Chat wake guidance so agent final text cannot replace the required durable operator reply tool call.
+- Made Codex code-mode Team Chat wakes resolve deferred MCP reply callables through `ALL_TOOLS` and computed bracket access, avoiding false `not a function` failures from dotted tool names.
+- Made a missing reply tool in the first code-mode `ALL_TOOLS` snapshot an explicit hydration pass that must be retried, preventing agents from replacing the required tool call with plain output during deferred-tool startup.
+- Initialized Team MCP managed-Git authority before command transactions begin, preventing deliverable submission from deadlocking while lazily assembling another Team-aware admin runtime.
+- Published clean task base branches when worktrees are prepared, allowing artifact-only deliverables to resolve their authoritative managed-Git candidate without requiring a synthetic commit.
+
 ## 2026-08-10 - Discord Agent Personas
 
 - Added an add-on-extensible outbound identity resolver and per-communication-target Discord
@@ -16,6 +26,11 @@
   bounded the per-channel persona cache with least-recently-used cleanup.
 - Made webhook send bookkeeping, stale-404 repair, and cache eviction identity-checked so an
   in-flight send cannot restore or delete a concurrently replaced webhook credential.
+- Preserved the resolved-sender checkbox value across structured communication-target draft
+  rerenders so the Admin editor no longer immediately clears the operator's selection.
+- Carried the replying Team agent's session through the external-chat workflow and made Discord
+  communication effects honor resolved sender identity, so replies use the agent's webhook name
+  and avatar instead of the Evander bot identity.
 
 ## 2026-08-10 - Team Agent Context Editor
 

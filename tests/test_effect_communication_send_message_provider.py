@@ -15,6 +15,7 @@ from evander.messaging.targets import (
     SqliteCommunicationTargetsRepository,
     communication_targets_db_path,
 )
+from evander.outbound_identity import OutboundIdentity
 from evander.runtime import build_runtime
 
 
@@ -37,6 +38,7 @@ def _execute(
     message: str = "Workflow completed.",
     thread_id: str | None = None,
     subject: str | None = None,
+    sender_session_id: str | None = None,
 ) -> dict[str, object]:
     effect = CommunicationSendMessageEffectDefinition.model_validate(
         {
@@ -47,6 +49,7 @@ def _execute(
             "message": message,
             "thread_id": thread_id,
             "subject": subject,
+            "sender_session_id": sender_session_id,
         }
     )
     provider = CommunicationSendMessageEffectProvider()
@@ -137,6 +140,160 @@ def test_communication_send_message_posts_to_discord_channel(tmp_path: Path) -> 
     assert output["success"] is True
     assert output["provider"] == "discord"
     assert output["channel_id"] == "234567890123456789"
+
+
+def test_communication_send_message_uses_resolved_discord_sender_identity(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _write_targets(
+        tmp_path,
+        [
+            {
+                "id": "discord-trudy",
+                "provider": "discord",
+                "kind": "discord",
+                "address": "123456789012345678/234567890123456789",
+                "policy": {
+                    "capabilities": ["write"],
+                    "sender_identity": "resolved",
+                },
+            }
+        ],
+    )
+    calls: list[dict[str, object]] = []
+    service_builds: list[dict[str, object]] = []
+
+    class FakeDiscordService:
+        def post_status_with_identity(
+            self,
+            message: str,
+            channel_id: str,
+            session_id: str,
+            *,
+            identity: OutboundIdentity | None,
+            identity_status: str,
+        ) -> dict[str, object]:
+            calls.append(
+                {
+                    "message": message,
+                    "channel_id": channel_id,
+                    "session_id": session_id,
+                    "identity": identity,
+                    "identity_status": identity_status,
+                }
+            )
+            return {
+                "status": "posted",
+                "message_id": "discord-persona-1",
+                "channel_id": channel_id,
+                "transport": "webhook",
+            }
+
+        def post_status(self, *_args: object, **_kwargs: object) -> dict[str, object]:
+            raise AssertionError("resolved targets must use the identity-aware Discord sender")
+
+    def build_discord_service(*_args: object, **kwargs: object) -> FakeDiscordService:
+        service_builds.append(dict(kwargs))
+        return FakeDiscordService()
+
+    monkeypatch.setattr("evander.messaging.notifications._build_discord_service", build_discord_service)
+    runtime = _runtime(tmp_path)
+    runtime.register_outbound_identity_resolver(
+        "test",
+        lambda **kwargs: OutboundIdentity(
+            display_name="Trudy",
+            source=f"test:{kwargs['session_id']}",
+        ),
+    )
+
+    output = _execute(
+        project_dir=tmp_path,
+        runtime=runtime,
+        target_id="discord-trudy",
+        sender_session_id="session-trudy",
+    )
+
+    assert output["transport"] == "webhook"
+    assert calls == [
+        {
+            "message": "Workflow completed.",
+            "channel_id": "234567890123456789",
+            "session_id": "session-trudy",
+            "identity": OutboundIdentity(
+                display_name="Trudy",
+                source="test:session-trudy",
+            ),
+            "identity_status": "resolved",
+        }
+    ]
+    assert service_builds == [{"session_id": "session-trudy", "capability": "write"}]
+
+
+def test_communication_send_message_keeps_platform_discord_sender_identity(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _write_targets(
+        tmp_path,
+        [
+            {
+                "id": "discord-platform",
+                "provider": "discord",
+                "kind": "discord",
+                "address": "123456789012345678/234567890123456789",
+                "policy": {
+                    "capabilities": ["write"],
+                    "sender_identity": "platform",
+                },
+            }
+        ],
+    )
+    calls: list[tuple[str, str, str]] = []
+
+    class FakeDiscordService:
+        def post_status(
+            self,
+            message: str,
+            channel_id: str,
+            session_id: str,
+        ) -> dict[str, object]:
+            calls.append((message, channel_id, session_id))
+            return {
+                "status": "posted",
+                "message_id": "discord-platform-1",
+                "channel_id": channel_id,
+                "transport": "bot_api",
+            }
+
+        def post_status_with_identity(self, *_args: object, **_kwargs: object) -> dict[str, object]:
+            raise AssertionError("platform targets must use the ordinary Discord sender")
+
+    monkeypatch.setattr(
+        "evander.messaging.notifications._build_discord_service",
+        lambda *_args, **_kwargs: FakeDiscordService(),
+    )
+    runtime = _runtime(tmp_path)
+    runtime.register_outbound_identity_resolver(
+        "test",
+        lambda **_: OutboundIdentity(display_name="Trudy", source="test"),
+    )
+
+    output = _execute(
+        project_dir=tmp_path,
+        runtime=runtime,
+        target_id="discord-platform",
+        sender_session_id="session-trudy",
+    )
+
+    assert output["transport"] == "bot_api"
+    assert calls == [
+        (
+            "Workflow completed.",
+            "234567890123456789",
+            "session-trudy",
+        )
+    ]
 
 
 def test_communication_send_message_requires_write_capability(tmp_path: Path) -> None:

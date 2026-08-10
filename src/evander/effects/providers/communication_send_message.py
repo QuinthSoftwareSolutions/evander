@@ -22,6 +22,7 @@ class CommunicationSendMessageEffectProvider(EffectProviderBase):
         message = self._require_message(payload.get("message"))
         thread_id = self._normalize_optional_string(payload.get("thread_id"))
         subject = self._normalize_optional_string(payload.get("subject"))
+        sender_session_id = self._normalize_optional_string(payload.get("sender_session_id"))
 
         context = self._context()
         sender = CommunicationMessageSender(
@@ -34,7 +35,7 @@ class CommunicationSendMessageEffectProvider(EffectProviderBase):
             message=message,
             thread_id=thread_id,
             subject=subject,
-            sender_session_id=f"workflow:{self._effect_id()}",
+            sender_session_id=sender_session_id or f"workflow:{self._effect_id()}",
         )
 
     def _effect_payload(self) -> dict[str, Any]:
@@ -45,6 +46,7 @@ class CommunicationSendMessageEffectProvider(EffectProviderBase):
             "message",
             "thread_id",
             "subject",
+            "sender_session_id",
         ):
             if effect is not None and hasattr(effect, field_name):
                 payload[field_name] = getattr(effect, field_name)

@@ -120,8 +120,26 @@ class NotificationSender:
         message: str,
         sender_session_id: str,
     ) -> Mapping[str, Any]:
-        service = self._discord_service()
+        service = self._discord_service(sender_session_id=sender_session_id)
         channel_id = _discord_channel_id(target.address)
+        resolve_identity = getattr(self.runtime, "resolve_outbound_identity", None)
+        if (
+            target.policy.sender_identity == "resolved"
+            and callable(resolve_identity)
+            and hasattr(service, "post_status_with_identity")
+        ):
+            identity_resolution = resolve_identity(
+                session_id=sender_session_id,
+                provider="discord",
+                destination=channel_id,
+            )
+            return service.post_status_with_identity(
+                message,
+                channel_id,
+                sender_session_id,
+                identity=identity_resolution.identity,
+                identity_status=identity_resolution.status,
+            )
         return service.post_status(message, channel_id, sender_session_id)
 
     def _create_email_draft(
@@ -144,7 +162,7 @@ class NotificationSender:
     def _resolved_config(self) -> Any:
         return self.runtime.provider_config.resolve_for_directory(self.directory_path)
 
-    def _discord_service(self) -> Any:
+    def _discord_service(self, *, sender_session_id: str = "workflow") -> Any:
         return _build_discord_service(
             self._resolved_config(),
             self.runtime.discord_commands,
@@ -200,6 +218,19 @@ class NotificationSender:
 
 
 class CommunicationMessageSender(NotificationSender):
+    def _discord_service(self, *, sender_session_id: str = "workflow") -> Any:
+        normalized_session_id = str(sender_session_id or "").strip()
+        if not normalized_session_id or normalized_session_id == "workflow":
+            return super()._discord_service(sender_session_id=sender_session_id)
+        return _build_discord_service(
+            self._resolved_config(),
+            self.runtime.discord_commands,
+            self.runtime.session_repository,
+            self.runtime.policy_config,
+            session_id=normalized_session_id,
+            capability="write",
+        )
+
     def send_message(
         self,
         *,
