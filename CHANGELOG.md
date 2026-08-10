@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-08-10 - Team Chat Send Latency
+
+- Persisted a direct operator chat message and its queued asynchronous dispatch in one Team-state
+  transaction, avoiding a second complete state read, validation, and write before returning the
+  chat API response.
+
 ## 2026-08-10 - Team Cost Budget Window Corrections
 
 - Kept an active manual cost window intact when an operator changes it to UTC-monthly renewal;

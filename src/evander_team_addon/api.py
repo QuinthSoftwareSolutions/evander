@@ -1516,28 +1516,23 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
         else:
             payload = await _read_payload(request)
             body = _optional(payload, "body")
-        # Chat messages are append-only. The service validates the current
-        # conversation and agent state, so a stale global revision must not block a send.
+        # Chat messages are append-only. Persist the message and its queued dispatch in one
+        # update, so a send does not need two full Team-state transactions. The service validates
+        # the current conversation and agent state, so a stale global revision must not block it.
         try:
-            state, message = chat_service.record_operator_chat_message(
+            state, message, dispatch_id = chat_service.record_and_queue_operator_chat_message(
                 conversation_id=conversation_id,
                 body=body,
                 attachments=prepared_attachments,
                 created_by=identity["actor"],
                 mutation_authorization=mutation_authorization,
+                reason="queued by Team chat API for asynchronous dispatch",
             )
         except Exception:
             chat_attachment_storage.delete_prepared(
                 attachment.id for attachment in prepared_attachments
             )
             raise
-        conversation = state.conversations[conversation_id]
-        dispatch_id = f"team-chat:{message.id}"
-        state, message = chat_service.queue_chat_message_dispatch(
-            message_id=message.id,
-            dispatch_id=dispatch_id,
-            reason="queued by Team chat API for asynchronous dispatch",
-        )
         dispatch_payload: dict[str, Any] = {
             "success": False,
             "queued": True,

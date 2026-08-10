@@ -2850,6 +2850,7 @@ def test_team_addon_admin_api_conversation_queues_without_inline_dispatch_and_re
 
     assert sent.status_code == 202
     sent_payload = sent.json()
+    assert sent_payload["revision"] == created.json()["revision"] + 1
     assert sent_payload["dispatch"]["success"] is False
     assert sent_payload["dispatch"]["queued"] is True
     assert sent_payload["dispatch"]["dispatch_id"].startswith("team-chat:")
