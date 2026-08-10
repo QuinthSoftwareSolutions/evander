@@ -91,11 +91,10 @@ def _mark_action_failure(
         now=completed_at,
     )
     dispatch = state.dispatches.get(runtime.active_dispatch_id or dispatch_id)
-    if (
-        dispatch is not None
-        and dispatch.status
-        in {TeamDispatchStatus.PREPARING, TeamDispatchStatus.LEASED}
-    ):
+    if dispatch is not None and dispatch.status in {
+        TeamDispatchStatus.PREPARING,
+        TeamDispatchStatus.LEASED,
+    }:
         dispatch.status = TeamDispatchStatus.FAILED
         dispatch.completed_at = completed_at
         dispatch.error = error

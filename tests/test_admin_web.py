@@ -1581,9 +1581,7 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
         "github",
     ]
     pr_work_items = next(
-        node
-        for node in catalog_payload["nodes"]
-        if node["type"] == "query:pull-request:work-items"
+        node for node in catalog_payload["nodes"] if node["type"] == "query:pull-request:work-items"
     )
     assert [field["key"] for field in pr_work_items["fields"]] == [
         "provider",
@@ -13861,9 +13859,7 @@ def test_admin_web_agents_list_includes_vms_and_container_sessions(
                     "agent_provider": "codex",
                 },
                 codex_auth_mode=(
-                    "chatgpt_subscription"
-                    if session_id == "container-session-a"
-                    else None
+                    "chatgpt_subscription" if session_id == "container-session-a" else None
                 ),
             )
         )

@@ -4760,12 +4760,15 @@ def test_local_capacity_reconciles_terminal_vm_lease_before_new_admission(
         execution_backend="libvirt_vm",
         target_name="vm-old",
     )
-    assert capacity_store.mark_running(
-        orphaned.slot_id,
-        target_name="vm-old",
-        execution_id="vm-old",
-        now=datetime.now(timezone.utc) - timedelta(minutes=1),
-    ) is True
+    assert (
+        capacity_store.mark_running(
+            orphaned.slot_id,
+            target_name="vm-old",
+            execution_id="vm-old",
+            now=datetime.now(timezone.utc) - timedelta(minutes=1),
+        )
+        is True
+    )
     monkeypatch.setattr(
         worker.provider_factory.admin_service.vm_agent_admin,
         "list_vms",
@@ -5996,10 +5999,10 @@ def test_agent_enqueue_prompt_replay_discards_libvirt_row_after_waiting_record_c
             SimpleNamespace(success=True, thread_id="duplicate-thread"),
         ),
         _publish_completion_event_from_record=(
-            lambda record, outputs, branch_port=None: published_started.append(
-                (branch_port, str(outputs.get("dispatch_id") or ""))
+            lambda record, outputs, branch_port=None: (
+                published_started.append((branch_port, str(outputs.get("dispatch_id") or "")))
+                or "started-event"
             )
-            or "started-event"
         ),
     )
 
@@ -6009,9 +6012,12 @@ def test_agent_enqueue_prompt_replay_discards_libvirt_row_after_waiting_record_c
     assert resume_calls == []
     assert published_started == [("started", "dispatch-libvirt-crash")]
     assert queue_store.get(queued.queue_key) is None
-    assert execution_store.find_execution_by_idempotency_key(
-        _queued_prompt_execution_record(queued, status="waiting").idempotency_key
-    ) is not None
+    assert (
+        execution_store.find_execution_by_idempotency_key(
+            _queued_prompt_execution_record(queued, status="waiting").idempotency_key
+        )
+        is not None
+    )
 
 
 def test_agent_enqueue_prompt_replay_discards_container_row_after_terminal_record_crash(
@@ -6066,10 +6072,10 @@ def test_agent_enqueue_prompt_replay_discards_container_row_after_terminal_recor
             )
         ),
         _publish_completion_event_from_record=(
-            lambda record, outputs, branch_port=None: published_started.append(
-                (branch_port, str(outputs.get("dispatch_id") or ""))
+            lambda record, outputs, branch_port=None: (
+                published_started.append((branch_port, str(outputs.get("dispatch_id") or "")))
+                or "started-event"
             )
-            or "started-event"
         ),
     )
 
@@ -6674,9 +6680,7 @@ def test_agent_enqueue_prompt_container_ineligible_replay_keeps_one_coalescing_r
     worker = SimpleNamespace(
         config=config,
         queued_agent_prompt_store=queue_store,
-        execution_store=JsonExecutionStore(
-            tmp_path / "effect-orchestrator-executions.json"
-        ),
+        execution_store=JsonExecutionStore(tmp_path / "effect-orchestrator-executions.json"),
         agent_prompt_dispatch_port=object(),
         provider_config_resolver=SimpleNamespace(resolve_for_session_id=lambda _id: config),
         provider_factory=SimpleNamespace(
@@ -6804,9 +6808,7 @@ def test_agent_enqueue_prompt_dispatch_prunes_removed_effect_before_capacity_fif
         agent_prompt_dispatch_port=object(),
         agent_run_status_port=_AgentRunStatusPortStub([]),
         _build_execution_graph=lambda: SimpleNamespace(
-            effects_by_id={
-                "effect-current": SimpleNamespace(type="effect:agent:enqueue-prompt")
-            }
+            effects_by_id={"effect-current": SimpleNamespace(type="effect:agent:enqueue-prompt")}
         ),
     )
     hook = AgentEnqueuePromptQueueDispatchHook()
@@ -7613,8 +7615,10 @@ def test_agent_enqueue_prompt_dispatches_admin_prompt_without_graph_effect(
     assert len(waiting_records) == 1
     assert waiting_records[0].status == "waiting"
     assert waiting_records[0].effect_type == "effect:agent:enqueue-prompt"
-    assert waiting_records[0].outputs["queue_key"].startswith(
-        "admin-agent-prompt:libvirt_vm:session-1:replay:"
+    assert (
+        waiting_records[0]
+        .outputs["queue_key"]
+        .startswith("admin-agent-prompt:libvirt_vm:session-1:replay:")
     )
     assert waiting_records[0].outputs["thread_id"] == "thread-dispatched"
 

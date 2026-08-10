@@ -282,10 +282,7 @@ class CodeConsultationEffectProvider(EffectProviderBase):
 
     def _service(self) -> CodeConsultationService:
         if self._consultation_service_instance is None:
-            factory = (
-                self._service_factory
-                or self._context().code_consultation_service_factory
-            )
+            factory = self._service_factory or self._context().code_consultation_service_factory
             if factory is None:
                 raise RuntimeError("code consultation application service is unavailable")
             configured_path = self._context().metadata.get("internal_event_store_path")

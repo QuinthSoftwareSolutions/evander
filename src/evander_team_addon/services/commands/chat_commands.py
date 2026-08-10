@@ -250,8 +250,7 @@ class TeamChatCommandService(TeamCommandExecutor):
                             "event_type": EXTERNAL_CHAT_REPLY_REQUESTED_EVENT_TYPE,
                             "correlation_key": delivery_id,
                             "idempotency_key": (
-                                "team-chat-external-reply:"
-                                f"{reply_id}:{communication_target_id}"
+                                f"team-chat-external-reply:{reply_id}:{communication_target_id}"
                             ),
                             "payload": {
                                 "delivery_id": delivery_id,
@@ -268,12 +267,10 @@ class TeamChatCommandService(TeamCommandExecutor):
                                 "body": external_reply_body,
                                 "team_chat_body": body_text,
                                 "attachment_ids": [
-                                    attachment.id
-                                    for attachment in prepared_attachments
+                                    attachment.id for attachment in prepared_attachments
                                 ],
                                 "attachments": [
-                                    attachment.payload()
-                                    for attachment in prepared_attachments
+                                    attachment.payload() for attachment in prepared_attachments
                                 ],
                             },
                         }
@@ -378,8 +375,7 @@ class TeamChatCommandService(TeamCommandExecutor):
                 (
                     item
                     for item in state.conversations.values()
-                    if item.agent_id == agent.id
-                    and item.operator_user_id == normalized_operator_id
+                    if item.agent_id == agent.id and item.operator_user_id == normalized_operator_id
                 ),
                 None,
             )

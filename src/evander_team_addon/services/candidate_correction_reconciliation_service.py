@@ -127,11 +127,7 @@ def _current_successor_deliverable_ids(
     correction_task: AgentTask,
 ) -> list[str]:
     failure = predecessor.gate_failure
-    if (
-        failure is not None
-        and failure.stage == "verification"
-        and failure.kind == "candidate"
-    ):
+    if failure is not None and failure.stage == "verification" and failure.kind == "candidate":
         recovery_ids = sorted(
             deliverable.id
             for deliverable in state.deliverables.values()
@@ -196,56 +192,51 @@ def _release_review_correction_is_ready(
         and state.review_requests[review_id].retired_at is None
         and (
             predecessor.review_cohort_id is None
-            or state.review_requests[review_id].review_cohort_id
-            == predecessor.review_cohort_id
+            or state.review_requests[review_id].review_cohort_id == predecessor.review_cohort_id
         )
     ]
     if predecessor.review_cohort_id is not None and (
         predecessor.review_cohort_sealed_at is None
         or any(
-            review.review_cohort_id != predecessor.review_cohort_id
-            for review in current_reviews
+            review.review_cohort_id != predecessor.review_cohort_id for review in current_reviews
         )
     ):
         return False
     if not current_reviews or any(
-        review.state not in _COMPLETED_RELEASE_REVIEW_STATES
-        for review in current_reviews
+        review.state not in _COMPLETED_RELEASE_REVIEW_STATES for review in current_reviews
     ):
         return False
 
     rejected_review_ids = {
-        review.id
-        for review in current_reviews
-        if review.state == TeamRecordState.REJECTED
+        review.id for review in current_reviews if review.state == TeamRecordState.REJECTED
     }
     latest_rejection_at = max(
         (
             review.decision_at
             for review in current_reviews
-            if review.state == TeamRecordState.REJECTED
-            and review.decision_at is not None
+            if review.state == TeamRecordState.REJECTED and review.decision_at is not None
         ),
         default=None,
     )
-    if predecessor.review_cohort_id is None and latest_rejection_at is not None and any(
-        deliverable.created_at < latest_rejection_at
-        for deliverable in state.deliverables.values()
-        if deliverable.task_id == correction_task.id
-        and deliverable.state == TeamRecordState.ACCEPTED
-        and deliverable.superseded_by_deliverable_id is None
+    if (
+        predecessor.review_cohort_id is None
+        and latest_rejection_at is not None
+        and any(
+            deliverable.created_at < latest_rejection_at
+            for deliverable in state.deliverables.values()
+            if deliverable.task_id == correction_task.id
+            and deliverable.state == TeamRecordState.ACCEPTED
+            and deliverable.superseded_by_deliverable_id is None
+        )
     ):
         return False
     incorporated_review_ids = {
-        review_id
-        for review_id in rejected_review_ids
-        if review_id in correction_task.description
+        review_id for review_id in rejected_review_ids if review_id in correction_task.description
     }
     for item in state.inbox.values():
         if (
             item.task_id != correction_task.id
-            or item.payload.get("kind")
-            != "release_review_rejection_correction_work"
+            or item.payload.get("kind") != "release_review_rejection_correction_work"
         ):
             continue
         review_id = item.payload.get("review_request_id")
@@ -256,9 +247,7 @@ def _release_review_correction_is_ready(
             incorporated_review_ids.update(
                 review_id for review_id in review_ids if isinstance(review_id, str)
             )
-    return bool(rejected_review_ids) and rejected_review_ids.issubset(
-        incorporated_review_ids
-    )
+    return bool(rejected_review_ids) and rejected_review_ids.issubset(incorporated_review_ids)
 
 
 def _candidate_release_ids_for_reconciliation(state: TeamState) -> list[str]:
@@ -321,14 +310,12 @@ def _record_successor_notice(
         for item in state.inbox.values()
         if item.task_id == correction_task.id
         and item.recipient_agent_id == recipient_agent_id
-        and item.payload.get("kind")
-        in {"candidate_correction_resolution", "root_task_resolution"}
+        and item.payload.get("kind") in {"candidate_correction_resolution", "root_task_resolution"}
     ]
     created = False
     if not notices:
-        notice_id = (
-            "inbox-candidate-successor-"
-            + _stable_token(predecessor.id, correction_task.id, length=24)
+        notice_id = "inbox-candidate-successor-" + _stable_token(
+            predecessor.id, correction_task.id, length=24
         )
         notice = AgentInboxItem(
             id=notice_id,
@@ -361,8 +348,7 @@ def _record_successor_notice(
             "predecessor_release_package_id": predecessor.id,
             "successor_release_package_id": successor.id,
             "summary": (
-                "The reviewed rejected-gate correction automatically created "
-                "its successor release."
+                "The reviewed rejected-gate correction automatically created its successor release."
             ),
             "next_action": (
                 "Observe the successor's normal promotion and release gates; "
@@ -425,9 +411,7 @@ def _open_reconciliation_blocker(
         blocker.updated_at = now
         changed = True
     if created:
-        result.setdefault("created_candidate_correction_blocker_ids", []).append(
-            blocker.id
-        )
+        result.setdefault("created_candidate_correction_blocker_ids", []).append(blocker.id)
     return changed
 
 
@@ -481,9 +465,7 @@ def reconcile_candidate_correction_successors(
                     )
                     or changed
                 )
-            result.setdefault("existing_successor_release_package_ids", []).append(
-                successor.id
-            )
+            result.setdefault("existing_successor_release_package_ids", []).append(successor.id)
             continue
         if (
             correction_task is None
@@ -534,20 +516,15 @@ def reconcile_candidate_correction_successors(
                 )
                 or changed
             )
-            result.setdefault("candidate_correction_errors", {})[
-                predecessor.id
-            ] = successor_error
+            result.setdefault("candidate_correction_errors", {})[predecessor.id] = successor_error
             continue
 
         package_result = _package_result()
-        successor_id = (
-            "release-"
-            + _stable_token(
-                "candidate-correction-successor",
-                predecessor.id,
-                correction_task.id,
-                *correction_deliverable_ids,
-            )
+        successor_id = "release-" + _stable_token(
+            "candidate-correction-successor",
+            predecessor.id,
+            correction_task.id,
+            *correction_deliverable_ids,
         )
         try:
             created_id = _build_release_package(
@@ -566,9 +543,7 @@ def reconcile_candidate_correction_successors(
                 },
                 result=package_result,
                 projects_to_recalc=set(),
-                actor_agent_id=(
-                    predecessor.owner_agent_id or correction_task.owner_agent_id
-                ),
+                actor_agent_id=(predecessor.owner_agent_id or correction_task.owner_agent_id),
                 team_id=state.projects[predecessor.project_id].team_id,
             )
         except Exception as exc:  # pragma: no cover - defensive durable recovery
@@ -599,9 +574,7 @@ def reconcile_candidate_correction_successors(
                 )
                 or changed
             )
-            result.setdefault("candidate_correction_errors", {})[
-                predecessor.id
-            ] = details
+            result.setdefault("candidate_correction_errors", {})[predecessor.id] = details
             continue
 
         successor = state.release_packages[created_id]
@@ -621,24 +594,18 @@ def reconcile_candidate_correction_successors(
                 )
                 or changed
             )
-            result.setdefault("candidate_correction_errors", {})[
-                predecessor.id
-            ] = details
+            result.setdefault("candidate_correction_errors", {})[predecessor.id] = details
             continue
 
         if package_result.get("created"):
-            result.setdefault("created_successor_release_package_ids", []).append(
-                created_id
-            )
+            result.setdefault("created_successor_release_package_ids", []).append(created_id)
             result.setdefault("release_package_ids", []).append(created_id)
             result.setdefault("events", []).extend(package_result.get("events") or [])
             result.setdefault("git_promotion_event_ids", []).extend(
                 package_result.get("git_promotion_event_ids") or []
             )
         else:
-            result.setdefault("existing_successor_release_package_ids", []).append(
-                created_id
-            )
+            result.setdefault("existing_successor_release_package_ids", []).append(created_id)
         resolve_active_blockers_for_source(
             state,
             source_kind=TeamBlockerSourceKind.CANDIDATE_CORRECTION_SUCCESSOR,
@@ -683,13 +650,11 @@ def recover_candidate_correction_successor(
     if blocker.state.value != "open":
         raise ValueError(f"blocker {blocker.id} is {blocker.state.value}")
     if (
-        blocker.source_kind
-        != TeamBlockerSourceKind.CANDIDATE_CORRECTION_SUCCESSOR
+        blocker.source_kind != TeamBlockerSourceKind.CANDIDATE_CORRECTION_SUCCESSOR
         or blocker.resolution_scope != TeamBlockerResolutionScope.DOWNSTREAM
     ):
         raise ValueError(
-            f"blocker {blocker.id} is not a downstream candidate-correction "
-            "successor blocker"
+            f"blocker {blocker.id} is not a downstream candidate-correction successor blocker"
         )
     prefix = _BLOCKER_SOURCE_PREFIX
     if not blocker.source_id.startswith(prefix):
@@ -704,17 +669,10 @@ def recover_candidate_correction_successor(
     if correction_task is None:
         raise ValueError(f"release {predecessor.id} has no automatic correction task")
     failure = predecessor.gate_failure
-    if (
-        action in {
-            "create_verified_replacement",
-            "authorize_verification_waiver",
-        }
-        and (
-            failure is None
-            or failure.stage != "verification"
-            or failure.kind != "candidate"
-        )
-    ):
+    if action in {
+        "create_verified_replacement",
+        "authorize_verification_waiver",
+    } and (failure is None or failure.stage != "verification" or failure.kind != "candidate"):
         raise ValueError(
             f"{action} is available only for candidate verification correction recovery"
         )
@@ -728,10 +686,7 @@ def recover_candidate_correction_successor(
                 and deliverable.state == TeamRecordState.ACCEPTED
                 and deliverable.superseded_by_deliverable_id is None
                 and deliverable.git_refs.agent_branch is not None
-                and (
-                    deliverable.git_refs.submitted_commit_sha
-                    or deliverable.git_refs.commit_sha
-                )
+                and (deliverable.git_refs.submitted_commit_sha or deliverable.git_refs.commit_sha)
                 is not None
             ),
             key=lambda deliverable: (deliverable.created_at, deliverable.id),
@@ -767,10 +722,7 @@ def recover_candidate_correction_successor(
             operator_instruction = (
                 ""
                 if instruction is None
-                else (
-                    "\n\nOperator instruction from "
-                    f"{operator_actor_id}:\n{instruction}"
-                )
+                else (f"\n\nOperator instruction from {operator_actor_id}:\n{instruction}")
             )
             recovery_task = AgentTask(
                 id=task_id,
@@ -831,8 +783,7 @@ def recover_candidate_correction_successor(
                 or recovery_task.git_base_commit_sha != source_commit.casefold()
             ):
                 raise ValueError(
-                    f"deterministic recovery task {recovery_task.id} has "
-                    "incompatible provenance"
+                    f"deterministic recovery task {recovery_task.id} has incompatible provenance"
                 )
             result["existing_recovery_task_id"] = recovery_task.id
         result["recovery_task_id"] = recovery_task.id
@@ -856,9 +807,7 @@ def recover_candidate_correction_successor(
     for deliverable_id in deliverable_ids:
         deliverable = state.deliverables[deliverable_id]
         status = (
-            deliverable.verification.status
-            if deliverable.verification is not None
-            else "unknown"
+            deliverable.verification.status if deliverable.verification is not None else "unknown"
         )
         if status == "failed":
             raise ValueError(
@@ -906,10 +855,7 @@ def recover_candidate_correction_successor(
         source_id=blocker.source_id,
         actor_agent_id=None,
         dispatch_id=None,
-        note=(
-            f"Operator {operator_actor_id} authorized verified successor "
-            f"{created_id}: {reason}"
-        ),
+        note=(f"Operator {operator_actor_id} authorized verified successor {created_id}: {reason}"),
         reference_ids=[created_id],
         result=result,
         now=now,
@@ -954,9 +900,7 @@ class CandidateCorrectionReconciliationService:
             try:
                 state = self._repository.update_with_outbox(
                     _mutate,
-                    outbox_records=lambda: _team_event_outbox_records(
-                        result.get("events") or []
-                    ),
+                    outbox_records=lambda: _team_event_outbox_records(result.get("events") or []),
                     expected_revision=current.revision,
                 )
             except TeamStateConflictError as exc:

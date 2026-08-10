@@ -300,8 +300,7 @@ def _assigned_blocker_recovery_tasks(
     for blocker in blockers:
         if (
             blocker.state != TeamBlockerState.OPEN
-            or blocker.reason_code
-            in EXECUTION_PREPARATION_BLOCKER_REASON_CODES
+            or blocker.reason_code in EXECUTION_PREPARATION_BLOCKER_REASON_CODES
             or not _blocker_is_assigned_to_agent(
                 blocker,
                 agent_id=agent.id,
@@ -435,8 +434,7 @@ def _blocker_project_ids(state: TeamState, blocker: TeamBlocker) -> set[str]:
         if project_id is not None:
             project_ids.add(project_id)
     elif (
-        blocker.source_kind
-        == TeamBlockerSourceKind.CANDIDATE_CORRECTION_SUCCESSOR
+        blocker.source_kind == TeamBlockerSourceKind.CANDIDATE_CORRECTION_SUCCESSOR
         and blocker.source_id.startswith("candidate-correction-successor:")
     ):
         project_id = _release_project_id(

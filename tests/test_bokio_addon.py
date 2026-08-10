@@ -1341,9 +1341,7 @@ def test_bokio_duplicate_check_cache_is_scoped_to_source_identity(
     assert first["source_identity"] != second["source_identity"]
     assert len(requests) == 2
     assert (
-        BokioDuplicateCheckStore(tmp_path).get(second["check_id"])[
-            "source_identity"
-        ]
+        BokioDuplicateCheckStore(tmp_path).get(second["check_id"])["source_identity"]
         == second["source_identity"]
     )
 

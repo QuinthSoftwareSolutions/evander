@@ -158,6 +158,4 @@ def test_gateway_host_directory_tools_hide_root_and_gate_delete_exactly_once(
             )
         )
 
-    assert str(host_root) not in (tmp_path / "runtime" / "audit.jsonl").read_text(
-        encoding="utf-8"
-    )
+    assert str(host_root) not in (tmp_path / "runtime" / "audit.jsonl").read_text(encoding="utf-8")

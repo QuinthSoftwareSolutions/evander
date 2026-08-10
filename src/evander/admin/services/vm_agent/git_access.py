@@ -75,9 +75,7 @@ class VmAgentGitAccessMixin:
             self.revoke_managed_git_access(session.session_id, repo_id)
         elif existing_matches and existing_grant is not None:
             public_key_body = str(existing_grant.get("public_key_body") or "").strip()
-            authorized_keys_path = str(
-                existing_grant.get("authorized_keys_path") or ""
-            ).strip()
+            authorized_keys_path = str(existing_grant.get("authorized_keys_path") or "").strip()
             if not public_key_body or not authorized_keys_path:
                 raise RuntimeError(
                     "Existing managed Git grant is missing credential reconciliation metadata"
@@ -258,9 +256,7 @@ class VmAgentGitAccessMixin:
         else:
             raise RuntimeError("managed Git clone returned an invalid result")
         if payload.get("success") is False:
-            raise RuntimeError(
-                str(payload.get("message") or "managed Git clone did not complete")
-            )
+            raise RuntimeError(str(payload.get("message") or "managed Git clone did not complete"))
         return payload
 
     def _resolve_git_access_session(self, target: str):

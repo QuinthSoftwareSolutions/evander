@@ -12,9 +12,7 @@ from evander.admin.web.frontend_assets import (
 def test_admin_frontend_dist_dir_uses_the_admin_web_project_name() -> None:
     project_dir = Path("/workspace/evander")
 
-    assert admin_frontend_dist_dir(project_dir) == (
-        project_dir / "frontend" / "admin-web" / "dist"
-    )
+    assert admin_frontend_dist_dir(project_dir) == (project_dir / "frontend" / "admin-web" / "dist")
 
 
 def test_admin_frontend_assets_ready_requires_referenced_files(tmp_path: Path) -> None:

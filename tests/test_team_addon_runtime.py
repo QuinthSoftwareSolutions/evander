@@ -208,9 +208,7 @@ def test_team_runtime_pack_layout_positions_every_runtime_node() -> None:
 
     node_ids = {ir_node.node.id for ir_node in pack.ir.nodes}
     assert set(nodes) == node_ids
-    assert len({(position["x"], position["y"]) for position in nodes.values()}) == len(
-        node_ids
-    )
+    assert len({(position["x"], position["y"]) for position in nodes.values()}) == len(node_ids)
     assert nodes["team-consolidate-correction-branches"] == {"x": 720.0, "y": 1360.0}
     assert nodes["team-publish-outbox-on-request"] == {"x": 360.0, "y": 40.0}
     assert nodes["team-record-release-recovery-promotion"] == {"x": 720.0, "y": 1940.0}
@@ -1340,9 +1338,7 @@ def test_retained_wake_deduplication_preserves_nested_payload_project_context() 
                     "item_type": "status_request",
                     "state": "pending",
                     "payload": {
-                        "legacy_context": {
-                            "routing": {"project_id": "project-from-legacy-payload"}
-                        }
+                        "legacy_context": {"routing": {"project_id": "project-from-legacy-payload"}}
                     },
                 }
             ],
@@ -2569,11 +2565,10 @@ def test_wake_due_agents_provider_prompts_and_mirrors_metadata(tmp_path: Path) -
     assert usage_context.project_id == "project"
     assert usage_context.agent_id == "backend"
     state_after_resume = repo.read()
-    assert (
-        state_after_resume.agent_runtimes["backend"].last_delivered_role_description_fingerprint
-        == agent_role_description_fingerprint(
-            _agent_payload(state_after_resume, state_after_resume.agents["backend"])
-        )
+    assert state_after_resume.agent_runtimes[
+        "backend"
+    ].last_delivered_role_description_fingerprint == agent_role_description_fingerprint(
+        _agent_payload(state_after_resume, state_after_resume.agents["backend"])
     )
     prompt = str(resumer.calls[0]["prompt"])
     assert "wakeprivate" not in prompt
@@ -4047,9 +4042,7 @@ def test_wake_due_agents_fails_closed_when_authorized_chat_scope_becomes_empty(
     assert reread.dispatches[dispatch_id].status == TeamDispatchStatus.FAILED
     assert reread.dispatches[dispatch_id].project_ids == []
     assert reread.conversation_messages[message.id].status == "failed"
-    assert "no authorized projects remain" in str(
-        reread.conversation_messages[message.id].error
-    )
+    assert "no authorized projects remain" in str(reread.conversation_messages[message.id].error)
     runtime = reread.agent_runtimes["backend"]
     assert runtime.active_dispatch_id is None
     assert runtime.wake_leased_until is None
@@ -4748,8 +4741,7 @@ def test_build_prompt_includes_release_package_recovery_context(tmp_path: Path) 
     )
     assert "git_release_recoveries" in context["release_packages"]["rel-1"]["next_action_hint"]
     assert not any(
-        row["kind"] == "blocked_release_package"
-        and row["release_package_id"] == "rel-1"
+        row["kind"] == "blocked_release_package" and row["release_package_id"] == "rel-1"
         for row in context.get("runtime_attention", [])
     )
 
@@ -5534,10 +5526,7 @@ def test_manager_fallback_skips_finished_task_deliverable_without_actionable_wor
     manager_runtime = state.agent_runtimes.get("manager")
     assert manager_runtime is None or manager_runtime.active_dispatch_id is None
     assert manager_runtime is None or manager_runtime.wake_reason is None
-    assert (
-        state.deliverables["deliverable-feature"].initial_release_disposition
-        is None
-    )
+    assert state.deliverables["deliverable-feature"].initial_release_disposition is None
 
 
 def test_manager_fallback_owns_pending_initial_release_until_audited_decision(
@@ -5581,9 +5570,7 @@ def test_manager_fallback_owns_pending_initial_release_until_audited_decision(
     ]
     assert lease["dispatch"]["project_ids"] == ["project"]
     context = _team_context_from_prompt(_build_prompt(lease))
-    assert context["manager_fallback_summary"][
-        "pending_initial_release_decisions"
-    ] == [
+    assert context["manager_fallback_summary"]["pending_initial_release_decisions"] == [
         {
             "artifact_ref_count": 0,
             "deliverable_id": "deliverable-initial-release",
@@ -5598,9 +5585,7 @@ def test_manager_fallback_owns_pending_initial_release_until_audited_decision(
         }
     ]
 
-    state, result = TeamGitReleaseCommandService(
-        repo
-    ).decide_initial_release_command(
+    state, result = TeamGitReleaseCommandService(repo).decide_initial_release_command(
         session_id="session-manager",
         deliverable_ids=["deliverable-initial-release"],
         decision="not_planned",
@@ -5609,17 +5594,13 @@ def test_manager_fallback_owns_pending_initial_release_until_audited_decision(
     )
 
     assert result["success"] is True
-    disposition = state.deliverables[
-        "deliverable-initial-release"
-    ].initial_release_disposition
+    disposition = state.deliverables["deliverable-initial-release"].initial_release_disposition
     assert disposition is not None
     assert disposition.state == InitialReleaseDispositionState.NOT_PLANNED
     assert disposition.decided_by_actor == "agent:manager"
     assert disposition.reason == "This result is intentionally internal-only."
 
-    state, finalized = _team_runtime_service(
-        repo
-    ).finalize_agent_dispatch_from_activity(
+    state, finalized = _team_runtime_service(repo).finalize_agent_dispatch_from_activity(
         session_id="session-manager",
         dispatch_id=lease["dispatch"]["id"],
     )
@@ -6464,13 +6445,9 @@ def test_idle_context_grace_keeps_context_for_work_arriving_before_expiry(
     assert idle_since_at is not None
     assert idle_due_at == idle_since_at + timedelta(hours=1)
     assert runtime.context_rotation_pending is False
-    [idle_wake_outbox] = repo.list_outbox_records(
-        intent_type=AGENT_WAKE_REQUESTED_EVENT_TYPE
-    )
+    [idle_wake_outbox] = repo.list_outbox_records(intent_type=AGENT_WAKE_REQUESTED_EVENT_TYPE)
     assert idle_wake_outbox.payload["payload"]["reason"] == "idle_grace_expired"
-    assert idle_wake_outbox.payload["run_at"] == idle_due_at.isoformat().replace(
-        "+00:00", "Z"
-    )
+    assert idle_wake_outbox.payload["run_at"] == idle_due_at.isoformat().replace("+00:00", "Z")
     assert "delay_seconds" not in idle_wake_outbox.payload
 
     _state, idle_tick_leases = _team_runtime_service(repo).lease_due_agents(
@@ -6524,13 +6501,9 @@ def test_admin_task_cancellation_enqueues_idle_grace_expiry_wake(
 
     due_at = state.agent_runtimes["backend"].context_idle_rotation_due_at
     assert due_at is not None
-    [idle_wake_outbox] = repo.list_outbox_records(
-        intent_type=AGENT_WAKE_REQUESTED_EVENT_TYPE
-    )
+    [idle_wake_outbox] = repo.list_outbox_records(intent_type=AGENT_WAKE_REQUESTED_EVENT_TYPE)
     assert idle_wake_outbox.payload["payload"]["reason"] == "idle_grace_expired"
-    assert idle_wake_outbox.payload["run_at"] == due_at.isoformat().replace(
-        "+00:00", "Z"
-    )
+    assert idle_wake_outbox.payload["run_at"] == due_at.isoformat().replace("+00:00", "Z")
 
 
 def test_stale_idle_context_grace_expiry_does_not_handoff_active_work(
@@ -7412,9 +7385,7 @@ def test_libvirt_dependency_git_composition_command_is_valid_shell() -> None:
     assert "EVANDER_DEPENDENCY_CONFLICT_BASE_COMMIT" in command
     assert "EVANDER_DEPENDENCY_CONFLICT_PATH" in command
     conflict_gate = 'if [ -n "$conflict_paths" ]; then'
-    assert command.index(conflict_gate) < command.index(
-        'echo "EVANDER_DEPENDENCY_CONFLICT=1"'
-    )
+    assert command.index(conflict_gate) < command.index('echo "EVANDER_DEPENDENCY_CONFLICT=1"')
     assert 'reset --hard "$frontier_commit"' in command
 
 
@@ -7467,25 +7438,23 @@ def test_dependency_recovery_worktree_uses_pinned_commit_not_live_base_branch(
             state=TeamBlockerState.OPEN,
             summary="Dependency composition conflict",
         )
-        state.dependency_composition_recoveries["recovery"] = (
-            DependencyCompositionRecovery(
-                id="recovery",
-                blocker_id="blocker-recovery",
-                target_task_id="task",
-                project_id="project",
-                managed_repo_id="mr_0123456789abcdefabcd",
-                directory_path="root",
-                base_branch="main",
-                base_commit_sha=base_commit,
-                base_tree_hash=base_tree,
-                dependency_git_sources=dependency_sources,
-                source_fingerprint="f" * 64,
-                preparation_generation="generation",
-                failed_dependency_task_id="source-task",
-                failed_deliverable_id="source-deliverable",
-                recovery_task_id="recovery-task",
-                state=DependencyCompositionRecoveryState.IN_PROGRESS,
-            )
+        state.dependency_composition_recoveries["recovery"] = DependencyCompositionRecovery(
+            id="recovery",
+            blocker_id="blocker-recovery",
+            target_task_id="task",
+            project_id="project",
+            managed_repo_id="mr_0123456789abcdefabcd",
+            directory_path="root",
+            base_branch="main",
+            base_commit_sha=base_commit,
+            base_tree_hash=base_tree,
+            dependency_git_sources=dependency_sources,
+            source_fingerprint="f" * 64,
+            preparation_generation="generation",
+            failed_dependency_task_id="source-task",
+            failed_deliverable_id="source-deliverable",
+            recovery_task_id="recovery-task",
+            state=DependencyCompositionRecoveryState.IN_PROGRESS,
         )
         state.agent_runtimes["backend"] = AgentRuntime(
             agent_id="backend",
@@ -9183,9 +9152,7 @@ def test_session_metadata_mirror_retries_after_activation_survives_worker_restar
     )
 
     assert (
-        TeamAgentPromptCompletionFinalizeHook().on_post_completion_dispatch(
-            worker=failed_worker
-        )
+        TeamAgentPromptCompletionFinalizeHook().on_post_completion_dispatch(worker=failed_worker)
         == 1
     )
 
@@ -9209,9 +9176,7 @@ def test_session_metadata_mirror_retries_after_activation_survives_worker_restar
     )
 
     assert (
-        TeamAgentPromptCompletionFinalizeHook().on_post_completion_dispatch(
-            worker=restarted_worker
-        )
+        TeamAgentPromptCompletionFinalizeHook().on_post_completion_dispatch(worker=restarted_worker)
         == 0
     )
 
@@ -10119,9 +10084,7 @@ def test_enqueue_operator_chat_message_effect_validates_target_and_authorization
             resolved_config={"runtime_dir": str(tmp_path)},
             metadata={"directory_path": "root/team-a", "directory_store": directory_store},
             session_lookup=SimpleNamespace(
-                get_session=lambda _session_id: SimpleNamespace(
-                    directory_path="root/team-b"
-                )
+                get_session=lambda _session_id: SimpleNamespace(directory_path="root/team-b")
             ),
         ),
     )
@@ -11424,12 +11387,14 @@ def test_team_runtime_pack_routes_git_promotion_kinds() -> None:
     assert effects["team-mark-release-published"]["result_outputs"]["error_code"] == (
         "${{team-push-canonical-branch.reason ?? null}}"
     )
-    assert effects["team-mark-release-published"]["result_outputs"][
-        "expected_destination_commit_sha"
-    ] == "${{team-push-canonical-branch.expected_destination_commit_sha ?? null}}"
-    assert effects["team-mark-release-published"]["result_outputs"][
-        "destination_commit"
-    ] == "${{team-push-canonical-branch.destination_commit ?? null}}"
+    assert (
+        effects["team-mark-release-published"]["result_outputs"]["expected_destination_commit_sha"]
+        == "${{team-push-canonical-branch.expected_destination_commit_sha ?? null}}"
+    )
+    assert (
+        effects["team-mark-release-published"]["result_outputs"]["destination_commit"]
+        == "${{team-push-canonical-branch.destination_commit ?? null}}"
+    )
     assert ("team-git-promotion-canonical", "team-push-canonical-branch") in edges
     assert ("team-push-canonical-branch", "team-record-canonical-promotion") in edges
     assert (

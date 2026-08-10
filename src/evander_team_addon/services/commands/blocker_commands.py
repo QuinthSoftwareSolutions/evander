@@ -202,7 +202,11 @@ class TeamBlockerCommandService(TeamCommandExecutor):
                 created_domain_ids=(
                     [blocker.id, *result["created_inbox_item_ids"]] if created else []
                 ),
-                created_event_ids=[event.id for event in state.blocker_events.values() if event.blocker_id == blocker.id]
+                created_event_ids=[
+                    event.id
+                    for event in state.blocker_events.values()
+                    if event.blocker_id == blocker.id
+                ]
                 if created
                 else [],
                 progress_classification="blocker_progress" if created else "none",
@@ -229,9 +233,7 @@ class TeamBlockerCommandService(TeamCommandExecutor):
     ) -> tuple[TeamState, dict[str, Any]]:
         normalized_session_id = _required_text(session_id, "session_id")
         normalized_blocker_id = _required_text(blocker_id, "blocker_id")
-        normalized_resolver_id = _required_text(
-            resolver_agent_id, "resolver_agent_id"
-        )
+        normalized_resolver_id = _required_text(resolver_agent_id, "resolver_agent_id")
         normalized_request_id = _required_text(request_id, "request_id")
         normalized_handled_ids = _unique_text_list(
             handled_inbox_item_ids or [], "handled_inbox_item_ids"
@@ -256,9 +258,7 @@ class TeamBlockerCommandService(TeamCommandExecutor):
             state: TeamState,
             resolved: _ResolvedTeamCommandContext,
         ) -> TeamCommandApplyResult:
-            actor = _require_command_agent(
-                resolved, "team_start_dependency_composition_recovery"
-            )
+            actor = _require_command_agent(resolved, "team_start_dependency_composition_recovery")
             blocker = state.blockers.get(normalized_blocker_id)
             if blocker is None:
                 raise TeamCommandValidationError(
@@ -273,8 +273,7 @@ class TeamBlockerCommandService(TeamCommandExecutor):
                 raise TeamCommandValidationError(
                     code="blocker_resolution_line_required",
                     message=(
-                        f"agent {actor.id} is not on blocker {blocker.id}'s "
-                        "active escalation line"
+                        f"agent {actor.id} is not on blocker {blocker.id}'s active escalation line"
                     ),
                 )
             resolver = state.agents.get(normalized_resolver_id)
@@ -424,10 +423,7 @@ class TeamBlockerCommandService(TeamCommandExecutor):
                     code="blocker_not_found",
                     message=f"blocker {normalized_blocker_id} does not exist",
                 )
-            if (
-                blocker.state == TeamBlockerState.RESOLVED
-                and normalized_action == "resolve"
-            ):
+            if blocker.state == TeamBlockerState.RESOLVED and normalized_action == "resolve":
                 eligible_agent_ids = blocker_resolution_line_agent_ids(
                     state,
                     blocker=blocker,
@@ -436,8 +432,7 @@ class TeamBlockerCommandService(TeamCommandExecutor):
                     raise TeamCommandValidationError(
                         code="blocker_resolution_line_required",
                         message=(
-                            f"agent {actor.id} is not in blocker {blocker.id}'s "
-                            "resolution line"
+                            f"agent {actor.id} is not in blocker {blocker.id}'s resolution line"
                         ),
                     )
                 existing_refs = set(blocker.terminal_reference_ids)
@@ -697,10 +692,7 @@ class TeamBlockerCommandService(TeamCommandExecutor):
                         result=result,
                         now=now,
                     )
-                    if (
-                        blocker.source_kind
-                        == TeamBlockerSourceKind.AGENT_EXECUTION_STALL
-                    ):
+                    if blocker.source_kind == TeamBlockerSourceKind.AGENT_EXECUTION_STALL:
                         runtime = state.agent_runtimes.get(blocker.source_id)
                         if runtime is not None:
                             runtime.no_progress_count = 0
@@ -783,10 +775,7 @@ def _prepare_blocker_source_for_resolution(
             },
         )
 
-    if (
-        blocker.source_kind
-        == TeamBlockerSourceKind.CANDIDATE_CORRECTION_SUCCESSOR
-    ):
+    if blocker.source_kind == TeamBlockerSourceKind.CANDIDATE_CORRECTION_SUCCESSOR:
         raise TeamCommandValidationError(
             code="candidate_correction_recovery_command_required",
             message=(
@@ -914,8 +903,7 @@ def _validate_report_source(
                 code="task_not_found", message=f"task {source_id} does not exist"
             )
         if task.owner_agent_id != actor.id and not (
-            _is_project_lead_for(state, actor.id, task.project_id)
-            or _is_team_manager(state, actor)
+            _is_project_lead_for(state, actor.id, task.project_id) or _is_team_manager(state, actor)
         ):
             raise TeamCommandValidationError(
                 code="blocker_source_not_permitted",
@@ -967,8 +955,7 @@ def _validate_report_source(
             message=f"release package {source_id} does not exist",
         )
     if not (
-        _is_project_lead_for(state, actor.id, release.project_id)
-        or _is_team_manager(state, actor)
+        _is_project_lead_for(state, actor.id, release.project_id) or _is_team_manager(state, actor)
     ):
         raise TeamCommandValidationError(
             code="blocker_source_not_permitted",

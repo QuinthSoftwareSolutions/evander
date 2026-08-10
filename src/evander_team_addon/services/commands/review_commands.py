@@ -77,9 +77,7 @@ class TeamReviewCommandService(TeamCommandExecutor):
             repository,
             git_candidate_commit_resolver=git_candidate_commit_resolver,
         )
-        self._human_review_eligibility_resolver = (
-            human_review_eligibility_resolver
-        )
+        self._human_review_eligibility_resolver = human_review_eligibility_resolver
         self._review_dispatch_steering = review_dispatch_steering
 
     def request_review_command(
@@ -189,10 +187,8 @@ class TeamReviewCommandService(TeamCommandExecutor):
                 if dispatch is not None and dispatch.cause_kind == "manager_fallback":
                     for authority in dispatch.review_routing_authorities:
                         if (
-                            authority.reviewer_agent_id
-                            == review.reviewer_agent_id
-                            and authority.deliverable_id
-                            == review.deliverable_id
+                            authority.reviewer_agent_id == review.reviewer_agent_id
+                            and authority.deliverable_id == review.deliverable_id
                             and authority.consumed_at is None
                         ):
                             authority.consumed_at = created_at
@@ -387,14 +383,10 @@ class TeamReviewCommandService(TeamCommandExecutor):
                         "release_package": release.model_dump(mode="json"),
                         "release_package_id": release.id,
                         "created_successor_release_package_ids": list(
-                            decision_result.get(
-                                "created_successor_release_package_ids"
-                            )
-                            or []
+                            decision_result.get("created_successor_release_package_ids") or []
                         ),
                         "candidate_correction_blocker_ids": list(
-                            decision_result.get("candidate_correction_blocker_ids")
-                            or []
+                            decision_result.get("candidate_correction_blocker_ids") or []
                         ),
                         "events": list(decision_result.get("events") or []),
                         "intent_recorded": True,
@@ -408,15 +400,8 @@ class TeamReviewCommandService(TeamCommandExecutor):
                         decided_id,
                         *list(decision_result.get("created_blocker_ids") or []),
                         *list(decision_result["created_inbox_item_ids"]),
-                        *list(
-                            decision_result.get(
-                                "created_successor_release_package_ids"
-                            )
-                            or []
-                        ),
-                        *list(
-                            decision_result.get("git_promotion_event_ids") or []
-                        ),
+                        *list(decision_result.get("created_successor_release_package_ids") or []),
+                        *list(decision_result.get("git_promotion_event_ids") or []),
                     ],
                 )
             deliverable = command_state.deliverables[decided_review.deliverable_id]
@@ -431,22 +416,17 @@ class TeamReviewCommandService(TeamCommandExecutor):
                     "task": task_payload_with_assessment(command_state, task),
                     "deliverable_id": deliverable.id,
                     "task_id": task.id,
-                    "created_blocker_ids": list(
-                        decision_result.get("created_blocker_ids") or []
-                    ),
+                    "created_blocker_ids": list(decision_result.get("created_blocker_ids") or []),
                     "created_successor_release_package_ids": list(
-                        decision_result.get("created_successor_release_package_ids")
-                        or []
+                        decision_result.get("created_successor_release_package_ids") or []
                     ),
                     "candidate_correction_blocker_ids": list(
-                        decision_result.get("candidate_correction_blocker_ids")
-                        or []
+                        decision_result.get("candidate_correction_blocker_ids") or []
                     ),
                     "events": list(decision_result.get("events") or []),
                     "intent_recorded": True,
                     "async_effect_pending": bool(
-                        decision_result["created_inbox_item_ids"]
-                        or decision_result.get("events")
+                        decision_result["created_inbox_item_ids"] or decision_result.get("events")
                     ),
                     "progress_made": True,
                 },
@@ -454,10 +434,7 @@ class TeamReviewCommandService(TeamCommandExecutor):
                     decided_id,
                     *list(decision_result.get("created_blocker_ids") or []),
                     *list(decision_result["created_inbox_item_ids"]),
-                    *list(
-                        decision_result.get("created_successor_release_package_ids")
-                        or []
-                    ),
+                    *list(decision_result.get("created_successor_release_package_ids") or []),
                     *list(decision_result.get("git_promotion_event_ids") or []),
                 ],
             )
@@ -486,9 +463,7 @@ class TeamReviewCommandService(TeamCommandExecutor):
         normalized_session_id = _required_text(session_id, "session_id")
         normalized_request_id = _required_text(request_id, "request_id")
         normalized_payload = {
-            "review_request_id": _required_text(
-                review_request_id, "review_request_id"
-            ),
+            "review_request_id": _required_text(review_request_id, "review_request_id"),
             "reason": _required_text(reason, "reason"),
             "reviewer_agent_id": _optional_text(reviewer_agent_id),
             "handled_inbox_item_ids": sorted(
@@ -562,18 +537,14 @@ class TeamReviewCommandService(TeamCommandExecutor):
                     "intent_recorded": True,
                     "async_effect_pending": bool(created_inbox_ids or events),
                     "review_request_id": retry.id,
-                    "retried_review_request_id": normalized_payload[
-                        "review_request_id"
-                    ],
+                    "retried_review_request_id": normalized_payload["review_request_id"],
                     "replacement_review_request_id": retry.id,
                     "review": retry.model_dump(mode="json"),
                     "deliverable": deliverable.model_dump(mode="json"),
                     "task": task_payload_with_assessment(command_state, task),
                     "created_inbox_item_ids": created_inbox_ids,
                     "events": events,
-                    "resolved_blocker_ids": list(
-                        intent_result.get("resolved_blocker_ids") or []
-                    ),
+                    "resolved_blocker_ids": list(intent_result.get("resolved_blocker_ids") or []),
                     "progress_made": True,
                 },
                 created_domain_ids=[retry.id, *created_inbox_ids],
@@ -724,13 +695,9 @@ class TeamReviewCommandService(TeamCommandExecutor):
                     "review": review.model_dump(mode="json"),
                     "deliverable": deliverable.model_dump(mode="json"),
                     "task": task_payload_with_assessment(command_state, task),
-                    "closed_inbox_item_ids": list(
-                        closure_result["closed_inbox_item_ids"]
-                    ),
+                    "closed_inbox_item_ids": list(closure_result["closed_inbox_item_ids"]),
                     "created_inbox_item_ids": created_inbox_ids,
-                    "resolved_blocker_ids": list(
-                        closure_result["resolved_blocker_ids"]
-                    ),
+                    "resolved_blocker_ids": list(closure_result["resolved_blocker_ids"]),
                     "open_finding_ids": [
                         finding.id
                         for finding in deliverable.carried_findings
@@ -763,11 +730,7 @@ class TeamReviewCommandService(TeamCommandExecutor):
                     steering_callback(
                         state=command_state,
                         review_request_id=normalized_payload["review_request_id"],
-                        action=(
-                            "withdrawn"
-                            if action == "withdraw"
-                            else "retired"
-                        ),
+                        action=("withdrawn" if action == "withdraw" else "retired"),
                         reason=normalized_payload["reason"],
                         created_by=f"agent-session:{normalized_session_id}",
                     )

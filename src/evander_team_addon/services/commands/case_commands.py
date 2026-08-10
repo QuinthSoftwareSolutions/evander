@@ -358,11 +358,9 @@ class TeamCaseCommandService(TeamCommandExecutor):
                 resolved,
                 "team_propose_human_finding_resolution",
             )
-            finding, _request, _release, project, _case = (
-                _human_finding_command_context(
-                    state,
-                    finding_id=normalized_finding_id,
-                )
+            finding, _request, _release, project, _case = _human_finding_command_context(
+                state,
+                finding_id=normalized_finding_id,
             )
             correction_task = state.tasks.get(finding.correction_task_id)
             if correction_task is None:
@@ -387,9 +385,7 @@ class TeamCaseCommandService(TeamCommandExecutor):
                     correction_context={
                         "finding_id": finding.id,
                         "correction_task_id": correction_task.id,
-                        "correction_task_owner_agent_id": (
-                            correction_task.owner_agent_id
-                        ),
+                        "correction_task_owner_agent_id": (correction_task.owner_agent_id),
                     },
                 )
             try:
@@ -410,9 +406,7 @@ class TeamCaseCommandService(TeamCommandExecutor):
                 response_payload={
                     "human_review_finding_id": updated.id,
                     "correction_task_id": updated.correction_task_id,
-                    "proposed_by_deliverable_ids": list(
-                        updated.proposed_by_deliverable_ids
-                    ),
+                    "proposed_by_deliverable_ids": list(updated.proposed_by_deliverable_ids),
                     "progress_made": True,
                 },
             )
@@ -479,11 +473,9 @@ class TeamCaseCommandService(TeamCommandExecutor):
                 resolved,
                 "team_route_human_finding_correction",
             )
-            finding, _request, _release, project, case = (
-                _human_finding_command_context(
-                    state,
-                    finding_id=normalized_finding_id,
-                )
+            finding, _request, _release, project, case = _human_finding_command_context(
+                state,
+                finding_id=normalized_finding_id,
             )
             authorized_triage_actor = (
                 case.owner_agent_id == actor.id
@@ -604,10 +596,7 @@ class TeamCaseCommandService(TeamCommandExecutor):
             if case is None or project is None:
                 raise TeamCommandValidationError(
                     code="post_release_case_not_found",
-                    message=(
-                        f"post-release feedback case {normalized_case_id} "
-                        "does not exist"
-                    ),
+                    message=(f"post-release feedback case {normalized_case_id} does not exist"),
                 )
             if not (
                 case.owner_agent_id == actor.id
@@ -616,10 +605,7 @@ class TeamCaseCommandService(TeamCommandExecutor):
             ):
                 raise TeamCommandValidationError(
                     code="post_release_case_close_not_permitted",
-                    message=(
-                        f"agent {actor.id} cannot close post-release feedback "
-                        f"case {case.id}"
-                    ),
+                    message=(f"agent {actor.id} cannot close post-release feedback case {case.id}"),
                     correction_context={
                         "case_id": case.id,
                         "owner_agent_id": case.owner_agent_id,
@@ -677,19 +663,11 @@ def _human_finding_command_context(
             code="human_finding_not_found",
             message=f"human review finding {finding_id} does not exist",
         )
-    request = state.human_review_requests.get(
-        finding.source_human_review_request_id
-    )
+    request = state.human_review_requests.get(finding.source_human_review_request_id)
     release = (
-        state.release_packages.get(request.release_package_id)
-        if request is not None
-        else None
+        state.release_packages.get(request.release_package_id) if request is not None else None
     )
-    project = (
-        state.projects.get(release.project_id)
-        if release is not None
-        else None
-    )
+    project = state.projects.get(release.project_id) if release is not None else None
     correction_task = state.tasks.get(finding.correction_task_id)
     case = (
         state.cases.get(correction_task.case_id)

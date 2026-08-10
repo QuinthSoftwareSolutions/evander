@@ -57,8 +57,7 @@ def is_human_review_correction_task(
     task_id: str,
 ) -> bool:
     return any(
-        finding.correction_task_id == task_id
-        for finding in state.human_review_findings.values()
+        finding.correction_task_id == task_id for finding in state.human_review_findings.values()
     )
 
 
@@ -92,9 +91,7 @@ def human_review_correction_git_source(
             + ", ".join(finding.id for finding in matches)
         )
     finding = matches[0]
-    request = state.human_review_requests.get(
-        finding.source_human_review_request_id
-    )
+    request = state.human_review_requests.get(finding.source_human_review_request_id)
     if request is None:
         raise ValueError(
             f"human review finding {finding.id} references missing request "
@@ -121,9 +118,7 @@ def human_review_correction_git_source(
         )
     manifest = release.manifest
     if manifest is None or manifest.evidence_status != "complete":
-        raise ValueError(
-            f"rejected release {release.id} has no complete candidate manifest"
-        )
+        raise ValueError(f"rejected release {release.id} has no complete candidate manifest")
 
     candidate_commit_sha = request.candidate_commit_sha.casefold()
     candidate_tree_hash = request.candidate_tree_hash.casefold()
@@ -158,9 +153,7 @@ def human_review_correction_git_source(
         ("candidate tree", candidate_tree_hash),
     ):
         if _FULL_OBJECT_ID_RE.fullmatch(value) is None:
-            raise ValueError(
-                f"rejected release {release.id} records an invalid {field_name}"
-            )
+            raise ValueError(f"rejected release {release.id} records an invalid {field_name}")
 
     dependency_sources: list[DependencyGitSource] = []
     for evidence in sorted(
@@ -219,8 +212,7 @@ def is_release_verification_correction_task(
     task_id: str,
 ) -> bool:
     return any(
-        run.correction_task_id == task_id
-        for run in state.release_verification_runs.values()
+        run.correction_task_id == task_id for run in state.release_verification_runs.values()
     )
 
 
@@ -255,14 +247,11 @@ def release_verification_correction_git_source(
     release = state.release_packages.get(run.release_package_id)
     if release is None:
         raise ValueError(
-            f"release verification run {run.id} references missing release "
-            f"{run.release_package_id}"
+            f"release verification run {run.id} references missing release {run.release_package_id}"
         )
     task = state.tasks.get(task_id)
     if task is None:
-        raise ValueError(
-            f"release verification correction task {task_id} does not exist"
-        )
+        raise ValueError(f"release verification correction task {task_id} does not exist")
     if release.project_id != task.project_id:
         raise ValueError(
             f"release verification correction task {task_id} belongs to project "
@@ -281,15 +270,11 @@ def release_verification_correction_git_source(
         )
     manifest = release.manifest
     if manifest is None or manifest.evidence_status != "complete":
-        raise ValueError(
-            f"rejected release {release.id} has no complete candidate manifest"
-        )
+        raise ValueError(f"rejected release {release.id} has no complete candidate manifest")
 
     candidate_commit_sha = run.candidate_commit_sha.casefold()
     candidate_tree_hash = (
-        release.candidate_tree_hash.casefold()
-        if release.candidate_tree_hash is not None
-        else ""
+        release.candidate_tree_hash.casefold() if release.candidate_tree_hash is not None else ""
     )
     release_branch = release.release_branch or manifest.release_branch
     if not release_branch:
@@ -321,9 +306,7 @@ def release_verification_correction_git_source(
         ("candidate tree", candidate_tree_hash),
     ):
         if _FULL_OBJECT_ID_RE.fullmatch(value) is None:
-            raise ValueError(
-                f"rejected release {release.id} records an invalid {field_name}"
-            )
+            raise ValueError(f"rejected release {release.id} records an invalid {field_name}")
 
     dependency_sources: list[DependencyGitSource] = []
     for evidence in sorted(
@@ -381,8 +364,7 @@ def is_release_review_correction_task(
     task_id: str,
 ) -> bool:
     return any(
-        release.review_correction_task_id == task_id
-        for release in state.release_packages.values()
+        release.review_correction_task_id == task_id for release in state.release_packages.values()
     )
 
 
@@ -455,9 +437,7 @@ def release_review_correction_git_source(
         )
     manifest = release.manifest
     if manifest is None or manifest.evidence_status != "complete":
-        raise ValueError(
-            f"rejected release {release.id} has no complete candidate manifest"
-        )
+        raise ValueError(f"rejected release {release.id} has no complete candidate manifest")
 
     candidate_commit_sha = (release.candidate_commit_sha or "").casefold()
     candidate_tree_hash = (release.candidate_tree_hash or "").casefold()
@@ -492,9 +472,7 @@ def release_review_correction_git_source(
         ("candidate tree", candidate_tree_hash),
     ):
         if _FULL_OBJECT_ID_RE.fullmatch(value) is None:
-            raise ValueError(
-                f"rejected release {release.id} records an invalid {field_name}"
-            )
+            raise ValueError(f"rejected release {release.id} records an invalid {field_name}")
 
     dependency_sources: list[DependencyGitSource] = []
     for evidence in sorted(
@@ -560,13 +538,10 @@ def rejected_candidate_git_source(
     )
     review_source = release_review_correction_git_source(state, task_id=task_id)
     source_count = sum(
-        source is not None
-        for source in (human_source, verification_source, review_source)
+        source is not None for source in (human_source, verification_source, review_source)
     )
     if source_count > 1:
-        raise ValueError(
-            f"task {task_id} is linked to multiple rejected-candidate failures"
-        )
+        raise ValueError(f"task {task_id} is linked to multiple rejected-candidate failures")
     return human_source or verification_source or review_source
 
 

@@ -244,10 +244,7 @@ def test_correction_source_is_derived_from_rejected_release_not_main() -> None:
     assert source.release_branch == RELEASE_BRANCH
     assert source.candidate_commit_sha == CANDIDATE_COMMIT
     assert source.candidate_tree_hash == CANDIDATE_TREE
-    assert [
-        item.model_dump(mode="json")
-        for item in source.dependency_git_sources
-    ] == [
+    assert [item.model_dump(mode="json") for item in source.dependency_git_sources] == [
         {
             "dependency_task_id": "source-task",
             "deliverable_id": "source-deliverable",
@@ -269,10 +266,7 @@ def test_verification_correction_source_is_derived_from_failed_candidate() -> No
     assert source.release_branch == RELEASE_BRANCH
     assert source.candidate_commit_sha == CANDIDATE_COMMIT
     assert source.candidate_tree_hash == CANDIDATE_TREE
-    assert [
-        item.model_dump(mode="json")
-        for item in source.dependency_git_sources
-    ] == [
+    assert [item.model_dump(mode="json") for item in source.dependency_git_sources] == [
         {
             "dependency_task_id": "source-task",
             "deliverable_id": "source-deliverable",
@@ -294,10 +288,7 @@ def test_release_review_correction_source_is_derived_from_rejected_candidate() -
     assert source.release_branch == RELEASE_BRANCH
     assert source.candidate_commit_sha == CANDIDATE_COMMIT
     assert source.candidate_tree_hash == CANDIDATE_TREE
-    assert [
-        item.model_dump(mode="json")
-        for item in source.dependency_git_sources
-    ] == [
+    assert [item.model_dump(mode="json") for item in source.dependency_git_sources] == [
         {
             "dependency_task_id": "source-task",
             "deliverable_id": "source-deliverable",
@@ -346,8 +337,7 @@ def test_release_review_correction_link_round_trips(tmp_path) -> None:
     reloaded = repo.read()
 
     assert (
-        reloaded.release_packages["rejected-release"].review_correction_task_id
-        == "correction-task"
+        reloaded.release_packages["rejected-release"].review_correction_task_id == "correction-task"
     )
 
 
@@ -533,14 +523,11 @@ def test_libvirt_correction_worktree_fetches_and_checks_pinned_candidate() -> No
     assert 'git worktree add -b "$branch" "$target" "$base_commitish"' in command
     head_capture = 'head_before="$(git -C "$target" rev-parse HEAD)"'
     pinned_ancestry_check = (
-        'git -C "$target" merge-base --is-ancestor '
-        '"$pinned_base_commit" "$head_before"'
+        'git -C "$target" merge-base --is-ancestor "$pinned_base_commit" "$head_before"'
     )
     assert pinned_ancestry_check in command
     assert command.index(head_capture) < command.index(pinned_ancestry_check)
-    assert command.index(pinned_ancestry_check) < command.index(
-        'current_dependency_provenance='
-    )
+    assert command.index(pinned_ancestry_check) < command.index("current_dependency_provenance=")
 
 
 def test_correction_git_context_records_candidate_base_and_manifest_sources(
@@ -616,10 +603,7 @@ def test_correction_git_context_records_candidate_base_and_manifest_sources(
     context_model = next(iter(result_state.git_work_contexts.values()))
     assert context_model.base_branch == RELEASE_BRANCH
     assert context_model.base_commit == CANDIDATE_COMMIT
-    assert [
-        item.model_dump(mode="json")
-        for item in context_model.dependency_git_sources
-    ] == [
+    assert [item.model_dump(mode="json") for item in context_model.dependency_git_sources] == [
         {
             "dependency_task_id": "source-task",
             "deliverable_id": "source-deliverable",
@@ -661,8 +645,7 @@ def test_operator_preparation_recovery_creates_one_fresh_inbox_and_due_wake(
     recovery_items = [
         item
         for item in resolved.inbox.values()
-        if item.payload.get("kind")
-        == "rejected_candidate_correction_preparation_recovered"
+        if item.payload.get("kind") == "rejected_candidate_correction_preparation_recovered"
     ]
     assert len(recovery_items) == 1
     assert recovery_items[0].recipient_agent_id == "owner"
@@ -673,9 +656,7 @@ def test_operator_preparation_recovery_creates_one_fresh_inbox_and_due_wake(
     assert result["events"][0]["event_type"] == AGENT_WAKE_REQUESTED_EVENT_TYPE
     assert result["events"][0]["delay_seconds"] == 0
     assert result["events"][0]["payload"]["agent_id"] == "owner"
-    wake_outbox = repo.list_outbox_records(
-        intent_type=AGENT_WAKE_REQUESTED_EVENT_TYPE
-    )
+    wake_outbox = repo.list_outbox_records(intent_type=AGENT_WAKE_REQUESTED_EVENT_TYPE)
     assert len(wake_outbox) == 1
     assert wake_outbox[0].payload["delay_seconds"] == 0
     assert wake_outbox[0].payload["payload"]["agent_id"] == "owner"
@@ -697,19 +678,19 @@ def test_operator_preparation_recovery_creates_one_fresh_inbox_and_due_wake(
         return state
 
     replayed = repo.update(_replay)
-    assert len(
-        [
-            item
-            for item in replayed.inbox.values()
-            if item.payload.get("kind")
-            == "rejected_candidate_correction_preparation_recovered"
-        ]
-    ) == 1
+    assert (
+        len(
+            [
+                item
+                for item in replayed.inbox.values()
+                if item.payload.get("kind") == "rejected_candidate_correction_preparation_recovered"
+            ]
+        )
+        == 1
+    )
     assert [
         record.id
-        for record in repo.list_outbox_records(
-            intent_type=AGENT_WAKE_REQUESTED_EVENT_TYPE
-        )
+        for record in repo.list_outbox_records(intent_type=AGENT_WAKE_REQUESTED_EVENT_TYPE)
     ] == [wake_outbox[0].id]
 
 

@@ -91,9 +91,9 @@ def test_task_preparation_failure_reuses_incident_and_unlocks_on_generation_chan
     assert suppressed == []
 
     def _change_task_generation(state):
-        state.tasks["task"].description = (
-            "Use the replacement dependency candidate recorded by the lead."
-        )
+        state.tasks[
+            "task"
+        ].description = "Use the replacement dependency candidate recorded by the lead."
         return state
 
     repo.update(_change_task_generation)
@@ -433,9 +433,9 @@ def test_preparation_recovery_wake_isolates_ordinary_project_work(
     assert recovery["leases"][0]["dispatch"]["task_ids"] == []
     assert recovery_cloner.calls == []
     assert len(lead_resumer.calls) == 1
-    assert {
-        blocker.reason_code for blocker in repo.read().blockers.values()
-    } == {"task_execution_preparation_failed"}
+    assert {blocker.reason_code for blocker in repo.read().blockers.values()} == {
+        "task_execution_preparation_failed"
+    }
 
 
 def test_delegated_preparation_recovery_does_not_retry_affected_task_repository(
@@ -557,13 +557,11 @@ def test_future_delegated_preparation_blocker_does_not_contaminate_other_work(
     )
 
     def _delegate_and_assign_other_project(state):
-        state.project_assignments["backend-other-project"] = (
-            AgentProjectAssignment(
-                id="backend-other-project",
-                team_id="team",
-                project_id="other-project",
-                agent_id="backend",
-            )
+        state.project_assignments["backend-other-project"] = AgentProjectAssignment(
+            id="backend-other-project",
+            team_id="team",
+            project_id="other-project",
+            agent_id="backend",
         )
         blocker = state.blockers[blocker_id]
         blocker.route = TeamBlockerRoute.DELEGATED
@@ -624,9 +622,7 @@ def test_review_artifact_preparation_blocks_before_inference_and_requires_retry(
 ) -> None:
     repo = _seed_team(tmp_path)
     _add_luke_reviewer(repo)
-    artifact_ref = (
-        "artifact-space:/teams/team/projects/project/deliverables/missing"
-    )
+    artifact_ref = "artifact-space:/teams/team/projects/project/deliverables/missing"
     _state, submission = _team_agent_action_service(repo).apply_agent_action(
         action={
             "agent_id": "backend",
@@ -699,11 +695,7 @@ def test_review_artifact_preparation_blocks_before_inference_and_requires_retry(
     assert review.state == TeamRecordState.BLOCKED
     assert review.block_kind == ReviewBlockKind.SYSTEM
     assert state.agent_runtimes["luke"].no_progress_count == 0
-    blocker = next(
-        blocker
-        for blocker in state.blockers.values()
-        if blocker.source_id == review.id
-    )
+    blocker = next(blocker for blocker in state.blockers.values() if blocker.source_id == review.id)
     assert blocker.reason_code == "review_preparation_failed"
 
     repeated = provider.execute()
@@ -806,9 +798,7 @@ def test_review_repository_preparation_failure_blocks_exact_review_attempt(
     state = repo.read()
     assert state.review_requests["review-luke"].state == TeamRecordState.BLOCKED
     blockers = [
-        blocker
-        for blocker in state.blockers.values()
-        if blocker.source_id == "review-luke"
+        blocker for blocker in state.blockers.values() if blocker.source_id == "review-luke"
     ]
     assert len(blockers) == 1
     assert blockers[0].reason_code == "review_preparation_failed"

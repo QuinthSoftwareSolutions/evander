@@ -121,10 +121,7 @@ def _candidate_correction_state(
         priority=0,
         state=TeamTaskState.FINISHED,
         title="Correct the rejected release candidate",
-        description=(
-            "Fix the rejected release-gate finding. "
-            "Release reviews: release-review"
-        ),
+        description=("Fix the rejected release-gate finding. Release reviews: release-review"),
         created_by_actor=task_actor,
         git_base_branch=predecessor.release_branch,
         deliverable_ids=["correction-deliverable"],
@@ -272,9 +269,7 @@ def test_release_review_correction_waits_for_every_current_review(
     assert len(repository.read().release_packages) == 1
 
     def _accept_sibling_review(state: TeamState) -> TeamState:
-        state.review_requests["release-review-pending"].state = (
-            TeamRecordState.ACCEPTED
-        )
+        state.review_requests["release-review-pending"].state = TeamRecordState.ACCEPTED
         return state
 
     repository.update(_accept_sibling_review)
@@ -313,10 +308,7 @@ def test_late_release_review_rejection_reopens_accepted_correction(
     repository = TeamStateRepository(tmp_path)
     seeded = _candidate_correction_state(gate_kind="review")
     predecessor = seeded.release_packages["release-predecessor"]
-    task_id = (
-        "release-review-correction-"
-        + sha256(predecessor.id.encode("utf-8")).hexdigest()[:24]
-    )
+    task_id = "release-review-correction-" + sha256(predecessor.id.encode("utf-8")).hexdigest()[:24]
     task = seeded.tasks.pop("correction-task")
     task.id = task_id
     seeded.tasks[task.id] = task
@@ -465,12 +457,9 @@ def test_operator_can_create_exact_pinned_replacement_for_owned_blocker(
     progress_event_ids = {
         event.id
         for event in state.blocker_events.values()
-        if event.blocker_id == blocker.id
-        and event.event_type == TeamBlockerEventType.PROGRESS
+        if event.blocker_id == blocker.id and event.event_type == TeamBlockerEventType.PROGRESS
     }
-    state, replay = TeamAdminService(
-        repository
-    ).recover_candidate_correction_successor_as_operator(
+    state, replay = TeamAdminService(repository).recover_candidate_correction_successor_as_operator(
         blocker_id=blocker.id,
         action="create_verified_replacement",
         operator_actor_id="jonathan",
@@ -484,8 +473,7 @@ def test_operator_can_create_exact_pinned_replacement_for_owned_blocker(
     assert progress_event_ids == {
         event.id
         for event in state.blocker_events.values()
-        if event.blocker_id == blocker.id
-        and event.event_type == TeamBlockerEventType.PROGRESS
+        if event.blocker_id == blocker.id and event.event_type == TeamBlockerEventType.PROGRESS
     }
 
     with pytest.raises(ValueError, match="does not match task .* pin"):
@@ -516,8 +504,8 @@ def test_passed_downstream_recovery_deliverable_creates_successor_without_waiver
 ) -> None:
     repository = TeamStateRepository(tmp_path)
     seeded = _candidate_correction_state(gate_kind="verification")
-    seeded.deliverables["correction-deliverable"].verification = (
-        DeliverableVerification(status="partial", summary="Needs downstream repair.")
+    seeded.deliverables["correction-deliverable"].verification = DeliverableVerification(
+        status="partial", summary="Needs downstream repair."
     )
     repository.update(lambda _state: seeded, expected_revision=0)
     CandidateCorrectionReconciliationService(repository).reconcile()
@@ -589,17 +577,15 @@ def test_operator_waiver_action_records_reason_and_creates_successor(
 ) -> None:
     repository = TeamStateRepository(tmp_path)
     seeded = _candidate_correction_state(gate_kind="verification")
-    seeded.deliverables["correction-deliverable"].verification = (
-        DeliverableVerification(status="partial", summary="Environment unavailable.")
+    seeded.deliverables["correction-deliverable"].verification = DeliverableVerification(
+        status="partial", summary="Environment unavailable."
     )
     repository.update(lambda _state: seeded, expected_revision=0)
     CandidateCorrectionReconciliationService(repository).reconcile()
     state = repository.read()
     blocker = next(iter(state.blockers.values()))
 
-    state, result = TeamAdminService(
-        repository
-    ).recover_candidate_correction_successor_as_operator(
+    state, result = TeamAdminService(repository).recover_candidate_correction_successor_as_operator(
         blocker_id=blocker.id,
         action="authorize_verification_waiver",
         reason="Focused verifier passed; the full environment is unavailable.",
@@ -613,9 +599,7 @@ def test_operator_waiver_action_records_reason_and_creates_successor(
     waiver = successor.verification_waivers[0]
     assert waiver.actor_kind == "operator"
     assert waiver.actor_id == "jonathan"
-    assert waiver.reason == (
-        "Focused verifier passed; the full environment is unavailable."
-    )
+    assert waiver.reason == ("Focused verifier passed; the full environment is unavailable.")
     assert state.blockers[blocker.id].state == TeamBlockerState.RESOLVED
 
 
@@ -673,9 +657,7 @@ def test_existing_successor_resolves_recovery_before_task_readiness_check(
     result = CandidateCorrectionReconciliationService(repository).reconcile()
     state = repository.read()
 
-    assert result["existing_successor_release_package_ids"] == [
-        "release-existing-successor"
-    ]
+    assert result["existing_successor_release_package_ids"] == ["release-existing-successor"]
     assert state.blockers[recovery_blocker.id].state == TeamBlockerState.RESOLVED
     assert state.blockers["unrelated-task-blocker"].state == TeamBlockerState.OPEN
 
@@ -742,10 +724,7 @@ def test_accepting_generated_correction_review_creates_successor_atomically(
     assert notice.state == TeamInboxItemState.HANDLED
     assert notice.response_requested is False
     assert notice.payload["successor_release_package_id"] == successor_id
-    assert not any(
-        event["event_type"] == "team.agent.wake_requested"
-        for event in result["events"]
-    )
+    assert not any(event["event_type"] == "team.agent.wake_requested" for event in result["events"])
     assert any(
         record.intent_type == "team.git.promotion_requested"
         for record in repository.list_outbox_records()

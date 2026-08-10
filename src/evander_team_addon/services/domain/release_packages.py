@@ -60,9 +60,7 @@ from .task_assessment import (
 
 GIT_RELEASE_RECOVERY_EVENT_TYPE = "team.git.release_recovery_requested"
 _TERMINAL_RELEASE_STATES = {TeamRecordState.ACCEPTED, TeamRecordState.REJECTED}
-_HUMAN_CORRECTION_AGGREGATION_TASK_ID_KEY = (
-    "human_correction_aggregation_task_id"
-)
+_HUMAN_CORRECTION_AGGREGATION_TASK_ID_KEY = "human_correction_aggregation_task_id"
 
 
 class ReleasePackageValidationError(ValueError):
@@ -99,11 +97,7 @@ def allowed_release_parent_task_ids(
         parent_task_id = _optional_text(
             case.metadata.get(_HUMAN_CORRECTION_AGGREGATION_TASK_ID_KEY)
         )
-        parent = (
-            state.tasks.get(parent_task_id)
-            if parent_task_id is not None
-            else None
-        )
+        parent = state.tasks.get(parent_task_id) if parent_task_id is not None else None
         if (
             parent is not None
             and parent.case_id == case.id
@@ -236,9 +230,8 @@ def _apply_git_release_request(
             f"agent {actor.id} is not permitted to request releases on project {project_id}"
         )
         return None
-    waiver_actor_authorized = (
-        _is_project_lead_for(state, actor.id, project_id)
-        or (_is_team_manager(state, actor) and project.team_id == actor.team_id)
+    waiver_actor_authorized = _is_project_lead_for(state, actor.id, project_id) or (
+        _is_team_manager(state, actor) and project.team_id == actor.team_id
     )
     if request.get("verification_waivers") and not waiver_actor_authorized:
         result["errors"].append(
@@ -320,7 +313,8 @@ def _failed_release_promotion_for_recovery(
     promotions = [
         promotion
         for promotion in state.git_promotions.values()
-        if promotion.promotion_kind in {
+        if promotion.promotion_kind
+        in {
             "feature",
             "correction_aggregate",
             "release",
@@ -489,19 +483,10 @@ def _build_release_package(
             f"git release request for project {project_id} requires deliverable_ids"
         )
         return None
-    supersedes_release_package_id = _optional_text(
-        request.get("supersedes_release_package_id")
-    )
-    post_release_feedback_case_id = _optional_text(
-        request.get("post_release_feedback_case_id")
-    )
-    if (
-        post_release_feedback_case_id is not None
-        and supersedes_release_package_id is None
-    ):
-        result["errors"].append(
-            "post_release_feedback_case_id requires a predecessor release"
-        )
+    supersedes_release_package_id = _optional_text(request.get("supersedes_release_package_id"))
+    post_release_feedback_case_id = _optional_text(request.get("post_release_feedback_case_id"))
+    if post_release_feedback_case_id is not None and supersedes_release_package_id is None:
+        result["errors"].append("post_release_feedback_case_id requires a predecessor release")
         return None
     predecessor: ReleasePackage | None = None
     correction_deliverable_ids = list(requested_deliverable_ids)
@@ -529,17 +514,14 @@ def _build_release_package(
         result["predecessor_release_package_id"] = predecessor.id
         result["correction_deliverable_ids"] = correction_deliverable_ids
         if post_release_feedback_case_id is not None:
-            result["post_release_feedback_case_id"] = (
-                post_release_feedback_case_id
-            )
+            result["post_release_feedback_case_id"] = post_release_feedback_case_id
     else:
         deliverable_ids = requested_deliverable_ids
         not_planned_ids = sorted(
             deliverable_id
             for deliverable_id in deliverable_ids
             if (
-                (deliverable := state.deliverables.get(deliverable_id))
-                is not None
+                (deliverable := state.deliverables.get(deliverable_id)) is not None
                 and deliverable.initial_release_disposition is not None
                 and deliverable.initial_release_disposition.state
                 == InitialReleaseDispositionState.NOT_PLANNED
@@ -554,9 +536,7 @@ def _build_release_package(
             return None
 
     predecessor_candidate_branch = (
-        _release_candidate_branch(predecessor)
-        if predecessor is not None
-        else None
+        _release_candidate_branch(predecessor) if predecessor is not None else None
     )
 
     def _release_input_git_base(
@@ -603,9 +583,7 @@ def _build_release_package(
     allowed_parent_task_ids = allowed_release_parent_task_ids(
         state,
         project_id=project_id,
-        predecessor_release_package_id=(
-            predecessor.id if predecessor is not None else None
-        ),
+        predecessor_release_package_id=(predecessor.id if predecessor is not None else None),
     )
     try:
         release_scope = require_release_scope(
@@ -715,11 +693,7 @@ def _build_release_package(
         )
         waiver_request = waivers_by_deliverable.get(deliverable_id)
         inherited_waiver = next(
-            (
-                waiver
-                for waiver in verification_waivers
-                if waiver.deliverable_id == deliverable_id
-            ),
+            (waiver for waiver in verification_waivers if waiver.deliverable_id == deliverable_id),
             None,
         )
         if verification_status == "failed":
@@ -792,9 +766,7 @@ def _build_release_package(
         feature = deliverable.git_refs.feature_branch
         if feature:
             try:
-                git_base_snapshots.add(
-                    _release_input_git_base(deliverable)
-                )
+                git_base_snapshots.add(_release_input_git_base(deliverable))
             except ValueError as exc:
                 result["errors"].append(str(exc))
                 valid = False
@@ -838,9 +810,7 @@ def _build_release_package(
                 continue
             if source_branch is not None:
                 try:
-                    git_base_snapshots.add(
-                        _release_input_git_base(deliverable)
-                    )
+                    git_base_snapshots.add(_release_input_git_base(deliverable))
                 except ValueError as exc:
                     result["errors"].append(str(exc))
                     valid = False
@@ -886,17 +856,9 @@ def _build_release_package(
     release_git_base_branch: str | None = None
     release_base_commit_sha: str | None = None
     if needs_git_release:
-        base_branches = {
-            branch for branch, _commit in git_base_snapshots if branch is not None
-        }
-        base_commits = {
-            commit for _branch, commit in git_base_snapshots if commit is not None
-        }
-        if (
-            len(base_branches) != 1
-            or len(base_commits) != 1
-            or len(git_base_snapshots) != 1
-        ):
+        base_branches = {branch for branch, _commit in git_base_snapshots if branch is not None}
+        base_commits = {commit for _branch, commit in git_base_snapshots if commit is not None}
+        if len(base_branches) != 1 or len(base_commits) != 1 or len(git_base_snapshots) != 1:
             result["error_code"] = "mixed_git_base_branches"
             result["errors"].append(
                 "mixed_git_base_branches: Git release inputs must share one "
@@ -913,9 +875,7 @@ def _build_release_package(
             "content so a changed candidate can enter release gates"
         )
         return None
-    unknown_waiver_ids = sorted(
-        set(waivers_by_deliverable) - promotion_deliverable_ids
-    )
+    unknown_waiver_ids = sorted(set(waivers_by_deliverable) - promotion_deliverable_ids)
     if unknown_waiver_ids:
         result["errors"].append(
             "verification waivers reference deliverables outside the release: "
@@ -986,8 +946,7 @@ def _build_release_package(
             )
         else:
             canonical_base_commit_sha = (
-                predecessor.canonical_base_commit_sha
-                or predecessor.base_commit_sha
+                predecessor.canonical_base_commit_sha or predecessor.base_commit_sha
             )
     promotion_ids: list[str] = []
     now = utc_now()
@@ -1032,23 +991,17 @@ def _build_release_package(
         project_id=project.id,
         owner_agent_id=actor_agent_id,
         summary=_optional_text(request.get("summary")),
-        supersedes_release_package_id=(
-            predecessor.id if predecessor is not None else None
-        ),
+        supersedes_release_package_id=(predecessor.id if predecessor is not None else None),
         deliverable_ids=deliverable_ids,
         artifact_refs=artifact_refs,
         feature_branches=feature_branches,
         release_branch=target_release_branch,
         canonical_branch=target_canonical_branch,
         git_base_branch=(
-            predecessor_candidate_branch
-            if predecessor is not None
-            else release_git_base_branch
+            predecessor_candidate_branch if predecessor is not None else release_git_base_branch
         ),
         base_commit_sha=(
-            predecessor.candidate_commit_sha
-            if predecessor is not None
-            else release_base_commit_sha
+            predecessor.candidate_commit_sha if predecessor is not None else release_base_commit_sha
         ),
         canonical_base_commit_sha=canonical_base_commit_sha,
         git_promotion_record_ids=promotion_ids,
@@ -1071,8 +1024,7 @@ def _build_release_package(
         deliverable_ids=deliverable_ids,
         release_package_id=release_id,
         decided_by_actor=(
-            _optional_text(request.get("release_requested_by_actor"))
-            or f"agent:{actor_agent_id}"
+            _optional_text(request.get("release_requested_by_actor")) or f"agent:{actor_agent_id}"
         ),
         now=now,
     )
@@ -1120,9 +1072,7 @@ def _build_release_package(
                 },
                 "target_branch": promotion.target_branch,
                 "task_id": promotion.task_id,
-                "commit_message": (
-                    f"Integrate accepted work for task {promotion.task_id}"
-                ),
+                "commit_message": (f"Integrate accepted work for task {promotion.task_id}"),
             }
             payload.update(_managed_repo_fields(git))
             _emit_git_promotion_event(
@@ -1153,8 +1103,7 @@ def _ordered_correction_deliverable_ids(
     request_ids = {
         request.id
         for request in state.human_review_requests.values()
-        if request.release_package_id == predecessor.id
-        and request.state == "changes_requested"
+        if request.release_package_id == predecessor.id and request.state == "changes_requested"
     }
     correction_set = set(correction_deliverable_ids)
     finding_keys: dict[str, tuple[str, str]] = {}
@@ -1206,9 +1155,7 @@ def _create_correction_aggregate_promotion(
     for deliverable_id in ordered_ids:
         deliverable = state.deliverables.get(deliverable_id)
         if deliverable is None:
-            result["errors"].append(
-                f"successor correction deliverable {deliverable_id} is missing"
-            )
+            result["errors"].append(f"successor correction deliverable {deliverable_id} is missing")
             return None
         try:
             branch = _feature_promotion_source_branch_for_release(deliverable)
@@ -1324,9 +1271,7 @@ def _successor_release_request_error(
             or successor.state in _TERMINAL_RELEASE_STATES
         ):
             continue
-        existing_correction_set = (
-            set(successor.deliverable_ids) - set(predecessor.deliverable_ids)
-        )
+        existing_correction_set = set(successor.deliverable_ids) - set(predecessor.deliverable_ids)
         if existing_correction_set != requested_correction_set:
             return (
                 f"predecessor release {predecessor.id} already has active "
@@ -1341,10 +1286,7 @@ def _successor_release_request_error(
             post_release_feedback_case_id=post_release_feedback_case_id,
         )
     if post_release_feedback_case_id is not None:
-        return (
-            "post_release_feedback_case_id can authorize only a successor of a "
-            "published release"
-        )
+        return "post_release_feedback_case_id can authorize only a successor of a published release"
     if (
         predecessor.state == TeamRecordState.REJECTED
         and predecessor.gate_failure is not None
@@ -1373,10 +1315,7 @@ def _successor_release_request_error(
         or predecessor.gate_failure.stage != "human_review"
         or predecessor.gate_failure.kind != "changes_requested"
     ):
-        return (
-            f"predecessor release {predecessor.id} did not end in human "
-            "changes_requested"
-        )
+        return f"predecessor release {predecessor.id} did not end in human changes_requested"
     if (
         predecessor.candidate_commit_sha is None
         or predecessor.candidate_tree_hash is None
@@ -1393,8 +1332,7 @@ def _successor_release_request_error(
     )
     if predecessor_request is None or predecessor_request.state != "changes_requested":
         return (
-            f"predecessor release {predecessor.id} has no terminal "
-            "changes-requested human review"
+            f"predecessor release {predecessor.id} has no terminal changes-requested human review"
         )
     correction_cases = sorted(
         (
@@ -1417,11 +1355,7 @@ def _successor_release_request_error(
     )
     correction_case_task_ids = sorted(
         set(correction_case.task_ids)
-        | {
-            task.id
-            for task in state.tasks.values()
-            if task.case_id == correction_case.id
-        }
+        | {task.id for task in state.tasks.values() if task.case_id == correction_case.id}
     )
     for task_id in correction_case_task_ids:
         if task_id == coordination_task_id:
@@ -1430,10 +1364,7 @@ def _successor_release_request_error(
             require_task_resolved(
                 state,
                 task_id,
-                boundary=(
-                    f"successor release for human review case "
-                    f"{correction_case.id}"
-                ),
+                boundary=(f"successor release for human review case {correction_case.id}"),
             )
         except TaskAssessmentBoundaryError as exc:
             return exc.message
@@ -1443,9 +1374,8 @@ def _successor_release_request_error(
         set(correction_deliverable_ids).intersection(predecessor.deliverable_ids)
     )
     if duplicate_ids:
-        return (
-            "successor correction deliverables are already in predecessor scope: "
-            + ", ".join(duplicate_ids)
+        return "successor correction deliverables are already in predecessor scope: " + ", ".join(
+            duplicate_ids
         )
     open_findings = [
         finding
@@ -1454,10 +1384,7 @@ def _successor_release_request_error(
         and finding.state == "open"
     ]
     if not open_findings:
-        return (
-            f"predecessor human review {predecessor_request.id} has no open "
-            "findings to carry"
-        )
+        return f"predecessor human review {predecessor_request.id} has no open findings to carry"
     correction_set = set(correction_deliverable_ids)
     proposed_correction_deliverable_ids = {
         deliverable_id
@@ -1479,9 +1406,7 @@ def _successor_release_request_error(
             return f"human finding {finding.id} has no resolution evidence"
         if not finding.proposed_by_deliverable_ids:
             return f"human finding {finding.id} has no accepted correction deliverable"
-        missing = sorted(
-            set(finding.proposed_by_deliverable_ids) - correction_set
-        )
+        missing = sorted(set(finding.proposed_by_deliverable_ids) - correction_set)
         if missing:
             return (
                 f"human finding {finding.id} proposes deliverables outside the "
@@ -1521,9 +1446,7 @@ def _verification_downstream_recovery_base(
         or gate_failure.kind != "candidate"
     ):
         return None
-    verification_run = state.release_verification_runs.get(
-        gate_failure.source_id or ""
-    )
+    verification_run = state.release_verification_runs.get(gate_failure.source_id or "")
     if verification_run is None or verification_run.correction_task_id is None:
         return None
     correction_task = state.tasks.get(verification_run.correction_task_id)
@@ -1544,10 +1467,7 @@ def _verification_downstream_recovery_base(
         require_task_resolved(
             state,
             recovery_task.id,
-            boundary=(
-                "verified downstream recovery for correction task "
-                f"{correction_task.id}"
-            ),
+            boundary=(f"verified downstream recovery for correction task {correction_task.id}"),
         )
     except TaskAssessmentBoundaryError:
         return None
@@ -1594,14 +1514,11 @@ def _verification_correction_successor_request_error(
         return f"predecessor release {predecessor.id} has no immutable candidate"
     gate_failure = predecessor.gate_failure
     assert gate_failure is not None
-    verification_run = state.release_verification_runs.get(
-        gate_failure.source_id or ""
-    )
+    verification_run = state.release_verification_runs.get(gate_failure.source_id or "")
     if (
         verification_run is None
         or verification_run.release_package_id != predecessor.id
-        or verification_run.candidate_commit_sha
-        != predecessor.candidate_commit_sha
+        or verification_run.candidate_commit_sha != predecessor.candidate_commit_sha
         or verification_run.state != "failed"
         or verification_run.failure_kind != "candidate"
         or verification_run.correction_task_id is None
@@ -1620,10 +1537,7 @@ def _verification_correction_successor_request_error(
         require_task_resolved(
             state,
             correction_task.id,
-            boundary=(
-                f"successor release for verification run "
-                f"{verification_run.id}"
-            ),
+            boundary=(f"successor release for verification run {verification_run.id}"),
         )
     except TaskAssessmentBoundaryError as exc:
         return exc.message
@@ -1633,9 +1547,8 @@ def _verification_correction_successor_request_error(
         set(correction_deliverable_ids).intersection(predecessor.deliverable_ids)
     )
     if duplicate_ids:
-        return (
-            "successor correction deliverables are already in predecessor scope: "
-            + ", ".join(duplicate_ids)
+        return "successor correction deliverables are already in predecessor scope: " + ", ".join(
+            duplicate_ids
         )
     invalid_ids: list[str] = []
     for deliverable_id in correction_deliverable_ids:
@@ -1645,18 +1558,20 @@ def _verification_correction_successor_request_error(
             continue
         if deliverable.task_id == correction_task.id:
             continue
-        if _verification_downstream_recovery_base(
-            state,
-            predecessor=predecessor,
-            deliverable=deliverable,
-        ) is None:
+        if (
+            _verification_downstream_recovery_base(
+                state,
+                predecessor=predecessor,
+                deliverable=deliverable,
+            )
+            is None
+        ):
             invalid_ids.append(deliverable_id)
     if invalid_ids:
         return (
             f"verification correction task {correction_task.id} did not produce "
             "correction deliverables or verified dependency-free downstream "
-            "recovery deliverables: "
-            + ", ".join(invalid_ids)
+            "recovery deliverables: " + ", ".join(invalid_ids)
         )
     return None
 
@@ -1698,10 +1613,7 @@ def _release_review_correction_successor_request_error(
         require_task_resolved(
             state,
             correction_task.id,
-            boundary=(
-                f"successor release for rejected release review "
-                f"{review.id}"
-            ),
+            boundary=(f"successor release for rejected release review {review.id}"),
         )
     except TaskAssessmentBoundaryError as exc:
         return exc.message
@@ -1711,9 +1623,8 @@ def _release_review_correction_successor_request_error(
         set(correction_deliverable_ids).intersection(predecessor.deliverable_ids)
     )
     if duplicate_ids:
-        return (
-            "successor correction deliverables are already in predecessor scope: "
-            + ", ".join(duplicate_ids)
+        return "successor correction deliverables are already in predecessor scope: " + ", ".join(
+            duplicate_ids
         )
     invalid_ids = sorted(
         deliverable_id
@@ -1726,8 +1637,7 @@ def _release_review_correction_successor_request_error(
     if invalid_ids:
         return (
             f"release review correction task {correction_task.id} did not produce "
-            "correction deliverables: "
-            + ", ".join(invalid_ids)
+            "correction deliverables: " + ", ".join(invalid_ids)
         )
     return None
 
@@ -1745,17 +1655,12 @@ def _post_release_successor_request_error(
         or predecessor.candidate_commit_sha is None
         or predecessor.candidate_tree_hash is None
         or predecessor.manifest is None
-        or predecessor.approved_commit_sha
-        != predecessor.candidate_commit_sha
-        or predecessor.published_commit_sha
-        != predecessor.candidate_commit_sha
+        or predecessor.approved_commit_sha != predecessor.candidate_commit_sha
+        or predecessor.published_commit_sha != predecessor.candidate_commit_sha
     ):
         return f"predecessor release {predecessor.id} is not fully published"
     if post_release_feedback_case_id is None:
-        return (
-            "a published-release successor requires an explicit "
-            "post_release_feedback_case_id"
-        )
+        return "a published-release successor requires an explicit post_release_feedback_case_id"
     case = state.cases.get(post_release_feedback_case_id)
     if (
         case is None
@@ -1793,11 +1698,7 @@ def _post_release_successor_request_error(
             return exc.message
     for deliverable_id in correction_deliverable_ids:
         deliverable = state.deliverables.get(deliverable_id)
-        task = (
-            state.tasks.get(deliverable.task_id)
-            if deliverable is not None
-            else None
-        )
+        task = state.tasks.get(deliverable.task_id) if deliverable is not None else None
         if (
             deliverable is None
             or deliverable.state != TeamRecordState.ACCEPTED
@@ -1972,9 +1873,7 @@ def _release_final_allowed_changed_paths(
 
     allowed: list[str] = []
     missing_manifest_ids: list[str] = []
-    predecessor = state.release_packages.get(
-        release.supersedes_release_package_id or ""
-    )
+    predecessor = state.release_packages.get(release.supersedes_release_package_id or "")
     predecessor_evidence = {
         row.deliverable_id: row
         for row in (
@@ -2066,14 +1965,10 @@ def _repair_deliverable_review_manifest_from_promotion_evidence(
         if (
             promotion.project_id != task.project_id
             or promotion.state == "retired"
-            or promotion.promotion_kind
-            not in {"feature", "correction_aggregate", "release"}
+            or promotion.promotion_kind not in {"feature", "correction_aggregate", "release"}
         ):
             continue
-        if (
-            promotion.deliverable_id != deliverable.id
-            and promotion.task_id != deliverable.task_id
-        ):
+        if promotion.deliverable_id != deliverable.id and promotion.task_id != deliverable.task_id:
             promotion_source_branches = [
                 promotion.source_branch,
                 *(item.source_branch for item in promotion.sources),
@@ -2104,8 +1999,7 @@ def _repair_deliverable_review_manifest_from_promotion_evidence(
     if not candidates:
         return False
     unique_manifests = {
-        candidate.model_dump_json(exclude={"generated_at"})
-        for _promotion, candidate in candidates
+        candidate.model_dump_json(exclude={"generated_at"}) for _promotion, candidate in candidates
     }
     if len(unique_manifests) != 1:
         result.setdefault("diagnostics", []).append(

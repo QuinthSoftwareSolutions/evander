@@ -70,15 +70,9 @@ class VmAgentPromptMixin:
             dispatch_id=str(response.get("dispatch_id") or dispatch_id or "").strip() or None,
             session_id=str(response.get("session_id") or "").strip() or None,
             model=str(response.get("model") or model or "").strip() or None,
-            model_provider_mode=(
-                str(response.get("model_provider_mode") or "").strip() or None
-            ),
-            local_inference_capacity_enabled=bool(
-                response.get("local_inference_capacity_enabled")
-            ),
-            local_inference_active_count=int(
-                response.get("local_inference_active_count") or 0
-            ),
+            model_provider_mode=(str(response.get("model_provider_mode") or "").strip() or None),
+            local_inference_capacity_enabled=bool(response.get("local_inference_capacity_enabled")),
+            local_inference_active_count=int(response.get("local_inference_active_count") or 0),
             local_inference_max_concurrency=(
                 int(response["local_inference_max_concurrency"])
                 if response.get("local_inference_max_concurrency") is not None
@@ -142,11 +136,7 @@ class VmAgentPromptMixin:
 
         target = session_id or target_name
         effect_id = f"admin-agent-prompt:{backend}:{target}"
-        queue_key = (
-            f"{effect_id}:dispatch:{dispatch_id}"
-            if dispatch_id is not None
-            else effect_id
-        )
+        queue_key = f"{effect_id}:dispatch:{dispatch_id}" if dispatch_id is not None else effect_id
         effect = AgentEnqueuePromptEffectDefinition(
             id=effect_id,
             display_name="Admin prompt agent",

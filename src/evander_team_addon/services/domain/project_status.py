@@ -28,14 +28,11 @@ def project_blocking_sources(
     deliverables = [
         deliverable
         for deliverable in state.deliverables.values()
-        if deliverable.task_id in task_ids
-        and deliverable.superseded_by_deliverable_id is None
+        if deliverable.task_id in task_ids and deliverable.superseded_by_deliverable_id is None
     ]
     deliverable_ids = {deliverable.id for deliverable in deliverables}
     project_releases = [
-        release
-        for release in state.release_packages.values()
-        if release.project_id == project_id
+        release for release in state.release_packages.values() if release.project_id == project_id
     ]
     release_ids = {release.id for release in project_releases}
     terminal_release_review_ids = {
@@ -62,8 +59,7 @@ def project_blocking_sources(
             "affected_task_ids": [task.id],
             "next_action": (
                 "repair invalid task state"
-                if assessments[task.id].resolution_status
-                == TaskResolutionStatus.INVALID
+                if assessments[task.id].resolution_status == TaskResolutionStatus.INVALID
                 else "resolve the task blocker"
             ),
         }
@@ -91,9 +87,7 @@ def project_blocking_sources(
                 else None
             ),
             "recovery_directory_path": (
-                state.human_review_requests[
-                    blocker.source_id
-                ].requirement_snapshot.directory_path
+                state.human_review_requests[blocker.source_id].requirement_snapshot.directory_path
                 if blocker.reason_code == "human_review_assignment_unavailable"
                 and blocker.source_id in state.human_review_requests
                 else None
@@ -148,10 +142,7 @@ def project_blocking_sources(
             ),
         }
         for review in state.review_requests.values()
-        if (
-            review.deliverable_id in deliverable_ids
-            or review.release_package_id in release_ids
-        )
+        if (review.deliverable_id in deliverable_ids or review.release_package_id in release_ids)
         and review.id not in terminal_release_review_ids
         and review.superseded_by_review_request_id is None
         and review.retired_at is None
@@ -165,8 +156,7 @@ def project_blocking_sources(
             "summary": release.error or f"Release {release.id} is blocked",
         }
         for release in state.release_packages.values()
-        if release.project_id == project_id
-        and release.state == TeamRecordState.BLOCKED
+        if release.project_id == project_id and release.state == TeamRecordState.BLOCKED
     )
     rows.extend(
         {
@@ -175,9 +165,7 @@ def project_blocking_sources(
             "state": request.state,
             "summary": f"Human review for release {request.release_package_id}",
             "reason_code": (
-                "human_review_blocked"
-                if request.state == "blocked"
-                else "human_review_pending"
+                "human_review_blocked" if request.state == "blocked" else "human_review_pending"
             ),
             "source_kind": "human_review_request",
             "source_id": request.id,
@@ -189,8 +177,7 @@ def project_blocking_sources(
             ),
         }
         for request in state.human_review_requests.values()
-        if request.release_package_id in release_ids
-        and request.state in {"blocked"}
+        if request.release_package_id in release_ids and request.state in {"blocked"}
     )
     return sorted(rows, key=lambda row: (row["kind"], row["id"]))
 
@@ -248,19 +235,14 @@ def _recalculate_project_status(state: TeamState, project_id: str) -> None:
         for request in state.human_review_requests.values()
         if request.release_package_id in project_release_ids
     ]
-    project_human_request_ids = {
-        request.id for request in project_human_requests
-    }
+    project_human_request_ids = {request.id for request in project_human_requests}
     project_human_findings = [
         finding
         for finding in state.human_review_findings.values()
         if finding.source_human_review_request_id in project_human_request_ids
     ]
     assessment_service = TaskAssessmentService(state)
-    assessments = {
-        task.id: assessment_service.assess(task.id)
-        for task in project_tasks
-    }
+    assessments = {task.id: assessment_service.assess(task.id) for task in project_tasks}
     project_blockers = [
         blocker
         for blocker in state.blockers.values()
@@ -269,9 +251,7 @@ def _recalculate_project_status(state: TeamState, project_id: str) -> None:
             blocker.project_id == project_id
             or blocker.task_id in {task.id for task in project_tasks}
             or bool(
-                set(blocker.affected_task_ids).intersection(
-                    {task.id for task in project_tasks}
-                )
+                set(blocker.affected_task_ids).intersection({task.id for task in project_tasks})
             )
         )
     ]

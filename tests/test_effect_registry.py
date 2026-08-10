@@ -4702,9 +4702,7 @@ def test_agent_prompt_capacity_queue_preserves_workflow_context(
     [queued] = AgentPromptQueueStore(tmp_path / "queued-agent-prompts.json").read_all().values()
     assert queued.session_id == session_id
     assert queued.vm_name == ("vm-42" if execution_backend == "libvirt_vm" else session_id)
-    assert queued.workflow_context == {
-        "gate-map": {"ticket": {"issue_id": "ISSUE-1"}}
-    }
+    assert queued.workflow_context == {"gate-map": {"ticket": {"issue_id": "ISSUE-1"}}}
     assert queued.workflow_for_execution_ids == {"for-1": "event-for-1"}
     assert queued.metadata["workflow_run_id"] == "run-1"
     assert queued.metadata["mcp_tool_approval_lease_id"] == "lease-1"

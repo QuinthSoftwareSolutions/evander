@@ -316,34 +316,31 @@ def test_reconciliation_derives_resolution_and_creates_one_successor(
     assert len(successor.git_promotion_record_ids) == 1
     aggregate = state.git_promotions[successor.git_promotion_record_ids[0]]
     assert aggregate.promotion_kind == "correction_aggregate"
-    assert aggregate.source_branch == (
-        "team/team/features/human-correction-child-owner"
-    )
+    assert aggregate.source_branch == ("team/team/features/human-correction-child-owner")
     assert aggregate.target_branch == f"team/team/corrections/{successor.id}"
     assert [(source.source_branch, source.expected_commit_sha) for source in aggregate.sources] == [
         ("team/team/features/human-correction-child-owner", CORRECTION_COMMIT)
     ]
     aggregate_event = next(
-        event
-        for event in first["events"]
-        if event["payload"].get("promotion_id") == aggregate.id
+        event for event in first["events"] if event["payload"].get("promotion_id") == aggregate.id
     )
     assert aggregate_event["payload"]["base_commit_sha"] == PREDECESSOR_COMMIT
-    assert aggregate_event["payload"]["required_source_ancestor_commit_sha"] == (
-        PREDECESSOR_COMMIT
-    )
+    assert aggregate_event["payload"]["required_source_ancestor_commit_sha"] == (PREDECESSOR_COMMIT)
     assert "allowed_changed_paths" not in aggregate_event["payload"]
 
     second = HumanCorrectionReconciliationService(repo).reconcile()
     assert second["changed"] is False
     assert second["revision"] == state.revision
-    assert len(
-        [
-            release
-            for release in repo.read().release_packages.values()
-            if release.supersedes_release_package_id == "release-rejected"
-        ]
-    ) == 1
+    assert (
+        len(
+            [
+                release
+                for release in repo.read().release_packages.values()
+                if release.supersedes_release_package_id == "release-rejected"
+            ]
+        )
+        == 1
+    )
 
 
 def test_reconciliation_self_heals_completed_ambiguous_finding(
@@ -352,9 +349,7 @@ def test_reconciliation_self_heals_completed_ambiguous_finding(
     repo = _repo(tmp_path)
 
     def _retain_stale_ambiguity(state: TeamState) -> TeamState:
-        state.cases["human-case"].metadata[
-            HUMAN_CORRECTION_AMBIGUOUS_FINDING_IDS_KEY
-        ] = ["finding"]
+        state.cases["human-case"].metadata[HUMAN_CORRECTION_AMBIGUOUS_FINDING_IDS_KEY] = ["finding"]
         return state
 
     repo.update(_retain_stale_ambiguity)
@@ -363,12 +358,8 @@ def test_reconciliation_self_heals_completed_ambiguous_finding(
 
     assert result["implicitly_routed_human_review_finding_ids"] == ["finding"]
     assert result["created_successor_release_package_ids"]
-    assert state.cases["human-case"].metadata[
-        HUMAN_CORRECTION_AMBIGUOUS_FINDING_IDS_KEY
-    ] == []
-    assert state.tasks["human-correction-aggregate"].state == (
-        TeamTaskState.FINISHED
-    )
+    assert state.cases["human-case"].metadata[HUMAN_CORRECTION_AMBIGUOUS_FINDING_IDS_KEY] == []
+    assert state.tasks["human-correction-aggregate"].state == (TeamTaskState.FINISHED)
     assert state.cases["human-case"].status == TeamCaseStatus.RESOLVED
 
 
@@ -378,9 +369,7 @@ def test_reconciliation_keeps_unresolved_ambiguous_finding_routed(
     repo = _repo(tmp_path)
 
     def _restore_unresolved_ambiguity(state: TeamState) -> TeamState:
-        state.cases["human-case"].metadata[
-            HUMAN_CORRECTION_AMBIGUOUS_FINDING_IDS_KEY
-        ] = ["finding"]
+        state.cases["human-case"].metadata[HUMAN_CORRECTION_AMBIGUOUS_FINDING_IDS_KEY] = ["finding"]
         state.tasks["human-correction-child"].state = TeamTaskState.IN_PROGRESS
         return state
 
@@ -390,9 +379,9 @@ def test_reconciliation_keeps_unresolved_ambiguous_finding_routed(
     assert result["changed"] is False
     assert result["revision"] == state.revision
     final = repo.read()
-    assert final.cases["human-case"].metadata[
-        HUMAN_CORRECTION_AMBIGUOUS_FINDING_IDS_KEY
-    ] == ["finding"]
+    assert final.cases["human-case"].metadata[HUMAN_CORRECTION_AMBIGUOUS_FINDING_IDS_KEY] == [
+        "finding"
+    ]
     assert not any(
         release.supersedes_release_package_id == "release-rejected"
         for release in final.release_packages.values()
@@ -476,9 +465,7 @@ def test_correction_aggregate_success_keeps_rejected_candidate_workstream(
     first = HumanCorrectionReconciliationService(repo).reconcile()
     successor_id = first["created_successor_release_package_ids"][0]
     state = repo.read()
-    aggregate_id = state.release_packages[
-        successor_id
-    ].git_promotion_record_ids[0]
+    aggregate_id = state.release_packages[successor_id].git_promotion_record_ids[0]
 
     state, result = TeamGitReleaseService(repo).record_git_promotion_result(
         promotion_id=aggregate_id,
@@ -514,20 +501,15 @@ def test_correction_aggregate_success_keeps_rejected_candidate_workstream(
         for event in result["events"]
         if event["payload"].get("promotion_id") == release_promotion.id
     )
-    assert release_promotion.git_base_branch == (
-        "team/team/releases/release-rejected"
-    )
+    assert release_promotion.git_base_branch == ("team/team/releases/release-rejected")
     assert release_promotion.base_commit_sha == PREDECESSOR_COMMIT
-    assert release_event["payload"]["base_branch"] == (
-        "team/team/releases/release-rejected"
-    )
+    assert release_event["payload"]["base_branch"] == ("team/team/releases/release-rejected")
     assert release_event["payload"]["base_commit_sha"] == PREDECESSOR_COMMIT
-    assert release_event["payload"]["allowed_changed_paths"] == [
-        "M\tsrc/correction.cs"
-    ]
-    assert state.deliverables[
-        "correction-deliverable"
-    ].review_manifest.base_commit_sha == PREDECESSOR_COMMIT
+    assert release_event["payload"]["allowed_changed_paths"] == ["M\tsrc/correction.cs"]
+    assert (
+        state.deliverables["correction-deliverable"].review_manifest.base_commit_sha
+        == PREDECESSOR_COMMIT
+    )
 
     successor.candidate_commit_sha = "e" * 40
     successor.approved_commit_sha = "e" * 40
@@ -584,12 +566,10 @@ def test_reconciliation_migrates_candidate_less_legacy_leaf_promotions_once(
                 error="legacy merge conflict",
                 outputs={"error_code": "merge_conflict"},
             )
-        state.deliverables["correction-deliverable"].review_manifest = (
-            DeliverableReviewManifest(
-                base_commit_sha="9" * 40,
-                reviewed_commit_sha=CORRECTION_COMMIT,
-                changed_paths=["M\tbroad/untrusted.cs"],
-            )
+        state.deliverables["correction-deliverable"].review_manifest = DeliverableReviewManifest(
+            base_commit_sha="9" * 40,
+            reviewed_commit_sha=CORRECTION_COMMIT,
+            changed_paths=["M\tbroad/untrusted.cs"],
         )
         recovery_task = AgentTask(
             id="legacy-recovery-task",
@@ -631,8 +611,7 @@ def test_reconciliation_migrates_candidate_less_legacy_leaf_promotions_once(
     aggregate_rows = [
         state.git_promotions[promotion_id]
         for promotion_id in successor.git_promotion_record_ids
-        if state.git_promotions[promotion_id].promotion_kind
-        == "correction_aggregate"
+        if state.git_promotions[promotion_id].promotion_kind == "correction_aggregate"
     ]
     assert len(aggregate_rows) == 1
     assert successor.state == TeamRecordState.PENDING
@@ -645,12 +624,8 @@ def test_reconciliation_migrates_candidate_less_legacy_leaf_promotions_once(
     )
     assert aggregate_event["payload"]["base_commit_sha"] == PREDECESSOR_COMMIT
     assert "allowed_changed_paths" not in aggregate_event["payload"]
-    assert state.deliverables[
-        "correction-deliverable"
-    ].review_manifest.base_commit_sha == "9" * 40
-    state, late_legacy_result = TeamGitReleaseService(
-        repo
-    ).record_git_promotion_result(
+    assert state.deliverables["correction-deliverable"].review_manifest.base_commit_sha == "9" * 40
+    state, late_legacy_result = TeamGitReleaseService(repo).record_git_promotion_result(
         promotion_id="legacy-feature-one",
         success=True,
         commit_sha="6" * 40,
@@ -679,14 +654,13 @@ def test_reconciliation_migrates_candidate_less_legacy_leaf_promotions_once(
             },
         },
     )
-    assert state.deliverables[
-        "correction-deliverable"
-    ].review_manifest.base_commit_sha == PREDECESSOR_COMMIT
+    assert (
+        state.deliverables["correction-deliverable"].review_manifest.base_commit_sha
+        == PREDECESSOR_COMMIT
+    )
     assert failed["merge_recovery_task_id"] != "legacy-recovery-task"
     assert state.tasks[failed["merge_recovery_task_id"]].state == TeamTaskState.PENDING
-    assert "correction aggregation" in state.tasks[
-        failed["merge_recovery_task_id"]
-    ].title
+    assert "correction aggregation" in state.tasks[failed["merge_recovery_task_id"]].title
     recovery_result = {
         "errors": [],
         "events": [],
@@ -708,9 +682,7 @@ def test_reconciliation_migrates_candidate_less_legacy_leaf_promotions_once(
     assert recovery_payload["promotion_id"] == aggregate.id
     assert recovery_payload["promotion_kind"] == "correction_aggregate"
     assert recovery_payload["base_commit_sha"] == PREDECESSOR_COMMIT
-    assert recovery_payload["required_source_ancestor_commit_sha"] == (
-        PREDECESSOR_COMMIT
-    )
+    assert recovery_payload["required_source_ancestor_commit_sha"] == (PREDECESSOR_COMMIT)
     assert recovery_payload["allowed_changed_paths"] == ["M\tsrc/correction.cs"]
     state, recovered = TeamGitReleaseService(repo).record_git_promotion_result(
         promotion_id=aggregate.id,
@@ -731,18 +703,17 @@ def test_reconciliation_migrates_candidate_less_legacy_leaf_promotions_once(
         },
     )
     assert recovered["promotion_state"] == "succeeded"
-    assert state.tasks[
-        failed["merge_recovery_task_id"]
-    ].state == TeamTaskState.FINISHED
-    assert len(
-        [
-            promotion_id
-            for promotion_id in state.release_packages[
-                successor_id
-            ].git_promotion_record_ids
-            if state.git_promotions[promotion_id].promotion_kind == "release"
-        ]
-    ) == 1
+    assert state.tasks[failed["merge_recovery_task_id"]].state == TeamTaskState.FINISHED
+    assert (
+        len(
+            [
+                promotion_id
+                for promotion_id in state.release_packages[successor_id].git_promotion_record_ids
+                if state.git_promotions[promotion_id].promotion_kind == "release"
+            ]
+        )
+        == 1
+    )
 
     replay = HumanCorrectionReconciliationService(repo).reconcile()
     assert replay["changed"] is False
@@ -798,13 +769,16 @@ def test_reconciliation_converts_one_active_legacy_case_once(
     assert result["reparented_correction_task_ids"] == ["human-correction-child"]
     assert state.tasks["human-correction-child"].parent_task_id == parent_id
     assert state.tasks[parent_id].state == TeamTaskState.FINISHED
-    assert len(
-        [
-            release
-            for release in state.release_packages.values()
-            if release.supersedes_release_package_id == "release-rejected"
-        ]
-    ) == 1
+    assert (
+        len(
+            [
+                release
+                for release in state.release_packages.values()
+                if release.supersedes_release_package_id == "release-rejected"
+            ]
+        )
+        == 1
+    )
 
 
 @pytest.mark.parametrize(
@@ -843,9 +817,7 @@ def test_existing_successor_permanently_terminates_reconciliation(
     assert second["changed"] is False
     assert second["revision"] == revision
     assert final.blockers == {}
-    assert final.tasks["human-correction-aggregate"].state == (
-        TeamTaskState.FINISHED
-    )
+    assert final.tasks["human-correction-aggregate"].state == (TeamTaskState.FINISHED)
     assert [
         release.id
         for release in final.release_packages.values()
@@ -887,9 +859,7 @@ def test_reconciliation_preserves_authored_resolution_and_unions_evidence(
 
     def _author_resolution(state: TeamState) -> TeamState:
         finding = state.human_review_findings["finding"]
-        finding.proposed_resolution = (
-            "Operator-authored explanation of the verified correction."
-        )
+        finding.proposed_resolution = "Operator-authored explanation of the verified correction."
         finding.proposed_by_deliverable_ids = ["correction-deliverable"]
         finding.resolution_evidence_refs = ["manual:operator-reproduction"]
         return state
@@ -961,7 +931,5 @@ def test_missing_ambiguous_aggregation_parent_opens_recoverable_explicit_blocker
 
     assert recovered["created_successor_release_package_ids"]
     assert final.blockers[blocker.id].state.value == "resolved"
-    parent_id = final.cases["human-case"].metadata[
-        HUMAN_CORRECTION_AGGREGATION_TASK_METADATA_KEY
-    ]
+    parent_id = final.cases["human-case"].metadata[HUMAN_CORRECTION_AGGREGATION_TASK_METADATA_KEY]
     assert final.tasks[parent_id].state == TeamTaskState.FINISHED

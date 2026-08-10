@@ -36,9 +36,7 @@ def _command_success_response(
             "tool_name": context.tool_name,
             "action_record_id": _optional_text(response.get("action_record_id")),
             "handled_inbox_item_ids": list(handled_inbox_item_ids),
-            "already_handled_inbox_item_ids": list(
-                already_handled_inbox_item_ids
-            ),
+            "already_handled_inbox_item_ids": list(already_handled_inbox_item_ids),
             "errors": [],
         }
     )

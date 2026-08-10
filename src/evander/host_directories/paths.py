@@ -33,13 +33,7 @@ def normalize_relative_host_path(value: object, *, allow_empty: bool) -> tuple[s
 
 def host_directory_revision(info: object) -> str:
     mode = int(getattr(info, "st_mode"))
-    kind = (
-        "directory"
-        if stat.S_ISDIR(mode)
-        else "file"
-        if stat.S_ISREG(mode)
-        else "unsupported"
-    )
+    kind = "directory" if stat.S_ISDIR(mode) else "file" if stat.S_ISREG(mode) else "unsupported"
     source = ":".join(
         [
             kind,

@@ -916,7 +916,9 @@ def test_worker_composes_divergent_dependencies_into_one_meaningful_commit(
         subprocess.run(["git", "checkout", "-q", "-b", branch], cwd=source, check=True)
         (source / f"{suffix}.txt").write_text(f"accepted {suffix}\n", encoding="utf-8")
         subprocess.run(["git", "add", f"{suffix}.txt"], cwd=source, check=True)
-        subprocess.run(["git", "commit", "-q", "-m", f"{suffix} dependency"], cwd=source, check=True)
+        subprocess.run(
+            ["git", "commit", "-q", "-m", f"{suffix} dependency"], cwd=source, check=True
+        )
         commit = subprocess.run(
             ["git", "rev-parse", "HEAD"],
             cwd=source,
@@ -953,9 +955,7 @@ def test_worker_composes_divergent_dependencies_into_one_meaningful_commit(
         dependency_git_sources=dependency_rows,
         dependency_merge_author_name="Jonathan Quinth",
         dependency_merge_author_email="operator@example.invalid",
-        dependency_composition_commit_message=(
-            "Compose accepted dependencies for task task-ui"
-        ),
+        dependency_composition_commit_message=("Compose accepted dependencies for task task-ui"),
     )
     prepared = daemon.prepare_task_worktree("session-1", request)
     target = (
@@ -1201,6 +1201,7 @@ def test_worker_adopts_only_clean_retained_dependency_history_with_prior_base(
         != 0
     )
 
+
 def test_worker_does_not_merge_missing_dependency_into_retained_task_work(
     tmp_path: Path,
 ) -> None:
@@ -1396,8 +1397,7 @@ def test_worker_rolls_back_conflicting_dependency_git_composition(
         "base_commit_sha": base_commit,
         "base_tree_hash": base_tree_hash,
         "dependency_git_sources": [
-            source.model_dump(mode="json")
-            for source in request.dependency_git_sources
+            source.model_dump(mode="json") for source in request.dependency_git_sources
         ],
         "failed_dependency_task_id": "task-second",
         "failed_deliverable_id": "deliverable-second",
@@ -1528,19 +1528,22 @@ def test_worker_rolls_back_conflicting_dependency_git_composition(
     assert adopted.base_commit_sha == resolved_commit
     adopted_target = target.parent / "task-adopt-recovery"
     assert (adopted_target / "shared.txt").read_text(encoding="utf-8") == "resolved\n"
-    assert subprocess.run(
-        [
-            "git",
-            "config",
-            "--worktree",
-            "--get",
-            "evander.dependencyCompositionRecovery",
-        ],
-        cwd=adopted_target,
-        check=True,
-        capture_output=True,
-        text=True,
-    ).stdout.strip() == "depcomp-test"
+    assert (
+        subprocess.run(
+            [
+                "git",
+                "config",
+                "--worktree",
+                "--get",
+                "evander.dependencyCompositionRecovery",
+            ],
+            cwd=adopted_target,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+        == "depcomp-test"
+    )
 
 
 def test_worker_task_worktree_metadata_survives_host_container_host_reuse(
@@ -2029,12 +2032,7 @@ def test_worker_rejects_release_branch_that_does_not_match_pinned_candidate(
         )
 
     paths = WorkerSessionPaths.resolve(daemon.worker_root, "session-1")
-    assert not (
-        paths.agent_home
-        / "worktrees"
-        / "repo"
-        / "correction-moved-1234"
-    ).exists()
+    assert not (paths.agent_home / "worktrees" / "repo" / "correction-moved-1234").exists()
     assert (
         subprocess.run(
             [
@@ -2062,12 +2060,7 @@ def test_worker_rejects_release_branch_that_does_not_match_pinned_candidate(
                 expected_base_tree_hash=expected_tree,
             ),
         )
-    assert not (
-        paths.agent_home
-        / "worktrees"
-        / "repo"
-        / "correction-wrong-tree-1234"
-    ).exists()
+    assert not (paths.agent_home / "worktrees" / "repo" / "correction-wrong-tree-1234").exists()
 
 
 def test_worker_cleanup_removes_safe_task_worktree_and_inventory_ignored_files(
@@ -2321,9 +2314,7 @@ def test_worker_prepare_session_endpoint_offloads_blocking_lifecycle_work(
 
     app = daemon.create_app()
     endpoint = next(
-        route.endpoint
-        for route in app.routes
-        if getattr(route, "path", None) == "/v1/sessions"
+        route.endpoint for route in app.routes if getattr(route, "path", None) == "/v1/sessions"
     )
     body = json.dumps({"session_id": "session-1"}).encode()
 
@@ -2647,13 +2638,7 @@ def test_worker_api_rejects_legacy_worker_git_key_name(tmp_path: Path) -> None:
     assert response.status_code == 400
     assert "reserved for the worker Git credential" in response.json()["error"]
     assert not (
-        tmp_path
-        / "worker-root"
-        / "sessions"
-        / "session-1"
-        / "agent_home"
-        / ".ssh"
-        / "evander-git"
+        tmp_path / "worker-root" / "sessions" / "session-1" / "agent_home" / ".ssh" / "evander-git"
     ).exists()
 
 

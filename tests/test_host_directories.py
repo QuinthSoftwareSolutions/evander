@@ -97,9 +97,7 @@ def test_host_directory_models_validate_overlay_and_grants(tmp_path: Path) -> No
             {"host_directories": {"drop": {"root": "relative"}}}
         )
     with pytest.raises(ValueError, match="filesystem root"):
-        validate_host_directory_directory_overlay(
-            {"host_directories": {"drop": {"root": "/"}}}
-        )
+        validate_host_directory_directory_overlay({"host_directories": {"drop": {"root": "/"}}})
     with pytest.raises(ValueError, match="filesystem root"):
         validate_host_directory_directory_overlay(
             {"host_directories": {"drop": {"root": "/tmp/.."}}}
@@ -244,9 +242,7 @@ def test_import_file_and_folder_stage_session_owned_artifacts(tmp_path: Path) ->
     service = _service(tmp_path, root)
     session = _session("import")
 
-    imported_file = service.import_for_session(
-        session=session, directory_id="drop", path="a.txt"
-    )
+    imported_file = service.import_for_session(session=session, directory_id="drop", path="a.txt")
     staged_file = CommunicationArtifactStore(tmp_path / "runtime").get(
         imported_file["artifact"]["artifact_id"]
     )
@@ -420,9 +416,7 @@ def test_health_fails_when_mount_boundary_verification_is_unavailable(
     service.provider_config.config.host_directories["drop"].capabilities = ["list"]
 
     def unavailable(_file_descriptor: int) -> int:
-        raise HostDirectoryError(
-            "host directory mount-boundary verification is unavailable"
-        )
+        raise HostDirectoryError("host directory mount-boundary verification is unavailable")
 
     monkeypatch.setattr(service_module, "_mount_id", unavailable)
     health = service.health(directory_path="root", directory_id="drop")
@@ -444,9 +438,7 @@ def test_delete_quarantines_and_operator_can_restore_or_purge(tmp_path: Path) ->
     (folder / "nested.txt").write_text("nested", encoding="utf-8")
     service = _service(tmp_path, root)
     session = _session("list", "delete")
-    listing = service.list_for_session(
-        session=session, directory_id="drop", recursive=True
-    )
+    listing = service.list_for_session(session=session, directory_id="drop", recursive=True)
     entries = {entry["path"]: entry for entry in listing["entries"]}
 
     deleted = service.delete_for_session(
@@ -456,13 +448,17 @@ def test_delete_quarantines_and_operator_can_restore_or_purge(tmp_path: Path) ->
         expected_revision=entries["a.txt"]["revision"],
     )
     assert not (root / "a.txt").exists()
-    assert service.list_quarantine(directory_path="root", directory_id="drop")[0][
-        "recovery_id"
-    ] == deleted["recovery_id"]
-    assert service.list_quarantine(
-        directory_path="root",
-        directory_id="drop",
-    )[0]["recovery_status"] == "ready"
+    assert (
+        service.list_quarantine(directory_path="root", directory_id="drop")[0]["recovery_id"]
+        == deleted["recovery_id"]
+    )
+    assert (
+        service.list_quarantine(
+            directory_path="root",
+            directory_id="drop",
+        )[0]["recovery_status"]
+        == "ready"
+    )
     service.provider_config.config.host_directories["drop"].disabled = True
     assert service.health(directory_path="root", directory_id="drop")["disabled"] is True
     (root / "a.txt").write_text("replacement", encoding="utf-8")
@@ -511,9 +507,9 @@ def test_delete_rejects_stale_revision_and_missing_grant(tmp_path: Path) -> None
     target.write_text("a", encoding="utf-8")
     service = _service(tmp_path, root)
     session = _session("list", "delete")
-    revision = service.list_for_session(
-        session=session, directory_id="drop"
-    )["entries"][0]["revision"]
+    revision = service.list_for_session(session=session, directory_id="drop")["entries"][0][
+        "revision"
+    ]
     target.write_text("changed", encoding="utf-8")
 
     with pytest.raises(HostDirectoryError, match="changed after"):
@@ -589,9 +585,7 @@ def test_quarantine_recovery_is_scoped_to_evander_directory(tmp_path: Path) -> N
     target = root / "a.txt"
     target.write_text("a", encoding="utf-8")
     service = _service(tmp_path, root)
-    child_session = _session("list", "delete").model_copy(
-        update={"directory_path": "root/team"}
-    )
+    child_session = _session("list", "delete").model_copy(update={"directory_path": "root/team"})
     revision = service.list_for_session(
         session=child_session,
         directory_id="drop",
@@ -604,10 +598,13 @@ def test_quarantine_recovery_is_scoped_to_evander_directory(tmp_path: Path) -> N
         expected_revision=revision,
     )
 
-    assert service.list_quarantine(
-        directory_path="root",
-        directory_id="drop",
-    ) == []
+    assert (
+        service.list_quarantine(
+            directory_path="root",
+            directory_id="drop",
+        )
+        == []
+    )
     assert [
         record["recovery_id"]
         for record in service.list_quarantine(
@@ -658,9 +655,7 @@ def test_incomplete_quarantine_records_remain_visible_and_purgeable(
         path="a.txt",
         expected_revision=revision,
     )
-    recovery_root = (
-        root / ".evander-trash" / deleted["recovery_id"]
-    )
+    recovery_root = root / ".evander-trash" / deleted["recovery_id"]
     if damage == "remove-payload":
         (recovery_root / "payload").unlink()
     else:
@@ -737,10 +732,13 @@ def test_stale_empty_internal_quarantine_record_is_reconciled(
     os.utime(orphan, (old, old))
     service = _service(tmp_path, root)
 
-    assert service.list_quarantine(
-        directory_path="root",
-        directory_id="drop",
-    ) == []
+    assert (
+        service.list_quarantine(
+            directory_path="root",
+            directory_id="drop",
+        )
+        == []
+    )
     assert not orphan.exists()
 
 
@@ -757,8 +755,11 @@ def test_stale_corrupt_control_only_quarantine_record_is_reconciled(
     os.utime(orphan, (old, old))
     service = _service(tmp_path, root)
 
-    assert service.list_quarantine(
-        directory_path="root",
-        directory_id="drop",
-    ) == []
+    assert (
+        service.list_quarantine(
+            directory_path="root",
+            directory_id="drop",
+        )
+        == []
+    )
     assert not orphan.exists()

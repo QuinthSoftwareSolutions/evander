@@ -92,8 +92,7 @@ def _pending_for(state: TeamState, agent_id: str) -> list:
     return [
         item
         for item in state.inbox.values()
-        if item.recipient_agent_id == agent_id
-        and item.state == TeamInboxItemState.PENDING
+        if item.recipient_agent_id == agent_id and item.state == TeamInboxItemState.PENDING
     ]
 
 
@@ -347,8 +346,7 @@ def test_formal_review_rejection_notifies_child_for_rework_and_parent_for_superv
 
     assert child.state == TeamTaskState.IN_PROGRESS
     assert any(
-        item.payload.get("kind") == "review_rejected"
-        for item in _pending_for(state, "child-owner")
+        item.payload.get("kind") == "review_rejected" for item in _pending_for(state, "child-owner")
     )
     parent_notice = next(
         item
@@ -383,14 +381,10 @@ def test_child_resolution_coalesces_and_emits_integration_ready_transition() -> 
 
     parent_notices = _pending_for(state, "parent-owner")
     resolution = next(
-        item
-        for item in parent_notices
-        if item.payload.get("transition") == "resolution"
+        item for item in parent_notices if item.payload.get("transition") == "resolution"
     )
     integration_ready = next(
-        item
-        for item in parent_notices
-        if item.payload.get("transition") == "integration_ready"
+        item for item in parent_notices if item.payload.get("transition") == "integration_ready"
     )
     assert resolution.payload["child_task_ids"] == ["child-1", "child-2"]
     assert integration_ready.payload["parent_task_id"] == "parent"
@@ -429,22 +423,16 @@ def test_final_review_acceptance_emits_parent_wake_event() -> None:
     )
 
     assert child.state == TeamTaskState.FINISHED
-    assert {
-        item.payload.get("transition")
-        for item in _pending_for(state, "parent-owner")
-    } == {"resolution", "integration_ready"}
+    assert {item.payload.get("transition") for item in _pending_for(state, "parent-owner")} == {
+        "resolution",
+        "integration_ready",
+    }
     wake_events = [
-        event
-        for event in result["events"]
-        if event["event_type"] == "team.agent.wake_requested"
+        event for event in result["events"] if event["event_type"] == "team.agent.wake_requested"
     ]
     assert wake_events
-    assert {
-        event["payload"]["agent_id"] for event in wake_events
-    } == {"parent-owner"}
-    assert {
-        event["payload"]["reason"] for event in wake_events
-    } == {"inbox"}
+    assert {event["payload"]["agent_id"] for event in wake_events} == {"parent-owner"}
+    assert {event["payload"]["reason"] for event in wake_events} == {"inbox"}
 
 
 def test_final_root_review_acceptance_wakes_project_lead_for_release() -> None:
@@ -491,14 +479,10 @@ def test_final_root_review_acceptance_wakes_project_lead_for_release() -> None:
     assert notice.payload["deliverable_id"] == deliverable.id
     assert notice.payload["release_ready"] is True
     wake_events = [
-        event
-        for event in result["events"]
-        if event["event_type"] == "team.agent.wake_requested"
+        event for event in result["events"] if event["event_type"] == "team.agent.wake_requested"
     ]
     assert wake_events
-    assert {
-        event["payload"]["agent_id"] for event in wake_events
-    } == {"lead"}
+    assert {event["payload"]["agent_id"] for event in wake_events} == {"lead"}
 
 
 def test_reaccepted_root_deliverable_creates_a_new_pending_release_notice() -> None:
@@ -591,25 +575,18 @@ def test_execution_stall_notifies_every_distinct_parent_owner_and_coalesces() ->
         if item.payload.get("kind") == "agent_execution_stall_parent_notice"
     ]
     assert len(parent_notices) == 2
-    notices_by_recipient = {
-        item.recipient_agent_id: item for item in parent_notices
-    }
-    assert notices_by_recipient[
-        "parent-owner"
-    ].payload["accountable_parent_task_ids"] == ["parent", "parent-3"]
-    assert notices_by_recipient[
-        "parent-owner"
-    ].payload["affected_child_task_ids"] == [
+    notices_by_recipient = {item.recipient_agent_id: item for item in parent_notices}
+    assert notices_by_recipient["parent-owner"].payload["accountable_parent_task_ids"] == [
+        "parent",
+        "parent-3",
+    ]
+    assert notices_by_recipient["parent-owner"].payload["affected_child_task_ids"] == [
         "child-1",
         "child-2",
         "child-4",
     ]
-    assert notices_by_recipient[
-        "reviewer"
-    ].payload["accountable_parent_task_ids"] == ["parent-2"]
-    assert notices_by_recipient["reviewer"].payload["affected_child_task_ids"] == [
-        "child-3"
-    ]
+    assert notices_by_recipient["reviewer"].payload["accountable_parent_task_ids"] == ["parent-2"]
+    assert notices_by_recipient["reviewer"].payload["affected_child_task_ids"] == ["child-3"]
 
     second_result: dict[str, object] = {
         "events": [],
@@ -628,14 +605,16 @@ def test_execution_stall_notifies_every_distinct_parent_owner_and_coalesces() ->
     )
 
     assert repeated.id == blocker.id
-    assert len(
-        [
-            item
-            for item in state.inbox.values()
-            if item.payload.get("kind")
-            == "agent_execution_stall_parent_notice"
-        ]
-    ) == 2
+    assert (
+        len(
+            [
+                item
+                for item in state.inbox.values()
+                if item.payload.get("kind") == "agent_execution_stall_parent_notice"
+            ]
+        )
+        == 2
+    )
     for notice in notices_by_recipient.values():
         assert notice.payload["exhausted_dispatch_ids"] == [
             "dispatch-1",

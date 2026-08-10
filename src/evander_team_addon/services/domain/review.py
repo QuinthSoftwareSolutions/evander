@@ -93,9 +93,7 @@ def _is_team_manager_for_task_project(
 ) -> bool:
     project = state.projects.get(task.project_id)
     return bool(
-        project is not None
-        and actor.team_id == project.team_id
-        and _is_team_manager(state, actor)
+        project is not None and actor.team_id == project.team_id and _is_team_manager(state, actor)
     )
 
 
@@ -239,12 +237,9 @@ def _apply_review_request(
         return None
     task = state.tasks.get(deliverable.task_id)
     project_id = task.project_id if task is not None else None
-    if (
-        deliverable.state == TeamRecordState.REJECTED
-        or (
-            deliverable.acceptance_decision is not None
-            and deliverable.acceptance_decision.decision == "rejected"
-        )
+    if deliverable.state == TeamRecordState.REJECTED or (
+        deliverable.acceptance_decision is not None
+        and deliverable.acceptance_decision.decision == "rejected"
     ):
         result["errors"].append(
             f"rejected deliverable {deliverable.id} cannot enter formal review; "
@@ -345,11 +340,7 @@ def _apply_review_request(
     requested_cohort_id = _optional_text(request.get("review_cohort_id"))
     if deliverable.review_cohort_id is not None:
         if requested_cohort_id != deliverable.review_cohort_id:
-            qualifier = (
-                "sealed "
-                if deliverable.review_cohort_sealed_at is not None
-                else ""
-            )
+            qualifier = "sealed " if deliverable.review_cohort_sealed_at is not None else ""
             result["errors"].append(
                 f"deliverable {deliverable.id} belongs to {qualifier}review cohort "
                 f"{deliverable.review_cohort_id}; new review requests must be "
@@ -483,15 +474,11 @@ def create_sealed_review_cohort(
         actor.id == deliverable.producer_agent_id
         or _supervises(state, actor.id, deliverable.producer_agent_id)
         or (project_id is not None and _is_project_lead_for(state, actor.id, project_id))
-        or (
-            task is not None
-            and _is_team_manager_for_task_project(state, actor=actor, task=task)
-        )
+        or (task is not None and _is_team_manager_for_task_project(state, actor=actor, task=task))
     )
     if not permitted:
         raise ValueError(
-            f"agent {actor.id} is not permitted to request review of "
-            f"deliverable {deliverable.id}"
+            f"agent {actor.id} is not permitted to request review of deliverable {deliverable.id}"
         )
     normalized_reviews = [dict(review) for review in reviews]
     if not normalized_reviews:
@@ -508,19 +495,15 @@ def create_sealed_review_cohort(
                 "a sealed review cohort requires one review slot per reviewer; "
                 f"duplicate reviewer: {reviewer_id}"
             )
-        requested_members[reviewer_id] = _optional_text(
-            review.get("review_profile_id")
-        )
+        requested_members[reviewer_id] = _optional_text(review.get("review_profile_id"))
 
     current_reviews = _current_deliverable_reviews(state, deliverable)
     if _has_sealed_review_cohort(deliverable):
         current_members = {
-            review.reviewer_agent_id: review.review_profile_id
-            for review in current_reviews
+            review.reviewer_agent_id: review.review_profile_id for review in current_reviews
         }
         profiles_match = all(
-            requested_profile is None
-            or current_members.get(reviewer_id) == requested_profile
+            requested_profile is None or current_members.get(reviewer_id) == requested_profile
             for reviewer_id, requested_profile in requested_members.items()
         )
         if set(current_members) != set(requested_members) or not profiles_match:
@@ -531,8 +514,7 @@ def create_sealed_review_cohort(
         existing_ids = sorted(review.id for review in current_reviews)
         result.setdefault("existing_review_request_ids", []).extend(existing_ids)
         if any(
-            review.state in _MANAGER_FALLBACK_PENDING_REVIEW_STATES
-            for review in current_reviews
+            review.state in _MANAGER_FALLBACK_PENDING_REVIEW_STATES for review in current_reviews
         ):
             _align_task_with_sealed_review_cohort(
                 deliverable=deliverable,
@@ -606,9 +588,7 @@ def retry_blocked_review(
     normalized_reason = _required_text(reason, "reason")
     current = _require_present(state.review_requests, current_id, "review request")
     if current.release_package_id is not None:
-        raise ValueError(
-            "release reviews must be retried with team_retry_release_gate"
-        )
+        raise ValueError("release reviews must be retried with team_retry_release_gate")
     if current.state != TeamRecordState.BLOCKED:
         raise ValueError("only a blocked review may be retried")
     if current.superseded_by_review_request_id is not None or current.retired_at is not None:
@@ -623,9 +603,7 @@ def retry_blocked_review(
         or _is_team_manager_for_task_project(state, actor=actor, task=task)
     )
     if not permitted:
-        raise ValueError(
-            f"agent {actor.id} is not permitted to retry review {current.id}"
-        )
+        raise ValueError(f"agent {actor.id} is not permitted to retry review {current.id}")
     requested_reviewer_id = _optional_text(reviewer_agent_id) or current.reviewer_agent_id
     reviewer = _require_present(state.agents, requested_reviewer_id, "reviewer")
     if reviewer.team_id != project.team_id:
@@ -634,8 +612,7 @@ def retry_blocked_review(
         (
             review
             for review in _current_deliverable_reviews(state, deliverable)
-            if review.id != current.id
-            and review.reviewer_agent_id == reviewer.id
+            if review.id != current.id and review.reviewer_agent_id == reviewer.id
         ),
         None,
     )
@@ -714,9 +691,7 @@ def retry_blocked_review(
                 for definition in current.required_outcome_kind_definitions
             ]
         ),
-        instructions=(
-            f"Retry blocked review {current.id}. Reason: {normalized_reason}"
-        ),
+        instructions=(f"Retry blocked review {current.id}. Reason: {normalized_reason}"),
         reviewed_commit_sha=retry_reviewed_commit_sha,
         review_cohort_id=current.review_cohort_id,
         supersedes_review_request_id=current.id,
@@ -769,9 +744,7 @@ def retry_blocked_review(
             "id": profile.id,
             "name": profile.name,
             "description": profile.description,
-            "criteria": [
-                criterion.model_dump(mode="json") for criterion in profile.criteria
-            ],
+            "criteria": [criterion.model_dump(mode="json") for criterion in profile.criteria],
             "required_outcome_kinds": list(profile.required_outcome_kinds),
             "outcome_kind_definitions": [
                 definition.model_dump(mode="json")
@@ -818,9 +791,7 @@ def withdraw_pending_review(
             or _is_team_manager_for_task_project(state, actor=actor, task=task)
         )
         if not permitted:
-            raise ValueError(
-                f"agent {actor.id} is not permitted to withdraw review {review.id}"
-            )
+            raise ValueError(f"agent {actor.id} is not permitted to withdraw review {review.id}")
     _close_review_attempt(
         state,
         review=review,
@@ -888,8 +859,7 @@ def _review_closure_target(
         raise ValueError("release reviews must be recovered through release gates")
     if review.superseded_by_review_request_id is not None:
         raise ValueError(
-            f"review {review.id} is already superseded by "
-            f"{review.superseded_by_review_request_id}"
+            f"review {review.id} is already superseded by {review.superseded_by_review_request_id}"
         )
     if review.retired_at is not None:
         raise ValueError(f"review {review.id} is already retired")
@@ -918,10 +888,7 @@ def _close_review_attempt(
     normalized_actor = _required_text(retired_by, "retired_by")
     if _has_sealed_review_cohort(deliverable):
         current_cohort_reviews = _current_deliverable_reviews(state, deliverable)
-        if (
-            len(current_cohort_reviews) == 1
-            and current_cohort_reviews[0].id == review.id
-        ):
+        if len(current_cohort_reviews) == 1 and current_cohort_reviews[0].id == review.id:
             raise ValueError(
                 f"review {review.id} is the final active member of sealed cohort "
                 f"{deliverable.review_cohort_id}; replace/retry that cohort slot "
@@ -994,16 +961,14 @@ def _current_deliverable_reviews(
         and state.review_requests[review_id].retired_at is None
         and (
             deliverable.review_cohort_id is None
-            or state.review_requests[review_id].review_cohort_id
-            == deliverable.review_cohort_id
+            or state.review_requests[review_id].review_cohort_id == deliverable.review_cohort_id
         )
     ]
 
 
 def _has_sealed_review_cohort(deliverable: Deliverable) -> bool:
     return (
-        deliverable.review_cohort_id is not None
-        and deliverable.review_cohort_sealed_at is not None
+        deliverable.review_cohort_id is not None and deliverable.review_cohort_sealed_at is not None
     )
 
 
@@ -1055,9 +1020,7 @@ def _recalculate_sealed_review_cohort(
         return
 
     rejected_reviews = [
-        review
-        for review in current_reviews
-        if review.state == TeamRecordState.REJECTED
+        review for review in current_reviews if review.state == TeamRecordState.REJECTED
     ]
     cohort_review_ids = {
         review_id
@@ -1068,8 +1031,7 @@ def _recalculate_sealed_review_cohort(
     open_findings = [
         finding.model_dump(mode="json")
         for finding in deliverable.carried_findings
-        if finding.state == "open"
-        and finding.source_review_request_id in cohort_review_ids
+        if finding.state == "open" and finding.source_review_request_id in cohort_review_ids
     ]
     if rejected_reviews or open_findings:
         deliverable.state = TeamRecordState.REJECTED
@@ -1077,15 +1039,10 @@ def _recalculate_sealed_review_cohort(
         task.updated_at = now
         rejected_review_ids = sorted(
             {review.id for review in rejected_reviews}
-            | {
-                finding["source_review_request_id"]
-                for finding in open_findings
-            }
+            | {finding["source_review_request_id"] for finding in open_findings}
         )
         rejection_source_review_id = rejected_review_ids[0]
-        rejection_source_review = state.review_requests.get(
-            rejection_source_review_id
-        )
+        rejection_source_review = state.review_requests.get(rejection_source_review_id)
         rejection_sender_agent_id = (
             rejection_source_review.reviewer_agent_id
             if rejection_source_review is not None
@@ -1100,8 +1057,7 @@ def _recalculate_sealed_review_cohort(
                 and item.recipient_agent_id == task.owner_agent_id
                 and item.task_id == task.id
                 and item.payload.get("kind") == "review_rejected"
-                and item.payload.get("review_cohort_id")
-                == deliverable.review_cohort_id
+                and item.payload.get("review_cohort_id") == deliverable.review_cohort_id
             ),
             None,
         )
@@ -1538,11 +1494,7 @@ def _apply_review_decision(
         )
         return None
     if review.retired_at is not None:
-        action = (
-            "withdrawn"
-            if review.state == TeamRecordState.PENDING
-            else "retired"
-        )
+        action = "withdrawn" if review.state == TeamRecordState.PENDING else "retired"
         result["errors"].append(
             f"review {review_request_id} was {action} and cannot receive a decision"
         )
@@ -1590,9 +1542,7 @@ def _apply_review_decision(
     raw_block_kind = _optional_text(decision.get("block_kind"))
     if decision_state == TeamRecordState.BLOCKED:
         try:
-            block_kind = ReviewBlockKind(
-                raw_block_kind or ReviewBlockKind.UNSPECIFIED.value
-            )
+            block_kind = ReviewBlockKind(raw_block_kind or ReviewBlockKind.UNSPECIFIED.value)
         except ValueError:
             result["errors"].append(
                 "review decision block_kind must be dependency, input_unavailable, "
@@ -1600,9 +1550,7 @@ def _apply_review_decision(
             )
             return None
     elif raw_block_kind is not None:
-        result["errors"].append(
-            "review decision block_kind is only allowed when state is blocked"
-        )
+        result["errors"].append("review decision block_kind is only allowed when state is blocked")
         return None
     else:
         block_kind = None
@@ -1735,21 +1683,15 @@ def _review_decision_policy_error(
     ):
         deliverable = state.deliverables.get(review.deliverable_id)
         if deliverable is not None:
-            delivered_outcome_kinds = {
-                outcome.kind for outcome in deliverable.outcomes
-            }
+            delivered_outcome_kinds = {outcome.kind for outcome in deliverable.outcomes}
             missing_outcome_kinds = sorted(
-                {
-                    definition.kind
-                    for definition in review.required_outcome_kind_definitions
-                }
+                {definition.kind for definition in review.required_outcome_kind_definitions}
                 - delivered_outcome_kinds
             )
             if missing_outcome_kinds:
                 return (
                     f"accepted review {review.id} is missing required deliverable "
-                    "outcome kinds: "
-                    + ", ".join(missing_outcome_kinds)
+                    "outcome kinds: " + ", ".join(missing_outcome_kinds)
                 )
     criterion_definitions = _criterion_definitions_for_review(state, review)
     if decision_state == TeamRecordState.ACCEPTED and criterion_definitions is not None:
@@ -1847,11 +1789,7 @@ def _review_owns_finding(
         if current.id == finding.source_review_request_id:
             return True
         predecessor_id = current.supersedes_review_request_id
-        current = (
-            state.review_requests.get(predecessor_id)
-            if predecessor_id is not None
-            else None
-        )
+        current = state.review_requests.get(predecessor_id) if predecessor_id is not None else None
     if finding.owner_review_profile_id is not None:
         return review.review_profile_id == finding.owner_review_profile_id
     reviewer = state.agents.get(review.reviewer_agent_id)

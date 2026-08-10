@@ -77,18 +77,12 @@ def queue_parent_task_transition(
         raise ValueError(f"unsupported parent task transition {transition}")
     recipient_agent_id = parent.owner_agent_id
     effective_sender_id = (
-        sender_agent_id
-        if sender_agent_id in state.agents
-        else child.owner_agent_id
+        sender_agent_id if sender_agent_id in state.agents else child.owner_agent_id
     )
     self_observed_resolution = (
-        recipient_agent_id == effective_sender_id
-        and transition == "resolution"
+        recipient_agent_id == effective_sender_id and transition == "resolution"
     )
-    if (
-        recipient_agent_id == effective_sender_id
-        and transition in {"handoff", "rejection"}
-    ):
+    if recipient_agent_id == effective_sender_id and transition in {"handoff", "rejection"}:
         # An agent already knows about these child-state transitions caused by
         # its own command. Resolution is retained below as handled history;
         # integration-ready and blocker notices can make distinct parent-level
@@ -107,9 +101,7 @@ def queue_parent_task_transition(
         None,
     )
     normalized_references = {
-        str(key): value
-        for key, value in (references or {}).items()
-        if value is not None
+        str(key): value for key, value in (references or {}).items() if value is not None
     }
     if existing is not None:
         child_ids = {
@@ -171,9 +163,7 @@ def queue_parent_task_transition(
         priority=TeamInboxPriority.NORMAL,
         payload=payload,
         state=(
-            TeamInboxItemState.HANDLED
-            if self_observed_resolution
-            else TeamInboxItemState.PENDING
+            TeamInboxItemState.HANDLED if self_observed_resolution else TeamInboxItemState.PENDING
         ),
         created_at=now,
         updated_at=now,
@@ -250,9 +240,7 @@ def queue_root_task_resolution(
     project = state.projects.get(task.project_id)
     if project is None or project.lead_agent_id == sender_agent_id:
         return None
-    automatic_candidate_correction = (
-        task.created_by_actor in _AUTOMATIC_CANDIDATE_CORRECTION_ACTORS
-    )
+    automatic_candidate_correction = task.created_by_actor in _AUTOMATIC_CANDIDATE_CORRECTION_ACTORS
     notice_kind = (
         "candidate_correction_resolution"
         if automatic_candidate_correction
@@ -262,10 +250,7 @@ def queue_root_task_resolution(
         (
             item
             for item in state.inbox.values()
-            if (
-                automatic_candidate_correction
-                or item.state == TeamInboxItemState.PENDING
-            )
+            if (automatic_candidate_correction or item.state == TeamInboxItemState.PENDING)
             and item.recipient_agent_id == project.lead_agent_id
             and item.payload.get("kind") == notice_kind
             and item.payload.get("task_id") == task.id
@@ -305,8 +290,7 @@ def queue_root_task_resolution(
                 "task_id": task.id,
                 "deliverable_id": deliverable_id,
                 "summary": (
-                    "A reviewed rejected-gate correction reached its resolved "
-                    "disposition."
+                    "A reviewed rejected-gate correction reached its resolved disposition."
                 ),
                 "next_action": (
                     "Team will automatically create the successor release; "
@@ -366,10 +350,7 @@ def _parent_transition_next_action(
         return "Supervise the child rework without treating it as resolved."
     if transition == "resolution":
         return "Review the resolved child contribution and remaining direct children."
-    return (
-        f"Integrate the accepted direct-child sources into parent task "
-        f"{parent_task_id}."
-    )
+    return f"Integrate the accepted direct-child sources into parent task {parent_task_id}."
 
 
 def _append_wake_event_for_notice(

@@ -108,9 +108,7 @@ class VmAgentMutationMixin:
             update["allowed_tools"] = _normalize_allowed_tools(
                 [
                     *update.get("allowed_tools", session.allowed_tools),
-                    *host_directory_tool_names_for_grants(
-                        update["host_directory_grants"]
-                    ),
+                    *host_directory_tool_names_for_grants(update["host_directory_grants"]),
                 ]
             )
         session_policy_fields = {

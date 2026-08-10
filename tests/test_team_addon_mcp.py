@@ -391,15 +391,13 @@ def _install_leased_dispatch(
     existing_runtime = state.agent_runtimes.get(agent_id)
     previous_dispatch = (
         state.dispatches.get(existing_runtime.active_dispatch_id)
-        if existing_runtime is not None
-        and existing_runtime.active_dispatch_id is not None
+        if existing_runtime is not None and existing_runtime.active_dispatch_id is not None
         else None
     )
     if (
         previous_dispatch is not None
         and previous_dispatch.id != dispatch_id
-        and previous_dispatch.status
-        in {TeamDispatchStatus.PREPARING, TeamDispatchStatus.LEASED}
+        and previous_dispatch.status in {TeamDispatchStatus.PREPARING, TeamDispatchStatus.LEASED}
     ):
         previous_dispatch.status = TeamDispatchStatus.COMPLETED
         previous_dispatch.completed_at = datetime(
@@ -446,13 +444,9 @@ def _install_leased_dispatch(
         for blocker in state.blockers.values()
         if blocker.state == TeamBlockerState.OPEN
         and (
-            (
-                blocker.route == TeamBlockerRoute.DELEGATED
-                and blocker.delegate_agent_id == agent_id
-            )
+            (blocker.route == TeamBlockerRoute.DELEGATED and blocker.delegate_agent_id == agent_id)
             or (
-                blocker.route
-                in {TeamBlockerRoute.OWNED, TeamBlockerRoute.ROUTING_FAILED}
+                blocker.route in {TeamBlockerRoute.OWNED, TeamBlockerRoute.ROUTING_FAILED}
                 and blocker.owner_agent_id == agent_id
             )
         )
@@ -460,8 +454,7 @@ def _install_leased_dispatch(
     inbox_item_ids = sorted(
         item.id
         for item in state.inbox.values()
-        if item.recipient_agent_id == agent_id
-        and item.state == TeamInboxItemState.PENDING
+        if item.recipient_agent_id == agent_id and item.state == TeamInboxItemState.PENDING
     )
     managed_repo_ids = sorted(
         {
@@ -582,9 +575,7 @@ def test_team_addon_mcp_registers_all_plan_tool_names_as_addon_tools(
     assert set(MCP_TOOL_NAMES).issubset(visible)
     tools = {tool.name: tool for tool in server._tool_manager.list_tools()}
     submit_description = tools[TEAM_SUBMIT_DELIVERABLE_TOOL].description or ""
-    decide_deliverable_description = (
-        tools[TEAM_DECIDE_DELIVERABLE_TOOL].description or ""
-    )
+    decide_deliverable_description = tools[TEAM_DECIDE_DELIVERABLE_TOOL].description or ""
     publish_description = tools[TEAM_PUBLISH_REVIEW_BRANCH_TOOL].description or ""
     escalation_description = tools[TEAM_ESCALATE_OPERATOR_TOOL].description or ""
     retry_release_description = tools[TEAM_RETRY_RELEASE_GATE_TOOL].description or ""
@@ -592,21 +583,13 @@ def test_team_addon_mcp_registers_all_plan_tool_names_as_addon_tools(
     retry_review_description = tools[TEAM_RETRY_REVIEW_TOOL].description or ""
     withdraw_review_description = tools[TEAM_WITHDRAW_REVIEW_TOOL].description or ""
     retire_review_description = tools[TEAM_RETIRE_REVIEW_TOOL].description or ""
-    replacement_description = (
-        tools[TEAM_LINK_DELIVERABLE_REPLACEMENT_TOOL].description or ""
-    )
-    reopen_rework_description = (
-        tools[TEAM_REOPEN_TASK_FOR_REWORK_TOOL].description or ""
-    )
+    replacement_description = tools[TEAM_LINK_DELIVERABLE_REPLACEMENT_TOOL].description or ""
+    reopen_rework_description = tools[TEAM_REOPEN_TASK_FOR_REWORK_TOOL].description or ""
     finding_resolution_description = (
         tools[TEAM_PROPOSE_HUMAN_FINDING_RESOLUTION_TOOL].description or ""
     )
-    correction_route_description = (
-        tools[TEAM_ROUTE_HUMAN_FINDING_CORRECTION_TOOL].description or ""
-    )
-    post_release_close_description = (
-        tools[TEAM_CLOSE_POST_RELEASE_CASE_TOOL].description or ""
-    )
+    correction_route_description = tools[TEAM_ROUTE_HUMAN_FINDING_CORRECTION_TOOL].description or ""
+    post_release_close_description = tools[TEAM_CLOSE_POST_RELEASE_CASE_TOOL].description or ""
     assert "verification records status" in submit_description
     assert "git_refs are provenance only" in submit_description
     assert "use commit_sha, not commit" in submit_description
@@ -620,9 +603,7 @@ def test_team_addon_mcp_registers_all_plan_tool_names_as_addon_tools(
         publish_description
     )
     assert "receipt, not delivery confirmation" in escalation_description
-    assert "report the escalation as queued or pending, never delivered" in (
-        escalation_description
-    )
+    assert "report the escalation as queued or pending, never delivered" in (escalation_description)
     assert "infrastructure-failed or timed-out verification" in retry_release_description
     assert "process-blocked reviews" in retry_release_description
     assert "concrete evidence that the failure recovered" in retry_release_description
@@ -1456,9 +1437,9 @@ def test_team_addon_mcp_slice6_tools_use_command_implementation(
                     "project_id": "project",
                     "priority": 1,
                     "title": "Batch B",
-                        "description": "Second batch task.",
-                        "parent_task_id": "task-mcp-batch-a",
-                        "dependency_task_ids": ["task-mcp"],
+                    "description": "Second batch task.",
+                    "parent_task_id": "task-mcp-batch-a",
+                    "dependency_task_ids": ["task-mcp"],
                 },
             ],
             "request_id": "request-mcp-task-batch",
@@ -1595,16 +1576,11 @@ def test_team_addon_mcp_reopens_finished_task_for_reviewed_rework(
     state = repo.read()
     assert state.tasks["task"].state == TeamTaskState.IN_PROGRESS
     assert state.deliverables["deliverable"].state == TeamRecordState.ACCEPTED
-    assert (
-        state.deliverables["deliverable"].rework_requested_by_agent_id
-        == "manager"
-    )
+    assert state.deliverables["deliverable"].rework_requested_by_agent_id == "manager"
     assert state.review_requests["review-deliverable"].state == TeamRecordState.ACCEPTED
     rework_item = state.inbox[result["created_inbox_item_ids"][0]]
     assert rework_item.recipient_agent_id == "backend"
-    assert rework_item.payload["required_tool"] == (
-        "team_submit_deliverable_for_review"
-    )
+    assert rework_item.payload["required_tool"] == ("team_submit_deliverable_for_review")
 
 
 def test_team_addon_mcp_designates_existing_task_as_integration_boundary(
@@ -1668,9 +1644,7 @@ def test_team_addon_mcp_designates_existing_task_as_integration_boundary(
     assert task.integration_boundary is True
     assert task.deliverable_contract is not None
     assert task.deliverable_contract.require_git_provenance is True
-    assert task.deliverable_contract.required_contribution_task_ids == [
-        "implementation"
-    ]
+    assert task.deliverable_contract.required_contribution_task_ids == ["implementation"]
 
     admin.create_or_reprioritize_task(
         task_id="ordinary-after-submission",
@@ -1916,9 +1890,7 @@ def test_team_addon_mcp_records_audited_initial_release_decision(
     )
 
     assert result["success"] is True
-    disposition = repo.read().deliverables[
-        "deliverable"
-    ].initial_release_disposition
+    disposition = repo.read().deliverables["deliverable"].initial_release_disposition
     assert disposition is not None
     assert disposition.state == InitialReleaseDispositionState.NOT_PLANNED
     assert disposition.decided_by_actor == "agent:lead"

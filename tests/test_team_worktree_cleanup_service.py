@@ -1087,13 +1087,16 @@ def test_prior_task_base_commit_is_scoped_to_task_base_snapshot() -> None:
         }
     )
 
-    assert _prior_project_repo_task_base_commit(
-        state,
-        agent_id="backend",
-        task_id="task",
-        agent_branch="agents/session-backend/tasks/task-12345678",
-        base_branch="main",
-    ) == "1" * 40
+    assert (
+        _prior_project_repo_task_base_commit(
+            state,
+            agent_id="backend",
+            task_id="task",
+            agent_branch="agents/session-backend/tasks/task-12345678",
+            base_branch="main",
+        )
+        == "1" * 40
+    )
 
 
 def test_prior_task_base_commit_survives_task_reassignment() -> None:
@@ -1110,10 +1113,13 @@ def test_prior_task_base_commit_survives_task_reassignment() -> None:
         }
     )
 
-    assert _prior_project_repo_task_base_commit(
-        state,
-        agent_id="backend-reassigned",
-        task_id="task",
-        agent_branch="agents/session-reassigned/tasks/task-12345678",
-        base_branch="feature/foo",
-    ) == "2" * 40
+    assert (
+        _prior_project_repo_task_base_commit(
+            state,
+            agent_id="backend-reassigned",
+            task_id="task",
+            agent_branch="agents/session-reassigned/tasks/task-12345678",
+            base_branch="feature/foo",
+        )
+        == "2" * 40
+    )

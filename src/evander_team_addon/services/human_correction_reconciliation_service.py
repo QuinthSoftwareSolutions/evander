@@ -43,13 +43,9 @@ from .domain.task_assessment import (
 )
 
 
-HUMAN_CORRECTION_AGGREGATION_TASK_METADATA_KEY = (
-    HUMAN_CORRECTION_AGGREGATION_TASK_ID_KEY
-)
+HUMAN_CORRECTION_AGGREGATION_TASK_METADATA_KEY = HUMAN_CORRECTION_AGGREGATION_TASK_ID_KEY
 _MAX_RECONCILIATION_ATTEMPTS = 3
-_HUMAN_CORRECTION_AGGREGATION_BLOCKER_SOURCE_PREFIX = (
-    "human-correction-aggregation:"
-)
+_HUMAN_CORRECTION_AGGREGATION_BLOCKER_SOURCE_PREFIX = "human-correction-aggregation:"
 _TERMINAL_COORDINATION_PARENT_STATES = {
     TeamTaskState.FINISHED,
     TeamTaskState.ACCEPTED,
@@ -85,8 +81,7 @@ def _case_findings(state: Any, case: TeamCase) -> list[HumanReviewFinding]:
         (
             finding
             for finding in state.human_review_findings.values()
-            if finding.source_human_review_request_id == case.source_ref
-            and finding.state == "open"
+            if finding.source_human_review_request_id == case.source_ref and finding.state == "open"
         ),
         key=lambda finding: (finding.created_at, finding.id),
     )
@@ -95,9 +90,7 @@ def _case_findings(state: Any, case: TeamCase) -> list[HumanReviewFinding]:
 def _case_predecessor(state: Any, case: TeamCase) -> tuple[Any | None, Any | None]:
     request = state.human_review_requests.get(case.source_ref or "")
     release = (
-        state.release_packages.get(request.release_package_id)
-        if request is not None
-        else None
+        state.release_packages.get(request.release_package_id) if request is not None else None
     )
     return request, release
 
@@ -134,10 +127,7 @@ def _completed_ambiguous_finding_ids(
             require_task_resolved(
                 state,
                 task.id,
-                boundary=(
-                    "reconciling completed ambiguous human-review correction "
-                    f"{finding.id}"
-                ),
+                boundary=(f"reconciling completed ambiguous human-review correction {finding.id}"),
             )
         except TaskAssessmentBoundaryError:
             continue
@@ -150,11 +140,7 @@ def _deliverable_resolution_evidence(deliverable: Any) -> list[str]:
     refs = {
         deliverable.id,
         *deliverable.artifact_refs,
-        *(
-            deliverable.verification.evidence_refs
-            if deliverable.verification is not None
-            else []
-        ),
+        *(deliverable.verification.evidence_refs if deliverable.verification is not None else []),
     }
     git_refs = deliverable.git_refs
     for value in (
@@ -219,8 +205,7 @@ def _legacy_case_can_convert(state: Any, case: TeamCase, findings: list[Any]) ->
     if len(set(task_ids)) != len(task_ids):
         return False
     return all(
-        task_id in state.tasks and state.tasks[task_id].case_id == case.id
-        for task_id in task_ids
+        task_id in state.tasks and state.tasks[task_id].case_id == case.id for task_id in task_ids
     )
 
 
@@ -248,19 +233,13 @@ def _case_needs_reconciliation(state: Any, case: TeamCase) -> bool:
         ):
             return True
         parent = state.tasks.get(_coordination_parent_id(case) or "")
-        return (
-            parent is not None
-            and parent.state not in _TERMINAL_COORDINATION_PARENT_STATES
-        )
+        return parent is not None and parent.state not in _TERMINAL_COORDINATION_PARENT_STATES
     if any(
         blocker.reason_code == "human_correction_aggregation_failed"
         for blocker in active_blockers_for_source(
             state,
             source_kind=TeamBlockerSourceKind.EXPLICIT,
-            source_id=(
-                _HUMAN_CORRECTION_AGGREGATION_BLOCKER_SOURCE_PREFIX
-                + request.id
-            ),
+            source_id=(_HUMAN_CORRECTION_AGGREGATION_BLOCKER_SOURCE_PREFIX + request.id),
         )
     ):
         return False
@@ -272,9 +251,7 @@ def _case_needs_reconciliation(state: Any, case: TeamCase) -> bool:
     current_finding_ids = {finding.id for finding in findings}
     configured_ambiguous_finding_ids = {
         str(value).strip()
-        for value in (
-            case.metadata.get(HUMAN_CORRECTION_AMBIGUOUS_FINDING_IDS_KEY) or []
-        )
+        for value in (case.metadata.get(HUMAN_CORRECTION_AMBIGUOUS_FINDING_IDS_KEY) or [])
         if str(value).strip()
     }
     if configured_ambiguous_finding_ids - current_finding_ids:
@@ -300,9 +277,7 @@ def _case_needs_reconciliation(state: Any, case: TeamCase) -> bool:
         if not finding.proposed_resolution or not finding.resolution_evidence_refs:
             return True
     if findings and all(len(_current_accepted_deliverables(state, item)) == 1 for item in findings):
-        deliverables = [
-            _current_accepted_deliverables(state, item)[0] for item in findings
-        ]
+        deliverables = [_current_accepted_deliverables(state, item)[0] for item in findings]
         if not all(_reviews_ready(state, deliverable)[0] for deliverable in deliverables):
             return False
         return (
@@ -310,9 +285,7 @@ def _case_needs_reconciliation(state: Any, case: TeamCase) -> bool:
                 state,
                 project_id=predecessor.project_id,
                 predecessor=predecessor,
-                correction_deliverable_ids=sorted(
-                    deliverable.id for deliverable in deliverables
-                ),
+                correction_deliverable_ids=sorted(deliverable.id for deliverable in deliverables),
             )
             is None
         )
@@ -327,10 +300,7 @@ def _legacy_successor_promotions(state: Any, successor: Any) -> list[Any]:
             for promotion in state.git_promotions.values()
             if promotion.promotion_kind == "feature"
             and promotion.state != "retired"
-            and (
-                promotion.release_package_id == successor.id
-                or promotion.id in linked_ids
-            )
+            and (promotion.release_package_id == successor.id or promotion.id in linked_ids)
         ),
         key=lambda item: (item.created_at, item.id),
     )
@@ -358,10 +328,7 @@ def _legacy_successor_needs_migration(
     if any(
         promotion.promotion_kind in {"release", "canonical_push"}
         and promotion.state != "retired"
-        and (
-            promotion.release_package_id == successor.id
-            or promotion.id in linked_ids
-        )
+        and (promotion.release_package_id == successor.id or promotion.id in linked_ids)
         for promotion in state.git_promotions.values()
     ):
         return False
@@ -398,12 +365,10 @@ def _cancel_obsolete_merge_recovery_tasks(
             for blocker in state.blockers.values()
         )
         has_context = any(
-            context.task_id == task.id
-            for context in state.git_work_contexts.values()
+            context.task_id == task.id for context in state.git_work_contexts.values()
         )
         has_active_dispatch = any(
-            task.id in dispatch.task_ids
-            and dispatch.status in active_dispatch_states
+            task.id in dispatch.task_ids and dispatch.status in active_dispatch_states
             for dispatch in state.dispatches.values()
         )
         if not linked or has_context or has_active_dispatch:
@@ -458,9 +423,7 @@ def _migrate_legacy_successor(
         result=migration_result,
     )
     if aggregate is None:
-        result.setdefault("migration_errors", {})[successor.id] = list(
-            migration_result["errors"]
-        )
+        result.setdefault("migration_errors", {})[successor.id] = list(migration_result["errors"])
         return False
     for promotion in legacy_promotions:
         promotion.state = "retired"
@@ -504,9 +467,7 @@ def _migrate_legacy_successor(
     result.setdefault("retired_legacy_promotion_ids", []).extend(
         promotion.id for promotion in legacy_promotions
     )
-    result.setdefault("migrated_successor_release_package_ids", []).append(
-        successor.id
-    )
+    result.setdefault("migrated_successor_release_package_ids", []).append(successor.id)
     result.setdefault("events", []).extend(migration_result["events"])
     result.setdefault("git_promotion_event_ids", []).append(aggregate.id)
     return True
@@ -523,17 +484,13 @@ def _open_aggregation_blocker(
 ) -> None:
     project = state.projects[case.project_id]
     owner_id = (
-        case.owner_agent_id
-        or project_lead_agent_id(state, project.id)
-        or project.lead_agent_id
+        case.owner_agent_id or project_lead_agent_id(state, project.id) or project.lead_agent_id
     )
     configured_parent_id = _coordination_parent_id(case)
     blocker, created = open_or_get_blocker(
         state,
         source_kind=TeamBlockerSourceKind.EXPLICIT,
-        source_id=(
-            _HUMAN_CORRECTION_AGGREGATION_BLOCKER_SOURCE_PREFIX + request.id
-        ),
+        source_id=(_HUMAN_CORRECTION_AGGREGATION_BLOCKER_SOURCE_PREFIX + request.id),
         summary=f"Human correction aggregation failed for {case.id}",
         details=details,
         reason_code="human_correction_aggregation_failed",
@@ -542,14 +499,8 @@ def _open_aggregation_blocker(
         initial_owner_agent_id=owner_id,
         team_id=case.team_id,
         project_id=project.id,
-        task_id=(
-            configured_parent_id
-            if configured_parent_id in state.tasks
-            else None
-        ),
-        affected_task_ids=[
-            task_id for task_id in case.task_ids if task_id in state.tasks
-        ],
+        task_id=(configured_parent_id if configured_parent_id in state.tasks else None),
+        affected_task_ids=[task_id for task_id in case.task_ids if task_id in state.tasks],
         result=result,
         now=now,
     )
@@ -621,11 +572,7 @@ def _reconcile_case(
                 or migrated
             )
         parent = state.tasks.get(_coordination_parent_id(case) or "")
-        changed = (
-            _finish_coordination_parent(parent, now=now)
-            if parent is not None
-            else False
-        )
+        changed = _finish_coordination_parent(parent, now=now) if parent is not None else False
         resolved = _resolve_correction_case(
             state,
             case=case,
@@ -656,28 +603,20 @@ def _reconcile_case(
         )
         return True
     created_task_ids = set(result.get("created_task_ids") or [])
-    reparented_task_ids = set(
-        result.get("reparented_correction_task_ids") or []
-    )
+    reparented_task_ids = set(result.get("reparented_correction_task_ids") or [])
     newly_created = sorted(created_task_ids - before_created)
     if parent.id in newly_created:
         result.setdefault("created_coordination_task_ids", []).append(parent.id)
-    changed = bool(
-        newly_created or reparented_task_ids - before_reparented
-    )
+    changed = bool(newly_created or reparented_task_ids - before_reparented)
     if not findings:
         return changed
     configured_ambiguous_finding_ids = {
         str(value).strip()
-        for value in (
-            case.metadata.get(HUMAN_CORRECTION_AMBIGUOUS_FINDING_IDS_KEY) or []
-        )
+        for value in (case.metadata.get(HUMAN_CORRECTION_AMBIGUOUS_FINDING_IDS_KEY) or [])
         if str(value).strip()
     }
     current_finding_ids = {finding.id for finding in findings}
-    ambiguous_finding_ids = (
-        configured_ambiguous_finding_ids & current_finding_ids
-    )
+    ambiguous_finding_ids = configured_ambiguous_finding_ids & current_finding_ids
     completed_ambiguous_finding_ids = _completed_ambiguous_finding_ids(
         state,
         findings,
@@ -685,9 +624,7 @@ def _reconcile_case(
     )
     ambiguous_finding_ids -= completed_ambiguous_finding_ids
     if ambiguous_finding_ids != configured_ambiguous_finding_ids:
-        case.metadata[HUMAN_CORRECTION_AMBIGUOUS_FINDING_IDS_KEY] = sorted(
-            ambiguous_finding_ids
-        )
+        case.metadata[HUMAN_CORRECTION_AMBIGUOUS_FINDING_IDS_KEY] = sorted(ambiguous_finding_ids)
         case.updated_at = now
         changed = True
     if completed_ambiguous_finding_ids:
@@ -696,9 +633,7 @@ def _reconcile_case(
             [],
         ).extend(sorted(completed_ambiguous_finding_ids))
     if ambiguous_finding_ids:
-        result.setdefault("waiting_ambiguous_finding_ids", []).extend(
-            sorted(ambiguous_finding_ids)
-        )
+        result.setdefault("waiting_ambiguous_finding_ids", []).extend(sorted(ambiguous_finding_ids))
         return changed
 
     correction_deliverable_ids: list[str] = []
@@ -718,16 +653,12 @@ def _reconcile_case(
         if not finding.proposed_resolution:
             finding.proposed_resolution = deliverable.summary
             finding_changed = True
-        merged_evidence = sorted(
-            {*finding.resolution_evidence_refs, *evidence}
-        )
+        merged_evidence = sorted({*finding.resolution_evidence_refs, *evidence})
         if finding.resolution_evidence_refs != merged_evidence:
             finding.resolution_evidence_refs = merged_evidence
             finding_changed = True
         if finding_changed:
-            result.setdefault("derived_resolution_finding_ids", []).append(
-                finding.id
-            )
+            result.setdefault("derived_resolution_finding_ids", []).append(finding.id)
             changed = True
         correction_deliverable_ids.append(deliverable.id)
 
@@ -740,8 +671,7 @@ def _reconcile_case(
             details=(
                 "Each human finding must resolve through exactly one current "
                 "accepted correction deliverable. Multiple current deliverables "
-                "exist for: "
-                + ", ".join(ambiguous_findings)
+                "exist for: " + ", ".join(ambiguous_findings)
             ),
             result=result,
             now=now,
@@ -772,15 +702,12 @@ def _reconcile_case(
 
     package_result = _package_result()
     projects_to_recalculate: set[str] = set()
-    package_id = (
-        "release-"
-        + _stable_token(
-            "human-correction-successor",
-            predecessor.id,
-            case.id,
-            *sorted(correction_deliverable_ids),
-            length=32,
-        )
+    package_id = "release-" + _stable_token(
+        "human-correction-successor",
+        predecessor.id,
+        case.id,
+        *sorted(correction_deliverable_ids),
+        length=32,
     )
     created_id = _build_release_package(
         state,
@@ -807,9 +734,7 @@ def _reconcile_case(
         team_id=state.projects[predecessor.project_id].team_id,
     )
     if created_id is None or package_result["errors"]:
-        result.setdefault("package_errors", {})[case.id] = list(
-            package_result["errors"]
-        )
+        result.setdefault("package_errors", {})[case.id] = list(package_result["errors"])
         _open_aggregation_blocker(
             state,
             case=case,
@@ -828,9 +753,7 @@ def _reconcile_case(
         and returned_package.supersedes_release_package_id == predecessor.id
     )
     if not package_result["created"] and not returned_successor:
-        result.setdefault("deduplicated_release_package_ids", []).append(
-            created_id
-        )
+        result.setdefault("deduplicated_release_package_ids", []).append(created_id)
         result.setdefault("waiting_case_ids", []).append(case.id)
         return changed
     for project_id in sorted(projects_to_recalculate):
@@ -902,9 +825,7 @@ class HumanCorrectionReconciliationService:
             try:
                 state = self._repository.update_with_outbox(
                     _mutate,
-                    outbox_records=lambda: _team_event_outbox_records(
-                        result.get("events") or []
-                    ),
+                    outbox_records=lambda: _team_event_outbox_records(result.get("events") or []),
                     expected_revision=current.revision,
                 )
             except TeamStateConflictError as exc:

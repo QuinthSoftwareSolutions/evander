@@ -150,8 +150,7 @@ def require_authoritative_git_review_retry_candidate(
         raise GitWorkContextValidationError(
             code="git_review_project_configuration_required",
             message=(
-                f"Git-backed deliverable {deliverable.id} has no managed Git "
-                "project configuration"
+                f"Git-backed deliverable {deliverable.id} has no managed Git project configuration"
             ),
             correction_context={
                 **correction_context,
@@ -183,9 +182,7 @@ def require_authoritative_git_review_retry_candidate(
     except Exception as exc:
         raise GitWorkContextValidationError(
             code="git_review_candidate_resolution_failed",
-            message=(
-                f"could not resolve managed Git branch {context.agent_branch!r}: {exc}"
-            ),
+            message=(f"could not resolve managed Git branch {context.agent_branch!r}: {exc}"),
             correction_context={
                 **correction_context,
                 "branch_context_id": branch_context_id,
@@ -263,8 +260,7 @@ def authoritative_deliverable_git_base(
         context = state.git_work_contexts.get(context_id)
         if context is None:
             raise ValueError(
-                f"deliverable {deliverable.id} references missing Git work context "
-                f"{context_id}"
+                f"deliverable {deliverable.id} references missing Git work context {context_id}"
             )
         if context.task_id != task.id:
             raise ValueError(
@@ -304,18 +300,14 @@ def authoritative_deliverable_git_base(
         if context.task_id == task.id and context.base_branch is not None
     }
     if len(contexts) > 1:
-        raise ValueError(
-            f"task {task.id} has conflicting authoritative Git work contexts"
-        )
+        raise ValueError(f"task {task.id} has conflicting authoritative Git work contexts")
     if contexts:
         branch, commit = next(iter(contexts))
         return branch, commit
     project = state.projects.get(task.project_id)
     legacy_project_base = (
         project.git.base_branch
-        if task.git_base_branch is None
-        and project is not None
-        and project.git is not None
+        if task.git_base_branch is None and project is not None and project.git is not None
         else None
     )
     manifest_base = (
@@ -537,9 +529,7 @@ def bind_deliverable_git_refs_to_work_context(
                     "task_id": task_id,
                     "agent_id": agent_id,
                     "dispatch_id": dispatch_id,
-                    "branch_context_ids": [
-                        context.id for context in active_contexts
-                    ],
+                    "branch_context_ids": [context.id for context in active_contexts],
                     "required_field": "branch_context_id",
                 },
             )
@@ -820,10 +810,7 @@ def _resolve_git_context_branch_commit(
     except Exception as exc:
         raise GitWorkContextValidationError(
             code="git_candidate_commit_resolution_failed",
-            message=(
-                f"could not resolve managed Git branch "
-                f"{context.agent_branch!r}: {exc}"
-            ),
+            message=(f"could not resolve managed Git branch {context.agent_branch!r}: {exc}"),
             correction_context={
                 "branch_context_id": context.id,
                 "task_id": task_id,

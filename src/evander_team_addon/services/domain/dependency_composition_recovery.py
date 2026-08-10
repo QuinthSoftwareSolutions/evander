@@ -80,9 +80,7 @@ def record_dependency_composition_conflict(
 ) -> DependencyCompositionRecovery:
     task_id = _required_text(conflict.get("target_task_id"), "target_task_id")
     if blocker.task_id != task_id:
-        raise ValueError(
-            f"dependency conflict task {task_id} does not match blocker {blocker.id}"
-        )
+        raise ValueError(f"dependency conflict task {task_id} does not match blocker {blocker.id}")
     sources = [
         DependencyGitSource.model_validate(source)
         for source in conflict.get("dependency_git_sources", [])
@@ -186,9 +184,7 @@ def recovery_for_task(
         }
     ]
     if len(matches) > 1:
-        raise ValueError(
-            f"task {recovery_task_id} references multiple dependency recoveries"
-        )
+        raise ValueError(f"task {recovery_task_id} references multiple dependency recoveries")
     return matches[0] if matches else None
 
 
@@ -211,13 +207,10 @@ def accepted_recovery_for_target(
         and recovery.state == DependencyCompositionRecoveryState.ACCEPTED
         and [source.model_dump(mode="json") for source in recovery.dependency_git_sources]
         == expected_sources
-        and recovery.preparation_generation
-        == task_preparation_generation(state, target_task_id)
+        and recovery.preparation_generation == task_preparation_generation(state, target_task_id)
     ]
     if len(candidates) > 1:
-        raise ValueError(
-            f"task {target_task_id} has multiple accepted dependency recoveries"
-        )
+        raise ValueError(f"task {target_task_id} has multiple accepted dependency recoveries")
     return candidates[0] if candidates else None
 
 
@@ -293,15 +286,11 @@ def start_dependency_composition_recovery(
     if target is None:
         raise ValueError(f"recovery target task {recovery.target_task_id} does not exist")
     if recovery.preparation_generation != task_preparation_generation(state, target.id):
-        raise ValueError(
-            f"dependency recovery {recovery.id} is stale for task {target.id}"
-        )
+        raise ValueError(f"dependency recovery {recovery.id} is stale for task {target.id}")
     contribution_task_ids = list(
         dict.fromkeys(source.dependency_task_id for source in recovery.dependency_git_sources)
     )
-    recovery_task_id_base = (
-        f"{target.id}-merge-recovery-{recovery.source_fingerprint[:12]}"
-    )
+    recovery_task_id_base = f"{target.id}-merge-recovery-{recovery.source_fingerprint[:12]}"
     recovery_task_id = recovery_task_id_base
     existing = state.tasks.get(recovery_task_id)
     if existing is not None:
@@ -397,8 +386,7 @@ def start_dependency_composition_recovery(
             "base_commit_sha": recovery.base_commit_sha,
             "base_tree_hash": recovery.base_tree_hash,
             "dependency_git_sources": [
-                source.model_dump(mode="json")
-                for source in recovery.dependency_git_sources
+                source.model_dump(mode="json") for source in recovery.dependency_git_sources
             ],
             "conflict_paths": list(recovery.conflict_paths),
             "next_action": (
@@ -483,8 +471,7 @@ def accept_dependency_composition_recovery(
     )
     if recovery.preparation_generation != current_generation:
         raise ValueError(
-            f"dependency recovery {recovery.id} is stale for target task "
-            f"{recovery.target_task_id}"
+            f"dependency recovery {recovery.id} is stale for target task {recovery.target_task_id}"
         )
     recovery.state = DependencyCompositionRecoveryState.ACCEPTED
     recovery.accepted_deliverable_id = deliverable.id

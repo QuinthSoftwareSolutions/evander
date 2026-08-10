@@ -28,9 +28,7 @@ _CURSOR_FILENAME = "trigger-cursors-host-directories.json"
 _STATE_VERSION = 1
 _ACKNOWLEDGED_EVENT_LIMIT = 2_048
 _PATH_OPEN_FLAGS = (
-    getattr(os, "O_PATH", os.O_RDONLY)
-    | getattr(os, "O_NOFOLLOW", 0)
-    | getattr(os, "O_CLOEXEC", 0)
+    getattr(os, "O_PATH", os.O_RDONLY) | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
 )
 
 
@@ -91,16 +89,13 @@ class HostDirectoryFileAddedTriggerProvider(TriggerProviderBase):
 
     def _resource(self) -> HostDirectoryDefinition:
         if self.runtime_context is None:
-            raise RuntimeError(
-                "HostDirectoryFileAddedTriggerProvider has no runtime context"
-            )
+            raise RuntimeError("HostDirectoryFileAddedTriggerProvider has no runtime context")
         resolver = self.runtime_context.provider_config_resolver
         resolve = getattr(resolver, "resolve_host_directories_for_directory", None)
         if not callable(resolve):
             raise RuntimeError("Host directory configuration is unavailable")
         directory_scope = (
-            str(self.runtime_context.metadata.get("directory_path") or "root").strip()
-            or "root"
+            str(self.runtime_context.metadata.get("directory_path") or "root").strip() or "root"
         )
         configured = resolve(directory_scope)
         resource = configured.host_directories.get(self._trigger().directory_id)
@@ -110,16 +105,13 @@ class HostDirectoryFileAddedTriggerProvider(TriggerProviderBase):
                 f"for directory scope {directory_scope!r}"
             )
         if resource.disabled:
-            raise ValueError(
-                f"Host directory {self._trigger().directory_id!r} is disabled"
-            )
+            raise ValueError(f"Host directory {self._trigger().directory_id!r} is disabled")
         return resource
 
     def _configuration_signature(self, resource: HostDirectoryDefinition) -> str:
         trigger = self._trigger()
         directory_scope = (
-            str(self.runtime_context.metadata.get("directory_path") or "root").strip()
-            or "root"
+            str(self.runtime_context.metadata.get("directory_path") or "root").strip() or "root"
         )
         payload = {
             "directory_id": trigger.directory_id,
@@ -139,9 +131,7 @@ class HostDirectoryFileAddedTriggerProvider(TriggerProviderBase):
 
     def _cursor_store(self) -> TriggerCursorStore:
         if self.runtime_context is None:
-            raise RuntimeError(
-                "HostDirectoryFileAddedTriggerProvider has no runtime context"
-            )
+            raise RuntimeError("HostDirectoryFileAddedTriggerProvider has no runtime context")
         return TriggerCursorStore(
             Path(self.runtime_context.resolved_config.runtime_dir) / _CURSOR_FILENAME
         )
@@ -230,10 +220,13 @@ def _advance_scan_state(
 
         candidate["snapshot"] = current_snapshot
         candidate["last_observed_at"] = now_text
-        candidate["observations"] = max(
-            1,
-            _coerce_int(candidate.get("observations"), default=1),
-        ) + 1
+        candidate["observations"] = (
+            max(
+                1,
+                _coerce_int(candidate.get("observations"), default=1),
+            )
+            + 1
+        )
         first_observed_at = _parse_datetime(candidate.get("first_observed_at"))
         if (
             first_observed_at is not None
@@ -309,9 +302,7 @@ def _pending_events(
     state: dict[str, Any],
 ) -> list[TriggerEvent]:
     pending: list[tuple[datetime, str, TriggerEvent]] = []
-    for relative_path, candidate in _mapping_of_mappings(
-        state.get("candidates")
-    ).items():
+    for relative_path, candidate in _mapping_of_mappings(state.get("candidates")).items():
         if not _pending_candidate(candidate):
             continue
         snapshot = candidate.get("snapshot")
@@ -421,9 +412,7 @@ def _scan_regular_files(
                         dir_fd=directory_fd,
                     )
                 except OSError as exc:
-                    raise HostDirectoryScanError(
-                        "Host directory changed during scan"
-                    ) from exc
+                    raise HostDirectoryScanError("Host directory changed during scan") from exc
                 try:
                     info = os.fstat(entry_fd)
                     _ensure_same_mount(
@@ -582,9 +571,7 @@ def _ensure_same_device(
 
 def _mount_id(file_descriptor: int) -> int:
     try:
-        content = Path(f"/proc/self/fdinfo/{file_descriptor}").read_text(
-            encoding="utf-8"
-        )
+        content = Path(f"/proc/self/fdinfo/{file_descriptor}").read_text(encoding="utf-8")
     except OSError as exc:
         raise HostDirectoryScanError(
             "Host directory mount-boundary verification is unavailable"
@@ -596,9 +583,7 @@ def _mount_id(file_descriptor: int) -> int:
                 return int(value.strip())
             except ValueError:
                 break
-    raise HostDirectoryScanError(
-        "Host directory mount-boundary verification is unavailable"
-    )
+    raise HostDirectoryScanError("Host directory mount-boundary verification is unavailable")
 
 
 def _ensure_same_mount(
@@ -625,19 +610,14 @@ def _snapshot(info: os.stat_result) -> dict[str, Any]:
 
 
 def _same_identity(left: dict[str, Any], right: dict[str, Any]) -> bool:
-    return (
-        _coerce_int(left.get("device"), default=-1)
-        == _coerce_int(right.get("device"), default=-2)
-        and _coerce_int(left.get("inode"), default=-1)
-        == _coerce_int(right.get("inode"), default=-2)
-    )
+    return _coerce_int(left.get("device"), default=-1) == _coerce_int(
+        right.get("device"), default=-2
+    ) and _coerce_int(left.get("inode"), default=-1) == _coerce_int(right.get("inode"), default=-2)
 
 
 def _same_stable_snapshot(left: dict[str, Any], right: dict[str, Any]) -> bool:
-    return (
-        _same_identity(left, right)
-        and str(left.get("revision") or "")
-        == str(right.get("revision") or "__missing__")
+    return _same_identity(left, right) and str(left.get("revision") or "") == str(
+        right.get("revision") or "__missing__"
     )
 
 
@@ -651,9 +631,7 @@ def _path_matches(
         _glob_matches(relative_path, pattern) for pattern in include_globs
     ):
         return False
-    return not any(
-        _glob_matches(relative_path, pattern) for pattern in exclude_globs
-    )
+    return not any(_glob_matches(relative_path, pattern) for pattern in exclude_globs)
 
 
 def _glob_matches(relative_path: str, pattern: str) -> bool:
@@ -672,11 +650,7 @@ def _glob_matches(relative_path: str, pattern: str) -> bool:
 def _mapping_of_mappings(value: object) -> dict[str, dict[str, Any]]:
     if not isinstance(value, dict):
         return {}
-    return {
-        str(key): dict(item)
-        for key, item in value.items()
-        if isinstance(item, dict)
-    }
+    return {str(key): dict(item) for key, item in value.items() if isinstance(item, dict)}
 
 
 def _mapping_of_positive_ints(value: object) -> dict[str, int]:
@@ -721,9 +695,7 @@ def _format_datetime(value: datetime) -> str:
 
 def _format_timestamp_ns(value: int) -> str:
     seconds, nanoseconds = divmod(int(value), 1_000_000_000)
-    timestamp = datetime.fromtimestamp(seconds, tz=UTC).replace(
-        microsecond=nanoseconds // 1_000
-    )
+    timestamp = datetime.fromtimestamp(seconds, tz=UTC).replace(microsecond=nanoseconds // 1_000)
     return _format_datetime(timestamp)
 
 

@@ -368,12 +368,15 @@ def test_wake_capacity_claim_reconciles_orphaned_terminal_container_lease(
         execution_backend="container_worker_vm",
         target_name="agent-orphaned-session",
     )
-    assert capacity_store.mark_running(
-        orphaned.slot_id,
-        target_name="agent-orphaned-session",
-        execution_id="execution:orphaned-session",
-        now=datetime.now(UTC) - timedelta(minutes=1),
-    ) is True
+    assert (
+        capacity_store.mark_running(
+            orphaned.slot_id,
+            target_name="agent-orphaned-session",
+            execution_id="execution:orphaned-session",
+            now=datetime.now(UTC) - timedelta(minutes=1),
+        )
+        is True
+    )
     monkeypatch.setattr(
         "evander.messaging.wake_dispatch.build_execution_backend",
         lambda *_args, **_kwargs: SimpleNamespace(

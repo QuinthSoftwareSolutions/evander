@@ -78,10 +78,7 @@ def _manager_fallback_task_only_has_excluded_reviews(
 ) -> bool:
     if task.state != TeamTaskState.WAITING_FOR_REVIEW or not excluded_review_ids:
         return False
-    deliverable_ids = {
-        deliverable.id
-        for deliverable in _active_task_deliverables(state, task)
-    }
+    deliverable_ids = {deliverable.id for deliverable in _active_task_deliverables(state, task)}
     pending_review_ids = {
         review.id
         for review in visible_reviews
@@ -204,8 +201,7 @@ def _manager_fallback_summary_payload(
         review
         for review in visible_reviews
         if review.id not in excluded_review_ids
-        and review.deliverable_id
-        in {deliverable.id for deliverable in displayed_deliverables}
+        and review.deliverable_id in {deliverable.id for deliverable in displayed_deliverables}
     ]
     pending_initial_release_rows = [
         _manager_fallback_initial_release_row(
@@ -219,9 +215,7 @@ def _manager_fallback_summary_payload(
     ]
     reviewer_candidates = _manager_fallback_reviewer_candidates(
         state,
-        team_agents=[
-            agent for agent in team_agents if agent.id != manager.id
-        ],
+        team_agents=[agent for agent in team_agents if agent.id != manager.id],
         project_ids=project_ids,
         review_profiles=review_profiles,
         now=now,
@@ -286,11 +280,9 @@ def _manager_fallback_summary_payload(
         limited_routing_gaps = list(routing_gaps)
         omitted_routing_gaps = 0
     else:
-        limited_routing_gaps, omitted_routing_gaps = (
-            _manager_fallback_limited_rows(
-                routing_gaps,
-                max(0, routing_gap_limit),
-            )
+        limited_routing_gaps, omitted_routing_gaps = _manager_fallback_limited_rows(
+            routing_gaps,
+            max(0, routing_gap_limit),
         )
     omitted_counts = _manager_fallback_omitted_counts(
         {
@@ -325,8 +317,7 @@ def _manager_fallback_summary_payload(
             "active_agent_count": len(team_agents),
             "open_task_count": len(actionable_visible_tasks),
             "actionable_open_task_count": sum(
-                task.state in _NON_TERMINAL_TASK_STATES
-                for task in actionable_visible_tasks
+                task.state in _NON_TERMINAL_TASK_STATES for task in actionable_visible_tasks
             ),
             "active_deliverable_count": len(displayed_deliverables),
             "review_request_count": len(displayed_reviews),
@@ -334,9 +325,7 @@ def _manager_fallback_summary_payload(
             "pending_inbox_count": len(visible_pending_inbox),
             "failed_action_count": len(visible_action_records),
             "routing_gap_count": len(routing_gaps),
-            "pending_initial_release_decision_count": len(
-                pending_initial_release_rows
-            ),
+            "pending_initial_release_decision_count": len(pending_initial_release_rows),
         },
         "agents": [
             _manager_fallback_agent_row(
@@ -394,8 +383,7 @@ def _manager_fallback_initial_release_decision_ids(
             deliverable_id
             for row in rows
             if isinstance(row, Mapping)
-            if (deliverable_id := _optional_text(row.get("deliverable_id")))
-            is not None
+            if (deliverable_id := _optional_text(row.get("deliverable_id"))) is not None
         }
     )
 
@@ -434,21 +422,15 @@ def _manager_fallback_review_routing_authorities(
         for raw_deliverable_id in deliverable_ids:
             deliverable_id = _optional_text(raw_deliverable_id)
             deliverable = state.deliverables.get(deliverable_id or "")
-            task = (
-                state.tasks.get(deliverable.task_id)
-                if deliverable is not None
-                else None
-            )
+            task = state.tasks.get(deliverable.task_id) if deliverable is not None else None
             if deliverable is None or task is None:
                 continue
-            authorities[(reviewer_agent_id, deliverable.id)] = (
-                TeamDispatchReviewRoutingAuthority(
-                    kind="reviewer_without_assigned_review_work",
-                    reviewer_agent_id=reviewer_agent_id,
-                    project_id=task.project_id,
-                    task_id=task.id,
-                    deliverable_id=deliverable.id,
-                )
+            authorities[(reviewer_agent_id, deliverable.id)] = TeamDispatchReviewRoutingAuthority(
+                kind="reviewer_without_assigned_review_work",
+                reviewer_agent_id=reviewer_agent_id,
+                project_id=task.project_id,
+                task_id=task.id,
+                deliverable_id=deliverable.id,
             )
     return [authorities[key] for key in sorted(authorities)]
 
@@ -499,10 +481,7 @@ def _manager_fallback_review_routing_authority_error(
     if team is None:
         return f"project team {project.team_id} no longer exists"
     if manager.team_id != team.id or team.manager_agent_id != manager.id:
-        return (
-            f"agent {manager.id} is no longer manager of project team "
-            f"{team.id}"
-        )
+        return f"agent {manager.id} is no longer manager of project team {team.id}"
     pair = f"{authority.reviewer_agent_id}:{authority.deliverable_id}"
     if reviewer is None:
         return (
@@ -570,10 +549,7 @@ def _manager_fallback_review_routing_authority_error(
             f"{deliverable.review_cohort_id}; retry or replace its blocked cohort "
             "member instead of creating a new review request"
         )
-    if any(
-        review.reviewer_agent_id == reviewer.id
-        for review in current_reviews
-    ):
+    if any(review.reviewer_agent_id == reviewer.id for review in current_reviews):
         return (
             f"reviewer/deliverable pair {pair} is no longer an actionable "
             "manager-fallback routing gap: reviewer already has a current "
@@ -700,8 +676,7 @@ def _manager_fallback_initial_release_row(
     reviewed_commit_sha = (
         deliverable.review_manifest.reviewed_commit_sha
         if deliverable.review_manifest is not None
-        else deliverable.git_refs.reviewed_commit_sha
-        or deliverable.git_refs.commit_sha
+        else deliverable.git_refs.reviewed_commit_sha or deliverable.git_refs.commit_sha
     )
     row: dict[str, Any] = {
         "project_id": project.id,

@@ -376,9 +376,9 @@ class WorkerTaskWorktreeRequest(BaseModel):
     expected_base_commit_sha: str | None = None
     expected_base_tree_hash: str | None = None
     dependency_git_sources: list[WorkerTaskDependencyGitSource] = Field(default_factory=list)
-    dependency_composition_mode: Literal[
-        "automatic", "manual_recovery", "adopt_resolved"
-    ] = "automatic"
+    dependency_composition_mode: Literal["automatic", "manual_recovery", "adopt_resolved"] = (
+        "automatic"
+    )
     dependency_composition_recovery_id: str | None = None
     resolved_dependency_branch: str | None = None
     resolved_dependency_commit_sha: str | None = None
@@ -411,13 +411,9 @@ class WorkerTaskWorktreeRequest(BaseModel):
             raise ValueError("dependency_composition_recovery_id must be single-line text")
         return text
 
-    @field_validator(
-        "expected_base_commit_sha", "resolved_dependency_commit_sha", mode="before"
-    )
+    @field_validator("expected_base_commit_sha", "resolved_dependency_commit_sha", mode="before")
     @classmethod
-    def normalize_expected_base_commit_sha(
-        cls, value: object, info: ValidationInfo
-    ) -> str | None:
+    def normalize_expected_base_commit_sha(cls, value: object, info: ValidationInfo) -> str | None:
         if value is None:
             return None
         text = str(value).strip().casefold()
@@ -460,8 +456,7 @@ class WorkerTaskWorktreeRequest(BaseModel):
     def validate_dependency_merge_author(self) -> "WorkerTaskWorktreeRequest":
         if bool(self.dependency_merge_author_name) != bool(self.dependency_merge_author_email):
             raise ValueError(
-                "dependency_merge_author_name and dependency_merge_author_email "
-                "must both be set"
+                "dependency_merge_author_name and dependency_merge_author_email must both be set"
             )
         if self.dependency_composition_mode == "automatic":
             if any(
@@ -490,10 +485,7 @@ class WorkerTaskWorktreeRequest(BaseModel):
         if self.dependency_composition_mode != "automatic":
             if not self.dependency_git_sources:
                 raise ValueError("dependency recovery requires dependency_git_sources")
-            if (
-                self.expected_base_commit_sha is None
-                or self.expected_base_tree_hash is None
-            ):
+            if self.expected_base_commit_sha is None or self.expected_base_tree_hash is None:
                 raise ValueError(
                     "dependency recovery requires an immutable expected base commit and tree"
                 )

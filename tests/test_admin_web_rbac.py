@@ -51,8 +51,7 @@ def test_admin_web_rbac_seeds_builtin_groups(tmp_path: Path) -> None:
     assert TEAM_CHATS_MUTATE_PERMISSION in store.get_group(OPERATOR_GROUP_ID).permissions
     assert TEAM_HUMAN_REVIEWS_DECIDE_PERMISSION in PERMISSION_CATALOG
     assert (
-        TEAM_HUMAN_REVIEWS_DECIDE_PERMISSION
-        not in store.get_group(OPERATOR_GROUP_ID).permissions
+        TEAM_HUMAN_REVIEWS_DECIDE_PERMISSION not in store.get_group(OPERATOR_GROUP_ID).permissions
     )
 
 
@@ -100,10 +99,7 @@ def test_admin_web_rbac_migrates_legacy_roles_to_assignments(
     assert store.can("operator@example.com", WORKFLOWS_WRITE_PERMISSION)
     assert store.can("operator@example.com", WORKFLOW_RUNS_CONTROL_PERMISSION)
     assert store.can("operator@example.com", TEAM_CHATS_MUTATE_PERMISSION)
-    assert (
-        store.can("operator@example.com", TEAM_HUMAN_REVIEWS_DECIDE_PERMISSION)
-        is False
-    )
+    assert store.can("operator@example.com", TEAM_HUMAN_REVIEWS_DECIDE_PERMISSION) is False
     assert store.can("operator@example.com", USERS_MANAGE_PERMISSION) is False
 
 

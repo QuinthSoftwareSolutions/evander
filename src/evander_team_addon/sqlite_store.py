@@ -1535,13 +1535,11 @@ class TeamStateSqliteStore:
                     previous_schema_version < SQLITE_SCHEMA_VERSION
                     or previous_state_schema_version < SCHEMA_VERSION
                 ):
-                    affected_deliverable_ids = (
-                        _normalize_rejected_acceptance_override_rows(connection)
+                    affected_deliverable_ids = _normalize_rejected_acceptance_override_rows(
+                        connection
                     )
                     if affected_deliverable_ids:
-                        migrated_state = TeamState.model_validate(
-                            self._read_payload(connection)
-                        )
+                        migrated_state = TeamState.model_validate(self._read_payload(connection))
                         _reconcile_rejected_acceptance_overrides(
                             migrated_state,
                             deliverable_ids=affected_deliverable_ids,
@@ -1597,8 +1595,8 @@ class TeamStateSqliteStore:
                     text = self.legacy_json_path.read_text(encoding="utf-8")
                     payload = json.loads(text)
                     _migrate_legacy_json_outcome_kind_records(payload)
-                    affected_deliverable_ids = (
-                        _normalize_rejected_acceptance_override_payload(payload)
+                    affected_deliverable_ids = _normalize_rejected_acceptance_override_payload(
+                        payload
                     )
                     state = TeamState.model_validate(payload)
                     if affected_deliverable_ids:
@@ -2434,9 +2432,7 @@ class TeamStateSqliteStore:
                 "low_priority_batch_cycle_count": row["low_priority_batch_cycle_count"],
                 "low_priority_batch_due_after_cycles": row["low_priority_batch_due_after_cycles"],
                 "context_clearing_policy": row["context_clearing_policy"],
-                "context_clearing_idle_grace_seconds": row[
-                    "context_clearing_idle_grace_seconds"
-                ],
+                "context_clearing_idle_grace_seconds": row["context_clearing_idle_grace_seconds"],
                 "context_idle_since_at": row["context_idle_since_at"],
                 "context_idle_rotation_due_at": row["context_idle_rotation_due_at"],
                 "auto_context_clearing_enabled": _bool(row["auto_context_clearing_enabled"]),
@@ -4276,9 +4272,7 @@ class TeamStateSqliteStore:
                 "initial_release_decision_deliverable_ids": _json_loads(
                     row["initial_release_decision_deliverable_ids_json"] or "[]"
                 ),
-                "mcp_capability_receipt": _json_loads(
-                    row["mcp_capability_receipt_json"] or "null"
-                ),
+                "mcp_capability_receipt": _json_loads(row["mcp_capability_receipt_json"] or "null"),
                 "status": row["status"],
                 "created_at": row["created_at"],
                 "preparation_expires_at": row["preparation_expires_at"],
@@ -4327,9 +4321,7 @@ class TeamStateSqliteStore:
                     dispatch.get("cause_id"),
                     _json_dumps(dispatch.get("chat_message_ids", [])),
                     _json_dumps(dispatch.get("review_routing_authorities", [])),
-                    _json_dumps(
-                        dispatch.get("initial_release_decision_deliverable_ids", [])
-                    ),
+                    _json_dumps(dispatch.get("initial_release_decision_deliverable_ids", [])),
                     _json_dumps(dispatch.get("mcp_capability_receipt")),
                     dispatch["status"],
                     dispatch["created_at"],
@@ -4577,9 +4569,7 @@ class TeamStateSqliteStore:
                 "base_branch": row["base_branch"],
                 "base_commit_sha": row["base_commit_sha"],
                 "base_tree_hash": row["base_tree_hash"],
-                "dependency_git_sources": _json_loads(
-                    row["dependency_git_sources_json"]
-                ),
+                "dependency_git_sources": _json_loads(row["dependency_git_sources_json"]),
                 "source_fingerprint": row["source_fingerprint"],
                 "preparation_generation": row["preparation_generation"],
                 "failed_dependency_task_id": row["failed_dependency_task_id"],
@@ -4662,9 +4652,7 @@ class TeamStateSqliteStore:
                 "agent_branch": row["agent_branch"],
                 "commit_sha": row["commit_sha"],
                 "dependency_git_sources": _json_loads(row["dependency_git_sources_json"]),
-                "dependency_composition_recovery_id": row[
-                    "dependency_composition_recovery_id"
-                ],
+                "dependency_composition_recovery_id": row["dependency_composition_recovery_id"],
                 "manual_dependency_git_sources": _json_loads(
                     row["manual_dependency_git_sources_json"]
                 ),
@@ -5262,9 +5250,7 @@ def _migrate_worktree_cleanup_evidence(connection: sqlite3.Connection) -> None:
         )
 
 
-_REJECTED_ACCEPTANCE_MIGRATION_ACTOR = (
-    f"system:sqlite-migration:v{SQLITE_SCHEMA_VERSION}"
-)
+_REJECTED_ACCEPTANCE_MIGRATION_ACTOR = f"system:sqlite-migration:v{SQLITE_SCHEMA_VERSION}"
 _REJECTED_ACCEPTANCE_MIGRATION_REASON = (
     "Formal review was attached after the deliverable's authoritative direct rejection; "
     f"the invalid review path was retired during the v{SQLITE_SCHEMA_VERSION} "
@@ -5306,10 +5292,7 @@ def _normalize_rejected_acceptance_override_rows(
         if not _acceptance_decision_is_rejected(decision):
             continue
         deliverable_id = str(row["id"])
-        if (
-            row["state"] == "rejected"
-            and deliverable_id not in current_review_deliverable_ids
-        ):
+        if row["state"] == "rejected" and deliverable_id not in current_review_deliverable_ids:
             continue
         connection.execute(
             "UPDATE team_deliverables SET state = 'rejected' WHERE id = ?",
@@ -5340,9 +5323,7 @@ def _normalize_rejected_acceptance_override_payload(payload: object) -> list[str
     for deliverable_id, raw_deliverable in deliverables.items():
         if not isinstance(raw_deliverable, dict):
             continue
-        if not _acceptance_decision_is_rejected(
-            raw_deliverable.get("acceptance_decision")
-        ):
+        if not _acceptance_decision_is_rejected(raw_deliverable.get("acceptance_decision")):
             continue
         normalized_id = str(deliverable_id)
         state = raw_deliverable.get("state")
@@ -5378,9 +5359,7 @@ def _reconcile_rejected_acceptance_overrides(
     from .services.domain.work_due import _mark_agent_work_due
 
     selected_ids = {
-        deliverable_id
-        for deliverable_id in deliverable_ids
-        if deliverable_id in state.deliverables
+        deliverable_id for deliverable_id in deliverable_ids if deliverable_id in state.deliverables
     }
     if not selected_ids:
         return
@@ -5413,10 +5392,7 @@ def _reconcile_rejected_acceptance_overrides(
                 now=now,
             )
         for finding in deliverable.carried_findings:
-            if (
-                finding.source_review_request_id in invalid_review_ids
-                and finding.state == "open"
-            ):
+            if finding.source_review_request_id in invalid_review_ids and finding.state == "open":
                 finding.state = "resolved"
                 finding.resolution = _REJECTED_ACCEPTANCE_MIGRATION_REASON
                 finding.resolved_at = now
@@ -5491,9 +5467,7 @@ def _reconcile_rejected_acceptance_overrides(
                     "summary": "Superior rejected the deliverable; revise and resubmit.",
                     "reason": decision.reason,
                     "artifact_refs": list(deliverable.artifact_refs),
-                    "migration": (
-                        f"rejected_acceptance_override_v{SQLITE_SCHEMA_VERSION}"
-                    ),
+                    "migration": (f"rejected_acceptance_override_v{SQLITE_SCHEMA_VERSION}"),
                 },
                 created_at=now,
                 updated_at=now,
@@ -5523,8 +5497,7 @@ def _reconcile_rejected_acceptance_overrides(
                     state,
                     project_id=project_id,
                     source_id=(
-                        "rejected-acceptance-terminal-ancestors:"
-                        + ",".join(project_task_ids)
+                        "rejected-acceptance-terminal-ancestors:" + ",".join(project_task_ids)
                     ),
                     summary="Reconcile terminal ancestor tasks after a restored rejection",
                     details=(
@@ -5556,9 +5529,7 @@ def _reconcile_rejected_acceptance_overrides(
                 "a successor from accepted replacement lineage before publication."
             ),
             reference_ids=sorted(
-                set(selected_ids)
-                | {release.id}
-                | set(release.git_promotion_record_ids)
+                set(selected_ids) | {release.id} | set(release.git_promotion_record_ids)
             ),
             now=now,
         )
@@ -5588,9 +5559,7 @@ def _close_invalid_rejection_override_inbox_items(
             continue
         payload = item.payload
         linked_review_ids = {
-            str(value)
-            for value in payload.get("review_request_ids") or []
-            if value is not None
+            str(value) for value in payload.get("review_request_ids") or [] if value is not None
         }
         if payload.get("review_request_id") is not None:
             linked_review_ids.add(str(payload["review_request_id"]))
@@ -5647,12 +5616,9 @@ def _close_stale_task_resolution_inbox_items(
             continue
         payload = item.payload
         kind = payload.get("kind")
-        if (
-            kind in {"root_task_resolution", "candidate_correction_resolution"}
-            and (
-                payload.get("task_id") in invalid_resolution_task_ids
-                or payload.get("deliverable_id") in deliverable_ids
-            )
+        if kind in {"root_task_resolution", "candidate_correction_resolution"} and (
+            payload.get("task_id") in invalid_resolution_task_ids
+            or payload.get("deliverable_id") in deliverable_ids
         ):
             item.state = TeamInboxItemState.HANDLED
             item.updated_at = now
@@ -5660,9 +5626,7 @@ def _close_stale_task_resolution_inbox_items(
         if kind != "parent_task_transition":
             continue
         child_ids = {
-            str(value)
-            for value in payload.get("child_task_ids") or []
-            if value is not None
+            str(value) for value in payload.get("child_task_ids") or [] if value is not None
         }
         invalid_child_ids = child_ids.intersection(invalid_resolution_task_ids)
         if not invalid_child_ids:
@@ -5816,9 +5780,7 @@ def _legacy_correction_release_ids_by_task(
         normalized_task_id = str(task_id or "").strip()
         normalized_release_id = str(release_id or "").strip()
         if normalized_task_id and normalized_release_id:
-            release_ids_by_task.setdefault(normalized_task_id, set()).add(
-                normalized_release_id
-            )
+            release_ids_by_task.setdefault(normalized_task_id, set()).add(normalized_release_id)
 
     request_release_ids = {
         str(row["id"]): str(row["release_package_id"])
@@ -5844,9 +5806,7 @@ def _legacy_correction_release_ids_by_task(
         """
     ):
         _add(row["review_correction_task_id"], row["release_package_id"])
-    for row in connection.execute(
-        "SELECT payload_json FROM team_release_verification_runs"
-    ):
+    for row in connection.execute("SELECT payload_json FROM team_release_verification_runs"):
         payload = _json_loads(row["payload_json"])
         if isinstance(payload, dict):
             _add(payload.get("correction_task_id"), payload.get("release_package_id"))
@@ -6084,9 +6044,7 @@ def _migrate_task_git_base_snapshots(connection: sqlite3.Connection) -> None:
                 """,
                 (release_id,),
             ).fetchone()
-            candidate_branch, _candidate_commit = _legacy_release_candidate_snapshot(
-                linked_release
-            )
+            candidate_branch, _candidate_commit = _legacy_release_candidate_snapshot(linked_release)
             if (
                 linked_release is None
                 or linked_release["project_id"] != task["project_id"]
@@ -6224,9 +6182,7 @@ def _migrate_task_git_base_snapshots(connection: sqlite3.Connection) -> None:
                 )
             }
             correction_deliverables = [
-                row
-                for row in git_deliverables
-                if str(row["id"]) not in inherited_deliverable_ids
+                row for row in git_deliverables if str(row["id"]) not in inherited_deliverable_ids
             ]
             inferred, unresolved = _legacy_deliverable_git_snapshots(
                 connection,
@@ -6240,9 +6196,8 @@ def _migrate_task_git_base_snapshots(connection: sqlite3.Connection) -> None:
                     )
                     continue
                 inferred_branch, inferred_commit = next(iter(inferred))
-                if (
-                    (branch is not None and branch != inferred_branch)
-                    or (commit is not None and commit != inferred_commit)
+                if (branch is not None and branch != inferred_branch) or (
+                    commit is not None and commit != inferred_commit
                 ):
                     _block_legacy_release_git_base_conflict(
                         connection,
@@ -6415,10 +6370,7 @@ def _migrate_release_canonical_base_snapshots(
                         or row["predecessor_candidate"]
                     )
                 else:
-                    canonical_base = (
-                        row["predecessor_canonical_base"]
-                        or row["predecessor_base"]
-                    )
+                    canonical_base = row["predecessor_canonical_base"] or row["predecessor_base"]
             else:
                 canonical_base = row["base_commit_sha"]
             if not canonical_base:

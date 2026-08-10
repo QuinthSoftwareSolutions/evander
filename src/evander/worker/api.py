@@ -166,8 +166,7 @@ def build_worker_app(daemon: WorkerDaemon) -> Starlette:
             payload = await request.json()
             cleanup_request = WorkerTaskWorktreeCleanupRequest.model_validate(payload)
             record = await run_in_threadpool(
-                daemon.cleanup_task_worktree,
-                request.path_params["session_id"], cleanup_request
+                daemon.cleanup_task_worktree, request.path_params["session_id"], cleanup_request
             )
         except ValueError as exc:
             return JSONResponse({"error": str(exc)}, status_code=400)

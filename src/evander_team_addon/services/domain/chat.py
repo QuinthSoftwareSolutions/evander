@@ -91,9 +91,7 @@ def _publish_admin_chat_notification(
             body=f"{agent_label}: {_chat_preview(message.body, limit=140)}",
             source="team-chat",
             source_id=message.id,
-            target_url=(
-                f"#addon:team-addon?view=chat&conversation_id={conversation.id}"
-            ),
+            target_url=(f"#addon:team-addon?view=chat&conversation_id={conversation.id}"),
             metadata={
                 "conversation_id": conversation.id,
                 "message_id": message.id,
@@ -391,11 +389,10 @@ def _clear_completed_chat_dispatch_lease(
     if not messages or not all(message.status in {"replied", "failed"} for message in messages):
         return False
     dispatch = state.dispatches.get(dispatch_id)
-    if (
-        dispatch is not None
-        and dispatch.status
-        in {TeamDispatchStatus.PREPARING, TeamDispatchStatus.LEASED}
-    ):
+    if dispatch is not None and dispatch.status in {
+        TeamDispatchStatus.PREPARING,
+        TeamDispatchStatus.LEASED,
+    }:
         failed_message = next((message for message in messages if message.status == "failed"), None)
         dispatch.status = (
             TeamDispatchStatus.FAILED

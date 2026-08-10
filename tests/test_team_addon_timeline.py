@@ -502,17 +502,12 @@ def test_derived_activity_uses_recorded_initiators_without_inventing_actors() ->
     state.agents["alpha-reviewer"].display_name = "Rita Reviewer"
     state.review_requests["alpha-review"].requested_by_agent_id = "alpha-lead"
 
-    entries = {
-        entry["id"]: entry
-        for entry in derive_team_timeline(state)["entries"]
-    }
+    entries = {entry["id"]: entry for entry in derive_team_timeline(state)["entries"]}
 
     assert entries["task:alpha-task:created"]["actor_subject"] == "Ada Lead"
     assert entries["task:alpha-task:updated"]["actor_agent_id"] is None
     assert entries["task:alpha-task:updated"]["actor_subject"] is None
-    assert entries["task:alpha-task:updated"]["summary"] == (
-        "Task entered accepted: Alpha task"
-    )
+    assert entries["task:alpha-task:updated"]["summary"] == ("Task entered accepted: Alpha task")
     assert entries["task:alpha-task:updated"]["change"]["before_known"] is False
 
     assert entries["inbox:alpha-inbox:created"]["actor_subject"] == "Ada Lead"
@@ -530,19 +525,13 @@ def test_derived_activity_uses_recorded_initiators_without_inventing_actors() ->
     assert entries["review:alpha-review:decision"]["actor_agent_id"] == "alpha-reviewer"
     assert entries["review:alpha-review:decision"]["actor_subject"] == "Rita Reviewer"
 
-    assert entries["git-promotion:alpha-promotion:requested"]["actor_agent_id"] == (
-        "alpha-lead"
-    )
+    assert entries["git-promotion:alpha-promotion:requested"]["actor_agent_id"] == ("alpha-lead")
     assert entries["git-promotion:alpha-promotion:result"]["actor_agent_id"] is None
-    assert entries["git-promotion:alpha-promotion:result"]["process"] == (
-        "Git promotion worker"
-    )
+    assert entries["git-promotion:alpha-promotion:result"]["process"] == ("Git promotion worker")
 
     assert entries["release:alpha-release:created"]["actor_agent_id"] is None
     assert entries["release:alpha-release:blocked"]["actor_agent_id"] is None
-    assert "alpha-lead" in entries["release:alpha-release:created"][
-        "related_agent_ids"
-    ]
+    assert "alpha-lead" in entries["release:alpha-release:created"]["related_agent_ids"]
 
 
 def test_derived_activity_exposes_only_honest_changes_reasons_and_human_subjects() -> None:
@@ -562,10 +551,7 @@ def test_derived_activity_exposes_only_honest_changes_reasons_and_human_subjects
         cancelled_at=cancellation_time,
     )
 
-    entries = {
-        entry["id"]: entry
-        for entry in derive_team_timeline(state)["entries"]
-    }
+    entries = {entry["id"]: entry for entry in derive_team_timeline(state)["entries"]}
     cancelled = entries["task:alpha-task:cancelled"]
     assert cancelled["subject"] == "Alpha task"
     assert cancelled["summary"] == "Task cancelled: Alpha task"
@@ -601,9 +587,7 @@ def test_derived_activity_exposes_only_honest_changes_reasons_and_human_subjects
     assert entries["release:alpha-release:blocked"]["reason"] == (
         "blocked waiting on release checks"
     )
-    assert entries["release:alpha-release:blocked"]["subject"] == (
-        "Alpha Project: Alpha task"
-    )
+    assert entries["release:alpha-release:blocked"]["subject"] == ("Alpha Project: Alpha task")
     assert "alpha-release" not in entries["release:alpha-release:blocked"]["summary"]
 
 
@@ -621,9 +605,7 @@ def test_derived_activity_resolves_release_review_context_and_request_process() 
 
     timeline = derive_team_timeline(state, types="review")
     requested = next(
-        entry
-        for entry in timeline["entries"]
-        if entry["id"] == "review:release-review:created"
+        entry for entry in timeline["entries"] if entry["id"] == "review:release-review:created"
     )
 
     assert requested["team_id"] == "alpha-team"
@@ -636,6 +618,4 @@ def test_derived_activity_resolves_release_review_context_and_request_process() 
     assert requested["actor_agent_id"] is None
     assert requested["actor_subject"] == "workflow:release-review"
     assert requested["process"] == "Workflow"
-    assert {"alpha-lead", "alpha-dev", "alpha-reviewer"}.issubset(
-        requested["related_agent_ids"]
-    )
+    assert {"alpha-lead", "alpha-dev", "alpha-reviewer"}.issubset(requested["related_agent_ids"])

@@ -213,10 +213,7 @@ def test_voice_session_store_supports_browser_agent_call(tmp_path: Path) -> None
                     "id": "backend-task",
                     "title": "Review blockers",
                     "created_at": context_timestamp,
-                    "note": (
-                        "Created at 2026-08-03T15:04:05.123456+00:00; "
-                        "call +46 70 123 45 67"
-                    ),
+                    "note": ("Created at 2026-08-03T15:04:05.123456+00:00; call +46 70 123 45 67"),
                     "authorization": "Bearer sensitive-value",
                 }
             ],

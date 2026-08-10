@@ -190,13 +190,7 @@ def _seed_session(
 
 def test_sessions_screen_groups_voice_calling_and_workspace_staging_tools() -> None:
     source = (
-        ROOT
-        / "frontend"
-        / "admin-web"
-        / "src"
-        / "features"
-        / "sessions"
-        / "SessionsScreen.tsx"
+        ROOT / "frontend" / "admin-web" / "src" / "features" / "sessions" / "SessionsScreen.tsx"
     ).read_text(encoding="utf-8")
 
     assert '"Voice calling"' in source

@@ -305,9 +305,7 @@ def git_repository_routes(
     async def set_host_commit_identity(request: Request) -> JSONResponse:
         managed_repo_id = str(request.path_params.get("managed_repo_id") or "").strip()
         try:
-            payload = ManagedGitHostCommitIdentityRequest.model_validate(
-                await _json_body(request)
-            )
+            payload = ManagedGitHostCommitIdentityRequest.model_validate(await _json_body(request))
         except ValueError as exc:
             message = _validation_error_text(exc) if isinstance(exc, ValidationError) else str(exc)
             return json_error(message, status_code=400)

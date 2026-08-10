@@ -146,9 +146,7 @@ def test_file_added_trigger_baselines_settles_retries_and_acknowledges(
     rebuilt.acknowledge_published_event(event)
     assert rebuilt.poll() == []
     state = json.loads(
-        (runtime_dir / "trigger-cursors-host-directories.json").read_text(
-            encoding="utf-8"
-        )
+        (runtime_dir / "trigger-cursors-host-directories.json").read_text(encoding="utf-8")
     )[trigger.id]
     assert state["acknowledged_event_ids"] == [event.event_id]
     assert "new.txt" in state["known_files"]
@@ -261,9 +259,7 @@ def test_scan_failure_preserves_durable_cursor_state(
     root.mkdir()
     (root / "baseline.txt").write_text("baseline", encoding="utf-8")
     runtime_dir = tmp_path / "runtime"
-    resolver = _HostDirectoryResolver(
-        {"inbox": _resource(root, max_watch_entries=2)}
-    )
+    resolver = _HostDirectoryResolver({"inbox": _resource(root, max_watch_entries=2)})
     trigger = _trigger()
     now = [datetime(2026, 7, 23, 11, 0, tzinfo=UTC)]
     monkeypatch.setattr(provider_module, "_utc_now", lambda: now[0])
@@ -414,9 +410,7 @@ def test_catalog_host_directory_options_omit_roots_and_disabled_resources(
         directory_admin=SimpleNamespace(
             compute_effective_config=lambda path, domain: SimpleNamespace(
                 ok=True,
-                data=SimpleNamespace(
-                    resolution=SimpleNamespace(effective_config=effective_config)
-                ),
+                data=SimpleNamespace(resolution=SimpleNamespace(effective_config=effective_config)),
                 errors=[],
             )
         ),
@@ -430,9 +424,7 @@ def test_catalog_host_directory_options_omit_roots_and_disabled_resources(
     assert [option.value for option in options] == ["inbox"]
     assert options[0].label == "Inbox"
     assert options[0].description == "Files delivered to the host inbox."
-    assert str(tmp_path) not in json.dumps(
-        [option.model_dump(mode="json") for option in options]
-    )
+    assert str(tmp_path) not in json.dumps([option.model_dump(mode="json") for option in options])
 
 
 def test_trigger_rejects_unknown_or_disabled_directory(

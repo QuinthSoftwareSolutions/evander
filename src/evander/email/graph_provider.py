@@ -71,9 +71,7 @@ class GraphAccessTokenCache:
             refresh_skew = min(expiry_skew_seconds, expires_in * 0.1)
             cached = _CachedGraphAccessToken(
                 value=access_token,
-                refresh_at_monotonic=(
-                    monotonic() + max(0.0, expires_in - refresh_skew)
-                ),
+                refresh_at_monotonic=(monotonic() + max(0.0, expires_in - refresh_skew)),
             )
             with self._entries_lock:
                 now = monotonic()
@@ -396,8 +394,7 @@ class GraphEmailProvider:
         if missing_values:
             missing_env_vars = ", ".join(repr(refs[name]) for name in missing_values)
             raise RuntimeError(
-                "graph OAuth client credential environment variables are empty: "
-                f"{missing_env_vars}"
+                f"graph OAuth client credential environment variables are empty: {missing_env_vars}"
             )
 
         credential_key = self._client_credentials_cache_key(credentials)
@@ -444,7 +441,7 @@ class GraphEmailProvider:
                 )
             except ProviderRequestError as exc:
                 raise RuntimeError(
-                    "graph OAuth client-credentials token acquisition failed: " f"{exc}"
+                    f"graph OAuth client-credentials token acquisition failed: {exc}"
                 ) from exc
         try:
             payload = response.json()
@@ -498,15 +495,18 @@ class GraphEmailProvider:
         self, payload: dict[str, Any], query: EmailMessageSearchQuery
     ) -> bool:
         received_at = datetime.fromisoformat(
-            str(payload.get("receivedDateTime", datetime.min.replace(tzinfo=UTC).isoformat())).replace(
-                "Z", "+00:00"
-            )
+            str(
+                payload.get("receivedDateTime", datetime.min.replace(tzinfo=UTC).isoformat())
+            ).replace("Z", "+00:00")
         )
         if query.received_after is not None and received_at < query.received_after:
             return False
         if query.received_before is not None and received_at >= query.received_before:
             return False
-        if query.unread is not None and (not bool(payload.get("isRead", False))) is not query.unread:
+        if (
+            query.unread is not None
+            and (not bool(payload.get("isRead", False))) is not query.unread
+        ):
             return False
         if (
             query.has_attachments is not None

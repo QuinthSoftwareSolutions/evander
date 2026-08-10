@@ -113,9 +113,7 @@ def enqueue_agent_prompt(
     max_retries: int = 3,
 ) -> QueuedAgentPromptRecord:
     start = time.monotonic()
-    persisted_dispatch_id = (
-        str(dispatch_id or "").strip() or f"dispatch-queued-{uuid4().hex}"
-    )
+    persisted_dispatch_id = str(dispatch_id or "").strip() or f"dispatch-queued-{uuid4().hex}"
     queue_store = AgentPromptQueueStore(runtime_dir / "queued-agent-prompts.json")
     try:
         record = queue_store.put(

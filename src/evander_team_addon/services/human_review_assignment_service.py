@@ -27,9 +27,7 @@ def current_human_review_eligible_user_ids(
     return current_human_review_eligible_user_ids_for_requirement(
         user_store,
         request.requirement_snapshot,
-        explicitly_assigned_user_ids=(
-            request.current_assignment.explicitly_assigned_user_ids
-        ),
+        explicitly_assigned_user_ids=(request.current_assignment.explicitly_assigned_user_ids),
     )
 
 
@@ -48,15 +46,12 @@ def current_human_review_eligible_user_ids_for_requirement(
         if str(group_id).strip()
     }
     explicit_user_ids = {
-        str(user_id).strip()
-        for user_id in explicitly_assigned_user_ids
-        if str(user_id).strip()
+        str(user_id).strip() for user_id in explicitly_assigned_user_ids if str(user_id).strip()
     }
     candidate_user_ids = set(explicit_user_ids)
     for assignment in user_store.list_user_group_assignments():
-        if (
-            assignment.group_id.casefold() in configured_group_ids
-            and scope_matches(assignment.directory_path, directory_path)
+        if assignment.group_id.casefold() in configured_group_ids and scope_matches(
+            assignment.directory_path, directory_path
         ):
             candidate_user_ids.add(assignment.login)
     return sorted(
@@ -82,8 +77,7 @@ def human_review_eligibility_resolver(
         "can",
     )
     if user_store is None or any(
-        not callable(getattr(user_store, method_name, None))
-        for method_name in required_methods
+        not callable(getattr(user_store, method_name, None)) for method_name in required_methods
     ):
         return None
     return lambda requirement: current_human_review_eligible_user_ids_for_requirement(
@@ -103,11 +97,7 @@ def reconcile_current_human_review_assignments(
 
     initial_state = repository.read()
     selected_request_ids = (
-        {
-            str(request_id).strip()
-            for request_id in request_ids
-            if str(request_id).strip()
-        }
+        {str(request_id).strip() for request_id in request_ids if str(request_id).strip()}
         if request_ids is not None
         else None
     )
@@ -130,8 +120,7 @@ def reconcile_current_human_review_assignments(
     changed_request_ids = sorted(
         request.id
         for request in requests
-        if request.current_assignment.eligible_user_ids
-        != planned_eligible_user_ids[request.id]
+        if request.current_assignment.eligible_user_ids != planned_eligible_user_ids[request.id]
     )
     effective_now = now or datetime.now(UTC)
     has_expired_targets = any(
@@ -179,9 +168,7 @@ def reconcile_current_human_review_assignments(
                 now=effective_now,
             )
             reconciled_request_ids.append(request.id)
-            emitted_events.extend(
-                event for event in result["events"] if isinstance(event, Mapping)
-            )
+            emitted_events.extend(event for event in result["events"] if isinstance(event, Mapping))
         return state
 
     next_state = repository.update_with_outbox(

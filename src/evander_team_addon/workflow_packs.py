@@ -302,9 +302,7 @@ _TEAM_RUNTIME_V1_LEGACY: dict[str, Any] = {
                 "type": "effect:team:record-external-chat-delivery",
                 "delivery_id": "${{team-external-chat-reply-requested.payload.delivery_id}}",
                 "success": "${{team-send-external-chat-reply.success}}",
-                "provider_message_id": (
-                    "${{team-send-external-chat-reply.message_id ?? null}}"
-                ),
+                "provider_message_id": ("${{team-send-external-chat-reply.message_id ?? null}}"),
             },
             {
                 "id": "team-record-external-chat-delivery-failure",
@@ -577,9 +575,7 @@ _TEAM_RUNTIME_V1_LEGACY: dict[str, Any] = {
                 "type": "effect:team:record-git-promotion",
                 "promotion_id": "${{team-git-promotion-requested.payload.promotion_id}}",
                 "success": "${{team-consolidate-correction-branches.success}}",
-                "commit_sha": (
-                    "${{team-consolidate-correction-branches.commit_sha ?? null}}"
-                ),
+                "commit_sha": ("${{team-consolidate-correction-branches.commit_sha ?? null}}"),
                 "error": "${{team-consolidate-correction-branches.error ?? null}}",
                 "result_outputs": {
                     "merged_branches": (
@@ -589,9 +585,7 @@ _TEAM_RUNTIME_V1_LEGACY: dict[str, Any] = {
                         "${{team-consolidate-correction-branches.conflict_branch ?? null}}"
                     ),
                     "output": "${{team-consolidate-correction-branches.output ?? null}}",
-                    "error_code": (
-                        "${{team-consolidate-correction-branches.error_code ?? null}}"
-                    ),
+                    "error_code": ("${{team-consolidate-correction-branches.error_code ?? null}}"),
                     "unexpected_commit_shas": (
                         "${{team-consolidate-correction-branches.unexpected_commit_shas ?? null}}"
                     ),
@@ -604,9 +598,7 @@ _TEAM_RUNTIME_V1_LEGACY: dict[str, Any] = {
                     "unexpected_paths": (
                         "${{team-consolidate-correction-branches.unexpected_paths ?? null}}"
                     ),
-                    "tree_hash": (
-                        "${{team-consolidate-correction-branches.tree_hash ?? null}}"
-                    ),
+                    "tree_hash": ("${{team-consolidate-correction-branches.tree_hash ?? null}}"),
                 },
             },
             {
@@ -1036,10 +1028,7 @@ _TEAM_RUNTIME_V1_LAYOUT_NODE_POSITIONS: tuple[tuple[str, float, float], ...] = (
 )
 
 TEAM_RUNTIME_V1_LAYOUT: dict[str, Any] = {
-    "nodes": {
-        node_id: {"x": x, "y": y}
-        for node_id, x, y in _TEAM_RUNTIME_V1_LAYOUT_NODE_POSITIONS
-    }
+    "nodes": {node_id: {"x": x, "y": y} for node_id, x, y in _TEAM_RUNTIME_V1_LAYOUT_NODE_POSITIONS}
 }
 
 

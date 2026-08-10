@@ -1204,6 +1204,4 @@ def _escape_like(value: str) -> str:
 
 def _trigram_match_query(value: str) -> str:
     trigrams = dict.fromkeys(value[index : index + 3] for index in range(len(value) - 2))
-    return " AND ".join(
-        f'"{trigram.replace(chr(34), chr(34) * 2)}"' for trigram in trigrams
-    )
+    return " AND ".join(f'"{trigram.replace(chr(34), chr(34) * 2)}"' for trigram in trigrams)

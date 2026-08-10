@@ -75,9 +75,7 @@ class HostDirectoryDefinition(BaseModel):
     display_name: str = Field(min_length=1)
     description: str = Field(min_length=1)
     root: Path
-    capabilities: list[HostDirectoryCapability] = Field(
-        default_factory=lambda: ["list", "import"]
-    )
+    capabilities: list[HostDirectoryCapability] = Field(default_factory=lambda: ["list", "import"])
     delete_requires_approval: bool = True
     max_import_bytes: int = Field(
         default=DEFAULT_MAX_IMPORT_BYTES,
@@ -180,8 +178,7 @@ def validate_host_directory_directory_overlay(payload: object) -> dict[str, Any]
     unknown_top_level = sorted(set(payload) - {"host_directories"})
     if unknown_top_level:
         raise ValueError(
-            "host directory configuration does not allow fields: "
-            + ", ".join(unknown_top_level)
+            "host directory configuration does not allow fields: " + ", ".join(unknown_top_level)
         )
     raw_directories = payload.get("host_directories", {})
     if not isinstance(raw_directories, dict):
@@ -202,13 +199,9 @@ def validate_host_directory_directory_overlay(payload: object) -> dict[str, Any]
         definition = dict(raw_definition)
         if "root" in definition:
             try:
-                definition["root"] = str(
-                    normalize_host_directory_root(definition["root"])
-                )
+                definition["root"] = str(normalize_host_directory_root(definition["root"]))
             except ValueError as exc:
-                raise ValueError(
-                    f"host directory {directory_id!r} {exc}"
-                ) from exc
+                raise ValueError(f"host directory {directory_id!r} {exc}") from exc
         if "capabilities" in definition:
             definition["capabilities"] = normalize_host_directory_capabilities(
                 definition["capabilities"]
@@ -221,9 +214,7 @@ def validate_host_directory_directory_overlay(payload: object) -> dict[str, Any]
             if field_name not in definition:
                 continue
             if isinstance(definition[field_name], bool):
-                raise ValueError(
-                    f"host directory {directory_id!r} {field_name} must be an integer"
-                )
+                raise ValueError(f"host directory {directory_id!r} {field_name} must be an integer")
             field_value = int(definition[field_name])
             if field_value < lower or field_value > upper:
                 raise ValueError(
@@ -241,8 +232,6 @@ def validate_host_directory_directory_overlay(payload: object) -> dict[str, Any]
                 definition[field_name] = text
         for field_name in ("delete_requires_approval", "disabled"):
             if field_name in definition and not isinstance(definition[field_name], bool):
-                raise ValueError(
-                    f"host directory {directory_id!r} {field_name} must be a boolean"
-                )
+                raise ValueError(f"host directory {directory_id!r} {field_name} must be a boolean")
         normalized[directory_id] = definition
     return {"host_directories": normalized} if "host_directories" in payload else {}

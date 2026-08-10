@@ -157,25 +157,19 @@ def test_review_capability_columns_migrate_existing_database(
     TeamStateRepository(tmp_path).read()
     database_path = tmp_path / "addons" / "team-addon" / "state.db"
     with sqlite3.connect(database_path) as connection:
-        connection.execute(
-            "ALTER TABLE team_dispatches DROP COLUMN mcp_capability_receipt_json"
-        )
-        connection.execute(
-            "ALTER TABLE team_blockers DROP COLUMN mcp_capability_identity_json"
-        )
+        connection.execute("ALTER TABLE team_dispatches DROP COLUMN mcp_capability_receipt_json")
+        connection.execute("ALTER TABLE team_blockers DROP COLUMN mcp_capability_identity_json")
 
     TeamStateRepository(tmp_path).read()
 
     with sqlite3.connect(database_path) as connection:
         dispatch_columns = {
-            str(row[1])
-            for row in connection.execute("PRAGMA table_info(team_dispatches)")
+            str(row[1]) for row in connection.execute("PRAGMA table_info(team_dispatches)")
         }
     assert "mcp_capability_receipt_json" in dispatch_columns
     with sqlite3.connect(database_path) as connection:
         blocker_columns = {
-            str(row[1])
-            for row in connection.execute("PRAGMA table_info(team_blockers)")
+            str(row[1]) for row in connection.execute("PRAGMA table_info(team_blockers)")
         }
     assert "mcp_capability_identity_json" in blocker_columns
 
@@ -360,10 +354,7 @@ def test_policy_grant_failure_does_not_complete_unstarted_dispatch_scope(
     assert state.blockers["blocker-unrelated"].state == TeamBlockerState.OPEN
     assert state.blockers["blocker-unrelated"].owner_agent_id == "backend"
     assert state.blockers["blocker-unrelated"].active_dispatch_id is None
-    assert (
-        state.git_work_contexts["gitctx-unstarted"].state
-        == GitWorkContextState.ACTIVE
-    )
+    assert state.git_work_contexts["gitctx-unstarted"].state == GitWorkContextState.ACTIVE
     assert state.git_work_contexts["gitctx-unstarted"].dispatch_id == dispatch_id
 
 

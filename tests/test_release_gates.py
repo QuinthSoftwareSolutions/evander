@@ -268,8 +268,7 @@ def test_release_review_cohort_waits_then_materializes_one_consolidated_correcti
     correction_notices = [
         state.inbox[item_id]
         for item_id in second["created_inbox_item_ids"]
-        if state.inbox[item_id].payload.get("kind")
-        == "release_review_rejection_correction_work"
+        if state.inbox[item_id].payload.get("kind") == "release_review_rejection_correction_work"
     ]
     assert len(correction_notices) == 1
     assert correction_notices[0].payload["review_request_ids"] == [
@@ -302,8 +301,7 @@ def test_release_review_cohort_all_acceptance_advances_release_once_complete() -
 
     assert release.approved_commit_sha == release.candidate_commit_sha
     assert any(
-        promotion.promotion_kind == "canonical_push"
-        for promotion in state.git_promotions.values()
+        promotion.promotion_kind == "canonical_push" for promotion in state.git_promotions.values()
     )
 
 
@@ -541,10 +539,7 @@ def test_candidate_verification_failure_creates_candidate_rooted_correction_task
     assert result["created_task_ids"] == [task.id]
     assert result["verification_correction_task_id"] == task.id
     assert result["verification_correction_task_owner_agent_id"] == "coder"
-    assert (
-        result["verification_correction_assignment_reason"]
-        == "single_failed_path_source_owner"
-    )
+    assert result["verification_correction_assignment_reason"] == "single_failed_path_source_owner"
     assert len(result["created_inbox_item_ids"]) == 1
     item = state.inbox[result["created_inbox_item_ids"][0]]
     assert item.recipient_agent_id == "coder"
@@ -570,9 +565,7 @@ def test_candidate_verification_failure_creates_candidate_rooted_correction_task
     assert "Team automatically creates the successor release" in item.payload["next_action"]
     assert "create a replacement release" not in item.payload["next_action"]
     wake = next(
-        event
-        for event in result["events"]
-        if event["event_type"] == "team.agent.wake_requested"
+        event for event in result["events"] if event["event_type"] == "team.agent.wake_requested"
     )
     assert wake["payload"]["agent_id"] == "coder"
     assert wake["payload"]["reason"] == "inbox"
@@ -691,9 +684,7 @@ def test_rejected_release_review_creates_candidate_rooted_correction_task() -> N
         project_id="project",
         name="Reviewer",
     )
-    state.projects["project"] = _project(
-        release_policy=ProjectReleasePolicy(allow_ungated=True)
-    )
+    state.projects["project"] = _project(release_policy=ProjectReleasePolicy(allow_ungated=True))
     state.agents["lead"] = PersistentAgent(
         id="lead",
         team_id="team",
@@ -751,9 +742,7 @@ def test_rejected_release_review_creates_candidate_rooted_correction_task() -> N
     assert "Team automatically creates the successor release" in inbox.payload["next_action"]
     assert "create a replacement release" not in inbox.payload["next_action"]
     wake = next(
-        event
-        for event in result["events"]
-        if event["event_type"] == "team.agent.wake_requested"
+        event for event in result["events"] if event["event_type"] == "team.agent.wake_requested"
     )
     assert wake["payload"]["agent_id"] == "lead"
     assert wake["payload"]["reason"] == "inbox"
@@ -808,9 +797,7 @@ def test_multiple_rejected_release_reviews_aggregate_context_and_wake_again() ->
         project_id="project",
         name="Lead",
     )
-    state.projects["project"] = _project(
-        release_policy=ProjectReleasePolicy(allow_ungated=True)
-    )
+    state.projects["project"] = _project(release_policy=ProjectReleasePolicy(allow_ungated=True))
     state.agents["lead"] = PersistentAgent(
         id="lead",
         team_id="team",
@@ -859,13 +846,16 @@ def test_multiple_rejected_release_reviews_aggregate_context_and_wake_again() ->
     assert "release-review-b" in task.description
     assert "First release-blocking finding." in task.description
     assert "Second release-blocking finding." in task.description
-    assert len(
-        [
-            candidate
-            for candidate in state.tasks.values()
-            if candidate.created_by_actor == "system:release-review-correction"
-        ]
-    ) == 1
+    assert (
+        len(
+            [
+                candidate
+                for candidate in state.tasks.values()
+                if candidate.created_by_actor == "system:release-review-correction"
+            ]
+        )
+        == 1
+    )
     assert len(second_result["created_inbox_item_ids"]) == 1
     second_inbox = state.inbox[second_result["created_inbox_item_ids"][0]]
     assert second_inbox.payload["review_request_ids"] == [
@@ -900,9 +890,7 @@ def test_configuration_gate_rejection_routes_high_priority_team_blocker() -> Non
         project_id="project",
         name="Lead",
     )
-    project = _project(
-        release_policy=ProjectReleasePolicy(allow_ungated=True)
-    )
+    project = _project(release_policy=ProjectReleasePolicy(allow_ungated=True))
     project.release_policy = None
     state.projects[project.id] = project
     state.agents["lead"] = PersistentAgent(
@@ -940,9 +928,7 @@ def test_configuration_gate_rejection_routes_high_priority_team_blocker() -> Non
     assert inbox.recipient_agent_id == "lead"
     assert inbox.payload["blocker_id"] == blocker.id
     wake = next(
-        event
-        for event in result["events"]
-        if event["event_type"] == "team.agent.wake_requested"
+        event for event in result["events"] if event["event_type"] == "team.agent.wake_requested"
     )
     assert wake["payload"]["agent_id"] == "lead"
 
@@ -1020,20 +1006,13 @@ def test_non_candidate_verification_failure_persists_team_wake(
         error="verification worker disconnected",
     )
     wake = next(
-        event
-        for event in result["events"]
-        if event["event_type"] == "team.agent.wake_requested"
+        event for event in result["events"] if event["event_type"] == "team.agent.wake_requested"
     )
-    wake_outbox = repository.list_outbox_records(
-        intent_type="team.agent.wake_requested"
-    )
+    wake_outbox = repository.list_outbox_records(intent_type="team.agent.wake_requested")
 
     assert updated.release_packages[release.id].state == TeamRecordState.BLOCKED
     assert wake["payload"]["agent_id"] == "lead"
-    assert any(
-        record.idempotency_key == wake["idempotency_key"]
-        for record in wake_outbox
-    )
+    assert any(record.idempotency_key == wake["idempotency_key"] for record in wake_outbox)
 
 
 def test_resolved_verification_correction_can_create_successor_release() -> None:
@@ -1078,9 +1057,7 @@ def test_resolved_verification_correction_can_create_successor_release() -> None
         correction_task_id=correction_task.id,
     )
     state = TeamState.empty()
-    state.projects["project"] = _project(
-        release_policy=ProjectReleasePolicy(allow_ungated=True)
-    )
+    state.projects["project"] = _project(release_policy=ProjectReleasePolicy(allow_ungated=True))
     state.release_packages[release.id] = release
     state.release_verification_runs[verification_run.id] = verification_run
     state.tasks[correction_task.id] = correction_task
@@ -1094,6 +1071,7 @@ def test_resolved_verification_correction_can_create_successor_release() -> None
     )
 
     assert error is None
+
 
 def test_resolved_release_review_correction_can_create_successor_release() -> None:
     release, _promotion = _release_and_promotion()
@@ -1138,9 +1116,7 @@ def test_resolved_release_review_correction_can_create_successor_release() -> No
     )
     release.review_correction_task_id = correction_task.id
     state = TeamState.empty()
-    state.projects["project"] = _project(
-        release_policy=ProjectReleasePolicy(allow_ungated=True)
-    )
+    state.projects["project"] = _project(release_policy=ProjectReleasePolicy(allow_ungated=True))
     state.release_packages[release.id] = release
     state.review_requests[review.id] = review
     state.tasks[correction_task.id] = correction_task

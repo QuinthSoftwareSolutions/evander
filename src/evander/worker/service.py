@@ -526,9 +526,7 @@ class WorkerDaemon:
         raw_failure_cause = info.get("failure_cause")
         try:
             failure_cause = (
-                WorkerFailureCause(raw_failure_cause)
-                if raw_failure_cause is not None
-                else None
+                WorkerFailureCause(raw_failure_cause) if raw_failure_cause is not None else None
             )
         except ValueError:
             failure_cause = None
@@ -1298,9 +1296,7 @@ class WorkerDaemon:
                 or "Compose accepted Team dependencies"
             ),
             dependency_composition_mode=request.dependency_composition_mode,
-            dependency_composition_recovery_id=(
-                request.dependency_composition_recovery_id
-            ),
+            dependency_composition_recovery_id=(request.dependency_composition_recovery_id),
             resolved_dependency_branch=request.resolved_dependency_branch,
             resolved_dependency_commit_sha=request.resolved_dependency_commit_sha,
         )
@@ -1664,6 +1660,7 @@ class WorkerDaemon:
                 "does not already contain every accepted dependency commit; "
                 "preserve it for explicit recovery"
             )
+
         def is_ancestor(ancestor: str, descendant: str) -> bool:
             return (
                 subprocess.run(
@@ -1774,9 +1771,7 @@ class WorkerDaemon:
                                 "base_commit_sha": head_before,
                                 "base_tree_hash": base_tree_hash,
                                 "dependency_git_sources": expected_rows,
-                                "failed_dependency_task_id": source[
-                                    "dependency_task_id"
-                                ],
+                                "failed_dependency_task_id": source["dependency_task_id"],
                                 "failed_deliverable_id": source["deliverable_id"],
                                 "conflict_paths": conflict_paths,
                             },
@@ -3083,10 +3078,7 @@ class WorkerDaemon:
         env: dict[str, str],
     ) -> None:
         normalized_commit = base_commit_sha.strip().casefold()
-        if (
-            expected_base_commit_sha is not None
-            and normalized_commit != expected_base_commit_sha
-        ):
+        if expected_base_commit_sha is not None and normalized_commit != expected_base_commit_sha:
             raise ValueError(
                 f"task worktree base ref {base_ref!r} resolved to "
                 f"{normalized_commit}, expected authoritative Team base commit "

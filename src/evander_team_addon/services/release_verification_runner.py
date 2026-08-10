@@ -125,7 +125,9 @@ class TeamReleaseVerificationRunner:
             candidate_commit_sha=candidate_commit_sha,
         )
         run = state.release_verification_runs[verification_run_id]
-        command_results = [item.model_dump(mode="json", exclude_none=True) for item in run.command_results]
+        command_results = [
+            item.model_dump(mode="json", exclude_none=True) for item in run.command_results
+        ]
         if len(command_results) != len(verification_commands):
             raise ValueError("release verification run does not match its frozen command manifest")
         persisted_outcome = _persisted_terminal_outcome(command_results)
@@ -275,7 +277,11 @@ class TeamReleaseVerificationRunner:
                 excerpt = _bounded_verification_log_excerpt(command_log)
                 result = {
                     "name": command.name,
-                    "state": "passed" if success else "timed_out" if command_timed_out else "failed",
+                    "state": "passed"
+                    if success
+                    else "timed_out"
+                    if command_timed_out
+                    else "failed",
                     **(
                         {"failure_kind": command_failure_kind}
                         if command_failure_kind is not None
@@ -307,9 +313,7 @@ class TeamReleaseVerificationRunner:
                         terminal_state = "failed"
                         failure_kind = command_failure_kind
                         if command_failure_kind == "candidate":
-                            terminal_error = (
-                                f"release verification command {command.name!r} failed"
-                            )
+                            terminal_error = f"release verification command {command.name!r} failed"
                         else:
                             terminal_error = (
                                 f"release verification command {command.name!r} "
@@ -377,16 +381,11 @@ def _persisted_terminal_outcome(
                 failure_kind,
                 (
                     f"release verification command {command_name!r} failed"
-                    + (
-                        " in verifier infrastructure"
-                        if failure_kind == "infrastructure"
-                        else ""
-                    )
+                    + (" in verifier infrastructure" if failure_kind == "infrastructure" else "")
                 ),
             )
     if command_results and all(
-        str(command_result.get("state") or "") == "passed"
-        for command_result in command_results
+        str(command_result.get("state") or "") == "passed" for command_result in command_results
     ):
         return "passed", None, None
     return None
@@ -400,8 +399,4 @@ def _bounded_verification_log_excerpt(log_text: str) -> str:
     retained = _VERIFICATION_LOG_EXCERPT_LIMIT - len(_VERIFICATION_LOG_OMISSION_MARKER)
     head_length = retained // 2
     tail_length = retained - head_length
-    return (
-        log_text[:head_length]
-        + _VERIFICATION_LOG_OMISSION_MARKER
-        + log_text[-tail_length:]
-    )
+    return log_text[:head_length] + _VERIFICATION_LOG_OMISSION_MARKER + log_text[-tail_length:]

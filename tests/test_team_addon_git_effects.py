@@ -362,9 +362,7 @@ def test_release_merge_conflicts_create_one_direct_coder_recovery_task(
     assert not replay["events"]
     backend_wake_outbox = [
         record
-        for record in repo.list_outbox_records(
-            intent_type="team.agent.wake_requested"
-        )
+        for record in repo.list_outbox_records(intent_type="team.agent.wake_requested")
         if record.payload["payload"]["agent_id"] == "backend"
     ]
     assert len(backend_wake_outbox) == 1
@@ -387,15 +385,12 @@ def test_release_merge_conflicts_create_one_direct_coder_recovery_task(
     blockers = [
         blocker
         for blocker in state.blockers.values()
-        if blocker.source_kind.value == "release_package"
-        and blocker.source_id == "release-1"
+        if blocker.source_kind.value == "release_package" and blocker.source_id == "release-1"
     ]
     assert len(blockers) == 1
     assert blockers[0].affected_task_ids == [task_id]
     blocker_notices = [
-        item
-        for item in state.inbox.values()
-        if item.payload.get("blocker_id") == blockers[0].id
+        item for item in state.inbox.values() if item.payload.get("blocker_id") == blockers[0].id
     ]
     assert len(blocker_notices) == 1
     assert blocker_notices[0].recipient_agent_id == "backend"
@@ -403,8 +398,7 @@ def test_release_merge_conflicts_create_one_direct_coder_recovery_task(
     assert not [
         item
         for item in state.inbox.values()
-        if item.recipient_agent_id == "manager"
-        and item.payload.get("blocker_id") == blockers[0].id
+        if item.recipient_agent_id == "manager" and item.payload.get("blocker_id") == blockers[0].id
     ]
     recovery_state = state.model_copy(deep=True)
     recovery_state.release_packages["release-1"].policy_version = 1
@@ -426,9 +420,7 @@ def test_release_merge_conflicts_create_one_direct_coder_recovery_task(
     assert recovered_release_id == "release-1"
     assert recovery_intent["errors"] == []
     assert len(recovery_intent["events"]) == 1
-    assert recovery_intent["events"][0]["event_type"] == (
-        "team.git.release_recovery_requested"
-    )
+    assert recovery_intent["events"][0]["event_type"] == ("team.git.release_recovery_requested")
 
 
 def test_release_merge_conflict_with_ambiguous_owners_falls_back_to_lead(
@@ -489,33 +481,36 @@ def test_release_merge_conflict_with_ambiguous_owners_falls_back_to_lead(
 
     task = repo.read().tasks[result["merge_recovery_task_id"]]
     assert task.owner_agent_id == "lead"
-    assert result["merge_recovery_assignment_reason"] == (
-        "ambiguous_source_owners_project_lead"
+    assert result["merge_recovery_assignment_reason"] == ("ambiguous_source_owners_project_lead")
+    assert (
+        len(
+            [
+                event
+                for event in result["events"]
+                if event["event_type"] == "team.agent.wake_requested"
+                and event["payload"]["agent_id"] == "lead"
+            ]
+        )
+        == 1
     )
-    assert len(
-        [
-            event
-            for event in result["events"]
-            if event["event_type"] == "team.agent.wake_requested"
-            and event["payload"]["agent_id"] == "lead"
-        ]
-    ) == 1
     ambiguous_blocker = next(
         blocker
         for blocker in repo.read().blockers.values()
-        if blocker.source_kind.value == "release_package"
-        and blocker.source_id == "release-1"
+        if blocker.source_kind.value == "release_package" and blocker.source_id == "release-1"
     )
     assert ambiguous_blocker.owner_agent_id == "lead"
-    assert len(
-        [
-            item
-            for item in repo.read().inbox.values()
-            if item.state == TeamInboxItemState.PENDING
-            and item.recipient_agent_id == "lead"
-            and item.payload.get("blocker_id") == ambiguous_blocker.id
-        ]
-    ) == 1
+    assert (
+        len(
+            [
+                item
+                for item in repo.read().inbox.values()
+                if item.state == TeamInboxItemState.PENDING
+                and item.recipient_agent_id == "lead"
+                and item.payload.get("blocker_id") == ambiguous_blocker.id
+            ]
+        )
+        == 1
+    )
     assert not [
         event
         for event in result["events"]
@@ -572,8 +567,7 @@ def test_release_merge_recovery_task_respects_active_stand_down(
     blocker = next(
         blocker
         for blocker in repo.read().blockers.values()
-        if blocker.source_kind.value == "release_package"
-        and blocker.source_id == "release-1"
+        if blocker.source_kind.value == "release_package" and blocker.source_id == "release-1"
     )
     assert blocker.affected_task_ids == [task_id]
     assert not [
@@ -584,9 +578,7 @@ def test_release_merge_recovery_task_respects_active_stand_down(
     ]
     assert not [
         record
-        for record in repo.list_outbox_records(
-            intent_type="team.agent.wake_requested"
-        )
+        for record in repo.list_outbox_records(intent_type="team.agent.wake_requested")
         if record.payload["payload"]["agent_id"] == "backend"
     ]
 
@@ -659,10 +651,7 @@ def test_release_recovery_permission_is_scoped_to_active_linked_task_owner(
 
     unlinked_state = state.model_copy(deep=True)
     for blocker in unlinked_state.blockers.values():
-        if (
-            blocker.source_kind.value == "release_package"
-            and blocker.source_id == "release-1"
-        ):
+        if blocker.source_kind.value == "release_package" and blocker.source_id == "release-1":
             blocker.affected_task_ids = []
     assert not _release_recovery_permitted(
         unlinked_state,
@@ -736,14 +725,17 @@ def test_merge_recovery_replay_retires_legacy_terminal_blocker_route(
         and item.payload.get("blocker_id") == blocker.id
     ]
     assert len(backend_notices) == 1
-    assert len(
-        [
-            event
-            for event in result["events"]
-            if event["event_type"] == "team.agent.wake_requested"
-            and event["payload"]["agent_id"] == "backend"
-        ]
-    ) == 1
+    assert (
+        len(
+            [
+                event
+                for event in result["events"]
+                if event["event_type"] == "team.agent.wake_requested"
+                and event["payload"]["agent_id"] == "backend"
+            ]
+        )
+        == 1
+    )
     assert any(
         event.blocker_id == blocker.id
         and event.event_type.value == "owner_transferred"
@@ -1087,7 +1079,7 @@ def _seed_release_verification(repo: TeamStateRepository) -> None:
                     cwd="live",
                     argv=["python", "-m", "live_policy_check"],
                 )
-            ]
+            ],
         )
         return state
 
@@ -2222,11 +2214,11 @@ def test_consolidate_git_branches_delegates_exact_source_commits() -> None:
             "managed_repo_id": "mr_0123456789abcdefabcd",
             "directory_path": "root/team-a",
             "source_branches": ["team/team/features/task-backend"],
-                "target_branch": "team/team/releases/release-1",
-                "base_branch": "main",
-                "base_commit_sha": None,
-                "required_source_ancestor_commit_sha": "a" * 40,
-                "expected_source_commits": {"team/team/features/task-backend": "b" * 40},
+            "target_branch": "team/team/releases/release-1",
+            "base_branch": "main",
+            "base_commit_sha": None,
+            "required_source_ancestor_commit_sha": "a" * 40,
+            "expected_source_commits": {"team/team/features/task-backend": "b" * 40},
             "allowed_changed_paths": ["src/backend.py"],
             "commit_message": "Assemble release release-1",
         }

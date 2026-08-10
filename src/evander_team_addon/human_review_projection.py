@@ -27,9 +27,7 @@ def compact_human_review_release_summary(
     requests = _release_human_review_requests(state, release.id)
     manifest = release.manifest
     requirement = getattr(manifest, "human_review_requirement", None)
-    carried_findings = list(
-        getattr(manifest, "carried_human_findings", None) or ()
-    )
+    carried_findings = list(getattr(manifest, "carried_human_findings", None) or ())
     if requirement is None and not carried_findings and not requests:
         return None
 
@@ -46,9 +44,7 @@ def compact_human_review_release_summary(
         for finding in carried_findings
         if (finding_id := _finding_snapshot_id(finding)) is not None
     ]
-    open_finding_ids = sorted(
-        finding.id for finding in finding_rows if finding.state == "open"
-    )
+    open_finding_ids = sorted(finding.id for finding in finding_rows if finding.state == "open")
     state_value = request.state if request is not None else "required"
     return {
         "required": requirement is not None or bool(carried_findings),
@@ -124,11 +120,7 @@ def human_review_request_detail_payload(
         key=lambda finding: (finding.created_at, finding.id),
     )
     release = state.release_packages.get(request.release_package_id)
-    project = (
-        state.projects.get(release.project_id)
-        if release is not None
-        else None
-    )
+    project = state.projects.get(release.project_id) if release is not None else None
     cases = sorted(
         (
             case
@@ -143,22 +135,13 @@ def human_review_request_detail_payload(
             for finding in findings
             if finding.correction_task_id in state.tasks
         }
-        | {
-            task_id
-            for case in cases
-            for task_id in case.task_ids
-            if task_id in state.tasks
-        }
+        | {task_id for case in cases for task_id in case.task_ids if task_id in state.tasks}
     )
     task_assessments = assess_tasks(state)
     payload.update(
         {
-            "decisions": [
-                decision.model_dump(mode="json") for decision in decisions
-            ],
-            "findings": [
-                finding.model_dump(mode="json") for finding in findings
-            ],
+            "decisions": [decision.model_dump(mode="json") for decision in decisions],
+            "findings": [finding.model_dump(mode="json") for finding in findings],
             "release": (
                 release_package_payload_with_derived(state, release)
                 if release is not None
@@ -221,15 +204,9 @@ def _human_review_target_deliverable_options(
     options: list[dict[str, Any]] = []
     for deliverable_id in ordered_ids:
         deliverable = state.deliverables.get(deliverable_id)
-        task = (
-            state.tasks.get(deliverable.task_id)
-            if deliverable is not None
-            else None
-        )
+        task = state.tasks.get(deliverable.task_id) if deliverable is not None else None
         producer = (
-            state.agents.get(deliverable.producer_agent_id)
-            if deliverable is not None
-            else None
+            state.agents.get(deliverable.producer_agent_id) if deliverable is not None else None
         )
         options.append(
             {
@@ -265,10 +242,7 @@ def release_human_review_detail_payload(
     requests = _release_human_review_requests(state, release.id)
     return {
         **summary,
-        "requests": [
-            human_review_request_detail_payload(state, request)
-            for request in requests
-        ],
+        "requests": [human_review_request_detail_payload(state, request) for request in requests],
     }
 
 

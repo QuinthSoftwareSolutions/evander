@@ -300,9 +300,7 @@ class SessionAdminService:
             update["allowed_tools"] = session_helpers.normalize_allowed_tools(
                 [
                     *manifest.allowed_tools,
-                    *host_directory_tool_names_for_grants(
-                        update["host_directory_grants"]
-                    ),
+                    *host_directory_tool_names_for_grants(update["host_directory_grants"]),
                 ]
             )
         if "approval_notification_target_ids" in update:

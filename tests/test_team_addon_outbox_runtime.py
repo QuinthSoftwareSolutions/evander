@@ -199,9 +199,9 @@ def test_publish_outbox_event_preserves_absolute_run_at(tmp_path: Path) -> None:
     result = provider.execute()
 
     assert result["success"] is True
-    scheduled = ScheduledInternalEventStore(
-        scheduled_internal_event_store_path(tmp_path)
-    ).list_due(run_at)
+    scheduled = ScheduledInternalEventStore(scheduled_internal_event_store_path(tmp_path)).list_due(
+        run_at
+    )
     assert len(scheduled) == 1
     assert scheduled[0].run_at == run_at
     assert scheduled[0].payload["reason"] == "idle_grace_expired"
@@ -291,12 +291,9 @@ def test_publish_human_review_outbox_creates_deduplicated_admin_notification(
     )
     assert unread_count == 1
     assert notifications[0]["source"] == "team_human_review"
-    assert notifications[0]["source_id"] == (
-        "human-review-1:reviewer@example.com:1"
-    )
+    assert notifications[0]["source_id"] == ("human-review-1:reviewer@example.com:1")
     assert notifications[0]["target_url"] == (
-        "#addon:team-addon?view=my-human-reviews"
-        "&human_review_request_id=human-review-1"
+        "#addon:team-addon?view=my-human-reviews&human_review_request_id=human-review-1"
     )
     assert notifications[0]["metadata"] == {
         "human_review_request_id": "human-review-1",
@@ -315,9 +312,12 @@ def test_publish_human_review_outbox_creates_deduplicated_admin_notification(
         source_id="human-review-1:reviewer@example.com:1",
     )
     assert duplicate["id"] == notifications[0]["id"]
-    assert AdminUserNotificationStore(tmp_path).list_unread(
-        user_id="reviewer@example.com",
-    )[1] == 1
+    assert (
+        AdminUserNotificationStore(tmp_path).list_unread(
+            user_id="reviewer@example.com",
+        )[1]
+        == 1
+    )
 
 
 def test_reconcile_human_review_assignment_adds_current_group_member_and_outbox(
@@ -400,9 +400,12 @@ def test_stale_human_review_notification_is_suppressed_and_request_is_blocked(
     assert result["success"] is True
     assert result["completed_outbox_record_ids"] == ["outbox-human-review-stale"]
     assert result["published_event_ids"] == []
-    assert AdminUserNotificationStore(tmp_path).list_unread(
-        user_id="reviewer@example.com",
-    )[1] == 0
+    assert (
+        AdminUserNotificationStore(tmp_path).list_unread(
+            user_id="reviewer@example.com",
+        )[1]
+        == 0
+    )
     state = repo.read()
     request = state.human_review_requests["human-review-1"]
     assert request.state == "blocked"

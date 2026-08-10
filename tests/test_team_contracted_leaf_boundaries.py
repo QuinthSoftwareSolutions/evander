@@ -35,9 +35,7 @@ def _task(
         created_by_actor="operator:test",
         parent_task_id=parent_task_id,
         deliverable_contract=(
-            TaskDeliverableContract(require_git_provenance=True)
-            if contracted
-            else None
+            TaskDeliverableContract(require_git_provenance=True) if contracted else None
         ),
     )
 
@@ -65,9 +63,7 @@ def _plan(
         outcome_contract=None,
         integration_boundary=False,
         deliverable_contract=(
-            TaskDeliverableContract(require_git_provenance=True)
-            if contracted
-            else None
+            TaskDeliverableContract(require_git_provenance=True) if contracted else None
         ),
     )
 
@@ -106,12 +102,8 @@ def test_batch_creation_plan_rejects_child_under_planned_contracted_leaf() -> No
         child,
         task_projects={plan.task_id: plan.project_id for plan in plans},
         parent_map={plan.task_id: plan.parent_task_id for plan in plans},
-        integration_boundary_map={
-            plan.task_id: plan.integration_boundary for plan in plans
-        },
-        deliverable_contract_map={
-            plan.task_id: plan.deliverable_contract for plan in plans
-        },
+        integration_boundary_map={plan.task_id: plan.integration_boundary for plan in plans},
+        deliverable_contract_map={plan.task_id: plan.deliverable_contract for plan in plans},
         dependency_map={plan.task_id: list(plan.dependency_task_ids) for plan in plans},
     )
 

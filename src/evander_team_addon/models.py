@@ -1874,9 +1874,7 @@ class DependencyCompositionRecovery(TeamModel):
                 "dependency composition recovery verification requires deliverable and commit"
             )
         if bool(self.verified_deliverable_id) != bool(self.verified_at):
-            raise ValueError(
-                "dependency composition recovery verification requires verified_at"
-            )
+            raise ValueError("dependency composition recovery verification requires verified_at")
         return self
 
 
@@ -2193,13 +2191,10 @@ class TeamBlocker(TeamModel):
     @model_validator(mode="after")
     def _validate_route(self) -> "TeamBlocker":
         if (
-            self.source_kind
-            == TeamBlockerSourceKind.CANDIDATE_CORRECTION_SUCCESSOR
+            self.source_kind == TeamBlockerSourceKind.CANDIDATE_CORRECTION_SUCCESSOR
             and self.resolution_scope != TeamBlockerResolutionScope.DOWNSTREAM
         ):
-            raise ValueError(
-                "candidate correction successor blocker must use downstream scope"
-            )
+            raise ValueError("candidate correction successor blocker must use downstream scope")
         if self.route == TeamBlockerRoute.DELEGATED and self.delegate_agent_id is None:
             raise ValueError("delegated blocker requires delegate_agent_id")
         if self.route != TeamBlockerRoute.DELEGATED and self.delegate_agent_id is not None:
@@ -2518,13 +2513,8 @@ class TeamDispatch(TeamModel):
             raise ValueError("dispatch review routing authorities must be unique")
         if self.review_routing_authorities and self.cause_kind != "manager_fallback":
             raise ValueError("dispatch review routing authorities require manager_fallback cause")
-        if (
-            self.initial_release_decision_deliverable_ids
-            and self.cause_kind != "manager_fallback"
-        ):
-            raise ValueError(
-                "dispatch initial release decisions require manager_fallback cause"
-            )
+        if self.initial_release_decision_deliverable_ids and self.cause_kind != "manager_fallback":
+            raise ValueError("dispatch initial release decisions require manager_fallback cause")
         if self.status == TeamDispatchStatus.LEASED:
             if self.leased_at is None or self.lease_expires_at is None:
                 raise ValueError("leased dispatch requires leased_at and lease_expires_at")
@@ -3409,9 +3399,7 @@ class HumanReviewTestTarget(TeamModel):
 class HumanReviewFindingSnapshot(TeamModel):
     finding_id: str
     text: str
-    target_scope: HumanReviewFindingTargetScope = (
-        HumanReviewFindingTargetScope.LEGACY_UNSPECIFIED
-    )
+    target_scope: HumanReviewFindingTargetScope = HumanReviewFindingTargetScope.LEGACY_UNSPECIFIED
     target_deliverable_ids: list[str] = Field(default_factory=list)
     correction_task_id: str | None = None
     proposed_resolution: str | None = None
@@ -3445,9 +3433,7 @@ class HumanReviewFindingSnapshot(TeamModel):
             return value
         normalized = dict(value)
         if normalized.get("target_deliverable_ids"):
-            normalized["target_scope"] = (
-                HumanReviewFindingTargetScope.DELIVERABLES
-            )
+            normalized["target_scope"] = HumanReviewFindingTargetScope.DELIVERABLES
         return normalized
 
     @model_validator(mode="after")
@@ -3456,16 +3442,12 @@ class HumanReviewFindingSnapshot(TeamModel):
             self.target_scope == HumanReviewFindingTargetScope.RELEASE_CANDIDATE
             and self.target_deliverable_ids
         ):
-            raise ValueError(
-                "release-candidate human findings cannot target deliverables"
-            )
+            raise ValueError("release-candidate human findings cannot target deliverables")
         if (
             self.target_scope == HumanReviewFindingTargetScope.DELIVERABLES
             and not self.target_deliverable_ids
         ):
-            raise ValueError(
-                "deliverable-scoped human findings require target deliverables"
-            )
+            raise ValueError("deliverable-scoped human findings require target deliverables")
         return self
 
 
@@ -3554,9 +3536,7 @@ class HumanReviewFinding(TeamModel):
     id: str
     source_human_review_request_id: str
     text: str
-    target_scope: HumanReviewFindingTargetScope = (
-        HumanReviewFindingTargetScope.LEGACY_UNSPECIFIED
-    )
+    target_scope: HumanReviewFindingTargetScope = HumanReviewFindingTargetScope.LEGACY_UNSPECIFIED
     target_deliverable_ids: list[str] = Field(default_factory=list)
     evidence_refs: list[str] = Field(default_factory=list)
     correction_task_id: str
@@ -3606,9 +3586,7 @@ class HumanReviewFinding(TeamModel):
             return value
         normalized = dict(value)
         if normalized.get("target_deliverable_ids"):
-            normalized["target_scope"] = (
-                HumanReviewFindingTargetScope.DELIVERABLES
-            )
+            normalized["target_scope"] = HumanReviewFindingTargetScope.DELIVERABLES
         return normalized
 
     @model_validator(mode="after")
@@ -3617,16 +3595,12 @@ class HumanReviewFinding(TeamModel):
             self.target_scope == HumanReviewFindingTargetScope.RELEASE_CANDIDATE
             and self.target_deliverable_ids
         ):
-            raise ValueError(
-                "release-candidate human findings cannot target deliverables"
-            )
+            raise ValueError("release-candidate human findings cannot target deliverables")
         if (
             self.target_scope == HumanReviewFindingTargetScope.DELIVERABLES
             and not self.target_deliverable_ids
         ):
-            raise ValueError(
-                "deliverable-scoped human findings require target deliverables"
-            )
+            raise ValueError("deliverable-scoped human findings require target deliverables")
         return self
 
     @model_validator(mode="after")
@@ -4833,8 +4807,7 @@ class TeamState(TeamModel):
             disposition = deliverable.initial_release_disposition
             if (
                 disposition is not None
-                and disposition.state
-                == InitialReleaseDispositionState.RELEASE_REQUESTED
+                and disposition.state == InitialReleaseDispositionState.RELEASE_REQUESTED
             ):
                 release = self.release_packages.get(disposition.release_package_id or "")
                 if release is None:
@@ -5300,8 +5273,7 @@ class TeamState(TeamModel):
                         and ":" in blocker.source_id
                         and blocker.source_id.split(":", 1)[0] in self.agents
                         and any(
-                            review_id
-                            for review_id in blocker.source_id.split(":", 1)[1].split("|")
+                            review_id for review_id in blocker.source_id.split(":", 1)[1].split("|")
                         )
                         and all(
                             review_id in self.review_requests
@@ -5312,9 +5284,7 @@ class TeamState(TeamModel):
                 ),
                 TeamBlockerSourceKind.CANDIDATE_CORRECTION_SUCCESSOR: (
                     blocker.source_id.startswith("candidate-correction-successor:")
-                    and blocker.source_id.removeprefix(
-                        "candidate-correction-successor:"
-                    )
+                    and blocker.source_id.removeprefix("candidate-correction-successor:")
                     in self.release_packages
                 ),
                 TeamBlockerSourceKind.EXPLICIT: True,
@@ -5492,9 +5462,7 @@ class TeamState(TeamModel):
                     )
                 chat_conversation_ids.add(message.conversation_id)
             if len(chat_conversation_ids) > 1:
-                errors.append(
-                    f"dispatch {dispatch.id} chat messages span multiple conversations"
-                )
+                errors.append(f"dispatch {dispatch.id} chat messages span multiple conversations")
 
     def _validate_external_chat_bridge(self, errors: list[str]) -> None:
         ingress_keys: set[tuple[str, str, str]] = set()
@@ -6961,8 +6929,7 @@ def release_package_payload_with_derived(
             if review_id in state.review_requests
             and state.review_requests[review_id].superseded_by_review_request_id is None
             and state.review_requests[review_id].retired_at is None
-            and state.review_requests[review_id].review_cohort_id
-            == release.review_cohort_id
+            and state.review_requests[review_id].review_cohort_id == release.review_cohort_id
         ]
         blocked_ids = [
             review.id for review in cohort_reviews if review.state == TeamRecordState.BLOCKED
@@ -7034,16 +7001,13 @@ def _release_next_action_hint(state: TeamState, release: ReleasePackage) -> str 
             if review_id in state.review_requests
             and state.review_requests[review_id].superseded_by_review_request_id is None
             and state.review_requests[review_id].retired_at is None
-            and state.review_requests[review_id].review_cohort_id
-            == release.review_cohort_id
+            and state.review_requests[review_id].review_cohort_id == release.review_cohort_id
         ]
         pending_count = sum(
             review.state in {TeamRecordState.PENDING, TeamRecordState.IN_PROGRESS}
             for review in current_reviews
         )
-        rejected_count = sum(
-            review.state == TeamRecordState.REJECTED for review in current_reviews
-        )
+        rejected_count = sum(review.state == TeamRecordState.REJECTED for review in current_reviews)
         if pending_count:
             return (
                 f"Wait for the remaining {pending_count} release review cohort slot(s). "
@@ -7901,13 +7865,10 @@ def _blocker_rows(state: TeamState) -> list[dict[str, Any]]:
         elif blocker.source_kind == TeamBlockerSourceKind.RELEASE_PACKAGE:
             release_package_id = blocker.source_id
         elif (
-            blocker.source_kind
-            == TeamBlockerSourceKind.CANDIDATE_CORRECTION_SUCCESSOR
+            blocker.source_kind == TeamBlockerSourceKind.CANDIDATE_CORRECTION_SUCCESSOR
             and blocker.source_id.startswith("candidate-correction-successor:")
         ):
-            release_package_id = blocker.source_id.removeprefix(
-                "candidate-correction-successor:"
-            )
+            release_package_id = blocker.source_id.removeprefix("candidate-correction-successor:")
         detail_parts = [
             f"source {blocker.source_kind.value} {blocker.source_id}",
             f"route {blocker.route.value}",
@@ -8501,17 +8462,12 @@ def _runtime_attention_links(
             elif blocker.source_kind == TeamBlockerSourceKind.RELEASE_PACKAGE:
                 add("release_package_ids", blocker.source_id)
             elif (
-                blocker.source_kind
-                == TeamBlockerSourceKind.CANDIDATE_CORRECTION_SUCCESSOR
-                and blocker.source_id.startswith(
-                    "candidate-correction-successor:"
-                )
+                blocker.source_kind == TeamBlockerSourceKind.CANDIDATE_CORRECTION_SUCCESSOR
+                and blocker.source_id.startswith("candidate-correction-successor:")
             ):
                 add(
                     "release_package_ids",
-                    blocker.source_id.removeprefix(
-                        "candidate-correction-successor:"
-                    ),
+                    blocker.source_id.removeprefix("candidate-correction-successor:"),
                 )
         for promotion_id in list(links.get("promotion_ids", ())):
             promotion = state.git_promotions.get(promotion_id)

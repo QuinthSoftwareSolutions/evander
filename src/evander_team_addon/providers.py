@@ -2190,9 +2190,9 @@ class TeamWakeDueAgentsEffectProvider(EffectProviderBase):
         candidate_correction_reconciliation_error: str | None = None
         if run_global_maintenance:
             try:
-                candidate_correction_reconciliation = (
-                    CandidateCorrectionReconciliationService(repo).reconcile()
-                )
+                candidate_correction_reconciliation = CandidateCorrectionReconciliationService(
+                    repo
+                ).reconcile()
                 if candidate_correction_reconciliation.get("events"):
                     candidate_correction_reconciliation["published_event_ids"] = (
                         _publish_team_events(
@@ -2203,9 +2203,7 @@ class TeamWakeDueAgentsEffectProvider(EffectProviderBase):
             except Exception as exc:
                 # The durable reconciliation blocker and the next Team cycle
                 # preserve recovery without suppressing unrelated wakes.
-                candidate_correction_reconciliation_error = (
-                    str(exc) or exc.__class__.__name__
-                )
+                candidate_correction_reconciliation_error = str(exc) or exc.__class__.__name__
         human_correction_reconciliation: dict[str, Any] = {}
         human_correction_reconciliation_error: str | None = None
         if run_global_maintenance:
@@ -2474,18 +2472,14 @@ class TeamWakeDueAgentsEffectProvider(EffectProviderBase):
                     raise RuntimeError(str(tool_grant_result["error"]))
                 dispatch = state.dispatches[lease["dispatch_id"]]
                 if dispatch.mcp_capability_receipt is not None:
-                    state = TeamRuntimeService(
-                        repo
-                    ).confirm_agent_dispatch_mcp_capability_grant(
+                    state = TeamRuntimeService(repo).confirm_agent_dispatch_mcp_capability_grant(
                         agent_id=agent["id"],
                         dispatch_id=lease["dispatch_id"],
                         granted_tool_names=tool_grant_result["requested_tools"],
                     )
                     lease = {
                         **lease,
-                        "dispatch": state.dispatches[
-                            lease["dispatch_id"]
-                        ].model_dump(mode="json"),
+                        "dispatch": state.dispatches[lease["dispatch_id"]].model_dump(mode="json"),
                     }
                     leases[lease_index] = lease
                 review_artifacts = _prepare_review_artifacts_for_lease(
@@ -2724,9 +2718,7 @@ class TeamWakeDueAgentsEffectProvider(EffectProviderBase):
             ),
             "human_correction_reconciliation": human_correction_reconciliation,
             "human_correction_reconciliation_error": (human_correction_reconciliation_error),
-            "candidate_correction_reconciliation": (
-                candidate_correction_reconciliation
-            ),
+            "candidate_correction_reconciliation": (candidate_correction_reconciliation),
             "candidate_correction_reconciliation_error": (
                 candidate_correction_reconciliation_error
             ),
@@ -2761,8 +2753,7 @@ def _dispatch_queued_team_chat_messages(
             dispatch = state.dispatches[dispatch_id]
             if _team_chat_mutation_scope_lost(message, dispatch):
                 error = (
-                    "Team Chat authorization changed before dispatch; "
-                    "no authorized projects remain"
+                    "Team Chat authorization changed before dispatch; no authorized projects remain"
                 )
                 tool_grant_result = _set_session_team_mcp_tools(
                     context,
@@ -3124,8 +3115,7 @@ def build_voice_reconciliation_context(
             review.model_dump(mode="json")
             for review in state.review_requests.values()
             if review.reviewer_agent_id == agent.id
-            and review.state
-            not in {TeamRecordState.ACCEPTED, TeamRecordState.REJECTED}
+            and review.state not in {TeamRecordState.ACCEPTED, TeamRecordState.REJECTED}
         ],
         "release_packages": _release_package_payloads_for_agent(state, agent),
         "runtime_attention": _runtime_attention_payloads_for_agent(state, agent),
@@ -3182,9 +3172,7 @@ def _copy_team_chat_attachments_for_dispatch(
                 raise FileNotFoundError(f"Team Chat attachment file is missing: {attachment.id}")
             source_path = source_path.resolve(strict=True)
             destination_name = f"{index:02d}-{attachment.filename}"
-            destination_path = (
-                f"/home/agent/team-chat-attachments/{message.id}/{destination_name}"
-            )
+            destination_path = f"/home/agent/team-chat-attachments/{message.id}/{destination_name}"
             files.append(
                 {
                     "source_path": str(source_path),
@@ -3535,12 +3523,8 @@ class TeamEnqueueOperatorChatMessageEffectProvider(EffectProviderBase):
             except Exception:
                 session = None
             if session is None:
-                session = (_session_records_by_id(session_repository) or {}).get(
-                    agent.session_id
-                )
-            recipient_directory_path = _optional_text(
-                getattr(session, "directory_path", None)
-            )
+                session = (_session_records_by_id(session_repository) or {}).get(agent.session_id)
+            recipient_directory_path = _optional_text(getattr(session, "directory_path", None))
             if recipient_directory_path is None:
                 raise ValueError(
                     "mutation-enabled external Team chat requires a resolvable recipient directory"
@@ -3561,9 +3545,7 @@ class TeamEnqueueOperatorChatMessageEffectProvider(EffectProviderBase):
                 ),
             )
             if mutation_authorization.mode != "project_scoped":
-                raise ValueError(
-                    "mutation-enabled external Team chat has no authorized projects"
-                )
+                raise ValueError("mutation-enabled external Team chat has no authorized projects")
         elif duplicate_ingress is None:
             mutation_authorization = reply_only_team_chat_authorization(
                 source="external_bridge",
@@ -4563,9 +4545,9 @@ class TeamAgentPromptCompletionFinalizeHook(EffectLifecycleHookBase):
                 break
         if finalized_count:
             try:
-                candidate_correction_result = (
-                    CandidateCorrectionReconciliationService(repo).reconcile()
-                )
+                candidate_correction_result = CandidateCorrectionReconciliationService(
+                    repo
+                ).reconcile()
                 _publish_team_events(
                     context,
                     candidate_correction_result.get("events"),
@@ -6052,13 +6034,10 @@ def _require_team_artifact_space_read(
         _optional_text(space.metadata.get("source")) != "team_addon"
         or _optional_text(space.metadata.get("team_id")) != team_id
         or (
-            artifact_space_path != team_root
-            and not artifact_space_path.startswith(f"{team_root}/")
+            artifact_space_path != team_root and not artifact_space_path.startswith(f"{team_root}/")
         )
     ):
-        raise ArtifactSpacePermissionError(
-            f"artifact space is not owned by Team {team_id}"
-        )
+        raise ArtifactSpacePermissionError(f"artifact space is not owned by Team {team_id}")
     _require_artifact_space_read(
         artifact_state,
         artifact_space_path=artifact_space_path,
@@ -7286,9 +7265,7 @@ def _build_team_chat_prompt(
             )
         )
     )
-    operator_chat_scope_guidance = _operator_chat_participant_scope_guidance(
-        ordinary_team_context
-    )
+    operator_chat_scope_guidance = _operator_chat_participant_scope_guidance(ordinary_team_context)
     ordinary_context_section = (
         f"{context_guidance}{operator_chat_scope_guidance}Team context JSON:\n"
         f"{json.dumps(ordinary_team_context, sort_keys=True, indent=2)}"
@@ -7659,9 +7636,7 @@ def _prepare_project_repo(
     agent_id = _required_text(agent.get("id"), "agent.id")
     session_id = _required_text(agent.get("session_id"), "session_id")
     managed_repo_id = _required_text(_value(git, "managed_repo_id"), "project.git.managed_repo_id")
-    agent_author_identity = _resolved_project_git_identity(
-        _value(git, "agent_author_identity")
-    )
+    agent_author_identity = _resolved_project_git_identity(_value(git, "agent_author_identity"))
     agent_committer_identity = _resolved_project_git_identity(
         _value(git, "agent_committer_identity")
     )
@@ -7670,9 +7645,7 @@ def _prepare_project_repo(
         clone_branch = _managed_repository_default_branch(
             context,
             managed_repo_id=managed_repo_id,
-            directory_path=(
-                _optional_text(_value(git, "directory_path")) or "root"
-            ),
+            directory_path=(_optional_text(_value(git, "directory_path")) or "root"),
         )
     provider = AgentCloneRepoEffectProvider()
     provider.initialize(
@@ -7753,9 +7726,7 @@ def _managed_repository_default_branch(
         raise RuntimeError("managed Git repository lookup returned an invalid record")
     default_branch = _optional_text(record.get("default_branch"))
     if default_branch is None:
-        raise RuntimeError(
-            f"managed repository {managed_repo_id} has no concrete default branch"
-        )
+        raise RuntimeError(f"managed repository {managed_repo_id} has no concrete default branch")
     return validate_branch_name(default_branch)
 
 
@@ -7899,9 +7870,7 @@ def _create_project_repo_git_work_contexts(
                 task_id=task_id,
                 managed_repo_id=managed_repo_id,
             )
-            effective_base_branch = (
-                _optional_text(task.get("git_base_branch")) or base_branch
-            )
+            effective_base_branch = _optional_text(task.get("git_base_branch")) or base_branch
             worktree_base_ref = effective_base_branch
             pinned_base_commit = None
             pinned_base_tree = None
@@ -7929,10 +7898,7 @@ def _create_project_repo_git_work_contexts(
                 resolved_dependency_commit_sha = _optional_text(
                     accepted_recovery.resolved_commit_sha
                 )
-                if (
-                    resolved_dependency_branch is None
-                    or resolved_dependency_commit_sha is None
-                ):
+                if resolved_dependency_branch is None or resolved_dependency_commit_sha is None:
                     raise DependencyGitPreparationError(
                         task_id=task_id,
                         message=(
@@ -7988,9 +7954,7 @@ def _create_project_repo_git_work_contexts(
                     pinned_base_tree=pinned_base_tree,
                     dependency_git_sources=composition_git_sources,
                     dependency_composition_mode=dependency_composition_mode,
-                    dependency_composition_recovery_id=(
-                        dependency_composition_recovery_id
-                    ),
+                    dependency_composition_recovery_id=(dependency_composition_recovery_id),
                     resolved_dependency_branch=resolved_dependency_branch,
                     resolved_dependency_commit_sha=resolved_dependency_commit_sha,
                     dependency_merge_author_identity=dependency_merge_author_identity,
@@ -8073,9 +8037,7 @@ def _create_project_repo_git_work_contexts(
                         base_commit=base_commit,
                         worktree_path=worktree_path,
                         dependency_git_sources=dependency_git_sources,
-                        dependency_composition_recovery_id=(
-                            dependency_composition_recovery_id
-                        ),
+                        dependency_composition_recovery_id=(dependency_composition_recovery_id),
                         manual_dependency_git_sources=manual_dependency_git_sources,
                     )
                     break
@@ -8090,9 +8052,7 @@ def _create_project_repo_git_work_contexts(
                         dispatch_id=dispatch_id,
                         worktree_path=worktree_path,
                         dependency_git_sources=dependency_git_sources,
-                        dependency_composition_recovery_id=(
-                            dependency_composition_recovery_id
-                        ),
+                        dependency_composition_recovery_id=(dependency_composition_recovery_id),
                         manual_dependency_git_sources=manual_dependency_git_sources,
                         expected_revision=state.revision,
                     )
@@ -8149,9 +8109,7 @@ def _validate_project_repo_git_work_context(
         "worktree_path": worktree_path,
         "dependency_git_sources": [dict(row) for row in dependency_git_sources],
         "dependency_composition_recovery_id": dependency_composition_recovery_id,
-        "manual_dependency_git_sources": [
-            dict(row) for row in manual_dependency_git_sources
-        ],
+        "manual_dependency_git_sources": [dict(row) for row in manual_dependency_git_sources],
     }
     mismatches = [
         field_name
@@ -8161,7 +8119,8 @@ def _validate_project_repo_git_work_context(
                 item.model_dump(mode="json") if hasattr(item, "model_dump") else dict(item)
                 for item in getattr(context_model, field_name, [])
             ]
-            if field_name in {
+            if field_name
+            in {
                 "dependency_git_sources",
                 "manual_dependency_git_sources",
             }
@@ -8591,9 +8550,7 @@ def _prepare_project_repo_task_worktree(
                 expected_base_tree_hash=pinned_base_tree,
                 dependency_git_sources=[dict(row) for row in dependency_git_sources],
                 dependency_composition_mode=dependency_composition_mode,
-                dependency_composition_recovery_id=(
-                    dependency_composition_recovery_id
-                ),
+                dependency_composition_recovery_id=(dependency_composition_recovery_id),
                 resolved_dependency_branch=resolved_dependency_branch,
                 resolved_dependency_commit_sha=resolved_dependency_commit_sha,
                 dependency_merge_author_name=dependency_merge_author_identity.name,
@@ -8653,8 +8610,7 @@ def _prepare_project_repo_task_worktree(
         if (
             dependency_composition_mode == "adopt_resolved"
             and resolved_dependency_commit_sha is not None
-            and base_commit_sha.casefold()
-            != resolved_dependency_commit_sha.casefold()
+            and base_commit_sha.casefold() != resolved_dependency_commit_sha.casefold()
         ):
             raise DependencyGitPreparationError(
                 task_id=task_id,
@@ -8688,9 +8644,7 @@ def _prepare_project_repo_task_worktree(
         "manual_recovery",
         "adopt_resolved",
     }:
-        raise ValueError(
-            f"unsupported dependency composition mode {dependency_composition_mode!r}"
-        )
+        raise ValueError(f"unsupported dependency composition mode {dependency_composition_mode!r}")
     recovery_payload_json = json.dumps(
         {
             "recovery_id": dependency_composition_recovery_id,
@@ -8700,9 +8654,7 @@ def _prepare_project_repo_task_worktree(
         separators=(",", ":"),
     )
     quoted_dependency_composition_mode = shlex.quote(dependency_composition_mode)
-    quoted_dependency_recovery_id = shlex.quote(
-        dependency_composition_recovery_id or ""
-    )
+    quoted_dependency_recovery_id = shlex.quote(dependency_composition_recovery_id or "")
     quoted_manual_recovery_payload = shlex.quote(recovery_payload_json)
     quoted_resolved_dependency_branch = shlex.quote(
         validate_branch_name(resolved_dependency_branch)
@@ -8716,12 +8668,8 @@ def _prepare_project_repo_task_worktree(
     )
     quoted_dependency_author_name = shlex.quote(dependency_merge_author_identity.name)
     quoted_dependency_author_email = shlex.quote(dependency_merge_author_identity.email)
-    quoted_dependency_committer_name = shlex.quote(
-        TEAM_DEPENDENCY_COMPOSER_GIT_IDENTITY.name
-    )
-    quoted_dependency_committer_email = shlex.quote(
-        TEAM_DEPENDENCY_COMPOSER_GIT_IDENTITY.email
-    )
+    quoted_dependency_committer_name = shlex.quote(TEAM_DEPENDENCY_COMPOSER_GIT_IDENTITY.name)
+    quoted_dependency_committer_email = shlex.quote(TEAM_DEPENDENCY_COMPOSER_GIT_IDENTITY.email)
     quoted_dependency_commit_message = shlex.quote(
         f"Compose accepted dependencies for task {task_id}"
     )
@@ -8974,10 +8922,7 @@ def _prepare_project_repo_task_worktree(
         '  test -n "$resolved_dependency_branch"',
         '  test -n "$resolved_dependency_commit"',
         '  git fetch --no-tags origin "refs/heads/$resolved_dependency_branch"',
-        (
-            '  test "$(git rev-parse --verify FETCH_HEAD^{commit})" '
-            '= "$resolved_dependency_commit"'
-        ),
+        ('  test "$(git rev-parse --verify FETCH_HEAD^{commit})" = "$resolved_dependency_commit"'),
         *[f"  {line}" for line in dependency_fetch_lines],
         (
             '  git -C "$target" merge-base --is-ancestor '
@@ -9004,10 +8949,7 @@ def _prepare_project_repo_task_worktree(
             '  git -C "$target" config --worktree '
             'evander.dependencyCompositionRecovery "$dependency_recovery_id"'
         ),
-        (
-            '  git -C "$target" config --worktree evander.baseCommit '
-            '"$resolved_dependency_commit"'
-        ),
+        ('  git -C "$target" config --worktree evander.baseCommit "$resolved_dependency_commit"'),
         '  configured_base="$resolved_dependency_commit"',
         "else",
         (
@@ -9044,12 +8986,9 @@ def _prepare_project_repo_task_worktree(
         '      set -- git -C "$target" commit-tree "$result_tree" -p "$head_before"',
         *[f"      {line}" for line in dependency_parent_lines],
         '      set -- "$@" -m "$dependency_commit_message"',
-        (
-            '      max_parent_timestamp="$(git -C "$target" show -s '
-            '--format=%ct "$head_before")"'
-        ),
+        ('      max_parent_timestamp="$(git -C "$target" show -s --format=%ct "$head_before")"'),
         *[f"      {line}" for line in dependency_timestamp_lines],
-        '      deterministic_timestamp=$((max_parent_timestamp + 1))',
+        "      deterministic_timestamp=$((max_parent_timestamp + 1))",
         '      export GIT_AUTHOR_DATE="@$deterministic_timestamp +0000"',
         '      export GIT_COMMITTER_DATE="@$deterministic_timestamp +0000"',
         '      if ! composed_commit="$("$@")"; then',
@@ -9110,10 +9049,7 @@ def _prepare_project_repo_task_worktree(
         if dependency_git_sources or pinned_base_commit is not None:
             conflict: dict[str, object] | None = None
             failure_lines = failure_evidence.splitlines()
-            if any(
-                line.strip() == "EVANDER_DEPENDENCY_CONFLICT=1"
-                for line in failure_lines
-            ):
+            if any(line.strip() == "EVANDER_DEPENDENCY_CONFLICT=1" for line in failure_lines):
                 conflict_values: dict[str, str] = {}
                 conflict_paths: list[str] = []
                 for line in failure_lines:
@@ -9127,12 +9063,8 @@ def _prepare_project_repo_task_worktree(
                 conflict_base_commit = conflict_values.get(
                     "EVANDER_DEPENDENCY_CONFLICT_BASE_COMMIT"
                 )
-                conflict_base_tree = conflict_values.get(
-                    "EVANDER_DEPENDENCY_CONFLICT_BASE_TREE"
-                )
-                failed_task_id = conflict_values.get(
-                    "EVANDER_DEPENDENCY_CONFLICT_FAILED_TASK"
-                )
+                conflict_base_tree = conflict_values.get("EVANDER_DEPENDENCY_CONFLICT_BASE_TREE")
+                failed_task_id = conflict_values.get("EVANDER_DEPENDENCY_CONFLICT_FAILED_TASK")
                 failed_deliverable_id = conflict_values.get(
                     "EVANDER_DEPENDENCY_CONFLICT_FAILED_DELIVERABLE"
                 )
@@ -9150,9 +9082,7 @@ def _prepare_project_repo_task_worktree(
                         "base_branch": base_ref,
                         "base_commit_sha": conflict_base_commit,
                         "base_tree_hash": conflict_base_tree,
-                        "dependency_git_sources": [
-                            dict(row) for row in dependency_git_sources
-                        ],
+                        "dependency_git_sources": [dict(row) for row in dependency_git_sources],
                         "failed_dependency_task_id": failed_task_id,
                         "failed_deliverable_id": failed_deliverable_id,
                         "conflict_paths": conflict_paths,
@@ -9685,9 +9615,7 @@ def _dispatch_session_metadata_mirror_is_due(dispatch: TeamDispatch) -> bool:
     if required_at is None:
         return False
     mirrored_at = dispatch.session_metadata_mirrored_at
-    return mirrored_at is None or _team_datetime_utc(mirrored_at) < _team_datetime_utc(
-        required_at
-    )
+    return mirrored_at is None or _team_datetime_utc(mirrored_at) < _team_datetime_utc(required_at)
 
 
 def _cost_guard_blocked_teams(
@@ -9978,16 +9906,12 @@ def _set_session_team_mcp_tools(
         repository.upsert_session(updated_session)
     confirmed_session = repository.get_session(normalized_session_id)
     confirmed_values = {
-        tool_name_value(tool)
-        for tool in getattr(confirmed_session, "allowed_tools", [])
+        tool_name_value(tool) for tool in getattr(confirmed_session, "allowed_tools", [])
     }
-    missing_requested_tools = [
-        tool for tool in requested_tools if tool not in confirmed_values
-    ]
+    missing_requested_tools = [tool for tool in requested_tools if tool not in confirmed_values]
     if missing_requested_tools:
-        result["error"] = (
-            "Team MCP policy did not retain requested tool(s): "
-            + ", ".join(missing_requested_tools)
+        result["error"] = "Team MCP policy did not retain requested tool(s): " + ", ".join(
+            missing_requested_tools
         )
     result["already_allowed_tools"] = already_allowed
     result["granted_tools"] = granted
@@ -10003,11 +9927,7 @@ def _review_mcp_capability_observation(
     """Summarize post-lease tools/list evidence without retaining its catalogue."""
 
     receipt = dispatch.mcp_capability_receipt if dispatch is not None else None
-    if (
-        receipt is None
-        or not receipt.required_tool_names
-        or receipt.grant_confirmed_at is None
-    ):
+    if receipt is None or not receipt.required_tool_names or receipt.grant_confirmed_at is None:
         return None
     cutoff = receipt.grant_confirmed_at
     bindings = JsonMcpTransportBindingRepository.from_runtime_dir(_runtime_dir(context))
@@ -10036,8 +9956,7 @@ def _review_mcp_capability_observation(
         "observed_tool_fingerprint": binding.last_visible_tool_fingerprint,
         "missing_tool_names": missing_tool_names,
         "diagnostic": (
-            "The authenticated MCP tools/list response did not include the required "
-            "review tool(s)."
+            "The authenticated MCP tools/list response did not include the required review tool(s)."
             if missing_tool_names
             else None
         ),
@@ -11097,16 +11016,17 @@ def _reconcile_team_queued_prompt_reservations(
                 else:
                     reconciled_count += 1
                     continue
-            elif _team_queue_governance_group_id(
-                state,
-                dispatch_id=dispatch_id,
-                record_session_id=record_session_id,
-            ) is not None:
+            elif (
+                _team_queue_governance_group_id(
+                    state,
+                    dispatch_id=dispatch_id,
+                    record_session_id=record_session_id,
+                )
+                is not None
+            ):
                 continue
 
-        if dispatch_id.startswith(
-            ("team-dispatch-", "team-chat:", "team-governance-dispatch-")
-        ):
+        if dispatch_id.startswith(("team-dispatch-", "team-chat:", "team-governance-dispatch-")):
             if not delete_current_record(queue_key, dispatch_id):
                 continue
             logger.warning(

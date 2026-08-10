@@ -42,9 +42,7 @@ def effective_outcome_kind_payloads(
     return [
         outcome_kind_definition_payload(
             definition,
-            inherited=(
-                project_id is not None and definition.project_id is None
-            ),
+            inherited=(project_id is not None and definition.project_id is None),
         )
         for definition in sorted(
             effective_outcome_kind_definitions(
@@ -105,8 +103,7 @@ def snapshot_deliverable_outcomes(
         )
         if definition is None:
             raise ValueError(
-                f"unknown or archived outcome kind {outcome.kind} for project "
-                f"{project.id}"
+                f"unknown or archived outcome kind {outcome.kind} for project {project.id}"
             )
         snapshotted.append(
             outcome.model_copy(
@@ -150,17 +147,12 @@ def agent_can_manage_outcome_kinds(
             and role is not None
             and role.team_id == team_id
             and role.project_id is None
-            and RolePermission.MANAGE_OUTCOME_KINDS
-            in role.permissions
+            and RolePermission.MANAGE_OUTCOME_KINDS in role.permissions
         )
-    if not (
-        _is_team_manager(state, actor)
-        or _is_project_lead_for(state, actor.id, project_id)
-    ):
+    if not (_is_team_manager(state, actor) or _is_project_lead_for(state, actor.id, project_id)):
         return False
-    return (
-        RolePermission.MANAGE_OUTCOME_KINDS
-        in effective_role_permissions(state, actor, project_id=project_id)
+    return RolePermission.MANAGE_OUTCOME_KINDS in effective_role_permissions(
+        state, actor, project_id=project_id
     )
 
 
@@ -174,10 +166,7 @@ def active_outcome_kind_references(
     for task in state.tasks.values():
         if task.outcome_contract is None:
             continue
-        if (
-            assessments.assess(task.id).resolution_status
-            == TaskResolutionStatus.RESOLVED
-        ):
+        if assessments.assess(task.id).resolution_status == TaskResolutionStatus.RESOLVED:
             continue
         contract = task.outcome_contract
         if definition.kind not in (

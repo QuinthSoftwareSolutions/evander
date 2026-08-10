@@ -623,13 +623,11 @@ def test_worker_git_access_role_sets_up_private_repo_checkout_before_repo_checko
     assert 'evander_repo_url: "{{ evander_worker_repo_checkout_url }}"' in role
     assert (
         'evander_repo_refspec: "+{{ evander_worker_repo_deploy_ref }}:'
-        '{{ evander_worker_repo_checkout_ref }}"'
-        in role
+        '{{ evander_worker_repo_checkout_ref }}"' in role
     )
     assert (
         'evander_worker_repo_checkout_ref: "refs/remotes/origin/evander-deploy/'
-        '{{ inventory_hostname }}"'
-        in defaults
+        '{{ inventory_hostname }}"' in defaults
     )
     assert "Deploy the control plane first, then rerun ansible/worker.yml" in role
     assert "not the literal <control-plane-private-ip> placeholder" in role

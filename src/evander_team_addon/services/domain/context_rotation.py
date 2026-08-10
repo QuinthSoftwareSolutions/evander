@@ -115,9 +115,7 @@ def _append_idle_context_rotation_wake_requested_event(
         now=normalized_now,
         run_at=due_at,
         idempotency_suffix=f"idle-grace:{due_key}",
-        payload_extra={
-            "context_idle_rotation_due_at": due_at.isoformat().replace("+00:00", "Z")
-        },
+        payload_extra={"context_idle_rotation_due_at": due_at.isoformat().replace("+00:00", "Z")},
     )
 
 
@@ -294,9 +292,7 @@ def _context_clearing_idle_grace_seconds_from_value(value: object) -> int:
     if isinstance(value, str) and str(normalized) != value.strip():
         raise ValueError("context_clearing_idle_grace_seconds must be an integer")
     if normalized < 0 or normalized > MAX_CONTEXT_CLEARING_IDLE_GRACE_SECONDS:
-        raise ValueError(
-            "context_clearing_idle_grace_seconds must be between 0 and 604800"
-        )
+        raise ValueError("context_clearing_idle_grace_seconds must be between 0 and 604800")
     return normalized
 
 
@@ -315,9 +311,7 @@ def _set_context_clearing_idle_grace_seconds(
         if runtime.context_idle_since_at is not None:
             idle_since_at = _ensure_utc(runtime.context_idle_since_at)
             runtime.context_idle_since_at = idle_since_at
-            runtime.context_idle_rotation_due_at = idle_since_at + timedelta(
-                seconds=grace_seconds
-            )
+            runtime.context_idle_rotation_due_at = idle_since_at + timedelta(seconds=grace_seconds)
             runtime.next_wake_at = runtime.context_idle_rotation_due_at
         _maybe_mark_idle_context_rotation_due(
             state,

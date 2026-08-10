@@ -139,9 +139,7 @@ def test_agent_session_policy_reports_effective_codex_auth_mode_and_source() -> 
     assert inherited["effective_codex_auth_mode"] == "chatgpt_subscription"
     assert inherited["codex_auth_mode_source"] == "directory_default"
 
-    explicit_session = session.model_copy(
-        update={"codex_auth_mode": CodexAuthMode.METERED_API}
-    )
+    explicit_session = session.model_copy(update={"codex_auth_mode": CodexAuthMode.METERED_API})
     explicit = service.agent_session_policy_payload(explicit_session)
     assert explicit is not None
     assert explicit["effective_codex_auth_mode"] == "metered_api"

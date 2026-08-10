@@ -561,9 +561,7 @@ class AddonAdminService:
             return raw_source
         module_name, separator, attribute_name = source.rpartition(".")
         if not separator or not module_name or not attribute_name:
-            raise ValueError(
-                f"{source_label} source {source!r} must be a dotted callable path"
-            )
+            raise ValueError(f"{source_label} source {source!r} must be a dotted callable path")
         value: object = import_module(module_name)
         for part in attribute_name.split("."):
             value = getattr(value, part)

@@ -204,9 +204,7 @@ def test_host_directory_inheritance_and_child_grant_validation(
         base_config={"host_directories": {}},
         validator=lambda payload: HostDirectoryDirectoryConfig.model_validate(payload),
     )
-    config = HostDirectoryDirectoryConfig.model_validate(
-        resolution.effective_config
-    )
+    config = HostDirectoryDirectoryConfig.model_validate(resolution.effective_config)
 
     assert resolution.validation_errors == []
     assert config.host_directories["shared"].root == root_path

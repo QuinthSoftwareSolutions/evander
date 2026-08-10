@@ -1029,10 +1029,7 @@ class DirectoryConfigResolver:
                 continue
             if domain == "providers":
                 overlay = DirectoryConfigStore._canonicalize_provider_domain_payload(overlay)
-                if (
-                    directory.path != "root"
-                    and "local_openai_max_concurrency" in overlay
-                ):
+                if directory.path != "root" and "local_openai_max_concurrency" in overlay:
                     raise ValueError(
                         "local_openai_max_concurrency is host-global and may be configured only "
                         "in root providers.json"

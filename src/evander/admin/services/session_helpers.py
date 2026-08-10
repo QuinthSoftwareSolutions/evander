@@ -402,9 +402,7 @@ def build_issue_session_manifest(
             seen.add(tool_value)
             resolved_allowed_tools.append(tool)
 
-    resolved_host_directory_grants = normalize_host_directory_grants(
-        host_directory_grants or {}
-    )
+    resolved_host_directory_grants = normalize_host_directory_grants(host_directory_grants or {})
     host_directory_tool_by_capability = {
         "list": ToolName.HOST_DIRECTORY_LIST,
         "import": ToolName.HOST_DIRECTORY_IMPORT,

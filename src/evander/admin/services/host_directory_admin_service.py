@@ -138,8 +138,7 @@ class HostDirectoryAdminService:
             current = self.snapshot(directory_path)
             if current["revision"] != expected_revision:
                 raise HostDirectoryConfigRevisionConflict(
-                    "Host directory configuration changed before save. "
-                    "Reload before saving again."
+                    "Host directory configuration changed before save. Reload before saving again."
                 )
             current_resolution_result = (
                 self._deps.operations_admin.compute_directory_effective_config(
@@ -170,9 +169,7 @@ class HostDirectoryAdminService:
             )
             if not result.ok:
                 message = (
-                    result.errors[0].message
-                    if result.errors
-                    else "Unable to save host directories"
+                    result.errors[0].message if result.errors else "Unable to save host directories"
                 )
                 raise ValueError(message)
             return self.snapshot(directory_path)
@@ -236,9 +233,7 @@ class HostDirectoryAdminService:
             directory_path,
             *[
                 str(item.path)
-                for item in self._deps.directory_inventory.list_descendants(
-                    directory_path
-                )
+                for item in self._deps.directory_inventory.list_descendants(directory_path)
             ],
         ]
         for directory_id, current_definition in current.host_directories.items():
@@ -249,15 +244,10 @@ class HostDirectoryAdminService:
             ):
                 continue
             for scoped_directory_path in directory_scopes:
-                scoped_definition = (
-                    self._deps.host_directory_service.config_for_directory(
-                        scoped_directory_path
-                    ).host_directories.get(directory_id)
-                )
-                if (
-                    scoped_definition is None
-                    or scoped_definition.root != current_definition.root
-                ):
+                scoped_definition = self._deps.host_directory_service.config_for_directory(
+                    scoped_directory_path
+                ).host_directories.get(directory_id)
+                if scoped_definition is None or scoped_definition.root != current_definition.root:
                     continue
                 quarantined = self._deps.host_directory_service.list_quarantine(
                     directory_path=scoped_directory_path,

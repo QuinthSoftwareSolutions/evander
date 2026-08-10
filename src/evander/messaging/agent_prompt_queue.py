@@ -47,9 +47,7 @@ def queued_agent_prompt_dispatch_id(record: Any) -> str:
     if dispatch_id:
         return dispatch_id
     created_at = getattr(record, "created_at", None)
-    created_text = (
-        created_at.isoformat() if isinstance(created_at, datetime) else str(created_at)
-    )
+    created_text = created_at.isoformat() if isinstance(created_at, datetime) else str(created_at)
     identity = "\0".join(
         (
             str(getattr(record, "queue_key", "") or ""),

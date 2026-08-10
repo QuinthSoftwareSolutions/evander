@@ -6607,9 +6607,7 @@ def test_get_admin_agent_log_page_container_unthreaded_honors_cursorless_offset(
 
     assert page["offset"] == 3
     assert page["returned_lines"] == 3
-    assert page["text"] == (
-        "execution line 5\nexecution line 6\nexecution line 7\n"
-    )
+    assert page["text"] == ("execution line 5\nexecution line 6\nexecution line 7\n")
     assert page["next_cursor"] is None
     assert fake_backend.calls == [
         (
@@ -7105,8 +7103,7 @@ def test_get_admin_agent_log_page_preserves_legacy_shared_thread_fallback_across
                 worker_job_id=f"job-legacy-shared-{index:03d}",
                 worker_url="http://worker.test",
                 target_name="target-thread-legacy-shared",
-                started_at=datetime(2026, 5, 18, 8, 0, tzinfo=UTC)
-                + timedelta(minutes=index),
+                started_at=datetime(2026, 5, 18, 8, 0, tzinfo=UTC) + timedelta(minutes=index),
                 last_status="removed",
                 directory_path="root",
                 metadata={"effect_type": "effect:agent:prompt"},
@@ -7156,12 +7153,7 @@ def test_get_admin_agent_log_page_preserves_legacy_shared_thread_fallback_across
 
     combined_text = "\n".join(page_texts)
     for index in range(25):
-        assert (
-            combined_text.count(
-                f"fallback body for agent-legacy-shared-{index:03d}"
-            )
-            == 1
-        )
+        assert combined_text.count(f"fallback body for agent-legacy-shared-{index:03d}") == 1
     assert page["has_more_before"] is False
 
 
@@ -7189,11 +7181,9 @@ def test_get_admin_agent_log_page_preserves_mixed_stored_and_legacy_thread_fallb
     )
     for index in range(15):
         started_at = (
-            datetime(2026, 5, 18, 11, 0, tzinfo=UTC)
-            + timedelta(minutes=index)
+            datetime(2026, 5, 18, 11, 0, tzinfo=UTC) + timedelta(minutes=index)
             if index < 5
-            else datetime(2026, 5, 18, 8, 0, tzinfo=UTC)
-            + timedelta(minutes=index)
+            else datetime(2026, 5, 18, 8, 0, tzinfo=UTC) + timedelta(minutes=index)
         )
         repository.put(
             ContainerWorkerExecutionRecord(
@@ -7210,11 +7200,9 @@ def test_get_admin_agent_log_page_preserves_mixed_stored_and_legacy_thread_fallb
         )
     for index in range(10):
         started_at = (
-            datetime(2026, 5, 18, 10, 0, tzinfo=UTC)
-            + timedelta(minutes=index)
+            datetime(2026, 5, 18, 10, 0, tzinfo=UTC) + timedelta(minutes=index)
             if index < 5
-            else datetime(2026, 5, 18, 9, 0, tzinfo=UTC)
-            + timedelta(minutes=index)
+            else datetime(2026, 5, 18, 9, 0, tzinfo=UTC) + timedelta(minutes=index)
         )
         repository.put(
             ContainerWorkerExecutionRecord(
@@ -7279,12 +7267,7 @@ def test_get_admin_agent_log_page_preserves_mixed_stored_and_legacy_thread_fallb
     combined_text = "\n".join(page_texts)
     for prefix, count in (("agent-mixed-legacy", 15), ("agent-mixed-stored", 10)):
         for index in range(count):
-            assert (
-                combined_text.count(
-                    f"fallback body for {prefix}-{index:03d}"
-                )
-                == 1
-            )
+            assert combined_text.count(f"fallback body for {prefix}-{index:03d}") == 1
     assert page["has_more_before"] is False
 
 
@@ -7318,8 +7301,7 @@ def test_get_admin_agent_log_page_emits_legacy_shared_transcript_once(
                 worker_job_id=f"job-legacy-transcript-{index:03d}",
                 worker_url="http://worker.test",
                 target_name="target-thread-legacy-transcript",
-                started_at=datetime(2026, 5, 18, 8, 0, tzinfo=UTC)
-                + timedelta(minutes=index),
+                started_at=datetime(2026, 5, 18, 8, 0, tzinfo=UTC) + timedelta(minutes=index),
                 last_status="removed",
                 directory_path="root",
                 metadata={"effect_type": "effect:agent:prompt"},

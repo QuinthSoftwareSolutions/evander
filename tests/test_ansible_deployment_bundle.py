@@ -744,9 +744,9 @@ def test_ansible_repo_checkout_resets_legacy_and_current_admin_web_entrypoints()
     defaults = (repo / "ansible" / "group_vars" / "all" / "defaults.yml").read_text(
         encoding="utf-8"
     )
-    generated_paths = defaults.split(
-        "evander_repo_managed_generated_tracked_paths:", 1
-    )[1].split("evander_repo_managed_tracked_config_paths:", 1)[0]
+    generated_paths = defaults.split("evander_repo_managed_generated_tracked_paths:", 1)[1].split(
+        "evander_repo_managed_tracked_config_paths:", 1
+    )[0]
 
     assert "- frontend/workflow-editor/dist/index.html" in generated_paths
     assert "- frontend/admin-web/dist/index.html" in generated_paths

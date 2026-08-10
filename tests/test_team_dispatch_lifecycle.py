@@ -209,10 +209,7 @@ def test_terminal_dispatch_keeps_historical_session_after_agent_rebind(
     )
 
     assert state.agents["worker"].session_id == "session-worker-next"
-    assert (
-        state.dispatches[f"dispatch-{status.value}"].session_id
-        == "session-worker"
-    )
+    assert state.dispatches[f"dispatch-{status.value}"].session_id == "session-worker"
 
 
 def test_preparing_dispatch_prevents_agent_session_rebind(tmp_path: Path) -> None:
@@ -270,9 +267,7 @@ def test_preparing_dispatch_rejects_commands_and_scope_does_not_widen(
     assert leased.status == TeamDispatchStatus.LEASED
     assert leased.task_ids == ["task"]
 
-    _state, out_of_scope = TeamTaskUpdateCommandService(
-        repository
-    ).update_task_command(
+    _state, out_of_scope = TeamTaskUpdateCommandService(repository).update_task_command(
         session_id="session-worker",
         task_id="later-task",
         request_id="later-task-update",
@@ -444,8 +439,9 @@ def test_origin_provenance_does_not_grant_root_authority_or_gate_resolution(
     )
 
     assert mismatched_origin["success"] is False
-    assert "must belong to project project and team team" in (
-        mismatched_origin["errors"][0]["message"]
+    assert (
+        "must belong to project project and team team"
+        in (mismatched_origin["errors"][0]["message"])
     )
     assert "cross-project-origin-root" not in unchanged.tasks
 
@@ -558,9 +554,7 @@ def test_parent_owner_cancels_child_from_exact_supervision_handoff(
     assert state.inbox["child-supervision"].state.value == "handled"
     assert assess_task(state, "task").readiness.value == "actionable"
     child_blockers = [
-        blocker
-        for blocker in state.blockers.values()
-        if blocker.source_id == "child-task"
+        blocker for blocker in state.blockers.values() if blocker.source_id == "child-task"
     ]
     assert len(child_blockers) == 1
     assert child_blockers[0].state == TeamBlockerState.RESOLVED
@@ -894,9 +888,7 @@ def test_operator_chat_selects_direct_acceptance_at_tool_call_time(
         dispatch_id=f"team-chat:{message.id}",
     )
 
-    state, decided = TeamDeliverableSubmissionCommandService(
-        repository
-    ).decide_deliverable_command(
+    state, decided = TeamDeliverableSubmissionCommandService(repository).decide_deliverable_command(
         session_id="session-lead",
         deliverable_id="chat-deliverable",
         decision="rejected",
@@ -1023,13 +1015,9 @@ def test_cancellation_reconciles_blocker_backed_blocked_review_handoff(
         respect_wake_interval=False,
     )
     assert len(leases) == 1
-    assert assess_task(state, "task").active_review_request_ids == [
-        "blocked-review"
-    ]
+    assert assess_task(state, "task").active_review_request_ids == ["blocked-review"]
 
-    state, cancelled = TeamTaskUpdateCommandService(
-        repository
-    ).cancel_task_command(
+    state, cancelled = TeamTaskUpdateCommandService(repository).cancel_task_command(
         session_id="session-worker",
         task_id="task",
         reason_code="obsolete",
@@ -1043,9 +1031,7 @@ def test_cancellation_reconciles_blocker_backed_blocked_review_handoff(
     assert state.deliverables["blocked-deliverable"].state == TeamRecordState.REJECTED
     assert state.review_requests["blocked-review"].retired_at is not None
     review_blocker = next(
-        blocker
-        for blocker in state.blockers.values()
-        if blocker.source_id == "blocked-review"
+        blocker for blocker in state.blockers.values() if blocker.source_id == "blocked-review"
     )
     assert review_blocker.state == TeamBlockerState.RESOLVED
 
@@ -1356,9 +1342,7 @@ def test_id_only_project_resources_require_exact_dispatch_project_scope(
     )
     _lease_lead_for_primary_project(repository)
 
-    _state, archived_memory = TeamMemoryCommandService(
-        repository
-    ).archive_memory_command(
+    _state, archived_memory = TeamMemoryCommandService(repository).archive_memory_command(
         session_id="session-lead",
         memory_id="other-memory",
         request_id="archive-memory-outside-dispatch-project",
@@ -1438,8 +1422,7 @@ def test_operator_task_blocked_state_repair_is_reason_required_and_audited(
     reported = [
         event
         for event in state.blocker_events.values()
-        if event.blocker_id == blocker.id
-        and event.event_type == TeamBlockerEventType.REPORTED
+        if event.blocker_id == blocker.id and event.event_type == TeamBlockerEventType.REPORTED
     ]
     assert reported[0].metadata["reporter_actor"] == "admin@example.com"
 
@@ -1458,8 +1441,7 @@ def test_operator_task_blocked_state_repair_is_reason_required_and_audited(
     resolved = [
         event
         for event in state.blocker_events.values()
-        if event.blocker_id == blocker.id
-        and event.event_type == TeamBlockerEventType.RESOLVED
+        if event.blocker_id == blocker.id and event.event_type == TeamBlockerEventType.RESOLVED
     ]
     assert resolved[-1].note == "Dependency was repaired and independently verified."
     assert resolved[-1].metadata == {
@@ -1497,8 +1479,7 @@ def test_stale_preparing_scope_fails_atomically_with_exact_error(
     assert dispatch.completed_at == LEASE_NOW
     assert dispatch.task_ids == ["task"]
     assert dispatch.error == (
-        "dispatch scope became stale during preparation: "
-        "task task is now assigned to lead"
+        "dispatch scope became stale during preparation: task task is now assigned to lead"
     )
     assert state.agent_runtimes["worker"].active_dispatch_id is None
     assert state.agent_runtimes["worker"].wake_leased_until is None
@@ -1614,8 +1595,7 @@ def test_no_progress_limit_creates_one_routed_execution_stall(
     assert evidence[0].dispatch_id == "exhausted-dispatch"
     assert evidence[0].metadata["scoped_task_ids"] == ["task"]
     assert any(
-        item.recipient_agent_id == "lead"
-        and item.payload.get("blocker_id") == blocker.id
+        item.recipient_agent_id == "lead" and item.payload.get("blocker_id") == blocker.id
         for item in state.inbox.values()
     )
 
@@ -1628,24 +1608,29 @@ def test_no_progress_limit_creates_one_routed_execution_stall(
 
     assert replay_leases == []
     replay = repository.read()
-    assert len(
-        [
-            item
-            for item in replay.blockers.values()
-            if item.source_kind
-            == TeamBlockerSourceKind.AGENT_EXECUTION_STALL
-            and item.source_id == "worker"
-        ]
-    ) == 1
-    assert len(
-        [
-            event
-            for event in replay.blocker_events.values()
-            if event.blocker_id == blocker.id
-            and event.event_type == TeamBlockerEventType.PROGRESS
-            and event.metadata.get("kind") == "execution_stall_exhausted"
-        ]
-    ) == 1
+    assert (
+        len(
+            [
+                item
+                for item in replay.blockers.values()
+                if item.source_kind == TeamBlockerSourceKind.AGENT_EXECUTION_STALL
+                and item.source_id == "worker"
+            ]
+        )
+        == 1
+    )
+    assert (
+        len(
+            [
+                event
+                for event in replay.blocker_events.values()
+                if event.blocker_id == blocker.id
+                and event.event_type == TeamBlockerEventType.PROGRESS
+                and event.metadata.get("kind") == "execution_stall_exhausted"
+            ]
+        )
+        == 1
+    )
 
     TeamAdminService(repository).create_or_reprioritize_task(
         task_id="task-created-during-stall",

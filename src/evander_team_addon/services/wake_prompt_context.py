@@ -48,8 +48,7 @@ def wake_uses_fresh_context(
     runtime_behavior_available = False
     if isinstance(runtime, Mapping):
         runtime_behavior_available = (
-            "context_rotation_pending" in runtime
-            or "context_clearing_policy" in runtime
+            "context_rotation_pending" in runtime or "context_clearing_policy" in runtime
         )
         if bool(runtime.get("context_rotation_pending")):
             return True
@@ -84,11 +83,7 @@ def build_compact_wake_context(
         omitted_counts,
         "subordinate_ids",
     )
-    compact_agent = (
-        _compact_agent(agent)
-        if fresh_context
-        else _compact_fields(agent, ("id",))
-    )
+    compact_agent = _compact_agent(agent) if fresh_context else _compact_fields(agent, ("id",))
     if not fresh_context and lease.get("role_description_changed") is True:
         role_description = _optional_text(agent.get("role_description"))
         if role_description is not None:
@@ -142,10 +137,7 @@ def build_compact_wake_context(
 
     if fresh_context:
         outcome_kinds = sorted(
-            (
-                _compact_outcome_kind(row)
-                for row in _mapping_rows(lease.get("outcome_kinds"))
-            ),
+            (_compact_outcome_kind(row) for row in _mapping_rows(lease.get("outcome_kinds"))),
             key=lambda row: (
                 _sort_text(row.get("effective_project_id")),
                 _sort_text(row.get("kind")),
@@ -173,9 +165,7 @@ def build_compact_wake_context(
             _compact_inbox(
                 row,
                 payload_text_limit=(
-                    2048
-                    if _optional_text(row.get("id")) == sole_high_priority_id
-                    else TEXT_LIMIT
+                    2048 if _optional_text(row.get("id")) == sole_high_priority_id else TEXT_LIMIT
                 ),
             )
             for row in sorted_inbox_rows
@@ -836,12 +826,8 @@ def _compact_session_health(row: Mapping[str, Any]) -> dict[str, Any]:
 
 def _session_health_requires_attention(row: Mapping[str, Any]) -> bool:
     status = (_optional_text(row.get("status")) or "").casefold()
-    execution_status = (
-        _optional_text(row.get("agent_execution_status")) or ""
-    ).casefold()
-    lifecycle = (
-        _optional_text(row.get("container_lifecycle_state")) or ""
-    ).casefold()
+    execution_status = (_optional_text(row.get("agent_execution_status")) or "").casefold()
+    lifecycle = (_optional_text(row.get("container_lifecycle_state")) or "").casefold()
     return (
         row.get("is_expired") is True
         or row.get("session_present") is False
@@ -922,9 +908,7 @@ def _compact_manager_fallback_summary(summary: Mapping[str, Any]) -> dict[str, A
                     "git_base_branch",
                 ),
             )
-            for item in _mapping_rows(
-                summary.get("pending_initial_release_decisions")
-            )
+            for item in _mapping_rows(summary.get("pending_initial_release_decisions"))
         ],
         MAX_MANAGER_FALLBACK_ROWS,
         "pending_initial_release_decisions",
@@ -1505,9 +1489,7 @@ def _runtime_attention_matches_dispatch(
             if ids
         ):
             return True
-        if dispatch_id is not None and dispatch_id in _string_items(
-            links.get("dispatch_ids")
-        ):
+        if dispatch_id is not None and dispatch_id in _string_items(links.get("dispatch_ids")):
             return True
     return False
 

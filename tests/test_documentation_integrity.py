@@ -218,9 +218,7 @@ def test_human_review_correction_documentation_matches_automatic_graph() -> None
     for source in (addon_reference, transaction_chapter, release_chapter):
         assert "coordination-only parent" in source
     assert "automatically creates the changed successor release" in addon_reference
-    assert re.search(
-        r"creates one changed successor release\s+automatically", transaction_chapter
-    )
+    assert re.search(r"creates one changed successor release\s+automatically", transaction_chapter)
     assert "automatically creates one successor" in release_chapter
     assert re.search(
         r"exactly one current accepted, reviewed\s+correction\s+deliverable",
@@ -229,9 +227,7 @@ def test_human_review_correction_documentation_matches_automatic_graph() -> None
     assert re.search(
         r"exactly one current accepted\s+correction\s+deliverable", transaction_chapter
     )
-    assert re.search(
-        r"exactly one current accepted\s+correction\s+deliverable", release_chapter
-    )
+    assert re.search(r"exactly one current accepted\s+correction\s+deliverable", release_chapter)
     assert "request a changed successor" not in release_chapter
 
 

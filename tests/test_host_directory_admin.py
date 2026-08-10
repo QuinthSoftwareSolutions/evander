@@ -133,9 +133,7 @@ def test_host_directory_admin_quarantine_restore_and_purge(
     client = TestClient(create_app(service))
     assert client.post("/api/admin/privileged/unlock").status_code == 200
 
-    host_directory_service = (
-        service.host_directory_admin._deps.host_directory_service
-    )
+    host_directory_service = service.host_directory_admin._deps.host_directory_service
     session = SessionManifest(
         session_id="session-host-directory-admin",
         directory_path="root",
@@ -152,9 +150,7 @@ def test_host_directory_admin_quarantine_restore_and_purge(
         path="first.txt",
         expected_revision=host_directory_revision(first_file.lstat()),
     )
-    quarantine = client.get(
-        "/api/admin/host-directories/shared/quarantine?directory_path=root"
-    )
+    quarantine = client.get("/api/admin/host-directories/shared/quarantine?directory_path=root")
     assert quarantine.status_code == 200
     assert [entry["recovery_id"] for entry in quarantine.json()["entries"]] == [
         first_deleted["recovery_id"]
@@ -182,9 +178,12 @@ def test_host_directory_admin_quarantine_restore_and_purge(
     )
     assert purged.status_code == 200
     assert not second_file.exists()
-    assert client.get(
-        "/api/admin/host-directories/shared/quarantine?directory_path=root"
-    ).json()["entries"] == []
+    assert (
+        client.get("/api/admin/host-directories/shared/quarantine?directory_path=root").json()[
+            "entries"
+        ]
+        == []
+    )
 
 
 def test_host_directory_admin_save_preserves_recoverability_until_quarantine_is_empty(

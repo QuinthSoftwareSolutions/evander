@@ -92,10 +92,7 @@ def test_governance_goal_names_round_trip_and_update_generates_new_ids(
 
     reloaded = repository.read()
     goals = reloaded.governance_groups["portfolio"].goals
-    assert [
-        (goal.id, goal.name, goal.description, goal.state.value)
-        for goal in goals
-    ] == [
+    assert [(goal.id, goal.name, goal.description, goal.state.value) for goal in goals] == [
         (
             "cost",
             "Budget stewardship",
@@ -146,9 +143,7 @@ def test_sqlite_schema_migrates_and_backfills_governance_goal_names(
     with sqlite3.connect(database_path) as connection:
         goal_columns = {
             str(row[1])
-            for row in connection.execute(
-                "PRAGMA table_info(team_governance_group_goals)"
-            )
+            for row in connection.execute("PRAGMA table_info(team_governance_group_goals)")
         }
         goal_name = connection.execute(
             """

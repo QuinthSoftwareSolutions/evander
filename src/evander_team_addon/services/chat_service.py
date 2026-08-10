@@ -191,8 +191,7 @@ def project_scoped_team_chat_authorization(
         {
             project.git.managed_repo_id
             for project_id in project_ids
-            if (project := state.projects.get(project_id)) is not None
-            and project.git is not None
+            if (project := state.projects.get(project_id)) is not None and project.git is not None
         }
     )
     return TeamChatMutationAuthorization(
@@ -221,12 +220,8 @@ def _matching_team_chat_dispatch(
     message: TeamConversationMessage,
     dispatch: TeamDispatch,
 ) -> bool:
-    return (
-        dispatch.cause_kind == "team_chat"
-        and (
-            message.id in dispatch.chat_message_ids
-            or dispatch.cause_id == message.id
-        )
+    return dispatch.cause_kind == "team_chat" and (
+        message.id in dispatch.chat_message_ids or dispatch.cause_id == message.id
     )
 
 
@@ -558,9 +553,7 @@ class TeamChatService:
             metadata[TEAM_CHAT_MUTATION_AUTHORIZATION_METADATA_KEY] = (
                 effective_authorization.model_dump(mode="json")
             )
-            metadata["allow_team_mutations"] = (
-                effective_authorization.mode == "project_scoped"
-            )
+            metadata["allow_team_mutations"] = effective_authorization.mode == "project_scoped"
             state.conversation_messages[message_id] = TeamConversationMessage(
                 id=message_id,
                 conversation_id=conversation.id,
@@ -740,9 +733,7 @@ class TeamChatService:
             metadata[TEAM_CHAT_MUTATION_AUTHORIZATION_METADATA_KEY] = (
                 effective_authorization.model_dump(mode="json")
             )
-            metadata["allow_team_mutations"] = (
-                effective_authorization.mode == "project_scoped"
-            )
+            metadata["allow_team_mutations"] = effective_authorization.mode == "project_scoped"
             state.conversation_messages[message_id] = TeamConversationMessage(
                 id=message_id,
                 conversation_id=conversation.id,
@@ -823,9 +814,7 @@ class TeamChatService:
                 runtime=runtime,
                 now=now,
             )
-            lease_expires_at = now + timedelta(
-                seconds=max(1, int(lease_seconds))
-            )
+            lease_expires_at = now + timedelta(seconds=max(1, int(lease_seconds)))
             existing_dispatch = state.dispatches.get(normalized_dispatch_id)
             if existing_dispatch is None:
                 chat_scope = _operator_chat_dispatch_scope(
@@ -1054,12 +1043,9 @@ class TeamChatService:
                     agent.id,
                     AgentRuntime(agent_id=agent.id),
                 )
-                if (
-                    _runtime_has_active_chat_or_agent_dispatch(state, runtime)
-                    or (
-                        runtime.wake_leased_until is not None
-                        and _ensure_utc(runtime.wake_leased_until) > effective_now
-                    )
+                if _runtime_has_active_chat_or_agent_dispatch(state, runtime) or (
+                    runtime.wake_leased_until is not None
+                    and _ensure_utc(runtime.wake_leased_until) > effective_now
                 ):
                     continue
                 batch_key = _chat_batch_key(message)
@@ -1083,9 +1069,7 @@ class TeamChatService:
                     now=effective_now,
                 )
                 dispatch_id = message.dispatch_id or f"team-chat:{message.id}"
-                lease_expires_at = effective_now + timedelta(
-                    seconds=max(1, int(lease_seconds))
-                )
+                lease_expires_at = effective_now + timedelta(seconds=max(1, int(lease_seconds)))
                 existing_dispatch = state.dispatches.get(dispatch_id)
                 if existing_dispatch is None:
                     chat_scope = _operator_chat_dispatch_scope(
@@ -1252,14 +1236,10 @@ class TeamChatService:
                 runtime.wake_reason = None
                 runtime.updated_at = utc_now()
             now = utc_now()
-            if (
-                dispatch is not None
-                and dispatch.status
-                in {
-                    TeamDispatchStatus.PREPARING,
-                    TeamDispatchStatus.LEASED,
-                }
-            ):
+            if dispatch is not None and dispatch.status in {
+                TeamDispatchStatus.PREPARING,
+                TeamDispatchStatus.LEASED,
+            }:
                 dispatch.status = TeamDispatchStatus.FAILED
                 dispatch.completed_at = now
                 dispatch.error = normalized_error

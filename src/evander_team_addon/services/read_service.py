@@ -134,10 +134,7 @@ class TeamReadService:
             and _matches_enum(state, blocker.state)
             and _matches_enum(source_kind, blocker.source_kind)
         ]
-        rows = [
-            self._blocker_row(blocker)
-            for blocker in sorted(blockers, key=_blocker_sort_key)
-        ]
+        rows = [self._blocker_row(blocker) for blocker in sorted(blockers, key=_blocker_sort_key)]
         return _page(rows, limit=limit, cursor=cursor, offset=offset)
 
     def get_blocker(self, blocker_id: str) -> dict[str, Any] | None:
@@ -165,9 +162,7 @@ class TeamReadService:
             key=lambda recovery: (recovery.created_at, recovery.id),
         )
         if recoveries:
-            payload["dependency_composition_recovery"] = recoveries[-1].model_dump(
-                mode="json"
-            )
+            payload["dependency_composition_recovery"] = recoveries[-1].model_dump(mode="json")
         return _without_none(payload)
 
     def list_cases(
@@ -449,10 +444,7 @@ class TeamReadService:
             )
         else:
             effective_team_id = normalized_team_id or self._actor.team_id
-            if (
-                effective_team_id is None
-                or effective_team_id not in self._visible_team_ids
-            ):
+            if effective_team_id is None or effective_team_id not in self._visible_team_ids:
                 return _page([], limit=limit, cursor=cursor, offset=offset)
             rows = effective_outcome_kind_payloads(
                 self._state,
@@ -463,15 +455,10 @@ class TeamReadService:
         return _page(rows, limit=limit, cursor=cursor, offset=offset)
 
     def get_outcome_kind(self, definition_id: str) -> dict[str, Any] | None:
-        definition = self._state.outcome_kind_definitions.get(
-            _text(definition_id)
-        )
+        definition = self._state.outcome_kind_definitions.get(_text(definition_id))
         if definition is None or definition.team_id not in self._visible_team_ids:
             return None
-        if (
-            definition.project_id is not None
-            and not self._project_visible(definition.project_id)
-        ):
+        if definition.project_id is not None and not self._project_visible(definition.project_id):
             return None
         return _without_none(definition.model_dump(mode="json"))
 
@@ -1134,9 +1121,7 @@ class TeamReadService:
                 "name": project.name,
                 "lead_agent_id": project.lead_agent_id,
                 "status": project.status.value,
-                "blocking_source_count": len(
-                    project_blocking_sources(self._state, project.id)
-                ),
+                "blocking_source_count": len(project_blocking_sources(self._state, project.id)),
                 "goal_count": len(project.goals),
                 "has_git": project.git is not None,
                 "updated_at": _json_value(project.updated_at),
@@ -1148,9 +1133,7 @@ class TeamReadService:
         raw_session_ids = {
             session_id
             for value in (
-                _sequence(raw_links.get("session_ids"))
-                if isinstance(raw_links, Mapping)
-                else []
+                _sequence(raw_links.get("session_ids")) if isinstance(raw_links, Mapping) else []
             )
             if (session_id := _maybe_text(value)) is not None
         }

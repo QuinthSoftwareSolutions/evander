@@ -176,9 +176,7 @@ def test_human_release_policy_resolves_directory_groups_and_rejects_empty_pool()
     permitted = {"reviewer@example.com"}
     user_store = SimpleNamespace(
         get_group=lambda group_id: (
-            SimpleNamespace(group_id=group_id)
-            if group_id == "release-reviewers"
-            else None
+            SimpleNamespace(group_id=group_id) if group_id == "release-reviewers" else None
         ),
         list_user_group_assignments=lambda: list(assignments),
         get_user=lambda login: (
@@ -210,9 +208,7 @@ def test_human_release_policy_resolves_directory_groups_and_rejects_empty_pool()
     assert policy is not None
     assert policy.human_review_requirement is not None
     assert policy.human_review_requirement.directory_path == "root/team/project"
-    assert policy.human_review_requirement.resolved_reviewer_user_ids == [
-        "reviewer@example.com"
-    ]
+    assert policy.human_review_requirement.resolved_reviewer_user_ids == ["reviewer@example.com"]
 
     permitted.clear()
     with pytest.raises(ValueError, match="no active reviewer"):
@@ -289,9 +285,7 @@ def test_project_git_patch_re_resolves_existing_human_review_scope(
     }
     user_store = SimpleNamespace(
         get_group=lambda group_id: (
-            SimpleNamespace(group_id=group_id)
-            if group_id == "release-reviewers"
-            else None
+            SimpleNamespace(group_id=group_id) if group_id == "release-reviewers" else None
         ),
         list_user_group_assignments=lambda: list(assignments),
         get_user=lambda login: (
@@ -363,40 +357,29 @@ def test_team_addon_registers_release_gate_retry_api_route(tmp_path: Path) -> No
     assert verification_live_route.methods == {"GET", "HEAD"}
 
     blocker_resolve_route = next(
-        route
-        for route in routes
-        if route.path == "/blockers/{blocker_id}/resolve"
+        route for route in routes if route.path == "/blockers/{blocker_id}/resolve"
     )
     assert blocker_resolve_route.methods == {"POST"}
     dependency_composition_recovery_route = next(
         route
         for route in routes
-        if route.path
-        == "/blockers/{blocker_id}/dependency-composition-recovery"
+        if route.path == "/blockers/{blocker_id}/dependency-composition-recovery"
     )
     assert dependency_composition_recovery_route.methods == {"POST"}
     candidate_recovery_route = next(
-        route
-        for route in routes
-        if route.path == "/candidate-correction-recoveries/{blocker_id}"
+        route for route in routes if route.path == "/candidate-correction-recoveries/{blocker_id}"
     )
     assert candidate_recovery_route.methods == {"POST"}
     review_retire_route = next(
-        route
-        for route in routes
-        if route.path == "/review-requests/{review_request_id}/retire"
+        route for route in routes if route.path == "/review-requests/{review_request_id}/retire"
     )
     assert review_retire_route.methods == {"POST"}
     task_repair_route = next(
-        route
-        for route in routes
-        if route.path == "/tasks/{task_id}/repair-state"
+        route for route in routes if route.path == "/tasks/{task_id}/repair-state"
     )
     assert task_repair_route.methods == {"POST"}
     review_withdraw_route = next(
-        route
-        for route in routes
-        if route.path == "/review-requests/{review_request_id}/withdraw"
+        route for route in routes if route.path == "/review-requests/{review_request_id}/withdraw"
     )
     assert review_withdraw_route.methods == {"POST"}
     human_review_collection_route = next(
@@ -406,8 +389,7 @@ def test_team_addon_registers_release_gate_retry_api_route(tmp_path: Path) -> No
     human_review_detail_route = next(
         route
         for route in routes
-        if route.path
-        == "/human-review-requests/{human_review_request_id}"
+        if route.path == "/human-review-requests/{human_review_request_id}"
     )
     assert human_review_detail_route.methods == {"GET", "HEAD"}
     for suffix in (
@@ -419,15 +401,13 @@ def test_team_addon_registers_release_gate_retry_api_route(tmp_path: Path) -> No
         mutation_route = next(
             route
             for route in routes
-            if route.path
-            == f"/human-review-requests/{{human_review_request_id}}/{suffix}"
+            if route.path == f"/human-review-requests/{{human_review_request_id}}/{suffix}"
         )
         assert mutation_route.methods == {"POST"}
     report_issue_route = next(
         route
         for route in routes
-        if route.path
-        == "/release-packages/{release_package_id}/report-issue"
+        if route.path == "/release-packages/{release_package_id}/report-issue"
     )
     assert report_issue_route.methods == {"POST"}
     for path in (
@@ -439,17 +419,13 @@ def test_team_addon_registers_release_gate_retry_api_route(tmp_path: Path) -> No
         assert mutation_route.methods == {"POST"}
     activity_route = next(route for route in routes if route.path == "/dispatch-events")
     assert activity_route.methods == {"GET", "HEAD"}
-    outcome_collection_routes = [
-        route for route in routes if route.path == "/outcome-kinds"
-    ]
+    outcome_collection_routes = [route for route in routes if route.path == "/outcome-kinds"]
     assert {frozenset(route.methods or set()) for route in outcome_collection_routes} == {
         frozenset({"GET", "HEAD"}),
         frozenset({"POST"}),
     }
     outcome_detail_routes = [
-        route
-        for route in routes
-        if route.path == "/outcome-kinds/{definition_id}"
+        route for route in routes if route.path == "/outcome-kinds/{definition_id}"
     ]
     assert {frozenset(route.methods or set()) for route in outcome_detail_routes} == {
         frozenset({"GET", "HEAD"}),
@@ -832,18 +808,10 @@ class _HumanApiAuthStub:
         self.allow_decide = allow_decide
         self.permission_calls: list[tuple[str, str | None]] = []
         self.team_chat_mutation_directories = set(team_chat_mutation_directories or ())
-        known = {
-            value.casefold()
-            for value in (known_users or [login])
-        }
-        permitted = {
-            value.casefold()
-            for value in (permission_users or [login])
-        }
+        known = {value.casefold() for value in (known_users or [login])}
+        permitted = {value.casefold() for value in (permission_users or [login])}
         self.user_store = SimpleNamespace(
-            list_user_group_assignments=lambda _login=None: list(
-                group_assignments or ()
-            ),
+            list_user_group_assignments=lambda _login=None: list(group_assignments or ()),
             get_user=lambda value: (
                 SimpleNamespace(login=str(value).casefold())
                 if str(value).casefold() in known
@@ -953,9 +921,7 @@ def test_human_decision_identity_enforces_assignment_group_scope_and_permission(
     )
 
     assert identity["user_id"] == "reviewer@example.com"
-    assert auth.permission_calls == [
-        ("team.human_reviews.decide", "root/team/sub")
-    ]
+    assert auth.permission_calls == [("team.human_reviews.decide", "root/team/sub")]
     with pytest.raises(ValueError, match="derived from the authenticated session"):
         _require_human_review_decision_identity(
             auth,
@@ -1027,9 +993,7 @@ def test_explicit_human_assignment_can_decide_but_agent_principal_cannot(
                 AddonContext(
                     addon_id="team-addon",
                     runtime_dir=explicit_runtime_dir,
-                    addon_runtime_dir=(
-                        explicit_runtime_dir / "addons" / "team-addon"
-                    ),
+                    addon_runtime_dir=(explicit_runtime_dir / "addons" / "team-addon"),
                     auth=_HumanApiAuthStub(login="explicit@example.com"),
                 )
             )
@@ -1046,9 +1010,10 @@ def test_explicit_human_assignment_can_decide_but_agent_principal_cannot(
     )
     assert decided.status_code == 200, decided.text
     assert decided.json()["human_review_request"]["state"] == "blocked"
-    assert next(
-        iter(explicit_repository.read().human_review_decisions.values())
-    ).reviewer_user_id == "explicit@example.com"
+    assert (
+        next(iter(explicit_repository.read().human_review_decisions.values())).reviewer_user_id
+        == "explicit@example.com"
+    )
 
     agent_runtime_dir = tmp_path / "agent" / "runtime"
     agent_repository = _seed_runtime_operations_state(agent_runtime_dir)
@@ -1166,16 +1131,12 @@ def test_human_review_api_is_strict_scoped_and_projects_release_detail(
     )
     reviewer_client = TestClient(reviewer_app)
 
-    listed = reviewer_client.get(
-        "/human-review-requests?assigned_to=me&state=pending"
-    )
+    listed = reviewer_client.get("/human-review-requests?assigned_to=me&state=pending")
     detail = reviewer_client.get("/human-review-requests/human-review-1")
     release_detail = reviewer_client.get("/release-packages/release-1")
 
     assert listed.status_code == 200
-    assert [row["id"] for row in listed.json()["human_review_requests"]] == [
-        "human-review-1"
-    ]
+    assert [row["id"] for row in listed.json()["human_review_requests"]] == ["human-review-1"]
     assert detail.status_code == 200
     assert detail.json()["release"]["candidate_commit_sha"] == "candidate-sha"
     assert detail.json()["project"]["name"] == "Project"
@@ -1204,12 +1165,11 @@ def test_human_review_api_is_strict_scoped_and_projects_release_detail(
         },
     ]
     assert release_detail.status_code == 200
-    assert release_detail.json()["human_review"]["requests"][0]["id"] == (
-        "human-review-1"
+    assert release_detail.json()["human_review"]["requests"][0]["id"] == ("human-review-1")
+    assert (
+        release_detail.json()["human_review"]["requests"][0]["target_deliverable_options"]
+        == detail.json()["target_deliverable_options"]
     )
-    assert release_detail.json()["human_review"]["requests"][0][
-        "target_deliverable_options"
-    ] == detail.json()["target_deliverable_options"]
     assert release_detail.json()["candidate_checkout"] == {
         "canonical_repository_identity": "azure-devops:org/project/app",
         "repository_display_name": "ExampleIndustryAPP",
@@ -1224,9 +1184,7 @@ def test_human_review_api_is_strict_scoped_and_projects_release_detail(
             f"--runtime-dir {runtime_dir}"
         ),
     }
-    assert managed_repo_calls == [
-        ("mr_0123456789abcdefabcd", "root/team")
-    ]
+    assert managed_repo_calls == [("mr_0123456789abcdefabcd", "root/team")]
 
     compact_state = _team_state_payload_for_request(
         reviewer_auth,
@@ -1249,9 +1207,7 @@ def test_human_review_api_is_strict_scoped_and_projects_release_detail(
         agent_id="backend",
     )
     assert "human_review_requests" not in agent_payload
-    assert agent_payload["release_packages"]["release-1"]["human_review"][
-        "state"
-    ] == "pending"
+    assert agent_payload["release_packages"]["release-1"]["human_review"]["state"] == "pending"
     assert agent_payload["release_packages"]["release-1"]["manifest"][
         "human_review_requirement"
     ] == {
@@ -1272,10 +1228,7 @@ def test_human_review_api_is_strict_scoped_and_projects_release_detail(
         )
     )
     outsider_client = TestClient(outsider_app)
-    assert (
-        outsider_client.get("/human-review-requests/human-review-1").status_code
-        == 403
-    )
+    assert outsider_client.get("/human-review-requests/human-review-1").status_code == 403
     outsider_release = outsider_client.get("/release-packages/release-1")
     assert outsider_release.status_code == 200
     assert "requests" not in outsider_release.json()["human_review"]
@@ -1284,9 +1237,7 @@ def test_human_review_api_is_strict_scoped_and_projects_release_detail(
         "preparation_mode": "manual",
     }
     assert "candidate_checkout" not in outsider_release.json()
-    assert managed_repo_calls == [
-        ("mr_0123456789abcdefabcd", "root/team")
-    ]
+    assert managed_repo_calls == [("mr_0123456789abcdefabcd", "root/team")]
 
 
 def test_human_review_bundle_download_is_pinned_and_scoped(tmp_path: Path) -> None:
@@ -1445,9 +1396,7 @@ def test_human_review_bundle_download_is_pinned_and_scoped(tmp_path: Path) -> No
             )
         )
     )
-    moved_release = moved_release_client.get(
-        "/human-review-requests/human-review-1/review-bundle"
-    )
+    moved_release = moved_release_client.get("/human-review-requests/human-review-1/review-bundle")
     assert moved_release.status_code == 409
     assert moved_release.json()["error"] == "Release ref no longer equals the pinned candidate"
 
@@ -1629,17 +1578,13 @@ def test_human_review_changes_requested_publishes_correction_wake_before_cron(
             "findings": [
                 {
                     "text": "Correct the release-wide workflow failure.",
-                    "evidence_refs": [
-                        "artifact-space:reports/release-failure.txt"
-                    ],
+                    "evidence_refs": ["artifact-space:reports/release-failure.txt"],
                 }
             ],
         },
     )
     assert missing_scope.status_code == 400
-    assert "must select the entire release candidate" in missing_scope.json()[
-        "error"
-    ]
+    assert "must select the entire release candidate" in missing_scope.json()["error"]
 
     decided = client.post(
         "/human-review-requests/human-review-1/decisions",
@@ -1653,9 +1598,7 @@ def test_human_review_changes_requested_publishes_correction_wake_before_cron(
     assert len(decided_payload["published_event_ids"]) == 1
     wake_events = [
         event
-        for event in InternalEventBus(
-            internal_event_store_path(runtime_dir)
-        ).list_events()
+        for event in InternalEventBus(internal_event_store_path(runtime_dir)).list_events()
         if event.event_type == "team.agent.wake_requested"
     ]
     assert len(wake_events) == 1
@@ -1674,9 +1617,7 @@ def test_human_review_changes_requested_publishes_correction_wake_before_cron(
     assert replay_payload["published_event_ids"] == decided_payload["published_event_ids"]
     replay_wake_events = [
         event
-        for event in InternalEventBus(
-            internal_event_store_path(runtime_dir)
-        ).list_events()
+        for event in InternalEventBus(internal_event_store_path(runtime_dir)).list_events()
         if event.event_type == "team.agent.wake_requested"
     ]
     assert len(replay_wake_events) == 1
@@ -1729,12 +1670,10 @@ def test_human_review_owner_reassign_resume_and_preparation_result_api(
     reassigned_request = reassigned.json()["human_review_request"]
     assert reassigned_request["state"] == "pending"
     assert reassigned_request["assignment_generation"] == 2
-    assert reassigned_request["current_assignment"][
-        "explicitly_assigned_user_ids"
-    ] == ["reviewer@example.com"]
-    assert reassigned_request["current_assignment"]["assigned_by_user_id"] == (
-        "owner@example.com"
-    )
+    assert reassigned_request["current_assignment"]["explicitly_assigned_user_ids"] == [
+        "reviewer@example.com"
+    ]
+    assert reassigned_request["current_assignment"]["assigned_by_user_id"] == ("owner@example.com")
     reassign_revision = reassigned.json()["revision"]
     notification_count = len(
         repo.list_outbox_records(
@@ -1926,8 +1865,7 @@ def test_generic_operator_blocker_resolution_rejects_human_review_recovery_witho
 
     assert rejected.status_code == 400
     assert (
-        f"POST /human-review-requests/human-review-1/{recovery_action}"
-        in rejected.json()["error"]
+        f"POST /human-review-requests/human-review-1/{recovery_action}" in rejected.json()["error"]
     )
     assert "generic blocker resolution cannot bypass" in rejected.json()["error"]
     assert repo.read().model_dump(mode="json") == before
@@ -1950,9 +1888,7 @@ def test_post_release_report_api_uses_session_identity_and_idempotency(
         return state
 
     repo.update(_publish)
-    published_before = repo.read().release_packages["release-1"].model_copy(
-        deep=True
-    )
+    published_before = repo.read().release_packages["release-1"].model_copy(deep=True)
     release_ids_before = set(repo.read().release_packages)
     promotion_ids_before = set(repo.read().git_promotions)
     auth = _HumanApiAuthStub(login="Reporter@Example.com")
@@ -1995,17 +1931,13 @@ def test_post_release_report_api_uses_session_identity_and_idempotency(
     assert reported.status_code == 200, reported.text
     reported_payload = reported.json()
     assert reported_payload["case"]["source"] == "post_release_feedback"
-    assert reported_payload["case"]["metadata"]["reporter_user_id"] == (
-        "reporter@example.com"
-    )
+    assert reported_payload["case"]["metadata"]["reporter_user_id"] == ("reporter@example.com")
     assert len(reported_payload["published_event_ids"]) == 1
     first_revision = reported_payload["revision"]
     first_result = reported_payload["result"]
     reported_state = repo.read()
     feedback_cases = [
-        case
-        for case in reported_state.cases.values()
-        if case.source == "post_release_feedback"
+        case for case in reported_state.cases.values() if case.source == "post_release_feedback"
     ]
     assert len(feedback_cases) == 1
     feedback_case = feedback_cases[0]
@@ -2023,17 +1955,15 @@ def test_post_release_report_api_uses_session_identity_and_idempotency(
     assert feedback_inbox[0].task_id == triage_task.id
     assert reported_state.agent_runtimes["lead"].next_wake_at is None
     assert len(first_result["outbox_record_ids"]) == 1
-    report_outbox = {
-        record.id: record for record in repo.list_outbox_records()
-    }[first_result["outbox_record_ids"][0]]
+    report_outbox = {record.id: record for record in repo.list_outbox_records()}[
+        first_result["outbox_record_ids"][0]
+    ]
     assert report_outbox.intent_type == "team.agent.wake_requested"
     assert report_outbox.payload["payload"]["agent_id"] == "lead"
     assert set(reported_state.release_packages) == release_ids_before
     wake_events = [
         event
-        for event in InternalEventBus(
-            internal_event_store_path(runtime_dir)
-        ).list_events()
+        for event in InternalEventBus(internal_event_store_path(runtime_dir)).list_events()
         if event.event_type == "team.agent.wake_requested"
     ]
     assert len(wake_events) == 1
@@ -2050,41 +1980,40 @@ def test_post_release_report_api_uses_session_identity_and_idempotency(
     assert replay_payload["revision"] == first_revision
     assert replay_payload["published_event_ids"] == reported_payload["published_event_ids"]
     replay_state = repo.read()
-    assert len(
-        [
-            case
-            for case in replay_state.cases.values()
-            if case.source == "post_release_feedback"
-        ]
-    ) == 1
-    assert len(
-        [
-            task
-            for task in replay_state.tasks.values()
-            if task.case_id == feedback_case.id
-        ]
-    ) == 1
-    assert len(
-        [
-            item
-            for item in replay_state.inbox.values()
-            if item.payload.get("case_id") == feedback_case.id
-        ]
-    ) == 1
+    assert (
+        len(
+            [case for case in replay_state.cases.values() if case.source == "post_release_feedback"]
+        )
+        == 1
+    )
+    assert (
+        len([task for task in replay_state.tasks.values() if task.case_id == feedback_case.id]) == 1
+    )
+    assert (
+        len(
+            [
+                item
+                for item in replay_state.inbox.values()
+                if item.payload.get("case_id") == feedback_case.id
+            ]
+        )
+        == 1
+    )
     assert {
         record.id
         for record in repo.list_outbox_records()
         if record.id in first_result["outbox_record_ids"]
     } == set(first_result["outbox_record_ids"])
-    assert len(
-        [
-            event
-            for event in InternalEventBus(
-                internal_event_store_path(runtime_dir)
-            ).list_events()
-            if event.event_type == "team.agent.wake_requested"
-        ]
-    ) == 1
+    assert (
+        len(
+            [
+                event
+                for event in InternalEventBus(internal_event_store_path(runtime_dir)).list_events()
+                if event.event_type == "team.agent.wake_requested"
+            ]
+        )
+        == 1
+    )
 
     conflict = client.post(
         "/release-packages/release-1/report-issue",
@@ -2151,21 +2080,14 @@ def test_post_release_report_api_uses_session_identity_and_idempotency(
     published_after = final_state.release_packages["release-1"]
     assert published_after == published_before
     assert published_after.state == published_before.state
-    assert published_after.candidate_commit_sha == (
-        published_before.candidate_commit_sha
-    )
-    assert published_after.approved_commit_sha == (
-        published_before.approved_commit_sha
-    )
-    assert published_after.published_commit_sha == (
-        published_before.published_commit_sha
-    )
+    assert published_after.candidate_commit_sha == (published_before.candidate_commit_sha)
+    assert published_after.approved_commit_sha == (published_before.approved_commit_sha)
+    assert published_after.published_commit_sha == (published_before.published_commit_sha)
     assert published_after.published_at == published_before.published_at
     assert set(final_state.release_packages) == release_ids_before
     assert set(final_state.git_promotions) == promotion_ids_before
     assert not any(
-        promotion.promotion_kind == "rollback"
-        for promotion in final_state.git_promotions.values()
+        promotion.promotion_kind == "rollback" for promotion in final_state.git_promotions.values()
     )
 
 
@@ -2180,20 +2102,18 @@ def test_human_finding_correction_and_post_release_closure_admin_api(
         release = state.release_packages["release-1"]
         release.candidate_commit_sha = "candidate-sha"
         release.candidate_tree_hash = "candidate-tree"
-        state.human_review_requests["human-review-correction"] = (
-            HumanReviewRequest(
-                id="human-review-correction",
-                release_package_id=release.id,
-                candidate_commit_sha="candidate-sha",
-                candidate_tree_hash="candidate-tree",
-                requirement_snapshot=HumanReviewRequirementSnapshot(
-                    directory_path="root",
-                    configured_group_ids=["release-reviewers"],
-                    initially_eligible_user_ids=["reviewer@example.com"],
-                ),
-                state="changes_requested",
-                completed_at=now,
-            )
+        state.human_review_requests["human-review-correction"] = HumanReviewRequest(
+            id="human-review-correction",
+            release_package_id=release.id,
+            candidate_commit_sha="candidate-sha",
+            candidate_tree_hash="candidate-tree",
+            requirement_snapshot=HumanReviewRequirementSnapshot(
+                directory_path="root",
+                configured_group_ids=["release-reviewers"],
+                initially_eligible_user_ids=["reviewer@example.com"],
+            ),
+            state="changes_requested",
+            completed_at=now,
         )
         state.cases["human-correction-case"] = TeamCase(
             id="human-correction-case",
@@ -2278,16 +2198,11 @@ def test_human_finding_correction_and_post_release_closure_admin_api(
     assert created.status_code == 200, created.text
     correction_task_id = created.json()["correction_task"]["id"]
     assert correction_task_id == "human-correction-triage"
-    aggregation_task_id = repo.read().cases[
-        "human-correction-case"
-    ].metadata["human_correction_aggregation_task_id"]
-    assert (
-        created.json()["correction_task"]["parent_task_id"]
-        == aggregation_task_id
+    aggregation_task_id = (
+        repo.read().cases["human-correction-case"].metadata["human_correction_aggregation_task_id"]
     )
-    assert created.json()["correction_task"]["assessment"]["task_id"] == (
-        correction_task_id
-    )
+    assert created.json()["correction_task"]["parent_task_id"] == aggregation_task_id
+    assert created.json()["correction_task"]["assessment"]["task_id"] == (correction_task_id)
 
     def _accept_correction(state):
         task = state.tasks[correction_task_id]
@@ -2308,17 +2223,15 @@ def test_human_finding_correction_and_post_release_closure_admin_api(
         json={
             "proposed_resolution": "The verified safe-state path is restored.",
             "evidence_refs": ["test:safe-state"],
-            "proposed_by_deliverable_ids": [
-                "human-correction-api-deliverable"
-            ],
+            "proposed_by_deliverable_ids": ["human-correction-api-deliverable"],
             "expected_revision": repo.read().revision,
             "request_id": "propose-resolution-api",
         },
     )
     assert proposed.status_code == 200, proposed.text
-    assert proposed.json()["human_review_finding"][
-        "proposed_by_deliverable_ids"
-    ] == ["human-correction-api-deliverable"]
+    assert proposed.json()["human_review_finding"]["proposed_by_deliverable_ids"] == [
+        "human-correction-api-deliverable"
+    ]
 
     before_close_revision = repo.read().revision
     generic_close = client.patch(
@@ -2343,9 +2256,10 @@ def test_human_finding_correction_and_post_release_closure_admin_api(
     )
     assert closed.status_code == 200, closed.text
     assert closed.json()["case"]["status"] == "closed"
-    assert closed.json()["case"]["metadata"][
-        "post_release_feedback_resolution"
-    ]["actor_id"] == "operator:operator@example.com"
+    assert (
+        closed.json()["case"]["metadata"]["post_release_feedback_resolution"]["actor_id"]
+        == "operator:operator@example.com"
+    )
 
 
 def test_successor_api_requires_resolved_human_case_and_authorized_corrections(
@@ -2367,9 +2281,7 @@ def test_successor_api_requires_resolved_human_case_and_authorized_corrections(
             managed_repo_id="mr_0123456789abcdefabcd",
             base_branch="main",
         )
-        state.projects["project"].release_policy = ProjectReleasePolicy(
-            allow_ungated=True
-        )
+        state.projects["project"].release_policy = ProjectReleasePolicy(allow_ungated=True)
         state.tasks["human-source-task"] = AgentTask(
             id="human-source-task",
             owner_agent_id="backend",
@@ -2411,16 +2323,14 @@ def test_successor_api_requires_resolved_human_case_and_authorized_corrections(
             deliverables=[{"deliverable_id": "human-source-deliverable"}],
             human_review_requirement=requirement,
         )
-        state.human_review_requests["human-review-successor-api"] = (
-            HumanReviewRequest(
-                id="human-review-successor-api",
-                release_package_id=predecessor.id,
-                candidate_commit_sha=candidate_sha,
-                candidate_tree_hash=candidate_tree,
-                requirement_snapshot=requirement,
-                state="changes_requested",
-                completed_at=now,
-            )
+        state.human_review_requests["human-review-successor-api"] = HumanReviewRequest(
+            id="human-review-successor-api",
+            release_package_id=predecessor.id,
+            candidate_commit_sha=candidate_sha,
+            candidate_tree_hash=candidate_tree,
+            requirement_snapshot=requirement,
+            state="changes_requested",
+            completed_at=now,
         )
         state.cases["human-successor-case-api"] = TeamCase(
             id="human-successor-case-api",
@@ -2484,18 +2394,14 @@ def test_successor_api_requires_resolved_human_case_and_authorized_corrections(
             state=TeamRecordState.ACCEPTED,
             reviewed_commit_sha="c" * 40,
         )
-        state.human_review_findings["human-finding-successor-api"] = (
-            HumanReviewFinding(
-                id="human-finding-successor-api",
-                source_human_review_request_id="human-review-successor-api",
-                text="Correct the release-wide behavior.",
-                correction_task_id="human-current-correction-api",
-                proposed_resolution="The retargeted correction is verified.",
-                resolution_evidence_refs=["test:retargeted-correction"],
-                proposed_by_deliverable_ids=[
-                    "human-correction-deliverable-api"
-                ],
-            )
+        state.human_review_findings["human-finding-successor-api"] = HumanReviewFinding(
+            id="human-finding-successor-api",
+            source_human_review_request_id="human-review-successor-api",
+            text="Correct the release-wide behavior.",
+            correction_task_id="human-current-correction-api",
+            proposed_resolution="The retargeted correction is verified.",
+            resolution_evidence_refs=["test:retargeted-correction"],
+            proposed_by_deliverable_ids=["human-correction-deliverable-api"],
         )
         state.tasks["unrelated-accepted-task-api"] = AgentTask(
             id="unrelated-accepted-task-api",
@@ -2583,9 +2489,9 @@ def test_successor_api_requires_resolved_human_case_and_authorized_corrections(
         },
     )
     assert accepted.status_code == 201, accepted.text
-    assert accepted.json()["release_packages"][
-        "successor-after-complete-triage"
-    ]["deliverable_ids"] == [
+    assert accepted.json()["release_packages"]["successor-after-complete-triage"][
+        "deliverable_ids"
+    ] == [
         "human-source-deliverable",
         "human-correction-deliverable-api",
     ]
@@ -2619,8 +2525,7 @@ def test_operator_api_resolves_terminal_blocker_with_audit_identity(tmp_path: Pa
     resolution_event = next(
         event
         for event in reread.blocker_events.values()
-        if event.blocker_id == blocker.id
-        and event.event_type == TeamBlockerEventType.RESOLVED
+        if event.blocker_id == blocker.id and event.event_type == TeamBlockerEventType.RESOLVED
     )
     assert resolution_event.actor_agent_id is None
     assert resolution_event.metadata["operator_actor_id"].startswith("operator:")
@@ -3146,9 +3051,7 @@ def test_team_chat_mutation_scope_requires_operator_rbac_and_snapshots_projects(
     ]
     assert operator_authorization["mode"] == "project_scoped"
     assert operator_authorization["project_ids"] == ["project"]
-    assert operator_authorization["managed_repo_ids"] == [
-        "mr_0123456789abcdefabcd"
-    ]
+    assert operator_authorization["managed_repo_ids"] == ["mr_0123456789abcdefabcd"]
 
 
 def test_team_addon_chat_ignores_stale_global_state_revision(tmp_path: Path) -> None:
@@ -3505,12 +3408,8 @@ def test_team_addon_planning_and_operations_views_include_renderer_dependencies(
     planning_state = planning_payload["data"]["state"]
     assert set(planning_state["blockers"]) == set(repo.read().blockers)
     assert set(planning_state["blocker_events"]) == set(repo.read().blocker_events)
-    assert planning_state["review_profiles"]["planning-readiness"]["name"] == (
-        "Planning readiness"
-    )
-    assert set(planning_payload["resource_tokens"]["review_profiles"]) == {
-        "planning-readiness"
-    }
+    assert planning_state["review_profiles"]["planning-readiness"]["name"] == ("Planning readiness")
+    assert set(planning_payload["resource_tokens"]["review_profiles"]) == {"planning-readiness"}
     assert all(
         event["blocker_id"] in planning_state["blockers"]
         for event in planning_state["blocker_events"].values()
@@ -3527,19 +3426,16 @@ def test_team_addon_planning_and_operations_views_include_renderer_dependencies(
         "ephemeral-failed",
     }
     attention = operations_state["runtime_operations"]["attention"]
-    blocked_release = next(
-        row for row in attention if row["kind"] == "blocked_release_package"
-    )
+    blocked_release = next(row for row in attention if row["kind"] == "blocked_release_package")
     assert blocked_release["release_package_id"] in operations_state["release_packages"]
     ephemeral_rows = [
         row
         for row in attention
-        if row["kind"]
-        in {"failed_ephemeral_assignment", "cleanup_pending_ephemeral_assignment"}
+        if row["kind"] in {"failed_ephemeral_assignment", "cleanup_pending_ephemeral_assignment"}
     ]
-    assert {
-        row["assignment_id"] for row in ephemeral_rows
-    } == set(operations_state["ephemeral_assignments"])
+    assert {row["assignment_id"] for row in ephemeral_rows} == set(
+        operations_state["ephemeral_assignments"]
+    )
 
 
 def test_team_addon_delivery_view_serializes_derived_datetime_values(
@@ -3571,9 +3467,7 @@ def test_team_addon_delivery_view_serializes_derived_datetime_values(
 def test_team_api_json_response_serializes_derived_datetime_values() -> None:
     observed_at = datetime(2026, 8, 7, 7, 40, tzinfo=UTC)
 
-    response = team_addon_api.JSONResponse(
-        {"result": {"nested": [{"observed_at": observed_at}]}}
-    )
+    response = team_addon_api.JSONResponse({"result": {"nested": [{"observed_at": observed_at}]}})
 
     assert json.loads(response.body) == {
         "result": {"nested": [{"observed_at": "2026-08-07T07:40:00Z"}]}
@@ -3661,8 +3555,7 @@ def test_team_addon_views_filter_non_actionable_history(tmp_path: Path) -> None:
     people_state = people.json()["data"]["state"]
     assert {"inbox-1", "escalation-1"}.issubset(people_state["inbox"])
     assert any(
-        item["payload"].get("kind") == "blocker_reported"
-        for item in people_state["inbox"].values()
+        item["payload"].get("kind") == "blocker_reported" for item in people_state["inbox"].values()
     )
     assert "action_records" not in people_state
 
@@ -3676,9 +3569,7 @@ def test_team_addon_views_filter_non_actionable_history(tmp_path: Path) -> None:
         row["kind"] in {"blocked_release_package", "failed_git_promotion"}
         for row in operations_state["runtime_operations"]["attention"]
     )
-    assert set(operations_state["resource_tokens"]["inbox"]) == set(
-        operations_state["inbox"]
-    )
+    assert set(operations_state["resource_tokens"]["inbox"]) == set(operations_state["inbox"])
     assert set(operations_state["resource_tokens"]["action_records"]) == {"action-1"}
 
 
@@ -3820,9 +3711,7 @@ def test_team_addon_admin_api_creates_outcome_task_contract(
     repo = _seed_runtime_operations_state(tmp_path / "runtime")
 
     async def _exercise() -> None:
-        app = create_app(
-            build_admin_runtime(_write_config(tmp_path, enable_team_addon=True))
-        )
+        app = create_app(build_admin_runtime(_write_config(tmp_path, enable_team_addon=True)))
         transport = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(
             transport=transport,
@@ -3871,17 +3760,13 @@ def test_team_addon_admin_api_creates_outcome_task_contract(
             assert response.status_code == 201, response.text
             task = response.json()["tasks"]["outcome-task"]
             assert task["task_kind"] == "outcome"
-            assert task["outcome_contract"]["required_outcome_kinds"] == [
-                "prepared_action"
-            ]
+            assert task["outcome_contract"]["required_outcome_kinds"] == ["prepared_action"]
             assert task["outcome_contract"]["match"] == "all"
             assert task["outcome_contract"]["allow_evidenced_noop"] is False
             assert task["outcome_contract"]["forbidden_outcome_kinds"] == ["report"]
             assert {
                 definition["kind"]
-                for definition in task["outcome_contract"][
-                    "outcome_kind_definitions"
-                ]
+                for definition in task["outcome_contract"]["outcome_kind_definitions"]
             } == {"prepared_action", "report"}
 
             report_only = await client.post(
@@ -3929,8 +3814,7 @@ def test_team_addon_admin_api_creates_outcome_task_contract(
             listing = await client.get("/api/addons/team-addon/outcome-kinds")
             assert listing.status_code == 200
             assert {
-                definition["id"]
-                for definition in listing.json()["outcome_kind_definitions"]
+                definition["id"] for definition in listing.json()["outcome_kind_definitions"]
             } == {"outcome-kind-prepared_action", "outcome-kind-report"}
             updated = await client.patch(
                 "/api/addons/team-addon/outcome-kinds/outcome-kind-prepared_action",
@@ -3941,15 +3825,12 @@ def test_team_addon_admin_api_creates_outcome_task_contract(
             )
             assert updated.status_code == 200, updated.text
             detail = await client.get(
-                "/api/addons/team-addon/outcome-kinds/"
-                "outcome-kind-prepared_action"
+                "/api/addons/team-addon/outcome-kinds/outcome-kind-prepared_action"
             )
             assert detail.status_code == 200
             assert detail.json()["name"] == "Prepared Action Updated"
             task_snapshot = (
-                repo.read()
-                .tasks["outcome-task"]
-                .outcome_contract.outcome_kind_definitions[0]
+                repo.read().tasks["outcome-task"].outcome_contract.outcome_kind_definitions[0]
             )
             assert task_snapshot.name == "Prepared Action"
 
@@ -3962,9 +3843,7 @@ def test_team_addon_admin_api_designates_explicit_integration_boundary(
     repo = _seed_runtime_operations_state(tmp_path / "runtime")
 
     async def _exercise() -> None:
-        app = create_app(
-            build_admin_runtime(_write_config(tmp_path, enable_team_addon=True))
-        )
+        app = create_app(build_admin_runtime(_write_config(tmp_path, enable_team_addon=True)))
         transport = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(
             transport=transport,
@@ -3998,9 +3877,7 @@ def test_team_addon_admin_api_designates_explicit_integration_boundary(
                     "expected_revision": repo.read().revision,
                 },
             )
-            assert ordinary_deliverable.status_code == 201, (
-                ordinary_deliverable.text
-            )
+            assert ordinary_deliverable.status_code == 201, ordinary_deliverable.text
             ordinary_title_edit = await client.patch(
                 "/api/addons/team-addon/tasks/ordinary-edit",
                 json={
@@ -4010,12 +3887,11 @@ def test_team_addon_admin_api_designates_explicit_integration_boundary(
                     "expected_revision": repo.read().revision,
                 },
             )
-            assert ordinary_title_edit.status_code == 200, (
-                ordinary_title_edit.text
+            assert ordinary_title_edit.status_code == 200, ordinary_title_edit.text
+            assert (
+                ordinary_title_edit.json()["tasks"]["ordinary-edit"]["title"]
+                == "Ordinary task renamed"
             )
-            assert ordinary_title_edit.json()["tasks"]["ordinary-edit"][
-                "title"
-            ] == "Ordinary task renamed"
 
             parent = await client.post(
                 "/api/addons/team-addon/tasks",
@@ -4075,9 +3951,7 @@ def test_team_addon_admin_api_designates_explicit_integration_boundary(
                 },
             )
             assert detach_contribution.status_code == 400
-            assert "must remain a direct child or dependency" in (
-                detach_contribution.text
-            )
+            assert "must remain a direct child or dependency" in (detach_contribution.text)
 
             contribution = await client.post(
                 "/api/addons/team-addon/deliverables",
@@ -4728,11 +4602,7 @@ def test_voice_reconciliation_context_keeps_actionable_blockers_and_reviews(
             id=f"terminal-review-{index}",
             deliverable_id="deliverable",
             reviewer_agent_id="backend",
-            state=(
-                TeamRecordState.ACCEPTED
-                if index % 2 == 0
-                else TeamRecordState.REJECTED
-            ),
+            state=(TeamRecordState.ACCEPTED if index % 2 == 0 else TeamRecordState.REJECTED),
             created_at=created_at,
         )
 
@@ -4768,9 +4638,7 @@ def test_voice_reconciliation_context_keeps_actionable_blockers_and_reviews(
 
     blocker_ids = {blocker["id"] for blocker in context["blockers"]}
     assert "open-blocker" in blocker_ids
-    assert blocker_ids.isdisjoint(
-        {f"resolved-blocker-{index}" for index in range(8)}
-    )
+    assert blocker_ids.isdisjoint({f"resolved-blocker-{index}" for index in range(8)})
     assert {blocker["state"] for blocker in context["blockers"]} == {"open"}
     assert {review["id"] for review in context["reviews"]} == {
         "pending-review",
@@ -5113,7 +4981,7 @@ def test_team_addon_routes_are_available_only_when_enabled(tmp_path: Path) -> No
     assert script.headers["cache-control"] == "no-cache"
     assert 'const API_BASE = "/api/addons/team-addon";' in script.text
     assert "createTeamMailController" in script.text
-    assert 'const linkAttributes = image' in script.text
+    assert "const linkAttributes = image" in script.text
     assert 'download="${escapeAttr(filename)}"' in script.text
 
     mail_script = enabled.get("/addons/team-addon/team-mail.js")
@@ -5411,8 +5279,7 @@ def test_team_addon_admin_api_governance_group_flow(tmp_path: Path) -> None:
         "governance-goal-portfolio"
     )
     assert (
-        state["governance_groups"]["portfolio"]["goals"][0]["name"]
-        == "Keep the team under budget"
+        state["governance_groups"]["portfolio"]["goals"][0]["name"] == "Keep the team under budget"
     )
 
     updated = client.patch(
@@ -5956,53 +5823,65 @@ def test_task_blocked_state_requires_audited_operator_repair_api(
     tmp_path: Path,
 ) -> None:
     client = _client(tmp_path)
-    assert client.post(
-        "/api/addons/team-addon/teams",
-        json={
-            "id": "team",
-            "name": "Team",
-            "manager_agent_id": "manager",
-            "manager_session_id": "session-manager",
-            "expected_revision": 0,
-        },
-    ).status_code == 201
-    assert client.post(
-        "/api/addons/team-addon/projects",
-        json={
-            "id": "project",
-            "team_id": "team",
-            "name": "Project",
-            "lead_agent_id": "lead",
-            "lead_session_id": "session-lead",
-            "expected_revision": 1,
-        },
-    ).status_code == 201
+    assert (
+        client.post(
+            "/api/addons/team-addon/teams",
+            json={
+                "id": "team",
+                "name": "Team",
+                "manager_agent_id": "manager",
+                "manager_session_id": "session-manager",
+                "expected_revision": 0,
+            },
+        ).status_code
+        == 201
+    )
+    assert (
+        client.post(
+            "/api/addons/team-addon/projects",
+            json={
+                "id": "project",
+                "team_id": "team",
+                "name": "Project",
+                "lead_agent_id": "lead",
+                "lead_session_id": "session-lead",
+                "expected_revision": 1,
+            },
+        ).status_code
+        == 201
+    )
     _post_backend_role(client, expected_revision=2)
-    assert client.post(
-        "/api/addons/team-addon/agents",
-        json={
-            "id": "backend",
-            "team_id": "team",
-            "project_id": "project",
-            "role_id": "project__backend",
-            "session_id": "session-backend",
-            "reports_to_agent_id": "lead",
-            "expected_revision": 3,
-        },
-    ).status_code == 201
-    assert client.post(
-        "/api/addons/team-addon/tasks",
-        json={
-            "id": "task",
-            "owner_agent_id": "backend",
-            "project_id": "project",
-            "priority": 1,
-            "title": "Repair legacy state",
-            "description": "Exercise the reason-required repair path.",
-            "created_by_agent_id": "lead",
-            "expected_revision": 4,
-        },
-    ).status_code == 201
+    assert (
+        client.post(
+            "/api/addons/team-addon/agents",
+            json={
+                "id": "backend",
+                "team_id": "team",
+                "project_id": "project",
+                "role_id": "project__backend",
+                "session_id": "session-backend",
+                "reports_to_agent_id": "lead",
+                "expected_revision": 3,
+            },
+        ).status_code
+        == 201
+    )
+    assert (
+        client.post(
+            "/api/addons/team-addon/tasks",
+            json={
+                "id": "task",
+                "owner_agent_id": "backend",
+                "project_id": "project",
+                "priority": 1,
+                "title": "Repair legacy state",
+                "description": "Exercise the reason-required repair path.",
+                "created_by_agent_id": "lead",
+                "expected_revision": 4,
+            },
+        ).status_code
+        == 201
+    )
 
     rejected = client.patch(
         "/api/addons/team-addon/tasks/task",
@@ -6158,8 +6037,7 @@ def test_team_addon_timeline_route_filters_current_state(tmp_path: Path) -> None
     assert payload["kind"] == "activity_timeline"
     assert payload["completeness"] == "retained_current_state_only"
     assert payload["retention_boundary"] == (
-        "Only records and timestamps retained in the current TeamState snapshot are "
-        "represented."
+        "Only records and timestamps retained in the current TeamState snapshot are represented."
     )
     assert payload["description"] == (
         "Activity reconstructed from records retained in the current TeamState snapshot; "
@@ -6314,9 +6192,7 @@ def test_team_addon_admin_api_create_flow(tmp_path: Path) -> None:
     )
     assert response.status_code == 201
     assert response.json()["revision"] == 7
-    assert response.json()["deliverables"]["deliverable"][
-        "review_request_ids"
-    ] == ["review"]
+    assert response.json()["deliverables"]["deliverable"]["review_request_ids"] == ["review"]
 
     response = client.patch(
         "/api/addons/team-addon/tasks/task",
@@ -6741,8 +6617,9 @@ def test_team_addon_admin_api_agent_context_clearing_toggle(tmp_path: Path) -> N
     assert scheduled[0].event_type == "team.agent.wake_requested"
     assert scheduled[0].payload["agent_id"] == "backend"
     assert scheduled[0].payload["reason"] == "idle_grace_expired"
-    assert scheduled[0].payload["context_idle_rotation_due_at"] == (
-        runtime["context_idle_rotation_due_at"]
+    assert (
+        scheduled[0].payload["context_idle_rotation_due_at"]
+        == (runtime["context_idle_rotation_due_at"])
     )
     assert scheduled[0].run_at == datetime.fromisoformat(
         runtime["context_idle_rotation_due_at"].replace("Z", "+00:00")
@@ -6817,10 +6694,7 @@ def test_team_addon_admin_task_idle_transition_requests_prompt_outbox_publicatio
     )
     assert policy_response.status_code == 200
     assert (
-        policy_response.json()["agent_runtimes"]["backend"][
-            "context_idle_rotation_due_at"
-        ]
-        is None
+        policy_response.json()["agent_runtimes"]["backend"]["context_idle_rotation_due_at"] is None
     )
 
     response = client.patch(
@@ -6833,14 +6707,10 @@ def test_team_addon_admin_task_idle_transition_requests_prompt_outbox_publicatio
     due_at = body["agent_runtimes"]["backend"]["context_idle_rotation_due_at"]
     assert due_at is not None
     assert body["outbox_publication_wake"]["event_ids"]
-    [idle_outbox] = repo.list_outbox_records(
-        intent_type="team.agent.wake_requested"
-    )
+    [idle_outbox] = repo.list_outbox_records(intent_type="team.agent.wake_requested")
     assert idle_outbox.payload["run_at"] == due_at.replace("+00:00", "Z")
     published = InternalEventBus(internal_event_store_path(runtime_dir)).list_events()
-    assert [event.event_type for event in published] == [
-        TEAM_OUTBOX_PUBLISH_REQUESTED_EVENT_TYPE
-    ]
+    assert [event.event_type for event in published] == [TEAM_OUTBOX_PUBLISH_REQUESTED_EVENT_TYPE]
 
 
 def test_team_addon_state_projects_reset_bounded_input_tokens(tmp_path: Path) -> None:
@@ -6878,7 +6748,9 @@ def test_team_addon_state_projects_reset_bounded_input_tokens(tmp_path: Path) ->
                 provider_endpoint_identifier="responses",
                 input_tokens=input_tokens,
                 request_status="success",
-                normalized_usage_status=("available" if input_tokens is not None else "usage_unavailable"),
+                normalized_usage_status=(
+                    "available" if input_tokens is not None else "usage_unavailable"
+                ),
                 raw_usage_metadata={},
                 session_id=session_id,
             )
@@ -7181,9 +7053,7 @@ def test_team_addon_admin_api_operator_stand_down_and_revoke(tmp_path: Path) -> 
 
     assert response.status_code == 200
     body = response.json()
-    stand_down = next(
-        item for item in body["stand_downs"].values() if item["agent_id"] == "lead"
-    )
+    stand_down = next(item for item in body["stand_downs"].values() if item["agent_id"] == "lead")
     assert stand_down["cleared_at"] is not None
     assert body["agents"]["lead"]["stand_down_active"] is False
     assert body["agents"]["backend"]["stand_down_active"] is False
