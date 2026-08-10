@@ -747,6 +747,11 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
                 cost_warning_ratio=(
                     payload.get("cost_warning_ratio") if "cost_warning_ratio" in payload else None
                 ),
+                cost_budget_renewal_mode=(
+                    payload.get("cost_budget_renewal_mode")
+                    if "cost_budget_renewal_mode" in payload
+                    else None
+                ),
                 expected_revision=expected_revision,
             ),
             create_collection="teams",
@@ -780,6 +785,12 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
                     payload.get("cost_warning_ratio") if "cost_warning_ratio" in payload else None
                 ),
                 set_cost_warning_ratio="cost_warning_ratio" in payload,
+                cost_budget_renewal_mode=(
+                    payload.get("cost_budget_renewal_mode")
+                    if "cost_budget_renewal_mode" in payload
+                    else None
+                ),
+                set_cost_budget_renewal_mode="cost_budget_renewal_mode" in payload,
                 archived=raw_archived if isinstance(raw_archived, bool) else None,
                 expected_revision=expected_revision,
             ),
@@ -787,6 +798,16 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
             target_id=team_id,
         )
         return _state_response(request, state, rebased_from_revision=rebased_from_revision)
+
+    async def reset_team_cost_budget(request: Request) -> JSONResponse:
+        payload = await _read_payload(request)
+        state = admin_service.reset_team_cost_budget(
+            team_id=request.path_params["team_id"],
+            reason=_required(payload, "reason"),
+            operator_actor_id=_operator_actor_from_request(context.auth, request),
+            expected_revision=_expected_revision(payload),
+        )
+        return _state_response(request, state)
 
     async def create_governance_group(request: Request) -> JSONResponse:
         payload = await _read_payload(request)
@@ -3738,6 +3759,7 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
         route("/costs/backfill", backfill_costs, methods=["POST"]),
         route("/teams", create_team, methods=["POST"]),
         route("/teams/{team_id}", patch_team, methods=["PATCH"]),
+        route("/teams/{team_id}/cost-budget/reset", reset_team_cost_budget, methods=["POST"]),
         route("/governance-groups", create_governance_group, methods=["POST"]),
         route(
             "/governance-groups/{governance_group_id}",

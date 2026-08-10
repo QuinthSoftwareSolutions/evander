@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-08-10 - Resettable Team Cost Budgets
+
+- Changed Team cost-cap enforcement from a lifetime-only guard to audited budget windows. Teams
+  can start a new window with a required operator reason or opt into no-carryover UTC-monthly
+  renewal, while lifetime spend remains visible for reporting.
+- Preserved existing caps as lifetime-based until their first explicit reset, avoiding an upgrade
+  that would silently authorize additional Team wakes.
+
 ## 2026-08-10 - Per-Team Governance Cost Warnings
 
 - Moved governance cost-warning policy out of the generated Team Runtime pack and into each

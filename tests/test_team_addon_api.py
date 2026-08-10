@@ -7250,6 +7250,7 @@ def test_team_addon_admin_api_operator_target_and_git_config(tmp_path: Path) -> 
             "operator_communication_target_id": "ops-channel",
             "max_cost_usd": 10.5,
             "cost_warning_ratio": 0.55,
+            "cost_budget_renewal_mode": "monthly_utc",
             "expected_revision": 0,
         },
     )
@@ -7257,6 +7258,8 @@ def test_team_addon_admin_api_operator_target_and_git_config(tmp_path: Path) -> 
     assert response.json()["teams"]["team"]["operator_communication_target_id"] == "ops-channel"
     assert response.json()["teams"]["team"]["max_cost_usd"] == 10.5
     assert response.json()["teams"]["team"]["cost_warning_ratio"] == 0.55
+    assert response.json()["teams"]["team"]["cost_budget_renewal_mode"] == "monthly_utc"
+    assert len(response.json()["teams"]["team"]["cost_budget_windows"]) == 1
 
     response = client.patch(
         "/api/addons/team-addon/teams/team",
@@ -7264,6 +7267,7 @@ def test_team_addon_admin_api_operator_target_and_git_config(tmp_path: Path) -> 
             "operator_communication_target_id": "ops-channel-2",
             "max_cost_usd": 12.25,
             "cost_warning_ratio": 0.65,
+            "cost_budget_renewal_mode": "manual",
             "expected_revision": 1,
         },
     )
@@ -7271,10 +7275,22 @@ def test_team_addon_admin_api_operator_target_and_git_config(tmp_path: Path) -> 
     assert response.json()["teams"]["team"]["operator_communication_target_id"] == "ops-channel-2"
     assert response.json()["teams"]["team"]["max_cost_usd"] == 12.25
     assert response.json()["teams"]["team"]["cost_warning_ratio"] == 0.65
+    assert response.json()["teams"]["team"]["cost_budget_renewal_mode"] == "manual"
+
+    response = client.post(
+        "/api/addons/team-addon/teams/team/cost-budget/reset",
+        json={"reason": "Authorized follow-up work.", "expected_revision": 2},
+    )
+    assert response.status_code == 200
+    windows = response.json()["teams"]["team"]["cost_budget_windows"]
+    assert len(windows) == 2
+    assert windows[-1]["kind"] == "manual_reset"
+    assert windows[-1]["actor"] == "operator:admin"
+    assert windows[-1]["reason"] == "Authorized follow-up work."
 
     response = client.patch(
         "/api/addons/team-addon/teams/team",
-        json={"max_cost_usd": None, "cost_warning_ratio": None, "expected_revision": 2},
+        json={"max_cost_usd": None, "cost_warning_ratio": None, "expected_revision": 3},
     )
     assert response.status_code == 200
     assert response.json()["teams"]["team"]["max_cost_usd"] is None
@@ -7307,7 +7323,7 @@ def test_team_addon_admin_api_operator_target_and_git_config(tmp_path: Path) -> 
                     "pids_limit": 1536,
                 },
             },
-            "expected_revision": 3,
+            "expected_revision": 4,
         },
     )
     assert response.status_code == 201
@@ -7339,7 +7355,7 @@ def test_team_addon_admin_api_operator_target_and_git_config(tmp_path: Path) -> 
                     "email": "evander@quinth.se",
                 },
             },
-            "expected_revision": 4,
+            "expected_revision": 5,
         },
     )
     assert response.status_code == 200
@@ -7366,7 +7382,7 @@ def test_team_addon_admin_api_operator_target_and_git_config(tmp_path: Path) -> 
             "title": "Snapshot the default",
             "description": "Exercise task Git-base API projection.",
             "created_by_agent_id": "lead",
-            "expected_revision": 5,
+            "expected_revision": 6,
         },
     )
     assert response.status_code == 201
@@ -7376,7 +7392,7 @@ def test_team_addon_admin_api_operator_target_and_git_config(tmp_path: Path) -> 
         "/api/addons/team-addon/tasks/task",
         json={
             "git_base_branch": "feature/foo",
-            "expected_revision": 6,
+            "expected_revision": 7,
         },
     )
     assert response.status_code == 200
@@ -7393,7 +7409,7 @@ def test_team_addon_admin_api_operator_target_and_git_config(tmp_path: Path) -> 
             "git": {
                 "managed_repo_id": "legacy-repo",
             },
-            "expected_revision": 7,
+            "expected_revision": 8,
         },
     )
     assert response.status_code == 400

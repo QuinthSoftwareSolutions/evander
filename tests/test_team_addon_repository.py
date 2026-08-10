@@ -7350,6 +7350,7 @@ def test_repository_migrates_action_feedback_inbox_and_low_priority_columns(
 
     assert repo.read().action_records == {}
     with sqlite3.connect(db_path) as connection:
+        team_columns = {str(row[1]) for row in connection.execute("PRAGMA table_info(team_teams)")}
         action_columns = {
             str(row[1]) for row in connection.execute("PRAGMA table_info(team_action_records)")
         }
@@ -7381,6 +7382,7 @@ def test_repository_migrates_action_feedback_inbox_and_low_priority_columns(
             for row in connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
         }
         metadata = dict(connection.execute("SELECT key, value FROM team_state_metadata").fetchall())
+    assert {"cost_budget_renewal_mode", "cost_budget_windows_json"} <= team_columns
     assert "feedback_delivered_at" in action_columns
     assert "feedback_delivered_by_dispatch_id" in action_columns
     assert "response_requested" in inbox_columns
@@ -9561,6 +9563,56 @@ def test_repository_updates_team_project_and_agent_records(tmp_path: Path) -> No
                 cost_warning_ratio=invalid_ratio,
                 set_cost_warning_ratio=True,
             )
+
+
+def test_team_cost_budget_windows_persist_resets_and_monthly_renewals(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    admin = _team_admin_service(repo)
+    admin.update_team(
+        team_id="team",
+        max_cost_usd="10.00",
+        set_max_cost_usd=True,
+        cost_budget_renewal_mode="monthly_utc",
+        set_cost_budget_renewal_mode=True,
+        expected_revision=repo.read().revision,
+    )
+    configured = repo.read().teams["team"].cost_budget_windows[-1]
+    assert configured.kind.value == "configured"
+    assert configured.max_cost_usd == 10
+
+    admin.reset_team_cost_budget(
+        team_id="team",
+        reason="Approved continuation after the first milestone.",
+        operator_actor_id="operator:jonathan",
+        expected_revision=repo.read().revision,
+    )
+    reset_team = repo.read().teams["team"]
+    reset_window = reset_team.cost_budget_windows[-1]
+    assert reset_team.cost_budget_windows[-2].ended_at == reset_window.started_at
+    assert reset_window.kind.value == "manual_reset"
+    assert reset_window.actor == "operator:jonathan"
+
+    def _backdate_window(state):
+        team = state.teams["team"]
+        team.cost_budget_windows[-1].started_at = datetime(2026, 1, 15, tzinfo=UTC)
+        return state
+
+    repo.update(_backdate_window)
+    state = admin.advance_team_cost_budget_windows(now=datetime(2026, 3, 2, tzinfo=UTC))
+    windows = state.teams["team"].cost_budget_windows
+    assert [window.started_at for window in windows[-3:]] == [
+        datetime(2026, 1, 15, tzinfo=UTC),
+        datetime(2026, 2, 1, tzinfo=UTC),
+        datetime(2026, 3, 1, tzinfo=UTC),
+    ]
+    assert [window.kind.value for window in windows[-2:]] == [
+        "monthly_renewal",
+        "monthly_renewal",
+    ]
+    reloaded = TeamStateRepository(tmp_path).read().teams["team"]
+    assert reloaded.cost_budget_windows[-1].reason == "UTC monthly cost budget renewal."
 
 
 def test_repository_rejects_agent_update_reporting_cycle_without_writing(tmp_path: Path) -> None:

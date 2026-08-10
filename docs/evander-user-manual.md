@@ -7725,9 +7725,19 @@ Search results are checked again against current visibility. Finding or possessi
 
 ## Cost as an operational guard
 
-A cost cap is a brake on future Team wakes, not a billing system. The displayed total is an estimated lifetime amount based on the usage Evander can price and attribute. Always read it together with its coverage information.
+A cost cap is a brake on future Team wakes, not a billing system. The displayed
+lifetime total is an estimate based on the usage Evander can price and
+attribute, while the cap applies to the active budget window. Always read both
+with the coverage information.
 
-When a Team reaches its cap, future Team wakes are blocked, including queued Chat. Existing external provider spend may already have occurred, and unrelated core workloads are not retroactively canceled. Raising or clearing the cap re-enables evaluation; do so only after understanding coverage.
+When a Team reaches its cap, future Team wakes are blocked, including queued
+Chat. An operator can start a new budget window with a revision-checked reset
+and a required reason, without increasing the cap. A Team may instead opt into
+a UTC-monthly renewal at 00:00 on the first day of the month; unused budget
+does not carry forward. Existing lifetime caps remain unchanged until an
+operator explicitly resets them, so an upgrade never silently reauthorizes
+spend. Existing external provider spend may already have occurred, and
+unrelated core workloads are not retroactively canceled.
 
 Each Team has a durable governance warning ratio, defaulting to `0.8`. When a
 governed Team reaches that portion of its own cap, governance can emit a

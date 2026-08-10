@@ -2271,6 +2271,7 @@ class TeamWakeDueAgentsEffectProvider(EffectProviderBase):
                 )
             except Exception as exc:  # cleanup must not suppress unrelated Team wakes
                 worktree_cleanup_error = str(exc) or exc.__class__.__name__
+        TeamAdminService(repo).advance_team_cost_budget_windows()
         current_state = repo.read()
         session_records = _session_records_by_id(_session_repository_from_context(context))
         cost_guard_blocked_teams = _cost_guard_blocked_teams(
@@ -3228,6 +3229,7 @@ class TeamWakeGovernanceManagersEffectProvider(EffectProviderBase):
             raise RuntimeError("effect:team:wake-governance-managers requires agent_resumer")
 
         repo = TeamStateRepository(_runtime_dir(context))
+        TeamAdminService(repo).advance_team_cost_budget_windows()
         current_state = repo.read()
         cost_payload = TeamCostService(
             runtime_dir=_runtime_dir(context),
@@ -9652,7 +9654,13 @@ def _cost_guard_blocked_teams(
             max_cost = _number_or_none(getattr(team, "max_cost_usd", None))
         if max_cost is None:
             continue
-        estimated_cost = _number_or_zero(cost.get("estimated_cost"))
+        lifetime_estimated_cost = _number_or_zero(cost.get("estimated_cost"))
+        budget_window_estimated_cost = _number_or_none(cost.get("budget_window_estimated_cost"))
+        estimated_cost = (
+            budget_window_estimated_cost
+            if budget_window_estimated_cost is not None
+            else lifetime_estimated_cost
+        )
         limit_reached = bool(cost.get("cost_limit_reached"))
         if not limit_reached:
             limit_reached = estimated_cost >= max_cost
@@ -9663,6 +9671,7 @@ def _cost_guard_blocked_teams(
                 "team_id": blocked_team_id,
                 "team_name": getattr(team, "name", blocked_team_id),
                 "estimated_cost": estimated_cost,
+                "lifetime_estimated_cost": lifetime_estimated_cost,
                 "max_cost_usd": max_cost,
                 "remaining_cost_usd": _number_or_none(cost.get("remaining_cost_usd")),
                 "cost_limit_basis": cost.get("cost_limit_basis") or "lifetime",

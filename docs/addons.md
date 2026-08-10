@@ -2104,15 +2104,23 @@ refs.
 
 ### Team Cost Guard
 
-Teams may carry an optional `max_cost_usd` estimated lifetime cap. The wake loop
-checks Team cost payloads before leasing due agents; when the estimated total
-reaches the cap, future Team wakes for that team are skipped until the cap is
-raised or cleared. This is an operational safety rail, not billing-grade
-enforcement: totals are derived from recorded model-usage events, the local
-pricing catalog, and optional Claude transcript backfill. Cost payloads expose
-`coverage_status` and `coverage_reasons`; operators should treat partial
-coverage as a reason to inspect the underlying usage data before making spend
-promises.
+Teams may carry an optional `max_cost_usd` estimated cap. New caps apply to a
+budget window rather than growing a lifetime authorization: an operator may
+start the next window with a revision-checked reset and required reason, or
+opt into a monthly reset at 00:00 UTC on the first day of each month. Monthly
+windows do not carry unused spend forward. The wake loop checks the active
+window before leasing due agents; when it reaches the cap, future Team wakes
+for that Team are skipped until the budget is reset, renewed, raised, or
+cleared. The cost payload retains the lifetime total alongside the active
+window total and boundary.
+
+Existing caps remain lifetime-based until an operator performs their first
+budget reset; upgrading does not silently authorize more spend. This is an
+operational safety rail, not billing-grade enforcement: totals are derived from
+recorded model-usage events, the local pricing catalog, and optional Claude
+transcript backfill. Cost payloads expose `coverage_status` and
+`coverage_reasons`; operators should treat partial coverage as a reason to
+inspect the underlying usage data before making spend promises.
 
 Each Team also stores its own `cost_warning_ratio`, which defaults to `0.8`.
 When a governed Team reaches that portion of its own `max_cost_usd`, the

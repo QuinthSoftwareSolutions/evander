@@ -26,7 +26,7 @@ from evander_team_addon.git_naming import (
     validate_branch_name,
 )
 
-SCHEMA_VERSION = 12
+SCHEMA_VERSION = 13
 DEFAULT_TEAM_COST_WARNING_RATIO = Decimal("0.8")
 WORKTREE_CLEANUP_INVENTORY_SAMPLE_LIMIT = 200
 TEAM_CHAT_ATTACHMENT_DEFAULT_MIME_TYPES = (
@@ -311,6 +311,17 @@ class GovernanceAgendaItemType(str, Enum):
 class GovernanceAgendaItemState(str, Enum):
     PENDING = "pending"
     HANDLED = "handled"
+
+
+class TeamCostBudgetRenewalMode(str, Enum):
+    MANUAL = "manual"
+    MONTHLY_UTC = "monthly_utc"
+
+
+class TeamCostBudgetWindowKind(str, Enum):
+    CONFIGURED = "configured"
+    MANUAL_RESET = "manual_reset"
+    MONTHLY_RENEWAL = "monthly_renewal"
 
 
 class TeamMemoryKind(str, Enum):
@@ -613,6 +624,45 @@ class GovernanceRuntime(TeamModel):
         return _unique_text_list(value, info.field_name)
 
 
+class TeamCostBudgetWindow(TeamModel):
+    id: str
+    started_at: datetime
+    ended_at: datetime | None = None
+    kind: TeamCostBudgetWindowKind
+    actor: str
+    reason: str
+    max_cost_usd: Decimal = Field(ge=Decimal("0"))
+
+    @field_validator("id", "actor", "reason", mode="before")
+    @classmethod
+    def _required_text(cls, value: object, info) -> str:
+        return _required_text(value, info.field_name)
+
+    @field_validator("max_cost_usd", mode="before")
+    @classmethod
+    def _cost_limit(cls, value: object) -> Decimal:
+        text = _optional_text(value)
+        if text is None:
+            raise ValueError("max_cost_usd must be a non-negative decimal")
+        try:
+            amount = Decimal(text)
+        except (InvalidOperation, ValueError):
+            raise ValueError("max_cost_usd must be a non-negative decimal") from None
+        if amount < 0:
+            raise ValueError("max_cost_usd must be a non-negative decimal")
+        return amount
+
+    @field_serializer("max_cost_usd", when_used="json")
+    def _serialize_max_cost_usd(self, value: Decimal) -> float:
+        return float(value)
+
+    @model_validator(mode="after")
+    def _validate_window_bounds(self) -> "TeamCostBudgetWindow":
+        if self.ended_at is not None and self.ended_at <= self.started_at:
+            raise ValueError("ended_at must be after started_at")
+        return self
+
+
 class Team(TeamModel):
     id: str
     name: str
@@ -624,6 +674,10 @@ class Team(TeamModel):
         gt=Decimal("0"),
         le=Decimal("1"),
     )
+    cost_budget_renewal_mode: TeamCostBudgetRenewalMode = (
+        TeamCostBudgetRenewalMode.MANUAL
+    )
+    cost_budget_windows: list[TeamCostBudgetWindow] = Field(default_factory=list)
     escalate_to_governance: bool = False
     project_ids: list[str] = Field(default_factory=list)
     created_at: datetime = Field(default_factory=utc_now)
@@ -675,6 +729,23 @@ class Team(TeamModel):
     @field_serializer("cost_warning_ratio", when_used="json")
     def _serialize_cost_warning_ratio(self, value: Decimal) -> float:
         return float(value)
+
+    @field_validator("cost_budget_windows", mode="before")
+    @classmethod
+    def _cost_budget_windows(cls, value: object) -> list[object]:
+        if value is None:
+            return []
+        if not isinstance(value, list):
+            raise ValueError("cost_budget_windows must be a list")
+        return list(value)
+
+    @model_validator(mode="after")
+    def _validate_cost_budget_windows(self) -> "Team":
+        _ensure_unique([window.id for window in self.cost_budget_windows], "cost budget windows")
+        active_windows = [window for window in self.cost_budget_windows if window.ended_at is None]
+        if len(active_windows) > 1:
+            raise ValueError("a team may have only one active cost budget window")
+        return self
 
     @field_validator("project_ids", mode="before")
     @classmethod

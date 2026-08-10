@@ -470,7 +470,7 @@ const fieldTooltips = {
   "setup-template-form:template_session_id": "Session ID used when this template-created agent is woken or resumed.",
   "setup-template-form:operator_communication_target_id": "Optional external target for manager escalations, such as a chat channel or operator contact.",
   "setup-template-form:escalate_to_governance": "Route manager escalations to governance agenda instead of operator escalation.",
-  "setup-template-form:max_cost_usd": "Optional estimated lifetime USD cap for this team. Team wakes stop when estimated accrued cost reaches the cap.",
+  "setup-template-form:max_cost_usd": "Optional estimated USD cap for each Team budget window. Team wakes stop when the active window reaches the cap.",
   "setup-template-form:cost_warning_ratio": "Governance wakes when this team's estimated cost reaches this fraction of its cap. 0.8 means 80%.",
   "setup-template-form:project_name": "Human-readable project name shown in project cards and filters.",
 
@@ -481,8 +481,9 @@ const fieldTooltips = {
   "create-team-form:manager_role_name": "Human-readable role name for the manager role.",
   "create-team-form:operator_communication_target_id": "Optional external target for escalations raised by this team's manager.",
   "create-team-form:escalate_to_governance": "Route manager escalations to governance agenda instead of operator escalation.",
-  "create-team-form:max_cost_usd": "Optional estimated lifetime USD cap for this team. Team wakes stop when estimated accrued cost reaches the cap.",
+  "create-team-form:max_cost_usd": "Optional estimated USD cap for each Team budget window. Team wakes stop when the active window reaches the cap.",
   "create-team-form:cost_warning_ratio": "Governance wakes when this team's estimated cost reaches this fraction of its cap. 0.8 means 80%.",
+  "create-team-form:cost_budget_renewal_mode": "Manual budgets require an operator reset. Monthly budgets renew at 00:00 UTC on the first day of each month without carryover.",
 
   "create-governance-group-form:name": "Human-readable portfolio or governance group name.",
   "create-governance-group-form:manager_agent_id": "Existing persistent agent that wakes for governance agenda, cost, and blocker signals.",
@@ -596,8 +597,9 @@ const fieldTooltips = {
   "edit:team:name": "Rename the team without changing its immutable ID.",
   "edit:team:operator_communication_target_id": "Set or clear the external target used for operator escalations.",
   "edit:team:escalate_to_governance": "Route manager escalations to governance instead of operator escalation when true.",
-  "edit:team:max_cost_usd": "Set or clear the estimated lifetime USD cap that suspends future Team wakes when reached.",
+  "edit:team:max_cost_usd": "Set or clear the estimated USD cap that suspends future Team wakes when the active budget window reaches it.",
   "edit:team:cost_warning_ratio": "Set the portion of this team's cap that produces a governance warning. 0.8 means 80%; clearing resets it to 0.8.",
+  "edit:team:cost_budget_renewal_mode": "Choose manual reset or an automatic monthly UTC renewal. Changing this setting does not reset the current budget window.",
   "edit:team:archived": "Archived teams stay in state; archiving a team also archives its agents.",
   "edit:governance-group:name": "Rename the governance group without changing its immutable ID.",
   "edit:governance-group:manager_agent_id": "Persistent agent responsible for governance agenda and portfolio signals. Options lead with display name and role.",
@@ -1465,6 +1467,7 @@ function openOrgCreateTeamDialog() {
         </label>
         <label>Estimated max cost USD <input name="max_cost_usd" type="number" min="0" step="0.01" /></label>
         <label>Governance cost warning threshold <input name="cost_warning_ratio" type="number" min="0.01" max="1" step="0.01" value="0.8" /></label>
+        <label>Budget renewal <select name="cost_budget_renewal_mode"><option value="manual">Manual reset</option><option value="monthly_utc">Monthly (UTC)</option></select></label>
         <div class="org-action-form-actions">
           <button type="submit">Create team</button>
           <button type="button" class="secondary" data-org-action-close>Cancel</button>
@@ -1791,6 +1794,23 @@ function bindForms() {
       return;
     }
     void retryReleaseGate(button, text(reason));
+  });
+
+  document.addEventListener("click", (event) => {
+    const button = event.target?.closest?.("[data-team-cost-budget-reset]");
+    if (!button) {
+      return;
+    }
+    event.preventDefault();
+    if (!guardTeamMutation("reset a team cost budget")) {
+      return;
+    }
+    const reason = window.prompt("Why is a new budget window authorized?", "");
+    if (!text(reason)) {
+      setStatus("A budget reset reason is required.", "error");
+      return;
+    }
+    void resetTeamCostBudget(button, text(button.dataset.teamCostBudgetReset), text(reason));
   });
 
   document.addEventListener("click", (event) => {
@@ -6051,7 +6071,7 @@ function renderTeamCostBlockedPill(teamId) {
     return "";
   }
   return `
-    <span class="state-pill warning team-cost-blocked-pill" title="Team wakes are suspended until the estimated cap is raised or cleared.">
+    <span class="state-pill warning team-cost-blocked-pill" title="Team wakes are suspended until this budget is reset, renewed, raised, or cleared.">
       cost blocked
     </span>
   `;
@@ -6069,7 +6089,7 @@ function renderTeamCostBlockedNotice(teamId) {
   return `
     <div class="team-cost-blocked-notice" role="status">
       <strong>Blocked: estimated cost cap reached</strong>
-      <span>Team wakes are suspended until the estimated cap is raised or cleared. ${escapeHtml(formatUsd(cost.estimated_cost))} estimated used of ${escapeHtml(capLabel)} lifetime cap.${escapeHtml(coverageNote)}</span>
+      <span>Team wakes are suspended until this budget is reset, renewed, raised, or cleared. ${escapeHtml(formatUsd(cost.budget_window_estimated_cost ?? cost.estimated_cost))} estimated used of ${escapeHtml(capLabel)} ${escapeHtml(text(cost.cost_limit_basis) === "budget_window" ? "budget window" : "lifetime cap")}.${escapeHtml(coverageNote)}</span>
     </div>
   `;
 }
@@ -6287,6 +6307,8 @@ function renderCostCounter(
       : "cost-counter cost-counter--warning";
   const parts = [];
   const maxCost = numberOrNull(cost.max_cost_usd);
+  const budgetWindowCost = numberOrNull(cost.budget_window_estimated_cost);
+  const displayedCost = budgetWindowCost === null ? numberOrZero(cost.estimated_cost) : budgetWindowCost;
   if (maxCost !== null) {
     parts.push(
       limitReached
@@ -6296,6 +6318,9 @@ function renderCostCounter(
   }
   if (events) {
     parts.push(`${formatCount(events)} event${events === 1 ? "" : "s"}`);
+  }
+  if (budgetWindowCost !== null && numberOrNull(cost.estimated_cost) !== null) {
+    parts.push(`lifetime ${formatUsd(cost.estimated_cost)}`);
   }
   if (unpriced) {
     parts.push(`${formatCount(unpriced)} unpriced`);
@@ -6310,7 +6335,7 @@ function renderCostCounter(
   return `
     <div class="${className}${compact ? " cost-counter--compact" : ""}${aggregate ? " cost-counter--aggregate" : ""}">
       <span>${escapeHtml(label || "Cost")}</span>
-      <strong>${escapeHtml(formatUsd(cost.estimated_cost))}</strong>
+      <strong>${escapeHtml(formatUsd(displayedCost))}</strong>
       ${context ? `<small class="cost-counter-context">${escapeHtml(context)}</small>` : ""}
       ${parts.length ? `<small>${escapeHtml(parts.join(" - "))}</small>` : ""}
     </div>
@@ -9171,6 +9196,17 @@ function renderTeamRecordDetailContent(team) {
     projects: values(state.projects).filter((project) => isVisibleProject(project) && text(project.team_id) === text(team.id)),
     roles: values(state.roles).filter((role) => isVisibleRole(role) && text(role.team_id) === text(team.id)),
   });
+  const teamCost = teamCostForTeam(team.id);
+  const renewalLabel = text(team.cost_budget_renewal_mode) === "monthly_utc"
+    ? "Monthly at 00:00 UTC"
+    : "Manual reset";
+  const budgetWindows = Array.isArray(team.cost_budget_windows) ? team.cost_budget_windows : [];
+  const budgetWindowHistory = budgetWindows.length
+    ? `<ul class="record-list">${[...budgetWindows]
+      .sort((left, right) => text(right.started_at).localeCompare(text(left.started_at)))
+      .map((window) => `<li><strong>${escapeHtml(humanizeToken(window.kind) || "budget window")}</strong> ${escapeHtml(formatChatTimestamp(window.started_at))} — ${escapeHtml(text(window.reason) || "No reason recorded")} <span class="meta-line">${escapeHtml(text(window.actor) || "unknown actor")}</span></li>`)
+      .join("")}</ul>`
+    : `<p class="empty-state">This Team retains its legacy lifetime cap until an operator resets its budget.</p>`;
   return `
     <div class="agent-detail team-record-detail">
       <div class="agent-detail-header">
@@ -9185,6 +9221,7 @@ function renderTeamRecordDetailContent(team) {
       </div>
       <div class="record-actions agent-detail-actions">
         ${editButton("team", team.id)}
+        ${team.max_cost_usd !== null && team.max_cost_usd !== undefined ? `<button type="button" class="record-action" data-team-cost-budget-reset="${escapeAttr(team.id)}">Reset budget</button>` : ""}
       </div>
       <div class="agent-detail-grid">
         ${renderAgentDetailField("Manager", manager ? `${agentLabel(manager)} (${manager.id})` : text(team.manager_agent_id) || "None")}
@@ -9195,11 +9232,17 @@ function renderTeamRecordDetailContent(team) {
         ${renderAgentDetailField("Operator communication target", text(team.operator_communication_target_id) || "None")}
         ${renderAgentDetailField("Estimated max cost USD", text(team.max_cost_usd) || "None")}
         ${renderAgentDetailField("Governance cost warning", `${Math.round((numberOrNull(team.cost_warning_ratio) ?? 0.8) * 100)}% of cap`)}
+        ${renderAgentDetailField("Budget renewal", renewalLabel)}
+        ${renderAgentDetailField("Budget window start", teamCost?.budget_window_started_at ? formatChatTimestamp(teamCost.budget_window_started_at) : "Lifetime legacy cap")}
       </div>
       <section class="agent-detail-section">
         <h3>Team cost</h3>
         ${renderTeamCostCounter(team.id) || "<p class=\"empty-state\">No cost estimate available.</p>"}
         ${renderCostBackfillControl()}
+      </section>
+      <section class="agent-detail-section">
+        <h3>Budget history</h3>
+        ${budgetWindowHistory}
       </section>
     </div>
   `;
@@ -20104,6 +20147,10 @@ function buildSelectOptionSets() {
     "record-states": recordStates.map((item) => [item, item]),
     "agent-statuses": agentStatuses.map((item) => [item, item]),
     "context-clearing-policies": contextClearingPolicies,
+    "cost-budget-renewal-modes": [
+      ["manual", "Manual reset"],
+      ["monthly_utc", "Monthly (UTC)"],
+    ],
     "realtime-voices": realtimeVoiceOptions,
     "project-statuses": projectStatuses.map((item) => [item, item]),
     "decision-states": decisionStates.map((item) => [item, item]),
@@ -20503,6 +20550,48 @@ function setGitImportStatus(element, message) {
     return;
   }
   element.textContent = message || "";
+}
+
+async function resetTeamCostBudget(button, teamId, reason) {
+  if (!teamId) {
+    setStatus("Team budget reset target is unavailable.", "error");
+    return;
+  }
+  button.disabled = true;
+  setStatus("Resetting cost budget.", "loading");
+  try {
+    const response = await teamFetch(
+      `${API_BASE}/teams/${encodeURIComponent(teamId)}/cost-budget/reset`,
+      {
+        method: "POST",
+        headers: {
+          Accept: "application/json",
+          "Content-Type": "application/json",
+          "X-Team-Addon-Response-Scope": "view",
+        },
+        body: JSON.stringify({ reason, expected_revision: state.revision }),
+      },
+    );
+    if (response.status === 409) {
+      const conflict = await response.json().catch(() => ({}));
+      await reloadActiveTeamView();
+      setStatus(
+        `Revision conflict. Reloaded revision ${conflict.current_revision ?? state.revision}; verify the budget and retry.`,
+        "warning",
+      );
+      return;
+    }
+    if (!response.ok) {
+      throw new Error(await responseText(response));
+    }
+    await applyMutationResultPayload(await response.json());
+    await loadCosts();
+    setStatus("Started a new team cost budget window.", "ok");
+  } catch (error) {
+    setStatus(error instanceof Error ? error.message : "Budget reset failed.", "error");
+  } finally {
+    button.disabled = false;
+  }
 }
 
 async function submitMutation(form, endpoint, method, payload, { resetOnSuccess = true, detailedResult = false } = {}) {
@@ -22218,6 +22307,7 @@ function payloadForForm(form, data = formData(form)) {
     if (costWarningRatio !== null) {
       payload.team.cost_warning_ratio = costWarningRatio;
     }
+    payload.team.cost_budget_renewal_mode = text(data.cost_budget_renewal_mode) || "manual";
     if (templateUsesGit(template)) {
       const git = gitConfigForForm(data);
       if (git) {
@@ -22254,6 +22344,7 @@ function payloadForForm(form, data = formData(form)) {
     if (costWarningRatio !== null) {
       payload.cost_warning_ratio = costWarningRatio;
     }
+    payload.cost_budget_renewal_mode = text(data.cost_budget_renewal_mode) || "manual";
     return payload;
   }
   if (formId === "create-governance-group-form") {
@@ -23126,6 +23217,7 @@ function renderEditFields(type, record) {
       ${checkboxField("Escalate manager escalations to governance", "escalate_to_governance", Boolean(record.escalate_to_governance))}
       ${numberField("Estimated max cost USD", "max_cost_usd", record.max_cost_usd ?? "", { min: 0, step: "0.01" })}
       ${numberField("Governance cost warning threshold", "cost_warning_ratio", record.cost_warning_ratio ?? 0.8, { min: 0.01, max: 1, step: "0.01" })}
+      ${selectField("Budget renewal", "cost_budget_renewal_mode", "cost-budget-renewal-modes", record.cost_budget_renewal_mode || "manual")}
       ${checkboxField("Archived", "archived", Boolean(record.archived))}
     `;
   }
@@ -23374,6 +23466,7 @@ function editPayloadForForm(type, form) {
       escalate_to_governance: Boolean(form.elements.escalate_to_governance?.checked),
       max_cost_usd: numberOrNull(data.max_cost_usd),
       cost_warning_ratio: numberOrNull(data.cost_warning_ratio),
+      cost_budget_renewal_mode: text(data.cost_budget_renewal_mode) || "manual",
       archived: Boolean(form.elements.archived?.checked),
     };
   }

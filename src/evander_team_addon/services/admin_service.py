@@ -4,7 +4,7 @@ import fcntl
 import os
 from collections.abc import Callable, Mapping, Sequence
 from contextlib import contextmanager
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
 from uuid import uuid4
 
@@ -56,6 +56,9 @@ from ..models import (
     TeamBlockerState,
     TeamCase,
     TeamCaseStatus,
+    TeamCostBudgetRenewalMode,
+    TeamCostBudgetWindow,
+    TeamCostBudgetWindowKind,
     TeamInboxItemType,
     TeamInboxPriority,
     TeamIdempotencyRecord,
@@ -210,6 +213,57 @@ from .candidate_correction_reconciliation_service import (
 
 def utc_now() -> datetime:
     return _team_common.utc_now()
+
+
+def _cost_budget_renewal_mode(value: object) -> TeamCostBudgetRenewalMode:
+    text = _optional_text(value)
+    if text is None:
+        return TeamCostBudgetRenewalMode.MANUAL
+    try:
+        return TeamCostBudgetRenewalMode(text)
+    except ValueError:
+        allowed = ", ".join(item.value for item in TeamCostBudgetRenewalMode)
+        raise ValueError(f"cost_budget_renewal_mode must be one of: {allowed}") from None
+
+
+def _active_team_cost_budget_window(team: Team) -> TeamCostBudgetWindow | None:
+    return next((window for window in team.cost_budget_windows if window.ended_at is None), None)
+
+
+def _close_active_team_cost_budget_window(team: Team, *, ended_at: datetime) -> None:
+    active_window = _active_team_cost_budget_window(team)
+    if active_window is not None:
+        active_window.ended_at = ended_at
+
+
+def _open_team_cost_budget_window(
+    team: Team,
+    *,
+    now: datetime,
+    kind: TeamCostBudgetWindowKind,
+    actor: str,
+    reason: str,
+) -> TeamCostBudgetWindow:
+    if team.max_cost_usd is None:
+        raise ValueError("a cost budget window requires max_cost_usd")
+    _close_active_team_cost_budget_window(team, ended_at=now)
+    window = TeamCostBudgetWindow(
+        id=f"team-cost-budget-{uuid4().hex}",
+        started_at=now,
+        kind=kind,
+        actor=actor,
+        reason=reason,
+        max_cost_usd=team.max_cost_usd,
+    )
+    team.cost_budget_windows.append(window)
+    return window
+
+
+def _next_utc_month_start(value: datetime) -> datetime:
+    normalized = value.astimezone(UTC) if value.tzinfo is not None else value.replace(tzinfo=UTC)
+    if normalized.month == 12:
+        return datetime(normalized.year + 1, 1, 1, tzinfo=UTC)
+    return datetime(normalized.year, normalized.month + 1, 1, tzinfo=UTC)
 
 
 def _default_memory_scope(project_id: str | None, agent_id: str | None) -> str:
@@ -1035,6 +1089,7 @@ class TeamAdminService:
         operator_communication_target_id: str | None = None,
         max_cost_usd: object | None = None,
         cost_warning_ratio: object | None = None,
+        cost_budget_renewal_mode: object | None = None,
         escalate_to_governance: bool = False,
         expected_revision: int | None = None,
     ) -> TeamState:
@@ -1108,17 +1163,27 @@ class TeamAdminService:
                     ephemeral_policy=role.ephemeral_policy.model_copy(deep=True),
                 )
                 state.agents[manager.id] = manager
-            state.teams[effective_team_id] = Team(
+            team = Team(
                 id=effective_team_id,
                 name=normalized_name,
                 manager_agent_id=manager.id,
                 operator_communication_target_id=normalized_operator_target,
                 max_cost_usd=max_cost_usd,
                 cost_warning_ratio=_cost_warning_ratio(cost_warning_ratio),
+                cost_budget_renewal_mode=_cost_budget_renewal_mode(cost_budget_renewal_mode),
                 escalate_to_governance=escalate_to_governance,
                 created_at=now,
                 updated_at=now,
             )
+            if team.max_cost_usd is not None:
+                _open_team_cost_budget_window(
+                    team,
+                    now=now,
+                    kind=TeamCostBudgetWindowKind.CONFIGURED,
+                    actor="operator:team-config",
+                    reason="Initial cost budget configured.",
+                )
+            state.teams[effective_team_id] = team
             return state
 
         return self._repository.update(_mutate, expected_revision=expected_revision)
@@ -1135,6 +1200,8 @@ class TeamAdminService:
         set_max_cost_usd: bool = False,
         cost_warning_ratio: object | None = None,
         set_cost_warning_ratio: bool = False,
+        cost_budget_renewal_mode: object | None = None,
+        set_cost_budget_renewal_mode: bool = False,
         escalate_to_governance: bool | None = None,
         archived: bool | None = None,
         expected_revision: int | None = None,
@@ -1245,9 +1312,24 @@ class TeamAdminService:
             if set_operator_communication_target_id:
                 team.operator_communication_target_id = operator_communication_target_id
             if set_max_cost_usd:
+                previous_max_cost_usd = team.max_cost_usd
                 team.max_cost_usd = _optional_cost_limit(max_cost_usd)
+                if previous_max_cost_usd is None and team.max_cost_usd is not None:
+                    _open_team_cost_budget_window(
+                        team,
+                        now=utc_now(),
+                        kind=TeamCostBudgetWindowKind.CONFIGURED,
+                        actor="operator:team-config",
+                        reason="Cost budget configured.",
+                    )
+                elif previous_max_cost_usd is not None and team.max_cost_usd is None:
+                    _close_active_team_cost_budget_window(team, ended_at=utc_now())
             if set_cost_warning_ratio:
                 team.cost_warning_ratio = _cost_warning_ratio(cost_warning_ratio)
+            if set_cost_budget_renewal_mode:
+                team.cost_budget_renewal_mode = _cost_budget_renewal_mode(
+                    cost_budget_renewal_mode
+                )
             if escalate_to_governance is not None:
                 team.escalate_to_governance = bool(escalate_to_governance)
             if archived is not None:
@@ -1260,6 +1342,72 @@ class TeamAdminService:
             return state
 
         return self._repository.update(_mutate, expected_revision=expected_revision)
+
+    def reset_team_cost_budget(
+        self,
+        *,
+        team_id: str,
+        reason: str,
+        operator_actor_id: str,
+        expected_revision: int | None = None,
+    ) -> TeamState:
+        normalized_team_id = _required_text(team_id, "team_id")
+        normalized_reason = _required_text(reason, "reason")
+        normalized_actor = _required_text(operator_actor_id, "operator_actor_id")
+
+        def _mutate(state: TeamState) -> TeamState:
+            team = _require_present(state.teams, normalized_team_id, "team")
+            if team.max_cost_usd is None:
+                raise ValueError("team has no configured max_cost_usd to reset")
+            now = utc_now()
+            _open_team_cost_budget_window(
+                team,
+                now=now,
+                kind=TeamCostBudgetWindowKind.MANUAL_RESET,
+                actor=normalized_actor,
+                reason=normalized_reason,
+            )
+            team.updated_at = now
+            return state
+
+        return self._repository.update(_mutate, expected_revision=expected_revision)
+
+    def advance_team_cost_budget_windows(
+        self,
+        *,
+        now: datetime | None = None,
+    ) -> TeamState:
+        effective_now = now or utc_now()
+
+        def _mutate(state: TeamState) -> TeamState:
+            for team in state.teams.values():
+                if (
+                    team.max_cost_usd is None
+                    or team.cost_budget_renewal_mode
+                    != TeamCostBudgetRenewalMode.MONTHLY_UTC
+                ):
+                    continue
+                active_window = _active_team_cost_budget_window(team)
+                if active_window is None:
+                    # A pre-window Team stays lifetime-based until an operator resets it.
+                    continue
+                next_boundary = _next_utc_month_start(active_window.started_at)
+                advanced = False
+                while next_boundary <= effective_now:
+                    _open_team_cost_budget_window(
+                        team,
+                        now=next_boundary,
+                        kind=TeamCostBudgetWindowKind.MONTHLY_RENEWAL,
+                        actor="system:team-cost-budget-renewal",
+                        reason="UTC monthly cost budget renewal.",
+                    )
+                    next_boundary = _next_utc_month_start(next_boundary)
+                    advanced = True
+                if advanced:
+                    team.updated_at = effective_now
+            return state
+
+        return self._repository.update(_mutate)
 
     def create_governance_group(
         self,
@@ -3901,6 +4049,9 @@ class TeamAdminService:
         )
         max_cost_usd = team_input.get("max_cost_usd") if "max_cost_usd" in team_input else None
         cost_warning_ratio = _cost_warning_ratio(team_input.get("cost_warning_ratio"))
+        cost_budget_renewal_mode = _cost_budget_renewal_mode(
+            team_input.get("cost_budget_renewal_mode")
+        )
         project_name = _required_text(project_input.get("name"), "project.name")
         git = _project_git_config(project_input.get("git"))
 
@@ -4070,7 +4221,7 @@ class TeamAdminService:
                 ephemeral_policy=root_role.ephemeral_policy.model_copy(deep=True),
             )
             state.agents[manager.id] = manager
-            state.teams[team_id] = Team(
+            team = Team(
                 id=team_id,
                 name=team_name,
                 manager_agent_id=manager.id,
@@ -4078,9 +4229,19 @@ class TeamAdminService:
                 escalate_to_governance=escalate_to_governance or False,
                 max_cost_usd=max_cost_usd,
                 cost_warning_ratio=cost_warning_ratio,
+                cost_budget_renewal_mode=cost_budget_renewal_mode,
                 created_at=now,
                 updated_at=now,
             )
+            if team.max_cost_usd is not None:
+                _open_team_cost_budget_window(
+                    team,
+                    now=now,
+                    kind=TeamCostBudgetWindowKind.CONFIGURED,
+                    actor="operator:team-template",
+                    reason="Initial cost budget configured from Team template.",
+                )
+            state.teams[team_id] = team
 
             project_goals = [
                 goal.model_copy(update={"id": goal_ids[goal.id]}, deep=True)

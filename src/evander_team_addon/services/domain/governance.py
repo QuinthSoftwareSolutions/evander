@@ -234,7 +234,9 @@ def _governance_cost_signals(
             max_cost = _decimal_or_none(team.max_cost_usd)
         if max_cost is None or max_cost <= 0:
             continue
-        estimated = _decimal_or_zero(cost.get("estimated_cost"))
+        lifetime_estimated = _decimal_or_zero(cost.get("estimated_cost"))
+        window_estimated = _decimal_or_none(cost.get("budget_window_estimated_cost"))
+        estimated = window_estimated if window_estimated is not None else lifetime_estimated
         remaining = max(max_cost - estimated, Decimal("0"))
         usage_ratio = estimated / max_cost
         if bool(cost.get("cost_limit_reached")) or estimated >= max_cost:
@@ -249,9 +251,11 @@ def _governance_cost_signals(
                 "team_id": team_id,
                 "team_name": team.name,
                 "estimated_cost": float(estimated),
+                "lifetime_estimated_cost": float(lifetime_estimated),
                 "max_cost_usd": float(max_cost),
                 "remaining_cost_usd": float(remaining),
                 "usage_ratio": float(usage_ratio),
+                "cost_limit_basis": cost.get("cost_limit_basis") or "lifetime",
                 "coverage_status": cost.get("coverage_status"),
                 "coverage_reasons": list(cost.get("coverage_reasons") or []),
             }

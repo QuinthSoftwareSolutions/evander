@@ -28,7 +28,7 @@ from .models import (
 ADDON_ID = "team-addon"
 STATE_DB_FILE = "state.db"
 LEGACY_STATE_FILE = "state.json"
-SQLITE_SCHEMA_VERSION = 55
+SQLITE_SCHEMA_VERSION = 56
 _SQLITE_WAL_ENABLE_TIMEOUT_SECONDS = 5.0
 
 T = TypeVar("T")
@@ -890,6 +890,18 @@ class TeamStateSqliteStore:
                     table_name="team_teams",
                     column_name="cost_warning_ratio",
                     definition="TEXT NOT NULL DEFAULT '0.8'",
+                )
+                _ensure_column(
+                    connection,
+                    table_name="team_teams",
+                    column_name="cost_budget_renewal_mode",
+                    definition="TEXT NOT NULL DEFAULT 'manual'",
+                )
+                _ensure_column(
+                    connection,
+                    table_name="team_teams",
+                    column_name="cost_budget_windows_json",
+                    definition="TEXT NOT NULL DEFAULT '[]'",
                 )
                 _ensure_column(
                     connection,
@@ -1900,6 +1912,8 @@ class TeamStateSqliteStore:
                 "operator_communication_target_id": row["operator_communication_target_id"],
                 "max_cost_usd": row["max_cost_usd"],
                 "cost_warning_ratio": row["cost_warning_ratio"],
+                "cost_budget_renewal_mode": row["cost_budget_renewal_mode"],
+                "cost_budget_windows": _json_loads(row["cost_budget_windows_json"] or "[]"),
                 "escalate_to_governance": _bool(row["escalate_to_governance"]),
                 "project_ids": project_ids.get(row["id"], []),
                 "created_at": row["created_at"],
@@ -1914,9 +1928,10 @@ class TeamStateSqliteStore:
                 """
                 INSERT INTO team_teams(
                     id, name, manager_agent_id, operator_communication_target_id,
-                    max_cost_usd, cost_warning_ratio, escalate_to_governance, created_at, updated_at, archived
+                    max_cost_usd, cost_warning_ratio, cost_budget_renewal_mode,
+                    cost_budget_windows_json, escalate_to_governance, created_at, updated_at, archived
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     team["id"],
@@ -1925,6 +1940,8 @@ class TeamStateSqliteStore:
                     team.get("operator_communication_target_id"),
                     _optional_text(team.get("max_cost_usd")),
                     _optional_text(team.get("cost_warning_ratio")) or "0.8",
+                    _optional_text(team.get("cost_budget_renewal_mode")) or "manual",
+                    _json_dumps(team.get("cost_budget_windows") or []),
                     _int_bool(team.get("escalate_to_governance")),
                     team["created_at"],
                     team["updated_at"],
@@ -7519,6 +7536,8 @@ CREATE TABLE IF NOT EXISTS team_teams (
     operator_communication_target_id TEXT,
     max_cost_usd TEXT,
     cost_warning_ratio TEXT NOT NULL DEFAULT '0.8',
+    cost_budget_renewal_mode TEXT NOT NULL DEFAULT 'manual',
+    cost_budget_windows_json TEXT NOT NULL DEFAULT '[]',
     escalate_to_governance INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
