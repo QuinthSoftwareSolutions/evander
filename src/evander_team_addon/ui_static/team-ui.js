@@ -3185,12 +3185,10 @@ function bindAgentEditTeamScopedSelects() {
     if (
       contextPolicySelect?.form === elements.editForm
       && text(elements.editForm?.dataset.editType) === "agent"
-      && text(contextPolicySelect.value) === "idle"
     ) {
-      const graceInput = contextPolicySelect.form.elements.context_clearing_idle_grace_minutes;
-      if (graceInput && numberOrZero(graceInput.value) === 0) {
-        graceInput.value = "60";
-      }
+      syncAgentEditContextIdleGraceField(contextPolicySelect.form, {
+        suggestDefaultGrace: true,
+      });
     }
     const teamSelect = event.target?.closest?.('select[name="team_id"]');
     if (!teamSelect || teamSelect.form !== elements.editForm) {
@@ -3201,6 +3199,23 @@ function bindAgentEditTeamScopedSelects() {
     }
     refreshAgentEditTeamScopedSelects(teamSelect.form);
   });
+}
+
+function syncAgentEditContextIdleGraceField(form, { suggestDefaultGrace = false } = {}) {
+  const contextPolicySelect = form?.elements?.context_clearing_policy;
+  const idleGraceField = form?.querySelector?.("[data-agent-context-idle-grace]");
+  if (!contextPolicySelect || !idleGraceField) {
+    return;
+  }
+  const isIdle = text(contextPolicySelect.value) === "idle";
+  idleGraceField.hidden = !isIdle;
+  if (!isIdle || !suggestDefaultGrace) {
+    return;
+  }
+  const graceInput = form.elements.context_clearing_idle_grace_minutes;
+  if (graceInput && numberOrZero(graceInput.value) === 0) {
+    graceInput.value = "60";
+  }
 }
 
 function refreshAgentEditTeamScopedSelects(form) {
@@ -23290,7 +23305,9 @@ function renderEditFields(type, record) {
       ${numberField("Max ephemeral agents", "max_concurrent", ephemeralCapacity(record), { min: 0 })}
       ${selectField("Status", "status", "agent-statuses", record.status || "active", { required: true })}
       ${selectField("Context clearing", "context_clearing_policy", "context-clearing-policies", contextPolicy, { required: true })}
-      ${numberField("Idle grace minutes", "context_clearing_idle_grace_minutes", contextIdleGraceMinutes, { min: 0, max: 10080, step: "any", required: true })}
+      <div data-agent-context-idle-grace${contextPolicy === "idle" ? "" : " hidden"}>
+        ${numberField("Idle grace minutes", "context_clearing_idle_grace_minutes", contextIdleGraceMinutes, { min: 0, max: 10080, step: "any", required: true })}
+      </div>
     `;
   }
   if (type === "role") {
@@ -23495,6 +23512,7 @@ function editPayloadForForm(type, form) {
     const currentProjectId = currentRecord ? agentEditProjectId(currentRecord) : "";
     const requestedTeamId = text(data.team_id);
     const normalizedTeamId = requestedTeamId === noTeamRecordId ? null : requestedTeamId || null;
+    const contextClearingPolicy = text(data.context_clearing_policy) || "off";
     const payload = {
       team_id: normalizedTeamId,
       role_id: text(data.role_id) || null,
@@ -23507,11 +23525,13 @@ function editPayloadForForm(type, form) {
       },
       ephemeral_policy: { max_concurrent: numberOrZero(data.max_concurrent) },
       status: text(data.status),
-      context_clearing_policy: text(data.context_clearing_policy) || "off",
-      context_clearing_idle_grace_seconds: Math.round(
-        numberOrZero(data.context_clearing_idle_grace_minutes) * 60,
-      ),
+      context_clearing_policy: contextClearingPolicy,
     };
+    if (contextClearingPolicy === "idle") {
+      payload.context_clearing_idle_grace_seconds = Math.round(
+        numberOrZero(data.context_clearing_idle_grace_minutes) * 60,
+      );
+    }
     if (selectedProjectId !== currentProjectId) {
       payload.project_id = selectedProjectId || null;
     }

@@ -1,5 +1,10 @@
 # Changelog
 
+## 2026-08-10 - Team Agent Context Editor
+
+- Show Idle grace minutes only when an agent uses idle context clearing, update it immediately
+  when the policy changes, and leave the stored grace unchanged for other policies.
+
 ## 2026-08-10 - Team Project-Lead Handoff
 
 - Added a revision-safe Team admin handoff for an existing project's lead overlay, preserving the
