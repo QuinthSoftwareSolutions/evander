@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-08-10 - Graph Email Trigger Reliability
+
+- Used Microsoft Graph's supported message-delta date filter for fallback polling and kept the
+  unread check client-side, allowing unread email workflow triggers to poll successfully.
+- Baseline newly registered communication, email, Discord, Teams, and Teams-transcript triggers at
+  their save-time cursor so a new subscription does not replay historical messages or transcripts.
+
 ## 2026-08-10 - Resettable Team Cost Budgets
 
 - Changed Team cost-cap enforcement from a lifetime-only guard to audited budget windows. Teams

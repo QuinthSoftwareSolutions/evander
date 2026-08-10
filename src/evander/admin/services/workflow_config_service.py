@@ -96,6 +96,9 @@ from evander.storage import JsonStore
 from evander.triggers.providers._local_tickets import (
     seed_new_ticket_created_trigger_cursors,
 )
+from evander.triggers.providers._new_message_baselines import (
+    seed_new_message_trigger_cursors,
+)
 from evander.triggers.queue import (
     SqliteTriggerEventQueue,
     TriggerEventQueue,
@@ -2556,6 +2559,10 @@ class WorkflowConfigAdminService:
             previous_config=existing_editable_config,
             next_config=validation.config,
         )
+        self._seed_new_message_trigger_cursors(
+            previous_config=existing_editable_config,
+            next_config=validation.config,
+        )
         layout_path = (
             self._workflow_editor_pack_layout_path(selected_reference)
             if selected_reference is not None
@@ -2706,6 +2713,25 @@ class WorkflowConfigAdminService:
             runtime_dir=runtime_dir,
             previous_config=previous_config,
             next_config=next_config,
+        )
+
+    def _seed_new_message_trigger_cursors(
+        self, *, previous_config: dict[str, object], next_config: dict[str, object]
+    ) -> None:
+        runtime_dir = _resolve_path_setting(
+            base_dir=self.project_dir,
+            value=next_config.get("runtime_dir"),
+            fallback=self.config.runtime_dir,
+        )
+        seed_new_message_trigger_cursors(
+            runtime_dir=runtime_dir,
+            previous_config=previous_config,
+            next_config=next_config,
+            teams_meeting_store_path=_resolve_path_setting(
+                base_dir=self.project_dir,
+                value=next_config.get("teams_meeting_store_path"),
+                fallback=self.config.teams_meeting_store_path,
+            ),
         )
 
     def _clear_workflow_run(self, event_id: str) -> WorkflowRunClearPayload:
@@ -3442,6 +3468,10 @@ class WorkflowConfigAdminService:
                 next_config = dict(config)
                 next_config["triggers"] = existing_triggers + [normalized_payload]
                 self._seed_new_ticket_created_trigger_cursors(
+                    previous_config=config,
+                    next_config=next_config,
+                )
+                self._seed_new_message_trigger_cursors(
                     previous_config=config,
                     next_config=next_config,
                 )

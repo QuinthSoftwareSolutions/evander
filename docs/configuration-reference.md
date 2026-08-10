@@ -1047,6 +1047,11 @@ Targets selected for this trigger must include `read`, must be Teams channel/cha
 channel, or mailbox-backed email targets, and are resolved for the trigger's `directory_path`
 before the provider polls host-owned inbox stores or the configured email provider.
 
+New inbound-message subscriptions establish their cursor when the workflow change is saved. This
+applies to provider-neutral communication, email, Discord, Teams, Teams direct-message, and Teams
+meeting-transcript triggers, so historical unread messages and transcripts are not replayed merely
+because a trigger was added.
+
 `effect:notification:send` delivers through a declared communication target in
 the same directory-scoped SQLite store. The target must include the `notify`
 capability. Teams and Discord targets post a status message; email targets create

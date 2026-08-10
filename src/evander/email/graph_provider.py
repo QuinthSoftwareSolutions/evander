@@ -744,7 +744,7 @@ class GraphEmailProvider:
                     "id,subject,bodyPreview,from,toRecipients,isRead,receivedDateTime,"
                     "conversationId,parentFolderId"
                 ),
-                "$filter": f"isRead eq false and receivedDateTime ge {since}",
+                "$filter": f"receivedDateTime ge {since}",
                 "$orderby": "receivedDateTime DESC",
                 "$top": max(1, limit * 2),
             },

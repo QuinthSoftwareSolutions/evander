@@ -5453,13 +5453,20 @@ def test_admin_web_save_seeds_new_ticket_created_trigger_cursor(tmp_path: Path) 
         "id": "ticket-copy",
         "display_name": "Ticket created Copy",
     }
+    email_trigger = {
+        "id": "email-copy",
+        "display_name": "Email received",
+        "type": "trigger:email:new-message",
+        "mailbox_ids": ["default"],
+    }
     _unlock_privileged_operations(client)
+    before_save = datetime.now(timezone.utc)
     response = client.put(
         "/api/workflow-editor/document",
         json={
             "config": {
                 "runtime_dir": str(runtime_dir),
-                "triggers": [existing_trigger, copied_trigger],
+                "triggers": [existing_trigger, copied_trigger, email_trigger],
                 "gates": [],
                 "effects": [],
                 "queries": [],
@@ -5475,6 +5482,12 @@ def test_admin_web_save_seeds_new_ticket_created_trigger_cursor(tmp_path: Path) 
     assert cursor_payload["preserve-me"] == {"last_created_at": "2026-05-01T00:00:00Z"}
     assert "ticket-existing" not in cursor_payload
     assert cursor_payload["ticket-copy"]["last_created_at"] == "2026-05-02T11:30:00Z"
+    email_cursor = json.loads(
+        (runtime_dir / "trigger-cursors-email.json").read_text(encoding="utf-8")
+    )["email-copy"]
+    seeded_at = datetime.fromisoformat(email_cursor["last_received_at"].replace("Z", "+00:00"))
+    assert before_save <= seeded_at <= datetime.now(timezone.utc)
+    assert email_cursor["recent_message_ids"] == []
 
 
 def test_admin_web_validate_reports_missing_binding_output(tmp_path: Path) -> None:

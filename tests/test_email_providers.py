@@ -759,6 +759,41 @@ def test_graph_get_message_selects_only_base_attachment_properties(
     assert detail.message_id == "msg-1"
 
 
+def test_graph_bounded_polling_uses_supported_date_filter(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("GRAPH_ACCESS_TOKEN", "secret-token")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.params["$filter"].startswith("receivedDateTime ge ")
+        assert "isRead" not in request.url.params["$filter"]
+        return httpx.Response(
+            200,
+            json={
+                "value": [
+                    {"id": "unread", "isRead": False},
+                    {"id": "read", "isRead": True},
+                ],
+                "@odata.deltaLink": "https://graph.test/v1.0/delta-token",
+            },
+            request=request,
+        )
+
+    provider = GraphEmailProvider(
+        account_identifier="leader@example.com",
+        folder_mapping={"inbox": "Inbox"},
+        auth_secret_refs={"access_token": "GRAPH_ACCESS_TOKEN"},
+        timeout_seconds=5.0,
+        api_base_url="https://graph.test/v1.0",
+    )
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        messages, next_delta_link = provider._list_bounded_polling(client, "Inbox", 10)
+
+    assert messages == [{"id": "unread", "isRead": False}]
+    assert next_delta_link == "https://graph.test/v1.0/delta-token"
+
+
 def test_graph_get_message_resolves_opaque_parent_folder_to_policy_folder(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
