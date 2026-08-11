@@ -1,5 +1,16 @@
 # Changelog
 
+## 2026-08-11 - GitHub Managed Git Refresh Authentication
+
+- Rewrote token-backed GitHub SSH refresh sources to their canonical HTTPS URLs at Git invocation
+  time, so the host-owned refresh broker uses its configured GitHub token while preserving
+  registered SSH source identity and fail-closed stale-ref behavior.
+
+## 2026-08-11 - Workflow Graph Label Legibility
+
+- Reduced workflow-canvas graph labels, kept each name on one line, and scaled labels with the
+  canvas zoom so adjacent graph names no longer crowd one another when viewing a broad workflow.
+
 ## 2026-08-11 - Bounded Team Test Execution
 
 - Versioned Team agent guidance to require explicit timeouts on every test command, recommend a

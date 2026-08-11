@@ -4768,17 +4768,17 @@ select {
 
 .workflow-graph-canvas-label {
   position: absolute;
-  max-width: min(18rem, 32vw);
-  transform: translate(-100%, -50%);
+  transform: translate(-100%, -50%) scale(var(--workflow-graph-label-scale, 1));
+  transform-origin: right center;
   color: rgba(48, 74, 73, 0.42);
   font-family: "Avenir Next Condensed", "Franklin Gothic Medium", sans-serif;
-  font-size: clamp(1.5rem, 2.0vw, 2.3rem);
+  font-size: clamp(0.9rem, 1.1vw, 1.35rem);
   font-weight: 800;
-  line-height: 0.95;
-  overflow-wrap: anywhere;
+  line-height: 1;
   text-align: right;
   text-transform: uppercase;
   text-shadow: 0 1px 0 rgba(255, 252, 246, 0.72);
+  white-space: nowrap;
 }
 
 .workflow-graph-canvas-label.selected {
