@@ -12330,7 +12330,13 @@ export default function App() {
                 <div
                   key={label.graph.id}
                   className={`workflow-graph-canvas-label${selectedGraphId === label.graph.id ? " selected" : ""}`}
-                  style={{ left: `${label.left}px`, top: `${label.top}px` }}
+                  style={
+                    {
+                      left: `${label.left}px`,
+                      top: `${label.top}px`,
+                      "--workflow-graph-label-scale": Math.max(0.45, Math.min(1, canvasViewport.zoom)),
+                    } as CSSProperties
+                  }
                 >
                   {label.graph.name}
                 </div>
