@@ -90,6 +90,9 @@ from evander_team_addon.repository import (
 )
 from evander_team_addon.services.domain.chat import CHAT_MESSAGE_QUEUED_EVENT_TYPE
 from evander_team_addon.services.domain.blockers import open_or_get_blocker
+from evander_team_addon.services.domain.operator_escalation import (
+    record_operator_escalation_delivery,
+)
 from evander_team_addon.services.domain.common import DEFAULT_AGENT_WAKE_REQUEST_DEBOUNCE_SECONDS
 from evander_team_addon.services.domain.ephemeral import (
     EPHEMERAL_COMPLETED_EVENT_TYPE,
@@ -2079,6 +2082,67 @@ def test_repository_escalate_operator_command_records_direct_operator_outbox(
         item for item in state.inbox.values() if item.item_type == TeamInboxItemType.ESCALATION
     ]
     assert len(escalation_items) == 1
+    assert escalation_items[0].payload["sender_session_id"] == "session-manager"
+    assert escalation_items[0].payload["escalation_id"] == first["escalation_id"]
+    assert first["progress_made"] is False
+
+
+def test_operator_escalation_delivery_is_recorded_and_only_success_resets_progress(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _set_operator_target(repo, "operator:ops-channel")
+    _lease_agent_dispatch(repo, agent_id="manager", dispatch_id="dispatch-escalation-delivery")
+    state, escalation = _command_service(repo).escalate_operator_command(
+        session_id="session-manager",
+        title="Need a decision",
+        message="Blocked waiting on operator input.",
+        request_id="request-escalation-delivery",
+    )
+    escalation_id = escalation["escalation_id"]
+
+    def _mark_failed_delivery(state_model: TeamState) -> TeamState:
+        state_model.agent_runtimes["manager"].no_progress_count = 2
+        record_operator_escalation_delivery(
+            state_model,
+            escalation_id=escalation_id,
+            success=False,
+            error="primary and fallback sends failed",
+            fallback_used=True,
+        )
+        return state_model
+
+    state = repo.update(_mark_failed_delivery)
+    item = next(
+        item for item in state.inbox.values() if item.payload.get("escalation_id") == escalation_id
+    )
+    assert state.agent_runtimes["manager"].no_progress_count == 2
+    assert item.priority == TeamInboxPriority.HIGH
+    assert item.response_requested is True
+    assert item.payload["delivery"]["status"] == "failed"
+    assert item.payload["delivery"]["error"] == "primary and fallback sends failed"
+    assert item.payload["delivery"]["fallback_used"] is True
+    assert item.payload["delivery"]["attempt_count"] == 1
+
+    def _mark_delivered(state_model: TeamState) -> TeamState:
+        record_operator_escalation_delivery(
+            state_model,
+            escalation_id=escalation_id,
+            success=True,
+            provider_message_id="provider-message-1",
+            fallback_used=True,
+        )
+        return state_model
+
+    state = repo.update(_mark_delivered)
+    item = next(
+        item for item in state.inbox.values() if item.payload.get("escalation_id") == escalation_id
+    )
+    assert state.agent_runtimes["manager"].no_progress_count == 0
+    assert item.payload["delivery"]["status"] == "delivered"
+    assert item.payload["delivery"]["provider_message_id"] == "provider-message-1"
+    assert item.payload["delivery"]["fallback_used"] is True
+    assert item.payload["delivery"]["attempt_count"] == 2
 
 
 def test_repository_escalate_operator_command_rejects_non_manager(
@@ -4512,6 +4576,65 @@ def test_blocker_specific_progress_keeps_owner_and_sets_follow_up(tmp_path: Path
         and event.event_type == TeamBlockerEventType.OWNER_TRANSFERRED
         for event in state.blocker_events.values()
     )
+
+
+def test_blocker_follow_up_without_evidence_counts_as_no_progress(tmp_path: Path) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    blocker_id = _report_explicit_blocker(
+        repo,
+        reporter_agent_id="worker",
+        reporter_session_id="session-worker",
+        source_id="unchanged-dependency",
+    )
+    _lease_backend(repo, dispatch_id="dispatch-unchanged-follow-up", no_progress_count=2)
+
+    _state, update = _command_service(repo).update_blocker_command(
+        session_id="session-backend",
+        blocker_id=blocker_id,
+        action="progress",
+        note="The dependency is still unavailable.",
+        follow_up_seconds=300,
+        request_id="request-unchanged-follow-up",
+    )
+    assert update["success"] is True
+    assert update["progress_made"] is False
+
+    state, finalized = _team_runtime_service(repo).finalize_agent_dispatch_from_activity(
+        session_id="session-backend",
+        dispatch_id="dispatch-unchanged-follow-up",
+    )
+
+    assert finalized["progress_made"] is False
+    assert state.agent_runtimes["backend"].no_progress_count == 3
+
+
+def test_blocker_progress_with_evidence_resets_no_progress_count(tmp_path: Path) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    blocker_id = _report_explicit_blocker(
+        repo,
+        reporter_agent_id="worker",
+        reporter_session_id="session-worker",
+        source_id="evidenced-dependency",
+    )
+    _lease_backend(repo, dispatch_id="dispatch-evidenced-progress", no_progress_count=2)
+
+    _state, update = _command_service(repo).update_blocker_command(
+        session_id="session-backend",
+        blocker_id=blocker_id,
+        action="progress",
+        note="Verified a repaired dependency response.",
+        resolution_refs=["dependency-check-2026-08-11"],
+        request_id="request-evidenced-progress",
+    )
+    assert update["progress_made"] is True
+
+    state, finalized = _team_runtime_service(repo).finalize_agent_dispatch_from_activity(
+        session_id="session-backend",
+        dispatch_id="dispatch-evidenced-progress",
+    )
+
+    assert finalized["progress_made"] is True
+    assert state.agent_runtimes["backend"].no_progress_count == 0
 
 
 @pytest.mark.parametrize(
@@ -13193,7 +13316,7 @@ def test_apply_agent_action_manager_operator_escalation_emits_event(tmp_path: Pa
 
     assert result["success"] is True
     assert len(result["operator_escalation_event_ids"]) == 1
-    assert state.agent_runtimes["manager"].no_progress_count == 0
+    assert state.agent_runtimes["manager"].no_progress_count == 1
     event = next(
         event
         for event in result["events"]
@@ -13201,8 +13324,10 @@ def test_apply_agent_action_manager_operator_escalation_emits_event(tmp_path: Pa
     )
     assert event["event_type"] == "team.operator.escalation_requested"
     assert event["payload"] == {
+        "escalation_id": event["correlation_key"],
         "team_id": "team",
         "manager_agent_id": "manager",
+        "sender_session_id": "session-manager",
         "communication_target_id": "operator:ops-channel",
         "title": "Need a decision",
         "message": "Blocked waiting on operator input.",

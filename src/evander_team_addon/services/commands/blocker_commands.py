@@ -517,12 +517,17 @@ class TeamBlockerCommandService(TeamCommandExecutor):
                 )
 
             now = _ensure_utc(utc_now())
+            # A recurring "still blocked" note changes bookkeeping, but it does
+            # not make the blocked work advance.  Only a progress update carrying
+            # new evidence can reset the dispatch no-progress counter; route and
+            # resolution actions are material by construction.
+            progress_made = normalized_action != "progress" or bool(normalized_refs)
             result: dict[str, Any] = {
                 "blocker_id": blocker.id,
                 "created_inbox_item_ids": [],
                 "events": [],
                 "errors": [],
-                "progress_made": True,
+                "progress_made": progress_made,
             }
             handled_ids = handle_blocker_inbox_for_agent(
                 state,
@@ -748,7 +753,7 @@ class TeamBlockerCommandService(TeamCommandExecutor):
                 response_payload=result,
                 created_domain_ids=[*event_ids, *result["created_inbox_item_ids"]],
                 created_event_ids=event_ids,
-                progress_classification="blocker_progress",
+                progress_classification=("blocker_progress" if progress_made else "none"),
             )
 
         return self._execute_team_command(

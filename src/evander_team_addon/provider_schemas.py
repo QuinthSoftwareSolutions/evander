@@ -101,6 +101,15 @@ class TeamRecordExternalChatDeliveryEffectDefinition(EffectDefinition):
     error: ConfigValue | None = None
 
 
+class TeamRecordOperatorEscalationDeliveryEffectDefinition(EffectDefinition):
+    type: Literal["effect:team:record-operator-escalation-delivery"]
+    escalation_id: ConfigValue
+    success: ConfigValue
+    provider_message_id: ConfigValue | None = None
+    error: ConfigValue | None = None
+    fallback_used: ConfigValue | None = None
+
+
 class TeamCreateOperatorDirectiveEffectDefinition(EffectDefinition):
     type: Literal["effect:team:create-operator-directive"]
     team_id: ConfigValue
@@ -553,6 +562,16 @@ TEAM_OUTPUT_SCHEMAS: dict[str, dict[str, dict[str, Any]]] = {
         "attempt_count": {"type": "integer"},
         "provider_message_id": {"type": ["string", "null"]},
         "error": {"type": ["string", "null"]},
+    },
+    "effect:team:record-operator-escalation-delivery": {
+        "success": {"type": "boolean"},
+        "escalation_id": {"type": "string"},
+        "manager_agent_id": {"type": "string"},
+        "status": {"type": "string"},
+        "attempt_count": {"type": "integer"},
+        "provider_message_id": {"type": ["string", "null"]},
+        "error": {"type": ["string", "null"]},
+        "fallback_used": {"type": "boolean"},
     },
     "effect:team:create-operator-directive": {
         "success": {"type": "boolean"},

@@ -35,7 +35,12 @@ class CommunicationSendMessageEffectProvider(EffectProviderBase):
             message=message,
             thread_id=thread_id,
             subject=subject,
-            sender_session_id=sender_session_id or f"workflow:{self._effect_id()}",
+            # ``workflow`` is the supported host-owned sender for an effect that
+            # does not carry an agent session.  Inventing a per-effect session
+            # makes Discord's write-capability lookup reject the message as an
+            # unknown session, turning a missing optional identity into a silent
+            # delivery failure.
+            sender_session_id=sender_session_id or "workflow",
         )
 
     def _effect_payload(self) -> dict[str, Any]:

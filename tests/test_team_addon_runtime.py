@@ -209,6 +209,7 @@ def test_team_runtime_pack_layout_positions_every_runtime_node() -> None:
 
     node_ids = {ir_node.node.id for ir_node in pack.ir.nodes}
     assert set(nodes) == node_ids
+    assert set(pack.graphs[0].node_ids) == node_ids
     assert len({(position["x"], position["y"]) for position in nodes.values()}) == len(node_ids)
     assert nodes["team-consolidate-correction-branches"] == {"x": 720.0, "y": 1360.0}
     assert nodes["team-publish-outbox-on-request"] == {"x": 360.0, "y": 40.0}
@@ -462,6 +463,8 @@ def test_team_runtime_pack_loads_as_current_workflow_pack(tmp_path: Path) -> Non
     assert "team-send-external-chat-reply" in _node_ids(config.effects)
     assert "team-record-external-chat-delivery" in _node_ids(config.effects)
     assert "team-notify-operator" in _node_ids(config.effects)
+    assert "team-notify-operator-fallback" in _node_ids(config.effects)
+    assert "team-record-operator-escalation-delivery" in _node_ids(config.effects)
     assert "team-git-promote-review-branch" in _node_ids(config.effects)
     assert "team-promote-release-recovery-branch" in _node_ids(config.effects)
     assert "team-verify-release-candidate" in _node_ids(config.effects)
@@ -483,6 +486,9 @@ def test_team_runtime_pack_loads_as_current_workflow_pack(tmp_path: Path) -> Non
         "type": "boolean"
     }
     assert document.output_schemas["team-record-external-chat-delivery"]["status"] == {
+        "type": "string"
+    }
+    assert document.output_schemas["team-record-operator-escalation-delivery"]["status"] == {
         "type": "string"
     }
     assert document.output_schemas["team-wake-due-agents"]["prepared_project_repos"] == {
@@ -11215,7 +11221,28 @@ def test_team_runtime_pack_routes_operator_escalation_to_communication() -> None
     assert "${{team-operator-escalation.payload.title}}" in notify["message"]
     assert "${{team-operator-escalation.payload.message}}" in notify["message"]
     assert "${{team-operator-escalation.payload.urgency}}" in notify["message"]
+    assert notify["sender_session_id"] == (
+        "${{team-operator-escalation.payload.sender_session_id ?? null}}"
+    )
+    fallback = effects["team-notify-operator-fallback"]
+    assert fallback["type"] == "effect:communication:send-message"
+    assert fallback["sender_session_id"] == "workflow"
+    assert effects["team-record-operator-escalation-delivery"]["type"] == (
+        "effect:team:record-operator-escalation-delivery"
+    )
+    assert effects["team-record-operator-escalation-fallback-delivery"]["fallback_used"] is True
+    assert effects["team-record-operator-escalation-delivery-failure"]["success"] is False
     assert ("team-operator-escalation", "team-notify-operator") in edges
+    assert ("team-notify-operator", "team-record-operator-escalation-delivery") in edges
+    assert ("team-notify-operator", "team-notify-operator-fallback") in {
+        (edge["source_id"], edge["target_id"])
+        for edge in pack["edges"]
+        if edge.get("source_port") == "error"
+    }
+    assert (
+        "team-notify-operator-fallback",
+        "team-record-operator-escalation-fallback-delivery",
+    ) in edges
     assert ("team-chat-message-queued", "team-wake-queued-chat-message") in edges
     assert (
         "team-external-chat-reply-requested",

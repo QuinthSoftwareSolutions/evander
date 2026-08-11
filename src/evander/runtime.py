@@ -557,6 +557,7 @@ def _build_discord_service(
     *,
     session_id: str | None = None,
     capability: CommunicationTargetCapability = "read",
+    allowed_channel_ids_provider: Callable[[], list[str]] | None = None,
 ) -> DiscordService:
     if config.discord_backend == "stub":
         return StubDiscordService(
@@ -584,12 +585,17 @@ def _build_discord_service(
             retry_count=config.discord_retry_count,
             retry_base_backoff_seconds=config.discord_retry_base_backoff_seconds,
             retry_max_backoff_seconds=config.discord_retry_max_backoff_seconds,
-            allowed_channel_ids_provider=lambda: _resolve_allowed_discord_channel_ids(
-                sessions,
-                config,
-                policy_config=policy_config,
-                session_id=session_id,
-                capability=capability,
+            allowed_channel_ids_provider=(
+                allowed_channel_ids_provider
+                or (
+                    lambda: _resolve_allowed_discord_channel_ids(
+                        sessions,
+                        config,
+                        policy_config=policy_config,
+                        session_id=session_id,
+                        capability=capability,
+                    )
+                )
             ),
             operator_user_ids_provider=(
                 policy_config.operator_user_ids_for_active_sessions

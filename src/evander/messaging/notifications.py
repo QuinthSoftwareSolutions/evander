@@ -120,7 +120,7 @@ class NotificationSender:
         message: str,
         sender_session_id: str,
     ) -> Mapping[str, Any]:
-        service = self._discord_service(sender_session_id=sender_session_id)
+        service = self._discord_service(sender_session_id=sender_session_id, target=target)
         channel_id = _discord_channel_id(target.address)
         resolve_identity = getattr(self.runtime, "resolve_outbound_identity", None)
         if (
@@ -162,12 +162,30 @@ class NotificationSender:
     def _resolved_config(self) -> Any:
         return self.runtime.provider_config.resolve_for_directory(self.directory_path)
 
-    def _discord_service(self, *, sender_session_id: str = "workflow") -> Any:
+    def _discord_service(
+        self,
+        *,
+        sender_session_id: str = "workflow",
+        target: CommunicationTargetDefinition | None = None,
+    ) -> Any:
+        allowed_channel_ids_provider = None
+        if target is not None and target.provider == "discord":
+            # A host-owned workflow is authorized by the selected directory
+            # target and its checked capability.  The provider's operator
+            # command allowlist controls polling; it must not accidentally
+            # gate a configured workflow destination.
+            channel_id = _discord_channel_id(target.address)
+
+            def allowed_target_channel_ids() -> list[str]:
+                return [channel_id]
+
+            allowed_channel_ids_provider = allowed_target_channel_ids
         return _build_discord_service(
             self._resolved_config(),
             self.runtime.discord_commands,
             self.runtime.session_repository,
             self.runtime.policy_config,
+            allowed_channel_ids_provider=allowed_channel_ids_provider,
         )
 
     def _teams_service(self, target_address: str) -> Any:
@@ -218,10 +236,15 @@ class NotificationSender:
 
 
 class CommunicationMessageSender(NotificationSender):
-    def _discord_service(self, *, sender_session_id: str = "workflow") -> Any:
+    def _discord_service(
+        self,
+        *,
+        sender_session_id: str = "workflow",
+        target: CommunicationTargetDefinition | None = None,
+    ) -> Any:
         normalized_session_id = str(sender_session_id or "").strip()
         if not normalized_session_id or normalized_session_id == "workflow":
-            return super()._discord_service(sender_session_id=sender_session_id)
+            return super()._discord_service(sender_session_id=sender_session_id, target=target)
         return _build_discord_service(
             self._resolved_config(),
             self.runtime.discord_commands,

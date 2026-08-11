@@ -1248,6 +1248,7 @@ def route_blocker_terminal(
         )
         return
     escalation_id = f"escalation-{uuid4().hex}"
+    manager = state.agents.get(team.manager_agent_id)
     blocker.route = TeamBlockerRoute.OPERATOR
     blocker.terminal_reference_ids = [escalation_id]
     blocker.updated_at = effective_now
@@ -1281,6 +1282,7 @@ def route_blocker_terminal(
                     "communication_target_id": target,
                     "team_id": team.id,
                     "manager_agent_id": team.manager_agent_id,
+                    "sender_session_id": manager.session_id if manager is not None else None,
                     "title": blocker.summary,
                     "message": blocker.details or reason,
                     "urgency": blocker.priority.value,

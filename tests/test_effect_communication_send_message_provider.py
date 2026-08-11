@@ -142,6 +142,86 @@ def test_communication_send_message_posts_to_discord_channel(tmp_path: Path) -> 
     assert output["channel_id"] == "234567890123456789"
 
 
+def test_communication_send_message_uses_supported_workflow_sender_by_default(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[dict[str, object]] = []
+
+    def send_message(_self, **kwargs: object) -> dict[str, object]:
+        calls.append(dict(kwargs))
+        return {"success": True, "message_id": "workflow-message-1"}
+
+    monkeypatch.setattr(
+        "evander.effects.providers.communication_send_message.CommunicationMessageSender.send_message",
+        send_message,
+    )
+
+    output = _execute(
+        project_dir=tmp_path,
+        runtime=_runtime(tmp_path),
+        target_id="unused-because-the-sender-is-mocked",
+    )
+
+    assert output["success"] is True
+    assert calls == [
+        {
+            "communication_target_id": "unused-because-the-sender-is-mocked",
+            "message": "Workflow completed.",
+            "thread_id": None,
+            "subject": None,
+            "sender_session_id": "workflow",
+        }
+    ]
+
+
+def test_workflow_discord_send_allows_only_its_declared_target(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _write_targets(
+        tmp_path,
+        [
+            {
+                "id": "discord-ops",
+                "provider": "discord",
+                "kind": "discord",
+                "address": "123456789012345678/234567890123456789",
+                "policy": {"capabilities": ["write"]},
+            }
+        ],
+    )
+    service_builds: list[dict[str, object]] = []
+
+    class FakeDiscordService:
+        def post_status(
+            self,
+            message: str,
+            channel_id: str,
+            session_id: str,
+        ) -> dict[str, object]:
+            return {
+                "status": "posted",
+                "message_id": "discord-workflow-1",
+                "channel_id": channel_id,
+                "session_id": session_id,
+            }
+
+    def build_discord_service(*_args: object, **kwargs: object) -> FakeDiscordService:
+        service_builds.append(dict(kwargs))
+        return FakeDiscordService()
+
+    monkeypatch.setattr("evander.messaging.notifications._build_discord_service", build_discord_service)
+
+    output = _execute(project_dir=tmp_path, runtime=_runtime(tmp_path), target_id="discord-ops")
+
+    assert output["message_id"] == "discord-workflow-1"
+    assert len(service_builds) == 1
+    allowed_channel_ids_provider = service_builds[0]["allowed_channel_ids_provider"]
+    assert callable(allowed_channel_ids_provider)
+    assert allowed_channel_ids_provider() == ["234567890123456789"]
+
+
 def test_communication_send_message_uses_resolved_discord_sender_identity(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

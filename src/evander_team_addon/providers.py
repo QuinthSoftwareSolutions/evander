@@ -192,6 +192,7 @@ from .provider_schemas import (
     TeamPublishReviewBranchEffectDefinition,
     TeamRecordGitPromotionEffectDefinition,
     TeamRecordExternalChatDeliveryEffectDefinition,
+    TeamRecordOperatorEscalationDeliveryEffectDefinition,
     TeamRecordHumanReviewPreparationResultEffectDefinition,
     TeamReindexMemoryEffectDefinition,
     TeamRequestEphemeralAgentsEffectDefinition,
@@ -235,7 +236,10 @@ from .services.domain.human_reviews import (
     HUMAN_REVIEW_PREPARATION_REQUESTED_EVENT_TYPE,
     HUMAN_REVIEW_REQUESTED_EVENT_TYPE,
 )
-from .services.domain.operator_escalation import OPERATOR_ESCALATION_EVENT_TYPE
+from .services.domain.operator_escalation import (
+    OPERATOR_ESCALATION_EVENT_TYPE,
+    record_operator_escalation_delivery,
+)
 from .services.domain.outcome_catalog import effective_outcome_kind_payloads
 from .services.domain.preparation_failures import (
     dispatch_project_work_ids,
@@ -841,6 +845,47 @@ _TEAM_WORKFLOW_EDITOR_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
                 "Error",
                 "string",
                 description="Send error to display on the Team reply when delivery fails.",
+            ),
+        ],
+    ),
+    _catalog_entry(
+        "effect",
+        "effect:team:record-operator-escalation-delivery",
+        "Record operator escalation delivery",
+        "Persist whether an operator escalation reached its communication target.",
+        [
+            _catalog_field(
+                "escalation_id",
+                "Escalation ID",
+                "string",
+                required=True,
+                description="Operator escalation identifier emitted by team_escalate_operator.",
+            ),
+            _catalog_field(
+                "success",
+                "Send succeeded",
+                "boolean",
+                required=True,
+                description="Bind from the communication send result or set false on its error branch.",
+            ),
+            _catalog_field(
+                "provider_message_id",
+                "Provider message ID",
+                "string",
+                description="Provider message ID returned after a successful send.",
+            ),
+            _catalog_field(
+                "error",
+                "Error",
+                "string",
+                description="Delivery error retained for the manager when every send attempt fails.",
+            ),
+            _catalog_field(
+                "fallback_used",
+                "Fallback used",
+                "boolean",
+                description="Whether a host-owned fallback sender delivered the escalation.",
+                default_value=False,
             ),
         ],
     ),
@@ -3624,6 +3669,49 @@ class TeamRecordExternalChatDeliveryEffectProvider(EffectProviderBase):
         }
 
 
+class TeamRecordOperatorEscalationDeliveryEffectProvider(EffectProviderBase):
+    @classmethod
+    def validate_definition(cls, effect_definition):
+        if isinstance(effect_definition, WorkflowNodeEnvelope):
+            return _materialize(
+                TeamRecordOperatorEscalationDeliveryEffectDefinition,
+                effect_definition,
+            )
+        return effect_definition
+
+    def execute(self, *, resolved_config: Mapping[str, Any] | None = None) -> dict[str, Any]:
+        payload = _definition_payload(
+            self.effect_definition,
+            "escalation_id",
+            "success",
+            "provider_message_id",
+            "error",
+            "fallback_used",
+        )
+        if resolved_config:
+            payload.update(dict(resolved_config))
+        delivery: dict[str, Any] = {}
+
+        def _mutate(state: TeamState) -> TeamState:
+            nonlocal delivery
+            delivery = record_operator_escalation_delivery(
+                state,
+                escalation_id=_required_text(payload.get("escalation_id"), "escalation_id"),
+                success=_optional_bool(payload.get("success"), default=False),
+                provider_message_id=_optional_text(payload.get("provider_message_id")),
+                error=_optional_text(payload.get("error")),
+                fallback_used=_optional_bool(payload.get("fallback_used"), default=False),
+            )
+            return state
+
+        state = TeamStateRepository(_runtime_dir(self.runtime_context)).update(_mutate)
+        return {
+            "success": delivery["status"] == "delivered",
+            "revision": state.revision,
+            **delivery,
+        }
+
+
 class TeamCreateOperatorDirectiveEffectProvider(EffectProviderBase):
     @classmethod
     def validate_definition(cls, effect_definition):
@@ -6367,6 +6455,9 @@ def register_providers() -> ProviderPluginRegistration:
             "effect:team:record-external-chat-delivery": (
                 TeamRecordExternalChatDeliveryEffectProvider
             ),
+            "effect:team:record-operator-escalation-delivery": (
+                TeamRecordOperatorEscalationDeliveryEffectProvider
+            ),
             "effect:team:create-operator-directive": (TeamCreateOperatorDirectiveEffectProvider),
             "effect:team:create-review-request": TeamCreateReviewRequestEffectProvider,
             "effect:team:create-review-cohort": TeamCreateReviewCohortEffectProvider,
@@ -6426,6 +6517,12 @@ def register_providers() -> ProviderPluginRegistration:
             "effect:team:record-external-chat-delivery": (
                 lambda node: _materialize(
                     TeamRecordExternalChatDeliveryEffectDefinition,
+                    node,
+                )
+            ),
+            "effect:team:record-operator-escalation-delivery": (
+                lambda node: _materialize(
+                    TeamRecordOperatorEscalationDeliveryEffectDefinition,
                     node,
                 )
             ),
