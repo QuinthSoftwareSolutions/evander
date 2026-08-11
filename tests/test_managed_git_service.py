@@ -334,6 +334,37 @@ def test_git_environment_rewrites_azure_ssh_refresh_when_only_general_pat_is_ava
     assert git_config[f"url.{canonical_url}.insteadOf"] == refresh_source
 
 
+def test_git_environment_rewrites_github_ssh_refresh_when_token_is_available(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("GH_TOKEN", raising=False)
+    monkeypatch.setenv("GITHUB_TOKEN", "test-secret")
+    service = ManagedGitAdminService(
+        GatewayConfig(runtime_dir=tmp_path / "runtime"),
+        SimpleNamespace(),
+        tmp_path,
+    )
+    refresh_source = "ssh://git@github.com/example/ExampleRepo.git"
+    canonical_url = "https://github.com/example/ExampleRepo.git"
+
+    git_env = service._git_environment(
+        {
+            "provider": "github",
+            "directory_path": "root",
+            "refresh_source": refresh_source,
+            "canonical_repository_url": canonical_url,
+        }
+    )
+    git_config = {
+        git_env[f"GIT_CONFIG_KEY_{index}"]: git_env[f"GIT_CONFIG_VALUE_{index}"]
+        for index in range(int(git_env["GIT_CONFIG_COUNT"]))
+    }
+
+    assert git_env["EVANDER_GIT_USERNAME"] == "x-access-token"
+    assert git_env["EVANDER_GIT_PASSWORD"] == "test-secret"
+    assert git_config[f"url.{canonical_url}.insteadOf"] == refresh_source
+
+
 def test_git_environment_preserves_azure_ssh_refresh_without_pat(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -351,6 +382,33 @@ def test_git_environment_preserves_azure_ssh_refresh_without_pat(
             "directory_path": "root",
             "refresh_source": "ssh://git@ssh.dev.azure.com/v3/example/project/repo",
             "canonical_repository_url": "https://dev.azure.com/example/project/_git/repo",
+        }
+    )
+    git_config_keys = {
+        git_env[f"GIT_CONFIG_KEY_{index}"] for index in range(int(git_env["GIT_CONFIG_COUNT"]))
+    }
+
+    assert "EVANDER_GIT_PASSWORD" not in git_env
+    assert not any(key.startswith("url.") for key in git_config_keys)
+
+
+def test_git_environment_preserves_github_ssh_refresh_without_token(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+    monkeypatch.delenv("GH_TOKEN", raising=False)
+    service = ManagedGitAdminService(
+        GatewayConfig(runtime_dir=tmp_path / "runtime"),
+        SimpleNamespace(),
+        tmp_path,
+    )
+
+    git_env = service._git_environment(
+        {
+            "provider": "github",
+            "directory_path": "root",
+            "refresh_source": "ssh://git@github.com/example/ExampleRepo.git",
+            "canonical_repository_url": "https://github.com/example/ExampleRepo.git",
         }
     )
     git_config_keys = {

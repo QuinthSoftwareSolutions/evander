@@ -6874,7 +6874,8 @@ class ManagedGitAdminService:
         refresh_source = str(record.get("refresh_source") or "").strip()
         canonical_url = str(record.get("canonical_repository_url") or "").strip()
         if (
-            str(record.get("provider") or "").casefold() == "azure_devops"
+            str(record.get("provider") or "").casefold()
+            in {"azure_devops", "github"}
             and password
             and urlsplit(refresh_source).scheme.casefold() == "ssh"
             and urlsplit(canonical_url).scheme.casefold() == "https"
