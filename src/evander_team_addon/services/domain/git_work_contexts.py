@@ -9,6 +9,7 @@ from ...models import (
     Deliverable,
     GitWorkContext,
     GitWorkContextState,
+    TeamDispatchStatus,
     TeamState,
     TeamTaskState,
     WorktreeCleanupState,
@@ -421,12 +422,21 @@ def reconcile_git_work_context_lifecycle(
             continue
         task = state.tasks.get(context.task_id)
         runtime = state.agent_runtimes.get(context.agent_id)
+        dispatch = state.dispatches.get(context.dispatch_id or "")
+        has_live_preparation_reservation = (
+            dispatch is not None
+            and dispatch.agent_id == context.agent_id
+            and dispatch.status == TeamDispatchStatus.PREPARING
+            and dispatch.preparation_expires_at is not None
+            and _ensure_utc(dispatch.preparation_expires_at) > effective_now
+        )
         should_abandon = (
             task is None
             or task.state in _TERMINAL_TASK_STATES
             or task.owner_agent_id != context.agent_id
             or (
                 context.dispatch_id is not None
+                and not has_live_preparation_reservation
                 and (
                     runtime is None
                     or runtime.active_dispatch_id != context.dispatch_id

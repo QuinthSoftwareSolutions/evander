@@ -1,5 +1,9 @@
 # Changelog
 
+## 2026-08-11 - Team Git Context Preparation Safety
+
+- Kept an active Git work context alive while its owning dispatch has an unexpired preparation reservation, preventing delayed local-inference prompt delivery from abandoning the context before the agent can submit its work.
+
 ## 2026-08-10 - APP Dev Team Discord Routing
 
 - Added a `content_starts_with` filter to provider-neutral communication-message triggers, enabling a shared Discord channel to route only explicit, leading agent-address messages into the durable Team Chat lifecycle.

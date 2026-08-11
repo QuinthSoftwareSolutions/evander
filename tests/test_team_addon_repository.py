@@ -4031,6 +4031,64 @@ def test_repository_reconcile_abandons_matching_dispatch_without_live_lease(
     assert state.git_work_contexts["ctx-task"].state == GitWorkContextState.ABANDONED
 
 
+def test_repository_reconcile_keeps_context_for_live_preparation_reservation(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _seed_task(repo, task_id="task")
+    now = datetime(2026, 7, 24, 8, 0, tzinfo=UTC)
+
+    def _set_preparing_dispatch(state):
+        state.dispatches["dispatch-preparing"] = TeamDispatch(
+            id="dispatch-preparing",
+            agent_id="backend",
+            session_id="session-backend",
+            cause_kind="inbox",
+            task_ids=["task"],
+            project_ids=["project"],
+            status=TeamDispatchStatus.PREPARING,
+            preparation_expires_at=now + timedelta(seconds=60),
+        )
+        return state
+
+    repo.update(_set_preparing_dispatch)
+    _seed_git_work_context(repo, dispatch_id="dispatch-preparing")
+
+    state, result = _team_runtime_service(repo).reconcile_git_work_contexts(now=now)
+
+    assert result == {"submitted": 0, "abandoned": 0, "pruned": 0}
+    assert state.git_work_contexts["ctx-task"].state == GitWorkContextState.ACTIVE
+
+
+def test_repository_reconcile_abandons_context_after_preparation_reservation_expires(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _seed_task(repo, task_id="task")
+    now = datetime(2026, 7, 24, 8, 0, tzinfo=UTC)
+
+    def _set_expired_preparing_dispatch(state):
+        state.dispatches["dispatch-preparing"] = TeamDispatch(
+            id="dispatch-preparing",
+            agent_id="backend",
+            session_id="session-backend",
+            cause_kind="inbox",
+            task_ids=["task"],
+            project_ids=["project"],
+            status=TeamDispatchStatus.PREPARING,
+            preparation_expires_at=now,
+        )
+        return state
+
+    repo.update(_set_expired_preparing_dispatch)
+    _seed_git_work_context(repo, dispatch_id="dispatch-preparing")
+
+    state, result = _team_runtime_service(repo).reconcile_git_work_contexts(now=now)
+
+    assert result == {"submitted": 0, "abandoned": 1, "pruned": 0}
+    assert state.git_work_contexts["ctx-task"].state == GitWorkContextState.ABANDONED
+
+
 def test_blocker_owner_no_progress_transfers_despite_unrelated_progress(
     tmp_path: Path,
 ) -> None:
