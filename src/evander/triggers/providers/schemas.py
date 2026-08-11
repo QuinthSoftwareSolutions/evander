@@ -475,6 +475,7 @@ class CommunicationNewMessageTriggerDefinition(TriggerDefinition):
     directory_path: str | None = "root"
     author_ids: list[str] = Field(default_factory=list)
     content_contains: str | None = None
+    content_starts_with: str | None = None
     case_sensitive: bool = False
 
     @field_validator("communication_target_ids", mode="before")
@@ -485,7 +486,7 @@ class CommunicationNewMessageTriggerDefinition(TriggerDefinition):
             raise ValueError("communication_target_ids must contain at least one target")
         return normalized
 
-    @field_validator("directory_path", "content_contains", mode="before")
+    @field_validator("directory_path", "content_contains", "content_starts_with", mode="before")
     @classmethod
     def normalize_optional_text(cls, value: object, info) -> object:
         if value is None:

@@ -1020,7 +1020,11 @@ def _task_owner_reassignment_error(
 ) -> str | None:
     if task.state not in _NON_TERMINAL_TASK_STATES:
         return f"task {task.id} is terminal and cannot be reassigned"
-    if not _supervises(state, actor.id, task.owner_agent_id):
+    if actor.id != task.owner_agent_id and not _supervises(
+        state,
+        actor.id,
+        task.owner_agent_id,
+    ):
         return f"agent {actor.id} is not permitted to reassign task {task.id}"
     new_owner = state.agents.get(new_owner_id)
     if new_owner is None:

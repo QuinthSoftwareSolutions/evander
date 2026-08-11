@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+import time
 from pathlib import Path
 
 import pytest
@@ -122,15 +123,23 @@ def test_docker_runtime_reports_causal_pids_limit_exhaustion(
     )
     events_path = cgroup_root / "system.slice" / "docker-container-1.scope" / "pids.events"
     events_path.parent.mkdir(parents=True)
-    events_path.write_text("max 1\n", encoding="utf-8")
+    events_path.write_text("max 0\n", encoding="utf-8")
     runtime = DockerContainerRuntime(proc_root=proc_root, cgroup_root=cgroup_root)
+    calls: list[list[str]] = []
 
     def _run(args, **kwargs):
         del kwargs
+        calls.append(args)
         if args[:3] == ["docker", "run", "-d"]:
             return subprocess.CompletedProcess(args=args, returncode=0, stdout="container-1\n")
         if "--format" in args:
             return subprocess.CompletedProcess(args=args, returncode=0, stdout="123\n")
+        if args[-3:] == ["ps", "-eo", "pid=,ppid=,pgid=,args="]:
+            return subprocess.CompletedProcess(
+                args=args,
+                returncode=0,
+                stdout="675 1 675 dotnet test Src/App.Tests.csproj\n",
+            )
         return subprocess.CompletedProcess(
             args=args,
             returncode=0,
@@ -150,13 +159,61 @@ def test_docker_runtime_reports_causal_pids_limit_exhaustion(
         )
 
     monkeypatch.setattr(subprocess, "run", _run)
-    record = _record(paths)
+    record = _record(paths).model_copy(update={"container_id": "container-1"})
 
     runtime.start_job(_request(), record, paths)
+    events_path.write_text("max 1\n", encoding="utf-8")
+    deadline = time.monotonic() + 1.0
+    while not runtime._pids_exhaustion_marker(record).exists() and time.monotonic() < deadline:  # noqa: SLF001
+        time.sleep(0.01)
     inspected = runtime.inspect_job(record)
 
     assert inspected["failure_cause"] == "pids_limit_exhausted"
     assert inspected["oom_killed"] is False
+    assert ["docker", "exec", "container-1", "kill", "-TERM", "-675"] in calls
+
+
+def test_docker_runtime_interrupts_only_a_recognized_test_process_group(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    paths = WorkerSessionPaths.resolve(tmp_path / "worker-root", "session-1")
+    record = _record(paths).model_copy(update={"container_id": "container-1"})
+    calls: list[list[str]] = []
+
+    def _run(args, **kwargs):
+        del kwargs
+        calls.append(args)
+        if args[-3:] == ["ps", "-eo", "pid=,ppid=,pgid=,args="]:
+            return subprocess.CompletedProcess(
+                args=args,
+                returncode=0,
+                stdout=(
+                    "1 0 1 /bin/bash /run-agent.sh\n"
+                    "205 1 205 /usr/local/bin/codex-code-mode-host codex exec dotnet test\n"
+                    "675 1 675 timeout --preserve-status 300 dotnet test Src/App.Tests.csproj\n"
+                    "676 675 675 dotnet test Src/App.Tests.csproj\n"
+                ),
+            )
+        return subprocess.CompletedProcess(args=args, returncode=0, stdout="")
+
+    monkeypatch.setattr(subprocess, "run", _run)
+
+    result = DockerContainerRuntime().interrupt_active_tool(record, reason="operator_requested")
+
+    assert result["interrupted"] is True
+    assert result["process_group_id"] == 675
+    assert calls[-1] == ["docker", "exec", "container-1", "kill", "-TERM", "-675"]
+    assert not any("205" in " ".join(call) and "kill" in call for call in calls)
+
+
+def test_docker_runtime_does_not_interrupt_codex_or_unrecognized_processes() -> None:
+    process_table = (
+        "205 1 205 /usr/local/bin/codex-code-mode-host codex exec dotnet test\n"
+        "400 1 400 bash -lc sleep 999\n"
+    )
+
+    assert DockerContainerRuntime._test_process_group(process_table) is None  # noqa: SLF001
 
 
 def test_docker_run_args_use_restricted_container_shape_and_persistent_mounts(

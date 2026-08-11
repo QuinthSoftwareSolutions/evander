@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+import socket
 import time
 from pathlib import Path
 
@@ -191,6 +192,74 @@ def test_host_wake_sleeper_returns_when_notified(tmp_path: Path) -> None:
         sleeper.close()
 
     assert time.monotonic() - started < 0.5
+
+
+def test_host_wake_sleeper_returns_when_additional_path_is_notified(tmp_path: Path) -> None:
+    primary_path = tmp_path / "worker.wake.sock"
+    scheduled_path = tmp_path / "scheduled-events.wake.sock"
+    sleeper = HostWakeSleeper(primary_path, additional_paths=(scheduled_path,))
+    sleeper.start()
+    try:
+        assert HostWakeNotifier(scheduled_path).notify() is True
+        started = time.monotonic()
+        sleeper.sleep(10.0)
+    finally:
+        sleeper.close()
+
+    assert time.monotonic() - started < 0.5
+
+
+def test_host_wake_sleeper_preserves_live_shared_additional_path(tmp_path: Path) -> None:
+    shared_path = tmp_path / "scheduled-events.wake.sock"
+    first = HostWakeSleeper(
+        tmp_path / "first-worker.wake.sock",
+        additional_paths=(shared_path,),
+    )
+    second = HostWakeSleeper(
+        tmp_path / "second-worker.wake.sock",
+        additional_paths=(shared_path,),
+    )
+    first.start()
+    shared_identity = (shared_path.lstat().st_dev, shared_path.lstat().st_ino)
+    try:
+        second.start()
+        assert (shared_path.lstat().st_dev, shared_path.lstat().st_ino) == shared_identity
+        assert HostWakeNotifier(shared_path).notify() is True
+        started = time.monotonic()
+        first.sleep(10.0)
+        assert time.monotonic() - started < 0.5
+
+        second.close()
+        assert (shared_path.lstat().st_dev, shared_path.lstat().st_ino) == shared_identity
+        assert HostWakeNotifier(shared_path).notify() is True
+        started = time.monotonic()
+        first.sleep(10.0)
+        assert time.monotonic() - started < 0.5
+    finally:
+        second.close()
+        first.close()
+
+
+def test_host_wake_sleeper_recovers_stale_additional_path(tmp_path: Path) -> None:
+    shared_path = tmp_path / "scheduled-events.wake.sock"
+    stale_listener = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
+    stale_listener.bind(str(shared_path))
+    stale_listener.close()
+
+    sleeper = HostWakeSleeper(
+        tmp_path / "worker.wake.sock",
+        additional_paths=(shared_path,),
+    )
+    sleeper.start()
+    try:
+        assert HostWakeNotifier(shared_path).notify() is True
+        started = time.monotonic()
+        sleeper.sleep(10.0)
+        assert time.monotonic() - started < 0.5
+    finally:
+        sleeper.close()
+
+    assert not shared_path.exists()
 
 
 def test_host_wake_notifier_noops_when_receiver_is_missing(tmp_path: Path) -> None:

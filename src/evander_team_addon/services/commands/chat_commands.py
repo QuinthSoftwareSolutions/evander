@@ -259,6 +259,7 @@ class TeamChatCommandService(TeamCommandExecutor):
                                 "operator_message_ids": source_message_ids,
                                 "agent_reply_message_id": reply_id,
                                 "agent_id": agent.id,
+                                "sender_session_id": normalized_session_id,
                                 "provider": provider,
                                 "communication_target_id": communication_target_id,
                                 "source_thread_id": _optional_text(

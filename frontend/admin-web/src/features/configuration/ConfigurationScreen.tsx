@@ -45,7 +45,11 @@ import {
   resolveConfiguredEmailMailboxEntries,
 } from "./EmailMailboxConfiguration";
 import { ConfigurationNavigator } from "./ConfigurationNavigator";
-import type { ConfigurationDraftFieldState } from "./configurationDraftState";
+import {
+  communicationTargetSenderIdentityFromValue,
+  type CommunicationTargetSenderIdentity,
+  type ConfigurationDraftFieldState,
+} from "./configurationDraftState";
 import {
   configurationDestinationsForTab,
   configurationFieldDomId,
@@ -204,10 +208,18 @@ type CommunicationTargetDraftEntry = {
   address: string;
   capabilities: string[];
   authProfileRef: string;
+  senderIdentity: CommunicationTargetSenderIdentity;
 };
 
 type CommunicationTargetDraftParseResult = {
   entries: CommunicationTargetDraftEntry[];
+  error: string | null;
+};
+
+type DiscordWebhookOperationState = {
+  loading: boolean;
+  configured: boolean | null;
+  message: string | null;
   error: string | null;
 };
 
@@ -505,6 +517,7 @@ function communicationTargetEntriesFromConfig(value: unknown): CommunicationTarg
       address: String(target.address ?? ""),
       capabilities: draftCapabilities.length ? draftCapabilities : policyCapabilities,
       authProfileRef: String(target.authProfileRef ?? policy.auth_profile_ref ?? ""),
+      senderIdentity: communicationTargetSenderIdentityFromValue(target),
     };
   });
 }
@@ -583,10 +596,17 @@ function communicationTargetDraftEntriesToConfig(entries: CommunicationTargetDra
       throw new Error(`Communication target ${id} requires provider, kind, and address.`);
     }
     const capabilities = entry.capabilities.map((capability) => capability.trim()).filter(Boolean);
-    const policy: { capabilities: string[]; auth_profile_ref?: string } = { capabilities };
+    const policy: {
+      capabilities: string[];
+      auth_profile_ref?: string;
+      sender_identity?: CommunicationTargetSenderIdentity;
+    } = { capabilities };
     const authProfileRef = entry.authProfileRef.trim();
     if (provider === "email" && authProfileRef) {
       policy.auth_profile_ref = authProfileRef;
+    }
+    if (provider === "discord" && entry.senderIdentity === "resolved") {
+      policy.sender_identity = "resolved";
     }
     return {
       id,
@@ -954,6 +974,9 @@ export function ConfigurationScreen() {
   const [teamsChannelLookupResult, setTeamsChannelLookupResult] = useState<TeamsChannelLookupView | null>(null);
   const [teamsChannelLookupLoading, setTeamsChannelLookupLoading] = useState(false);
   const [teamsChannelLookupError, setTeamsChannelLookupError] = useState<string | null>(null);
+  const [discordWebhookOperations, setDiscordWebhookOperations] = useState<
+    Record<string, DiscordWebhookOperationState>
+  >({});
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const teamsAuthDirectoryPathRef = useRef(normalizeDirectoryPath(selectedDirectoryPath));
@@ -1502,6 +1525,7 @@ export function ConfigurationScreen() {
           address: allowlistEntry,
           capabilities: ["notify"],
           authProfileRef: "",
+          senderIdentity: "platform",
         },
       ];
     });
@@ -1718,6 +1742,62 @@ export function ConfigurationScreen() {
       clear: false,
       value: encodeStringListDraftValue(dedupeStrings(nextEntries)),
     });
+  }
+
+  async function handleDiscordWebhookOperation(
+    targetId: string,
+    action: "status" | "provision" | "test" | "recreate",
+  ) {
+    const normalizedTargetId = targetId.trim().toLowerCase();
+    if (!normalizedTargetId) {
+      setError("Save a non-empty Discord target id before managing its webhook.");
+      return;
+    }
+    const operationKey = `${normalizeDirectoryPath(selectedDirectoryPath)}:${normalizedTargetId}`;
+    setDiscordWebhookOperations((current) => ({
+      ...current,
+      [operationKey]: {
+        loading: true,
+        configured: current[operationKey]?.configured ?? null,
+        message: null,
+        error: null,
+      },
+    }));
+    try {
+      const actionSuffix = action === "status" ? "" : `/${action}`;
+      const payload = await fetchJson<Record<string, unknown>>(
+        `/api/discord-webhooks/targets/${encodeURIComponent(normalizedTargetId)}${actionSuffix}`
+          + `?directory_path=${encodeURIComponent(normalizeDirectoryPath(selectedDirectoryPath))}`,
+        action === "status" ? undefined : { method: "POST" },
+      );
+      const configured = Boolean(payload.configured ?? action !== "status");
+      const channelWebhookCount = Number(payload.channel_webhook_count ?? 0);
+      const personaWebhookCount = Number(payload.persona_webhook_count ?? 0);
+      const message = action === "test"
+        ? `Webhook test posted (message ${String(payload.message_id ?? "created")}).`
+        : action === "status" && configured
+          ? `${channelWebhookCount} channel webhook${channelWebhookCount === 1 ? "" : "s"} ready (${personaWebhookCount} cached persona avatar${personaWebhookCount === 1 ? "" : "s"}).`
+        : configured
+          ? `Webhook ready${payload.webhook_id ? ` (${String(payload.webhook_id)})` : ""}.`
+          : "No webhook is currently provisioned.";
+      setDiscordWebhookOperations((current) => ({
+        ...current,
+        [operationKey]: { loading: false, configured, message, error: null },
+      }));
+      setStatusMessage(`${normalizedTargetId}: ${message}`);
+      setError(null);
+    } catch (reason) {
+      const message = reason instanceof Error ? reason.message : String(reason);
+      setDiscordWebhookOperations((current) => ({
+        ...current,
+        [operationKey]: {
+          loading: false,
+          configured: current[operationKey]?.configured ?? null,
+          message: null,
+          error: message,
+        },
+      }));
+    }
   }
 
   function mutateContactsField(
@@ -2046,6 +2126,7 @@ export function ConfigurationScreen() {
                     address: "",
                     capabilities: ["notify"],
                     authProfileRef: "",
+                    senderIdentity: "platform",
                   },
                 ])
               }
@@ -2166,6 +2247,12 @@ export function ConfigurationScreen() {
               const selectedMailbox = mailboxes.find(
                 (mailbox) => mailbox.mailboxId.trim() === selectedMailboxId,
               );
+              const webhookOperationKey = `${normalizeDirectoryPath(selectedDirectoryPath)}:${target.id.trim().toLowerCase()}`;
+              const webhookOperation = discordWebhookOperations[webhookOperationKey];
+              const webhookManagementDisabled = disabled
+                || target.disabled
+                || !target.id.trim()
+                || Boolean(dirtyTabs[selectedTab]);
               return (
               <div key={`communication-target-${targetIndex}`} className="contact-editor-item communication-target-editor-item">
                 <div className="contact-editor-item-header">
@@ -2211,6 +2298,7 @@ export function ConfigurationScreen() {
                           provider,
                           kind: normalizeCommunicationTargetKind(provider, target.kind),
                           authProfileRef: provider === "email" ? target.authProfileRef : "",
+                          senderIdentity: provider === "discord" ? target.senderIdentity : "platform",
                         });
                       }}
                       disabled={disabled || target.disabled}
@@ -2305,6 +2393,22 @@ export function ConfigurationScreen() {
                       <span>{capability}</span>
                     </label>
                   ))}
+                  {target.provider === "discord" ? (
+                    <label className="checkbox-row">
+                      <input
+                        type="checkbox"
+                        checked={target.senderIdentity === "resolved"}
+                        onChange={(event) =>
+                          updateCommunicationTargetEntry(field, fieldState, targetIndex, {
+                            ...target,
+                            senderIdentity: event.target.checked ? "resolved" : "platform",
+                          })
+                        }
+                        disabled={disabled || target.disabled}
+                      />
+                      <span>Use resolved sender name and avatar</span>
+                    </label>
+                  ) : null}
                   <label className="checkbox-row communication-target-disabled-toggle">
                     <input
                       type="checkbox"
@@ -2320,6 +2424,56 @@ export function ConfigurationScreen() {
                     <span>Disable inherited target</span>
                   </label>
                 </div>
+                {target.provider === "discord" ? (
+                  <div className="contact-subsection">
+                    <div className="contact-subsection-header">
+                      <div>
+                        <strong>Discord persona webhook pool</strong>
+                        <div className="panel-meta">
+                          Discord stores each resolved avatar on a small, lazily managed channel webhook pool; no public Admin Web avatar URL is required. Save target changes before managing it.
+                        </div>
+                      </div>
+                      <div className="inline-actions compact-actions">
+                        <button
+                          type="button"
+                          onClick={() => void handleDiscordWebhookOperation(target.id, "status")}
+                          disabled={webhookManagementDisabled || webhookOperation?.loading}
+                        >
+                          Status
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => void handleDiscordWebhookOperation(target.id, "provision")}
+                          disabled={webhookManagementDisabled || webhookOperation?.loading || !privilegedUnlocked}
+                        >
+                          Provision
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => void handleDiscordWebhookOperation(target.id, "test")}
+                          disabled={webhookManagementDisabled || webhookOperation?.loading || !privilegedUnlocked}
+                        >
+                          Test
+                        </button>
+                        <button
+                          type="button"
+                          className="danger"
+                          onClick={() => void handleDiscordWebhookOperation(target.id, "recreate")}
+                          disabled={webhookManagementDisabled || webhookOperation?.loading || !privilegedUnlocked}
+                        >
+                          Recreate
+                        </button>
+                      </div>
+                    </div>
+                    {webhookOperation?.loading ? <div className="panel-meta">Working...</div> : null}
+                    {webhookOperation?.message ? (
+                      <div className="callout success-callout">{webhookOperation.message}</div>
+                    ) : null}
+                    {webhookOperation?.error ? (
+                      <div className="callout error-callout">{webhookOperation.error}</div>
+                    ) : null}
+                  </div>
+                ) : null}
               </div>
               );
             })

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import os
 from datetime import UTC, datetime
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Callable
 from pathlib import Path
 
@@ -24,6 +24,7 @@ from evander.email.providers import JsonEmailProvider, MultiMailboxEmailProvider
 from evander.policy import PolicyEngine
 from evander.policy_config import PolicyConfigResolver
 from evander.provider_config import ProviderConfigResolver
+from evander.messaging.targets import CommunicationTargetCapability
 from evander.host_config import HostConfig
 from evander.retell_phone import RetellPhoneCallService, RetellPhoneCallStore
 from evander.reviews.request_service import (
@@ -83,6 +84,11 @@ from evander.messaging.teams_auth import (
     TeamsDeviceCodeTokenProvider,
 )
 from evander.messaging.wake_store import WakeRequestRepository, WakeRequestStore
+from evander.outbound_identity import (
+    OutboundIdentityRegistry,
+    OutboundIdentityResolution,
+    OutboundIdentityResolver,
+)
 from evander.teams_meeting import (
     TeamsMeetingBridgeClient,
     TeamsMeetingStore,
@@ -175,11 +181,30 @@ class RuntimeContext:
     voice_session_reconciler: VoiceSessionReconciler
     teams_meeting_store: TeamsMeetingStore
     teams_meeting_bridge_client: TeamsMeetingBridgeClient
+    outbound_identity_registry: OutboundIdentityRegistry = field(
+        default_factory=OutboundIdentityRegistry
+    )
     tool_approval_leases: SessionToolApprovalLeaseRepository | None = None
     mcp_transport_bindings: McpTransportBindingRepository | None = None
 
     def resolve_provider_config_for_session(self, session_id: str) -> GatewayConfig:
         return self.provider_config.resolve_for_session_id(session_id)
+
+    def register_outbound_identity_resolver(
+        self, source: str, resolver: OutboundIdentityResolver
+    ) -> None:
+        self.outbound_identity_registry.register(source, resolver)
+
+    def resolve_outbound_identity(
+        self, *, session_id: str, provider: str, destination: str
+    ) -> OutboundIdentityResolution:
+        if provider != "discord":
+            return OutboundIdentityResolution(identity=None, status="not_found")
+        return self.outbound_identity_registry.resolve(
+            session_id=session_id,
+            provider="discord",
+            destination=destination,
+        )
 
     def email_service_for_session(self, session_id: str) -> EmailService:
         if not isinstance(self.email_service, EmailService):
@@ -531,6 +556,8 @@ def _build_discord_service(
     policy_config: PolicyConfigResolver,
     *,
     session_id: str | None = None,
+    capability: CommunicationTargetCapability = "read",
+    allowed_channel_ids_provider: Callable[[], list[str]] | None = None,
 ) -> DiscordService:
     if config.discord_backend == "stub":
         return StubDiscordService(
@@ -558,11 +585,17 @@ def _build_discord_service(
             retry_count=config.discord_retry_count,
             retry_base_backoff_seconds=config.discord_retry_base_backoff_seconds,
             retry_max_backoff_seconds=config.discord_retry_max_backoff_seconds,
-            allowed_channel_ids_provider=lambda: _resolve_allowed_discord_channel_ids(
-                sessions,
-                config,
-                policy_config=policy_config,
-                session_id=session_id,
+            allowed_channel_ids_provider=(
+                allowed_channel_ids_provider
+                or (
+                    lambda: _resolve_allowed_discord_channel_ids(
+                        sessions,
+                        config,
+                        policy_config=policy_config,
+                        session_id=session_id,
+                        capability=capability,
+                    )
+                )
             ),
             operator_user_ids_provider=(
                 policy_config.operator_user_ids_for_active_sessions
@@ -575,6 +608,9 @@ def _build_discord_service(
                 else lambda: policy_config.include_operator_dms_for_session_id(session_id)
             ),
             read_reaction_emoji=config.discord_read_reaction_emoji,
+            bot_token_env=env_var_name,
+            webhook_store_path=config.discord_webhook_store_path,
+            persona_webhook_cache_limit=config.discord_persona_webhook_cache_limit,
         )
     raise RuntimeError(
         f"Unsupported discord backend {config.discord_backend!r}. Expected one of: 'stub', 'bot_api'."
@@ -765,16 +801,20 @@ def _resolve_allowed_discord_channel_ids(
     *,
     policy_config: PolicyConfigResolver | None = None,
     session_id: str | None = None,
+    capability: CommunicationTargetCapability = "read",
 ) -> list[str]:
     session_store = as_session_manifest_repository(session_store)
     if session_id is not None:
         if policy_config is not None:
-            return policy_config.allowed_discord_channel_ids_for_session_id(session_id)
+            return policy_config.allowed_discord_channel_ids_for_session_id(
+                session_id,
+                capability=capability,
+            )
         session = session_store.get_session(session_id)
         if session is None:
             raise ValueError(f"unknown session: {session_id}")
         channel_ids = set(config.discord_operator_channel_allowlist)
-        if ToolName.DISCORD_GET_COMMANDS in session.allowed_tools:
+        if capability != "read" or ToolName.DISCORD_GET_COMMANDS in session.allowed_tools:
             channel_ids.update(session.discord_channel_allowlist)
         return sorted(channel_id.strip() for channel_id in channel_ids if channel_id.strip())
 

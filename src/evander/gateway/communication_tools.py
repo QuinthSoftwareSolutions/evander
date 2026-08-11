@@ -294,9 +294,30 @@ def register_communication_tools(
                 channel_id,
                 capability="write",
             )
-            result = context.discord_service_for_session(session_id).post_status(
-                message, resolved_channel_id, session_id
+            use_resolved_identity = (
+                context.policy.discord_sender_identity_mode(
+                    session,
+                    channel_id,
+                    capability="write",
+                )
+                == "resolved"
             )
+            service = context.discord_service_for_session(session_id)
+            if use_resolved_identity and hasattr(service, "post_status_with_identity"):
+                identity_resolution = context.resolve_outbound_identity(
+                    session_id=session_id,
+                    provider="discord",
+                    destination=resolved_channel_id,
+                )
+                result = service.post_status_with_identity(
+                    message,
+                    resolved_channel_id,
+                    session_id,
+                    identity=identity_resolution.identity,
+                    identity_status=identity_resolution.status,
+                )
+            else:
+                result = service.post_status(message, resolved_channel_id, session_id)
             audit_success(session_id, ToolName.DISCORD_POST_STATUS, args, result)
             return result
         except PolicyError as exc:
@@ -2315,7 +2336,35 @@ def register_communication_tools(
             service = context.discord_service_for_session(session_id)
             if not hasattr(service, "post_file"):
                 raise ToolError("Configured Discord adapter does not support file posts")
-            result = service.post_file(message, resolved_channel_id, session_id, artifacts)
+            use_resolved_identity = (
+                context.policy.discord_sender_identity_mode(
+                    session,
+                    channel_id,
+                    capability="write",
+                )
+                == "resolved"
+            )
+            if use_resolved_identity and hasattr(service, "post_file_with_identity"):
+                identity_resolution = context.resolve_outbound_identity(
+                    session_id=session_id,
+                    provider="discord",
+                    destination=resolved_channel_id,
+                )
+                result = service.post_file_with_identity(
+                    message,
+                    resolved_channel_id,
+                    session_id,
+                    artifacts,
+                    identity=identity_resolution.identity,
+                    identity_status=identity_resolution.status,
+                )
+            else:
+                result = service.post_file(
+                    message,
+                    resolved_channel_id,
+                    session_id,
+                    artifacts,
+                )
             response = CommunicationSendMessageWithAttachmentsResponse(
                 provider="discord",
                 status=str(result.get("status", "posted")),

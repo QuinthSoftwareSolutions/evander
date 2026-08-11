@@ -49,7 +49,10 @@ class TeamStateRepository:
         self._outbox_repository = TeamOutboxRepository(self.store)
 
     def read(self) -> TeamState:
-        return TeamState.model_validate(self.store.read_object())
+        return self.store.read_state()
+
+    def read_revision(self) -> int:
+        return self.store.read_revision()
 
     def update(
         self,
@@ -57,24 +60,15 @@ class TeamStateRepository:
         *,
         expected_revision: int | None = None,
     ) -> TeamState:
-        def _update(payload: dict[str, Any]) -> TeamState:
-            state = TeamState.model_validate(payload)
+        def _update(state: TeamState) -> TeamState:
             if expected_revision is not None and state.revision != expected_revision:
                 raise TeamStateConflictError(
                     expected_revision=expected_revision,
                     current_revision=state.revision,
                 )
-            next_state = mutator(state) or state
-            next_state = next_state.model_copy(
-                update={"updated_at": utc_now()},
-                deep=True,
-            )
-            validated = TeamState.model_validate(next_state.model_dump(mode="json"))
-            payload.clear()
-            payload.update(validated.model_dump(mode="json"))
-            return validated
+            return mutator(state) or state
 
-        return self.store.update_object(_update)  # type: ignore[return-value]
+        return self.store.update_state(_update)
 
     def update_with_outbox(
         self,

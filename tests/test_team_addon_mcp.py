@@ -524,6 +524,7 @@ def test_team_git_candidate_resolver_builds_admin_authority_for_gateway_context(
         service=SimpleNamespace(),
     )
     resolver = _team_mcp_git_candidate_commit_resolver(context)
+    assert build_calls == [tmp_path / "runtime"]
 
     assert (
         resolver(
@@ -541,7 +542,6 @@ def test_team_git_candidate_resolver_builds_admin_authority_for_gateway_context(
         )
         == expected_commit
     )
-    assert build_calls == [tmp_path / "runtime"]
     assert resolve_calls == [
         (
             "mr_0123456789abcdefabcd",

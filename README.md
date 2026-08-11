@@ -740,6 +740,23 @@ migration contract. See [live-smoke-tests.md](docs/live-smoke-tests.md) for live
   `discord_retry_max_backoff_seconds` (defaults: 3 retries, 0.5-second base, 5-second cap).
   Terminal failures surface to the caller; policy denials are written to `audit_log_path`
   (default runtime path `runtime/audit.jsonl`).
+- A Discord communication target may opt into resolved sender identity with
+  `policy.sender_identity: resolved`. Evander then uses host-managed incoming webhooks keyed by
+  Discord channel and avatar digest, stores the avatar as the webhook's Discord-hosted default,
+  and supplies the resolved name on each message. Personas are not registered as Discord users and
+  do not require one Discord application or bot per agent. The bot must be able to manage webhooks
+  in the target channel.
+- Webhook credentials are provisioned lazily into the host-only
+  `runtime/discord-webhooks.json` store. Admin Web also exposes Status, Provision, Test, and
+  Recreate controls on each saved Discord communication target. Multiple agents and targets for
+  the same channel and avatar reuse the same webhook. The per-channel persona webhook cache is
+  bounded by `discord_persona_webhook_cache_limit` (default and maximum `10`) with
+  least-recently-used cleanup.
+- Discord persona avatars do not require Admin Web or another Evander endpoint to be publicly
+  reachable. WebP avatars are converted to PNG before provisioning; PNG and JPEG image data are
+  sent directly to Discord. If an avatar cannot be prepared, the resolved name is still used with
+  a generic webhook and fallback metadata. Definite webhook failures fall back to the platform bot
+  identity and are also reported in result metadata.
 - Operator least-privilege checklist:
   1. Keep the Discord bot token only on the host (environment or host env files), never in guest
      cloud-init, manifests, or guest shell profiles.

@@ -763,6 +763,25 @@ def test_provider_config_resolver_keeps_directory_mode_for_non_claude_sessions(
     assert resolved.model_provider_mode == "openai_public"
 
 
+def test_provider_config_resolver_applies_discord_persona_webhook_cache_limit(
+    tmp_path: Path,
+) -> None:
+    config = GatewayConfig(runtime_dir=tmp_path)
+    store = DirectoryStore(config.directories_store_path)
+    service = DirectoryService(store)
+    store.ensure_root()
+    team = service.create(parent="root", name="team")
+    DirectoryConfigStore(store, runtime_dir=config.runtime_dir).write(
+        team.path,
+        domain="providers",
+        payload={"discord_persona_webhook_cache_limit": 3},
+    )
+    resolver = ProviderConfigResolver(config, directory_store=store)
+
+    assert resolver.resolve_for_directory("root").discord_persona_webhook_cache_limit == 10
+    assert resolver.resolve_for_directory(team.path).discord_persona_webhook_cache_limit == 3
+
+
 def test_provider_config_resolver_resolves_email_authorization_from_policy_domain(
     tmp_path: Path,
 ) -> None:

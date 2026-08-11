@@ -524,6 +524,7 @@ class WorkerDaemon:
         runtime_error = str(info.get("runtime_error") or "").strip()
         oom_killed = bool(info.get("oom_killed"))
         raw_failure_cause = info.get("failure_cause")
+        active_tool_interruption = info.get("active_tool_interruption")
         try:
             failure_cause = (
                 WorkerFailureCause(raw_failure_cause) if raw_failure_cause is not None else None
@@ -531,6 +532,7 @@ class WorkerDaemon:
         except ValueError:
             failure_cause = None
         terminal = status in {"exited", "stopped", "failed", "removed"}
+        active_tool_reconciled = terminal or _worker_job_uses_codex(record)
         if failure_cause is not None:
             record.failure_cause = failure_cause
         if terminal and failure_cause is WorkerFailureCause.PIDS_LIMIT_EXHAUSTED:
@@ -549,6 +551,16 @@ class WorkerDaemon:
                 metadata["worker_terminal_kind"] = "command_exit"
             except (TypeError, ValueError):
                 metadata["worker_terminal_kind"] = "infrastructure"
+        if isinstance(active_tool_interruption, dict):
+            metadata["active_tool_interruption"] = active_tool_interruption
+        if terminal:
+            metadata.pop("active_tool", None)
+        elif active_tool_reconciled:
+            active_tool = self._active_codex_tool_context(record)
+            if active_tool is not None:
+                metadata["active_tool"] = active_tool
+            else:
+                metadata.pop("active_tool", None)
         record.metadata = sanitize_metadata(metadata)
         if terminal and record.finished_at is None:
             record.finished_at = now_utc()
@@ -570,8 +582,57 @@ class WorkerDaemon:
         with self._job_record_update_lock:
             latest = self.store.get(record.job_id)
             if latest is not None:
-                record.metadata = sanitize_metadata(dict(latest.metadata) | dict(record.metadata))
+                latest_metadata = dict(latest.metadata)
+                if active_tool_reconciled:
+                    # The scan above is authoritative for a completed tool call; do not retain a
+                    # stale active-tool card merely because another metadata update raced it.
+                    latest_metadata.pop("active_tool", None)
+                record.metadata = sanitize_metadata(latest_metadata | dict(record.metadata))
             self.store.put(record)
+        return record
+
+    def interrupt_active_tool(
+        self,
+        record: WorkerJobRecord,
+        *,
+        reason: str = "operator_requested",
+        max_elapsed_seconds: float | None = None,
+    ) -> WorkerJobRecord:
+        """Ask the runtime to end a safe test process group, not the job container."""
+        record = self.inspect_job(record)
+        if record.status != "running":
+            return record
+        metadata = dict(record.metadata) if isinstance(record.metadata, dict) else {}
+        active_tool = metadata.get("active_tool")
+        if max_elapsed_seconds is not None:
+            try:
+                threshold = float(max_elapsed_seconds)
+            except (TypeError, ValueError):
+                threshold = 0.0
+            started_at = (
+                _parse_codex_timestamp(active_tool.get("started_at"))
+                if isinstance(active_tool, dict)
+                else None
+            )
+            elapsed = (
+                (datetime.now(UTC) - started_at).total_seconds()
+                if started_at is not None
+                else None
+            )
+            if threshold <= 0 or elapsed is None or elapsed < threshold:
+                return record
+        interrupt = getattr(self.container_runtime, "interrupt_active_tool", None)
+        if not callable(interrupt):
+            metadata["active_tool_interruption"] = {
+                "interrupted": False,
+                "reason": reason,
+                "message": "worker runtime does not support active-test interruption",
+                "recorded_at": datetime.now(UTC).isoformat(),
+            }
+        else:
+            metadata["active_tool_interruption"] = interrupt(record, reason=reason)
+        record.metadata = sanitize_metadata(metadata)
+        self.store.put(record)
         return record
 
     def stop_job(self, record: WorkerJobRecord) -> WorkerJobRecord:
@@ -757,6 +818,26 @@ class WorkerDaemon:
         elif text:
             _merge_tail_log_snapshot(log_path, text)
         return text
+
+    def _active_codex_tool_context(self, record: WorkerJobRecord) -> dict[str, str] | None:
+        try:
+            text = self._raw_logs(record, tail_lines=200)
+        except (OSError, subprocess.CalledProcessError):
+            text = ""
+        agent_home = Path(record.agent_home_path)
+        thread_ids = list(dict.fromkeys(_CODEX_SESSION_ID_LOG_PATTERN.findall(text)))
+        if not thread_ids:
+            thread_ids = _recent_codex_session_ids(agent_home, limit=1)
+        for thread_id in thread_ids:
+            active_tool = _codex_active_tool_context(
+                agent_home,
+                thread_id,
+                started_at=record.started_at,
+                finished_at=record.finished_at,
+            )
+            if active_tool is not None:
+                return active_tool
+        return None
 
     def _merge_job_metadata(self, job_id: str, update: dict[str, Any]) -> None:
         with self._job_record_update_lock:
@@ -1313,14 +1394,48 @@ class WorkerDaemon:
         helper_target = target_dir / ".evander"
         if helper_source.is_dir() and not helper_target.exists():
             shutil.copytree(helper_source, helper_target)
+        commit_sha = self._git_commit_sha(target_dir, paths.agent_home)
+        if base_commit_sha is not None and commit_sha.casefold() == base_commit_sha.casefold():
+            self._publish_initial_task_branch(
+                target_dir=target_dir,
+                branch=request.branch,
+                env=env,
+            )
         return WorkerTaskWorktreeRecord(
             session_id=paths.session_id,
             repo_name=request.repo_name,
             target_dir=(f"/home/agent/worktrees/{request.repo_name}/{request.worktree_name}"),
             branch=request.branch,
-            commit_sha=self._git_commit_sha(target_dir, paths.agent_home),
+            commit_sha=commit_sha,
             base_commit_sha=base_commit_sha,
             created=created,
+        )
+
+    @staticmethod
+    def _publish_initial_task_branch(
+        *,
+        target_dir: Path,
+        branch: str,
+        env: dict[str, str],
+    ) -> None:
+        remote_ref = f"refs/heads/{branch}"
+        remote = subprocess.run(
+            ["git", "ls-remote", "--heads", "origin", remote_ref],
+            cwd=target_dir,
+            env=env,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        if remote.stdout.strip():
+            return
+        subprocess.run(
+            ["git", "push", "origin", f"HEAD:{remote_ref}"],
+            cwd=target_dir,
+            env=env,
+            check=True,
+            capture_output=True,
+            text=True,
         )
 
     @staticmethod
@@ -4645,6 +4760,60 @@ def _codex_running_context_messages(
         if summary:
             messages.append(f"active tool call: {summary}")
     return messages
+
+
+def _codex_active_tool_context(
+    agent_home: Path,
+    thread_id: str,
+    *,
+    started_at: datetime | None = None,
+    finished_at: datetime | None = None,
+) -> dict[str, str] | None:
+    """Return a small, sanitized view of the latest still-open Codex tool call."""
+    active_tool_calls: dict[str, str] = {}
+    active_started_at: dict[str, str] = {}
+    latest_event_timestamp: str | None = None
+    for path in _codex_session_jsonl_paths(agent_home, thread_id):
+        try:
+            lines = path.read_text(encoding="utf-8").splitlines()
+        except OSError:
+            continue
+        for raw_line in lines:
+            try:
+                event = json.loads(raw_line)
+            except ValueError:
+                continue
+            if not _codex_event_is_in_window(
+                event, started_at=started_at, finished_at=finished_at
+            ):
+                continue
+            timestamp = event.get("timestamp") if isinstance(event, dict) else None
+            latest_event_timestamp = _latest_codex_timestamp(latest_event_timestamp, timestamp)
+            before = set(active_tool_calls)
+            _codex_messages_from_session_event(event, active_tool_calls=active_tool_calls)
+            for call_id in set(active_tool_calls) - before:
+                if isinstance(timestamp, str) and _parse_codex_timestamp(timestamp) is not None:
+                    active_started_at[call_id] = timestamp.strip()
+            active_started_at = {
+                call_id: started
+                for call_id, started in active_started_at.items()
+                if call_id in active_tool_calls
+            }
+    if not active_tool_calls:
+        return None
+    call_id = next(reversed(active_tool_calls))
+    summary = active_tool_calls[call_id]
+    if not summary:
+        return None
+    result = {
+        "summary": _truncate_log_fragment(summary, limit=_CODEX_TOOL_SUMMARY_LIMIT),
+        "tool_name": summary.split(maxsplit=1)[0],
+    }
+    if call_id in active_started_at:
+        result["started_at"] = active_started_at[call_id]
+    if latest_event_timestamp:
+        result["latest_event_at"] = latest_event_timestamp
+    return result
 
 
 def _codex_function_call_summary(payload: dict[str, object]) -> str:

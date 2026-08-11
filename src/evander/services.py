@@ -49,6 +49,14 @@ from evander.models import (
 )
 from evander.issue_owner import assigned_to_identity
 from evander.messaging.discord_inbox_store import DiscordInboxStore
+from evander.discord_webhooks import (
+    DiscordWebhookAvatar,
+    DiscordWebhookCredential,
+    DiscordWebhookCredentialStore,
+    discord_webhook_credential_key,
+    prepare_discord_webhook_avatar,
+)
+from evander.outbound_identity import OutboundIdentity
 from evander.repositories.cursors import DiscordInboxCursorRepository
 from evander.inline_media import (
     InlineMediaDownload,
@@ -956,6 +964,9 @@ class DiscordBotApiService:
         include_operator_dms_provider: Callable[[], bool] | None = None,
         include_operator_dms: bool = False,
         read_reaction_emoji: str = "👀",
+        bot_token_env: str = "DISCORD_BOT_TOKEN",
+        webhook_store_path: str | Path | None = None,
+        persona_webhook_cache_limit: int = 10,
     ) -> None:
         self.command_store = command_store
         self.token = token
@@ -975,6 +986,13 @@ class DiscordBotApiService:
             lambda: include_operator_dms
         )
         self.read_reaction_emoji = read_reaction_emoji
+        self.bot_token_env = bot_token_env
+        self.webhook_store = (
+            DiscordWebhookCredentialStore(webhook_store_path)
+            if webhook_store_path is not None
+            else None
+        )
+        self.persona_webhook_cache_limit = max(1, min(10, int(persona_webhook_cache_limit)))
 
     def _headers(self) -> dict[str, str]:
         return {
@@ -1071,7 +1089,7 @@ class DiscordBotApiService:
                 response = client.request(
                     method,
                     url,
-                    headers=headers or self._headers(),
+                    headers=self._headers() if headers is None else headers,
                     params=params,
                     json=json,
                     data=data,
@@ -1127,19 +1145,37 @@ class DiscordBotApiService:
                     ]
                     safe_payload = dict(payload)
                     safe_payload["attachments"] = attachments
+                    metadata: dict[str, Any] = {
+                        "source": "discord_bot_api",
+                        "guild_id": payload.get("guild_id"),
+                        "channel_id": channel_id,
+                        "author_id": payload["author"]["id"],
+                        "attachments": attachments,
+                        "message": safe_payload,
+                    }
+                    existing = envelopes.get(str(payload["id"]))
+                    if existing is not None and existing.metadata.get("source") in {
+                        "discord_bot_api_status",
+                        "discord_webhook_status",
+                    }:
+                        for key in (
+                            "source",
+                            "session_id",
+                            "transport",
+                            "identity_source",
+                            "identity_status",
+                            "persona_name_applied",
+                            "persona_avatar_applied",
+                            "fallback_reason",
+                        ):
+                            if key in existing.metadata:
+                                metadata[key] = existing.metadata[key]
                     envelope = DiscordCommandEnvelope(
                         command_id=payload["id"],
                         author_id=payload["author"]["id"],
                         channel_id=channel_id,
                         content=payload.get("content", ""),
-                        metadata={
-                            "source": "discord_bot_api",
-                            "guild_id": payload.get("guild_id"),
-                            "channel_id": channel_id,
-                            "author_id": payload["author"]["id"],
-                            "attachments": attachments,
-                            "message": safe_payload,
-                        },
+                        metadata=metadata,
                     )
                     envelopes[envelope.command_id] = envelope
                     fetched_commands[envelope.command_id] = envelope
@@ -1222,12 +1258,436 @@ class DiscordBotApiService:
                 "content": response.content,
             }
 
-    def post_file(
+    def _persist_posted_message(
+        self,
+        payload: dict[str, Any],
+        *,
+        channel_id: str,
+        session_id: str,
+        source: str,
+        transport: str,
+        identity: OutboundIdentity | None,
+        identity_status: str,
+        fallback_reason: str | None = None,
+    ) -> dict[str, Any]:
+        attachments = [
+            _sanitize_attachment_metadata(item)
+            for item in payload.get("attachments") or []
+            if isinstance(item, dict)
+        ]
+        safe_payload = dict(payload)
+        safe_payload["attachments"] = attachments
+        author = payload.get("author") if isinstance(payload.get("author"), dict) else {}
+        author_id = str(author.get("id") or "")
+        envelope = DiscordCommandEnvelope(
+            command_id=str(payload["id"]),
+            author_id=author_id,
+            channel_id=channel_id,
+            content=str(payload.get("content") or ""),
+            metadata={
+                "source": source,
+                "guild_id": payload.get("guild_id"),
+                "channel_id": channel_id,
+                "author_id": author_id,
+                "session_id": session_id,
+                "attachments": attachments,
+                "message": safe_payload,
+                "transport": transport,
+                "identity_source": identity.source if identity is not None else None,
+                "identity_status": identity_status,
+                "persona_name_applied": identity is not None,
+                "persona_avatar_applied": bool(
+                    identity is not None and identity.avatar is not None
+                ),
+                "fallback_reason": fallback_reason,
+            },
+        )
+        self.command_store.put(envelope.command_id, envelope)
+        result: dict[str, Any] = {
+            "status": "posted",
+            "channel_id": channel_id,
+            "session_id": session_id,
+            "message_id": envelope.command_id,
+        }
+        if identity_status != "not_requested" or fallback_reason:
+            result.update(
+                {
+                    "transport": transport,
+                    "identity_status": identity_status,
+                    "identity_source": identity.source if identity is not None else None,
+                    "persona_name_applied": identity is not None,
+                    "persona_avatar_applied": bool(
+                        identity is not None and identity.avatar is not None
+                    ),
+                }
+            )
+        if fallback_reason:
+            result["fallback_reason"] = fallback_reason
+        if attachments:
+            result["artifact_count"] = len(attachments)
+        return result
+
+    def webhook_status(self, channel_id: str) -> dict[str, Any]:
+        if self.webhook_store is None:
+            return {
+                "configured": False,
+                "channel_id": channel_id,
+                "channel_webhook_count": 0,
+                "persona_webhook_count": 0,
+                "persona_webhook_cache_limit": self.persona_webhook_cache_limit,
+                "persona_webhooks": [],
+            }
+        credentials = self.webhook_store.list_for_channel(
+            api_base_url=self.api_base_url,
+            bot_token_env=self.bot_token_env,
+            channel_id=channel_id,
+        )
+        platform_credential = next(
+            (credential for credential in credentials if credential.avatar_sha256 is None),
+            None,
+        )
+        persona_credentials = [
+            credential for credential in credentials if credential.avatar_sha256 is not None
+        ]
+        selected = platform_credential or (credentials[-1] if credentials else None)
+        result = (
+            selected.safe_status()
+            if selected is not None
+            else {"configured": False, "channel_id": channel_id}
+        )
+        result.update(
+            {
+                "configured": bool(credentials),
+                "channel_webhook_count": len(credentials),
+                "persona_webhook_count": len(persona_credentials),
+                "persona_webhook_cache_limit": self.persona_webhook_cache_limit,
+                "persona_webhooks": [
+                    credential.safe_status() for credential in persona_credentials
+                ],
+            }
+        )
+        return result
+
+    def provision_webhook(
+        self,
+        channel_id: str,
+        *,
+        force: bool = False,
+        avatar: DiscordWebhookAvatar | None = None,
+    ) -> dict[str, Any]:
+        if self.webhook_store is None:
+            raise RuntimeError("Discord webhook credential storage is not configured")
+        self._require_allowed_channel_id(channel_id)
+        avatar_sha256 = avatar.sha256 if avatar is not None else None
+        with self.webhook_store.provision_lock():
+            existing = self.webhook_store.get(
+                api_base_url=self.api_base_url,
+                bot_token_env=self.bot_token_env,
+                channel_id=channel_id,
+                avatar_sha256=avatar_sha256,
+            )
+            if existing is not None and not force:
+                return existing.safe_status()
+            request_payload = {"name": "Evander"}
+            if avatar is not None:
+                request_payload["avatar"] = avatar.image_data
+            with httpx.Client(timeout=self.timeout_seconds) as client:
+                response = client.post(
+                    f"{self.api_base_url}/channels/{channel_id}/webhooks",
+                    headers=self._headers(),
+                    json=request_payload,
+                    timeout=self.timeout_seconds,
+                )
+                response.raise_for_status()
+                payload = response.json()
+            now = datetime.now(UTC)
+            credential = DiscordWebhookCredential(
+                key=discord_webhook_credential_key(
+                    api_base_url=self.api_base_url,
+                    bot_token_env=self.bot_token_env,
+                    channel_id=channel_id,
+                    avatar_sha256=avatar_sha256,
+                ),
+                channel_id=channel_id,
+                api_base_url=self.api_base_url,
+                bot_token_env=self.bot_token_env,
+                webhook_id=str(payload.get("id") or ""),
+                token=str(payload.get("token") or ""),
+                avatar_sha256=avatar_sha256,
+                created_at=now,
+                updated_at=now,
+                last_verified_at=now,
+            )
+            self.webhook_store.put(credential)
+            result = credential.safe_status()
+            if existing is not None and existing.webhook_id != credential.webhook_id:
+                try:
+                    with httpx.Client(timeout=self.timeout_seconds) as client:
+                        delete_response = client.delete(
+                            f"{self.api_base_url}/webhooks/{existing.webhook_id}",
+                            headers=self._headers(),
+                            timeout=self.timeout_seconds,
+                        )
+                        if delete_response.status_code not in {204, 404}:
+                            delete_response.raise_for_status()
+                except httpx.HTTPError as exc:
+                    result["replacement_cleanup_warning"] = type(exc).__name__
+            if avatar is not None:
+                cleanup_warnings = self._trim_persona_webhooks(
+                    channel_id,
+                    keep_key=credential.key,
+                )
+                if cleanup_warnings:
+                    result["persona_cleanup_warnings"] = cleanup_warnings
+                    _LOGGER.warning(
+                        "Discord persona webhook cleanup failed for channel %s: %s",
+                        channel_id,
+                        ", ".join(cleanup_warnings),
+                    )
+            return result
+
+    def _trim_persona_webhooks(self, channel_id: str, *, keep_key: str) -> list[str]:
+        if self.webhook_store is None:
+            return []
+        persona_credentials = [
+            credential
+            for credential in self.webhook_store.list_for_channel(
+                api_base_url=self.api_base_url,
+                bot_token_env=self.bot_token_env,
+                channel_id=channel_id,
+            )
+            if credential.avatar_sha256 is not None
+        ]
+        excess = len(persona_credentials) - self.persona_webhook_cache_limit
+        if excess <= 0:
+            return []
+        candidates = [
+            credential for credential in persona_credentials if credential.key != keep_key
+        ]
+        warnings: list[str] = []
+        for credential in candidates[:excess]:
+            try:
+                with httpx.Client(timeout=self.timeout_seconds) as client:
+                    response = client.delete(
+                        f"{self.api_base_url}/webhooks/{credential.webhook_id}",
+                        headers=self._headers(),
+                        timeout=self.timeout_seconds,
+                    )
+                    if response.status_code not in {204, 404}:
+                        response.raise_for_status()
+                self.webhook_store.delete_if_current(credential)
+            except httpx.HTTPError as exc:
+                warnings.append(f"{credential.webhook_id}:{type(exc).__name__}")
+        return warnings
+
+    def _webhook_credential(
+        self,
+        channel_id: str,
+        *,
+        avatar: DiscordWebhookAvatar | None = None,
+    ) -> DiscordWebhookCredential:
+        if self.webhook_store is None:
+            raise RuntimeError("Discord webhook credential storage is not configured")
+        avatar_sha256 = avatar.sha256 if avatar is not None else None
+        credential = self.webhook_store.get(
+            api_base_url=self.api_base_url,
+            bot_token_env=self.bot_token_env,
+            channel_id=channel_id,
+            avatar_sha256=avatar_sha256,
+        )
+        if credential is None:
+            self.provision_webhook(channel_id, avatar=avatar)
+            credential = self.webhook_store.get(
+                api_base_url=self.api_base_url,
+                bot_token_env=self.bot_token_env,
+                channel_id=channel_id,
+                avatar_sha256=avatar_sha256,
+            )
+        if credential is None:
+            raise RuntimeError("Discord webhook provisioning did not return a credential")
+        return credential
+
+    def _webhook_payload(
+        self, message: str, identity: OutboundIdentity | None
+    ) -> tuple[
+        dict[str, Any],
+        OutboundIdentity | None,
+        str | None,
+        DiscordWebhookAvatar | None,
+    ]:
+        payload: dict[str, Any] = {"content": message}
+        if identity is None:
+            return payload, None, None, None
+        payload["username"] = identity.display_name
+        fallback_reason = None
+        applied_identity = identity
+        webhook_avatar = None
+        if identity.avatar is not None:
+            try:
+                webhook_avatar = prepare_discord_webhook_avatar(identity.avatar)
+            except (RuntimeError, OSError, ValueError) as exc:
+                fallback_reason = f"persona_avatar_unavailable:{type(exc).__name__}"
+                applied_identity = OutboundIdentity(
+                    display_name=identity.display_name,
+                    source=identity.source,
+                )
+        return payload, applied_identity, fallback_reason, webhook_avatar
+
+    def _execute_webhook(
+        self,
+        *,
+        credential: DiscordWebhookCredential,
+        payload: dict[str, Any],
+        files: Any = None,
+    ) -> dict[str, Any]:
+        url = f"{self.api_base_url}/webhooks/{credential.webhook_id}/{credential.token}?wait=true"
+        try:
+            with httpx.Client(timeout=self.timeout_seconds) as client:
+                if files is None:
+                    response = self._request_with_retries(
+                        client,
+                        "POST",
+                        url,
+                        json=payload,
+                        headers={"Content-Type": "application/json"},
+                    )
+                else:
+                    response = self._request_with_retries(
+                        client,
+                        "POST",
+                        url,
+                        data={"payload_json": json.dumps(payload)},
+                        files=files,
+                        headers={},
+                    )
+        except httpx.HTTPStatusError as exc:
+            self._record_webhook_error(
+                credential,
+                f"http_{exc.response.status_code}",
+            )
+            safe_request = self._safe_webhook_request(credential)
+            safe_response = httpx.Response(exc.response.status_code, request=safe_request)
+            raise httpx.HTTPStatusError(
+                f"Discord webhook request failed with status {exc.response.status_code}",
+                request=safe_request,
+                response=safe_response,
+            ) from None
+        except httpx.ConnectError:
+            self._record_webhook_error(credential, "connect_error")
+            safe_request = self._safe_webhook_request(credential)
+            raise httpx.ConnectError(
+                "Discord webhook connection failed",
+                request=safe_request,
+            ) from None
+        except httpx.TimeoutException:
+            self._record_webhook_error(credential, "timeout")
+            safe_request = self._safe_webhook_request(credential)
+            raise httpx.TimeoutException(
+                "Discord webhook request timed out",
+                request=safe_request,
+            ) from None
+        except httpx.RequestError:
+            self._record_webhook_error(credential, "request_error")
+            safe_request = self._safe_webhook_request(credential)
+            raise httpx.RequestError(
+                "Discord webhook request failed",
+                request=safe_request,
+            ) from None
+        if self.webhook_store is not None:
+            now = datetime.now(UTC)
+            self.webhook_store.put_if_current(
+                credential.model_copy(
+                    update={
+                        "updated_at": now,
+                        "last_verified_at": now,
+                        "last_error": None,
+                    }
+                )
+            )
+        return response.json()
+
+    def _safe_webhook_request(self, credential: DiscordWebhookCredential) -> httpx.Request:
+        return httpx.Request(
+            "POST",
+            f"{self.api_base_url}/webhooks/{credential.webhook_id}/<redacted>",
+        )
+
+    def _record_webhook_error(
+        self,
+        credential: DiscordWebhookCredential,
+        error: str,
+    ) -> None:
+        if self.webhook_store is None:
+            return
+        self.webhook_store.put_if_current(
+            credential.model_copy(
+                update={
+                    "updated_at": datetime.now(UTC),
+                    "last_error": error,
+                }
+            )
+        )
+
+    def _execute_identity_webhook(
+        self,
+        *,
+        channel_id: str,
+        payload: dict[str, Any],
+        avatar: DiscordWebhookAvatar | None = None,
+        files: Any = None,
+    ) -> dict[str, Any]:
+        credential = self._webhook_credential(channel_id, avatar=avatar)
+        try:
+            return self._execute_webhook(
+                credential=credential,
+                payload=payload,
+                files=files,
+            )
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code != 404 or self.webhook_store is None:
+                raise
+            self.webhook_store.delete_if_current(credential)
+            return self._execute_webhook(
+                credential=self._webhook_credential(channel_id, avatar=avatar),
+                payload=payload,
+                files=files,
+            )
+
+    def test_webhook(
+        self,
+        channel_id: str,
+        *,
+        message: str = "Evander Discord webhook test",
+    ) -> dict[str, Any]:
+        self._require_allowed_channel_id(channel_id)
+        payload = self._execute_identity_webhook(
+            channel_id=channel_id,
+            payload={"content": message},
+        )
+        return self._persist_posted_message(
+            payload,
+            channel_id=channel_id,
+            session_id="admin-webhook-test",
+            source="discord_webhook_status",
+            transport="webhook",
+            identity=None,
+            identity_status="test",
+        )
+
+    @staticmethod
+    def _definite_webhook_failure(exc: httpx.HTTPStatusError) -> bool:
+        return exc.response.status_code in {400, 401, 403, 404, 429}
+
+    def _post_file(
         self,
         message: str,
         channel_id: str,
         session_id: str,
         artifacts: list[dict[str, Any]],
+        *,
+        identity: OutboundIdentity | None = None,
+        use_resolved_identity: bool = False,
+        identity_status: str = "not_requested",
     ) -> dict[str, Any]:
         self._require_allowed_channel_id(channel_id)
         files: list[tuple[str, tuple[str, bytes, str]]] = []
@@ -1243,6 +1703,39 @@ class DiscordBotApiService:
                     ),
                 )
             )
+        if use_resolved_identity and identity is not None:
+            payload, applied_identity, avatar_fallback, webhook_avatar = self._webhook_payload(
+                message, identity
+            )
+            try:
+                response_payload = self._execute_identity_webhook(
+                    channel_id=channel_id,
+                    payload=payload,
+                    avatar=webhook_avatar,
+                    files=files,
+                )
+                result = self._persist_posted_message(
+                    response_payload,
+                    channel_id=channel_id,
+                    session_id=session_id,
+                    source="discord_webhook_status",
+                    transport="webhook",
+                    identity=applied_identity,
+                    identity_status=identity_status,
+                    fallback_reason=avatar_fallback,
+                )
+                result["artifact_count"] = len(artifacts)
+                return result
+            except httpx.HTTPStatusError as exc:
+                if not self._definite_webhook_failure(exc):
+                    raise
+                fallback_reason = f"webhook_http_{exc.response.status_code}"
+            except (RuntimeError, httpx.ConnectError) as exc:
+                fallback_reason = f"webhook_unavailable:{type(exc).__name__}"
+        elif use_resolved_identity:
+            fallback_reason = f"identity_{identity_status}"
+        else:
+            fallback_reason = None
         payload = {"content": message}
         headers = {"Authorization": f"Bot {self.token}"}
         with httpx.Client(timeout=None) as client:
@@ -1255,39 +1748,92 @@ class DiscordBotApiService:
                 headers=headers,
             )
             response_payload = response.json()
-        response_attachments = [
-            _sanitize_attachment_metadata(item)
-            for item in response_payload.get("attachments") or []
-            if isinstance(item, dict)
-        ]
-        safe_response_payload = dict(response_payload)
-        safe_response_payload["attachments"] = response_attachments
-
-        envelope = DiscordCommandEnvelope(
-            command_id=response_payload["id"],
-            author_id=response_payload["author"]["id"],
+        result = self._persist_posted_message(
+            response_payload,
             channel_id=channel_id,
-            content=response_payload.get("content", ""),
-            metadata={
-                "source": "discord_bot_api_status",
-                "guild_id": response_payload.get("guild_id"),
-                "channel_id": channel_id,
-                "author_id": response_payload["author"]["id"],
-                "session_id": session_id,
-                "attachments": response_attachments,
-                "message": safe_response_payload,
-            },
+            session_id=session_id,
+            source="discord_bot_api_status",
+            transport="bot_api",
+            identity=None,
+            identity_status=identity_status,
+            fallback_reason=fallback_reason,
         )
-        self.command_store.put(envelope.command_id, envelope)
-        return {
-            "status": "posted",
-            "channel_id": channel_id,
-            "session_id": session_id,
-            "message_id": response_payload["id"],
-            "artifact_count": len(artifacts),
-        }
+        result["artifact_count"] = len(artifacts)
+        return result
 
-    def post_status(self, message: str, channel_id: str, session_id: str) -> dict[str, Any]:
+    def post_file(
+        self,
+        message: str,
+        channel_id: str,
+        session_id: str,
+        artifacts: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        return self._post_file(message, channel_id, session_id, artifacts)
+
+    def post_file_with_identity(
+        self,
+        message: str,
+        channel_id: str,
+        session_id: str,
+        artifacts: list[dict[str, Any]],
+        *,
+        identity: OutboundIdentity | None,
+        identity_status: str,
+    ) -> dict[str, Any]:
+        return self._post_file(
+            message,
+            channel_id,
+            session_id,
+            artifacts,
+            identity=identity,
+            use_resolved_identity=True,
+            identity_status=identity_status,
+        )
+
+    def _post_status(
+        self,
+        message: str,
+        channel_id: str,
+        session_id: str,
+        *,
+        identity: OutboundIdentity | None = None,
+        use_resolved_identity: bool = False,
+        identity_status: str = "not_requested",
+    ) -> dict[str, Any]:
+        self._require_allowed_channel_id(channel_id)
+        if use_resolved_identity and identity is not None:
+            (
+                webhook_payload,
+                applied_identity,
+                avatar_fallback,
+                webhook_avatar,
+            ) = self._webhook_payload(message, identity)
+            try:
+                payload = self._execute_identity_webhook(
+                    channel_id=channel_id,
+                    payload=webhook_payload,
+                    avatar=webhook_avatar,
+                )
+                return self._persist_posted_message(
+                    payload,
+                    channel_id=channel_id,
+                    session_id=session_id,
+                    source="discord_webhook_status",
+                    transport="webhook",
+                    identity=applied_identity,
+                    identity_status=identity_status,
+                    fallback_reason=avatar_fallback,
+                )
+            except httpx.HTTPStatusError as exc:
+                if not self._definite_webhook_failure(exc):
+                    raise
+                fallback_reason = f"webhook_http_{exc.response.status_code}"
+            except (RuntimeError, httpx.ConnectError) as exc:
+                fallback_reason = f"webhook_unavailable:{type(exc).__name__}"
+        elif use_resolved_identity:
+            fallback_reason = f"identity_{identity_status}"
+        else:
+            fallback_reason = None
         with httpx.Client(timeout=None) as client:
             response = self._request_with_retries(
                 client,
@@ -1296,36 +1842,37 @@ class DiscordBotApiService:
                 json={"content": message},
             )
             payload = response.json()
-        attachments = [
-            _sanitize_attachment_metadata(item)
-            for item in payload.get("attachments") or []
-            if isinstance(item, dict)
-        ]
-        safe_payload = dict(payload)
-        safe_payload["attachments"] = attachments
-
-        envelope = DiscordCommandEnvelope(
-            command_id=payload["id"],
-            author_id=payload["author"]["id"],
+        return self._persist_posted_message(
+            payload,
             channel_id=channel_id,
-            content=payload.get("content", ""),
-            metadata={
-                "source": "discord_bot_api_status",
-                "guild_id": payload.get("guild_id"),
-                "channel_id": channel_id,
-                "author_id": payload["author"]["id"],
-                "session_id": session_id,
-                "attachments": attachments,
-                "message": safe_payload,
-            },
+            session_id=session_id,
+            source="discord_bot_api_status",
+            transport="bot_api",
+            identity=None,
+            identity_status=identity_status,
+            fallback_reason=fallback_reason,
         )
-        self.command_store.put(envelope.command_id, envelope)
-        return {
-            "status": "posted",
-            "channel_id": channel_id,
-            "session_id": session_id,
-            "message_id": payload["id"],
-        }
+
+    def post_status(self, message: str, channel_id: str, session_id: str) -> dict[str, Any]:
+        return self._post_status(message, channel_id, session_id)
+
+    def post_status_with_identity(
+        self,
+        message: str,
+        channel_id: str,
+        session_id: str,
+        *,
+        identity: OutboundIdentity | None,
+        identity_status: str,
+    ) -> dict[str, Any]:
+        return self._post_status(
+            message,
+            channel_id,
+            session_id,
+            identity=identity,
+            use_resolved_identity=True,
+            identity_status=identity_status,
+        )
 
     def add_reaction(
         self,
@@ -3275,7 +3822,14 @@ class DiscordInboxService:
     def _is_self_authored_message(message: DiscordMessageEnvelope, *, session_id: str) -> bool:
         raw_source = str(message.raw.get("source", "")).strip()
         raw_session_id = str(message.raw.get("session_id", "")).strip()
-        return raw_source == "discord_bot_api_status" and raw_session_id == session_id
+        return (
+            raw_source
+            in {
+                "discord_bot_api_status",
+                "discord_webhook_status",
+            }
+            and raw_session_id == session_id
+        )
 
     def _effective_cursor(
         self,

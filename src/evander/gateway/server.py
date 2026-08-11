@@ -903,6 +903,11 @@ def create_server(context: RuntimeContext) -> FastMCP:
             config=context.config,
             service=context,
         )
+        if addon.outbound_identity_resolver is not None:
+            context.register_outbound_identity_resolver(
+                addon.addon_id,
+                addon.outbound_identity_resolver(addon_context),
+            )
         registered_names = register_addon_mcp_tools(addon, server, addon_context)
         declared_names = tuple(tool.name for tool in addon.mcp_tool_catalog)
         if declared_names and set(registered_names) != set(declared_names):

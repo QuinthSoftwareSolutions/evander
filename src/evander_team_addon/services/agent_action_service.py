@@ -794,13 +794,12 @@ class TeamAgentActionService:
             for escalation in _list_of_mappings(
                 normalized_action.get("operator_escalations"), "operator_escalations"
             ):
-                if _apply_operator_escalation(
+                _apply_operator_escalation(
                     state_model,
                     actor=agent,
                     escalation=escalation,
                     result=result,
-                ):
-                    _mark_progress()
+                )
 
             for index, deliverable_payload in enumerate(
                 _list_of_mappings(normalized_action.get("deliverables"), "deliverables")

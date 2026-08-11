@@ -343,6 +343,7 @@ class _ContainerDispatchBackendStub:
         self.prepared_specs: list[object] = []
         self.started_specs: list[object] = []
         self.stopped: list[str] = []
+        self.interrupted: list[tuple[str, float | None, str]] = []
         self.destroyed: list[str] = []
         self.config: object | None = None
         self.status = SimpleNamespace(
@@ -371,6 +372,15 @@ class _ContainerDispatchBackendStub:
     def stop(self, execution_id: str, *, timeout_seconds: int = 60):
         del timeout_seconds
         self.stopped.append(execution_id)
+
+    def interrupt_active_tool(
+        self,
+        execution_id: str,
+        *,
+        max_elapsed_seconds: float | None = None,
+        reason: str = "operator_requested",
+    ) -> None:
+        self.interrupted.append((execution_id, max_elapsed_seconds, reason))
 
     def destroy(self, execution_id: str):
         self.destroyed.append(execution_id)
@@ -8339,6 +8349,39 @@ def test_agent_prompt_finalize_waiting_record_marks_wake_completion_from_wake_di
     assert completed.completion_evidence["trigger_type"] == queue_record.trigger_type
     assert published_events
     assert published_events[0][1]["wake_dispatch_id"] == "wake-dispatch-1"
+
+
+def test_agent_prompt_container_active_tool_watchdog_interrupts_only_stalled_tool(
+    tmp_path: Path,
+) -> None:
+    config = GatewayConfig(
+        runtime_dir=tmp_path,
+        execution_backend="container_worker_vm",
+        container_worker_base_url="http://worker.test",
+        container_worker_active_tool_timeout_seconds=10,
+    )
+    backend = _ContainerDispatchBackendStub()
+    backend.config = config
+    backend.status = SimpleNamespace(
+        metadata={
+            "active_tool": {
+                "summary": "exec_command timeout --preserve-status 300 dotnet test",
+                "started_at": (datetime.now(timezone.utc) - timedelta(seconds=45)).isoformat(),
+            }
+        }
+    )
+
+    AgentPromptEffectProvider._interrupt_stalled_container_active_tool_if_expired(
+        backend=backend,
+        status=backend.status,
+        execution_id="agent-session-1-stalled-test",
+    )
+
+    assert backend.interrupted == [
+        ("agent-session-1-stalled-test", 10.0, "active_tool_timeout")
+    ]
+    assert backend.stopped == []
+    assert backend.destroyed == []
 
 
 def test_agent_prompt_container_reconciliation_times_out_running_job(

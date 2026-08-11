@@ -525,6 +525,11 @@ function agentTargetStateText(agent: AgentRecord): string {
   return `Worker: latest ${statusLabel(latestStatus)}`;
 }
 
+function isInterruptibleTestTool(summary: string | null): boolean {
+  if (!summary) return false;
+  return /(?:^|\s)(?:dotnet\s+test|pytest(?:\s|$)|python(?:3)?\s+-m\s+pytest|npm\s+(?:run\s+)?test|npx\s+(?:vitest|jest)|cargo\s+test|go\s+test)(?:\s|$)/i.test(summary);
+}
+
 function hostRuntimeImage(host: Record<string, unknown> | null | undefined): RuntimeImageInfo | null {
   const value = host?.runtime_image;
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
@@ -1524,7 +1529,7 @@ export function AgentsPage() {
     }
   }
 
-  async function runContainerExecutionAction(execution: AgentExecutionRecord, action: "stop") {
+  async function runContainerExecutionAction(execution: AgentExecutionRecord, action: "stop" | "interrupt-active-tool") {
     if (!selectedAgent) return;
     const actionKey = `${action}:${execution.execution_id}`;
     setBusyAction(actionKey);
@@ -2753,6 +2758,10 @@ export function AgentsPage() {
                   <div className="agent-execution-list">
                     {selectedExecutions.map((execution) => {
                       const executionCanStop = isActiveStatus(execution.status);
+                      const activeTool = hostRecord(execution.metadata, "active_tool");
+                      const activeToolSummary = hostString(activeTool, "summary");
+                      const activeToolStartedAt = hostString(activeTool, "started_at");
+                      const activeTestTool = isInterruptibleTestTool(activeToolSummary);
                       return (
                         <div className="agent-execution-row" key={execution.execution_id}>
                           <div>
@@ -2763,6 +2772,25 @@ export function AgentsPage() {
                             <span className={`status-pill state-${statusClass(execution.status)}`}>
                               {execution.status}
                             </span>
+                            {executionCanStop ? (
+                              activeTestTool ? (
+                                <Tooltip content="Send SIGTERM only to a recognized active test process group; the agent container stays running.">
+                                  <button
+                                    type="button"
+                                    className="admin-icon-button agent-execution-stop-button"
+                                    onClick={() => {
+                                      if (window.confirm(`Interrupt the active test tool in ${execution.execution_id}?`)) {
+                                        void runContainerExecutionAction(execution, "interrupt-active-tool");
+                                      }
+                                    }}
+                                    disabled={!canMutate}
+                                    aria-label={`Interrupt active test tool in ${execution.execution_id}`}
+                                  >
+                                    {busyAction === `interrupt-active-tool:${execution.execution_id}` ? "..." : "Interrupt tool"}
+                                  </button>
+                                </Tooltip>
+                              ) : null
+                            ) : null}
                             {executionCanStop ? (
                               <Tooltip content="Stop this running container execution.">
                                 <button
@@ -2784,6 +2812,12 @@ export function AgentsPage() {
                           <div className="agent-execution-meta">
                             <span>{formatTimestamp(execution.started_at ?? execution.created_at)}</span>
                             <span>{execution.image ?? "Image unknown"}</span>
+                            {activeToolSummary ? (
+                              <span title={activeToolSummary}>
+                                Active tool: {activeToolSummary}
+                                {activeToolStartedAt ? ` since ${formatTimestamp(activeToolStartedAt)}` : ""}
+                              </span>
+                            ) : null}
                           </div>
                         </div>
                       );

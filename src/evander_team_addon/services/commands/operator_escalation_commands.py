@@ -78,7 +78,9 @@ class TeamOperatorEscalationCommandService(TeamCommandExecutor):
             request_id=normalized_request_id,
             correlation_id=_optional_text(correlation_id),
             causation_id=_optional_text(causation_id),
-            progress_classification="operator_escalation",
+            # Recording an escalation intent is not delivery evidence.  Its
+            # completion effect resets no-progress only after a message is sent.
+            progress_classification="none",
         )
         normalized_payload = _team_operator_escalation_normalized_payload(
             title=normalized_title,
@@ -121,8 +123,10 @@ class TeamOperatorEscalationCommandService(TeamCommandExecutor):
             _validate_command_task_scope(state, agent=agent, task_id=normalized_task_id)
             escalation_id = f"escalation-{uuid4().hex}"
             payload: dict[str, Any] = {
+                "escalation_id": escalation_id,
                 "team_id": team.id,
                 "manager_agent_id": agent.id,
+                "sender_session_id": agent.session_id,
                 "title": title_text,
                 "message": message_text,
                 "urgency": normalized_urgency,
@@ -191,11 +195,12 @@ class TeamOperatorEscalationCommandService(TeamCommandExecutor):
                         "downstream_effect_completed": False,
                         "delivery_status": "pending",
                         "delivery_status_message": _PENDING_ESCALATION_DELIVERY_MESSAGE,
-                        "progress_made": True,
+                        "progress_made": False,
                     },
                     created_domain_ids=[escalation_id, inbox_id, outbox_id],
                     created_event_ids=[escalation_id],
                     outbox_records=[outbox_record],
+                    progress_classification="none",
                 )
 
             governance_groups = _governance_groups_for_team(state, team.id)
@@ -247,6 +252,7 @@ class TeamOperatorEscalationCommandService(TeamCommandExecutor):
                 },
                 created_domain_ids=[escalation_id, *agenda_ids],
                 created_event_ids=agenda_ids,
+                progress_classification="progress",
             )
 
         return self._execute_team_command(

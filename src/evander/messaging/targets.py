@@ -49,6 +49,7 @@ SQLITE_BUSY_TIMEOUT_MS = 30_000
 class CommunicationTargetPolicy(BaseModel):
     capabilities: list[CommunicationTargetCapability] = Field(default_factory=list)
     auth_profile_ref: str | None = None
+    sender_identity: Literal["platform", "resolved"] = "platform"
 
     @field_validator("auth_profile_ref", mode="before")
     @classmethod

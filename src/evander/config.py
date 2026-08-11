@@ -310,6 +310,7 @@ class GatewayConfig(BaseModel):
     email_store_path: Path = Path("/var/lib/evander/emails.json")
     email_cursor_store_path: Path = Path("/var/lib/evander/email_cursors.json")
     discord_command_store_path: Path = Path("/var/lib/evander/discord_commands.json")
+    discord_webhook_store_path: Path = Path("/var/lib/evander/discord-webhooks.json")
     teams_message_store_path: Path = Path("/var/lib/evander/teams_messages.json")
     directories_store_path: Path = Path("/var/lib/evander/directories.json")
     addon_loader: AddonLoaderConfig = Field(default_factory=AddonLoaderConfig)
@@ -319,6 +320,7 @@ class GatewayConfig(BaseModel):
     container_worker_token_env: str = Field(default="EVANDER_WORKER_TOKEN", min_length=1)
     container_worker_default_image: str = Field(default="evander-runner:latest", min_length=1)
     container_worker_images: dict[str, str] = Field(default_factory=dict)
+    container_worker_active_tool_timeout_seconds: float = Field(default=300.0, gt=0)
     container_worker_job_timeout_seconds: float = Field(default=1800.0, gt=0)
     container_worker_request_timeout_seconds: float = Field(default=30.0, gt=0)
     container_worker_workspace_persistence: str = Field(default="session", min_length=1)
@@ -346,6 +348,7 @@ class GatewayConfig(BaseModel):
     discord_retry_count: int = Field(default=3, ge=0, le=10)
     discord_retry_base_backoff_seconds: float = Field(default=0.5, gt=0)
     discord_retry_max_backoff_seconds: float = Field(default=5.0, gt=0)
+    discord_persona_webhook_cache_limit: int = Field(default=10, ge=1, le=10)
     discord_read_reaction_emoji: str = "👀"
     discord_operator_user_allowlist: list[str] = Field(default_factory=list)
     discord_operator_channel_allowlist: list[str] = Field(default_factory=list)
@@ -984,6 +987,7 @@ class GatewayConfig(BaseModel):
             "email_store_path": default_runtime_dir / "emails.json",
             "email_cursor_store_path": default_runtime_dir / "email_cursors.json",
             "discord_command_store_path": default_runtime_dir / "discord_commands.json",
+            "discord_webhook_store_path": default_runtime_dir / "discord-webhooks.json",
             "teams_message_store_path": default_runtime_dir / "teams_messages.json",
             "teams_meeting_store_path": default_runtime_dir / "teams-meetings.json",
             "teams_delegated_credential_store_path": default_runtime_dir

@@ -209,6 +209,7 @@ def test_team_runtime_pack_layout_positions_every_runtime_node() -> None:
 
     node_ids = {ir_node.node.id for ir_node in pack.ir.nodes}
     assert set(nodes) == node_ids
+    assert set(pack.graphs[0].node_ids) == node_ids
     assert len({(position["x"], position["y"]) for position in nodes.values()}) == len(node_ids)
     assert nodes["team-consolidate-correction-branches"] == {"x": 720.0, "y": 1360.0}
     assert nodes["team-publish-outbox-on-request"] == {"x": 360.0, "y": 40.0}
@@ -462,6 +463,8 @@ def test_team_runtime_pack_loads_as_current_workflow_pack(tmp_path: Path) -> Non
     assert "team-send-external-chat-reply" in _node_ids(config.effects)
     assert "team-record-external-chat-delivery" in _node_ids(config.effects)
     assert "team-notify-operator" in _node_ids(config.effects)
+    assert "team-notify-operator-fallback" in _node_ids(config.effects)
+    assert "team-record-operator-escalation-delivery" in _node_ids(config.effects)
     assert "team-git-promote-review-branch" in _node_ids(config.effects)
     assert "team-promote-release-recovery-branch" in _node_ids(config.effects)
     assert "team-verify-release-candidate" in _node_ids(config.effects)
@@ -483,6 +486,9 @@ def test_team_runtime_pack_loads_as_current_workflow_pack(tmp_path: Path) -> Non
         "type": "boolean"
     }
     assert document.output_schemas["team-record-external-chat-delivery"]["status"] == {
+        "type": "string"
+    }
+    assert document.output_schemas["team-record-operator-escalation-delivery"]["status"] == {
         "type": "string"
     }
     assert document.output_schemas["team-wake-due-agents"]["prepared_project_repos"] == {
@@ -3393,6 +3399,14 @@ def test_team_chat_prompt_deduplicates_current_body_and_caps_history() -> None:
     assert prompt.count(current_body) == 1
     assert historical_body not in prompt
     assert ("h" * 1199) + "…" in prompt
+    assert "Resolve `replyToolName` from ALL_TOOLS" in prompt
+    assert "`tools[replyToolName](...)`" in prompt
+    assert '`conversation_id="conversation"`' in prompt
+    assert '`message_ids=["message-current"]`' in prompt
+    assert "Do not use dotted access" in prompt
+    assert "Mandatory hydration retry" in prompt
+    assert "repeat the lookup, and make the tool call" in prompt
+    assert "only a successful tool result completes this chat reply" in prompt
 
 
 def test_wake_due_agents_provider_retries_queued_chat_attachment_from_relative_runtime(
@@ -4463,6 +4477,8 @@ def test_wake_governance_managers_uses_governance_prompt_without_action_seed(
     assert result["success"] is True
     assert result["leased_count"] == 1
     assert result["leases"][0]["reason"] == "operator_directive"
+    assert result["lease_summaries"][0]["status"] == "completed"
+    assert result["lease_summaries"][0]["dispatch"]["status"] == "completed"
     assert result["leases"][0]["governance_group"]["id"] == "portfolio"
     assert result["leases"][0]["agenda"][0]["id"] == "agenda-1"
     assert len(file_copier.calls) == 1
@@ -4544,6 +4560,63 @@ def test_wake_governance_managers_uses_governance_prompt_without_action_seed(
         "copied_paths": [TEAM_AGENT_GUIDANCE_PATH, TEAM_AGENT_GUIDANCE_PATH],
     }
     assert repo.read().governance_runtimes["portfolio"].active_dispatch_id is None
+
+
+def test_wake_governance_managers_reports_queued_summary(tmp_path: Path) -> None:
+    repo = _seed_team(tmp_path)
+    _team_admin_service(repo).register_agent(
+        agent_id="portfolio-manager",
+        session_id="session-portfolio-manager",
+        expected_revision=repo.read().revision,
+    )
+    _team_admin_service(repo).create_governance_group(
+        governance_group_id="portfolio",
+        name="Portfolio",
+        manager_agent_id="portfolio-manager",
+        member_team_ids=["team"],
+        expected_revision=repo.read().revision,
+    )
+    _team_admin_service(repo).create_governance_agenda_item(
+        agenda_item_id="agenda-1",
+        governance_group_id="portfolio",
+        item_type="operator_directive",
+        title="Review weekly status",
+        summary="Check whether Team is blocked.",
+        team_id="team",
+        expected_revision=repo.read().revision,
+    )
+    session_store = FakeSessionStore()
+    session_store.sessions["session-portfolio-manager"] = SimpleNamespace(
+        session_id="session-portfolio-manager",
+        vm_id="vm-portfolio-manager",
+        vm_provider="libvirt",
+        directory_path="root",
+        metadata={},
+    )
+    provider = TeamWakeGovernanceManagersEffectProvider()
+    provider.initialize(
+        TeamWakeGovernanceManagersEffectDefinition(
+            id="wake-governance",
+            display_name="Wake governance",
+            type="effect:team:wake-governance-managers",
+        ),
+        EffectRuntimeContext(
+            resolved_config={"runtime_dir": str(tmp_path)},
+            agent_resumer=FakeResumer({"success": True, "queued": True}),
+            vm_file_copier=FakeFileCopier(),
+            session_lookup=session_store,
+            session_metadata_updater=session_store,
+        ),
+    )
+
+    result = provider.execute()
+
+    summary = result["lease_summaries"][0]
+    assert summary["status"] == "queued"
+    assert summary["dispatch"]["status"] == "queued"
+    runtime = repo.read().governance_runtimes["portfolio"]
+    assert runtime.active_dispatch_id == summary["dispatch_id"]
+    assert runtime.queued_at is not None
 
 
 def test_build_prompt_allows_root_tasks_for_create_root_task_permission(
@@ -7415,6 +7488,8 @@ def test_libvirt_dependency_git_composition_command_is_valid_shell() -> None:
     assert syntax.returncode == 0, syntax.stderr
     assert "export GIT_AUTHOR_NAME='Jonathan Quinth'" in command
     assert "export GIT_AUTHOR_EMAIL=operator@example.invalid" in command
+    assert 'ls-remote --exit-code --heads origin "refs/heads/$branch"' in command
+    assert 'push origin "HEAD:refs/heads/$branch"' in command
     assert "export GIT_COMMITTER_NAME='Evander Team Dependency Composer'" in command
     assert "export GIT_COMMITTER_EMAIL=team-dependencies@evander.invalid" in command
     assert command.index("dependency_branch_0") < command.index("dependency_branch_1")
@@ -8467,6 +8542,10 @@ def test_wake_due_agents_provider_releases_lease_when_resume_reports_failure(
     failed_dispatch = next(iter(reread.dispatches.values()))
     assert failed_dispatch.status == TeamDispatchStatus.FAILED
     assert failed_dispatch.error == "vm not ready"
+    summary = result["lease_summaries"][0]
+    assert summary["status"] == "failed"
+    assert summary["dispatch"]["status"] == "failed"
+    assert summary["error"] == "vm not ready"
 
 
 def test_wake_due_agents_keeps_local_capacity_queued_dispatch_unleased(
@@ -8515,6 +8594,9 @@ def test_wake_due_agents_keeps_local_capacity_queued_dispatch_unleased(
     assert len(session_store.calls) == 1
     assert "action_contract" not in session_store.calls[0]["metadata"]["team_addon"]
     assert "agent_guidance" in session_store.calls[0]["metadata"]["team_addon"]
+    summary = result["lease_summaries"][0]
+    assert summary["status"] == "queued"
+    assert summary["dispatch"]["status"] == "queued"
 
 
 def test_wake_due_agents_keeps_capacity_queued_chat_unleased_and_skips_regular_dispatch(
@@ -11205,7 +11287,28 @@ def test_team_runtime_pack_routes_operator_escalation_to_communication() -> None
     assert "${{team-operator-escalation.payload.title}}" in notify["message"]
     assert "${{team-operator-escalation.payload.message}}" in notify["message"]
     assert "${{team-operator-escalation.payload.urgency}}" in notify["message"]
+    assert notify["sender_session_id"] == (
+        "${{team-operator-escalation.payload.sender_session_id ?? null}}"
+    )
+    fallback = effects["team-notify-operator-fallback"]
+    assert fallback["type"] == "effect:communication:send-message"
+    assert fallback["sender_session_id"] == "workflow"
+    assert effects["team-record-operator-escalation-delivery"]["type"] == (
+        "effect:team:record-operator-escalation-delivery"
+    )
+    assert effects["team-record-operator-escalation-fallback-delivery"]["fallback_used"] is True
+    assert effects["team-record-operator-escalation-delivery-failure"]["success"] is False
     assert ("team-operator-escalation", "team-notify-operator") in edges
+    assert ("team-notify-operator", "team-record-operator-escalation-delivery") in edges
+    assert ("team-notify-operator", "team-notify-operator-fallback") in {
+        (edge["source_id"], edge["target_id"])
+        for edge in pack["edges"]
+        if edge.get("source_port") == "error"
+    }
+    assert (
+        "team-notify-operator-fallback",
+        "team-record-operator-escalation-fallback-delivery",
+    ) in edges
     assert ("team-chat-message-queued", "team-wake-queued-chat-message") in edges
     assert (
         "team-external-chat-reply-requested",
@@ -11216,6 +11319,9 @@ def test_team_runtime_pack_routes_operator_escalation_to_communication() -> None
         "team-record-external-chat-delivery",
     ) in edges
     assert effects["team-send-external-chat-reply"]["type"] == ("effect:communication:send-message")
+    assert effects["team-send-external-chat-reply"]["sender_session_id"] == (
+        "${{team-external-chat-reply-requested.payload.sender_session_id ?? null}}"
+    )
     assert effects["team-record-external-chat-delivery"]["type"] == (
         "effect:team:record-external-chat-delivery"
     )

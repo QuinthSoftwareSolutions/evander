@@ -525,6 +525,40 @@ class VmAgentMutationMixin:
                 else:
                     status = worker_backend.stop(agent_id)
                     message = status.message or "stop completed"
+            elif action == "interrupt-active-tool":
+                if session is not None and record is None:
+                    active_records = [
+                        candidate
+                        for candidate in execution_records
+                        if self._agent_status_is_active(
+                            self._container_agent_status(candidate.last_status)
+                        )
+                    ]
+                    if not active_records:
+                        raise ValueError(
+                            f"No active container executions for session {session.session_id}"
+                        )
+                    statuses = [
+                        worker_backend.interrupt_active_tool(candidate.execution_id)
+                        for candidate in active_records
+                    ]
+                    status = statuses[-1]
+                    message = (
+                        f"Requested safe active-tool interruption for {len(statuses)} active "
+                        f"container execution{'' if len(statuses) == 1 else 's'}"
+                    )
+                else:
+                    status = worker_backend.interrupt_active_tool(agent_id)
+                    interruption = (
+                        status.metadata.get("active_tool_interruption")
+                        if isinstance(status.metadata, dict)
+                        else None
+                    )
+                    message = (
+                        str(interruption.get("message") or "")
+                        if isinstance(interruption, dict)
+                        else ""
+                    ) or "Requested safe active-tool interruption"
             elif action == "destroy":
                 if session is not None and record is None:
                     if not execution_records:

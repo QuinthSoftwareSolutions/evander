@@ -47,6 +47,14 @@ _SERVICE_EXPORTS = {
         "HostDirectoryConfigRevisionConflict",
     ),
     "DocumentationService": (".documentation_service", "DocumentationService"),
+    "DiscordWebhookAdminDependencies": (
+        ".discord_webhook_service",
+        "DiscordWebhookAdminDependencies",
+    ),
+    "DiscordWebhookAdminService": (
+        ".discord_webhook_service",
+        "DiscordWebhookAdminService",
+    ),
     "IssueGitAdminDependencies": (".issue_git_service", "IssueGitAdminDependencies"),
     "IssueGitAdminService": (".issue_git_service", "IssueGitAdminService"),
     "IssueGitAdminSupport": (".issue_git_service", "IssueGitAdminSupport"),

@@ -1633,6 +1633,35 @@ Audit/result behavior:
   - Destination `channel_id` must be in `session.discord_channel_allowlist`, either directly or
     through a communication target ID with `write`.
   - `discord_operator_user_allowlist` does not override post destination checks.
+- Optional per-agent sender identity is configured on a saved Discord communication target with
+  `policy.sender_identity = "resolved"`; the default is `"platform"`. Raw channel-ID sends retain
+  the bot identity. Identity providers are add-on extensions: Team Add-on resolves the persistent
+  agent attached to the sending session and returns that agent's display name and avatar.
+- Workflow `effect:communication:send-message` nodes may bind `sender_session_id` when the selected
+  target should resolve an agent identity. The Team Runtime external-chat reply graph binds the
+  replying agent's session automatically; older or generic workflow sends without that field keep
+  the platform identity fallback.
+- Resolved identities use host-created incoming webhooks scoped to the destination channel and
+  avatar digest. The avatar is installed as Discord-hosted webhook image data and the display name
+  is overridden per message, so no public Evander avatar URL, Discord persona registration, or
+  bot/application per agent is required. Grant the Evander bot permission to manage webhooks in
+  each opted-in channel.
+- The gateway lazily creates persona webhooks on first use and stores their ID/token in
+  `discord_webhook_store_path` (default `runtime/discord-webhooks.json`, mode `0600`). The pool is
+  bounded by `discord_persona_webhook_cache_limit` (default and maximum `10`); after a new avatar
+  is provisioned, least-recently-used persona webhooks beyond the limit are removed. A stale
+  webhook is recreated once after a Discord `404`. Definite provisioning/delivery failures fall
+  back to the ordinary bot message; transient or ambiguous failures are not duplicated through a
+  second transport.
+- In Admin Web, save the Discord target first, unlock privileged operations, then use the target's
+  Discord persona webhook controls to Provision, Test, or Recreate it. Status is read-only and
+  never returns the webhook token. Recreate stores the replacement before attempting to delete the
+  old webhook.
+- PNG and JPEG persona avatars are sent to Discord as image data when their webhook is created;
+  WebP avatars are converted to PNG first. If image preparation fails, Evander uses a generic
+  channel webhook with the resolved name and records avatar fallback metadata. The signed public
+  communication-artifact settings remain relevant to non-image Teams file links, not Discord
+  persona avatars.
 - Reaction precedence for `add_message_reaction`:
   - `provider=discord` requires `channel_id` in `session.discord_channel_allowlist`, either
     directly or through a communication target ID with `reply`.

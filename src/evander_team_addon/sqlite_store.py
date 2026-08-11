@@ -79,6 +79,28 @@ class TeamStateSqliteStore:
             with self._connect() as connection:
                 return self._read_payload(connection)
 
+    def read_state(self) -> TeamState:
+        """Read and validate Team state once without a JSON model round-trip."""
+
+        with self._lock:
+            with self._connect() as connection:
+                return self._read_state(connection)
+
+    def read_revision(self) -> int:
+        """Read the current state revision without reconstructing the Team state."""
+
+        # Do not take the process-local state lock or reapply WAL mode here. This
+        # read is used by one-second UI polls and WAL readers can safely proceed
+        # while a state update holds its write transaction.
+        with sqlite3.connect(self.path, timeout=30.0) as connection:
+            connection.row_factory = sqlite3.Row
+            connection.execute(f"PRAGMA busy_timeout={SQLITE_BUSY_TIMEOUT_MS}")
+            connection.execute("PRAGMA query_only=ON")
+            row = connection.execute(
+                "SELECT value FROM team_state_metadata WHERE key = 'revision'"
+            ).fetchone()
+        return int(row["value"]) if row is not None else 0
+
     def write_object(self, payload: dict[str, Any]) -> None:
         state = TeamState.model_validate(payload)
         with self._lock:
@@ -102,6 +124,36 @@ class TeamStateSqliteStore:
                     payload=payload,
                 )
                 return _replace_state_result(result, state)
+
+    def update_state(
+        self,
+        updater: Callable[[TeamState], TeamState | None],
+    ) -> TeamState:
+        """Atomically update typed Team state without redundant model round-trips.
+
+        The persisted payload is retained as the immutable comparison baseline because
+        callers commonly mutate the supplied model in place. The candidate is still
+        validated in full before any delta is written, so invalid mutations roll back
+        the transaction exactly like the legacy object update path.
+        """
+
+        with self._lock:
+            with self._connect() as connection:
+                connection.execute("BEGIN IMMEDIATE")
+                state = self._read_state(connection)
+                previous_payload = state.model_dump(mode="json")
+                previous_schema_version = state.schema_version
+                previous_revision = state.revision
+                previous_updated_at = state.updated_at
+                candidate = updater(state) or state
+                return self._persist_updated_state(
+                    connection,
+                    previous_payload=previous_payload,
+                    previous_schema_version=previous_schema_version,
+                    previous_revision=previous_revision,
+                    previous_updated_at=previous_updated_at,
+                    candidate=candidate,
+                )
 
     def update_object_with_command_transaction(
         self,
@@ -157,6 +209,51 @@ class TeamStateSqliteStore:
         self._write_state_delta(
             connection,
             previous_state=previous_state,
+            state=state,
+        )
+        return state
+
+    def _persist_updated_state(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        previous_payload: dict[str, Any],
+        previous_schema_version: int,
+        previous_revision: int,
+        previous_updated_at: datetime,
+        candidate: TeamState,
+    ) -> TeamState:
+        candidate_payload = candidate.model_dump(mode="json")
+        candidate_payload["updated_at"] = utc_now().isoformat()
+        validated = TeamState.model_validate(candidate_payload)
+        current_payload = validated.model_dump(mode="json")
+        state_changed = _state_content_changed(previous_payload, current_payload)
+        if not state_changed:
+            return validated.model_copy(
+                update={
+                    "schema_version": previous_schema_version,
+                    "revision": previous_revision,
+                    "updated_at": previous_updated_at,
+                }
+            )
+        state = validated.model_copy(
+            update={
+                "schema_version": SCHEMA_VERSION,
+                "revision": previous_revision + 1,
+                "updated_at": validated.updated_at,
+            }
+        )
+        current_payload.update(
+            {
+                "schema_version": SCHEMA_VERSION,
+                "revision": state.revision,
+                "updated_at": state.updated_at.isoformat(),
+            }
+        )
+        self._write_state_delta_payloads(
+            connection,
+            previous=previous_payload,
+            current=current_payload,
             state=state,
         )
         return state
@@ -1657,12 +1754,15 @@ class TeamStateSqliteStore:
         return row is not None
 
     def _read_payload(self, connection: sqlite3.Connection) -> dict[str, Any]:
+        return self._read_state(connection).model_dump(mode="json")
+
+    def _read_state(self, connection: sqlite3.Connection) -> TeamState:
         metadata = {
             str(row["key"]): str(row["value"])
             for row in connection.execute("SELECT key, value FROM team_state_metadata")
         }
         if "revision" not in metadata:
-            return TeamState.empty().model_dump(mode="json")
+            return TeamState.empty()
 
         payload: dict[str, Any] = {
             "schema_version": int(metadata.get("state_schema_version", SCHEMA_VERSION)),
@@ -1743,7 +1843,7 @@ class TeamStateSqliteStore:
         self._read_ephemeral_assignments(connection, payload)
         self._read_git_promotions(connection, payload)
         self._read_git_work_contexts(connection, payload)
-        return TeamState.model_validate(payload).model_dump(mode="json")
+        return TeamState.model_validate(payload)
 
     def _write_state(self, connection: sqlite3.Connection, state: TeamState) -> None:
         payload = state.model_dump(mode="json")
@@ -1825,6 +1925,21 @@ class TeamStateSqliteStore:
     ) -> None:
         previous = previous_state.model_dump(mode="json")
         current = state.model_dump(mode="json")
+        self._write_state_delta_payloads(
+            connection,
+            previous=previous,
+            current=current,
+            state=state,
+        )
+
+    def _write_state_delta_payloads(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        previous: dict[str, Any],
+        current: dict[str, Any],
+        state: TeamState,
+    ) -> None:
         changed_by_field: dict[str, set[str]] = {}
         for fields, _delete_specs, _writer_name in _PERSISTENCE_GROUPS:
             for field_name in fields:
@@ -4804,6 +4919,18 @@ def _state_content_payload(state: TeamState) -> dict[str, Any]:
     for field_name in ("schema_version", "revision", "updated_at"):
         payload.pop(field_name, None)
     return payload
+
+
+def _state_content_changed(
+    previous: Mapping[str, Any],
+    current: Mapping[str, Any],
+) -> bool:
+    ignored_fields = {"schema_version", "revision", "updated_at"}
+    return any(
+        previous.get(field_name) != current.get(field_name)
+        for field_name in TeamState.model_fields
+        if field_name not in ignored_fields
+    )
 
 
 def _replace_state_result(result: T, state: TeamState) -> T:

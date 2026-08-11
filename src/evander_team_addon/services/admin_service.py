@@ -195,6 +195,11 @@ from .domain.task_assessment import (
     require_deliverable_submission,
     require_task_can_finish,
 )
+from .historical_lifecycle_migration import (
+    HistoricalLifecycleMigrationPlan,
+    apply_historical_lifecycle_migration,
+    plan_historical_lifecycle_migration,
+)
 from .domain.task_supervision import queue_parent_resolution_transitions
 from .domain.wake import _append_agent_wake_requested_event
 from .domain.work_due import _mark_agent_work_due
@@ -294,6 +299,24 @@ def _advance_team_cost_budget_window(team: Team, *, now: datetime) -> bool:
         next_boundary = _next_utc_month_start(next_boundary)
         advanced = True
     return advanced
+
+
+def _team_cost_budget_window_advance_due(team: Team, *, now: datetime) -> bool:
+    """Return whether advancing this Team would open a new monthly window."""
+
+    if (
+        team.max_cost_usd is None
+        or team.cost_budget_renewal_mode != TeamCostBudgetRenewalMode.MONTHLY_UTC
+    ):
+        return False
+    active_window = _active_team_cost_budget_window(team)
+    if active_window is None:
+        return False
+    effective_now = now.astimezone(UTC) if now.tzinfo is not None else now.replace(tzinfo=UTC)
+    next_boundary = _next_utc_month_start(active_window.started_at)
+    if active_window.monthly_renewal_not_before is not None:
+        next_boundary = max(next_boundary, active_window.monthly_renewal_not_before)
+    return next_boundary <= effective_now
 
 
 def _default_memory_scope(project_id: str | None, agent_id: str | None) -> str:
@@ -1439,8 +1462,15 @@ class TeamAdminService:
         self,
         *,
         now: datetime | None = None,
+        current_state: TeamState | None = None,
     ) -> TeamState:
         effective_now = now or utc_now()
+        state_snapshot = current_state or self._repository.read()
+        if not any(
+            _team_cost_budget_window_advance_due(team, now=effective_now)
+            for team in state_snapshot.teams.values()
+        ):
+            return state_snapshot
 
         def _mutate(state: TeamState) -> TeamState:
             for team in state.teams.values():
@@ -3581,6 +3611,87 @@ class TeamAdminService:
             operator_repair_reference_ids=reference_ids,
             expected_revision=expected_revision,
         )
+
+    def plan_historical_lifecycle_migration(
+        self,
+        *,
+        project_id: str,
+    ) -> tuple[TeamState, HistoricalLifecycleMigrationPlan]:
+        state = self._repository.read()
+        return (
+            state,
+            plan_historical_lifecycle_migration(
+                state,
+                project_id=_required_text(project_id, "project_id"),
+            ),
+        )
+
+    def migrate_historical_task_lifecycle(
+        self,
+        *,
+        project_id: str,
+        actor: str,
+        reason: str,
+        reference_ids: Sequence[str] | None = None,
+        expected_revision: int | None = None,
+    ) -> tuple[TeamState, dict[str, Any]]:
+        """Atomically repair supported historical lifecycle contradictions.
+
+        This is deliberately narrower than ordinary task editing.  It only
+        handles audited terminal-state defects, preserves all historical task
+        and deliverable rows, and writes one resolved audit blocker per task.
+        """
+
+        normalized_project_id = _required_text(project_id, "project_id")
+        normalized_actor = _required_text(actor, "actor")
+        normalized_reason = _required_text(reason, "reason")
+        normalized_reference_ids = _unique_text_list(
+            reference_ids or [],
+            "reference_ids",
+        )
+        planned_state = self._repository.read()
+        if expected_revision is not None and planned_state.revision != expected_revision:
+            raise TeamStateConflictError(
+                expected_revision=expected_revision,
+                current_revision=planned_state.revision,
+            )
+        plan = plan_historical_lifecycle_migration(
+            planned_state,
+            project_id=normalized_project_id,
+        )
+        if not plan.task_repairs:
+            return (
+                planned_state,
+                {
+                    "applied": False,
+                    "migration_id": None,
+                    "project_id": normalized_project_id,
+                    "task_repairs": [],
+                    "audit_blocker_ids": [],
+                },
+            )
+
+        result: dict[str, Any] = {}
+
+        def _mutate(state_model: TeamState) -> TeamState:
+            nonlocal result
+            result = apply_historical_lifecycle_migration(
+                state_model,
+                plan=plan,
+                actor=normalized_actor,
+                reason=normalized_reason,
+                reference_ids=normalized_reference_ids,
+                now=utc_now(),
+            )
+            return state_model
+
+        state = self._repository.update(
+            _mutate,
+            expected_revision=(
+                expected_revision if expected_revision is not None else planned_state.revision
+            ),
+        )
+        return state, result
 
     def cancel_task(
         self,

@@ -295,6 +295,68 @@ def team_checkout_release_candidate(
     )
 
 
+@team_app.command(
+    "migrate-historical-lifecycle",
+    short_help="Dry-run or apply one audited Team historical-lifecycle migration.",
+)
+def team_migrate_historical_lifecycle(
+    project_id: Annotated[
+        str,
+        typer.Argument(
+            help="Team project whose invalid historical lifecycle records to reconcile."
+        ),
+    ],
+    actor: Annotated[
+        str,
+        typer.Option("--actor", help="Operator identity recorded on every migration audit record."),
+    ],
+    reason: Annotated[
+        str,
+        typer.Option("--reason", help="Operator-authorized reason retained with every repair."),
+    ],
+    apply: Annotated[
+        bool,
+        typer.Option("--apply", help="Apply the revision-checked migration; omit for a dry run."),
+    ] = False,
+    reference_ids: Annotated[
+        list[str],
+        typer.Option(
+            "--reference-id", help="Repeatable directive, incident, or approval reference."
+        ),
+    ] = [],
+    config: ConfigOption = CLI_DEFAULT_RUNTIME_DIR,
+) -> None:
+    """Repair only known lossless terminal lifecycle defects in one project."""
+
+    from evander_team_addon.repository import TeamStateRepository
+    from evander_team_addon.services.admin_service import TeamAdminService
+
+    runtime_dir, _legacy = _bootstrap_inputs(config)
+    service = TeamAdminService(TeamStateRepository(runtime_dir))
+    state, plan = service.plan_historical_lifecycle_migration(project_id=project_id)
+    payload: dict[str, object] = {
+        "dry_run": not apply,
+        "revision": state.revision,
+        **plan.payload(),
+    }
+    if apply:
+        state, result = service.migrate_historical_task_lifecycle(
+            project_id=project_id,
+            actor=actor,
+            reason=reason,
+            reference_ids=reference_ids,
+            expected_revision=state.revision,
+        )
+        payload.update(
+            {
+                "dry_run": False,
+                "revision": state.revision,
+                "result": result,
+            }
+        )
+    typer.echo(json.dumps(payload, indent=2, sort_keys=True, default=str))
+
+
 @team_app.command("dispatch-tail")
 def team_dispatch_tail(
     dispatch_id: Annotated[

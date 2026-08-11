@@ -1,5 +1,87 @@
 # Changelog
 
+## 2026-08-11 - Bounded Team Test Execution
+
+- Versioned Team agent guidance to require explicit timeouts on every test command, recommend a
+  five-minute initial budget for focused tests, and prohibit indefinite unchanged retries after a
+  timeout. Future Team wakes now reseed the managed guidance section before execution.
+- Added a container-worker active-tool watchdog (five minutes by default), safe worker-side
+  interruption for recognized test process groups on PID-limit events or an operator action,
+  visible active-tool execution metadata and interruption control in Admin Web, and retained the
+  thirty-minute whole-job timeout as the final fallback. The worker never accepts a caller-supplied
+  command, PID, or process group for this control path.
+
+## 2026-08-11 - Team Wake and UI Latency
+
+- Reduced high-signal Team wake debounce from ten seconds to one second and made newly scheduled
+  internal events notify the trigger worker, whose sleep now tracks the earliest durable deadline
+  and whose trigger sweep rechecks deadlines before it sleeps. Events that become due during a
+  provider sweep are now delivered to internal-event listeners in that same cycle without polling
+  unrelated external providers twice.
+- Made Team state and conversation streams poll only the lightweight revision metadata between
+  changes and moved their SQLite reads off the Admin Web event loop.
+- Coalesced bursts of identical, revision-matched Team agent and governance wakes into generational
+  passes per state database without serializing unrelated agents. A trailing pass preserves
+  wall-clock and external-session eligibility changes that occur during an active wake. Added
+  versioned, bounded persisted wake lease summaries so full release and task context stays
+  prompt-local. The existing `leases` output is retained as a bounded-summary compatibility alias;
+  live workflow packs do not bind its former raw internals.
+- Refreshed each bounded Team wake summary from final durable dispatch or governance-runtime state,
+  including queued, completed, and failed outcomes rather than the initial reservation snapshot.
+- Removed redundant Team-state validation, deep-copy, and serialization passes from reads and
+  atomic updates; targeted wakes also reuse their initial state snapshot and skip no-op
+  budget/chat transactions.
+
+## 2026-08-11 - Team Escalation Delivery and Wake Limits
+
+- Sent workflow communication through the supported host-owned `workflow` identity when an effect has no agent session, carry a Team manager's real session on new operator escalations, and retry a failed manager-identity send immediately with that host-owned sender. Host-owned Discord sends now authorize only the selected, capability-checked communication target instead of depending on the separate operator-command polling allowlist.
+- Recorded operator-escalation delivery outcomes durably, surfaced final send failures to the responsible manager, and reset no-progress state only after confirmed delivery rather than after queued intent.
+- Stopped unevidenced `team_update_blocker` follow-ups from resetting the three-wake no-progress cap; route, resolution, and evidence-bearing updates still count as material progress.
+
+## 2026-08-11 - Team Task Delegation
+
+- Allowed the current owner of a non-terminal task to delegate it to an eligible subordinate, while retaining the existing hierarchy, team, project-assignment, and terminal-task safeguards across both Team command surfaces.
+
+## 2026-08-11 - Historical Team Lifecycle Reconciliation
+
+- Added a revision-checked `evander-cli team migrate-historical-lifecycle` migration that dry-runs by default, repairs only audited terminal historical lifecycle contradictions, retires orphaned pending deliverables without altering their artifacts or evidence, and writes a resolved audit record for every repaired task.
+
+## 2026-08-11 - Team Git Context Preparation Safety
+
+- Kept an active Git work context alive while its owning dispatch has an unexpired preparation reservation, preventing delayed local-inference prompt delivery from abandoning the context before the agent can submit its work.
+
+## 2026-08-10 - APP Dev Team Discord Routing
+
+- Added a `content_starts_with` filter to provider-neutral communication-message triggers, enabling a shared Discord channel to route only explicit, leading agent-address messages into the durable Team Chat lifecycle.
+- Fixed session-scoped Discord replies so outbound Team Chat delivery checks the replying agent's `write` grant instead of an unrelated inbox-read allowlist.
+- Strengthened and versioned Team Chat wake guidance so agent final text cannot replace the required durable operator reply tool call.
+- Made Codex code-mode Team Chat wakes resolve deferred MCP reply callables through `ALL_TOOLS` and computed bracket access, avoiding false `not a function` failures from dotted tool names.
+- Made a missing reply tool in the first code-mode `ALL_TOOLS` snapshot an explicit hydration pass that must be retried, preventing agents from replacing the required tool call with plain output during deferred-tool startup.
+- Initialized Team MCP managed-Git authority before command transactions begin, preventing deliverable submission from deadlocking while lazily assembling another Team-aware admin runtime.
+- Published clean task base branches when worktrees are prepared, allowing artifact-only deliverables to resolve their authoritative managed-Git candidate without requiring a synthetic commit.
+
+## 2026-08-10 - Discord Agent Personas
+
+- Added an add-on-extensible outbound identity resolver and per-communication-target Discord
+  persona opt-in without introducing a platform-owned persona registry.
+- Added host-managed Discord webhooks keyed by channel and avatar digest that apply a resolved
+  sender name with a Discord-hosted default avatar, lazily provision and repair credentials, and
+  fall back to normal bot posts on definite webhook failures.
+- Connected Team Add-on persistent agents to the resolver so their configured display names and
+  avatars appear on opted-in Discord sends, and added Admin Web status, provision, test, and
+  recreate controls for the channel webhook pool.
+- Kept reusable Discord webhook tokens out of rendered failure tracebacks and authorized webhook
+  mutations against the selected directory so directory-scoped owners can manage their targets.
+- Kept Admin Web private by storing avatar image data as each cached webhook's default avatar and
+  bounded the per-channel persona cache with least-recently-used cleanup.
+- Made webhook send bookkeeping, stale-404 repair, and cache eviction identity-checked so an
+  in-flight send cannot restore or delete a concurrently replaced webhook credential.
+- Preserved the resolved-sender checkbox value across structured communication-target draft
+  rerenders so the Admin editor no longer immediately clears the operator's selection.
+- Carried the replying Team agent's session through the external-chat workflow and made Discord
+  communication effects honor resolved sender identity, so replies use the agent's webhook name
+  and avatar instead of the Evander bot identity.
+
 ## 2026-08-10 - Team Agent Context Editor
 
 - Show Idle grace minutes only when an agent uses idle context clearing, update it immediately

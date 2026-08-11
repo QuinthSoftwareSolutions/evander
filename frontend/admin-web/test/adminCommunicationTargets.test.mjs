@@ -2,6 +2,10 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
 
+import {
+  communicationTargetSenderIdentityFromValue,
+} from "../src/features/configuration/configurationDraftState.ts";
+
 const configuration = readFileSync(
   new URL("../src/features/configuration/ConfigurationScreen.tsx", import.meta.url),
   "utf8",
@@ -45,6 +49,38 @@ test("communication target editor preserves capability drafts and inserts Teams 
   assert.match(configuration, /address: allowlistEntry/);
   assert.match(configuration, /capabilities: \["notify"\]/);
   assert.match(configuration, /Insert target/);
+});
+
+test("Discord communication targets expose resolved identity and webhook pool controls", () => {
+  assert.match(configuration, /communicationTargetSenderIdentityFromValue\(target\)/);
+  assert.match(configuration, /policy\.sender_identity = "resolved"/);
+  assert.match(configuration, /Use resolved sender name and avatar/);
+  assert.match(configuration, /\/api\/discord-webhooks\/targets\//);
+  assert.match(configuration, /Discord persona webhook pool/);
+  assert.match(configuration, /no public Admin Web avatar URL is required/);
+  assert.match(configuration, />\s*Status\s*</);
+  assert.match(configuration, />\s*Provision\s*</);
+  assert.match(configuration, />\s*Test\s*</);
+  assert.match(configuration, />\s*Recreate\s*</);
+  assert.match(configuration, /!privilegedUnlocked/);
+});
+
+test("Discord resolved sender identity survives draft rerenders", () => {
+  assert.equal(
+    communicationTargetSenderIdentityFromValue({ senderIdentity: "resolved" }),
+    "resolved",
+  );
+  assert.equal(
+    communicationTargetSenderIdentityFromValue({ policy: { sender_identity: "resolved" } }),
+    "resolved",
+  );
+  assert.equal(
+    communicationTargetSenderIdentityFromValue({
+      senderIdentity: "platform",
+      policy: { sender_identity: "resolved" },
+    }),
+    "platform",
+  );
 });
 
 test("email policy mailbox references use structured mailbox and folder selectors", () => {

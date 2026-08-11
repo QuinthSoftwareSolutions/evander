@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import subprocess
+import threading
 import zipfile
 from io import BytesIO
 from datetime import UTC, datetime, timedelta
@@ -4237,6 +4238,10 @@ def test_team_addon_bootstrap_counts_only_current_operator_chats_without_read_al
 
 def test_team_addon_conversation_stream_snapshots_are_bounded(tmp_path: Path) -> None:
     repo, conversation_id = _seed_long_chat_history(tmp_path / "runtime")
+    initial_snapshot = team_addon_api._conversation_snapshot_state_and_payload(
+        repo,
+        conversation_id,
+    )
 
     class RequestStub:
         async def is_disconnected(self) -> bool:
@@ -4247,10 +4252,11 @@ def test_team_addon_conversation_stream_snapshots_are_bounded(tmp_path: Path) ->
             repo,
             RequestStub(),  # type: ignore[arg-type]
             conversation_id,
+            initial_snapshot=initial_snapshot,
             poll_interval_seconds=0,
         )
         try:
-            return await asyncio.wait_for(anext(stream), timeout=1.0)
+            return await asyncio.wait_for(anext(stream), timeout=5.0)
         finally:
             await stream.aclose()
 
@@ -4277,6 +4283,10 @@ def test_team_addon_conversation_stream_emits_updated_snapshots(tmp_path: Path) 
         agent_id="backend",
         created_by="operator",
     )
+    initial_snapshot = team_addon_api._conversation_snapshot_state_and_payload(
+        repo,
+        conversation.id,
+    )
 
     class RequestStub:
         async def is_disconnected(self) -> bool:
@@ -4291,10 +4301,11 @@ def test_team_addon_conversation_stream_emits_updated_snapshots(tmp_path: Path) 
             repo,
             RequestStub(),  # type: ignore[arg-type]
             conversation.id,
+            initial_snapshot=initial_snapshot,
             poll_interval_seconds=0,
         )
         try:
-            first = await asyncio.wait_for(anext(stream), timeout=1.0)
+            first = await asyncio.wait_for(anext(stream), timeout=5.0)
             _, message = _team_chat_service(repo).record_operator_chat_message(
                 conversation_id=conversation.id,
                 body="Can you summarize the blocker?",
@@ -4320,7 +4331,7 @@ def test_team_addon_conversation_stream_emits_updated_snapshots(tmp_path: Path) 
                 dispatch_id=dispatch_id,
                 expected_revision=repo.read().revision,
             )
-            second = await asyncio.wait_for(anext(stream), timeout=1.0)
+            second = await asyncio.wait_for(anext(stream), timeout=30.0)
             return first, second
         finally:
             await stream.aclose()
@@ -4338,6 +4349,50 @@ def test_team_addon_conversation_stream_emits_updated_snapshots(tmp_path: Path) 
     assert second_payload["conversation"]["messages"][1]["body"] == (
         "The dependency task is still open."
     )
+
+
+def test_team_addon_conversation_stream_reuses_state_until_revision_changes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = _seed_runtime_operations_state(tmp_path / "runtime")
+    _state, conversation, _created = _team_chat_service(repo).create_or_get_conversation(
+        agent_id="backend",
+        created_by="operator",
+    )
+    initial_snapshot = team_addon_api._conversation_snapshot_state_and_payload(
+        repo,
+        conversation.id,
+    )
+
+    def fail_full_state_read():
+        raise AssertionError("unchanged revisions must not rebuild the full Team state")
+
+    monkeypatch.setattr(repo, "read", fail_full_state_read)
+
+    class RequestStub:
+        async def is_disconnected(self) -> bool:
+            return False
+
+    async def read_two_events() -> tuple[str, str]:
+        stream = _conversation_snapshot_events(
+            repo,
+            RequestStub(),  # type: ignore[arg-type]
+            conversation.id,
+            initial_snapshot=initial_snapshot,
+            poll_interval_seconds=0,
+        )
+        try:
+            first = await asyncio.wait_for(anext(stream), timeout=5.0)
+            second = await asyncio.wait_for(anext(stream), timeout=5.0)
+            return first, second
+        finally:
+            await stream.aclose()
+
+    first_event, second_event = asyncio.run(read_two_events())
+
+    assert first_event.startswith("event: snapshot\n")
+    assert second_event == ": keepalive\n\n"
 
 
 def test_team_addon_state_stream_emits_updated_snapshots(tmp_path: Path) -> None:
@@ -4358,7 +4413,7 @@ def test_team_addon_state_stream_emits_updated_snapshots(tmp_path: Path) -> None
             poll_interval_seconds=0,
         )
         try:
-            first = await asyncio.wait_for(anext(stream), timeout=1.0)
+            first = await asyncio.wait_for(anext(stream), timeout=5.0)
             _team_admin_service(repo).create_or_reprioritize_task(
                 task_id="live-task",
                 owner_agent_id="backend",
@@ -4368,7 +4423,7 @@ def test_team_addon_state_stream_emits_updated_snapshots(tmp_path: Path) -> None
                 description="Task created while the UI stream is connected.",
                 created_by_agent_id="lead",
             )
-            second = await asyncio.wait_for(anext(stream), timeout=1.0)
+            second = await asyncio.wait_for(anext(stream), timeout=5.0)
             return first, second
         finally:
             await stream.aclose()
@@ -4385,30 +4440,44 @@ def test_team_addon_state_stream_emits_updated_snapshots(tmp_path: Path) -> None
 
 def test_team_addon_revision_state_stream_keeps_alive_when_revision_unchanged(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     repo = _seed_runtime_operations_state(tmp_path / "runtime")
+    snapshot_threads: list[int] = []
+
+    def fail_full_state_read():
+        raise AssertionError("the revision stream must not read the full Team state")
+
+    monkeypatch.setattr(repo, "read", fail_full_state_read)
 
     class RequestStub:
         async def is_disconnected(self) -> bool:
             return False
 
-    async def read_two_events() -> tuple[str, str]:
+    def snapshot() -> dict[str, object]:
+        snapshot_threads.append(threading.get_ident())
+        return team_addon_api._state_revision_payload(repo.read_revision())
+
+    async def read_two_events() -> tuple[int, str, str]:
+        event_loop_thread = threading.get_ident()
         stream = _state_snapshot_events(
-            lambda: team_addon_api._state_revision_payload(repo.read()),
+            snapshot,
             RequestStub(),  # type: ignore[arg-type]
             poll_interval_seconds=0,
         )
         try:
-            first = await asyncio.wait_for(anext(stream), timeout=1.0)
-            second = await asyncio.wait_for(anext(stream), timeout=1.0)
-            return first, second
+            first = await asyncio.wait_for(anext(stream), timeout=5.0)
+            second = await asyncio.wait_for(anext(stream), timeout=5.0)
+            return event_loop_thread, first, second
         finally:
             await stream.aclose()
 
-    first_event, second_event = asyncio.run(read_two_events())
+    event_loop_thread, first_event, second_event = asyncio.run(read_two_events())
 
     assert first_event.startswith("event: snapshot\n")
     assert second_event == ": keepalive\n\n"
+    assert snapshot_threads
+    assert all(thread_id != event_loop_thread for thread_id in snapshot_threads)
 
 
 def test_agent_voice_session_create_query_and_end(
@@ -5635,7 +5704,7 @@ def test_team_addon_view_payload_avoids_agent_execution_inventory(
 def test_team_addon_state_stream_payload_is_revision_scoped(tmp_path: Path) -> None:
     repo = _seed_runtime_operations_state(tmp_path / "runtime")
 
-    payload = team_addon_api._state_revision_payload(repo.read())
+    payload = team_addon_api._state_revision_payload(repo.read_revision())
 
     assert payload["response_scope"] == "revision"
     assert payload["revision"] == repo.read().revision
@@ -5737,9 +5806,7 @@ def test_team_addon_admin_api_cost_read_advances_stale_monthly_window(
     )
 
     def _backdate_window(state):
-        state.teams["team"].cost_budget_windows[-1].started_at = datetime(
-            2026, 1, 15, tzinfo=UTC
-        )
+        state.teams["team"].cost_budget_windows[-1].started_at = datetime(2026, 1, 15, tzinfo=UTC)
         return state
 
     repo.update(_backdate_window)

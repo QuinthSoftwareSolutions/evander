@@ -118,10 +118,20 @@ def test_versioned_agent_guidance_explains_task_topology_and_cancellation() -> N
         agent={"id": "implementer", "display_name": "Implementer"}
     )
 
-    assert TEAM_AGENT_GUIDANCE_VERSION == 30
+    assert TEAM_AGENT_GUIDANCE_VERSION == 34
+    assert "Every test command must have an explicit timeout" in content
+    assert "timeout --preserve-status -k 20s <seconds> <test command>" in content
+    assert "Do not retry the unchanged command indefinitely" in content
     assert "parent_task_id means constituent composition" in content
     assert "dependency_task_ids means execution ordering" in content
     assert "originating_task_id records provenance" in content
+    assert "ordinary final response is not delivered to the operator" in content
+    assert "resolve the callable name from ALL_TOOLS" in content
+    assert "tools[replyToolName](...)" in content
+    assert "Do not use tools.team_reply_to_chat" in content
+    assert "missing first snapshot is not a terminal failure" in content
+    assert "do not throw" in content
+    assert "finish before the tool call succeeds" in content
     assert "originating_task_id alone does not seed Git content" in content
     assert "every accepted predecessor whose content is required" in content
     assert "silently starting from the project base branch" in content

@@ -14,10 +14,13 @@ from evander.artifact_spaces import ArtifactSpaceConflictError
 from evander.communication_artifact_links import (
     CommunicationArtifactLinkError,
     PUBLIC_COMMUNICATION_ARTIFACT_DOWNLOAD_PREFIX,
+    PUBLIC_COMMUNICATION_PERSONA_AVATAR_PREFIX,
     communication_artifact_link_secret_env,
     verify_communication_artifact_download_token,
+    verify_communication_persona_avatar_token,
 )
 from evander.communication_artifacts import CommunicationArtifactStore
+from evander.discord_webhooks import CommunicationPersonaAvatarStore
 
 
 def artifact_routes(service: AdminRuntimeComponents, auth: AdminWebAuth) -> list[BaseRoute]:
@@ -99,6 +102,32 @@ def artifact_routes(service: AdminRuntimeComponents, auth: AdminWebAuth) -> list
             headers={"Cache-Control": "no-store"},
             media_type=artifact.metadata.mime_type or "application/octet-stream",
             filename=artifact.metadata.filename,
+        )
+
+    async def download_communication_persona_avatar(
+        request: Request,
+    ) -> FileResponse | JSONResponse:
+        sha256 = str(request.path_params.get("sha256") or "").strip()
+        token = str(request.query_params.get("token") or "").strip()
+        if not token:
+            return json_error("Invalid or expired persona avatar link", status_code=403)
+        try:
+            digest = verify_communication_persona_avatar_token(
+                sha256=sha256,
+                token=token,
+                secret_env=communication_artifact_link_secret_env(service.config),
+            )
+            path, mime_type = CommunicationPersonaAvatarStore(service.config.runtime_dir).get(
+                digest
+            )
+        except (CommunicationArtifactLinkError, ValueError):
+            return json_error("Invalid or expired persona avatar link", status_code=403)
+        except FileNotFoundError:
+            return json_error("Persona avatar not found", status_code=404)
+        return FileResponse(
+            path,
+            headers={"Cache-Control": "public, max-age=604800, immutable"},
+            media_type=mime_type,
         )
 
     async def upload_artifact(request: Request) -> JSONResponse:
@@ -239,6 +268,11 @@ def artifact_routes(service: AdminRuntimeComponents, auth: AdminWebAuth) -> list
         Route(
             f"{PUBLIC_COMMUNICATION_ARTIFACT_DOWNLOAD_PREFIX}/{{artifact_id:str}}",
             download_communication_artifact,
+            methods=["GET"],
+        ),
+        Route(
+            f"{PUBLIC_COMMUNICATION_PERSONA_AVATAR_PREFIX}/{{sha256:str}}",
+            download_communication_persona_avatar,
             methods=["GET"],
         ),
         Route("/api/admin/artifact-downloads/{key:path}", download_artifact, methods=["GET"]),

@@ -45,6 +45,10 @@ _TEAM_RUNTIME_V1_LEGACY: dict[str, Any] = {
                 "team-mark-ephemeral-cleaned-up",
                 "team-operator-escalation",
                 "team-notify-operator",
+                "team-notify-operator-fallback",
+                "team-record-operator-escalation-delivery",
+                "team-record-operator-escalation-fallback-delivery",
+                "team-record-operator-escalation-delivery-failure",
                 "team-git-promotion-requested",
                 "team-git-promotion-review",
                 "team-git-promote-review-branch",
@@ -295,6 +299,9 @@ _TEAM_RUNTIME_V1_LEGACY: dict[str, Any] = {
                 "thread_id": (
                     "${{team-external-chat-reply-requested.payload.source_thread_id ?? null}}"
                 ),
+                "sender_session_id": (
+                    "${{team-external-chat-reply-requested.payload.sender_session_id ?? null}}"
+                ),
             },
             {
                 "id": "team-record-external-chat-delivery",
@@ -450,6 +457,55 @@ _TEAM_RUNTIME_V1_LEGACY: dict[str, Any] = {
                     "${{team-operator-escalation.payload.title}}\n\n"
                     "${{team-operator-escalation.payload.message}}"
                 ),
+                "sender_session_id": (
+                    "${{team-operator-escalation.payload.sender_session_id ?? null}}"
+                ),
+            },
+            {
+                "id": "team-notify-operator-fallback",
+                "display_name": "Notify operator of escalation with host fallback",
+                "type": "effect:communication:send-message",
+                "communication_target_id": (
+                    "${{team-operator-escalation.payload.communication_target_id}}"
+                ),
+                "message": (
+                    "[Escalation delivery fallback: "
+                    "${{team-operator-escalation.payload.urgency}}] "
+                    "${{team-operator-escalation.payload.title}}\n\n"
+                    "${{team-operator-escalation.payload.message}}"
+                ),
+                "sender_session_id": "workflow",
+            },
+            {
+                "id": "team-record-operator-escalation-delivery",
+                "display_name": "Record operator escalation delivery",
+                "type": "effect:team:record-operator-escalation-delivery",
+                "escalation_id": "${{team-operator-escalation.payload.escalation_id}}",
+                "success": True,
+                "provider_message_id": "${{team-notify-operator.message_id ?? null}}",
+                "fallback_used": False,
+            },
+            {
+                "id": "team-record-operator-escalation-fallback-delivery",
+                "display_name": "Record fallback operator escalation delivery",
+                "type": "effect:team:record-operator-escalation-delivery",
+                "escalation_id": "${{team-operator-escalation.payload.escalation_id}}",
+                "success": True,
+                "provider_message_id": (
+                    "${{team-notify-operator-fallback.message_id ?? null}}"
+                ),
+                "fallback_used": True,
+            },
+            {
+                "id": "team-record-operator-escalation-delivery-failure",
+                "display_name": "Record failed operator escalation delivery",
+                "type": "effect:team:record-operator-escalation-delivery",
+                "escalation_id": "${{team-operator-escalation.payload.escalation_id}}",
+                "success": False,
+                "error": (
+                    "${{team-notify-operator-fallback.error_message ?? null}}"
+                ),
+                "fallback_used": True,
             },
             {
                 "id": "team-git-promote-review-branch",
@@ -856,6 +912,24 @@ _TEAM_RUNTIME_V1_LEGACY: dict[str, Any] = {
                 "target_id": "team-mark-ephemeral-cleaned-up",
             },
             {"source_id": "team-operator-escalation", "target_id": "team-notify-operator"},
+            {
+                "source_id": "team-notify-operator",
+                "target_id": "team-record-operator-escalation-delivery",
+            },
+            {
+                "source_id": "team-notify-operator",
+                "source_port": "error",
+                "target_id": "team-notify-operator-fallback",
+            },
+            {
+                "source_id": "team-notify-operator-fallback",
+                "target_id": "team-record-operator-escalation-fallback-delivery",
+            },
+            {
+                "source_id": "team-notify-operator-fallback",
+                "source_port": "error",
+                "target_id": "team-record-operator-escalation-delivery-failure",
+            },
             {"source_id": "team-git-promotion-requested", "target_id": "team-git-promotion-review"},
             {
                 "source_id": "team-git-promotion-requested",
@@ -998,6 +1072,10 @@ _TEAM_RUNTIME_V1_LAYOUT_NODE_POSITIONS: tuple[tuple[str, float, float], ...] = (
     ("team-mark-ephemeral-spawned", 720.0, 820.0),
     ("team-mark-release-published", 1440.0, 1600.0),
     ("team-notify-operator", 360.0, 1000.0),
+    ("team-notify-operator-fallback", 720.0, 900.0),
+    ("team-record-operator-escalation-delivery", 720.0, 1000.0),
+    ("team-record-operator-escalation-fallback-delivery", 1080.0, 900.0),
+    ("team-record-operator-escalation-delivery-failure", 1080.0, 1000.0),
     ("team-operator-escalation", 0.0, 1000.0),
     ("team-outbox-publish-requested", 0.0, 40.0),
     ("team-promote-release-recovery-branch", 360.0, 1940.0),

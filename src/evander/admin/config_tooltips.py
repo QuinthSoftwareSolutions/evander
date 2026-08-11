@@ -113,6 +113,11 @@ CONFIG_FIELD_TOOLTIPS: dict[str, str] = {
     "container_worker_images": (
         "Approved container image catalog that maps operator-safe aliases to exact runner image references. Session creation resolves selectors against this catalog, and runtime dispatch never pulls or builds images."
     ),
+    "container_worker_active_tool_timeout_seconds": (
+        "Maximum seconds an active Codex tool call may run before the control plane asks the worker "
+        "to interrupt only a recognized test process group. The default is 300 seconds. "
+        "This preserves the agent container and is separate from the job deadline."
+    ),
     "container_worker_job_timeout_seconds": (
         "Maximum runtime in seconds allowed for one container worker job before it is treated as "
         "timed out. If unset in directory config, the built-in default is 1800 seconds "

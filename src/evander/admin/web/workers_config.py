@@ -51,6 +51,7 @@ _DISCORD_CONFIG_FIELDS: tuple[tuple[str, str], ...] = (
     ("providers", "discord_retry_count"),
     ("providers", "discord_retry_base_backoff_seconds"),
     ("providers", "discord_retry_max_backoff_seconds"),
+    ("providers", "discord_persona_webhook_cache_limit"),
     ("providers", "discord_read_reaction_emoji"),
     ("policy", "discord_operator_channel_allowlist"),
     ("policy", "discord_operator_user_allowlist"),
@@ -131,6 +132,7 @@ _CONTAINER_WORKER_PROVIDER_FIELDS: tuple[tuple[str, str], ...] = (
     ("providers", "container_worker_token_env"),
     ("providers", "container_worker_default_image"),
     ("providers", "container_worker_images"),
+    ("providers", "container_worker_active_tool_timeout_seconds"),
     ("providers", "container_worker_job_timeout_seconds"),
     ("providers", "container_worker_request_timeout_seconds"),
     ("providers", "container_worker_workspace_persistence"),
@@ -302,6 +304,9 @@ _DIRECTORY_CONFIG_FIELD_LABELS: dict[tuple[str, str], str] = {
     ("providers", "communication_artifact_link_ttl_seconds"): (
         "Communication artifact link TTL seconds"
     ),
+    ("providers", "discord_persona_webhook_cache_limit"): (
+        "Discord persona webhook cache limit"
+    ),
     ("policy", "mcp_tool_policies"): "MCP tool approval policy",
     ("policy", "tool_argument_policies"): "Tool argument policy",
 }
@@ -326,6 +331,10 @@ _SOURCE_DOMAIN_CONFIG_FIELD_TOOLTIPS: dict[tuple[str, str], str] = {
     ("providers", "communication_artifact_link_ttl_seconds"): (
         "Maximum lifetime for signed communication artifact download links, capped by the "
         "staged artifact expiry."
+    ),
+    ("providers", "discord_persona_webhook_cache_limit"): (
+        "Maximum cached persona-avatar webhooks per Discord channel. Least-recently-used "
+        "persona webhooks are removed after new avatars are provisioned."
     ),
     (_ASSISTANT_SETTINGS_DOMAIN, "enabled"): (
         "Enables the admin web assistant launcher and chat endpoints."

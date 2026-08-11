@@ -413,6 +413,7 @@ _GATEWAY_RUNTIME_DEFAULT_PATH_NAMES: dict[str, str] = {
     "email_store_path": "emails.json",
     "email_cursor_store_path": "email_cursors.json",
     "discord_command_store_path": "discord_commands.json",
+    "discord_webhook_store_path": "discord-webhooks.json",
     "teams_message_store_path": "teams_messages.json",
     "teams_meeting_store_path": "teams-meetings.json",
     "teams_delegated_credential_store_path": "teams-delegated-credentials.json",

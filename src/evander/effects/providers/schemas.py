@@ -1077,6 +1077,7 @@ class CommunicationSendMessageEffectDefinition(EffectDefinition):
     message: ConfigValue
     thread_id: ConfigValue | None = None
     subject: ConfigValue | None = None
+    sender_session_id: ConfigValue | None = None
 
     @field_validator("communication_target_id", mode="before")
     @classmethod

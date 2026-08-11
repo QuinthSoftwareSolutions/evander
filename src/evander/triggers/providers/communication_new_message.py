@@ -538,15 +538,24 @@ def _message_matches_filters(
     if author_filter and author_id.strip().casefold() not in author_filter:
         return False
 
-    if trigger.content_contains is None:
+    if trigger.content_contains is not None:
+        haystack = content
+        needle = trigger.content_contains
+        if not trigger.case_sensitive:
+            haystack = haystack.casefold()
+            needle = needle.casefold()
+        if needle not in haystack:
+            return False
+
+    if trigger.content_starts_with is None:
         return True
 
     haystack = content
-    needle = trigger.content_contains
+    needle = trigger.content_starts_with
     if not trigger.case_sensitive:
         haystack = haystack.casefold()
         needle = needle.casefold()
-    return needle in haystack
+    return haystack.startswith(needle)
 
 
 def _message_is_behind_cursor(

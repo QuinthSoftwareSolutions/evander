@@ -86,6 +86,7 @@ logger = logging.getLogger(__name__)
 
 _AWAIT_AGENT_STALE_GRACE_SECONDS = 120
 _DEFAULT_CONTAINER_WORKER_JOB_TIMEOUT_SECONDS = 1800.0
+_DEFAULT_CONTAINER_WORKER_ACTIVE_TOOL_TIMEOUT_SECONDS = 300.0
 _BRANCH_PORT_PAYLOAD_KEY = "__branch_port"
 _FOR_EXECUTION_IDS_PAYLOAD_KEY = "__for_execution_ids"
 CONTAINER_INTERRUPT_IN_PROGRESS_OUTPUT_KEY = "interrupt_in_progress"
@@ -860,6 +861,11 @@ class AgentPromptEffectProvider(EffectProviderBase):
             ExecutionStatusKind.FAILED,
             ExecutionStatusKind.DESTROYED,
         }:
+            cls._interrupt_stalled_container_active_tool_if_expired(
+                backend=backend,
+                status=status,
+                execution_id=execution_id,
+            )
             timeout_result = cls._timeout_container_waiting_record_if_expired(
                 worker=worker,
                 record=record,
@@ -912,6 +918,65 @@ class AgentPromptEffectProvider(EffectProviderBase):
         )
         cls._finalize_waiting_record(worker=worker, record=record, queue_record=queue_record)
         return 1
+
+    @classmethod
+    def _interrupt_stalled_container_active_tool_if_expired(
+        cls,
+        *,
+        backend: Any,
+        status: Any,
+        execution_id: str,
+    ) -> None:
+        metadata = getattr(status, "metadata", None)
+        active_tool = metadata.get("active_tool") if isinstance(metadata, Mapping) else None
+        started_at = (
+            cls._container_active_tool_started_at(active_tool)
+            if isinstance(active_tool, Mapping)
+            else None
+        )
+        elapsed_seconds = cls._elapsed_seconds_since(started_at)
+        timeout_seconds = cls._container_active_tool_timeout_seconds(backend)
+        if elapsed_seconds is None or elapsed_seconds <= timeout_seconds:
+            return
+        interrupt = getattr(backend, "interrupt_active_tool", None)
+        if not callable(interrupt):
+            return
+        try:
+            interrupt(
+                execution_id,
+                max_elapsed_seconds=timeout_seconds,
+                reason="active_tool_timeout",
+            )
+        except Exception:  # noqa: BLE001
+            logger.warning(
+                "container_active_tool_timeout_interrupt_failed execution_id=%s",
+                execution_id,
+                exc_info=True,
+            )
+
+    @staticmethod
+    def _container_active_tool_timeout_seconds(backend: Any) -> float:
+        config = getattr(backend, "config", None)
+        value = getattr(config, "container_worker_active_tool_timeout_seconds", None)
+        try:
+            timeout = float(value)
+        except (TypeError, ValueError):
+            timeout = _DEFAULT_CONTAINER_WORKER_ACTIVE_TOOL_TIMEOUT_SECONDS
+        return timeout if timeout > 0 else _DEFAULT_CONTAINER_WORKER_ACTIVE_TOOL_TIMEOUT_SECONDS
+
+    @staticmethod
+    def _container_active_tool_started_at(active_tool: Mapping[str, Any]) -> datetime | None:
+        value = active_tool.get("started_at")
+        if not isinstance(value, str) or not value.strip():
+            return None
+        normalized = value.strip()
+        if normalized.endswith("Z"):
+            normalized = normalized[:-1] + "+00:00"
+        try:
+            started_at = datetime.fromisoformat(normalized)
+        except ValueError:
+            return None
+        return started_at.replace(tzinfo=UTC) if started_at.tzinfo is None else started_at.astimezone(UTC)
 
     @classmethod
     def _timeout_container_waiting_record_if_expired(

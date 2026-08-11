@@ -75,6 +75,7 @@ def test_bundled_team_addon_packaging_contract_is_declared() -> None:
 
     addon = importlib.import_module("evander_team_addon").register_addon()
     assert addon.mcp_tools is not None
+    assert addon.outbound_identity_resolver is not None
 
 
 def test_team_addon_ui_distinguishes_acceptance_from_review_waiting() -> None:

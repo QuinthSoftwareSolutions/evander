@@ -63,6 +63,7 @@ class FakeContainerRuntime:
         self.started: list[tuple[WorkerJobRequest, WorkerJobRecord, WorkerSessionPaths]] = []
         self.stopped: list[str] = []
         self.removed: list[str] = []
+        self.interruptions: list[tuple[str, str]] = []
         self.logs: dict[str, str] = {}
         self.inspect_results: dict[str, dict[str, Any]] = {}
 
@@ -80,6 +81,15 @@ class FakeContainerRuntime:
 
     def stop_job(self, record: WorkerJobRecord) -> None:
         self.stopped.append(record.job_id)
+
+    def interrupt_active_tool(self, record: WorkerJobRecord, *, reason: str) -> dict[str, Any]:
+        self.interruptions.append((record.job_id, reason))
+        return {
+            "interrupted": True,
+            "reason": reason,
+            "message": "sent SIGTERM to the active test process group",
+            "recorded_at": "2026-05-05T08:19:21Z",
+        }
 
     def remove_job(self, record: WorkerJobRecord) -> None:
         self.removed.append(record.job_id)
@@ -744,6 +754,16 @@ def test_worker_prepares_and_reuses_task_scoped_worktree(tmp_path: Path) -> None
     assert reused.created is False
     assert created.commit_sha == clone.commit_sha
     assert reused.target_dir == "/home/agent/worktrees/repo/task-a-1234"
+    assert (
+        subprocess.run(
+            ["git", "rev-parse", "refs/heads/agents/session-1/tasks/task-a-1234"],
+            cwd=source,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+        == clone.commit_sha
+    )
 
 
 def test_worker_composes_exact_dependency_git_source_before_task_work(
@@ -815,6 +835,16 @@ def test_worker_composes_exact_dependency_git_source_before_task_work(
 
     assert prepared.created is True
     assert prepared.base_commit_sha == prepared.commit_sha
+    assert (
+        subprocess.run(
+            ["git", "rev-parse", "refs/heads/agents/session-1/tasks/task-ui-1234"],
+            cwd=source,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+        == prepared.commit_sha
+    )
     assert (target / "domain.txt").read_text(encoding="utf-8") == "accepted dependency\n"
     assert (
         subprocess.run(
@@ -5148,6 +5178,7 @@ def test_logs_recover_live_codex_messages_without_thread_id_in_container_output(
 
 def test_logs_show_active_codex_exec_command_from_session_jsonl(tmp_path: Path) -> None:
     thread_id = "019de31a-8393-71d2-8990-e5f4fb0a4df2"
+    active_timestamp = (datetime.now(UTC) + timedelta(seconds=1)).isoformat()
     runtime = FakeContainerRuntime()
     runtime.logs["job-1"] = f"session id: {thread_id}\n"
     client = _client(tmp_path, runtime)
@@ -5159,7 +5190,7 @@ def test_logs_show_active_codex_exec_command_from_session_jsonl(tmp_path: Path) 
             "session_id": "session-1",
             "job_id": "job-1",
             "image": "codex:latest",
-            "command": ["true"],
+            "command": ["codex", "exec", "hello"],
         },
     )
     assert created.status_code == 201
@@ -5185,7 +5216,7 @@ def test_logs_show_active_codex_exec_command_from_session_jsonl(tmp_path: Path) 
             for event in [
                 {"type": "session_meta", "payload": {"id": thread_id}},
                 {
-                    "timestamp": "2026-05-05T08:19:10Z",
+                    "timestamp": active_timestamp,
                     "type": "event_msg",
                     "payload": {
                         "type": "agent_message",
@@ -5193,7 +5224,7 @@ def test_logs_show_active_codex_exec_command_from_session_jsonl(tmp_path: Path) 
                     },
                 },
                 {
-                    "timestamp": "2026-05-05T08:19:20Z",
+                    "timestamp": active_timestamp,
                     "type": "response_item",
                     "payload": {
                         "type": "function_call",
@@ -5218,11 +5249,46 @@ def test_logs_show_active_codex_exec_command_from_session_jsonl(tmp_path: Path) 
     assert response.status_code == 200
     assert f"session id: {thread_id}\n" in response.text
     assert "I am running the bounded test command.\n" in response.text
-    assert "latest codex event: 2026-05-05T08:19:20Z\n" in response.text
+    assert f"latest codex event: {active_timestamp}\n" in response.text
     assert (
         "active tool call: exec_command timeout --preserve-status 120 dotnet test --no-restore "
         "cwd=/home/agent/repos/repo\n"
     ) in response.text
+    status = client.get("/v1/jobs/job-1", headers=_auth())
+    assert status.status_code == 200
+    assert status.json()["metadata"]["active_tool"] == {
+        "summary": "exec_command timeout --preserve-status 120 dotnet test --no-restore cwd=/home/agent/repos/repo",
+        "tool_name": "exec_command",
+        "started_at": active_timestamp,
+        "latest_event_at": active_timestamp,
+    }
+
+
+def test_worker_api_interrupt_active_tool_keeps_job_running(tmp_path: Path) -> None:
+    runtime = FakeContainerRuntime()
+    client = _client(tmp_path, runtime)
+    created = client.post(
+        "/v1/jobs",
+        headers=_auth(),
+        json={
+            "session_id": "session-1",
+            "job_id": "job-1",
+            "image": "codex:latest",
+            "command": ["codex", "exec", "hello"],
+        },
+    )
+    assert created.status_code == 201
+
+    response = client.post(
+        "/v1/jobs/job-1/interrupt-active-tool",
+        headers=_auth(),
+        json={"reason": "operator_requested"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "running"
+    assert runtime.interruptions == [("job-1", "operator_requested")]
+    assert response.json()["metadata"]["active_tool_interruption"]["interrupted"] is True
 
 
 def test_execution_logs_show_bounded_codex_reasoning_and_completed_tools(

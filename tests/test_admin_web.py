@@ -907,6 +907,7 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
         "communication_target_id",
         "message",
         "thread_id",
+        "sender_session_id",
     ]
     assert (
         next(
@@ -12531,7 +12532,11 @@ def test_admin_web_people_communications_tab_saves_sqlite_communication_targets(
         "provider": "discord",
         "kind": "discord",
         "address": "123456789012345678",
-        "policy": {"capabilities": ["write"], "auth_profile_ref": None},
+            "policy": {
+                "capabilities": ["write"],
+                "auth_profile_ref": None,
+                "sender_identity": "platform",
+            },
     }
     assert communications["raw"]["config"]["targets"][1] == {
         "id": "teams-primary",

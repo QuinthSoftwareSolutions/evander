@@ -947,6 +947,81 @@ def test_list_agents_groups_container_executions_under_session(
     assert lifecycle.state == ContainerSessionLifecycleState.RUNNING
 
 
+def test_admin_action_interrupts_active_container_tool_without_stopping_execution(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from evander.execution import ExecutionStatusKind
+
+    service = build_admin_runtime(write_config(tmp_path))
+    service.runtime.session_repository.upsert_session(
+        SessionManifest(
+            session_id="container-session",
+            vm_provider="container_worker_vm",
+            vm_provider_id="container-target",
+            directory_path="root",
+            allowed_tools=[],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+            metadata={
+                "execution_backend": "container_worker_vm",
+                "target_name": "container-target",
+            },
+        )
+    )
+    repository = ContainerWorkerExecutionRepository(
+        service.config.runtime_dir / "container-worker-executions.json"
+    )
+    repository.put(
+        ContainerWorkerExecutionRecord(
+            execution_id="exec-current",
+            session_id="container-session",
+            worker_job_id="job-current",
+            worker_url="http://worker.test",
+            target_name="container-target",
+            last_status="running",
+            metadata={
+                "active_tool": {
+                    "summary": "exec_command timeout --preserve-status 300 dotnet test",
+                    "started_at": datetime.now(UTC).isoformat(),
+                }
+            },
+        )
+    )
+
+    class InterruptBackend:
+        def __init__(self) -> None:
+            self.interrupted: list[str] = []
+
+        def interrupt_active_tool(self, execution_id: str) -> SimpleNamespace:
+            self.interrupted.append(execution_id)
+            return SimpleNamespace(
+                execution_id=execution_id,
+                target_name="container-target",
+                status=ExecutionStatusKind.RUNNING,
+                message=None,
+                session_id="container-session",
+                metadata={},
+            )
+
+    backend = InterruptBackend()
+    monkeypatch.setattr(
+        service.vm_agent_admin,
+        "container_worker_backend",
+        lambda **_kwargs: backend,
+    )
+
+    result = service.vm_agent_admin.run_admin_agent_action(
+        "container-session",
+        "interrupt-active-tool",
+        backend="container_worker_vm",
+    )
+
+    assert result["success"] is True
+    assert result["status"] == "running"
+    assert result["session_id"] == "container-session"
+    assert backend.interrupted == ["exec-current"]
+
+
 def test_list_agents_prefers_failed_codex_outcome_for_container_session(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

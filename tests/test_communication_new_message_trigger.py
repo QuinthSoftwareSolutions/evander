@@ -195,6 +195,42 @@ def test_communication_trigger_polls_teams_and_discord_and_acknowledges_same_tim
     assert provider.poll() == []
 
 
+def test_communication_trigger_requires_message_prefix_at_the_start(tmp_path: Path) -> None:
+    context = _runtime_context(tmp_path)
+    runtime_dir = context.resolved_config.runtime_dir
+    _write_targets(runtime_dir)
+    store = DiscordInboxStore(runtime_dir / "discord-inbox-store.json")
+    created_at = datetime(2026, 8, 10, 9, 30, tzinfo=UTC)
+    for message_id, content in (
+        ("discord-msg-1", "@Trudy: review the retry behavior"),
+        ("discord-msg-2", "Could @Trudy: review the retry behavior?"),
+        ("discord-msg-3", " @Trudy: review the retry behavior"),
+        ("discord-msg-4", "@Trudell: review the retry behavior"),
+    ):
+        store.add_message_if_new(
+            DiscordMessageEnvelope(
+                message_id=message_id,
+                channel_id="234567890123456789",
+                author_id="user-a",
+                author_name="User A",
+                content=content,
+                created_at=created_at,
+                raw={"source": "discord_bot_api"},
+            )
+        )
+
+    provider = CommunicationNewMessageTriggerProvider()
+    provider.initialize(
+        _trigger_definition(
+            target_ids=["discord-ops"],
+            content_starts_with="@Trudy:",
+        ),
+        context,
+    )
+
+    assert [event.payload["message_id"] for event in provider.poll()] == ["discord-msg-1"]
+
+
 def test_communication_trigger_polls_email_target(tmp_path: Path) -> None:
     context = _runtime_context(tmp_path)
     runtime_dir = context.resolved_config.runtime_dir

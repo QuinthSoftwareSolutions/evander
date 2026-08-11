@@ -10,6 +10,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+from evander.addons import addon_storage_path
 from evander.effects.providers.agent_clone_repo import AgentCloneRepoEffectProvider
 from evander.effects.providers.agent_copy_files import AgentCopyFilesEffectProvider
 from evander.effects.providers.agent_exec import AgentExecEffectProvider
@@ -192,6 +193,7 @@ from .provider_schemas import (
     TeamPublishReviewBranchEffectDefinition,
     TeamRecordGitPromotionEffectDefinition,
     TeamRecordExternalChatDeliveryEffectDefinition,
+    TeamRecordOperatorEscalationDeliveryEffectDefinition,
     TeamRecordHumanReviewPreparationResultEffectDefinition,
     TeamReindexMemoryEffectDefinition,
     TeamRequestEphemeralAgentsEffectDefinition,
@@ -203,7 +205,7 @@ from .provider_schemas import (
     TeamWakeGovernanceManagersEffectDefinition,
 )
 from .repository import TeamStateConflictError, TeamStateRepository
-from .sqlite_store import TeamIdempotencyConflictError
+from .sqlite_store import ADDON_ID, STATE_DB_FILE, TeamIdempotencyConflictError
 from .services.agent_action_service import TeamAgentActionService
 from .services.admin_service import TeamAdminService
 from .services.chat_service import (
@@ -235,7 +237,10 @@ from .services.domain.human_reviews import (
     HUMAN_REVIEW_PREPARATION_REQUESTED_EVENT_TYPE,
     HUMAN_REVIEW_REQUESTED_EVENT_TYPE,
 )
-from .services.domain.operator_escalation import OPERATOR_ESCALATION_EVENT_TYPE
+from .services.domain.operator_escalation import (
+    OPERATOR_ESCALATION_EVENT_TYPE,
+    record_operator_escalation_delivery,
+)
 from .services.domain.outcome_catalog import effective_outcome_kind_payloads
 from .services.domain.preparation_failures import (
     dispatch_project_work_ids,
@@ -295,6 +300,7 @@ from .services.wake_prompt_context import (
     build_compact_wake_context,
     wake_uses_fresh_context,
 )
+from .services.wake_singleflight import TEAM_WAKE_SINGLE_FLIGHT
 from .services.runtime_service import (
     MAX_AGENT_DISPATCH_LEASE_RENEWAL_SECONDS,
     TeamRuntimeService,
@@ -307,7 +313,7 @@ from .services.worktree_cleanup_service import (
 
 logger = logging.getLogger(__name__)
 
-TEAM_AGENT_GUIDANCE_VERSION = 30
+TEAM_AGENT_GUIDANCE_VERSION = 34
 TEAM_AGENT_GUIDANCE_PATH = "/home/agent/AGENTS.md"
 TEAM_AGENT_GUIDANCE_SECTION_ID = "evander-team-addon"
 LEGACY_TEAM_AGENT_GUIDANCE_SECTION_IDS = ("truman-team-addon",)
@@ -315,11 +321,41 @@ TEAM_GOVERNANCE_GUIDANCE_VERSION = 2
 TEAM_GOVERNANCE_GUIDANCE_SECTION_ID = "evander-team-addon-governance"
 TEAM_WAKE_STATE_CONFLICT_MAX_ATTEMPTS = 3
 TEAM_WAKE_STATE_CONFLICT_RETRY_DELAY_SECONDS = 1.0
+TEAM_WAKE_OUTPUT_MAX_LEASE_SUMMARIES = 50
+TEAM_WAKE_OUTPUT_MAX_IDS_PER_FIELD = 10
+TEAM_WAKE_OUTPUT_MAX_ID_CHARS = 200
+TEAM_WAKE_OUTPUT_MAX_ERROR_CHARS = 1_000
 _ARTIFACT_SPACE_SAFE_SEGMENT_RE = re.compile(r"^[A-Za-z0-9._-]+$")
 _ARTIFACT_SPACE_ENCODED_SEGMENT_PREFIX = "seg_"
 _ARTIFACT_SPACE_COMPONENT_MAX_BYTES = 96
 _ARTIFACT_SPACE_REF_PREFIX = "artifact-space:"
 _TEAM_REVIEW_ARTIFACT_ID_DEFAULT = "bundle"
+
+_TEAM_WAKE_DEFINITION_PAYLOAD_FIELDS = (
+    "team_id",
+    "project_id",
+    "agent_id",
+    "limit",
+    "lease_seconds",
+    "wake_interval_seconds",
+    "max_no_progress_count",
+    "low_priority_wake_after_cycles",
+    "respect_wake_interval",
+    "run_global_maintenance",
+    "worktree_cleanup_limit",
+    "worktree_cleanup_grace_seconds",
+    "worktree_cleanup_retry_seconds",
+    "worktree_cleanup_recovery_seconds",
+    "worktree_cleanup_dry_run",
+    "resume_mode",
+)
+_TEAM_GOVERNANCE_WAKE_DEFINITION_PAYLOAD_FIELDS = (
+    "governance_group_id",
+    "limit",
+    "lease_seconds",
+    "wake_interval_seconds",
+    "resume_mode",
+)
 
 
 class DependencyGitPreparationError(RuntimeError):
@@ -841,6 +877,47 @@ _TEAM_WORKFLOW_EDITOR_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
                 "Error",
                 "string",
                 description="Send error to display on the Team reply when delivery fails.",
+            ),
+        ],
+    ),
+    _catalog_entry(
+        "effect",
+        "effect:team:record-operator-escalation-delivery",
+        "Record operator escalation delivery",
+        "Persist whether an operator escalation reached its communication target.",
+        [
+            _catalog_field(
+                "escalation_id",
+                "Escalation ID",
+                "string",
+                required=True,
+                description="Operator escalation identifier emitted by team_escalate_operator.",
+            ),
+            _catalog_field(
+                "success",
+                "Send succeeded",
+                "boolean",
+                required=True,
+                description="Bind from the communication send result or set false on its error branch.",
+            ),
+            _catalog_field(
+                "provider_message_id",
+                "Provider message ID",
+                "string",
+                description="Provider message ID returned after a successful send.",
+            ),
+            _catalog_field(
+                "error",
+                "Error",
+                "string",
+                description="Delivery error retained for the manager when every send attempt fails.",
+            ),
+            _catalog_field(
+                "fallback_used",
+                "Fallback used",
+                "boolean",
+                description="Whether a host-owned fallback sender delivered the escalation.",
+                default_value=False,
             ),
         ],
     ),
@@ -2145,24 +2222,33 @@ class TeamWakeDueAgentsEffectProvider(EffectProviderBase):
         return effect_definition
 
     def execute(self, *, resolved_config: Mapping[str, Any] | None = None) -> dict[str, Any]:
+        runtime_dir = _runtime_dir(self.runtime_context)
+        state_db_path = addon_storage_path(runtime_dir, ADDON_ID, STATE_DB_FILE)
+        repo = TeamStateRepository(runtime_dir)
+        effective_resolved_config = dict(resolved_config) if resolved_config is not None else None
+        invocation_key = _team_wake_invocation_key(
+            self.effect_definition,
+            resolved_config=effective_resolved_config,
+            state_revision=repo.read_revision(),
+        )
+        return TEAM_WAKE_SINGLE_FLIGHT.run(
+            state_db_path=state_db_path,
+            invocation_key=invocation_key,
+            execute=lambda: self._execute_once(
+                resolved_config=effective_resolved_config,
+                repository=repo,
+            ),
+        )
+
+    def _execute_once(
+        self,
+        *,
+        resolved_config: Mapping[str, Any] | None = None,
+        repository: TeamStateRepository | None = None,
+    ) -> dict[str, Any]:
         payload = _definition_payload(
             self.effect_definition,
-            "team_id",
-            "project_id",
-            "agent_id",
-            "limit",
-            "lease_seconds",
-            "wake_interval_seconds",
-            "max_no_progress_count",
-            "low_priority_wake_after_cycles",
-            "respect_wake_interval",
-            "run_global_maintenance",
-            "worktree_cleanup_limit",
-            "worktree_cleanup_grace_seconds",
-            "worktree_cleanup_retry_seconds",
-            "worktree_cleanup_recovery_seconds",
-            "worktree_cleanup_dry_run",
-            "resume_mode",
+            *_TEAM_WAKE_DEFINITION_PAYLOAD_FIELDS,
         )
         definition_fields = _configured_definition_fields(self.effect_definition)
         resolved_fields = set(resolved_config or {})
@@ -2173,7 +2259,7 @@ class TeamWakeDueAgentsEffectProvider(EffectProviderBase):
         if resumer is None or not callable(getattr(resumer, "resume_agent", None)):
             raise RuntimeError("effect:team:wake-due-agents requires agent_resumer")
 
-        repo = TeamStateRepository(_runtime_dir(context))
+        repo = repository or TeamStateRepository(_runtime_dir(context))
         run_global_maintenance = _optional_bool(
             payload.get("run_global_maintenance"),
             default=True,
@@ -2271,8 +2357,10 @@ class TeamWakeDueAgentsEffectProvider(EffectProviderBase):
                 )
             except Exception as exc:  # cleanup must not suppress unrelated Team wakes
                 worktree_cleanup_error = str(exc) or exc.__class__.__name__
-        TeamAdminService(repo).advance_team_cost_budget_windows()
         current_state = repo.read()
+        current_state = TeamAdminService(repo).advance_team_cost_budget_windows(
+            current_state=current_state,
+        )
         session_records = _session_records_by_id(_session_repository_from_context(context))
         cost_guard_blocked_teams = _cost_guard_blocked_teams(
             context,
@@ -2287,18 +2375,32 @@ class TeamWakeDueAgentsEffectProvider(EffectProviderBase):
         resume_mode = _optional_text(payload.get("resume_mode")) or "same_context"
         lease_limit = _optional_int(payload.get("limit"), default=10)
         normalized_limit = max(0, int(lease_limit or 0))
-        state, queued_chat_claims = TeamChatService(repo).claim_pending_chat_message_dispatches(
-            team_id=_optional_text(payload.get("team_id")),
-            project_id=_optional_text(payload.get("project_id")),
-            agent_id=_optional_text(payload.get("agent_id")),
-            limit=normalized_limit,
-            blocked_team_ids=blocked_team_ids,
-            session_is_busy=lambda session_id: _team_session_has_active_prompt(
-                context,
-                session_id=session_id,
-            ),
-            defer_activation=True,
-        )
+        if normalized_limit == 0 or (
+            not run_global_maintenance
+            and not _team_wake_has_chat_claim_candidate(
+                current_state,
+                team_id=_optional_text(payload.get("team_id")),
+                project_id=_optional_text(payload.get("project_id")),
+                agent_id=_optional_text(payload.get("agent_id")),
+                blocked_team_ids=blocked_team_ids,
+                now=datetime.now(UTC),
+            )
+        ):
+            state = current_state
+            queued_chat_claims = []
+        else:
+            state, queued_chat_claims = TeamChatService(repo).claim_pending_chat_message_dispatches(
+                team_id=_optional_text(payload.get("team_id")),
+                project_id=_optional_text(payload.get("project_id")),
+                agent_id=_optional_text(payload.get("agent_id")),
+                limit=normalized_limit,
+                blocked_team_ids=blocked_team_ids,
+                session_is_busy=lambda session_id: _team_session_has_active_prompt(
+                    context,
+                    session_id=session_id,
+                ),
+                defer_activation=True,
+            )
         chat_dispatches: list[dict[str, Any]] = []
         errors: list[str] = []
         state, chat_dispatches, chat_errors = _dispatch_queued_team_chat_messages(
@@ -2312,7 +2414,7 @@ class TeamWakeDueAgentsEffectProvider(EffectProviderBase):
         )
         errors.extend(chat_errors)
         agent_lease_seconds = _optional_int(payload.get("lease_seconds"), default=900) or 900
-        if normalized_limit and len(queued_chat_claims) >= normalized_limit:
+        if normalized_limit == 0 or len(queued_chat_claims) >= normalized_limit:
             leases = []
         else:
             regular_limit = (
@@ -2685,11 +2787,20 @@ class TeamWakeDueAgentsEffectProvider(EffectProviderBase):
                 except Exception as release_exc:  # pragma: no cover - defensive diagnostics
                     error = f"{error}; failed to release team runtime lease: {release_exc}"
                 errors.append(f"{agent['id']}: {error}")
+        final_state = repo.read()
+        lease_summaries = [
+            _team_wake_lease_summary(lease, state=final_state)
+            for lease in leases[:TEAM_WAKE_OUTPUT_MAX_LEASE_SUMMARIES]
+        ]
         return {
             "success": not errors,
-            "revision": state.revision,
+            "coalesced": False,
+            "revision": final_state.revision,
             "leased_count": len(leases),
-            "leases": leases,
+            "lease_summary_version": 1,
+            "lease_summaries": lease_summaries,
+            "leases": lease_summaries,
+            "lease_summaries_truncated": len(lease_summaries) < len(leases),
             "chat_dispatches": chat_dispatches,
             "dispatches": dispatches,
             "prepared_project_repos": prepared_project_repos,
@@ -3213,13 +3324,35 @@ class TeamWakeGovernanceManagersEffectProvider(EffectProviderBase):
         return effect_definition
 
     def execute(self, *, resolved_config: Mapping[str, Any] | None = None) -> dict[str, Any]:
+        runtime_dir = _runtime_dir(self.runtime_context)
+        state_db_path = addon_storage_path(runtime_dir, ADDON_ID, STATE_DB_FILE)
+        repo = TeamStateRepository(runtime_dir)
+        effective_resolved_config = dict(resolved_config) if resolved_config is not None else None
+        invocation_key = _team_wake_invocation_key(
+            self.effect_definition,
+            resolved_config=effective_resolved_config,
+            state_revision=repo.read_revision(),
+            field_names=_TEAM_GOVERNANCE_WAKE_DEFINITION_PAYLOAD_FIELDS,
+            namespace="governance",
+        )
+        return TEAM_WAKE_SINGLE_FLIGHT.run(
+            state_db_path=state_db_path,
+            invocation_key=invocation_key,
+            execute=lambda: self._execute_once(
+                resolved_config=effective_resolved_config,
+                repository=repo,
+            ),
+        )
+
+    def _execute_once(
+        self,
+        *,
+        resolved_config: Mapping[str, Any] | None = None,
+        repository: TeamStateRepository | None = None,
+    ) -> dict[str, Any]:
         payload = _definition_payload(
             self.effect_definition,
-            "governance_group_id",
-            "limit",
-            "lease_seconds",
-            "wake_interval_seconds",
-            "resume_mode",
+            *_TEAM_GOVERNANCE_WAKE_DEFINITION_PAYLOAD_FIELDS,
         )
         if resolved_config:
             payload.update(dict(resolved_config))
@@ -3228,15 +3361,17 @@ class TeamWakeGovernanceManagersEffectProvider(EffectProviderBase):
         if resumer is None or not callable(getattr(resumer, "resume_agent", None)):
             raise RuntimeError("effect:team:wake-governance-managers requires agent_resumer")
 
-        repo = TeamStateRepository(_runtime_dir(context))
-        TeamAdminService(repo).advance_team_cost_budget_windows()
+        repo = repository or TeamStateRepository(_runtime_dir(context))
         current_state = repo.read()
+        current_state = TeamAdminService(repo).advance_team_cost_budget_windows(
+            current_state=current_state,
+        )
         cost_payload = TeamCostService(
             runtime_dir=_runtime_dir(context),
             state=current_state,
             session_repository=_session_repository_from_context(context),
         ).costs_payload(backfill_transcripts=True)
-        state, leases = TeamRuntimeService(repo).lease_due_governance_managers(
+        _state, leases = TeamRuntimeService(repo).lease_due_governance_managers(
             governance_group_id=_optional_text(payload.get("governance_group_id")),
             limit=_optional_int(payload.get("limit"), default=10),
             lease_seconds=_optional_int(payload.get("lease_seconds"), default=900),
@@ -3282,12 +3417,12 @@ class TeamWakeGovernanceManagersEffectProvider(EffectProviderBase):
                     )
                 elif bool(result_payload.get("queued")):
                     queued_for_delivery = True
-                    state = TeamRuntimeService(repo).mark_governance_dispatch_queued(
+                    TeamRuntimeService(repo).mark_governance_dispatch_queued(
                         governance_group_id=group["id"],
                         dispatch_id=lease["dispatch_id"],
                     )
                 else:
-                    state = TeamRuntimeService(repo).activate_governance_dispatch(
+                    TeamRuntimeService(repo).activate_governance_dispatch(
                         governance_group_id=group["id"],
                         dispatch_id=lease["dispatch_id"],
                         lease_seconds=_optional_int(payload.get("lease_seconds"), default=900)
@@ -3310,15 +3445,24 @@ class TeamWakeGovernanceManagersEffectProvider(EffectProviderBase):
                 errors.append(f"{group['id']}/{agent['id']}: {exc}")
             finally:
                 if not queued_for_delivery:
-                    state = TeamRuntimeService(repo).complete_governance_dispatch(
+                    TeamRuntimeService(repo).complete_governance_dispatch(
                         governance_group_id=group["id"],
                         dispatch_id=lease["dispatch_id"],
                     )
+        final_state = repo.read()
+        lease_summaries = [
+            _team_wake_lease_summary(lease, state=final_state)
+            for lease in leases[:TEAM_WAKE_OUTPUT_MAX_LEASE_SUMMARIES]
+        ]
         return {
             "success": not errors,
-            "revision": state.revision,
+            "coalesced": False,
+            "revision": final_state.revision,
             "leased_count": len(leases),
-            "leases": leases,
+            "lease_summary_version": 1,
+            "lease_summaries": lease_summaries,
+            "leases": lease_summaries,
+            "lease_summaries_truncated": len(lease_summaries) < len(leases),
             "dispatches": dispatches,
             "errors": errors,
         }
@@ -3621,6 +3765,49 @@ class TeamRecordExternalChatDeliveryEffectProvider(EffectProviderBase):
             "attempt_count": delivery.attempt_count,
             "provider_message_id": delivery.provider_message_id,
             "error": delivery.last_error,
+        }
+
+
+class TeamRecordOperatorEscalationDeliveryEffectProvider(EffectProviderBase):
+    @classmethod
+    def validate_definition(cls, effect_definition):
+        if isinstance(effect_definition, WorkflowNodeEnvelope):
+            return _materialize(
+                TeamRecordOperatorEscalationDeliveryEffectDefinition,
+                effect_definition,
+            )
+        return effect_definition
+
+    def execute(self, *, resolved_config: Mapping[str, Any] | None = None) -> dict[str, Any]:
+        payload = _definition_payload(
+            self.effect_definition,
+            "escalation_id",
+            "success",
+            "provider_message_id",
+            "error",
+            "fallback_used",
+        )
+        if resolved_config:
+            payload.update(dict(resolved_config))
+        delivery: dict[str, Any] = {}
+
+        def _mutate(state: TeamState) -> TeamState:
+            nonlocal delivery
+            delivery = record_operator_escalation_delivery(
+                state,
+                escalation_id=_required_text(payload.get("escalation_id"), "escalation_id"),
+                success=_optional_bool(payload.get("success"), default=False),
+                provider_message_id=_optional_text(payload.get("provider_message_id")),
+                error=_optional_text(payload.get("error")),
+                fallback_used=_optional_bool(payload.get("fallback_used"), default=False),
+            )
+            return state
+
+        state = TeamStateRepository(_runtime_dir(self.runtime_context)).update(_mutate)
+        return {
+            "success": delivery["status"] == "delivered",
+            "revision": state.revision,
+            **delivery,
         }
 
 
@@ -6367,6 +6554,9 @@ def register_providers() -> ProviderPluginRegistration:
             "effect:team:record-external-chat-delivery": (
                 TeamRecordExternalChatDeliveryEffectProvider
             ),
+            "effect:team:record-operator-escalation-delivery": (
+                TeamRecordOperatorEscalationDeliveryEffectProvider
+            ),
             "effect:team:create-operator-directive": (TeamCreateOperatorDirectiveEffectProvider),
             "effect:team:create-review-request": TeamCreateReviewRequestEffectProvider,
             "effect:team:create-review-cohort": TeamCreateReviewCohortEffectProvider,
@@ -6426,6 +6616,12 @@ def register_providers() -> ProviderPluginRegistration:
             "effect:team:record-external-chat-delivery": (
                 lambda node: _materialize(
                     TeamRecordExternalChatDeliveryEffectDefinition,
+                    node,
+                )
+            ),
+            "effect:team:record-operator-escalation-delivery": (
+                lambda node: _materialize(
+                    TeamRecordOperatorEscalationDeliveryEffectDefinition,
                     node,
                 )
             ),
@@ -6521,6 +6717,15 @@ def _team_agent_guidance_content(*, agent: Mapping[str, Any]) -> str:
         "or detailed visible records through the Team read tools instead of "
         "assuming the prompt contains the full Team state. Read tools currently "
         f"include: {', '.join(READ_TEAM_MCP_TOOL_NAMES)}.\n\n"
+        "Bounded test execution:\n"
+        "- Every test command must have an explicit timeout. Wrap it with "
+        "`timeout --preserve-status -k 20s <seconds> <test command>`; choose a "
+        "budget suited to the scope (start at 300 seconds for a focused test) "
+        "and never leave a test running indefinitely.\n"
+        "- When a test reaches its timeout, capture its last useful output and "
+        "treat the timeout as evidence. Do not retry the unchanged command "
+        "indefinitely; narrow the test, investigate the stall, or report the "
+        "blocker.\n\n"
         "Identity detail: your own full role_description is included in fresh wake "
         "context and in retained-context deltas when it changes. Compact context may "
         "still omit display names or trim subordinate role descriptions. Use "
@@ -6759,8 +6964,23 @@ def _team_agent_guidance_content(*, agent: Mapping[str, Any]) -> str:
         "- A blocker dispatch that ends without blocker-specific progress transfers "
         "one reporting level. Unrelated Team actions do not count as blocker progress.\n"
         "- Team Chat messages are direct conversations with human operators, not "
-        f"agent-to-agent inbox items. Use {TEAM_REPLY_TO_CHAT_TOOL} only during a "
-        f"Team Chat wake. Use {TEAM_SEND_OPERATOR_CHAT_MESSAGE_TOOL} only for "
+        f"agent-to-agent inbox items. Every Team Chat wake must end with one successful "
+        f"{TEAM_REPLY_TO_CHAT_TOOL} call for the current operator message or coalesced "
+        "message batch, even when only acknowledging it. Your ordinary final response is "
+        "not delivered to the operator; do not replace the tool call with plain assistant "
+        "output or claim the tool is unavailable without calling it. In Codex code mode, "
+        "Team MCP tools can be deferred: resolve the callable name from ALL_TOOLS by "
+        f"matching {TEAM_REPLY_TO_CHAT_TOOL} or a name ending in "
+        f"__{TEAM_REPLY_TO_CHAT_TOOL}, then invoke it with computed bracket access as "
+        "tools[replyToolName](...). Do not use tools.team_reply_to_chat or another dotted "
+        "property form; a deferred tool can be listed while dotted access is undefined. "
+        "The first code-mode execution can omit the deferred reply tool from ALL_TOOLS while "
+        "that literal lookup hydrates it for the next model step. If the first lookup has no "
+        "match, emit a short text diagnostic and start another code-mode execution that repeats "
+        "the lookup and call. A missing first snapshot is not a terminal failure: do not throw, "
+        "send the reply as plain assistant output, or finish before the tool call succeeds. Use "
+        f"{TEAM_REPLY_TO_CHAT_TOOL} only during a Team Chat wake. Use "
+        f"{TEAM_SEND_OPERATOR_CHAT_MESSAGE_TOOL} only for "
         "operators in your own direct Team Chat conversations listed in the current "
         "Team context. "
         "Each wake's operator_chat_participants list replaces every prior wake's list; "
@@ -7282,6 +7502,20 @@ def _build_team_chat_prompt(
         f"Conversation ID: {conversation_id}\n"
         f"Human operator message IDs: {', '.join(message_ids)}\n"
         f"Reply once with {TEAM_REPLY_TO_CHAT_TOOL}, passing message_ids for this full batch.\n\n"
+        "Codex code-mode invocation: Team tools may be deferred even when ALL_TOOLS lists "
+        "them. Resolve `replyToolName` from ALL_TOOLS by matching the exact logical name "
+        f"`{TEAM_REPLY_TO_CHAT_TOOL}` or a name ending in "
+        f"`__{TEAM_REPLY_TO_CHAT_TOOL}`, then call `tools[replyToolName](...)` with "
+        f"`conversation_id={json.dumps(conversation_id)}`, "
+        f"`message_ids={json.dumps(message_ids)}`, `body`, and a unique `request_id`. "
+        "Do not use dotted access such as `tools.team_reply_to_chat(...)` or "
+        "`tools.evander__team_reply_to_chat(...)`; deferred dotted access can be undefined. "
+        "Mandatory hydration retry: the first code-mode execution can find no match while its "
+        "literal lookup makes the deferred tool available to the next model step. In that case "
+        "use `text(\"team_reply_to_chat hydration requested; repeat the lookup next\")`, then "
+        "start a new code-mode execution, repeat the lookup, and make the tool call. Do not throw, "
+        "write the intended reply as plain assistant output, or end the turn after the first miss; "
+        "only a successful tool result completes this chat reply.\n\n"
         f"{ordinary_context_section}"
         f"{rotation_section}\n"
         "Recent conversation:\n"
@@ -9010,8 +9244,13 @@ def _prepare_project_repo_task_worktree(
             'base_commit="$(git -C "$target" config --worktree --get '
             'evander.baseCommit || git -C "$target" rev-parse HEAD)"'
         ),
+        'head_commit="$(git -C "$target" rev-parse HEAD)"',
+        'if [ "$head_commit" = "$base_commit" ] && ! git -C "$target" ls-remote '
+        '--exit-code --heads origin "refs/heads/$branch" >/dev/null 2>&1; then',
+        '  git -C "$target" push origin "HEAD:refs/heads/$branch"',
+        "fi",
         'echo "EVANDER_BASE_COMMIT=$base_commit"',
-        'git -C "$target" rev-parse HEAD',
+        'printf "%s\\n" "$head_commit"',
     ]
     command = "\n".join(command_lines)
     provider = AgentExecEffectProvider()
@@ -10384,6 +10623,292 @@ def _materialize(model_class: type[Any], node: WorkflowNodeEnvelope) -> Any:
             **config,
         }
     )
+
+
+def _team_wake_invocation_key(
+    definition: Any,
+    *,
+    resolved_config: Mapping[str, Any] | None,
+    state_revision: int,
+    field_names: Sequence[str] = _TEAM_WAKE_DEFINITION_PAYLOAD_FIELDS,
+    namespace: str = "agent",
+) -> str:
+    payload = _definition_payload(definition, *field_names)
+    if resolved_config:
+        payload.update(dict(resolved_config))
+    payload["state_revision"] = int(state_revision)
+    payload["wake_namespace"] = namespace
+    serialized = json.dumps(
+        payload,
+        sort_keys=True,
+        separators=(",", ":"),
+        default=str,
+    )
+    return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+
+
+def _team_wake_has_chat_claim_candidate(
+    state: TeamState,
+    *,
+    team_id: str | None,
+    project_id: str | None,
+    agent_id: str | None,
+    blocked_team_ids: set[str],
+    now: datetime,
+) -> bool:
+    """Cheaply avoid a full write transaction when a targeted wake has no chat work."""
+
+    def _agent_is_in_scope(candidate_agent_id: str) -> bool:
+        agent = state.agents.get(candidate_agent_id)
+        if agent is None:
+            return False
+        if team_id is not None and agent.team_id != team_id:
+            return False
+        if agent.team_id is not None and agent.team_id in blocked_team_ids:
+            return False
+        if agent_id is not None and agent.id != agent_id:
+            return False
+        if project_id is not None and project_id not in agent_project_ids(state, agent.id):
+            return False
+        return True
+
+    for message in state.conversation_messages.values():
+        if (
+            message.sender != "operator"
+            or message.message_type != "text"
+            or message.status != "queued"
+        ):
+            continue
+        conversation = state.conversations.get(message.conversation_id)
+        if conversation is not None and _agent_is_in_scope(conversation.agent_id):
+            return True
+
+    effective_now = _team_datetime_utc(now)
+    return any(
+        dispatch.cause_kind == "team_chat"
+        and dispatch.status == TeamDispatchStatus.PREPARING
+        and dispatch.preparation_expires_at is not None
+        and _team_datetime_utc(dispatch.preparation_expires_at) <= effective_now
+        and _agent_is_in_scope(dispatch.agent_id)
+        for dispatch in state.dispatches.values()
+    )
+
+
+def _team_wake_lease_summary(
+    lease: Mapping[str, Any],
+    *,
+    state: TeamState,
+) -> dict[str, Any]:
+    agent = lease.get("agent") if isinstance(lease.get("agent"), Mapping) else {}
+    governance_group = (
+        lease.get("governance_group") if isinstance(lease.get("governance_group"), Mapping) else {}
+    )
+    dispatch_id = _team_wake_output_text(lease.get("dispatch_id"))
+    dispatch = _team_wake_final_dispatch_payload(
+        state,
+        dispatch_id=dispatch_id,
+        agent=agent,
+        governance_group=governance_group,
+        fallback=lease.get("dispatch"),
+    )
+    release_package_ids = _team_wake_record_ids(lease.get("release_packages"))
+    agenda_ids = _team_wake_record_ids(lease.get("agenda"))
+    context_counts = {
+        field_name: _team_wake_collection_count(lease.get(field_name))
+        for field_name in (
+            "tasks",
+            "projects",
+            "outcome_kinds",
+            "cases",
+            "inbox",
+            "blockers",
+            "reviews",
+            "release_packages",
+            "runtime_attention",
+            "recent_action_feedback",
+            "subordinates",
+            "agenda",
+            "member_teams",
+            "cost_signals",
+            "blocked_team_signals",
+        )
+    }
+    summary: dict[str, Any] = {
+        "agent_id": _team_wake_output_text(agent.get("id")),
+        "session_id": _team_wake_output_text(agent.get("session_id")),
+        "team_id": _team_wake_output_text(agent.get("team_id")),
+        "dispatch_id": dispatch_id,
+        "reason": _team_wake_output_text(lease.get("reason")),
+        "status": _team_wake_dispatch_status(dispatch),
+        "agent": {
+            "id": _team_wake_output_text(agent.get("id")),
+            "session_id": _team_wake_output_text(agent.get("session_id")),
+            "team_id": _team_wake_output_text(agent.get("team_id")),
+            "role_id": _team_wake_output_text(agent.get("role_id")),
+            "status": _team_wake_output_text(agent.get("status")),
+        },
+        "dispatch": _team_wake_dispatch_summary(dispatch, lease=lease),
+        "context_counts": context_counts,
+        "release_package_ids": release_package_ids,
+        "release_package_ids_truncated": (
+            context_counts["release_packages"] > len(release_package_ids)
+        ),
+        "error": _team_wake_output_text(
+            dispatch.get("error"),
+            max_chars=TEAM_WAKE_OUTPUT_MAX_ERROR_CHARS,
+        ),
+    }
+    if governance_group:
+        summary["governance_group_id"] = _team_wake_output_text(governance_group.get("id"))
+        summary["governance_group"] = {"id": _team_wake_output_text(governance_group.get("id"))}
+        summary["agenda"] = [{"id": item_id} for item_id in agenda_ids]
+        summary["agenda_ids_truncated"] = context_counts["agenda"] > len(agenda_ids)
+    return summary
+
+
+def _team_wake_final_dispatch_payload(
+    state: TeamState,
+    *,
+    dispatch_id: str | None,
+    agent: Mapping[str, Any],
+    governance_group: Mapping[str, Any],
+    fallback: Any,
+) -> Mapping[str, Any]:
+    """Return the persisted dispatch state corresponding to one wake lease."""
+
+    if dispatch_id is not None:
+        dispatch = state.dispatches.get(dispatch_id)
+        if dispatch is not None:
+            return dispatch.model_dump(mode="json")
+    governance_group_id = _team_wake_output_text(governance_group.get("id"))
+    if governance_group_id is not None:
+        runtime = state.governance_runtimes.get(governance_group_id)
+        return _team_wake_governance_dispatch_payload(
+            runtime=(runtime.model_dump(mode="json") if runtime is not None else {}),
+            dispatch_id=dispatch_id,
+            agent=agent,
+        )
+    return fallback if isinstance(fallback, Mapping) else {}
+
+
+def _team_wake_governance_dispatch_payload(
+    *,
+    runtime: Mapping[str, Any],
+    dispatch_id: str | None,
+    agent: Mapping[str, Any],
+) -> dict[str, Any]:
+    active_dispatch_id = _team_wake_output_text(runtime.get("active_dispatch_id"))
+    if active_dispatch_id == dispatch_id:
+        if runtime.get("queued_at") is not None:
+            status = "queued"
+        elif runtime.get("wake_leased_until") is not None:
+            status = "leased"
+        else:
+            status = "preparing"
+    elif active_dispatch_id is None:
+        status = "completed"
+    else:
+        status = "superseded"
+    return {
+        "id": dispatch_id,
+        "agent_id": _team_wake_output_text(agent.get("id")),
+        "session_id": _team_wake_output_text(agent.get("session_id")),
+        "status": status,
+    }
+
+
+def _team_wake_dispatch_status(dispatch: Mapping[str, Any]) -> str:
+    status = _team_wake_output_text(dispatch.get("status")) or "preparing"
+    if status == "preparing" and dispatch.get("queued_at") is not None:
+        return "queued"
+    return status
+
+
+def _team_wake_dispatch_summary(
+    dispatch: Mapping[str, Any],
+    *,
+    lease: Mapping[str, Any],
+) -> dict[str, Any]:
+    summary: dict[str, Any] = {
+        "id": _team_wake_output_text(dispatch.get("id") or lease.get("dispatch_id")),
+        "agent_id": _team_wake_output_text(dispatch.get("agent_id")),
+        "session_id": _team_wake_output_text(dispatch.get("session_id")),
+        "cause_kind": _team_wake_output_text(dispatch.get("cause_kind")),
+        "cause_id": _team_wake_output_text(dispatch.get("cause_id")),
+        "status": _team_wake_dispatch_status(dispatch),
+        "error": _team_wake_output_text(
+            dispatch.get("error"),
+            max_chars=TEAM_WAKE_OUTPUT_MAX_ERROR_CHARS,
+        ),
+    }
+    for field_name in (
+        "task_ids",
+        "blocker_ids",
+        "review_request_ids",
+        "inbox_item_ids",
+        "project_ids",
+        "managed_repo_ids",
+        "chat_message_ids",
+        "action_feedback_dispatch_ids",
+        "initial_release_decision_deliverable_ids",
+    ):
+        values = _team_wake_id_items(dispatch.get(field_name))
+        summary[field_name] = values
+        summary[f"{field_name[:-4]}_count"] = _team_wake_collection_count(dispatch.get(field_name))
+        summary[f"{field_name}_truncated"] = summary[f"{field_name[:-4]}_count"] > len(values)
+    return summary
+
+
+def _team_wake_record_ids(value: Any) -> list[str]:
+    if isinstance(value, Mapping):
+        return _team_wake_id_items(value.keys())
+    if not isinstance(value, Sequence) or isinstance(value, (str, bytes, bytearray)):
+        return []
+    return _team_wake_id_items(
+        item.get("id") if isinstance(item, Mapping) else item for item in value
+    )
+
+
+def _team_wake_id_items(value: Any) -> list[str]:
+    if isinstance(value, Mapping):
+        items: Sequence[Any] = list(value.keys())
+    elif isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
+        items = value
+    else:
+        try:
+            items = list(value or [])
+        except TypeError:
+            return []
+    result: list[str] = []
+    for item in items:
+        normalized = _team_wake_output_text(item)
+        if normalized is None or normalized in result:
+            continue
+        result.append(normalized)
+        if len(result) >= TEAM_WAKE_OUTPUT_MAX_IDS_PER_FIELD:
+            break
+    return result
+
+
+def _team_wake_collection_count(value: Any) -> int:
+    if isinstance(value, (Mapping, Sequence)) and not isinstance(value, (str, bytes, bytearray)):
+        return len(value)
+    return 0
+
+
+def _team_wake_output_text(
+    value: Any,
+    *,
+    max_chars: int = TEAM_WAKE_OUTPUT_MAX_ID_CHARS,
+) -> str | None:
+    if value is None:
+        return None
+    normalized = str(value).strip()
+    if not normalized:
+        return None
+    if len(normalized) <= max_chars:
+        return normalized
+    return normalized[: max(0, max_chars - 3)] + "..."
 
 
 def _definition_payload(definition: Any, *field_names: str) -> dict[str, Any]:

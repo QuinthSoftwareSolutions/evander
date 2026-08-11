@@ -15,6 +15,7 @@ from evander.orchestration.host_polling import HostFileLockManager
 from evander.daemons.trigger_orchestrator import (
     TriggerOrchestratorCycleResult,
     TriggerOrchestratorWorker,
+    _compute_trigger_cycle_sleep_seconds,
     build_trigger_orchestrator_worker,
     main,
 )
@@ -1157,6 +1158,97 @@ def test_due_scheduled_internal_event_publishes_before_event_trigger_poll(
     assert scheduled_record["published_event_id"] == published_event.event_id
 
 
+def test_events_scheduled_during_trigger_poll_are_delivered_same_cycle_without_external_repoll(
+    tmp_path: Path,
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    config = GatewayConfig(runtime_dir=runtime_dir)
+    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+        {
+            "runtime_dir": runtime_dir,
+            "poll_interval_seconds": 5,
+            "jitter_seconds": 0,
+            "triggers": [
+                {
+                    "id": "event-listener",
+                    "display_name": "Plan committed",
+                    "type": "trigger:event",
+                    "event_type": "issue.plan_committed",
+                },
+                {
+                    "id": "poller",
+                    "display_name": "External poller",
+                    "type": "trigger:cron",
+                    "expression": "* * * * *",
+                },
+            ],
+        }
+    )
+    scheduled_store = ScheduledInternalEventStore(worker_config.scheduled_internal_event_store_path)
+    worker = TriggerOrchestratorWorker(
+        config=config,
+        worker_config=worker_config,
+        runtime=None,  # type: ignore[arg-type]
+    )
+    original_build = worker.provider_factory.build
+    external_poll_count = 0
+
+    class _SchedulingProvider:
+        def poll(self) -> list[TriggerEvent]:
+            nonlocal external_poll_count
+            external_poll_count += 1
+            now = datetime.now(UTC)
+            scheduled_store.schedule_event(
+                event_type="issue.plan_committed",
+                payload={"issue_id": "ISSUE-LATER"},
+                run_at=now - timedelta(seconds=1),
+                idempotency_key="scheduled-during-poll-later",
+            )
+            scheduled_store.schedule_event(
+                event_type="issue.plan_committed",
+                payload={"issue_id": "ISSUE-EARLIER"},
+                run_at=now - timedelta(seconds=2),
+                idempotency_key="scheduled-during-poll-earlier",
+            )
+            return []
+
+    def build_provider(trigger, **kwargs):
+        if trigger.id == "poller":
+            return _SchedulingProvider()
+        return original_build(trigger, **kwargs)
+
+    worker.provider_factory.build = build_provider  # type: ignore[assignment]
+
+    first_result = worker.run_once()
+
+    assert first_result.events_discovered == 2
+    assert first_result.events_published == 2
+    assert first_result.next_sleep_seconds == 0.0
+    assert external_poll_count == 1
+    internal_events = InternalEventBus(
+        worker_config.internal_event_store_path,
+        journal_path=worker_config.workflow_event_journal_path,
+    ).list_events()
+    assert [event.payload["issue_id"] for event in internal_events] == [
+        "ISSUE-EARLIER",
+        "ISSUE-LATER",
+    ]
+    assert [
+        record.payload["payload"]["issue_id"] for record in worker.event_queue.list_pending()
+    ] == [
+        "ISSUE-EARLIER",
+        "ISSUE-LATER",
+    ]
+    assert scheduled_store.next_pending_run_at() is None
+
+    second_result = worker.run_once()
+
+    assert second_result.events_discovered == 0
+    assert second_result.events_published == 0
+    assert external_poll_count == 2
+    assert len(worker.event_queue.list_pending()) == 2
+
+
 def test_future_scheduled_internal_event_stays_pending_until_due(
     tmp_path: Path,
 ) -> None:
@@ -1200,6 +1292,34 @@ def test_future_scheduled_internal_event_stays_pending_until_due(
     assert scheduled_record["status"] == "pending"
     assert scheduled_record["published_event_id"] is None
     assert scheduled_record["published_at"] is None
+
+
+def test_trigger_cycle_sleep_is_capped_at_next_scheduled_event_due_time() -> None:
+    now = datetime(2030, 1, 1, 12, 0, tzinfo=UTC)
+
+    sleep_seconds = _compute_trigger_cycle_sleep_seconds(
+        events_published=0,
+        poll_interval_seconds=5,
+        jitter_seconds=5,
+        next_scheduled_run_at=now + timedelta(seconds=1),
+        now=now,
+    )
+
+    assert sleep_seconds == 1.0
+
+
+def test_trigger_cycle_sleep_keeps_poll_cadence_for_later_scheduled_event() -> None:
+    now = datetime(2030, 1, 1, 12, 0, tzinfo=UTC)
+
+    sleep_seconds = _compute_trigger_cycle_sleep_seconds(
+        events_published=0,
+        poll_interval_seconds=5,
+        jitter_seconds=0,
+        next_scheduled_run_at=now + timedelta(minutes=1),
+        now=now,
+    )
+
+    assert sleep_seconds == 5.0
 
 
 def test_due_scheduled_internal_event_is_published_once_across_cycles(

@@ -64,6 +64,7 @@ from evander_team_addon.models import (
     TeamBlockerState,
     TeamCase,
     TeamCaseStatus,
+    TeamChatAttachmentPolicy,
     TeamIdempotencyRecord,
     TeamInboxItemState,
     TeamInboxPriority,
@@ -90,6 +91,9 @@ from evander_team_addon.repository import (
 )
 from evander_team_addon.services.domain.chat import CHAT_MESSAGE_QUEUED_EVENT_TYPE
 from evander_team_addon.services.domain.blockers import open_or_get_blocker
+from evander_team_addon.services.domain.operator_escalation import (
+    record_operator_escalation_delivery,
+)
 from evander_team_addon.services.domain.common import DEFAULT_AGENT_WAKE_REQUEST_DEBOUNCE_SECONDS
 from evander_team_addon.services.domain.ephemeral import (
     EPHEMERAL_COMPLETED_EVENT_TYPE,
@@ -575,9 +579,122 @@ def test_repository_initializes_private_addon_state(tmp_path: Path) -> None:
     state = repo.read()
 
     assert state.revision == 0
+    assert repo.read_revision() == 0
     assert state.teams == {}
     assert (tmp_path / "addons" / "team-addon" / "state.db").is_file()
     assert not (tmp_path / "addons" / "team-addon" / "state.json").exists()
+
+
+def test_repository_reads_revision_without_rebuilding_state(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    expected_revision = repo.read().revision
+
+    def fail_full_state_read(_connection) -> dict[str, object]:
+        raise AssertionError("revision reads must not rebuild the full Team state")
+
+    monkeypatch.setattr(repo.store, "_read_payload", fail_full_state_read)
+
+    assert repo.read_revision() == expected_revision
+
+
+def test_repository_read_uses_single_typed_validation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = TeamStateRepository(tmp_path)
+    original_model_validate = TeamState.model_validate
+    validation_count = 0
+
+    def count_model_validate(cls, value, *args, **kwargs):
+        nonlocal validation_count
+        validation_count += 1
+        return original_model_validate(value, *args, **kwargs)
+
+    monkeypatch.setattr(TeamState, "model_validate", classmethod(count_model_validate))
+
+    state = repo.read()
+
+    assert state.revision == 0
+    assert validation_count == 1
+
+
+def test_repository_update_uses_two_typed_state_validations(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = TeamStateRepository(tmp_path)
+    original_model_validate = TeamState.model_validate
+    validation_count = 0
+
+    def count_model_validate(cls, value, *args, **kwargs):
+        nonlocal validation_count
+        validation_count += 1
+        return original_model_validate(value, *args, **kwargs)
+
+    def fail_legacy_payload_update(*_args, **_kwargs):
+        raise AssertionError("typed state updates must not use the legacy payload path")
+
+    monkeypatch.setattr(TeamState, "model_validate", classmethod(count_model_validate))
+    monkeypatch.setattr(repo.store, "update_object", fail_legacy_payload_update)
+    monkeypatch.setattr(repo.store, "_read_payload", fail_legacy_payload_update)
+
+    state = repo.update(lambda current: current)
+
+    assert state.revision == 0
+    assert validation_count == 2
+
+
+def test_repository_typed_update_noop_preserves_revision_and_timestamp(tmp_path: Path) -> None:
+    repo = TeamStateRepository(tmp_path)
+    before = repo.read()
+
+    updated = repo.update(lambda state: state)
+
+    assert updated.revision == before.revision
+    assert updated.updated_at == before.updated_at
+    assert repo.read_revision() == before.revision
+
+
+def test_repository_typed_update_persists_replacement_and_increments_revision(
+    tmp_path: Path,
+) -> None:
+    repo = TeamStateRepository(tmp_path)
+    before = repo.read()
+    policy = TeamChatAttachmentPolicy.root_defaults()
+
+    updated = repo.update(
+        lambda state: state.model_copy(
+            update={"chat_attachment_policies": {policy.id: policy}},
+        )
+    )
+
+    assert updated.revision == before.revision + 1
+    assert updated.chat_attachment_policies == {policy.id: policy}
+    persisted = repo.read()
+    assert persisted.revision == updated.revision
+    assert persisted.chat_attachment_policies == updated.chat_attachment_policies
+
+
+def test_repository_typed_update_invalid_mutation_rolls_back(tmp_path: Path) -> None:
+    repo = TeamStateRepository(tmp_path)
+    before = repo.read()
+    policy = TeamChatAttachmentPolicy.root_defaults()
+
+    def mutate_invalid(state: TeamState) -> TeamState:
+        state.chat_attachment_policies[policy.id] = policy
+        state.revision = -1
+        return state
+
+    with pytest.raises(ValidationError):
+        repo.update(mutate_invalid)
+
+    persisted = repo.read()
+    assert persisted.revision == before.revision
+    assert persisted.updated_at == before.updated_at
+    assert persisted.chat_attachment_policies == {}
 
 
 def test_repository_upgrades_persisted_state_schema_metadata(
@@ -1878,6 +1995,8 @@ def test_repository_coalesces_external_chat_messages_with_one_return_path(
         if event["event_type"] == "team.chat.external_reply_requested"
     )
     assert event["payload"]["operator_message_ids"] == claims[0]["message_ids"]
+    assert event["payload"]["agent_id"] == "backend"
+    assert event["payload"]["sender_session_id"] == "session-backend"
 
 
 def test_external_chat_reply_creates_delivery_event_and_records_failure(
@@ -2077,6 +2196,67 @@ def test_repository_escalate_operator_command_records_direct_operator_outbox(
         item for item in state.inbox.values() if item.item_type == TeamInboxItemType.ESCALATION
     ]
     assert len(escalation_items) == 1
+    assert escalation_items[0].payload["sender_session_id"] == "session-manager"
+    assert escalation_items[0].payload["escalation_id"] == first["escalation_id"]
+    assert first["progress_made"] is False
+
+
+def test_operator_escalation_delivery_is_recorded_and_only_success_resets_progress(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _set_operator_target(repo, "operator:ops-channel")
+    _lease_agent_dispatch(repo, agent_id="manager", dispatch_id="dispatch-escalation-delivery")
+    state, escalation = _command_service(repo).escalate_operator_command(
+        session_id="session-manager",
+        title="Need a decision",
+        message="Blocked waiting on operator input.",
+        request_id="request-escalation-delivery",
+    )
+    escalation_id = escalation["escalation_id"]
+
+    def _mark_failed_delivery(state_model: TeamState) -> TeamState:
+        state_model.agent_runtimes["manager"].no_progress_count = 2
+        record_operator_escalation_delivery(
+            state_model,
+            escalation_id=escalation_id,
+            success=False,
+            error="primary and fallback sends failed",
+            fallback_used=True,
+        )
+        return state_model
+
+    state = repo.update(_mark_failed_delivery)
+    item = next(
+        item for item in state.inbox.values() if item.payload.get("escalation_id") == escalation_id
+    )
+    assert state.agent_runtimes["manager"].no_progress_count == 2
+    assert item.priority == TeamInboxPriority.HIGH
+    assert item.response_requested is True
+    assert item.payload["delivery"]["status"] == "failed"
+    assert item.payload["delivery"]["error"] == "primary and fallback sends failed"
+    assert item.payload["delivery"]["fallback_used"] is True
+    assert item.payload["delivery"]["attempt_count"] == 1
+
+    def _mark_delivered(state_model: TeamState) -> TeamState:
+        record_operator_escalation_delivery(
+            state_model,
+            escalation_id=escalation_id,
+            success=True,
+            provider_message_id="provider-message-1",
+            fallback_used=True,
+        )
+        return state_model
+
+    state = repo.update(_mark_delivered)
+    item = next(
+        item for item in state.inbox.values() if item.payload.get("escalation_id") == escalation_id
+    )
+    assert state.agent_runtimes["manager"].no_progress_count == 0
+    assert item.payload["delivery"]["status"] == "delivered"
+    assert item.payload["delivery"]["provider_message_id"] == "provider-message-1"
+    assert item.payload["delivery"]["fallback_used"] is True
+    assert item.payload["delivery"]["attempt_count"] == 2
 
 
 def test_repository_escalate_operator_command_rejects_non_manager(
@@ -2127,6 +2307,12 @@ def test_repository_escalate_operator_command_creates_governance_agenda(
         dispatch_id="dispatch-governance-escalation",
     )
 
+    def _set_no_progress(state_model: TeamState) -> TeamState:
+        state_model.agent_runtimes["manager"].no_progress_count = 2
+        return state_model
+
+    repo.update(_set_no_progress)
+
     state, result = _command_service(repo).escalate_operator_command(
         session_id="session-manager",
         title="Governance decision needed",
@@ -2135,6 +2321,7 @@ def test_repository_escalate_operator_command_creates_governance_agenda(
     )
 
     assert result["success"] is True
+    assert result["progress_made"] is True
     assert result["delivery_status"] == "pending"
     assert "queued, not delivered" in result["delivery_status_message"]
     assert len(result["governance_agenda_item_ids"]) == 1
@@ -2144,6 +2331,12 @@ def test_repository_escalate_operator_command_creates_governance_agenda(
     assert agenda.team_id == "team"
     assert state.governance_runtimes["portfolio"].next_wake_at is None
     assert repo.list_outbox_records() == []
+    state, finalized = _team_runtime_service(repo).finalize_agent_dispatch_from_activity(
+        session_id="session-manager",
+        dispatch_id="dispatch-governance-escalation",
+    )
+    assert finalized["progress_made"] is True
+    assert state.agent_runtimes["manager"].no_progress_count == 0
 
 
 @pytest.mark.parametrize(
@@ -4029,6 +4222,64 @@ def test_repository_reconcile_abandons_matching_dispatch_without_live_lease(
     assert state.git_work_contexts["ctx-task"].state == GitWorkContextState.ABANDONED
 
 
+def test_repository_reconcile_keeps_context_for_live_preparation_reservation(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _seed_task(repo, task_id="task")
+    now = datetime(2026, 7, 24, 8, 0, tzinfo=UTC)
+
+    def _set_preparing_dispatch(state):
+        state.dispatches["dispatch-preparing"] = TeamDispatch(
+            id="dispatch-preparing",
+            agent_id="backend",
+            session_id="session-backend",
+            cause_kind="inbox",
+            task_ids=["task"],
+            project_ids=["project"],
+            status=TeamDispatchStatus.PREPARING,
+            preparation_expires_at=now + timedelta(seconds=60),
+        )
+        return state
+
+    repo.update(_set_preparing_dispatch)
+    _seed_git_work_context(repo, dispatch_id="dispatch-preparing")
+
+    state, result = _team_runtime_service(repo).reconcile_git_work_contexts(now=now)
+
+    assert result == {"submitted": 0, "abandoned": 0, "pruned": 0}
+    assert state.git_work_contexts["ctx-task"].state == GitWorkContextState.ACTIVE
+
+
+def test_repository_reconcile_abandons_context_after_preparation_reservation_expires(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _seed_task(repo, task_id="task")
+    now = datetime(2026, 7, 24, 8, 0, tzinfo=UTC)
+
+    def _set_expired_preparing_dispatch(state):
+        state.dispatches["dispatch-preparing"] = TeamDispatch(
+            id="dispatch-preparing",
+            agent_id="backend",
+            session_id="session-backend",
+            cause_kind="inbox",
+            task_ids=["task"],
+            project_ids=["project"],
+            status=TeamDispatchStatus.PREPARING,
+            preparation_expires_at=now,
+        )
+        return state
+
+    repo.update(_set_expired_preparing_dispatch)
+    _seed_git_work_context(repo, dispatch_id="dispatch-preparing")
+
+    state, result = _team_runtime_service(repo).reconcile_git_work_contexts(now=now)
+
+    assert result == {"submitted": 0, "abandoned": 1, "pruned": 0}
+    assert state.git_work_contexts["ctx-task"].state == GitWorkContextState.ABANDONED
+
+
 def test_blocker_owner_no_progress_transfers_despite_unrelated_progress(
     tmp_path: Path,
 ) -> None:
@@ -4452,6 +4703,65 @@ def test_blocker_specific_progress_keeps_owner_and_sets_follow_up(tmp_path: Path
         and event.event_type == TeamBlockerEventType.OWNER_TRANSFERRED
         for event in state.blocker_events.values()
     )
+
+
+def test_blocker_follow_up_without_evidence_counts_as_no_progress(tmp_path: Path) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    blocker_id = _report_explicit_blocker(
+        repo,
+        reporter_agent_id="worker",
+        reporter_session_id="session-worker",
+        source_id="unchanged-dependency",
+    )
+    _lease_backend(repo, dispatch_id="dispatch-unchanged-follow-up", no_progress_count=2)
+
+    _state, update = _command_service(repo).update_blocker_command(
+        session_id="session-backend",
+        blocker_id=blocker_id,
+        action="progress",
+        note="The dependency is still unavailable.",
+        follow_up_seconds=300,
+        request_id="request-unchanged-follow-up",
+    )
+    assert update["success"] is True
+    assert update["progress_made"] is False
+
+    state, finalized = _team_runtime_service(repo).finalize_agent_dispatch_from_activity(
+        session_id="session-backend",
+        dispatch_id="dispatch-unchanged-follow-up",
+    )
+
+    assert finalized["progress_made"] is False
+    assert state.agent_runtimes["backend"].no_progress_count == 3
+
+
+def test_blocker_progress_with_evidence_resets_no_progress_count(tmp_path: Path) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    blocker_id = _report_explicit_blocker(
+        repo,
+        reporter_agent_id="worker",
+        reporter_session_id="session-worker",
+        source_id="evidenced-dependency",
+    )
+    _lease_backend(repo, dispatch_id="dispatch-evidenced-progress", no_progress_count=2)
+
+    _state, update = _command_service(repo).update_blocker_command(
+        session_id="session-backend",
+        blocker_id=blocker_id,
+        action="progress",
+        note="Verified a repaired dependency response.",
+        resolution_refs=["dependency-check-2026-08-11"],
+        request_id="request-evidenced-progress",
+    )
+    assert update["progress_made"] is True
+
+    state, finalized = _team_runtime_service(repo).finalize_agent_dispatch_from_activity(
+        session_id="session-backend",
+        dispatch_id="dispatch-evidenced-progress",
+    )
+
+    assert finalized["progress_made"] is True
+    assert state.agent_runtimes["backend"].no_progress_count == 0
 
 
 @pytest.mark.parametrize(
@@ -6114,6 +6424,25 @@ def test_repository_update_task_command_owner_finishes_without_deliverable_notic
     assert not any(
         item.item_type == TeamInboxItemType.DELIVERABLE_NOTICE for item in state.inbox.values()
     )
+
+
+def test_repository_update_task_command_owner_delegates_to_subordinate(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _seed_task(repo, task_id="backend-task")
+    _lease_agent_dispatch(repo, agent_id="backend")
+
+    state, result = _command_service(repo).update_task_command(
+        session_id="session-backend",
+        task_id="backend-task",
+        owner_agent_id="worker",
+        request_id="delegate-backend-task",
+    )
+
+    assert result["success"] is True
+    assert state.tasks["backend-task"].owner_agent_id == "worker"
+    assert result["task_id"] == "backend-task"
 
 
 def test_task_finish_with_proposed_unresolved_dependency_is_rejected(
@@ -9799,7 +10128,40 @@ def test_switching_an_active_budget_to_monthly_waits_for_a_future_boundary(
     assert active_window.started_at == configured_at
     assert active_window.ended_at is None
     assert active_window.monthly_renewal_not_before == datetime(2026, 9, 1, tzinfo=UTC)
-    assert costs_module._current_team_budget_window(team, now=switched_at)["started_at"] == configured_at
+    assert (
+        costs_module._current_team_budget_window(team, now=switched_at)["started_at"]
+        == configured_at
+    )
+
+
+def test_advancing_current_cost_budget_snapshot_skips_noop_write(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    configured_at = datetime(2026, 7, 15, tzinfo=UTC)
+    monkeypatch.setattr(admin_service_module, "utc_now", lambda: configured_at)
+    repo = _seed_hierarchy(tmp_path)
+    admin = _team_admin_service(repo)
+    admin.update_team(
+        team_id="team",
+        max_cost_usd="10.00",
+        set_max_cost_usd=True,
+        cost_budget_renewal_mode="monthly_utc",
+        set_cost_budget_renewal_mode=True,
+    )
+    snapshot = repo.read()
+
+    def fail_update(*_args, **_kwargs):
+        raise AssertionError("a current budget window must not open a write transaction")
+
+    monkeypatch.setattr(repo, "update", fail_update)
+
+    state = admin.advance_team_cost_budget_windows(
+        now=datetime(2026, 7, 20, tzinfo=UTC),
+        current_state=snapshot,
+    )
+
+    assert state is snapshot
 
 
 def test_team_budget_mutation_rolls_an_overdue_monthly_window_first(
@@ -13133,7 +13495,7 @@ def test_apply_agent_action_manager_operator_escalation_emits_event(tmp_path: Pa
 
     assert result["success"] is True
     assert len(result["operator_escalation_event_ids"]) == 1
-    assert state.agent_runtimes["manager"].no_progress_count == 0
+    assert state.agent_runtimes["manager"].no_progress_count == 1
     event = next(
         event
         for event in result["events"]
@@ -13141,8 +13503,10 @@ def test_apply_agent_action_manager_operator_escalation_emits_event(tmp_path: Pa
     )
     assert event["event_type"] == "team.operator.escalation_requested"
     assert event["payload"] == {
+        "escalation_id": event["correlation_key"],
         "team_id": "team",
         "manager_agent_id": "manager",
+        "sender_session_id": "session-manager",
         "communication_target_id": "operator:ops-channel",
         "title": "Need a decision",
         "message": "Blocked waiting on operator input.",
@@ -21548,6 +21912,22 @@ def test_apply_agent_action_supervisor_claims_subordinate_task(tmp_path: Path) -
     assert state.tasks["w1"].owner_agent_id == "backend"
     assert "w1" in result["updated_task_ids"]
     assert "backend" in state.agent_runtimes
+
+
+def test_apply_agent_action_owner_delegates_to_subordinate(tmp_path: Path) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _seed_task(repo, task_id="backend-task")
+
+    state, result = _team_agent_action_service(repo).apply_agent_action(
+        action={
+            "agent_id": "backend",
+            "task_updates": [{"task_id": "backend-task", "owner_agent_id": "worker"}],
+        },
+    )
+
+    assert result["success"] is True
+    assert state.tasks["backend-task"].owner_agent_id == "worker"
+    assert "backend-task" in result["updated_task_ids"]
 
 
 def test_apply_agent_action_supervisor_reassigns_subordinate_task(

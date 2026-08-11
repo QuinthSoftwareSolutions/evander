@@ -1188,6 +1188,21 @@ class PolicyEngine:
             )
         return requested_channel_id
 
+    def discord_sender_identity_mode(
+        self,
+        session: SessionManifest,
+        reference: str,
+        *,
+        capability: CommunicationTargetCapability = "write",
+    ) -> str:
+        target = self._communication_target_for_session(
+            session,
+            str(reference or "").strip(),
+            provider="discord",
+            capability=capability,
+        )
+        return target.policy.sender_identity if target is not None else "platform"
+
     def require_discord_command_source(
         self,
         session: SessionManifest,

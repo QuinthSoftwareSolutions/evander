@@ -21,7 +21,7 @@ flowchart TD
     start([Team runtime pack enabled])
 
     start --> cron["team-cron<br/>default: every 15 minutes"]
-    start --> wake_event["team.agent.wake_requested event<br/>default debounce: 10s"]
+    start --> wake_event["team.agent.wake_requested event<br/>default debounce: 1s"]
     start --> chat_event["team.chat.message_queued event"]
     start --> gov_event["team.governance.wake_requested event"]
 

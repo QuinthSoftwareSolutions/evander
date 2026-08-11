@@ -432,8 +432,10 @@ def _team_costs_payload(
     *,
     backfill_transcripts: bool,
 ) -> dict[str, Any]:
-    TeamAdminService(repository).advance_team_cost_budget_windows()
     state = repository.read()
+    state = TeamAdminService(repository).advance_team_cost_budget_windows(
+        current_state=state,
+    )
     service = TeamCostService(
         runtime_dir=context.runtime_dir,
         state=state,
@@ -649,7 +651,7 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
         view = request.path_params["view"]
         if view not in TEAM_VIEW_IDS:
             return JSONResponse({"error": "view not found"}, status_code=404)
-        state = repository.read()
+        state = await run_in_threadpool(repository.read)
         return JSONResponse(
             _view_payload_for_request(
                 context.auth,
@@ -664,7 +666,7 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
     async def stream_state(request: Request) -> StreamingResponse:
         return StreamingResponse(
             _state_snapshot_events(
-                lambda: _state_revision_payload(repository.read()),
+                lambda: _state_revision_payload(repository.read_revision()),
                 request,
             ),
             media_type="text/event-stream",
@@ -1327,7 +1329,7 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
         return _state_response(request, state)
 
     async def list_conversations(request: Request) -> JSONResponse:
-        state = repository.read()
+        state = await run_in_threadpool(repository.read)
         scope = _chat_list_scope(context.auth, request, state)
         scope = _add_team_chat_mutation_modes(
             scope,
@@ -1376,7 +1378,7 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
         return JSONResponse(response_payload, status_code=201 if created else 200)
 
     async def get_conversation(request: Request) -> JSONResponse:
-        state = repository.read()
+        state = await run_in_threadpool(repository.read)
         conversation_id = request.path_params["conversation_id"]
         conversation = state.conversations.get(conversation_id)
         if conversation is None:
@@ -1413,7 +1415,7 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
         )
 
     async def list_conversation_messages(request: Request) -> JSONResponse:
-        state = repository.read()
+        state = await run_in_threadpool(repository.read)
         conversation_id = request.path_params["conversation_id"]
         conversation = state.conversations.get(conversation_id)
         if conversation is None:
@@ -1438,7 +1440,8 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
     async def stream_conversation(request: Request) -> StreamingResponse | JSONResponse:
         conversation_id = request.path_params["conversation_id"]
         try:
-            _conversation_snapshot_payload(
+            initial_snapshot = await run_in_threadpool(
+                _conversation_snapshot_state_and_payload,
                 repository,
                 conversation_id,
                 auth=context.auth,
@@ -1456,6 +1459,7 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
                 conversation_id,
                 auth=context.auth,
                 context=context,
+                initial_snapshot=initial_snapshot,
             ),
             media_type="text/event-stream",
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
@@ -4187,10 +4191,10 @@ def _mutation_view_response_payload(
     return payload
 
 
-def _state_revision_payload(state: TeamState) -> dict[str, Any]:
+def _state_revision_payload(revision: int) -> dict[str, Any]:
     return {
         "response_scope": "revision",
-        "revision": state.revision,
+        "revision": revision,
     }
 
 
@@ -6437,7 +6441,103 @@ def _conversation_snapshot_payload(
     request: Request | None = None,
     context: AddonContext | None = None,
 ) -> dict[str, Any]:
-    state = repository.read()
+    _state, payload = _conversation_snapshot_state_and_payload(
+        repository,
+        conversation_id,
+        auth=auth,
+        request=request,
+        context=context,
+    )
+    return payload
+
+
+def _conversation_snapshot_state_and_payload(
+    repository: TeamStateRepository,
+    conversation_id: str,
+    *,
+    auth: Any | None = None,
+    request: Request | None = None,
+    context: AddonContext | None = None,
+) -> tuple[TeamState, dict[str, Any]]:
+    state = _conversation_stream_state(repository.read(), conversation_id)
+    return state, _conversation_snapshot_payload_from_state(
+        state,
+        conversation_id,
+        auth=auth,
+        request=request,
+        context=context,
+    )
+
+
+def _conversation_stream_state(state: TeamState, conversation_id: str) -> TeamState:
+    """Keep only the state needed to recheck one conversation between revisions."""
+
+    conversation = state.conversations.get(conversation_id)
+    if conversation is None:
+        raise ValueError("conversation not found")
+    agent = state.agents.get(conversation.agent_id)
+    assignments = {
+        assignment_id: assignment
+        for assignment_id, assignment in state.project_assignments.items()
+        if assignment.agent_id == conversation.agent_id
+    }
+    project_ids = {assignment.project_id for assignment in assignments.values()}
+    roles = {}
+    teams = {}
+    if agent is not None:
+        if agent.role_id is not None and agent.role_id in state.roles:
+            role = state.roles[agent.role_id]
+            roles[role.id] = role
+            if role.project_id is not None:
+                project_ids.add(role.project_id)
+        if agent.team_id is not None and agent.team_id in state.teams:
+            team = state.teams[agent.team_id]
+            teams[team.id] = team
+            project_ids.update(
+                project.id
+                for project in state.projects.values()
+                if project.team_id == agent.team_id
+                and (project.lead_agent_id == agent.id or team.manager_agent_id == agent.id)
+            )
+    messages = {
+        message_id: message
+        for message_id, message in state.conversation_messages.items()
+        if message.conversation_id == conversation_id
+    }
+    attachment_ids = {
+        attachment_id for message in messages.values() for attachment_id in message.attachment_ids
+    }
+    return TeamState.model_construct(
+        schema_version=state.schema_version,
+        revision=state.revision,
+        updated_at=state.updated_at,
+        teams=teams,
+        projects={
+            project_id: state.projects[project_id]
+            for project_id in project_ids
+            if project_id in state.projects
+        },
+        roles=roles,
+        agents=({agent.id: agent} if agent is not None else {}),
+        project_assignments=assignments,
+        conversations=dict(state.conversations),
+        conversation_messages=messages,
+        chat_attachments={
+            attachment_id: state.chat_attachments[attachment_id]
+            for attachment_id in attachment_ids
+            if attachment_id in state.chat_attachments
+        },
+    )
+
+
+def _conversation_snapshot_payload_from_state(
+    state: TeamState,
+    conversation_id: str,
+    *,
+    auth: Any | None = None,
+    request: Request | None = None,
+    context: AddonContext | None = None,
+) -> dict[str, Any]:
     conversation = state.conversations.get(conversation_id)
     if conversation is None:
         raise ValueError("conversation not found")
@@ -6484,19 +6584,23 @@ async def _conversation_snapshot_events(
     *,
     auth: Any | None = None,
     context: AddonContext | None = None,
+    initial_snapshot: tuple[TeamState, dict[str, Any]] | None = None,
     poll_interval_seconds: float = 1.0,
 ) -> AsyncIterator[str]:
-    last_serialized = ""
-    try:
-        snapshot = _conversation_snapshot_payload(
-            repository,
-            conversation_id,
-            auth=auth,
-            request=request,
-            context=context,
-        )
-    except (ValueError, PermissionError):
-        return
+    if initial_snapshot is None:
+        try:
+            state, snapshot = await run_in_threadpool(
+                _conversation_snapshot_state_and_payload,
+                repository,
+                conversation_id,
+                auth=auth,
+                request=request,
+                context=context,
+            )
+        except (ValueError, PermissionError):
+            return
+    else:
+        state, snapshot = initial_snapshot
     last_serialized = json.dumps(snapshot, sort_keys=True)
     yield f"event: snapshot\ndata: {last_serialized}\n\n"
     while True:
@@ -6504,13 +6608,25 @@ async def _conversation_snapshot_events(
             break
         await asyncio.sleep(max(0.0, poll_interval_seconds))
         try:
-            snapshot = _conversation_snapshot_payload(
-                repository,
-                conversation_id,
-                auth=auth,
-                request=request,
-                context=context,
-            )
+            revision = await run_in_threadpool(repository.read_revision)
+            if revision != state.revision:
+                state, snapshot = await run_in_threadpool(
+                    _conversation_snapshot_state_and_payload,
+                    repository,
+                    conversation_id,
+                    auth=auth,
+                    request=request,
+                    context=context,
+                )
+            else:
+                snapshot = await run_in_threadpool(
+                    _conversation_snapshot_payload_from_state,
+                    state,
+                    conversation_id,
+                    auth=auth,
+                    request=request,
+                    context=context,
+                )
         except (ValueError, PermissionError):
             break
         serialized = json.dumps(snapshot, sort_keys=True)
@@ -6527,13 +6643,13 @@ async def _state_snapshot_events(
     *,
     poll_interval_seconds: float = 1.0,
 ) -> AsyncIterator[str]:
-    last_serialized = json.dumps(snapshot_factory(), sort_keys=True)
+    last_serialized = json.dumps(await run_in_threadpool(snapshot_factory), sort_keys=True)
     yield f"event: snapshot\ndata: {last_serialized}\n\n"
     while True:
         if await request.is_disconnected():
             break
         await asyncio.sleep(max(0.0, poll_interval_seconds))
-        serialized = json.dumps(snapshot_factory(), sort_keys=True)
+        serialized = json.dumps(await run_in_threadpool(snapshot_factory), sort_keys=True)
         if serialized == last_serialized:
             yield ": keepalive\n\n"
             continue

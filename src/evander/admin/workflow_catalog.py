@@ -1194,6 +1194,12 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
                 description="Optional substring filter applied to message content.",
             ),
             _field(
+                "content_starts_with",
+                "Content starts with",
+                "string",
+                description="Optional prefix filter applied to message content.",
+            ),
+            _field(
                 "case_sensitive",
                 "Case sensitive",
                 "boolean",
@@ -3495,6 +3501,17 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
                     "Optional Teams channel reply ID. Leave blank for a top-level send. "
                     "Teams chat and user targets, and Discord targets, do not support "
                     "thread replies."
+                ),
+            ),
+            _field(
+                "sender_session_id",
+                "Sender session ID",
+                "string",
+                bindable=True,
+                description=(
+                    "Optional session whose resolved identity should be used when a Discord "
+                    "target opts into resolved sender identity. If omitted or unresolved, the "
+                    "message uses the platform identity."
                 ),
             ),
         ],

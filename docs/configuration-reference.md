@@ -319,7 +319,7 @@ Type-specific keys:
 | `trigger:remote-issue-comment-created` | `provider` | Same filters as `trigger:remote-issue-matching`, plus `comment_contains`, `comment_contains_any`, `comment_author_exclude_names`, `comment_author_exclude_ids`, `comment_case_sensitive`, `include_existing` |
 | `trigger:script-run-request` | — | — |
 | `trigger:discord:new-message` | `discord_bot_token_env` | `channel_ids`, `user_ids` |
-| `trigger:communication:new-message` | `communication_target_ids` | `directory_path`, `author_ids`, `content_contains`, `case_sensitive` |
+| `trigger:communication:new-message` | `communication_target_ids` | `directory_path`, `author_ids`, `content_contains`, `content_starts_with`, `case_sensitive` |
 | `trigger:teams:new-message` | `targets` | `user_ids` |
 | `trigger:teams:direct-message` | `sender_user_ids` | `message_filter` |
 | `trigger:email:new-message` | `mailbox_ids` | `folder` |
@@ -490,7 +490,8 @@ name at least one target from the selected `directory_path` (default `root`); om
 not subscribe to all targets. Version 1 accepts only Teams channel/chat and Discord channel targets
 with the `read` capability, rejects Teams `user:` targets, and intentionally excludes email. The
 optional `author_ids` list filters by provider-native author/user ID, `content_contains` applies a
-substring filter to message content, and `case_sensitive` defaults to `false`. Host-side Teams and
+substring filter, `content_starts_with` applies a prefix filter, and `case_sensitive` defaults to
+`false`. When both content filters are configured, both must match. Host-side Teams and
 Discord ingest workers observe the declared targets and feed the inbox stores that the trigger
 reads. The trigger emits `provider`,
 `communication_target_id`, `message_id`, `thread_id`, `content`, `author_id`, `author_name`,
@@ -850,8 +851,13 @@ payload as a JSON object, and uses either an absolute `run_at` timestamp or a
 relative `delay_seconds` value to compute the due time. Duplicate
 `idempotency_key` values reuse the original schedule record unchanged, which
 keeps retries from mutating the first submission. The trigger orchestrator
-publishes due scheduled events during its normal cycle, so delivery latency is
-bounded by its `poll_interval_seconds`.
+listens for new schedules and caps its next sleep at the earliest pending due
+time. It also publishes anything that became due during the provider sweep
+before sleeping, then immediately polls only the configured `trigger:event`
+listeners so those events enter the trigger queue in the same cycle. Unrelated
+external providers are not polled twice. The normal `poll_interval_seconds`
+cycle remains a fallback, without adding a full polling interval to known
+scheduled-event deadlines.
 
 `effect:agent:prompt` and `effect:agent:enqueue-prompt` have three named
 outgoing ports: `started` emits after the prompt is dispatched, `completed`
@@ -1452,7 +1458,8 @@ Key bootstrap fields include:
 - `nuget_relay_host`, `nuget_relay_port`
 - `audit_log_path`
 - `session_store_path`, `approval_store_path`, `draft_store_path`, `email_store_path`, `email_cursor_store_path`
-- `discord_command_store_path`, `directories_store_path`, `pr_map_path`, `host_agent_control_state_path`
+- `discord_command_store_path`, `discord_webhook_store_path`, `directories_store_path`,
+  `pr_map_path`, `host_agent_control_state_path`
 - `addon_loader`
 - `enable_directory_scoped_config`
 
@@ -1470,6 +1477,7 @@ In the root-only model, this file is an import source for seeding `runtime/direc
 | `runtime_dir` | legacy gateway YAML | `src/evander/runtime.py` store locations. |
 | `audit_log_path` | legacy gateway YAML | `src/evander/runtime.py` audit logger destination. |
 | `session_store_path`, `approval_store_path`, `draft_store_path`, `email_store_path`, `email_cursor_store_path`, `discord_command_store_path` | legacy gateway YAML | `src/evander/runtime.py` persistent JSON stores. |
+| `discord_webhook_store_path` | host config or legacy gateway YAML | Host-only, mode-`0600` Discord channel-webhook credentials used for resolved sender identities. Defaults to `runtime/discord-webhooks.json`; tokens are never returned by Admin APIs. |
 | `directories_store_path` | legacy gateway YAML | `src/evander/runtime.py`, `src/evander/directories.py`, directory admin/config services. |
 | `addon_loader` | host config, legacy gateway YAML, and trigger-orchestrator config | Optional add-on module, package-directory, and entry-point loading for Admin Web routes/navigation and workflow-provider contributions. Scanned package add-ons are disabled until listed in `enabled_addon_ids`. |
 | `enable_directory_scoped_config` | legacy gateway YAML | `src/evander/admin/directory.py`, Admin Web directory edit surfaces, `src/evander/daemons/ado_issue_worker.py`, and `src/evander/daemons/pr_feedback_worker.py` (transition flag for directory edit surfaces and worker shadow resolution). |
@@ -1477,13 +1485,13 @@ In the root-only model, this file is an import source for seeding `runtime/direc
 | `default_session_ttl_seconds` | legacy gateway YAML | `src/evander/cli.py` session creation defaults. |
 | `bind_network_cidr` | legacy gateway YAML | `src/evander/config.py` validation/normalization (policy-bound network constraints). |
 | `gateway_url` | legacy gateway YAML | `src/evander/cli.py` health checks / external endpoint references. |
-| `execution_backend`, `container_worker_base_url`, `container_worker_token_env`, `container_worker_default_image`, `container_worker_images`, `container_worker_codex_auth_mode`, `container_worker_job_timeout_seconds`, `container_worker_request_timeout_seconds`, `container_worker_workspace_persistence`, `container_worker_git_allowed_from` | root or directory `providers.json` | `src/evander/execution/container_worker_backend.py` and portable `effect:agent:*` container worker routing. `container_worker_default_image` is the fallback image; `container_worker_images` maps approved aliases to exact image refs such as the separate Codex and Claude runner images. `container_worker_codex_auth_mode` defaults to `metered_api` and is inherited only by Codex sessions. `chatgpt_subscription` selects the worker-owned account only for public OpenAI container Codex turns; local and Azure routes use their configured private/API-key path without clearing the stored selection. A public subscription turn fails closed when the account is unavailable. A session override applies on its next turn without replacing the session. `container_worker_git_allowed_from` optionally overrides the `authorized_keys from=` restriction for session-scoped container Git write keys; when unset Evander derives it from `container_worker_base_url`. |
+| `execution_backend`, `container_worker_base_url`, `container_worker_token_env`, `container_worker_default_image`, `container_worker_images`, `container_worker_codex_auth_mode`, `container_worker_active_tool_timeout_seconds`, `container_worker_job_timeout_seconds`, `container_worker_request_timeout_seconds`, `container_worker_workspace_persistence`, `container_worker_git_allowed_from` | root or directory `providers.json` | `src/evander/execution/container_worker_backend.py` and portable `effect:agent:*` container worker routing. `container_worker_default_image` is the fallback image; `container_worker_images` maps approved aliases to exact image refs such as the separate Codex and Claude runner images. `container_worker_codex_auth_mode` defaults to `metered_api` and is inherited only by Codex sessions. `container_worker_active_tool_timeout_seconds` defaults to 300 and lets the reconciler safely interrupt only a recognized stalled test or build process group while retaining the agent container; the 1800-second `container_worker_job_timeout_seconds` remains the whole-job fallback. `chatgpt_subscription` selects the worker-owned account only for public OpenAI container Codex turns; local and Azure routes use their configured private/API-key path without clearing the stored selection. A public subscription turn fails closed when the account is unavailable. A session override applies on its next turn without replacing the session. `container_worker_git_allowed_from` optionally overrides the `authorized_keys from=` restriction for session-scoped container Git write keys; when unset Evander derives it from `container_worker_base_url`. |
 | `agent_consultation_profiles`, `agent_consultation_default_profile`, `agent_consultation_max_wait_seconds`, `agent_consultation_retention_days`, `agent_consultation_token_secret_env` | root or directory `providers.json` | Request-scoped `consult_codebase` workers. Each named profile requires `model`, is restricted to `container_worker_vm`, and may set `agent_provider`, `model_provider_mode`, `container_image`, `timeout_seconds`, and `max_concurrency`. The gateway pins a managed-Git commit, persists the request, and returns after the bounded wait; the hidden system workflow creates and cleans up the worker. The token field names a host env var and defaults to `AGENT_PROMPT_TOKEN_SECRET`; it never contains the secret itself. |
 | `container_worker_guest_openai_base_url`, `container_worker_guest_anthropic_base_url`, `container_worker_guest_gateway_url`, `container_worker_guest_http_target_relay_base_url`, `container_worker_guest_nuget_relay_base_url`, `container_worker_guest_pypi_index_url`, `container_worker_guest_npm_registry_url` | root `providers.json` | Container session bootstrap files under `/home/agent` for Codex/Claude model relays, MCP gateway, HTTP target relay, NuGet restore traffic, and Nexus-backed PyPI/npm restores. |
 | `container_worker_mssql_enabled`, `container_worker_mssql_host`, `container_worker_mssql_port` | root `providers.json` | Gateway-side enablement and advertised worker SQL Server endpoint for `mssql_*` MCP provisioning tools. |
 | `model_provider_mode`, `openai_api_base_url`, `openai_api_key_env`, `openai_relay_timeout_seconds`, `local_openai_api_base_url`, `local_openai_api_key`, `local_openai_provider_name`, `azure_openai_endpoint`, `azure_openai_auth_mode`, `azure_openai_api_key_env`, `azure_openai_api_version`, `azure_openai_model_deployments`, `anthropic_api_base_url`, `anthropic_api_key_env`, `anthropic_api_version`, `anthropic_relay_timeout_seconds` | root or directory `providers.json` | `src/evander/relays/openai.py` host relay mode selection and upstream routing. Public mode is the default; local mode forwards OpenAI-compatible requests to a host-local endpoint such as Ollama and uses a placeholder configured key rather than a host secret env var. Azure mode requires the endpoint, host env-var name, api-version, and logical-model-to-deployment mapping. Anthropic mode forwards supported Messages API HTTP endpoints and injects host-side `x-api-key`. `azure_openai_auth_mode` currently accepts only `api_key`. Legacy `openai_provider_mode` is accepted as an alias for `model_provider_mode`. |
 | `local_openai_max_concurrency` | root `providers.json` | Optional host-global limit for concurrent agent turns whose fully resolved provider mode is `local_openai`, across VM and container-worker backends. Excess prompts enter the durable FIFO prompt queue and are admitted as running turns finish. Omit the field for unlimited concurrency. Child directories cannot override it. |
-| `communication_artifact_public_base_url`, `communication_artifact_link_secret_env`, `communication_artifact_link_ttl_seconds` | root or directory `providers.json` | Signed public download links for staged communication artifacts, used by `teams_post_file` when a non-image Teams file has no SharePoint/OneDrive `contentUrl`. The secret env var must be loaded by both gateway and Admin Web; the link TTL is also capped by the staged artifact expiry. |
+| `communication_artifact_public_base_url`, `communication_artifact_link_secret_env`, `communication_artifact_link_ttl_seconds` | root or directory `providers.json` | Signed public links for staged communication artifacts. `teams_post_file` uses them when a non-image Teams file has no SharePoint/OneDrive `contentUrl`. Discord persona avatars are stored directly on Discord webhooks and do not use these settings. The secret env var must be loaded by both gateway and Admin Web; artifact link TTL is also capped by staged artifact expiry. |
 | `phone_call_backend`, `retell_api_base_url`, `retell_api_key_env`, `retell_from_number`, `retell_default_agent_id`, `retell_request_timeout_seconds`, `openai_realtime_model`, `openai_realtime_api_key_env`, `openai_realtime_api_base_url`, `voice_media_controller_url`, `voice_media_controller_token_env`, `voice_media_controller_request_timeout_seconds`, `didww_sip_bridge_url`, `didww_sip_bridge_token_env`, `didww_from_number`, `inbound_phone_routes` | root or directory `providers.json` | `src/evander/retell_phone.py`, `src/evander/voice_sessions.py`, and `src/evander/gateway.py` for host-side phone calls. |
 | `contacts`, `user_contact_links` | root or directory `contacts.json` | `src/evander/directory_config.py`, `src/evander/retell_phone.py`, `src/evander/voice_sessions.py`, and the admin Users API for directory-scoped contacts and user attachments. |
 | `redacted_keys` | legacy gateway YAML (optional) | `src/evander/gateway.py` request/response redaction in logs. |
@@ -1687,12 +1695,14 @@ aliases for the same provisioned environment.
 |---|---|---|
 | `discord_backend` | legacy gateway YAML | `src/evander/runtime.py` adapter selection (`stub`/`bot_api`). |
 | `discord_bot_token_env` | legacy gateway YAML | `src/evander/runtime.py` token env lookup. |
+| `discord_webhook_store_path` | host config or legacy gateway YAML | Host-only credential store for generic and channel-plus-avatar Discord webhooks used by communication targets whose `policy.sender_identity` is `resolved`. |
 | `discord_api_base_url` | legacy gateway YAML | `src/evander/runtime.py` bot API client base URL. |
 | `discord_poll_limit` | legacy gateway YAML | `src/evander/runtime.py` polling window size. |
 | `discord_timeout_seconds` | legacy gateway YAML | `src/evander/runtime.py` HTTP timeout. |
 | `discord_retry_count` | legacy gateway YAML | `src/evander/runtime.py` retry behavior. |
 | `discord_retry_base_backoff_seconds` | legacy gateway YAML | `src/evander/runtime.py` retry backoff floor. |
 | `discord_retry_max_backoff_seconds` | legacy gateway YAML | `src/evander/runtime.py` retry backoff ceiling. |
+| `discord_persona_webhook_cache_limit` | root or directory `providers.json` | Maximum cached persona-avatar webhooks per Discord channel. Defaults to `10`, is capped at `10`, and removes least-recently-used entries after provisioning. |
 | `discord_read_reaction_emoji` | legacy gateway YAML | Legacy adapter config retained for compatibility. The gateway no longer applies unread-message read reactions automatically; use `add_message_reaction` explicitly. |
 | `discord_operator_user_allowlist` | legacy gateway YAML | `src/evander/runtime.py` and `src/evander/policy.py` authorization checks. |
 | `discord_operator_channel_allowlist` | legacy gateway YAML | `src/evander/runtime.py` channel filter for operator events. |
@@ -1781,7 +1791,7 @@ Supported directory config domains:
 | `vm.json` | Guest-facing relay/network defaults and libvirt VM template selection data | `bind_network_cidr`, `gateway_url`, OpenAI relay host/port, NuGet relay host/port, HTTP target relay host/port, `libvirt_vm_default_template`, `libvirt_vm_templates` |
 | `connectors.json` | Named host-side REST/filesystem integrations available through the generic connector MCP tools | `auth_profiles`, `connectors`; child overlays deep-merge entries by id and may set `disabled: true` to disable inherited connectors |
 | `host-directories.json` | Named host filesystem roots available through dedicated list/import/delete tools and file-added triggers | `host_directories`; definitions include `display_name`, `description`, absolute non-root `root`, `capabilities`, `delete_requires_approval`, import/watch limits, and `disabled` |
-| `communication_targets` (SQLite) | Directory-scoped communication targets inherited by target ID | `targets` entries with `id`, `provider`, `kind`, `address`, `policy.capabilities`, optional `policy.auth_profile_ref`, or `disabled: true` for inherited target removal |
+| `communication_targets` (SQLite) | Directory-scoped communication targets inherited by target ID | `targets` entries with `id`, `provider`, `kind`, `address`, `policy.capabilities`, optional `policy.auth_profile_ref`, optional Discord `policy.sender_identity` (`platform` or `resolved`), or `disabled: true` for inherited target removal |
 
 Assistant settings fields:
 

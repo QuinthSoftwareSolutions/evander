@@ -19,6 +19,13 @@ class ContainerRuntime(Protocol):
 
     def stop_job(self, record: WorkerJobRecord) -> None: ...
 
+    def interrupt_active_tool(
+        self,
+        record: WorkerJobRecord,
+        *,
+        reason: str,
+    ) -> dict[str, Any]: ...
+
     def remove_job(self, record: WorkerJobRecord) -> None: ...
 
     def get_logs(self, record: WorkerJobRecord, *, tail_lines: int | None = None) -> str: ...

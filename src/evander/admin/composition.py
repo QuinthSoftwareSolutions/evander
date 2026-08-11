@@ -14,7 +14,13 @@ from uuid import uuid4
 import httpx
 
 from evander.agent_control import AgentControlStore
-from evander.addons import LoadedAddonCatalog, addon_mcp_tool_catalog_payloads, load_addons
+from evander.addons import (
+    AddonContext,
+    LoadedAddonCatalog,
+    addon_mcp_tool_catalog_payloads,
+    addon_runtime_dir,
+    load_addons,
+)
 from evander.admin.directory import DirectoryAdminService
 from evander.admin.operations_helpers import PrivilegedHelperSession
 from evander.admin.payloads import AdminRevisionConflict
@@ -32,6 +38,8 @@ from evander.admin.services import (
     ConnectorAdminDependencies,
     ConnectorAdminService,
     DocumentationService,
+    DiscordWebhookAdminDependencies,
+    DiscordWebhookAdminService,
     HostDirectoryAdminDependencies,
     HostDirectoryAdminService,
     IssueGitAdminDependencies,
@@ -224,6 +232,7 @@ class AdminRuntimeComponents:
     session_admin: SessionAdminService
     wake_schedule_admin: WakeScheduleAdminService
     teams_admin: TeamsAdminService
+    discord_webhook_admin: DiscordWebhookAdminService
     vm_inventory_admin: VmInventoryAdminService
     worker_control_admin: WorkerControlAdminService
     workflow_config_admin: WorkflowConfigAdminService
@@ -396,6 +405,21 @@ def _build_admin_runtime_components(
         runtime.policy.set_extra_mcp_tool_names(
             set(runtime.policy.extra_mcp_tool_names).union(addon_tool_names)
         )
+    for addon in addon_catalog.registrations:
+        if addon.outbound_identity_resolver is None:
+            continue
+        addon_context = AddonContext(
+            addon_id=addon.addon_id,
+            runtime_dir=config.runtime_dir,
+            addon_runtime_dir=addon_runtime_dir(config.runtime_dir, addon.addon_id),
+            project_dir=project_dir,
+            config=config,
+            service=runtime,
+        )
+        runtime.register_outbound_identity_resolver(
+            addon.addon_id,
+            addon.outbound_identity_resolver(addon_context),
+        )
     tool_call_audit_index: ToolCallAuditIndex | None = ToolCallAuditIndex.for_audit_log(
         config.audit_log_path
     )
@@ -491,6 +515,12 @@ def _build_admin_runtime_components(
     )
     teams_admin = TeamsAdminService(
         TeamsAdminDependencies(
+            runtime=runtime,
+            normalize_directory_reference=normalize_directory_reference,
+        )
+    )
+    discord_webhook_admin = DiscordWebhookAdminService(
+        DiscordWebhookAdminDependencies(
             runtime=runtime,
             normalize_directory_reference=normalize_directory_reference,
         )
@@ -779,6 +809,7 @@ def _build_admin_runtime_components(
         session_admin=session_admin,
         wake_schedule_admin=wake_schedule_admin,
         teams_admin=teams_admin,
+        discord_webhook_admin=discord_webhook_admin,
         vm_inventory_admin=vm_inventory_admin,
         worker_control_admin=worker_control_admin,
         workflow_config_admin=workflow_config_admin,

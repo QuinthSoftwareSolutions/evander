@@ -1,13 +1,21 @@
 from __future__ import annotations
 
+import hashlib
+import json
+import threading
+import traceback
 from datetime import UTC, datetime
 from inspect import signature
+from io import BytesIO
 from pathlib import Path
 
 import httpx
 import pytest
+from PIL import Image
 
+from evander.discord_webhooks import discord_webhook_credential_key
 from evander.models import DiscordCommandEnvelope
+from evander.outbound_identity import OutboundAvatar, OutboundIdentity
 from evander.services import DiscordBotApiService, StubDiscordService
 from evander.storage import JsonStore
 
@@ -56,6 +64,39 @@ def make_service(tmp_path: Path, transport: httpx.BaseTransport) -> DiscordBotAp
         retry_base_backoff_seconds=0.01,
         retry_max_backoff_seconds=0.05,
         allowed_channel_ids_provider=lambda: ["chan-a"],
+    )
+
+
+def make_webp_avatar(color: str = "#336699") -> OutboundAvatar:
+    output = BytesIO()
+    Image.new("RGB", (8, 8), color).save(output, format="WEBP")
+    return OutboundAvatar.from_bytes(output.getvalue(), mime_type="image/webp")
+
+
+def test_discord_webhook_generic_credential_key_remains_backward_compatible() -> None:
+    api_base_url = "https://discord.test/api/v10"
+    bot_token_env = "DISCORD_BOT_TOKEN"
+    channel_id = "chan-a"
+    expected = hashlib.sha256(
+        f"{api_base_url}\n{bot_token_env}\n{channel_id}".encode("utf-8")
+    ).hexdigest()
+
+    assert (
+        discord_webhook_credential_key(
+            api_base_url=api_base_url,
+            bot_token_env=bot_token_env,
+            channel_id=channel_id,
+        )
+        == expected
+    )
+    assert (
+        discord_webhook_credential_key(
+            api_base_url=api_base_url,
+            bot_token_env=bot_token_env,
+            channel_id=channel_id,
+            avatar_sha256="a" * 64,
+        )
+        != expected
     )
 
 
@@ -277,6 +318,57 @@ def test_get_commands_does_not_persist_partial_results_on_http_failure(
         "/api/v10/channels/chan-a/messages",
         "/api/v10/channels/chan-b/messages",
     ]
+
+
+def test_get_commands_preserves_self_authored_webhook_metadata(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    command_store = JsonStore(tmp_path / "discord.json", DiscordCommandEnvelope)
+    command_store.put(
+        "100",
+        DiscordCommandEnvelope(
+            command_id="100",
+            author_id="webhook-1",
+            channel_id="chan-a",
+            content="persona post",
+            metadata={
+                "source": "discord_webhook_status",
+                "session_id": "session-1",
+                "transport": "webhook",
+                "identity_status": "resolved",
+            },
+        ),
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json=[
+                {
+                    "id": "100",
+                    "content": "persona post",
+                    "author": {"id": "webhook-1"},
+                }
+            ],
+            request=request,
+        )
+
+    patch_httpx_client(monkeypatch, httpx.MockTransport(handler))
+    service = DiscordBotApiService(
+        command_store,
+        token="test-token",
+        api_base_url="https://discord.test/api/v10",
+        poll_limit=25,
+        timeout_seconds=5.0,
+        allowed_channel_ids_provider=lambda: ["chan-a"],
+    )
+
+    command = service.get_commands()[0]
+
+    assert command.metadata["source"] == "discord_webhook_status"
+    assert command.metadata["session_id"] == "session-1"
+    assert command.metadata["identity_status"] == "resolved"
 
 
 def test_get_commands_never_polls_stale_or_non_allowlisted_channels(
@@ -1090,3 +1182,677 @@ def test_discord_post_file_uses_multipart_bot_api_request(
     assert result["message_id"] == "9000"
     assert result["artifact_count"] == 1
     assert len(requests) == 1
+
+
+def test_discord_resolved_identity_lazily_provisions_and_reuses_avatar_webhook(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    requests: list[httpx.Request] = []
+    provisioning_payloads: list[dict[str, object]] = []
+    webhook_payloads: list[dict[str, object]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if request.url.path.endswith("/channels/chan-a/webhooks"):
+            assert request.headers["Authorization"] == "Bot test-token"
+            provisioning_payloads.append(json.loads(request.read()))
+            return httpx.Response(
+                200,
+                json={"id": "webhook-1", "token": "webhook-token"},
+                request=request,
+            )
+        if request.url.path.endswith("/webhooks/webhook-1/webhook-token"):
+            assert "Authorization" not in request.headers
+            payload = json.loads(request.read())
+            webhook_payloads.append(payload)
+            return httpx.Response(
+                200,
+                json={
+                    "id": str(9000 + len(webhook_payloads)),
+                    "content": payload["content"],
+                    "author": {"id": "webhook-1"},
+                },
+                request=request,
+            )
+        raise AssertionError(f"Unexpected URL: {request.url}")
+
+    transport = httpx.MockTransport(handler)
+    patch_httpx_client(monkeypatch, transport)
+    command_store = JsonStore(tmp_path / "discord.json", DiscordCommandEnvelope)
+    webhook_store_path = tmp_path / "discord-webhooks.json"
+    service = DiscordBotApiService(
+        command_store,
+        token="test-token",
+        api_base_url="https://discord.test/api/v10",
+        poll_limit=25,
+        timeout_seconds=5.0,
+        retry_count=0,
+        allowed_channel_ids_provider=lambda: ["chan-a"],
+        bot_token_env="DISCORD_BOT_TOKEN",
+        webhook_store_path=webhook_store_path,
+    )
+    identity = OutboundIdentity(
+        display_name="Build Agent",
+        source="test",
+        avatar=make_webp_avatar(),
+    )
+
+    first = service.post_status_with_identity(
+        "first",
+        "chan-a",
+        "session-1",
+        identity=identity,
+        identity_status="resolved",
+    )
+    second = service.post_status_with_identity(
+        "second",
+        "chan-a",
+        "session-1",
+        identity=identity,
+        identity_status="resolved",
+    )
+
+    assert first["transport"] == "webhook"
+    assert first["persona_name_applied"] is True
+    assert first["persona_avatar_applied"] is True
+    assert second["transport"] == "webhook"
+    assert len([request for request in requests if "/channels/" in request.url.path]) == 1
+    assert len(provisioning_payloads) == 1
+    assert str(provisioning_payloads[0]["avatar"]).startswith("data:image/png;base64,")
+    assert [payload["username"] for payload in webhook_payloads] == [
+        "Build Agent",
+        "Build Agent",
+    ]
+    assert all("avatar_url" not in payload for payload in webhook_payloads)
+    status = service.webhook_status("chan-a")
+    assert status["persona_webhook_count"] == 1
+    assert status["persona_webhooks"][0]["avatar_sha256"] == identity.avatar.sha256
+    assert webhook_store_path.stat().st_mode & 0o777 == 0o600
+
+
+def test_discord_in_flight_send_does_not_restore_admin_recreated_webhook(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    created_webhooks = 0
+    old_send_started = threading.Event()
+    release_old_send = threading.Event()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal created_webhooks
+        if request.url.path.endswith("/channels/chan-a/webhooks"):
+            created_webhooks += 1
+            return httpx.Response(
+                200,
+                json={
+                    "id": f"webhook-{created_webhooks}",
+                    "token": f"token-{created_webhooks}",
+                },
+                request=request,
+            )
+        if request.url.path.endswith("/webhooks/webhook-1/token-1"):
+            old_send_started.set()
+            if not release_old_send.wait(timeout=5.0):
+                raise AssertionError("Timed out waiting to complete the old webhook send")
+            return httpx.Response(
+                200,
+                json={"id": "old-message", "content": "old"},
+                request=request,
+            )
+        if request.method == "DELETE" and request.url.path.endswith("/webhooks/webhook-1"):
+            return httpx.Response(204, request=request)
+        raise AssertionError(f"Unexpected URL: {request.url}")
+
+    patch_httpx_client(monkeypatch, httpx.MockTransport(handler))
+    service = DiscordBotApiService(
+        JsonStore(tmp_path / "discord.json", DiscordCommandEnvelope),
+        token="test-token",
+        api_base_url="https://discord.test/api/v10",
+        poll_limit=25,
+        timeout_seconds=5.0,
+        retry_count=0,
+        allowed_channel_ids_provider=lambda: ["chan-a"],
+        bot_token_env="DISCORD_BOT_TOKEN",
+        webhook_store_path=tmp_path / "discord-webhooks.json",
+    )
+    service.provision_webhook("chan-a")
+    send_results: list[dict[str, object]] = []
+    send_failures: list[Exception] = []
+
+    def send_with_old_webhook() -> None:
+        try:
+            send_results.append(service.test_webhook("chan-a", message="old"))
+        except Exception as exc:  # pragma: no cover - asserted in the parent thread
+            send_failures.append(exc)
+
+    sender = threading.Thread(target=send_with_old_webhook)
+    sender.start()
+    try:
+        assert old_send_started.wait(timeout=5.0)
+        replacement = service.provision_webhook("chan-a", force=True)
+        assert replacement["webhook_id"] == "webhook-2"
+    finally:
+        release_old_send.set()
+        sender.join(timeout=5.0)
+
+    assert not sender.is_alive()
+    assert send_failures == []
+    assert send_results[0]["message_id"] == "old-message"
+    assert service.webhook_status("chan-a")["webhook_id"] == "webhook-2"
+
+
+def test_discord_persona_webhook_cache_evicts_least_recently_used_avatar(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    created_webhooks = 0
+    deleted_webhooks: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal created_webhooks
+        if request.url.path.endswith("/channels/chan-a/webhooks"):
+            created_webhooks += 1
+            return httpx.Response(
+                200,
+                json={
+                    "id": f"webhook-{created_webhooks}",
+                    "token": f"token-{created_webhooks}",
+                },
+                request=request,
+            )
+        if request.method == "DELETE" and request.url.path.startswith("/api/v10/webhooks/webhook-"):
+            deleted_webhooks.append(request.url.path.rsplit("/", 1)[-1])
+            return httpx.Response(204, request=request)
+        if "/webhooks/webhook-" in request.url.path:
+            payload = json.loads(request.read())
+            webhook_id = request.url.path.split("/webhooks/", 1)[1].split("/", 1)[0]
+            return httpx.Response(
+                200,
+                json={
+                    "id": f"message-{len(payload['content'])}-{webhook_id}",
+                    "content": payload["content"],
+                    "author": {"id": webhook_id},
+                },
+                request=request,
+            )
+        raise AssertionError(f"Unexpected URL: {request.url}")
+
+    patch_httpx_client(monkeypatch, httpx.MockTransport(handler))
+    service = DiscordBotApiService(
+        JsonStore(tmp_path / "discord.json", DiscordCommandEnvelope),
+        token="test-token",
+        api_base_url="https://discord.test/api/v10",
+        poll_limit=25,
+        timeout_seconds=5.0,
+        retry_count=0,
+        allowed_channel_ids_provider=lambda: ["chan-a"],
+        bot_token_env="DISCORD_BOT_TOKEN",
+        webhook_store_path=tmp_path / "discord-webhooks.json",
+        persona_webhook_cache_limit=2,
+    )
+    first = OutboundIdentity(
+        display_name="First",
+        source="test",
+        avatar=make_webp_avatar("#ff0000"),
+    )
+    second = OutboundIdentity(
+        display_name="Second",
+        source="test",
+        avatar=make_webp_avatar("#00ff00"),
+    )
+    third = OutboundIdentity(
+        display_name="Third",
+        source="test",
+        avatar=make_webp_avatar("#0000ff"),
+    )
+
+    for message, identity in (("one", first), ("two", second), ("one-again", first)):
+        service.post_status_with_identity(
+            message,
+            "chan-a",
+            "session-1",
+            identity=identity,
+            identity_status="resolved",
+        )
+    service.post_status_with_identity(
+        "three",
+        "chan-a",
+        "session-1",
+        identity=third,
+        identity_status="resolved",
+    )
+
+    status = service.webhook_status("chan-a")
+    assert created_webhooks == 3
+    assert deleted_webhooks == ["webhook-2"]
+    assert status["persona_webhook_count"] == 2
+    assert {item["avatar_sha256"] for item in status["persona_webhooks"]} == {
+        first.avatar.sha256,
+        third.avatar.sha256,
+    }
+
+
+def test_discord_in_flight_send_does_not_restore_lru_evicted_webhook(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    created_webhooks = 0
+    first_webhook_sends = 0
+    old_send_started = threading.Event()
+    release_old_send = threading.Event()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal created_webhooks, first_webhook_sends
+        if request.url.path.endswith("/channels/chan-a/webhooks"):
+            created_webhooks += 1
+            return httpx.Response(
+                200,
+                json={
+                    "id": f"webhook-{created_webhooks}",
+                    "token": f"token-{created_webhooks}",
+                },
+                request=request,
+            )
+        if request.url.path.endswith("/webhooks/webhook-1/token-1"):
+            first_webhook_sends += 1
+            if first_webhook_sends > 1:
+                old_send_started.set()
+                if not release_old_send.wait(timeout=5.0):
+                    raise AssertionError("Timed out waiting to complete the evicted webhook send")
+            return httpx.Response(
+                200,
+                json={"id": f"old-message-{first_webhook_sends}", "content": "old"},
+                request=request,
+            )
+        if request.method == "DELETE" and request.url.path.endswith("/webhooks/webhook-1"):
+            return httpx.Response(204, request=request)
+        if request.url.path.endswith("/webhooks/webhook-2/token-2"):
+            return httpx.Response(
+                200,
+                json={"id": "new-message", "content": "new"},
+                request=request,
+            )
+        raise AssertionError(f"Unexpected URL: {request.url}")
+
+    patch_httpx_client(monkeypatch, httpx.MockTransport(handler))
+    service = DiscordBotApiService(
+        JsonStore(tmp_path / "discord.json", DiscordCommandEnvelope),
+        token="test-token",
+        api_base_url="https://discord.test/api/v10",
+        poll_limit=25,
+        timeout_seconds=5.0,
+        retry_count=0,
+        allowed_channel_ids_provider=lambda: ["chan-a"],
+        bot_token_env="DISCORD_BOT_TOKEN",
+        webhook_store_path=tmp_path / "discord-webhooks.json",
+        persona_webhook_cache_limit=1,
+    )
+    first = OutboundIdentity(
+        display_name="First",
+        source="test",
+        avatar=make_webp_avatar("#ff0000"),
+    )
+    second = OutboundIdentity(
+        display_name="Second",
+        source="test",
+        avatar=make_webp_avatar("#00ff00"),
+    )
+    service.post_status_with_identity(
+        "initial",
+        "chan-a",
+        "session-1",
+        identity=first,
+        identity_status="resolved",
+    )
+    send_failures: list[Exception] = []
+
+    def send_with_old_webhook() -> None:
+        try:
+            service.post_status_with_identity(
+                "old",
+                "chan-a",
+                "session-1",
+                identity=first,
+                identity_status="resolved",
+            )
+        except Exception as exc:  # pragma: no cover - asserted in the parent thread
+            send_failures.append(exc)
+
+    sender = threading.Thread(target=send_with_old_webhook)
+    sender.start()
+    try:
+        assert old_send_started.wait(timeout=5.0)
+        service.post_status_with_identity(
+            "new",
+            "chan-a",
+            "session-1",
+            identity=second,
+            identity_status="resolved",
+        )
+    finally:
+        release_old_send.set()
+        sender.join(timeout=5.0)
+
+    assert not sender.is_alive()
+    assert send_failures == []
+    status = service.webhook_status("chan-a")
+    assert status["persona_webhook_count"] == 1
+    assert status["persona_webhooks"][0]["avatar_sha256"] == second.avatar.sha256
+
+
+def test_discord_invalid_webp_avatar_keeps_resolved_name_without_public_url(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provisioning_payloads: list[dict[str, object]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/channels/chan-a/webhooks"):
+            provisioning_payloads.append(json.loads(request.read()))
+            return httpx.Response(
+                200,
+                json={"id": "webhook-1", "token": "webhook-token"},
+                request=request,
+            )
+        if request.url.path.endswith("/webhooks/webhook-1/webhook-token"):
+            payload = json.loads(request.read())
+            return httpx.Response(
+                200,
+                json={
+                    "id": "message-1",
+                    "content": payload["content"],
+                    "author": {"id": "webhook-1"},
+                },
+                request=request,
+            )
+        raise AssertionError(f"Unexpected URL: {request.url}")
+
+    patch_httpx_client(monkeypatch, httpx.MockTransport(handler))
+    service = DiscordBotApiService(
+        JsonStore(tmp_path / "discord.json", DiscordCommandEnvelope),
+        token="test-token",
+        api_base_url="https://discord.test/api/v10",
+        poll_limit=25,
+        timeout_seconds=5.0,
+        retry_count=0,
+        allowed_channel_ids_provider=lambda: ["chan-a"],
+        bot_token_env="DISCORD_BOT_TOKEN",
+        webhook_store_path=tmp_path / "discord-webhooks.json",
+    )
+
+    result = service.post_status_with_identity(
+        "hello",
+        "chan-a",
+        "session-1",
+        identity=OutboundIdentity(
+            display_name="Named Agent",
+            source="test",
+            avatar=OutboundAvatar.from_bytes(b"not-webp", mime_type="image/webp"),
+        ),
+        identity_status="resolved",
+    )
+
+    assert result["transport"] == "webhook"
+    assert result["persona_name_applied"] is True
+    assert result["persona_avatar_applied"] is False
+    assert result["fallback_reason"] == "persona_avatar_unavailable:ValueError"
+    assert provisioning_payloads == [{"name": "Evander"}]
+
+
+def test_discord_resolved_identity_falls_back_to_bot_on_definite_webhook_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/channels/chan-a/webhooks"):
+            return httpx.Response(403, json={"message": "forbidden"}, request=request)
+        if request.url.path.endswith("/channels/chan-a/messages"):
+            return httpx.Response(
+                200,
+                json={
+                    "id": "bot-message-1",
+                    "content": "fallback",
+                    "author": {"id": "bot-1"},
+                },
+                request=request,
+            )
+        raise AssertionError(f"Unexpected URL: {request.url}")
+
+    patch_httpx_client(monkeypatch, httpx.MockTransport(handler))
+    service = DiscordBotApiService(
+        JsonStore(tmp_path / "discord.json", DiscordCommandEnvelope),
+        token="test-token",
+        api_base_url="https://discord.test/api/v10",
+        poll_limit=25,
+        timeout_seconds=5.0,
+        retry_count=0,
+        allowed_channel_ids_provider=lambda: ["chan-a"],
+        bot_token_env="DISCORD_BOT_TOKEN",
+        webhook_store_path=tmp_path / "discord-webhooks.json",
+    )
+
+    result = service.post_status_with_identity(
+        "fallback",
+        "chan-a",
+        "session-1",
+        identity=OutboundIdentity(display_name="Agent", source="test"),
+        identity_status="resolved",
+    )
+
+    assert result["transport"] == "bot_api"
+    assert result["identity_status"] == "resolved"
+    assert result["persona_name_applied"] is False
+    assert result["fallback_reason"] == "webhook_http_403"
+
+
+def test_discord_missing_resolved_identity_uses_bot_without_provisioning_webhook(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        assert request.url.path.endswith("/channels/chan-a/messages")
+        return httpx.Response(
+            200,
+            json={
+                "id": "bot-message-2",
+                "content": "fallback",
+                "author": {"id": "bot-1"},
+            },
+            request=request,
+        )
+
+    patch_httpx_client(monkeypatch, httpx.MockTransport(handler))
+    service = DiscordBotApiService(
+        JsonStore(tmp_path / "discord.json", DiscordCommandEnvelope),
+        token="test-token",
+        api_base_url="https://discord.test/api/v10",
+        poll_limit=25,
+        timeout_seconds=5.0,
+        retry_count=0,
+        allowed_channel_ids_provider=lambda: ["chan-a"],
+        bot_token_env="DISCORD_BOT_TOKEN",
+        webhook_store_path=tmp_path / "discord-webhooks.json",
+    )
+
+    result = service.post_status_with_identity(
+        "fallback",
+        "chan-a",
+        "session-1",
+        identity=None,
+        identity_status="not_found",
+    )
+
+    assert result["transport"] == "bot_api"
+    assert result["fallback_reason"] == "identity_not_found"
+    assert len(requests) == 1
+
+
+def test_discord_resolved_identity_recreates_stale_webhook_once(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    created_webhooks = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal created_webhooks
+        if request.url.path.endswith("/channels/chan-a/webhooks"):
+            created_webhooks += 1
+            return httpx.Response(
+                200,
+                json={
+                    "id": f"webhook-{created_webhooks}",
+                    "token": f"token-{created_webhooks}",
+                },
+                request=request,
+            )
+        if request.url.path.endswith("/webhooks/webhook-1/token-1"):
+            return httpx.Response(404, json={"message": "unknown webhook"}, request=request)
+        if request.url.path.endswith("/webhooks/webhook-2/token-2"):
+            return httpx.Response(
+                200,
+                json={
+                    "id": "persona-message-1",
+                    "content": "recovered",
+                    "author": {"id": "webhook-2"},
+                },
+                request=request,
+            )
+        raise AssertionError(f"Unexpected URL: {request.url}")
+
+    patch_httpx_client(monkeypatch, httpx.MockTransport(handler))
+    service = DiscordBotApiService(
+        JsonStore(tmp_path / "discord.json", DiscordCommandEnvelope),
+        token="test-token",
+        api_base_url="https://discord.test/api/v10",
+        poll_limit=25,
+        timeout_seconds=5.0,
+        retry_count=0,
+        allowed_channel_ids_provider=lambda: ["chan-a"],
+        bot_token_env="DISCORD_BOT_TOKEN",
+        webhook_store_path=tmp_path / "discord-webhooks.json",
+    )
+
+    result = service.post_status_with_identity(
+        "recovered",
+        "chan-a",
+        "session-1",
+        identity=OutboundIdentity(
+            display_name="Agent",
+            source="test",
+            avatar=make_webp_avatar(),
+        ),
+        identity_status="resolved",
+    )
+
+    assert result["transport"] == "webhook"
+    assert result["message_id"] == "persona-message-1"
+    assert created_webhooks == 2
+    assert service.webhook_status("chan-a")["webhook_id"] == "webhook-2"
+
+
+def test_discord_stale_404_does_not_delete_concurrent_replacement(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    created_webhooks = 0
+    webhook_store = None
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal created_webhooks
+        if request.url.path.endswith("/channels/chan-a/webhooks"):
+            created_webhooks += 1
+            return httpx.Response(
+                200,
+                json={"id": "webhook-1", "token": "token-1"},
+                request=request,
+            )
+        if request.url.path.endswith("/webhooks/webhook-1/token-1"):
+            assert webhook_store is not None
+            current = webhook_store.get(
+                api_base_url="https://discord.test/api/v10",
+                bot_token_env="DISCORD_BOT_TOKEN",
+                channel_id="chan-a",
+            )
+            assert current is not None
+            webhook_store.put(
+                current.model_copy(update={"webhook_id": "webhook-2", "token": "token-2"})
+            )
+            return httpx.Response(404, json={"message": "unknown webhook"}, request=request)
+        if request.url.path.endswith("/webhooks/webhook-2/token-2"):
+            return httpx.Response(
+                200,
+                json={"id": "replacement-message", "content": "recovered"},
+                request=request,
+            )
+        raise AssertionError(f"Unexpected URL: {request.url}")
+
+    patch_httpx_client(monkeypatch, httpx.MockTransport(handler))
+    service = DiscordBotApiService(
+        JsonStore(tmp_path / "discord.json", DiscordCommandEnvelope),
+        token="test-token",
+        api_base_url="https://discord.test/api/v10",
+        poll_limit=25,
+        timeout_seconds=5.0,
+        retry_count=0,
+        allowed_channel_ids_provider=lambda: ["chan-a"],
+        bot_token_env="DISCORD_BOT_TOKEN",
+        webhook_store_path=tmp_path / "discord-webhooks.json",
+    )
+    webhook_store = service.webhook_store
+    assert webhook_store is not None
+
+    result = service.test_webhook("chan-a", message="recovered")
+
+    assert result["message_id"] == "replacement-message"
+    assert created_webhooks == 1
+    assert service.webhook_status("chan-a")["webhook_id"] == "webhook-2"
+
+
+def test_discord_webhook_errors_redact_credential_token(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/channels/chan-a/webhooks"):
+            return httpx.Response(
+                200,
+                json={"id": "webhook-1", "token": "super-secret-webhook-token"},
+                request=request,
+            )
+        if request.url.path.endswith("/webhooks/webhook-1/super-secret-webhook-token"):
+            return httpx.Response(500, json={"message": "failure"}, request=request)
+        raise AssertionError(f"Unexpected URL: {request.url}")
+
+    patch_httpx_client(monkeypatch, httpx.MockTransport(handler))
+    service = DiscordBotApiService(
+        JsonStore(tmp_path / "discord.json", DiscordCommandEnvelope),
+        token="test-token",
+        api_base_url="https://discord.test/api/v10",
+        poll_limit=25,
+        timeout_seconds=5.0,
+        retry_count=0,
+        allowed_channel_ids_provider=lambda: ["chan-a"],
+        bot_token_env="DISCORD_BOT_TOKEN",
+        webhook_store_path=tmp_path / "discord-webhooks.json",
+    )
+
+    with pytest.raises(httpx.HTTPStatusError) as raised:
+        service.post_status_with_identity(
+            "failure",
+            "chan-a",
+            "session-1",
+            identity=OutboundIdentity(display_name="Agent", source="test"),
+            identity_status="resolved",
+        )
+
+    assert "super-secret-webhook-token" not in str(raised.value)
+    assert "super-secret-webhook-token" not in str(raised.value.request.url)
+    assert "super-secret-webhook-token" not in "".join(traceback.format_exception(raised.value))
+    assert raised.value.__cause__ is None
+    assert raised.value.__suppress_context__ is True
+    assert "redacted" in str(raised.value.request.url)
+    assert service.webhook_status("chan-a")["last_error"] == "http_500"

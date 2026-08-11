@@ -358,7 +358,12 @@ class PolicyConfigResolver:
             )
         return sorted(channel_id.strip() for channel_id in channel_ids if channel_id.strip())
 
-    def allowed_discord_channel_ids_for_session_id(self, session_id: str) -> list[str]:
+    def allowed_discord_channel_ids_for_session_id(
+        self,
+        session_id: str,
+        *,
+        capability: CommunicationTargetCapability = "read",
+    ) -> list[str]:
         session = self.session_store.get_session(session_id)
         if session is None:
             raise ValueError(f"unknown session: {session_id}")
@@ -372,13 +377,13 @@ class PolicyConfigResolver:
             self._discord_channel_ids_from_refs(
                 directory_path,
                 policy.discord_operator_channel_allowlist,
-                capability="read",
+                capability=capability,
                 strict_target_capability=False,
             )
         )
-        if ToolName.DISCORD_GET_COMMANDS in session.allowed_tools:
+        if capability != "read" or ToolName.DISCORD_GET_COMMANDS in session.allowed_tools:
             channel_ids.update(
-                self.resolved_discord_channel_ids_for_session(session, capability="read")
+                self.resolved_discord_channel_ids_for_session(session, capability=capability)
             )
         return sorted(channel_id.strip() for channel_id in channel_ids if channel_id.strip())
 

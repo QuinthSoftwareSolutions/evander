@@ -101,6 +101,15 @@ class TeamRecordExternalChatDeliveryEffectDefinition(EffectDefinition):
     error: ConfigValue | None = None
 
 
+class TeamRecordOperatorEscalationDeliveryEffectDefinition(EffectDefinition):
+    type: Literal["effect:team:record-operator-escalation-delivery"]
+    escalation_id: ConfigValue
+    success: ConfigValue
+    provider_message_id: ConfigValue | None = None
+    error: ConfigValue | None = None
+    fallback_used: ConfigValue | None = None
+
+
 class TeamCreateOperatorDirectiveEffectDefinition(EffectDefinition):
     type: Literal["effect:team:create-operator-directive"]
     team_id: ConfigValue
@@ -488,7 +497,11 @@ TEAM_OUTPUT_SCHEMAS: dict[str, dict[str, dict[str, Any]]] = {
         "success": {"type": "boolean"},
         "revision": {"type": "integer"},
         "leased_count": {"type": "integer"},
+        "lease_summary_version": {"type": "integer"},
+        "lease_summaries": {"type": "array"},
         "leases": {"type": "array"},
+        "lease_summaries_truncated": {"type": "boolean"},
+        "coalesced": {"type": "boolean"},
         "chat_dispatches": {"type": "array"},
         "dispatches": {"type": "array"},
         "prepared_project_repos": {"type": "array"},
@@ -510,7 +523,11 @@ TEAM_OUTPUT_SCHEMAS: dict[str, dict[str, dict[str, Any]]] = {
         "success": {"type": "boolean"},
         "revision": {"type": "integer"},
         "leased_count": {"type": "integer"},
+        "lease_summary_version": {"type": "integer"},
+        "lease_summaries": {"type": "array"},
         "leases": {"type": "array"},
+        "lease_summaries_truncated": {"type": "boolean"},
+        "coalesced": {"type": "boolean"},
         "dispatches": {"type": "array"},
         "errors": {"type": "array"},
     },
@@ -553,6 +570,16 @@ TEAM_OUTPUT_SCHEMAS: dict[str, dict[str, dict[str, Any]]] = {
         "attempt_count": {"type": "integer"},
         "provider_message_id": {"type": ["string", "null"]},
         "error": {"type": ["string", "null"]},
+    },
+    "effect:team:record-operator-escalation-delivery": {
+        "success": {"type": "boolean"},
+        "escalation_id": {"type": "string"},
+        "manager_agent_id": {"type": "string"},
+        "status": {"type": "string"},
+        "attempt_count": {"type": "integer"},
+        "provider_message_id": {"type": ["string", "null"]},
+        "error": {"type": ["string", "null"]},
+        "fallback_used": {"type": "boolean"},
     },
     "effect:team:create-operator-directive": {
         "success": {"type": "boolean"},

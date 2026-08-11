@@ -1000,6 +1000,12 @@ set:
   `/home/agent/AGENTS.md`, so repeated same-context wakes only need to carry the
   dynamic dispatch context. Team state changes are made through Team-owned MCP
   tools exposed only to the appropriate wake/session class.
+  The full lease context is prompt-local and is not persisted in workflow node
+  output. Wake results expose bounded `lease_summaries` with
+  `lease_summary_version: 1`; `leases` remains a compatibility alias for the
+  same summaries. Counts, bounded identifiers, dispatch status, and bounded
+  errors remain available without copying task or release history into every
+  workflow execution.
   A first successful ordinary-context wake, an explicit `new_context` resume,
   or a lifecycle rotation receives a compact complete context labeled
   `context_mode: fresh_full`. A retained same-context wake is labeled
@@ -1045,8 +1051,8 @@ set:
   High-signal wake requests, such as high/normal pending inbox,
   ready task handoffs, review requests, rework requests, and remaining work
   found when a dispatch finalizes, emit a debounced
-  `team.agent.wake_requested` internal event. The default debounce is 10
-  seconds, after which the wake-request path leases only the requested agent
+  `team.agent.wake_requested` internal event. The default debounce is one
+  second, after which the wake-request path leases only the requested agent
   with `respect_wake_interval=false`. Active leases, stand-downs, cost guards,
   no-progress suppression, and low-priority batching still apply.
 - Team-owned MCP tools mutate Team state immediately and atomically during the

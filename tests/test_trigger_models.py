@@ -404,6 +404,7 @@ def test_communication_trigger_normalizes_targets_and_authors() -> None:
             "directory_path": " root/team-a ",
             "author_ids": [" AUTHOR-A ", "Author-B", ""],
             "content_contains": "  Hello there  ",
+            "content_starts_with": "  @Trudy:  ",
         }
     )
 
@@ -411,6 +412,7 @@ def test_communication_trigger_normalizes_targets_and_authors() -> None:
     assert trigger.directory_path == "root/team-a"
     assert trigger.author_ids == ["author-a", "author-b"]
     assert trigger.content_contains == "Hello there"
+    assert trigger.content_starts_with == "@Trudy:"
     assert trigger.case_sensitive is False
 
 
@@ -1425,9 +1427,11 @@ def test_notification_send_effect_requires_target_and_message() -> None:
             "type": "effect:communication:send-message",
             "communication_target_id": "Teams-Primary",
             "message": "Done",
+            "sender_session_id": "${{event-1.payload.sender_session_id}}",
         }
     )
     assert communication.communication_target_id == "teams-primary"
+    assert communication.sender_session_id == "${{event-1.payload.sender_session_id}}"
 
     with pytest.raises(ValueError, match="Field required"):
         CommunicationSendMessageEffectDefinition.model_validate(
