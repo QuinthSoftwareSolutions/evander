@@ -6299,6 +6299,25 @@ def test_repository_update_task_command_owner_finishes_without_deliverable_notic
     )
 
 
+def test_repository_update_task_command_owner_delegates_to_subordinate(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _seed_task(repo, task_id="backend-task")
+    _lease_agent_dispatch(repo, agent_id="backend")
+
+    state, result = _command_service(repo).update_task_command(
+        session_id="session-backend",
+        task_id="backend-task",
+        owner_agent_id="worker",
+        request_id="delegate-backend-task",
+    )
+
+    assert result["success"] is True
+    assert state.tasks["backend-task"].owner_agent_id == "worker"
+    assert result["task_id"] == "backend-task"
+
+
 def test_task_finish_with_proposed_unresolved_dependency_is_rejected(
     tmp_path: Path,
 ) -> None:
@@ -21733,6 +21752,22 @@ def test_apply_agent_action_supervisor_claims_subordinate_task(tmp_path: Path) -
     assert state.tasks["w1"].owner_agent_id == "backend"
     assert "w1" in result["updated_task_ids"]
     assert "backend" in state.agent_runtimes
+
+
+def test_apply_agent_action_owner_delegates_to_subordinate(tmp_path: Path) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _seed_task(repo, task_id="backend-task")
+
+    state, result = _team_agent_action_service(repo).apply_agent_action(
+        action={
+            "agent_id": "backend",
+            "task_updates": [{"task_id": "backend-task", "owner_agent_id": "worker"}],
+        },
+    )
+
+    assert result["success"] is True
+    assert state.tasks["backend-task"].owner_agent_id == "worker"
+    assert "backend-task" in result["updated_task_ids"]
 
 
 def test_apply_agent_action_supervisor_reassigns_subordinate_task(

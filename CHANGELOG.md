@@ -6,6 +6,10 @@
 - Recorded operator-escalation delivery outcomes durably, surfaced final send failures to the responsible manager, and reset no-progress state only after confirmed delivery rather than after queued intent.
 - Stopped unevidenced `team_update_blocker` follow-ups from resetting the three-wake no-progress cap; route, resolution, and evidence-bearing updates still count as material progress.
 
+## 2026-08-11 - Team Task Delegation
+
+- Allowed the current owner of a non-terminal task to delegate it to an eligible subordinate, while retaining the existing hierarchy, team, project-assignment, and terminal-task safeguards across both Team command surfaces.
+
 ## 2026-08-11 - Historical Team Lifecycle Reconciliation
 
 - Added a revision-checked `evander-cli team migrate-historical-lifecycle` migration that dry-runs by default, repairs only audited terminal historical lifecycle contradictions, retires orphaned pending deliverables without altering their artifacts or evidence, and writes a resolved audit record for every repaired task.
