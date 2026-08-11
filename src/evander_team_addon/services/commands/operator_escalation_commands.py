@@ -252,6 +252,7 @@ class TeamOperatorEscalationCommandService(TeamCommandExecutor):
                 },
                 created_domain_ids=[escalation_id, *agenda_ids],
                 created_event_ids=agenda_ids,
+                progress_classification="progress",
             )
 
         return self._execute_team_command(

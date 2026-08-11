@@ -2307,6 +2307,12 @@ def test_repository_escalate_operator_command_creates_governance_agenda(
         dispatch_id="dispatch-governance-escalation",
     )
 
+    def _set_no_progress(state_model: TeamState) -> TeamState:
+        state_model.agent_runtimes["manager"].no_progress_count = 2
+        return state_model
+
+    repo.update(_set_no_progress)
+
     state, result = _command_service(repo).escalate_operator_command(
         session_id="session-manager",
         title="Governance decision needed",
@@ -2315,6 +2321,7 @@ def test_repository_escalate_operator_command_creates_governance_agenda(
     )
 
     assert result["success"] is True
+    assert result["progress_made"] is True
     assert result["delivery_status"] == "pending"
     assert "queued, not delivered" in result["delivery_status_message"]
     assert len(result["governance_agenda_item_ids"]) == 1
@@ -2324,6 +2331,12 @@ def test_repository_escalate_operator_command_creates_governance_agenda(
     assert agenda.team_id == "team"
     assert state.governance_runtimes["portfolio"].next_wake_at is None
     assert repo.list_outbox_records() == []
+    state, finalized = _team_runtime_service(repo).finalize_agent_dispatch_from_activity(
+        session_id="session-manager",
+        dispatch_id="dispatch-governance-escalation",
+    )
+    assert finalized["progress_made"] is True
+    assert state.agent_runtimes["manager"].no_progress_count == 0
 
 
 @pytest.mark.parametrize(

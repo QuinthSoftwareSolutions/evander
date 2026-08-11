@@ -4477,6 +4477,8 @@ def test_wake_governance_managers_uses_governance_prompt_without_action_seed(
     assert result["success"] is True
     assert result["leased_count"] == 1
     assert result["leases"][0]["reason"] == "operator_directive"
+    assert result["lease_summaries"][0]["status"] == "completed"
+    assert result["lease_summaries"][0]["dispatch"]["status"] == "completed"
     assert result["leases"][0]["governance_group"]["id"] == "portfolio"
     assert result["leases"][0]["agenda"][0]["id"] == "agenda-1"
     assert len(file_copier.calls) == 1
@@ -4558,6 +4560,63 @@ def test_wake_governance_managers_uses_governance_prompt_without_action_seed(
         "copied_paths": [TEAM_AGENT_GUIDANCE_PATH, TEAM_AGENT_GUIDANCE_PATH],
     }
     assert repo.read().governance_runtimes["portfolio"].active_dispatch_id is None
+
+
+def test_wake_governance_managers_reports_queued_summary(tmp_path: Path) -> None:
+    repo = _seed_team(tmp_path)
+    _team_admin_service(repo).register_agent(
+        agent_id="portfolio-manager",
+        session_id="session-portfolio-manager",
+        expected_revision=repo.read().revision,
+    )
+    _team_admin_service(repo).create_governance_group(
+        governance_group_id="portfolio",
+        name="Portfolio",
+        manager_agent_id="portfolio-manager",
+        member_team_ids=["team"],
+        expected_revision=repo.read().revision,
+    )
+    _team_admin_service(repo).create_governance_agenda_item(
+        agenda_item_id="agenda-1",
+        governance_group_id="portfolio",
+        item_type="operator_directive",
+        title="Review weekly status",
+        summary="Check whether Team is blocked.",
+        team_id="team",
+        expected_revision=repo.read().revision,
+    )
+    session_store = FakeSessionStore()
+    session_store.sessions["session-portfolio-manager"] = SimpleNamespace(
+        session_id="session-portfolio-manager",
+        vm_id="vm-portfolio-manager",
+        vm_provider="libvirt",
+        directory_path="root",
+        metadata={},
+    )
+    provider = TeamWakeGovernanceManagersEffectProvider()
+    provider.initialize(
+        TeamWakeGovernanceManagersEffectDefinition(
+            id="wake-governance",
+            display_name="Wake governance",
+            type="effect:team:wake-governance-managers",
+        ),
+        EffectRuntimeContext(
+            resolved_config={"runtime_dir": str(tmp_path)},
+            agent_resumer=FakeResumer({"success": True, "queued": True}),
+            vm_file_copier=FakeFileCopier(),
+            session_lookup=session_store,
+            session_metadata_updater=session_store,
+        ),
+    )
+
+    result = provider.execute()
+
+    summary = result["lease_summaries"][0]
+    assert summary["status"] == "queued"
+    assert summary["dispatch"]["status"] == "queued"
+    runtime = repo.read().governance_runtimes["portfolio"]
+    assert runtime.active_dispatch_id == summary["dispatch_id"]
+    assert runtime.queued_at is not None
 
 
 def test_build_prompt_allows_root_tasks_for_create_root_task_permission(
@@ -8483,6 +8542,10 @@ def test_wake_due_agents_provider_releases_lease_when_resume_reports_failure(
     failed_dispatch = next(iter(reread.dispatches.values()))
     assert failed_dispatch.status == TeamDispatchStatus.FAILED
     assert failed_dispatch.error == "vm not ready"
+    summary = result["lease_summaries"][0]
+    assert summary["status"] == "failed"
+    assert summary["dispatch"]["status"] == "failed"
+    assert summary["error"] == "vm not ready"
 
 
 def test_wake_due_agents_keeps_local_capacity_queued_dispatch_unleased(
@@ -8531,6 +8594,9 @@ def test_wake_due_agents_keeps_local_capacity_queued_dispatch_unleased(
     assert len(session_store.calls) == 1
     assert "action_contract" not in session_store.calls[0]["metadata"]["team_addon"]
     assert "agent_guidance" in session_store.calls[0]["metadata"]["team_addon"]
+    summary = result["lease_summaries"][0]
+    assert summary["status"] == "queued"
+    assert summary["dispatch"]["status"] == "queued"
 
 
 def test_wake_due_agents_keeps_capacity_queued_chat_unleased_and_skips_regular_dispatch(

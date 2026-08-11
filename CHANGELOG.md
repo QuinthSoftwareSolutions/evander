@@ -15,6 +15,8 @@
   versioned, bounded persisted wake lease summaries so full release and task context stays
   prompt-local. The existing `leases` output is retained as a bounded-summary compatibility alias;
   live workflow packs do not bind its former raw internals.
+- Refreshed each bounded Team wake summary from final durable dispatch or governance-runtime state,
+  including queued, completed, and failed outcomes rather than the initial reservation snapshot.
 - Removed redundant Team-state validation, deep-copy, and serialization passes from reads and
   atomic updates; targeted wakes also reuse their initial state snapshot and skip no-op
   budget/chat transactions.

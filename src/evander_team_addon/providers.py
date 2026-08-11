@@ -2787,14 +2787,15 @@ class TeamWakeDueAgentsEffectProvider(EffectProviderBase):
                 except Exception as release_exc:  # pragma: no cover - defensive diagnostics
                     error = f"{error}; failed to release team runtime lease: {release_exc}"
                 errors.append(f"{agent['id']}: {error}")
+        final_state = repo.read()
         lease_summaries = [
-            _team_wake_lease_summary(lease)
+            _team_wake_lease_summary(lease, state=final_state)
             for lease in leases[:TEAM_WAKE_OUTPUT_MAX_LEASE_SUMMARIES]
         ]
         return {
             "success": not errors,
             "coalesced": False,
-            "revision": state.revision,
+            "revision": final_state.revision,
             "leased_count": len(leases),
             "lease_summary_version": 1,
             "lease_summaries": lease_summaries,
@@ -3370,7 +3371,7 @@ class TeamWakeGovernanceManagersEffectProvider(EffectProviderBase):
             state=current_state,
             session_repository=_session_repository_from_context(context),
         ).costs_payload(backfill_transcripts=True)
-        state, leases = TeamRuntimeService(repo).lease_due_governance_managers(
+        _state, leases = TeamRuntimeService(repo).lease_due_governance_managers(
             governance_group_id=_optional_text(payload.get("governance_group_id")),
             limit=_optional_int(payload.get("limit"), default=10),
             lease_seconds=_optional_int(payload.get("lease_seconds"), default=900),
@@ -3416,12 +3417,12 @@ class TeamWakeGovernanceManagersEffectProvider(EffectProviderBase):
                     )
                 elif bool(result_payload.get("queued")):
                     queued_for_delivery = True
-                    state = TeamRuntimeService(repo).mark_governance_dispatch_queued(
+                    TeamRuntimeService(repo).mark_governance_dispatch_queued(
                         governance_group_id=group["id"],
                         dispatch_id=lease["dispatch_id"],
                     )
                 else:
-                    state = TeamRuntimeService(repo).activate_governance_dispatch(
+                    TeamRuntimeService(repo).activate_governance_dispatch(
                         governance_group_id=group["id"],
                         dispatch_id=lease["dispatch_id"],
                         lease_seconds=_optional_int(payload.get("lease_seconds"), default=900)
@@ -3444,18 +3445,19 @@ class TeamWakeGovernanceManagersEffectProvider(EffectProviderBase):
                 errors.append(f"{group['id']}/{agent['id']}: {exc}")
             finally:
                 if not queued_for_delivery:
-                    state = TeamRuntimeService(repo).complete_governance_dispatch(
+                    TeamRuntimeService(repo).complete_governance_dispatch(
                         governance_group_id=group["id"],
                         dispatch_id=lease["dispatch_id"],
                     )
+        final_state = repo.read()
         lease_summaries = [
-            _team_wake_lease_summary(lease)
+            _team_wake_lease_summary(lease, state=final_state)
             for lease in leases[:TEAM_WAKE_OUTPUT_MAX_LEASE_SUMMARIES]
         ]
         return {
             "success": not errors,
             "coalesced": False,
-            "revision": state.revision,
+            "revision": final_state.revision,
             "leased_count": len(leases),
             "lease_summary_version": 1,
             "lease_summaries": lease_summaries,
@@ -10683,11 +10685,22 @@ def _team_wake_has_chat_claim_candidate(
     )
 
 
-def _team_wake_lease_summary(lease: Mapping[str, Any]) -> dict[str, Any]:
+def _team_wake_lease_summary(
+    lease: Mapping[str, Any],
+    *,
+    state: TeamState,
+) -> dict[str, Any]:
     agent = lease.get("agent") if isinstance(lease.get("agent"), Mapping) else {}
-    dispatch = lease.get("dispatch") if isinstance(lease.get("dispatch"), Mapping) else {}
     governance_group = (
         lease.get("governance_group") if isinstance(lease.get("governance_group"), Mapping) else {}
+    )
+    dispatch_id = _team_wake_output_text(lease.get("dispatch_id"))
+    dispatch = _team_wake_final_dispatch_payload(
+        state,
+        dispatch_id=dispatch_id,
+        agent=agent,
+        governance_group=governance_group,
+        fallback=lease.get("dispatch"),
     )
     release_package_ids = _team_wake_record_ids(lease.get("release_packages"))
     agenda_ids = _team_wake_record_ids(lease.get("agenda"))
@@ -10715,9 +10728,9 @@ def _team_wake_lease_summary(lease: Mapping[str, Any]) -> dict[str, Any]:
         "agent_id": _team_wake_output_text(agent.get("id")),
         "session_id": _team_wake_output_text(agent.get("session_id")),
         "team_id": _team_wake_output_text(agent.get("team_id")),
-        "dispatch_id": _team_wake_output_text(lease.get("dispatch_id")),
+        "dispatch_id": dispatch_id,
         "reason": _team_wake_output_text(lease.get("reason")),
-        "status": _team_wake_output_text(dispatch.get("status")) or "preparing",
+        "status": _team_wake_dispatch_status(dispatch),
         "agent": {
             "id": _team_wake_output_text(agent.get("id")),
             "session_id": _team_wake_output_text(agent.get("session_id")),
@@ -10744,6 +10757,64 @@ def _team_wake_lease_summary(lease: Mapping[str, Any]) -> dict[str, Any]:
     return summary
 
 
+def _team_wake_final_dispatch_payload(
+    state: TeamState,
+    *,
+    dispatch_id: str | None,
+    agent: Mapping[str, Any],
+    governance_group: Mapping[str, Any],
+    fallback: Any,
+) -> Mapping[str, Any]:
+    """Return the persisted dispatch state corresponding to one wake lease."""
+
+    if dispatch_id is not None:
+        dispatch = state.dispatches.get(dispatch_id)
+        if dispatch is not None:
+            return dispatch.model_dump(mode="json")
+    governance_group_id = _team_wake_output_text(governance_group.get("id"))
+    if governance_group_id is not None:
+        runtime = state.governance_runtimes.get(governance_group_id)
+        return _team_wake_governance_dispatch_payload(
+            runtime=(runtime.model_dump(mode="json") if runtime is not None else {}),
+            dispatch_id=dispatch_id,
+            agent=agent,
+        )
+    return fallback if isinstance(fallback, Mapping) else {}
+
+
+def _team_wake_governance_dispatch_payload(
+    *,
+    runtime: Mapping[str, Any],
+    dispatch_id: str | None,
+    agent: Mapping[str, Any],
+) -> dict[str, Any]:
+    active_dispatch_id = _team_wake_output_text(runtime.get("active_dispatch_id"))
+    if active_dispatch_id == dispatch_id:
+        if runtime.get("queued_at") is not None:
+            status = "queued"
+        elif runtime.get("wake_leased_until") is not None:
+            status = "leased"
+        else:
+            status = "preparing"
+    elif active_dispatch_id is None:
+        status = "completed"
+    else:
+        status = "superseded"
+    return {
+        "id": dispatch_id,
+        "agent_id": _team_wake_output_text(agent.get("id")),
+        "session_id": _team_wake_output_text(agent.get("session_id")),
+        "status": status,
+    }
+
+
+def _team_wake_dispatch_status(dispatch: Mapping[str, Any]) -> str:
+    status = _team_wake_output_text(dispatch.get("status")) or "preparing"
+    if status == "preparing" and dispatch.get("queued_at") is not None:
+        return "queued"
+    return status
+
+
 def _team_wake_dispatch_summary(
     dispatch: Mapping[str, Any],
     *,
@@ -10755,7 +10826,7 @@ def _team_wake_dispatch_summary(
         "session_id": _team_wake_output_text(dispatch.get("session_id")),
         "cause_kind": _team_wake_output_text(dispatch.get("cause_kind")),
         "cause_id": _team_wake_output_text(dispatch.get("cause_id")),
-        "status": _team_wake_output_text(dispatch.get("status")) or "preparing",
+        "status": _team_wake_dispatch_status(dispatch),
         "error": _team_wake_output_text(
             dispatch.get("error"),
             max_chars=TEAM_WAKE_OUTPUT_MAX_ERROR_CHARS,
