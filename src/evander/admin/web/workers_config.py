@@ -132,6 +132,7 @@ _CONTAINER_WORKER_PROVIDER_FIELDS: tuple[tuple[str, str], ...] = (
     ("providers", "container_worker_token_env"),
     ("providers", "container_worker_default_image"),
     ("providers", "container_worker_images"),
+    ("providers", "container_worker_active_tool_timeout_seconds"),
     ("providers", "container_worker_job_timeout_seconds"),
     ("providers", "container_worker_request_timeout_seconds"),
     ("providers", "container_worker_workspace_persistence"),

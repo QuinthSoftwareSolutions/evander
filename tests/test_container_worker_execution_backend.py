@@ -37,6 +37,7 @@ class FakeContainerWorkerClient:
         self.created: list[WorkerJobRequest] = []
         self.got: list[str] = []
         self.stopped: list[str] = []
+        self.interruptions: list[tuple[str, float | None, str]] = []
         self.deleted: list[str] = []
         self.deleted_sessions: list[str] = []
         self.logged: list[tuple[str, str | None]] = []
@@ -80,6 +81,33 @@ class FakeContainerWorkerClient:
                 metadata=self.metadata_by_job.get(job_id, {}),
             ),
             "stopped",
+        )
+
+    def interrupt_active_tool(
+        self,
+        job_id: str,
+        *,
+        max_elapsed_seconds: float | None = None,
+        reason: str = "operator_requested",
+    ) -> WorkerJobRecord:
+        self.interruptions.append((job_id, max_elapsed_seconds, reason))
+        metadata = {
+            **self.metadata_by_job.get(job_id, {}),
+            "active_tool_interruption": {
+                "interrupted": True,
+                "reason": reason,
+                "message": "sent SIGTERM to the active test process group",
+            },
+        }
+        return _record(
+            WorkerJobRequest(
+                session_id="session-1",
+                job_id=job_id,
+                image="runner:latest",
+                command=["true"],
+                metadata=metadata,
+            ),
+            "running",
         )
 
     def delete(self, job_id: str) -> dict[str, object]:
@@ -274,6 +302,33 @@ def test_start_sends_worker_job_request_and_records_mapping(tmp_path: Path) -> N
     assert stored is not None
     assert stored.worker_job_id == "exec-1"
     assert stored.session_id == "session-1"
+
+
+def test_interrupt_active_tool_records_worker_outcome_without_stopping_job(tmp_path: Path) -> None:
+    client = FakeContainerWorkerClient()
+    backend = _backend(tmp_path, client)
+    handle = backend.start(
+        backend.prepare(
+            ExecutionSpec(
+                backend="container_worker_vm",
+                target_name="exec-1",
+                session_id="session-1",
+                command=["true"],
+            )
+        )
+    )
+
+    status = backend.interrupt_active_tool(
+        handle,
+        max_elapsed_seconds=300,
+        reason="active_tool_timeout",
+    )
+
+    assert status.status == ExecutionStatusKind.RUNNING
+    assert client.interruptions == [("exec-1", 300, "active_tool_timeout")]
+    assert status.metadata["active_tool_interruption"]["interrupted"] is True
+    assert status.metadata["active_tool_interruption"]["requested_reason"] == "active_tool_timeout"
+    assert status.metadata["active_tool_interruption"]["watchdog_threshold_seconds"] == 300.0
 
 
 def test_start_requires_first_class_command(tmp_path: Path) -> None:

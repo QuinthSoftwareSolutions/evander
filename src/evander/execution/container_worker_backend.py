@@ -198,6 +198,38 @@ class ContainerWorkerVmExecutionBackend:
         self.repository.put(mapping)
         return self._status_from_record(mapping, record.status, message=record.error)
 
+    def interrupt_active_tool(
+        self,
+        target: ExecutionTarget,
+        *,
+        max_elapsed_seconds: float | None = None,
+        reason: str = "operator_requested",
+    ) -> ExecutionStatus:
+        """Interrupt a worker-selected stalled test process group only.
+
+        `reason` and `max_elapsed_seconds` are retained locally for audit metadata. The worker
+        deliberately receives neither a caller-selected process ID nor a command string.
+        """
+        mapping = self._mapping_for_target(target)
+        record = self.client.interrupt_active_tool(
+            mapping.worker_job_id,
+            max_elapsed_seconds=max_elapsed_seconds,
+            reason=reason,
+        )
+        mapping.last_status = record.status
+        mapping.started_at = record.started_at
+        mapping.finished_at = record.finished_at
+        mapping.metadata = self._metadata_from_worker_record(mapping.metadata, record)
+        interruption = mapping.metadata.get("active_tool_interruption")
+        if isinstance(interruption, dict):
+            interruption = dict(interruption)
+            interruption["requested_reason"] = str(reason or "operator_requested")
+            if max_elapsed_seconds is not None:
+                interruption["watchdog_threshold_seconds"] = float(max_elapsed_seconds)
+            mapping.metadata["active_tool_interruption"] = sanitize_metadata(interruption)
+        self.repository.put(mapping)
+        return self._status_from_record(mapping, record.status, message=record.error)
+
     def destroy(self, target: ExecutionTarget) -> ExecutionStatus:
         mapping = self._mapping_for_target(target)
         attempted_at = now_utc()
@@ -630,6 +662,8 @@ class ContainerWorkerVmExecutionBackend:
             "codex_subscription_exit_code",
             "exit_code",
             "worker_terminal_kind",
+            "active_tool",
+            "active_tool_interruption",
         ):
             if key in worker_metadata:
                 metadata[key] = worker_metadata[key]

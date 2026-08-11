@@ -313,7 +313,7 @@ from .services.worktree_cleanup_service import (
 
 logger = logging.getLogger(__name__)
 
-TEAM_AGENT_GUIDANCE_VERSION = 33
+TEAM_AGENT_GUIDANCE_VERSION = 34
 TEAM_AGENT_GUIDANCE_PATH = "/home/agent/AGENTS.md"
 TEAM_AGENT_GUIDANCE_SECTION_ID = "evander-team-addon"
 LEGACY_TEAM_AGENT_GUIDANCE_SECTION_IDS = ("truman-team-addon",)
@@ -6717,6 +6717,15 @@ def _team_agent_guidance_content(*, agent: Mapping[str, Any]) -> str:
         "or detailed visible records through the Team read tools instead of "
         "assuming the prompt contains the full Team state. Read tools currently "
         f"include: {', '.join(READ_TEAM_MCP_TOOL_NAMES)}.\n\n"
+        "Bounded test execution:\n"
+        "- Every test command must have an explicit timeout. Wrap it with "
+        "`timeout --preserve-status -k 20s <seconds> <test command>`; choose a "
+        "budget suited to the scope (start at 300 seconds for a focused test) "
+        "and never leave a test running indefinitely.\n"
+        "- When a test reaches its timeout, capture its last useful output and "
+        "treat the timeout as evidence. Do not retry the unchanged command "
+        "indefinitely; narrow the test, investigate the stall, or report the "
+        "blocker.\n\n"
         "Identity detail: your own full role_description is included in fresh wake "
         "context and in retained-context deltas when it changes. Compact context may "
         "still omit display names or trim subordinate role descriptions. Use "

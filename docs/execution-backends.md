@@ -63,6 +63,7 @@ container_worker_images:
   default: "evander-runner:latest"
   claude: "evander-runner-claude:latest"
   dotnet-playwright: "evander-runner-dotnet-playwright:2026-06-05"
+container_worker_active_tool_timeout_seconds: 300
 container_worker_job_timeout_seconds: 1800
 container_worker_guest_openai_base_url: "http://<control-plane-private-ip>:11434/v1"
 container_worker_guest_anthropic_base_url: "http://<control-plane-private-ip>:11434/v1"

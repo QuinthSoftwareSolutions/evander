@@ -255,6 +255,25 @@ class ContainerWorkerClient:
         response = self._request("POST", f"/v1/jobs/{job_id}/stop")
         return WorkerJobRecord.model_validate(self._json_dict(response, operation="stop job"))
 
+    def interrupt_active_tool(
+        self,
+        job_id: str,
+        *,
+        max_elapsed_seconds: float | None = None,
+        reason: str = "operator_requested",
+    ) -> WorkerJobRecord:
+        payload: dict[str, object] = {"reason": reason}
+        if max_elapsed_seconds is not None:
+            payload["max_elapsed_seconds"] = float(max_elapsed_seconds)
+        response = self._request(
+            "POST",
+            f"/v1/jobs/{job_id}/interrupt-active-tool",
+            json=payload,
+        )
+        return WorkerJobRecord.model_validate(
+            self._json_dict(response, operation="interrupt active tool")
+        )
+
     def delete(self, job_id: str) -> dict[str, Any]:
         response = self._request("DELETE", f"/v1/jobs/{job_id}")
         return self._json_dict(response, operation="delete job")

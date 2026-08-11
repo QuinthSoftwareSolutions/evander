@@ -295,6 +295,35 @@ def build_worker_app(daemon: WorkerDaemon) -> Starlette:
             return JSONResponse({"error": safe_subprocess_error(exc)}, status_code=502)
         return JSONResponse(record.model_dump(mode="json"))
 
+    async def interrupt_active_tool(request: Request) -> JSONResponse:
+        record = daemon.store.get(request.path_params["job_id"])
+        if record is None:
+            return JSONResponse({"error": "job not found"}, status_code=404)
+        try:
+            payload = await request.json()
+            if not isinstance(payload, dict):
+                raise ValueError("interrupt request must be an object")
+            max_elapsed_raw = payload.get("max_elapsed_seconds")
+            max_elapsed_seconds = (
+                float(max_elapsed_raw) if max_elapsed_raw is not None else None
+            )
+            if max_elapsed_seconds is not None and max_elapsed_seconds <= 0:
+                raise ValueError("max_elapsed_seconds must be greater than zero")
+            reason = str(payload.get("reason") or "operator_requested").strip()
+            if reason not in {"operator_requested", "active_tool_timeout"}:
+                raise ValueError("unsupported active-tool interruption reason")
+            record = await run_in_threadpool(
+                daemon.interrupt_active_tool,
+                record,
+                reason=reason,
+                max_elapsed_seconds=max_elapsed_seconds,
+            )
+        except (TypeError, ValueError) as exc:
+            return JSONResponse({"error": str(exc)}, status_code=400)
+        except subprocess.CalledProcessError as exc:
+            return JSONResponse({"error": safe_subprocess_error(exc)}, status_code=502)
+        return JSONResponse(record.model_dump(mode="json"))
+
     async def delete_job(request: Request) -> JSONResponse:
         record = daemon.store.get(request.path_params["job_id"])
         if record is None:
@@ -430,6 +459,11 @@ def build_worker_app(daemon: WorkerDaemon) -> Starlette:
             Route("/v1/jobs", create_job, methods=["POST"]),
             Route("/v1/jobs/{job_id}", get_job, methods=["GET"]),
             Route("/v1/jobs/{job_id}/stop", stop_job, methods=["POST"]),
+            Route(
+                "/v1/jobs/{job_id}/interrupt-active-tool",
+                interrupt_active_tool,
+                methods=["POST"],
+            ),
             Route("/v1/jobs/{job_id}", delete_job, methods=["DELETE"]),
             Route("/v1/jobs/{job_id}/logs", get_logs, methods=["GET"]),
             Route("/v1/jobs/{job_id}/artifacts", get_artifacts, methods=["GET"]),

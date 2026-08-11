@@ -1,5 +1,16 @@
 # Changelog
 
+## 2026-08-11 - Bounded Team Test Execution
+
+- Versioned Team agent guidance to require explicit timeouts on every test command, recommend a
+  five-minute initial budget for focused tests, and prohibit indefinite unchanged retries after a
+  timeout. Future Team wakes now reseed the managed guidance section before execution.
+- Added a container-worker active-tool watchdog (five minutes by default), safe worker-side
+  interruption for recognized test process groups on PID-limit events or an operator action,
+  visible active-tool execution metadata and interruption control in Admin Web, and retained the
+  thirty-minute whole-job timeout as the final fallback. The worker never accepts a caller-supplied
+  command, PID, or process group for this control path.
+
 ## 2026-08-11 - Team Wake and UI Latency
 
 - Reduced high-signal Team wake debounce from ten seconds to one second and made newly scheduled

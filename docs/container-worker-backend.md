@@ -21,6 +21,7 @@ container_worker_images:
   default: "evander-runner:latest"
   claude: "evander-runner-claude:latest"
   dotnet-playwright: "evander-runner-dotnet-playwright:2026-06-05"
+container_worker_active_tool_timeout_seconds: 300
 container_worker_job_timeout_seconds: 1800
 container_worker_guest_openai_base_url: "http://<control-plane-private-ip>:11434/v1"
 container_worker_guest_anthropic_base_url: "http://<control-plane-private-ip>:11434/v1"
@@ -41,6 +42,14 @@ recorded, while `claude` and `dotnet-playwright` resolve to additional approved 
 dispatch does not pull or build images, so approved refs must already be present on the worker VM.
 For Anthropic-backed Claude sessions, set `model_provider_mode: "anthropic"` in the effective
 provider config and select the `claude` image alias when creating the container-backed session.
+
+`container_worker_active_tool_timeout_seconds` is a narrower safeguard than the job deadline.
+When the effect reconciler sees an active Codex tool call that has exceeded this budget, it asks
+the worker to send `SIGTERM` only to a recognized test process group. It does not stop
+the agent container, accepts no caller-supplied command or PID, and records the attempted
+interruption in execution metadata. The Admin Web execution list exposes the active tool and an
+operator control for the same safe interruption. Keep `container_worker_job_timeout_seconds` as
+the final, whole-job deadline if the agent cannot recover.
 `container_worker_codex_auth_mode` sets the inherited Codex usage source. Keep `metered_api` for
 the existing OpenAI relay, or select `chatgpt_subscription` after configuring and signing in the
 worker account. A session-level selection overrides this default. The subscription selection is

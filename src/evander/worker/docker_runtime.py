@@ -7,6 +7,7 @@ import subprocess
 import threading
 import time
 from collections.abc import Sequence
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
@@ -43,8 +44,17 @@ _CODEX_LEGACY_CONFIG_CONTAINER_PATH = "/home/agent/.codex/config.toml"
 _CODEX_SUBSCRIPTION_CONFIG_HOST_FILENAME = "codex-subscription-config.toml"
 _CODEX_SUBSCRIPTION_PROJECT_CONFIG_HOST_FILENAME = "codex-subscription-project-config.toml"
 _PIDS_EXHAUSTION_MARKER_SUFFIX = ".pids-limit-exhausted"
+_ACTIVE_TOOL_INTERRUPTION_MARKER_SUFFIX = ".active-tool-interruption.json"
 _PIDS_EVENT_POLL_SECONDS = 0.05
 _PIDS_MONITOR_TERMINAL_JOIN_SECONDS = 0.25
+_TEST_COMMAND_PATTERN = re.compile(
+    r"(?:^|\s)(?:dotnet\s+test|pytest(?:\s|$)|python(?:3)?\s+-m\s+pytest|"
+    r"npm\s+(?:run\s+)?test|npx\s+(?:vitest|jest)|cargo\s+test|go\s+test)(?:\s|$)",
+    re.IGNORECASE,
+)
+_CODEX_PROCESS_PATTERN = re.compile(
+    r"(?:^|[\s/])(codex|codex-code-mode-host)(?:[\s/]|$)", re.IGNORECASE
+)
 
 
 class DockerContainerRuntime:
@@ -125,6 +135,7 @@ class DockerContainerRuntime:
             "failure_cause": (
                 WorkerFailureCause.PIDS_LIMIT_EXHAUSTED.value if pids_limit_exhausted else None
             ),
+            "active_tool_interruption": self._active_tool_interruption(record),
             "raw_state": {
                 "status": state.get("Status"),
                 "running": state.get("Running"),
@@ -143,6 +154,9 @@ class DockerContainerRuntime:
     def _pids_exhaustion_marker(self, record: WorkerJobRecord) -> Path:
         return Path(record.logs_path) / f"{record.job_id}{_PIDS_EXHAUSTION_MARKER_SUFFIX}"
 
+    def _active_tool_interruption_marker(self, record: WorkerJobRecord) -> Path:
+        return Path(record.logs_path) / f"{record.job_id}{_ACTIVE_TOOL_INTERRUPTION_MARKER_SUFFIX}"
+
     def _start_pids_event_monitor(
         self,
         record: WorkerJobRecord,
@@ -154,12 +168,9 @@ class DockerContainerRuntime:
         maximum_events = self._pids_max_events(events_path)
         if maximum_events is None:
             return
-        if maximum_events > 0:
-            self._record_pids_limit_exhaustion(record)
-            return
         monitor = threading.Thread(
             target=self._monitor_pids_events,
-            args=(record, events_path),
+            args=(record, events_path, maximum_events),
             name=f"evander-pids-monitor-{record.job_id}",
             daemon=True,
         )
@@ -171,14 +182,28 @@ class DockerContainerRuntime:
         self,
         record: WorkerJobRecord,
         events_path: Path,
+        baseline_maximum_events: int,
     ) -> None:
+        unreadable_polls = 0
         try:
             while True:
                 maximum_events = self._pids_max_events(events_path)
                 if maximum_events is None:
-                    return
-                if maximum_events > 0:
+                    # A cgroup counter can be momentarily unreadable while the kernel updates
+                    # it. Retrying prevents a missed exhaustion event; a removed cgroup still
+                    # terminates the monitor promptly.
+                    unreadable_polls += 1
+                    if (
+                        unreadable_polls >= 20
+                        or self._cgroup_is_populated(events_path.parent / "cgroup.events") is False
+                    ):
+                        return
+                    time.sleep(_PIDS_EVENT_POLL_SECONDS)
+                    continue
+                unreadable_polls = 0
+                if maximum_events > baseline_maximum_events:
                     self._record_pids_limit_exhaustion(record)
+                    self.interrupt_active_tool(record, reason="pids_limit_event")
                     return
                 if self._cgroup_is_populated(events_path.parent / "cgroup.events") is False:
                     return
@@ -287,6 +312,117 @@ class DockerContainerRuntime:
             )
         except OSError:
             return
+
+    def interrupt_active_tool(
+        self,
+        record: WorkerJobRecord,
+        *,
+        reason: str,
+    ) -> dict[str, Any]:
+        """Terminate only a known test process group, never the Codex host group.
+
+        The command selector is deliberately worker-owned.  The control plane supplies no shell
+        command, PID, or process-group value, so this endpoint cannot become arbitrary command
+        execution inside a worker container.
+        """
+        target = record.container_id or record.container_name
+        result: dict[str, Any] = {
+            "reason": str(reason or "operator_requested").strip() or "operator_requested",
+            "interrupted": False,
+            "recorded_at": datetime.now(UTC).isoformat(),
+        }
+        try:
+            completed = subprocess.run(
+                [self.docker_binary, "exec", target, "ps", "-eo", "pid=,ppid=,pgid=,args="],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+        except (OSError, subprocess.CalledProcessError):
+            result["message"] = "could not inspect container processes"
+            self._record_active_tool_interruption(record, result)
+            return result
+        candidate = self._test_process_group(completed.stdout)
+        if candidate is None:
+            result["message"] = "no interruptible test process is active"
+            self._record_active_tool_interruption(record, result)
+            return result
+        pgid, command = candidate
+        try:
+            subprocess.run(
+                [self.docker_binary, "exec", target, "kill", "-TERM", f"-{pgid}"],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+        except (OSError, subprocess.CalledProcessError):
+            result.update(
+                {
+                    "process_group_id": pgid,
+                    "command": command,
+                    "message": "could not interrupt the active test process",
+                }
+            )
+            self._record_active_tool_interruption(record, result)
+            return result
+        result.update(
+            {
+                "interrupted": True,
+                "process_group_id": pgid,
+                "command": command,
+                "message": "sent SIGTERM to the active test process group",
+            }
+        )
+        self._record_active_tool_interruption(record, result)
+        return result
+
+    @staticmethod
+    def _test_process_group(process_table: str) -> tuple[int, str] | None:
+        candidates: list[tuple[int, int, str]] = []
+        for raw_line in str(process_table or "").splitlines():
+            parts = raw_line.strip().split(None, 3)
+            if len(parts) != 4:
+                continue
+            _pid_text, _parent_pid_text, pgid_text, command = parts
+            try:
+                pgid = int(pgid_text)
+            except ValueError:
+                continue
+            normalized_command = " ".join(command.split())
+            if pgid <= 1 or _CODEX_PROCESS_PATTERN.search(normalized_command):
+                continue
+            if not _TEST_COMMAND_PATTERN.search(normalized_command):
+                continue
+            # Prefer the group leader so a child runner cannot select a shared parent group.
+            try:
+                pid = int(_pid_text)
+            except ValueError:
+                pid = -1
+            candidates.append((0 if pid == pgid else 1, pgid, normalized_command))
+        if not candidates:
+            return None
+        _priority, pgid, command = min(candidates)
+        return pgid, command
+
+    def _record_active_tool_interruption(
+        self,
+        record: WorkerJobRecord,
+        interruption: dict[str, Any],
+    ) -> None:
+        marker = self._active_tool_interruption_marker(record)
+        try:
+            marker.parent.mkdir(parents=True, exist_ok=True)
+            marker.write_text(json.dumps(interruption, sort_keys=True) + "\n", encoding="utf-8")
+        except OSError:
+            return
+
+    def _active_tool_interruption(self, record: WorkerJobRecord) -> dict[str, Any] | None:
+        marker = self._active_tool_interruption_marker(record)
+        try:
+            payload = json.loads(marker.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return None
+        return payload if isinstance(payload, dict) else None
 
     def stop_job(self, record: WorkerJobRecord) -> None:
         subprocess.run(

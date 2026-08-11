@@ -118,7 +118,10 @@ def test_versioned_agent_guidance_explains_task_topology_and_cancellation() -> N
         agent={"id": "implementer", "display_name": "Implementer"}
     )
 
-    assert TEAM_AGENT_GUIDANCE_VERSION == 33
+    assert TEAM_AGENT_GUIDANCE_VERSION == 34
+    assert "Every test command must have an explicit timeout" in content
+    assert "timeout --preserve-status -k 20s <seconds> <test command>" in content
+    assert "Do not retry the unchanged command indefinitely" in content
     assert "parent_task_id means constituent composition" in content
     assert "dependency_task_ids means execution ordering" in content
     assert "originating_task_id records provenance" in content
