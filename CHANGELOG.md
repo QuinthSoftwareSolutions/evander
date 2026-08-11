@@ -1,5 +1,15 @@
 # Changelog
 
+## 2026-08-11 - Container Worker MSSQL Client Toolchain
+
+- Added an optional host-seeded, read-only `sqlcmd` and ODBC Driver 18 toolchain cache for
+  container workers. It is enabled with worker MSSQL by default, is verified inside the runner
+  image during deployment, and lets agents query only databases provisioned through existing
+  session-scoped MSSQL tools without putting a SQL Server engine in each container.
+- Documented snapshot-backed query-plan evidence using the existing MSSQL Seed add-on, including
+  local `.bak` placement, versioned aliases, Query Store warmup, artifact capture, and explicit
+  fixture-derived evidence labeling.
+
 ## 2026-08-11 - GitHub Managed Git Refresh Authentication
 
 - Rewrote token-backed GitHub SSH refresh sources to their canonical HTTPS URLs at Git invocation

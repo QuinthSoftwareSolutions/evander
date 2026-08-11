@@ -71,6 +71,9 @@ RUN chmod 0755 /usr/local/bin/codex \
     && cat >/etc/profile.d/evander.sh <<'PROFILE'
 export HOME="${HOME:-/home/agent}"
 export CODEX_HOME="${CODEX_HOME:-/home/agent/.config/evander/codex}"
+if [ -f /opt/evander/toolchains/mssql-client/env.sh ]; then
+  . /opt/evander/toolchains/mssql-client/env.sh
+fi
 if [ -f /home/agent/.evander/session.env ]; then
   set -a
   . /home/agent/.evander/session.env

@@ -275,6 +275,10 @@ sudo systemctl start evander-managed-git-refresh.service
 
 For fresh-host Ubuntu 24.04 deployment paths that wrap this same repo-native flow with Ansible,
 including the dedicated container-worker VM playbook, see `ansible/README.md`.
+When worker MSSQL is enabled, that playbook can also mount a host-seeded, read-only `sqlcmd` and
+ODBC Driver 18 cache into runner containers. Agents use it only with session-owned databases
+created by the existing Core MSSQL or optional MSSQL Seed add-on tools; the SQL Server engine stays
+on the worker VM.
 
 Optional Godot container-runner images can be built manually with
 `scripts/build_evander_godot_runner_images.sh`; see

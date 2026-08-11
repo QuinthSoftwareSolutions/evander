@@ -63,6 +63,9 @@ RUN chmod 0755 /usr/local/bin/claude \
     && cat >/etc/profile.d/evander.sh <<'PROFILE'
 export HOME="${HOME:-/home/agent}"
 export PATH="/opt/evander/toolchains/node-v24.14.0/bin:$PATH"
+if [ -f /opt/evander/toolchains/mssql-client/env.sh ]; then
+  . /opt/evander/toolchains/mssql-client/env.sh
+fi
 if [ -f /home/agent/.evander/session.env ]; then
   set -a
   . /home/agent/.evander/session.env

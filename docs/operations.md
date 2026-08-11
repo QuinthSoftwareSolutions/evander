@@ -846,6 +846,20 @@ Storage layout for directory config:
   ./scripts/inspect_nuget_cache.sh Acme.Product.Core 2026.3.6.1
   ```
 
+## Container Worker MSSQL Client Toolchain
+
+When worker MSSQL is enabled, the worker playbook packages host-installed `sqlcmd` and ODBC Driver
+18 into a worker cache and mounts it read-only at `/opt/evander/toolchains/mssql-client` in runner
+containers. The runner profile loads the cache automatically when present. Supply a prebuilt
+archive with `HOST_MSSQL_CLIENT_ARCHIVE`, or let the playbook build one from
+`HOST_MSSQL_TOOLS_ROOT` and `HOST_MSSQL_ODBC_ROOT`.
+
+The client does not grant database access by itself. An authorized session first provisions a
+session-owned database with `mssql_provision_database` or `mssql_seed_provision_database`, then
+uses the returned login with `SQLCMDPASSWORD`. For local snapshot evidence, place the approved
+`.bak` in the seed sidecar backup directory, register a versioned alias through the add-on API,
+and record the backup SHA-256 in the resulting artifact bundle.
+
 ## Container Worker NuGet Fallback Cache
 
 - Container workers use a separate fallback cache, typically

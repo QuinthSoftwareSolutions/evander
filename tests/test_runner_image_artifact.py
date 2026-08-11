@@ -194,6 +194,7 @@ def test_runner_dockerfile_contains_minimal_runtime_contract() -> None:
     assert "libnss3" in dockerfile
     assert "libgtk-3-0" in dockerfile
     assert "/home/agent/.evander/session.env" in dockerfile
+    assert "/opt/evander/toolchains/mssql-client/env.sh" in dockerfile
 
 
 def test_claude_runner_dockerfile_contains_minimal_runtime_contract() -> None:
@@ -208,6 +209,7 @@ def test_claude_runner_dockerfile_contains_minimal_runtime_contract() -> None:
     assert "/home/agent/repos" in dockerfile
     assert "/home/agent/.claude" in dockerfile
     assert "/home/agent/.evander/session.env" in dockerfile
+    assert "/opt/evander/toolchains/mssql-client/env.sh" in dockerfile
     assert "/opt/evander/toolchains/node-v24.14.0/bin" in dockerfile
     assert "ANTHROPIC_AUTH_TOKEN" in dockerfile
     assert "DISABLE_TELEMETRY" in dockerfile

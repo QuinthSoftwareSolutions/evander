@@ -191,6 +191,13 @@ worker playbook also renders `config/mssql-seed-sidecar.env`, installs
 `evander-mssql-seed-sidecar.service`, creates the configured seed backup directory, and verifies the
 sidecar health endpoint. The sidecar is disabled by default.
 
+Worker MSSQL also enables a host-seeded client cache by default. The worker playbook packages
+`sqlcmd`, ODBC Driver 18, and their required UnixODBC libraries on the control machine, mounts the
+result read-only at `/opt/evander/toolchains/mssql-client`, and verifies `sqlcmd -?` inside the
+runner image. This adds only a client to disposable containers; the SQL Server engine and database
+files remain on the worker VM. Database connectivity still requires a session-scoped login returned
+by the existing MSSQL provisioning tools.
+
 ## Cleanup Visibility
 
 Container session cleanup is intentionally non-destructive on the control plane. When an operator
@@ -727,6 +734,12 @@ Point the add-on sidecar catalog at
 reachable only from the control plane. The optional `restore_timeout_seconds`
 sidecar setting defaults to 3600 seconds so larger `.bak` restores can complete
 before the MCP call times out.
+
+For query-plan evidence, provision a versioned seed alias, enable Query Store in the disposable
+database, warm the query with a recorded repetition count, and save actual plan XML plus
+`STATISTICS IO`, `STATISTICS TIME`, Query Store IDs, parameters, row counts, and index/statistics
+metadata under `/artifacts`. Record the seed alias and SHA-256 with the evidence. These results
+describe the approved fixture, not a production workload or production data distribution.
 
 The host-side backend records the control-plane mapping in:
 

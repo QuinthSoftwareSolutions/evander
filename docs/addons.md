@@ -251,6 +251,11 @@ the add-on MCP tools call:
 - `mssql_seed_reset_database` with `logical_name`
 - `mssql_seed_list_databases`
 
+For a local-only seed, copy the native `.bak` directly into the configured worker backup directory,
+record its SHA-256, and register a versioned alias through the add-on Admin API. The backup does
+not need to be checked into Evander or represented in Ansible inventory. Use a new alias when the
+file changes so evidence always identifies the exact fixture it used.
+
 Provisioning first calls the Core container-worker `mssql_provision_database`
 path, so the worker records the physical database and session login. The add-on
 then asks the sidecar to run `RESTORE DATABASE ... WITH REPLACE` into that

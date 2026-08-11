@@ -200,6 +200,7 @@
     - role: worker_node_toolchain
     - role: worker_playwright_toolchain
     - role: worker_mssql
+    - role: worker_mssql_client_toolchain
     - role: worker_container_egress_policy
     - role: container_worker_service
     - role: container_worker_verification

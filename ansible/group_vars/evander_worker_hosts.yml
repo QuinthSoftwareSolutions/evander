@@ -30,6 +30,7 @@ evander_worker_revision_guard_paths:
   - ansible/roles/worker_node_toolchain
   - ansible/roles/worker_playwright_toolchain
   - ansible/roles/worker_mssql
+  - ansible/roles/worker_mssql_client_toolchain
   - ansible/roles/worker_container_egress_policy
   - ansible/roles/container_worker_service
   - ansible/roles/container_worker_verification
@@ -202,6 +203,24 @@ evander_worker_node_cache_path: "{{ evander_worker_toolchain_cache_root }}/node-
 evander_worker_playwright_runtime_cache_path: "{{ evander_worker_toolchain_cache_root }}/playwright-runtime"
 evander_worker_playwright_browsers_cache_path: "{{ evander_worker_toolchain_cache_root }}/ms-playwright"
 evander_worker_nuget_fallback_cache_path: "{{ evander_worker_toolchain_cache_root }}/nuget-cache-ro"
+evander_worker_mssql_client_cache_path: "{{ evander_worker_toolchain_cache_root }}/mssql-client"
+
+# Seed an offline sqlcmd/ODBC toolchain into a read-only runner mount whenever
+# worker MSSQL is enabled. A prebuilt archive avoids requiring the Microsoft
+# packages on the Ansible control machine.
+evander_worker_mssql_client_toolchain_enabled: "{{ evander_worker_mssql_enabled }}"
+evander_worker_mssql_client_toolchain_local_tools_path: >-
+  {{ lookup('env', 'HOST_MSSQL_TOOLS_ROOT') | default('/opt/mssql-tools18', true) }}
+evander_worker_mssql_client_toolchain_local_odbc_path: >-
+  {{ lookup('env', 'HOST_MSSQL_ODBC_ROOT') | default('/opt/microsoft/msodbcsql18', true) }}
+evander_worker_mssql_client_toolchain_local_runtime_libs:
+  - /lib/x86_64-linux-gnu/libodbc.so.2
+  - /lib/x86_64-linux-gnu/libodbcinst.so.2
+  - /lib/x86_64-linux-gnu/libltdl.so.7
+evander_worker_mssql_client_toolchain_archive_path: >-
+  {{ lookup('env', 'HOST_MSSQL_CLIENT_ARCHIVE') | default('', true) }}
+evander_worker_mssql_client_toolchain_remote_archive_path: >-
+  {{ evander_worker_root }}/images/mssql-client-toolchain.tar.gz
 
 # Seed the worker-mounted .NET SDK from the Ansible control machine.
 # HOST_DOTNET_ROOT can override the default local dotnet path; set
@@ -262,13 +281,22 @@ evander_worker_playwright_runtime_archive_path: "{{ lookup('env', 'HOST_PLAYWRIG
 evander_worker_playwright_browsers_archive_path: "{{ lookup('env', 'HOST_PLAYWRIGHT_BROWSERS_ARCHIVE') | default('', true) }}"
 evander_worker_playwright_runtime_remote_archive_path: "{{ evander_worker_root }}/images/playwright-runtime.tar.gz"
 evander_worker_playwright_browsers_remote_archive_path: "{{ evander_worker_root }}/images/playwright-browsers.tar.gz"
-evander_worker_readonly_mounts:
-  - "{{ evander_worker_dotnet_cache_path }}:/opt/evander/toolchains/dotnet"
-  - "{{ evander_worker_dotnet_tools_cache_path }}:/opt/evander/toolchains/dotnet-tools"
-  - "{{ evander_worker_node_cache_path }}:/opt/evander/toolchains/node-v24.14.0"
-  - "{{ evander_worker_playwright_runtime_cache_path }}:/opt/evander/playwright-runtime"
-  - "{{ evander_worker_playwright_browsers_cache_path }}:/opt/evander/ms-playwright"
-  - "{{ evander_worker_nuget_fallback_cache_path }}:/opt/evander/nuget-cache-ro"
+evander_worker_readonly_mounts: >-
+  {{
+    [
+      evander_worker_dotnet_cache_path ~ ':/opt/evander/toolchains/dotnet',
+      evander_worker_dotnet_tools_cache_path ~ ':/opt/evander/toolchains/dotnet-tools',
+      evander_worker_node_cache_path ~ ':/opt/evander/toolchains/node-v24.14.0',
+      evander_worker_playwright_runtime_cache_path ~ ':/opt/evander/playwright-runtime',
+      evander_worker_playwright_browsers_cache_path ~ ':/opt/evander/ms-playwright',
+      evander_worker_nuget_fallback_cache_path ~ ':/opt/evander/nuget-cache-ro'
+    ]
+    + (
+      [evander_worker_mssql_client_cache_path ~ ':/opt/evander/toolchains/mssql-client']
+      if (evander_worker_mssql_client_toolchain_enabled | bool)
+      else []
+    )
+  }}
 
 # Optional images to pre-pull during deployment. Add approved image refs here when
 # they are not already included in the repo-local runner tarball above; runtime
