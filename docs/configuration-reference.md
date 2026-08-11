@@ -851,8 +851,13 @@ payload as a JSON object, and uses either an absolute `run_at` timestamp or a
 relative `delay_seconds` value to compute the due time. Duplicate
 `idempotency_key` values reuse the original schedule record unchanged, which
 keeps retries from mutating the first submission. The trigger orchestrator
-publishes due scheduled events during its normal cycle, so delivery latency is
-bounded by its `poll_interval_seconds`.
+listens for new schedules and caps its next sleep at the earliest pending due
+time. It also publishes anything that became due during the provider sweep
+before sleeping, then immediately polls only the configured `trigger:event`
+listeners so those events enter the trigger queue in the same cycle. Unrelated
+external providers are not polled twice. The normal `poll_interval_seconds`
+cycle remains a fallback, without adding a full polling interval to known
+scheduled-event deadlines.
 
 `effect:agent:prompt` and `effect:agent:enqueue-prompt` have three named
 outgoing ports: `started` emits after the prompt is dispatched, `completed`

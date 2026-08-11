@@ -301,6 +301,24 @@ def _advance_team_cost_budget_window(team: Team, *, now: datetime) -> bool:
     return advanced
 
 
+def _team_cost_budget_window_advance_due(team: Team, *, now: datetime) -> bool:
+    """Return whether advancing this Team would open a new monthly window."""
+
+    if (
+        team.max_cost_usd is None
+        or team.cost_budget_renewal_mode != TeamCostBudgetRenewalMode.MONTHLY_UTC
+    ):
+        return False
+    active_window = _active_team_cost_budget_window(team)
+    if active_window is None:
+        return False
+    effective_now = now.astimezone(UTC) if now.tzinfo is not None else now.replace(tzinfo=UTC)
+    next_boundary = _next_utc_month_start(active_window.started_at)
+    if active_window.monthly_renewal_not_before is not None:
+        next_boundary = max(next_boundary, active_window.monthly_renewal_not_before)
+    return next_boundary <= effective_now
+
+
 def _default_memory_scope(project_id: str | None, agent_id: str | None) -> str:
     if agent_id is not None:
         return TeamMemoryScope.AGENT_PRIVATE.value
@@ -1444,8 +1462,15 @@ class TeamAdminService:
         self,
         *,
         now: datetime | None = None,
+        current_state: TeamState | None = None,
     ) -> TeamState:
         effective_now = now or utc_now()
+        state_snapshot = current_state or self._repository.read()
+        if not any(
+            _team_cost_budget_window_advance_due(team, now=effective_now)
+            for team in state_snapshot.teams.values()
+        ):
+            return state_snapshot
 
         def _mutate(state: TeamState) -> TeamState:
             for team in state.teams.values():

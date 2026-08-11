@@ -1,5 +1,24 @@
 # Changelog
 
+## 2026-08-11 - Team Wake and UI Latency
+
+- Reduced high-signal Team wake debounce from ten seconds to one second and made newly scheduled
+  internal events notify the trigger worker, whose sleep now tracks the earliest durable deadline
+  and whose trigger sweep rechecks deadlines before it sleeps. Events that become due during a
+  provider sweep are now delivered to internal-event listeners in that same cycle without polling
+  unrelated external providers twice.
+- Made Team state and conversation streams poll only the lightweight revision metadata between
+  changes and moved their SQLite reads off the Admin Web event loop.
+- Coalesced bursts of identical, revision-matched Team agent and governance wakes into generational
+  passes per state database without serializing unrelated agents. A trailing pass preserves
+  wall-clock and external-session eligibility changes that occur during an active wake. Added
+  versioned, bounded persisted wake lease summaries so full release and task context stays
+  prompt-local. The existing `leases` output is retained as a bounded-summary compatibility alias;
+  live workflow packs do not bind its former raw internals.
+- Removed redundant Team-state validation, deep-copy, and serialization passes from reads and
+  atomic updates; targeted wakes also reuse their initial state snapshot and skip no-op
+  budget/chat transactions.
+
 ## 2026-08-11 - Team Escalation Delivery and Wake Limits
 
 - Sent workflow communication through the supported host-owned `workflow` identity when an effect has no agent session, carry a Team manager's real session on new operator escalations, and retry a failed manager-identity send immediately with that host-owned sender. Host-owned Discord sends now authorize only the selected, capability-checked communication target instead of depending on the separate operator-command polling allowlist.

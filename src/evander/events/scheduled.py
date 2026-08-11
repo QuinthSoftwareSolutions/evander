@@ -11,6 +11,7 @@ from uuid import uuid4
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from evander.events.internal import InternalEventSource, validate_internal_event_type
+from evander.orchestration.host_polling import HostWakeNotifier
 from evander.storage import JsonStore
 
 
@@ -77,6 +78,9 @@ class ScheduledInternalEventStore:
         self.path = Path(path)
         self._store = JsonStore(path=self.path, model=ScheduledInternalEvent)
         self._lock = RLock()
+        self._wake_notifier = HostWakeNotifier(
+            scheduled_internal_event_wake_socket_path(self.path)
+        )
 
     def schedule_event(
         self,
@@ -133,7 +137,9 @@ class ScheduledInternalEventStore:
                 return event
 
             event = self._store.update_all(update)
-            return event, created
+        if created:
+            self._wake_notifier.notify()
+        return event, created
 
     def list_due(self, now_utc: datetime) -> list[ScheduledInternalEvent]:
         normalized_now = _normalize_datetime(now_utc)
@@ -146,6 +152,14 @@ class ScheduledInternalEventStore:
         ]
         due.sort(key=lambda event: (event.run_at, event.created_at, event.schedule_id))
         return due
+
+    def next_pending_run_at(self) -> datetime | None:
+        with self._lock:
+            events = list(self._store.read_all().values())
+        return min(
+            (event.run_at for event in events if event.status == "pending"),
+            default=None,
+        )
 
     def mark_published(
         self,
@@ -180,6 +194,10 @@ class ScheduledInternalEventStore:
 
 def scheduled_internal_event_store_path(runtime_dir: Path | str) -> Path:
     return Path(runtime_dir) / "scheduled-internal-events.json"
+
+
+def scheduled_internal_event_wake_socket_path(store_path: Path | str) -> Path:
+    return Path(store_path).with_suffix(".wake.sock")
 
 
 def _schedule_id(idempotency_key: str | None) -> str:

@@ -64,6 +64,7 @@ from evander_team_addon.models import (
     TeamBlockerState,
     TeamCase,
     TeamCaseStatus,
+    TeamChatAttachmentPolicy,
     TeamIdempotencyRecord,
     TeamInboxItemState,
     TeamInboxPriority,
@@ -578,9 +579,122 @@ def test_repository_initializes_private_addon_state(tmp_path: Path) -> None:
     state = repo.read()
 
     assert state.revision == 0
+    assert repo.read_revision() == 0
     assert state.teams == {}
     assert (tmp_path / "addons" / "team-addon" / "state.db").is_file()
     assert not (tmp_path / "addons" / "team-addon" / "state.json").exists()
+
+
+def test_repository_reads_revision_without_rebuilding_state(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    expected_revision = repo.read().revision
+
+    def fail_full_state_read(_connection) -> dict[str, object]:
+        raise AssertionError("revision reads must not rebuild the full Team state")
+
+    monkeypatch.setattr(repo.store, "_read_payload", fail_full_state_read)
+
+    assert repo.read_revision() == expected_revision
+
+
+def test_repository_read_uses_single_typed_validation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = TeamStateRepository(tmp_path)
+    original_model_validate = TeamState.model_validate
+    validation_count = 0
+
+    def count_model_validate(cls, value, *args, **kwargs):
+        nonlocal validation_count
+        validation_count += 1
+        return original_model_validate(value, *args, **kwargs)
+
+    monkeypatch.setattr(TeamState, "model_validate", classmethod(count_model_validate))
+
+    state = repo.read()
+
+    assert state.revision == 0
+    assert validation_count == 1
+
+
+def test_repository_update_uses_two_typed_state_validations(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = TeamStateRepository(tmp_path)
+    original_model_validate = TeamState.model_validate
+    validation_count = 0
+
+    def count_model_validate(cls, value, *args, **kwargs):
+        nonlocal validation_count
+        validation_count += 1
+        return original_model_validate(value, *args, **kwargs)
+
+    def fail_legacy_payload_update(*_args, **_kwargs):
+        raise AssertionError("typed state updates must not use the legacy payload path")
+
+    monkeypatch.setattr(TeamState, "model_validate", classmethod(count_model_validate))
+    monkeypatch.setattr(repo.store, "update_object", fail_legacy_payload_update)
+    monkeypatch.setattr(repo.store, "_read_payload", fail_legacy_payload_update)
+
+    state = repo.update(lambda current: current)
+
+    assert state.revision == 0
+    assert validation_count == 2
+
+
+def test_repository_typed_update_noop_preserves_revision_and_timestamp(tmp_path: Path) -> None:
+    repo = TeamStateRepository(tmp_path)
+    before = repo.read()
+
+    updated = repo.update(lambda state: state)
+
+    assert updated.revision == before.revision
+    assert updated.updated_at == before.updated_at
+    assert repo.read_revision() == before.revision
+
+
+def test_repository_typed_update_persists_replacement_and_increments_revision(
+    tmp_path: Path,
+) -> None:
+    repo = TeamStateRepository(tmp_path)
+    before = repo.read()
+    policy = TeamChatAttachmentPolicy.root_defaults()
+
+    updated = repo.update(
+        lambda state: state.model_copy(
+            update={"chat_attachment_policies": {policy.id: policy}},
+        )
+    )
+
+    assert updated.revision == before.revision + 1
+    assert updated.chat_attachment_policies == {policy.id: policy}
+    persisted = repo.read()
+    assert persisted.revision == updated.revision
+    assert persisted.chat_attachment_policies == updated.chat_attachment_policies
+
+
+def test_repository_typed_update_invalid_mutation_rolls_back(tmp_path: Path) -> None:
+    repo = TeamStateRepository(tmp_path)
+    before = repo.read()
+    policy = TeamChatAttachmentPolicy.root_defaults()
+
+    def mutate_invalid(state: TeamState) -> TeamState:
+        state.chat_attachment_policies[policy.id] = policy
+        state.revision = -1
+        return state
+
+    with pytest.raises(ValidationError):
+        repo.update(mutate_invalid)
+
+    persisted = repo.read()
+    assert persisted.revision == before.revision
+    assert persisted.updated_at == before.updated_at
+    assert persisted.chat_attachment_policies == {}
 
 
 def test_repository_upgrades_persisted_state_schema_metadata(
@@ -10001,7 +10115,40 @@ def test_switching_an_active_budget_to_monthly_waits_for_a_future_boundary(
     assert active_window.started_at == configured_at
     assert active_window.ended_at is None
     assert active_window.monthly_renewal_not_before == datetime(2026, 9, 1, tzinfo=UTC)
-    assert costs_module._current_team_budget_window(team, now=switched_at)["started_at"] == configured_at
+    assert (
+        costs_module._current_team_budget_window(team, now=switched_at)["started_at"]
+        == configured_at
+    )
+
+
+def test_advancing_current_cost_budget_snapshot_skips_noop_write(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    configured_at = datetime(2026, 7, 15, tzinfo=UTC)
+    monkeypatch.setattr(admin_service_module, "utc_now", lambda: configured_at)
+    repo = _seed_hierarchy(tmp_path)
+    admin = _team_admin_service(repo)
+    admin.update_team(
+        team_id="team",
+        max_cost_usd="10.00",
+        set_max_cost_usd=True,
+        cost_budget_renewal_mode="monthly_utc",
+        set_cost_budget_renewal_mode=True,
+    )
+    snapshot = repo.read()
+
+    def fail_update(*_args, **_kwargs):
+        raise AssertionError("a current budget window must not open a write transaction")
+
+    monkeypatch.setattr(repo, "update", fail_update)
+
+    state = admin.advance_team_cost_budget_windows(
+        now=datetime(2026, 7, 20, tzinfo=UTC),
+        current_state=snapshot,
+    )
+
+    assert state is snapshot
 
 
 def test_team_budget_mutation_rolls_an_overdue_monthly_window_first(

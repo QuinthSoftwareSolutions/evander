@@ -220,6 +220,12 @@ stable idempotency is part of a correct trigger provider.
 
 The default polling interval is five seconds with up to five seconds of configured jitter. A
 successful publish lets the loop return promptly rather than sleeping through available work.
+New durable scheduled events also notify the trigger worker, and each cycle caps its next sleep at
+the earliest pending due time. This keeps deadline delivery precise without busy polling; the
+provider sweep rechecks deadlines before sleeping and immediately polls only internal-event
+listeners when new events became due. Those events enter the trigger queue in the same cycle
+without polling unrelated external providers twice. The normal polling cadence remains the
+recovery fallback.
 
 ### The durable orchestration store
 

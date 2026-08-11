@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from threading import Barrier, Thread
@@ -8,7 +9,11 @@ from threading import Barrier, Thread
 from pytest import MonkeyPatch
 
 from evander.events.internal import InternalEventBus
-from evander.events.scheduled import ScheduledInternalEventStore
+from evander.events.scheduled import (
+    ScheduledInternalEventStore,
+    scheduled_internal_event_wake_socket_path,
+)
+from evander.orchestration.host_polling import HostWakeSleeper
 from evander.storage import JsonStore
 
 
@@ -166,3 +171,42 @@ def test_due_scheduled_events_are_sorted_by_run_at_then_created_at(tmp_path: Pat
     due = store.list_due(now)
 
     assert [event.payload["value"] for event in due] == ["third", "first", "second"]
+
+
+def test_next_pending_run_at_returns_earliest_unpublished_event(tmp_path: Path) -> None:
+    store = ScheduledInternalEventStore(tmp_path / "scheduled-internal-events.json")
+    now = datetime(2030, 1, 1, 12, 0, tzinfo=UTC)
+    first, _ = store.schedule_event(
+        event_type="custom.operator_event",
+        run_at=now + timedelta(seconds=1),
+        idempotency_key="first",
+    )
+    store.schedule_event(
+        event_type="custom.operator_event",
+        run_at=now + timedelta(seconds=2),
+        idempotency_key="second",
+    )
+
+    assert store.next_pending_run_at() == now + timedelta(seconds=1)
+
+    store.mark_published(first.schedule_id, "event-first", now)
+
+    assert store.next_pending_run_at() == now + timedelta(seconds=2)
+
+
+def test_new_scheduled_event_notifies_store_wake_socket(tmp_path: Path) -> None:
+    store_path = tmp_path / "scheduled-internal-events.json"
+    sleeper = HostWakeSleeper(scheduled_internal_event_wake_socket_path(store_path))
+    sleeper.start()
+    try:
+        ScheduledInternalEventStore(store_path).schedule_event(
+            event_type="custom.operator_event",
+            run_at=datetime.now(UTC) + timedelta(seconds=1),
+            idempotency_key="wake-trigger-worker",
+        )
+        started = time.monotonic()
+        sleeper.sleep(10.0)
+    finally:
+        sleeper.close()
+
+    assert time.monotonic() - started < 0.5

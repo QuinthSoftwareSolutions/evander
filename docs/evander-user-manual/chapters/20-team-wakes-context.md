@@ -92,7 +92,7 @@ This means:
 
 Do not interpret <code>response_requested=false</code> as “do not deliver” or “cannot wake.” It says the recipient should not send a no-op acknowledgement. Priority controls urgency; reply intent controls expected response.
 
-Normal/high inbox creation emits a debounced <code>team.agent.wake_requested</code> event, with a default ten-second debounce. The event path targets that agent and uses <code>respect_wake_interval=false</code>. It still respects active leases, busy sessions, stand-down, cost, and other safety checks.
+Normal/high inbox creation emits a debounced <code>team.agent.wake_requested</code> event, with a default one-second debounce. The event path targets that agent and uses <code>respect_wake_interval=false</code>. It still respects active leases, busy sessions, stand-down, cost, and other safety checks.
 
 Low-priority items accumulate evaluation cycles and are batched after the configured threshold unless another reason wakes the agent earlier. The resulting context includes the pending inbox, so a low/no-reply progress report can be read during useful work without causing a conversational ping-pong.
 
@@ -350,6 +350,12 @@ it so global correction, reviewer-assignment, and worktree scans do not delay
 the requested agent. Operators should inspect effect outputs, including leased
 agents and repository-preparation failures, rather than assuming a workflow run
 with no prompt is a model failure.
+
+The complete lease context is used to build the prompt but is not retained in
+workflow output. Wake nodes return bounded, versioned <code>lease_summaries</code>
+(currently <code>lease_summary_version: 1</code>) containing counts, identifiers,
+dispatch status, and bounded errors. The <code>leases</code> field is a compatibility
+alias for the same summaries, not the former full task and release history.
 
 The Operations view and Team runtime-attention reads expose wake due state, leases, stand-down, context policy, no-progress counters, and downstream failures. Core session logs remain necessary for startup and provider failures.
 
