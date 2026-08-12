@@ -21431,6 +21431,44 @@ def test_apply_agent_action_git_release_request_artifact_only(tmp_path: Path) ->
     assert state.git_promotions == {}
 
 
+def test_git_project_rejects_artifact_only_release_before_mutation(tmp_path: Path) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _set_project_git(repo)
+    _seed_accepted_feature_deliverable(
+        repo,
+        deliverable_id="deliverable",
+        task_id="task",
+        feature=None,
+        artifact_refs=["artifact-space:/teams/team/result"],
+    )
+    before = repo.read()
+
+    state, result = _team_agent_action_service(repo).apply_agent_action(
+        action={
+            "agent_id": "lead",
+            "git_release_requests": [
+                {"id": "rel-1", "project_id": "project", "deliverable_ids": ["deliverable"]}
+            ],
+        },
+    )
+
+    assert result["success"] is False
+    assert result["error_code"] == "candidate_git_inputs_required"
+    assert "source_deliverable_ids are supporting evidence" in result["errors"][0]
+    assert "explicit integration task" in result["errors"][0]
+    assert state.release_packages == before.release_packages == {}
+    assert state.git_promotions == before.git_promotions == {}
+
+    with pytest.raises(ValueError) as excinfo:
+        _team_admin_service(repo).create_release_package_with_result(
+            project_id="project",
+            deliverable_ids=["deliverable"],
+            release_id="rel-admin",
+        )
+    assert getattr(excinfo.value, "code", None) == "candidate_git_inputs_required"
+    assert repo.read().release_packages == {}
+
+
 def test_apply_agent_action_git_release_request_mixed_deliverables_requires_git(
     tmp_path: Path,
 ) -> None:

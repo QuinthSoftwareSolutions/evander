@@ -16549,6 +16549,14 @@ function releaseProgressStages(release) {
   const reviewRequirements = manifest?.review_requirements || [];
   const humanSummary = release.human_review || null;
   const humanRequired = Boolean(manifest?.human_review_requirement || humanSummary);
+  const candidateInputsMissing = Boolean(
+    modern
+    && !candidateSha
+    && !(release.git_promotion_record_ids || []).length
+    && !(release.feature_branches || []).length
+    && !text(release.release_branch)
+    && !text(release.canonical_branch)
+  );
 
   const stages = [];
   stages.push(
@@ -16556,6 +16564,8 @@ function releaseProgressStages(release) {
       ? { label: "Candidate prepared", state: "legacy", detail: "Not recorded (legacy release)" }
       : candidateSha
         ? { label: "Candidate prepared", state: "complete", detail: "Pinned candidate ready" }
+        : candidateInputsMissing
+          ? { label: "Candidate prepared", state: "blocked", detail: "No Git-backed release input" }
         : { label: "Candidate prepared", state: release.state === "blocked" ? "blocked" : "pending", detail: "Waiting for a pinned candidate" },
   );
 
@@ -17261,7 +17271,7 @@ function renderReleaseDetail(release) {
         <div><div class="delivery-detail-label">Project</div><div class="delivery-detail-value">${escapeHtml(project.name || "Unknown project")}</div></div>
         <div><div class="delivery-detail-label">Included work</div><div class="delivery-detail-value">${escapeHtml(includedWork.join(", ") || "No named work")}</div></div>
         <div><div class="delivery-detail-label">Release lineage</div><div class="delivery-detail-value">${release.supersedes_release_package_id || manifest.predecessor_release_package_id ? "Successor release attempt" : "Initial release attempt"}</div></div>
-        <div><div class="delivery-detail-label">Candidate</div><div class="delivery-detail-value">${release.candidate_commit_sha || manifest.candidate_commit_sha ? "Pinned candidate prepared" : Number(release.policy_version || 1) < 2 ? "Not recorded (legacy release)" : "Not prepared"}</div></div>
+        <div><div class="delivery-detail-label">Candidate</div><div class="delivery-detail-value">${release.candidate_commit_sha || manifest.candidate_commit_sha ? "Pinned candidate prepared" : Number(release.policy_version || 1) < 2 ? "Not recorded (legacy release)" : !(release.git_promotion_record_ids || []).length && !(release.feature_branches || []).length && !text(release.release_branch) && !text(release.canonical_branch) ? "Blocked: no Git-backed release input" : "Not prepared"}</div></div>
         <div><div class="delivery-detail-label">Publication</div><div class="delivery-detail-value">${release.published_at ? renderRecordDate(release.published_at, "Published") : escapeHtml(release.next_action_hint || release.next_action || "Not published")}</div></div>
         <div><div class="delivery-detail-label">Policy</div><div class="delivery-detail-value">Version ${Number(release.policy_version || 1)}</div></div>
       </div>

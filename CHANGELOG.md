@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-08-11 - Release Candidate Input Validation
+
+- Reject release packages for Git-backed projects when their direct inputs contain only
+  supporting artifacts or source-deliverable lineage and therefore cannot produce a pinned
+  candidate. The error now directs managers to create an explicit Git integration task for
+  mixed-base contributions, and the release UI identifies historical dead-end packages as
+  blocked instead of indefinitely waiting for a candidate.
+
 ## 2026-08-11 - Container Worker MSSQL Client Toolchain
 
 - Added an optional host-seeded, read-only `sqlcmd` and ODBC Driver 18 toolchain cache for

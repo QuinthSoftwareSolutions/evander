@@ -461,6 +461,16 @@ def test_deliverable_drill_down_renders_evidence_backed_release_pipeline() -> No
     assert "releaseDetailCache.get(text(compactRelease.id))" in source
 
 
+def test_release_progress_flags_historical_packages_without_candidate_inputs() -> None:
+    source = (ROOT / "src" / "evander_team_addon" / "ui_static" / "team-ui.js").read_text(
+        encoding="utf-8"
+    )
+
+    assert "const candidateInputsMissing = Boolean(" in source
+    assert 'detail: "No Git-backed release input"' in source
+    assert '"Blocked: no Git-backed release input"' in source
+
+
 def test_delivery_view_surfaces_pending_and_audited_initial_release_decisions() -> None:
     source = (ROOT / "src" / "evander_team_addon" / "ui_static" / "team-ui.js").read_text(
         encoding="utf-8"

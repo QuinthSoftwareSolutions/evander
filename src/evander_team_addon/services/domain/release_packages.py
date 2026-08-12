@@ -853,6 +853,17 @@ def _build_release_package(
     if not valid:
         return None
     needs_git_release = bool(feature_branches or feature_sources_by_task)
+    if project.git is not None and not needs_git_release:
+        result["error_code"] = "candidate_git_inputs_required"
+        result["errors"].append(
+            "candidate_git_inputs_required: Git-backed project "
+            f"{project.id} requires at least one accepted Git-backed deliverable "
+            "as a direct release input; artifact refs and source_deliverable_ids "
+            "are supporting evidence and cannot produce a pinned candidate. "
+            "Create an explicit integration task when accepted contributions use "
+            "different Git bases, then release its accepted Git-backed deliverable"
+        )
+        return None
     release_git_base_branch: str | None = None
     release_base_commit_sha: str | None = None
     if needs_git_release:
