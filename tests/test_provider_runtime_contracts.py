@@ -118,6 +118,36 @@ def test_provider_runtime_ports_preserve_original_admin_service_context() -> Non
     assert isinstance(ports.vm_creator, AdminRuntimeProviderAdapter)
 
 
+def test_admin_runtime_adapter_exposes_branch_aware_managed_git_refresh() -> None:
+    calls: list[tuple[str, dict[str, object]]] = []
+
+    class _ManagedGit:
+        def refresh_repository_if_branch_changed(
+            self,
+            managed_repo_id: str,
+            **kwargs: object,
+        ) -> dict[str, object]:
+            calls.append((managed_repo_id, kwargs))
+            return {"managed_repo_id": managed_repo_id, "refresh_performed": False}
+
+    adapter = AdminRuntimeProviderAdapter(SimpleNamespace(managed_git_admin=_ManagedGit()))
+
+    assert adapter.refresh_managed_git_repository_if_branch_changed(
+        "mr_0123456789abcdef0123",
+        branch="main",
+        directory_path="root/team",
+    ) == {
+        "managed_repo_id": "mr_0123456789abcdef0123",
+        "refresh_performed": False,
+    }
+    assert calls == [
+        (
+            "mr_0123456789abcdef0123",
+            {"branch": "main", "directory_path": "root/team"},
+        )
+    ]
+
+
 @dataclass
 class _FakeQueryServices:
     def list_vms(self, **kwargs: Any) -> list[VmSummary]:

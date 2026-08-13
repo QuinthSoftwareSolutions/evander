@@ -645,6 +645,18 @@ def test_prepare_reference_repositories_batches_exact_read_only_checkouts(
     )
     bind_calls: list[dict[str, object]] = []
     ensure_calls: list[dict[str, object]] = []
+    refresh_calls: list[tuple[str, dict[str, object]]] = []
+
+    def refresh_branch(managed_repo_id: str, **kwargs: object) -> dict[str, object]:
+        refresh_calls.append((managed_repo_id, kwargs))
+        return {
+            "managed_repo_id": managed_repo_id,
+            "branch": "main",
+            "probe_performed": True,
+            "probe_reused": False,
+            "refresh_performed": False,
+        }
+
     admin_service = SimpleNamespace(
         runtime=SimpleNamespace(
             session_repository=session_repository,
@@ -660,6 +672,7 @@ def test_prepare_reference_repositories_batches_exact_read_only_checkouts(
                 "refresh_reused": False,
             }
         ),
+        refresh_managed_git_repository_if_branch_changed=refresh_branch,
         resolve_managed_git_branch_commit=lambda managed_repo_id, **kwargs: (
             "a" * 40 if managed_repo_id == "mr-one" else "b" * 40
         ),
@@ -710,8 +723,13 @@ def test_prepare_reference_repositories_batches_exact_read_only_checkouts(
     assert {call["source_ref"] for call in backend.prepared_reference_repos} == {
         "refs/heads/main"
     }
-    assert all(call["refresh"] is True for call in ensure_calls)
-    assert len({call["reuse_if_refreshed_after"] for call in ensure_calls}) == 1
+    assert all(call["refresh"] is False for call in ensure_calls)
+    assert len(refresh_calls) == 2
+    assert all(call[1]["branch"] is None for call in refresh_calls)
+    assert len({call[1]["reuse_if_verified_after"] for call in refresh_calls}) == 1
+    assert all(item["probe_performed"] is True for item in result["repositories"])
+    assert all(item["probe_reused"] is False for item in result["repositories"])
+    assert all(item["refresh_performed"] is False for item in result["repositories"])
     assert len(backend.prepared_sessions) == 1
     assert {call["kind"] for call in bind_calls} == {"sessions"}
 

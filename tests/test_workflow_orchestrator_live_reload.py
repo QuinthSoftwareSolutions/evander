@@ -625,6 +625,40 @@ def test_effect_worker_reloads_to_sqlite_queue_backend_without_restart(
     assert effect_worker.worker_config.orchestration_store_path == reloaded_store_path
 
 
+def test_effect_worker_reloads_wake_sleeper_and_notifier_with_lock_path(
+    tmp_path: Path,
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    initial_lock_path = runtime_dir / "initial-effect-orchestrator.lock"
+    reloaded_lock_path = runtime_dir / "reloaded-effect-orchestrator.lock"
+    initial_config = _reload_worker_config(
+        runtime_dir,
+        effect_lock_path=initial_lock_path,
+    )
+    updated_config = _reload_worker_config(
+        runtime_dir,
+        effect_lock_path=reloaded_lock_path,
+    )
+    effect_worker = EffectOrchestratorWorker(
+        config=GatewayConfig(runtime_dir=runtime_dir),
+        worker_config=initial_config,
+        config_reloader=_SequenceConfigReloader(initial_config, updated_config),
+        runtime=None,  # type: ignore[arg-type]
+    )
+
+    effect_worker.run_once()
+    assert effect_worker._wake_sleeper.path == initial_lock_path.with_suffix(".wake.sock")
+    assert effect_worker._wake_notifier.path == initial_lock_path.with_suffix(".wake.sock")
+
+    effect_worker.run_once()
+
+    expected_wake_path = reloaded_lock_path.with_suffix(".wake.sock")
+    assert effect_worker.lock_path == reloaded_lock_path
+    assert effect_worker._wake_sleeper.path == expected_wake_path
+    assert effect_worker._wake_notifier.path == expected_wake_path
+    assert effect_worker._kernel.config.lock_path == reloaded_lock_path
+
+
 def test_effect_worker_drains_completed_future_before_sqlite_store_rebind(
     tmp_path: Path,
 ) -> None:

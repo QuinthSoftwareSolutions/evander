@@ -1,5 +1,25 @@
 # Changelog
 
+## 2026-08-13 - Branch-Probed Reference Repository Refresh
+
+- Replaced unconditional full managed-Git fetches during persistent-assistant reference repository
+  preparation with live branch probes. Unchanged requested refs reuse the verified canonical mirror;
+  changed, missing, default-branch-moved, and first-use repositories retain the existing full
+  transactional refresh and validation path.
+- Recorded branch-scoped probe evidence separately from repository-wide refresh timestamps and
+  exposed probe, coalescing, and full-refresh decisions in preparation outputs and logs.
+- Preserved repositories whose upstream `HEAD` is detached or otherwise lacks a symbolic-ref
+  advertisement by routing the valid SHA-only response through the existing full-refresh default
+  fallback.
+
+## 2026-08-13 - Immediate Effect Completion Wakeups
+
+- Woke the effect orchestrator as soon as an in-process effect or query future completes, including
+  futures resubmitted during recovery. Durable execution state and periodic polling remain the
+  fallback when the best-effort Unix wake signal cannot be delivered. Wake notifications use
+  nonblocking datagram sends so a full socket queue cannot stall provider executor threads or the
+  orchestrator cycle.
+
 ## 2026-08-13 - Required Codex MCP Startup
 
 - Marked the Evander MCP server as required in container, subscription, and VM Codex

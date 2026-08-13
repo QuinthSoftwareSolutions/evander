@@ -14,6 +14,7 @@ import pytest
 from evander.admin.services.managed_git_service import (
     ManagedGitAdminService,
     ManagedGitConflictError,
+    ManagedGitNotFoundError,
     REGISTRY_SCHEMA,
 )
 from evander.config import GatewayConfig
@@ -211,6 +212,399 @@ def test_refresh_publishes_freshness_before_releasing_target_lock(
     assert refresh_calls == 1
     assert results["first"]["refresh_reused"] is False
     assert results["second"]["refresh_reused"] is True
+
+
+def test_branch_refresh_probes_unchanged_explicit_and_default_branches_without_fetch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source, _, first = _source_repository(tmp_path)
+    service = _service(tmp_path)
+    record = service.register_repository("root", str(source))
+    requested_at = datetime.now(UTC)
+    original_run_git = service._run_git
+    commands: list[list[str]] = []
+
+    def recorded_run_git(command: list[str], **kwargs: object):
+        commands.append(command)
+        return original_run_git(command, **kwargs)
+
+    monkeypatch.setattr(service, "_run_git", recorded_run_git)
+
+    explicit = service.refresh_repository_if_branch_changed(
+        record["managed_repo_id"],
+        branch="main",
+        directory_path="root/project",
+        reuse_if_verified_after=requested_at,
+    )
+    coalesced = service.refresh_repository_if_branch_changed(
+        record["managed_repo_id"],
+        branch="main",
+        directory_path="root/project",
+        reuse_if_verified_after=requested_at,
+    )
+    default = service.refresh_repository_if_branch_changed(
+        record["managed_repo_id"],
+        directory_path="root/project",
+        reuse_if_verified_after=datetime.now(UTC),
+    )
+
+    assert explicit["observed_sha"] == first
+    assert explicit["probe_performed"] is True
+    assert explicit["probe_reused"] is False
+    assert explicit["refresh_performed"] is False
+    assert coalesced["probe_performed"] is False
+    assert coalesced["probe_reused"] is True
+    assert coalesced["refresh_performed"] is False
+    assert default["branch"] == "main"
+    assert default["default_branch_identity"] == "main"
+    assert default["probe_performed"] is True
+    assert default["refresh_performed"] is False
+    assert sum("ls-remote" in command for command in commands) == 2
+    assert any("--refs" in command for command in commands)
+    assert any("--symref" in command for command in commands)
+    assert not any("fetch" in command for command in commands)
+    stored = _internal_record(service, record["managed_repo_id"])
+    assert stored["refreshed_at"] == record["refreshed_at"]
+    assert set(stored["branch_probe_verifications"]) == {"branch:main", "default"}
+
+
+def test_branch_refresh_runs_transactional_refresh_when_explicit_branch_moves(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source, _, first = _source_repository(tmp_path)
+    service = _service(tmp_path)
+    record = service.register_repository("root", str(source))
+    second = _commit(source, "README.md", "second\n", "second")
+    original_run_git = service._run_git
+    commands: list[list[str]] = []
+
+    def recorded_run_git(command: list[str], **kwargs: object):
+        commands.append(command)
+        return original_run_git(command, **kwargs)
+
+    monkeypatch.setattr(service, "_run_git", recorded_run_git)
+
+    result = service.refresh_repository_if_branch_changed(
+        record["managed_repo_id"],
+        branch="main",
+        directory_path="root",
+    )
+
+    assert result["observed_sha"] == second
+    assert result["probe_performed"] is True
+    assert result["probe_reused"] is False
+    assert result["refresh_performed"] is True
+    assert any("ls-remote" in command and "--refs" in command for command in commands)
+    assert sum("fetch" in command for command in commands) == 1
+    assert (
+        service.resolve_branch_commit(
+            record["managed_repo_id"],
+            directory_path="root",
+            branch="main",
+        )
+        == second
+    )
+    assert first != second
+
+
+def test_branch_refresh_detects_changed_upstream_default_branch(tmp_path: Path) -> None:
+    source, _, _ = _source_repository(tmp_path)
+    service = _service(tmp_path)
+    record = service.register_repository("root", str(source))
+    _run("git", "switch", "-c", "trunk", cwd=source)
+    trunk = _commit(source, "README.md", "trunk\n", "move default")
+
+    result = service.refresh_repository_if_branch_changed(
+        record["managed_repo_id"],
+        directory_path="root",
+    )
+
+    assert result["branch"] == "trunk"
+    assert result["observed_sha"] == trunk
+    assert result["default_branch_identity"] == "trunk"
+    assert result["probe_performed"] is True
+    assert result["refresh_performed"] is True
+    assert service.get_repository(record["managed_repo_id"])["default_branch"] == "trunk"
+    assert (
+        _run(
+            "git",
+            f"--git-dir={_bare_path(service, record['managed_repo_id'])}",
+            "symbolic-ref",
+            "HEAD",
+        )
+        == "refs/heads/trunk"
+    )
+
+
+def test_branch_refresh_falls_back_to_full_refresh_when_upstream_head_is_detached(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source, _, first = _source_repository(tmp_path)
+    service = _service(tmp_path)
+    record = service.register_repository("root", str(source))
+    _run("git", "switch", "--detach", cwd=source)
+    original_run_git = service._run_git
+    commands: list[list[str]] = []
+
+    def recorded_run_git(command: list[str], **kwargs: object):
+        commands.append(command)
+        return original_run_git(command, **kwargs)
+
+    monkeypatch.setattr(service, "_run_git", recorded_run_git)
+
+    result = service.refresh_repository_if_branch_changed(
+        record["managed_repo_id"],
+        directory_path="root",
+    )
+
+    assert result["branch"] == "main"
+    assert result["observed_sha"] == first
+    assert result["default_branch_identity"] == "main"
+    assert result["probe_performed"] is True
+    assert result["refresh_performed"] is True
+    assert any("ls-remote" in command and "--symref" in command for command in commands)
+    assert sum("fetch" in command for command in commands) == 1
+
+
+def test_branch_refresh_probes_operator_default_override_as_exact_branch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source, _, first = _source_repository(tmp_path)
+    _run("git", "branch", "trunk", cwd=source)
+    service = _service(tmp_path)
+    record = service.register_repository("root", str(source), default_branch="trunk")
+    original_run_git = service._run_git
+    commands: list[list[str]] = []
+
+    def recorded_run_git(command: list[str], **kwargs: object):
+        commands.append(command)
+        return original_run_git(command, **kwargs)
+
+    monkeypatch.setattr(service, "_run_git", recorded_run_git)
+
+    result = service.refresh_repository_if_branch_changed(
+        record["managed_repo_id"],
+        directory_path="root",
+    )
+
+    assert result["branch"] == "trunk"
+    assert result["observed_sha"] == first
+    assert result["default_branch_identity"] == "trunk"
+    assert result["probe_performed"] is True
+    assert result["refresh_performed"] is False
+    assert any("ls-remote" in command and "--refs" in command for command in commands)
+    assert not any("--symref" in command for command in commands)
+    assert not any("fetch" in command for command in commands)
+
+
+def test_branch_refresh_preserves_first_use_full_refresh(tmp_path: Path) -> None:
+    source, _, first = _source_repository(tmp_path)
+    service = _service(tmp_path)
+    record = service.register_repository("root", str(source), refresh=False)
+
+    result = service.refresh_repository_if_branch_changed(
+        record["managed_repo_id"],
+        directory_path="root",
+    )
+
+    assert result["branch"] == "main"
+    assert result["observed_sha"] == first
+    assert result["probe_performed"] is False
+    assert result["probe_reused"] is False
+    assert result["refresh_performed"] is True
+    assert service.get_repository(record["managed_repo_id"])["refreshed_at"] is not None
+
+
+def test_branch_refresh_removes_missing_upstream_branch_before_failing(tmp_path: Path) -> None:
+    source, _, _ = _source_repository(tmp_path)
+    _run("git", "branch", "temporary", cwd=source)
+    service = _service(tmp_path)
+    record = service.register_repository("root", str(source))
+    _run("git", "branch", "-D", "temporary", cwd=source)
+
+    with pytest.raises(ManagedGitNotFoundError, match="does not exist"):
+        service.refresh_repository_if_branch_changed(
+            record["managed_repo_id"],
+            branch="temporary",
+            directory_path="root",
+        )
+
+    assert (
+        service.resolve_branch_commit(
+            record["managed_repo_id"],
+            directory_path="root",
+            branch="temporary",
+        )
+        is None
+    )
+
+
+def test_branch_refresh_rejects_malformed_probe_without_serving_cached_ref(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source, _, first = _source_repository(tmp_path)
+    service = _service(tmp_path)
+    record = service.register_repository("root", str(source))
+    original_run_git = service._run_git
+    commands: list[list[str]] = []
+
+    def malformed_probe(command: list[str], **kwargs: object):
+        commands.append(command)
+        if "ls-remote" in command and "--refs" in command:
+            return subprocess.CompletedProcess(command, 0, "not-an-object refs/heads/main\n", "")
+        return original_run_git(command, **kwargs)
+
+    monkeypatch.setattr(service, "_run_git", malformed_probe)
+
+    with pytest.raises(ManagedGitConflictError, match="Malformed upstream advertisement"):
+        service.refresh_repository_if_branch_changed(
+            record["managed_repo_id"],
+            branch="main",
+            directory_path="root",
+        )
+
+    assert not any("fetch" in command for command in commands)
+    assert (
+        service.resolve_branch_commit(
+            record["managed_repo_id"],
+            directory_path="root",
+            branch="main",
+        )
+        == first
+    )
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        RuntimeError("upstream authentication failed"),
+        ManagedGitConflictError("Managed Git operation timed out after 1 seconds"),
+    ],
+)
+def test_branch_refresh_probe_failure_never_falls_back_to_cached_ref(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    failure: Exception,
+) -> None:
+    source, _, first = _source_repository(tmp_path)
+    service = _service(tmp_path)
+    record = service.register_repository("root", str(source))
+    refresh_calls = 0
+
+    def fail_probe(*args: object, **kwargs: object):
+        del args, kwargs
+        raise failure
+
+    def count_refresh(*args: object, **kwargs: object):
+        nonlocal refresh_calls
+        del args, kwargs
+        refresh_calls += 1
+        raise AssertionError("full refresh must not run after a failed probe")
+
+    monkeypatch.setattr(service, "_probe_upstream_branch", fail_probe)
+    monkeypatch.setattr(service, "_refresh_record", count_refresh)
+
+    with pytest.raises(type(failure), match=str(failure)):
+        service.refresh_repository_if_branch_changed(
+            record["managed_repo_id"],
+            branch="main",
+            directory_path="root",
+        )
+
+    assert refresh_calls == 0
+    assert (
+        service.resolve_branch_commit(
+            record["managed_repo_id"],
+            directory_path="root",
+            branch="main",
+        )
+        == first
+    )
+
+
+def test_branch_refresh_coalesces_waiters_after_same_successful_probe(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source, _, _ = _source_repository(tmp_path)
+    service = _service(tmp_path)
+    record = service.register_repository("root", str(source))
+    requested_at = datetime.now(UTC)
+    original_probe = service._probe_upstream_branch
+    probe_started = threading.Event()
+    release_probe = threading.Event()
+    probe_calls = 0
+    results: dict[str, dict[str, object]] = {}
+
+    def delayed_probe(*args: object, **kwargs: object):
+        nonlocal probe_calls
+        probe_calls += 1
+        probe_started.set()
+        assert release_probe.wait(timeout=5)
+        return original_probe(*args, **kwargs)
+
+    def refresh(name: str) -> None:
+        results[name] = service.refresh_repository_if_branch_changed(
+            record["managed_repo_id"],
+            branch="main",
+            directory_path="root",
+            reuse_if_verified_after=requested_at,
+        )
+
+    monkeypatch.setattr(service, "_probe_upstream_branch", delayed_probe)
+    first = threading.Thread(target=refresh, args=("first",))
+    second = threading.Thread(target=refresh, args=("second",))
+    first.start()
+    assert probe_started.wait(timeout=5)
+    second.start()
+    release_probe.set()
+    first.join(timeout=5)
+    second.join(timeout=5)
+
+    assert not first.is_alive()
+    assert not second.is_alive()
+    assert probe_calls == 1
+    assert results["first"]["probe_performed"] is True
+    assert results["first"]["probe_reused"] is False
+    assert results["second"]["probe_performed"] is False
+    assert results["second"]["probe_reused"] is True
+
+
+def test_branch_refresh_ignores_unrelated_branch_and_tag_changes(tmp_path: Path) -> None:
+    source, _, first = _source_repository(tmp_path)
+    service = _service(tmp_path)
+    record = service.register_repository("root", str(source))
+    _run("git", "switch", "-c", "unrelated", cwd=source)
+    unrelated = _commit(source, "unrelated.txt", "change\n", "unrelated")
+    _run("git", "tag", "unrelated-tag", cwd=source)
+    _run("git", "switch", "main", cwd=source)
+
+    result = service.refresh_repository_if_branch_changed(
+        record["managed_repo_id"],
+        branch="main",
+        directory_path="root",
+    )
+
+    assert result["observed_sha"] == first
+    assert result["probe_performed"] is True
+    assert result["refresh_performed"] is False
+    assert (
+        service.get_repository(record["managed_repo_id"])["refreshed_at"] == record["refreshed_at"]
+    )
+    assert (
+        service.resolve_branch_commit(
+            record["managed_repo_id"],
+            directory_path="root",
+            branch="unrelated",
+        )
+        is None
+    )
+    assert unrelated != first
 
 
 def test_resolve_branch_commit_uses_scoped_managed_repository_ref(tmp_path: Path) -> None:

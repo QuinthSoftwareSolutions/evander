@@ -239,6 +239,29 @@ class _ImmediateExecutor:
         return future
 
 
+class _ManualExecutor:
+    def __init__(self) -> None:
+        self.futures: list[Future[dict[str, object]]] = []
+
+    def submit(self, fn, *args, **kwargs):
+        del fn, args, kwargs
+        future: Future[dict[str, object]] = Future()
+        self.futures.append(future)
+        return future
+
+
+class _RecordingWakeNotifier:
+    def __init__(self, *, before_notify=None) -> None:
+        self.before_notify = before_notify
+        self.calls = 0
+
+    def notify(self) -> bool:
+        self.calls += 1
+        if self.before_notify is not None:
+            self.before_notify()
+        return True
+
+
 class _FailingFactory:
     def build(self, effect, **kwargs):
         return _FailingProvider({})
@@ -391,6 +414,67 @@ def _edge(source_id: str, target_id: str, *, source_port: str | None = None) -> 
     if source_port is not None:
         edge["source_port"] = source_port
     return edge
+
+
+def _future_wake_worker_config(
+    runtime_dir: Path,
+    *,
+    node_kind: str,
+    include_downstream_effect: bool = False,
+) -> TriggerOrchestratorWorkerGlobalConfig:
+    trigger = {
+        "id": "trigger-1",
+        "display_name": "Tick",
+        "type": "trigger:cron",
+        "expression": "* * * * *",
+    }
+    effects: list[dict[str, object]] = []
+    queries: list[dict[str, object]] = []
+    if node_kind == "effect":
+        effects.append(
+            {
+                "id": "effect-1",
+                "display_name": "Create VM",
+                "type": "effect:vm:create",
+                "vm_name": "vm-1",
+            }
+        )
+        if include_downstream_effect:
+            effects.append(
+                {
+                    "id": "effect-2",
+                    "display_name": "Create downstream VM",
+                    "type": "effect:vm:create",
+                    "vm_name": "vm-2",
+                }
+            )
+    elif node_kind == "query":
+        queries.append(
+            {
+                "id": "query-1",
+                "display_name": "VM run state",
+                "type": "query:vm:run-state",
+                "session_id": "session-1",
+            }
+        )
+    else:
+        raise ValueError(f"unsupported node kind: {node_kind}")
+
+    first_node_id = "effect-1" if node_kind == "effect" else "query-1"
+    edges = [_edge("trigger-1", first_node_id)]
+    if include_downstream_effect:
+        edges.append(_edge("effect-1", "effect-2"))
+    return TriggerOrchestratorWorkerGlobalConfig.model_validate(
+        {
+            "runtime_dir": runtime_dir,
+            "poll_interval_seconds": 1,
+            "jitter_seconds": 0,
+            "triggers": [trigger],
+            "effects": effects,
+            "queries": queries,
+            "edges": edges,
+        }
+    )
 
 
 def _queued_prompt_execution_record(
@@ -1056,6 +1140,225 @@ def test_effect_orchestrator_uses_shared_host_lock_manager(tmp_path: Path) -> No
     worker._kernel.run_once_with_lock = lambda: sentinel  # type: ignore[method-assign]
 
     assert worker.run_once_with_lock() is sentinel
+
+
+@pytest.mark.parametrize("node_kind", ["effect", "query"])
+def test_effect_orchestrator_notifies_once_when_new_future_completes(
+    tmp_path: Path,
+    node_kind: str,
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    worker_config = _future_wake_worker_config(runtime_dir, node_kind=node_kind)
+    worker = EffectOrchestratorWorker(
+        config=GatewayConfig(runtime_dir=runtime_dir),
+        worker_config=worker_config,
+        runtime=None,  # type: ignore[arg-type]
+    )
+    executor = _ManualExecutor()
+    notifier = _RecordingWakeNotifier()
+    worker._executor = executor  # type: ignore[assignment]
+    worker._wake_notifier = notifier  # type: ignore[assignment]
+    worker.event_queue.publish(
+        TriggerEvent(
+            event_id=f"event-new-{node_kind}",
+            trigger_id="trigger-1",
+            trigger_type="trigger:cron",
+            occurred_at=datetime(2026, 8, 13, 12, 0, tzinfo=timezone.utc),
+            payload={},
+        )
+    )
+
+    worker.run_once()
+
+    assert len(executor.futures) == 1
+    future = executor.futures[0]
+    future.set_result({"success": True})
+
+    assert notifier.calls == 1
+    idempotency_key = f"event-new-{node_kind}::{node_kind}-1"
+    assert idempotency_key in worker._inflight
+    running_record = worker.execution_store.find_execution_by_idempotency_key(idempotency_key)
+    assert running_record is not None
+    assert running_record.status == "running"
+
+    cycle = worker.run_once()
+
+    completed_record = worker.execution_store.find_execution_by_idempotency_key(idempotency_key)
+    assert completed_record is not None
+    assert completed_record.status == "succeeded"
+    assert cycle.completion_events_published == 1
+    assert notifier.calls == 1
+
+
+@pytest.mark.parametrize("node_kind", ["effect", "query"])
+def test_effect_orchestrator_notifies_when_persisted_running_future_is_resubmitted(
+    tmp_path: Path,
+    node_kind: str,
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    worker_config = _future_wake_worker_config(runtime_dir, node_kind=node_kind)
+    config = GatewayConfig(runtime_dir=runtime_dir)
+    first_worker = EffectOrchestratorWorker(
+        config=config,
+        worker_config=worker_config,
+        runtime=None,  # type: ignore[arg-type]
+    )
+    first_executor = _ManualExecutor()
+    first_worker._executor = first_executor  # type: ignore[assignment]
+    first_worker.event_queue.publish(
+        TriggerEvent(
+            event_id=f"event-recovered-{node_kind}",
+            trigger_id="trigger-1",
+            trigger_type="trigger:cron",
+            occurred_at=datetime(2026, 8, 13, 12, 0, tzinfo=timezone.utc),
+            payload={},
+        )
+    )
+    first_worker.run_once()
+    assert len(first_executor.futures) == 1
+
+    restarted_worker = EffectOrchestratorWorker(
+        config=config,
+        worker_config=worker_config,
+        runtime=None,  # type: ignore[arg-type]
+    )
+    restarted_executor = _ManualExecutor()
+    notifier = _RecordingWakeNotifier()
+    restarted_worker._executor = restarted_executor  # type: ignore[assignment]
+    restarted_worker._wake_notifier = notifier  # type: ignore[assignment]
+
+    restarted_worker.run_once()
+
+    assert len(restarted_executor.futures) == 1
+    restarted_executor.futures[0].set_result({"success": True})
+    assert notifier.calls == 1
+
+
+def test_effect_orchestrator_registers_completed_future_before_wake_callback(
+    tmp_path: Path,
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    worker_config = _future_wake_worker_config(runtime_dir, node_kind="effect")
+    worker = EffectOrchestratorWorker(
+        config=GatewayConfig(runtime_dir=runtime_dir),
+        worker_config=worker_config,
+        runtime=None,  # type: ignore[arg-type]
+    )
+    idempotency_key = "event-already-complete::effect-1"
+    inflight_states: list[bool] = []
+    notifier = _RecordingWakeNotifier(
+        before_notify=lambda: inflight_states.append(idempotency_key in worker._inflight)
+    )
+    worker._wake_notifier = notifier  # type: ignore[assignment]
+    future: Future[dict[str, object]] = Future()
+    future.set_result({"success": True})
+
+    worker._register_inflight_future(
+        idempotency_key=idempotency_key,
+        future=future,  # type: ignore[arg-type]
+        config_revision="revision-1",
+    )
+
+    assert inflight_states == [True]
+    assert notifier.calls == 1
+    assert worker._inflight[idempotency_key].future is future
+
+
+def test_effect_orchestrator_missing_wake_listener_falls_back_to_polling(
+    tmp_path: Path,
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    worker_config = _future_wake_worker_config(runtime_dir, node_kind="effect")
+    worker = EffectOrchestratorWorker(
+        config=GatewayConfig(runtime_dir=runtime_dir),
+        worker_config=worker_config,
+        runtime=None,  # type: ignore[arg-type]
+    )
+    executor = _ManualExecutor()
+    worker._executor = executor  # type: ignore[assignment]
+    worker.event_queue.publish(
+        TriggerEvent(
+            event_id="event-missing-listener",
+            trigger_id="trigger-1",
+            trigger_type="trigger:cron",
+            occurred_at=datetime(2026, 8, 13, 12, 0, tzinfo=timezone.utc),
+            payload={},
+        )
+    )
+
+    worker.run_once()
+    assert not worker._wake_notifier.path.exists()
+
+    executor.futures[0].set_result({"success": True})
+
+    idempotency_key = "event-missing-listener::effect-1"
+    running_record = worker.execution_store.find_execution_by_idempotency_key(idempotency_key)
+    assert running_record is not None
+    assert running_record.status == "running"
+    assert idempotency_key in worker._inflight
+
+    cycle = worker.run_once()
+
+    completed_record = worker.execution_store.find_execution_by_idempotency_key(idempotency_key)
+    assert completed_record is not None
+    assert completed_record.status == "succeeded"
+    assert cycle.completion_events_published == 1
+
+
+def test_effect_completion_callback_only_wakes_before_next_cycle_dispatches_downstream(
+    tmp_path: Path,
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    worker_config = _future_wake_worker_config(
+        runtime_dir,
+        node_kind="effect",
+        include_downstream_effect=True,
+    )
+    worker = EffectOrchestratorWorker(
+        config=GatewayConfig(runtime_dir=runtime_dir),
+        worker_config=worker_config,
+        runtime=None,  # type: ignore[arg-type]
+    )
+    executor = _ManualExecutor()
+    notifier = _RecordingWakeNotifier()
+    worker._executor = executor  # type: ignore[assignment]
+    worker._wake_notifier = notifier  # type: ignore[assignment]
+    worker.event_queue.publish(
+        TriggerEvent(
+            event_id="event-downstream",
+            trigger_id="trigger-1",
+            trigger_type="trigger:cron",
+            occurred_at=datetime(2026, 8, 13, 12, 0, tzinfo=timezone.utc),
+            payload={},
+        )
+    )
+    worker.run_once()
+
+    executor.futures[0].set_result({"success": True})
+
+    first_record = worker.execution_store.find_execution_by_idempotency_key(
+        "event-downstream::effect-1"
+    )
+    assert first_record is not None
+    assert first_record.status == "running"
+    assert len(executor.futures) == 1
+    assert notifier.calls == 1
+
+    worker.run_once()
+
+    first_record = worker.execution_store.find_execution_by_idempotency_key(
+        "event-downstream::effect-1"
+    )
+    assert first_record is not None
+    assert first_record.status == "succeeded"
+    assert len(executor.futures) == 2
+    downstream_record = next(
+        record
+        for record in worker.execution_store.list_executions()
+        if record.effect_id == "effect-2"
+    )
+    assert downstream_record.status == "running"
+    assert notifier.calls == 1
 
 
 def test_effect_orchestrator_holds_delivery_for_gate_completion_pending(
