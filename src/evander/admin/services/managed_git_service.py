@@ -129,6 +129,7 @@ class _BranchProbeObservation:
     branch: str
     observed_sha: str | None
     default_branch_identity: str | None = None
+    requires_full_refresh: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -992,7 +993,8 @@ class ManagedGitAdminService:
                     )
                 probe_performed = True
                 branch_changed = (
-                    observed.observed_sha is None
+                    observed.requires_full_refresh
+                    or observed.observed_sha is None
                     or observed.observed_sha != local.observed_sha
                     or (
                         probe_default
@@ -1013,7 +1015,11 @@ class ManagedGitAdminService:
                     branch=refreshed_branch,
                     probe_default=probe_default,
                 )
-                if observed.observed_sha is None and probe_performed:
+                if (
+                    observed.observed_sha is None
+                    and probe_performed
+                    and not observed.requires_full_refresh
+                ):
                     raise ManagedGitNotFoundError(
                         f"Upstream branch {observed.branch!r} does not exist"
                     )
@@ -1021,11 +1027,16 @@ class ManagedGitAdminService:
                     raise ManagedGitNotFoundError(
                         f"Upstream branch {refreshed_branch!r} does not exist"
                     )
-                if probe_performed and (
-                    refreshed.observed_sha != observed.observed_sha
-                    or (
-                        probe_default
-                        and refreshed.default_branch_identity != observed.default_branch_identity
+                if (
+                    probe_performed
+                    and not observed.requires_full_refresh
+                    and (
+                        refreshed.observed_sha != observed.observed_sha
+                        or (
+                            probe_default
+                            and refreshed.default_branch_identity
+                            != observed.default_branch_identity
+                        )
                     )
                 ):
                     raise ManagedGitConflictError(
@@ -1185,7 +1196,10 @@ class ManagedGitAdminService:
                 ["git", "ls-remote", "--symref", source, "HEAD"],
                 env=env,
             )
-            return self._parse_default_branch_advertisement(result.stdout)
+            return self._parse_default_branch_advertisement(
+                result.stdout,
+                fallback_branch=branch,
+            )
         result = self._run_git(
             ["git", "ls-remote", "--refs", source, f"refs/heads/{branch}"],
             env=env,
@@ -1210,7 +1224,11 @@ class ManagedGitAdminService:
         return _BranchProbeObservation(branch=branch, observed_sha=fields[0].lower())
 
     @staticmethod
-    def _parse_default_branch_advertisement(output: str) -> _BranchProbeObservation:
+    def _parse_default_branch_advertisement(
+        output: str,
+        *,
+        fallback_branch: str,
+    ) -> _BranchProbeObservation:
         default_branch: str | None = None
         observed_sha: str | None = None
         for line in (line.strip() for line in output.splitlines() if line.strip()):
@@ -1226,6 +1244,12 @@ class ManagedGitAdminService:
                 observed_sha = fields[0].lower()
                 continue
             raise ManagedGitConflictError("Malformed upstream default-branch advertisement")
+        if default_branch is None and observed_sha is not None:
+            return _BranchProbeObservation(
+                branch=fallback_branch,
+                observed_sha=observed_sha,
+                requires_full_refresh=True,
+            )
         if default_branch is None:
             raise ManagedGitConflictError("Malformed upstream default-branch advertisement")
         normalized_branch = _normalize_branch(

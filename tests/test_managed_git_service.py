@@ -338,6 +338,37 @@ def test_branch_refresh_detects_changed_upstream_default_branch(tmp_path: Path) 
     )
 
 
+def test_branch_refresh_falls_back_to_full_refresh_when_upstream_head_is_detached(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source, _, first = _source_repository(tmp_path)
+    service = _service(tmp_path)
+    record = service.register_repository("root", str(source))
+    _run("git", "switch", "--detach", cwd=source)
+    original_run_git = service._run_git
+    commands: list[list[str]] = []
+
+    def recorded_run_git(command: list[str], **kwargs: object):
+        commands.append(command)
+        return original_run_git(command, **kwargs)
+
+    monkeypatch.setattr(service, "_run_git", recorded_run_git)
+
+    result = service.refresh_repository_if_branch_changed(
+        record["managed_repo_id"],
+        directory_path="root",
+    )
+
+    assert result["branch"] == "main"
+    assert result["observed_sha"] == first
+    assert result["default_branch_identity"] == "main"
+    assert result["probe_performed"] is True
+    assert result["refresh_performed"] is True
+    assert any("ls-remote" in command and "--symref" in command for command in commands)
+    assert sum("fetch" in command for command in commands) == 1
+
+
 def test_branch_refresh_probes_operator_default_override_as_exact_branch(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

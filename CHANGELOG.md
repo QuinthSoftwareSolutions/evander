@@ -8,6 +8,9 @@
   transactional refresh and validation path.
 - Recorded branch-scoped probe evidence separately from repository-wide refresh timestamps and
   exposed probe, coalescing, and full-refresh decisions in preparation outputs and logs.
+- Preserved repositories whose upstream `HEAD` is detached or otherwise lacks a symbolic-ref
+  advertisement by routing the valid SHA-only response through the existing full-refresh default
+  fallback.
 
 ## 2026-08-13 - Immediate Effect Completion Wakeups
 
