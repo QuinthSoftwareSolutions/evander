@@ -461,14 +461,85 @@ def test_deliverable_drill_down_renders_evidence_backed_release_pipeline() -> No
     assert "releaseDetailCache.get(text(compactRelease.id))" in source
 
 
-def test_release_progress_flags_historical_packages_without_candidate_inputs() -> None:
+def test_release_progress_only_flags_git_packages_without_candidate_inputs() -> None:
     source = (ROOT / "src" / "evander_team_addon" / "ui_static" / "team-ui.js").read_text(
         encoding="utf-8"
     )
+    helper_source = source[
+        source.index("function releaseRequiresGitCandidate(") : source.index(
+            "function releaseProgressStages("
+        )
+    ]
+    progress_source = source[
+        source.index("function releaseProgressStages(") : source.index(
+            "function renderReleaseProgress("
+        )
+    ]
 
-    assert "const candidateInputsMissing = Boolean(" in source
+    assert "function releaseRequiresGitCandidate(release)" in source
+    assert "const candidateInputsMissing = releaseCandidateInputsMissing(release);" in source
     assert 'detail: "No Git-backed release input"' in source
     assert '"Blocked: no Git-backed release input"' in source
+    assert "releaseCandidateDetail(release)" in source
+
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("node is required for Team UI release progress tests")
+    script = f"""
+      const assert = require("node:assert/strict");
+      const text = (value) => String(value ?? "").trim();
+      const state = {{
+        projects: {{
+          "artifact-project": {{ id: "artifact-project", git: null }},
+          "git-project": {{ id: "git-project", git: {{ managed_repo_id: "repo" }} }},
+        }},
+      }};
+      const releaseAgentReviews = () => [];
+      const releaseVerificationCommandFailed = () => false;
+      const releaseVerificationFailureSummary = () => "";
+      const humanizeToken = (value) => text(value);
+      const formatTimelineTimestamp = (value) => text(value);
+      {helper_source}
+      {progress_source}
+
+      const artifactRelease = {{
+        id: "artifact-release",
+        project_id: "artifact-project",
+        policy_version: 2,
+        state: "pending",
+        scope_validation: {{ state: "not_required" }},
+      }};
+      assert.equal(releaseCandidateInputsMissing(artifactRelease), false);
+      assert.equal(releaseCandidateDetail(artifactRelease), "Not required (artifact-only release)");
+      assert.deepEqual(releaseProgressStages(artifactRelease)[0], {{
+        label: "Candidate prepared",
+        state: "not-applicable",
+        detail: "No Git candidate required",
+      }});
+
+      const malformedGitRelease = {{
+        ...artifactRelease,
+        id: "malformed-git-release",
+        project_id: "git-project",
+      }};
+      assert.equal(releaseCandidateInputsMissing(malformedGitRelease), true);
+      assert.equal(releaseCandidateDetail(malformedGitRelease), "Blocked: no Git-backed release input");
+      assert.deepEqual(releaseProgressStages(malformedGitRelease)[0], {{
+        label: "Candidate prepared",
+        state: "blocked",
+        detail: "No Git-backed release input",
+      }});
+    """
+
+    result = subprocess.run(
+        [node, "--input-type=commonjs"],
+        input=script,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
 
 
 def test_delivery_view_surfaces_pending_and_audited_initial_release_decisions() -> None:
@@ -619,7 +690,9 @@ def test_agent_editor_round_trips_idle_context_grace_minutes() -> None:
 
     assert "contextClearingIdleGraceMinutesForEdit" in editor_source
     assert 'numberField("Idle grace minutes"' in editor_source
-    assert 'data-agent-context-idle-grace${contextPolicy === "idle" ? "" : " hidden"}' in editor_source
+    assert (
+        'data-agent-context-idle-grace${contextPolicy === "idle" ? "" : " hidden"}' in editor_source
+    )
     assert "max: 10080" in editor_source
     assert "context_clearing_idle_grace_seconds" in payload_source
     assert "context_clearing_idle_grace_minutes" in payload_source

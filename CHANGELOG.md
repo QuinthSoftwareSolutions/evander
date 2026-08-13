@@ -13,6 +13,9 @@
   no-progress limit. Exhausted agents now receive at most one attempt for a
   newly changed work snapshot while context rotation and recovery wakes remain
   available.
+- Kept immediate inbox follow-up events policy-neutral so the configured
+  `max_no_progress_count`, including custom and unlimited values, is enforced by
+  the lease decision instead of a hard-coded finalization default.
 - Applied the same edge-triggered limit to manager-fallback work using a
   separate, full-fidelity team-wide snapshot; direct manager work remains in
   the ordinary wake domain.
@@ -34,6 +37,8 @@
   candidate. The error now directs managers to create an explicit Git integration task for
   mixed-base contributions, and the release UI identifies historical dead-end packages as
   blocked instead of indefinitely waiting for a candidate.
+- Treat policy-v2 artifact-only releases for projects without Git as candidate-not-required in
+  both release progress and detail views instead of mislabeling them as blocked Git releases.
 
 ## 2026-08-11 - Container Worker MSSQL Client Toolchain
 

@@ -5638,7 +5638,7 @@ def test_finalize_reemits_wake_request_for_inbox_arriving_during_active_lease(
     assert wake_events[0]["payload"]["reason"] == "inbox"
 
 
-def test_finalize_at_no_progress_limit_reemits_only_changed_inbox_work(
+def test_finalize_reemits_inbox_wake_before_configured_no_progress_lease_check(
     tmp_path: Path,
 ) -> None:
     repo = _seed_hierarchy(tmp_path)
@@ -5738,17 +5738,51 @@ def test_finalize_at_no_progress_limit_reemits_only_changed_inbox_work(
     )
     assert finalized["progress_made"] is False
     assert state.agent_runtimes["backend"].no_progress_count == 4
-    assert all(
-        event["event_type"] != AGENT_WAKE_REQUESTED_EVENT_TYPE for event in finalized["events"]
-    )
+    unchanged_wake_events = [
+        event
+        for event in finalized["events"]
+        if event["event_type"] == AGENT_WAKE_REQUESTED_EVENT_TYPE
+    ]
+    assert len(unchanged_wake_events) == 1
+    assert unchanged_wake_events[0]["payload"]["reason"] == "inbox"
 
-    _state, replay = _team_runtime_service(repo).lease_due_agents(
+    _state, bounded_replay = _team_runtime_service(repo).lease_due_agents(
         agent_id="backend",
         now=now + timedelta(seconds=2),
         max_no_progress_count=3,
         respect_wake_interval=False,
     )
-    assert replay == []
+    assert bounded_replay == []
+
+    state, configured_replay = _team_runtime_service(repo).lease_due_agents(
+        agent_id="backend",
+        now=now + timedelta(seconds=3),
+        max_no_progress_count=5,
+        respect_wake_interval=False,
+    )
+    assert len(configured_replay) == 1
+    assert configured_replay[0]["reason"] == "inbox"
+
+    state, configured_finalized = _team_runtime_service(repo).finalize_agent_dispatch_from_activity(
+        session_id="session-backend",
+        dispatch_id=configured_replay[0]["dispatch_id"],
+    )
+    assert configured_finalized["progress_made"] is False
+    assert state.agent_runtimes["backend"].no_progress_count == 5
+    assert any(
+        event["event_type"] == AGENT_WAKE_REQUESTED_EVENT_TYPE
+        and event["payload"]["reason"] == "inbox"
+        for event in configured_finalized["events"]
+    )
+
+    _state, unlimited_replay = _team_runtime_service(repo).lease_due_agents(
+        agent_id="backend",
+        now=now + timedelta(seconds=4),
+        max_no_progress_count=-1,
+        respect_wake_interval=False,
+    )
+    assert len(unlimited_replay) == 1
+    assert unlimited_replay[0]["reason"] == "inbox"
 
 
 def test_repository_finalize_agent_dispatch_validation_failure_has_no_action_feedback(
@@ -13187,7 +13221,7 @@ def test_partial_inbox_handling_does_not_make_unchanged_review_look_new(
     assert replay == []
 
 
-def test_finalize_at_no_progress_limit_ignores_review_becoming_blocked(
+def test_configured_no_progress_lease_ignores_review_becoming_blocked(
     tmp_path: Path,
 ) -> None:
     repo = _seed_hierarchy(tmp_path)
@@ -13263,11 +13297,21 @@ def test_finalize_at_no_progress_limit_ignores_review_becoming_blocked(
     )
 
     assert state.agent_runtimes["worker"].no_progress_count == 3
-    assert [
+    wake_events = [
         event
         for event in result["events"]
         if event["event_type"] == AGENT_WAKE_REQUESTED_EVENT_TYPE
-    ] == []
+    ]
+    assert len(wake_events) == 1
+    assert wake_events[0]["payload"]["reason"] == "inbox"
+
+    _state, replay = _team_runtime_service(repo).lease_due_agents(
+        agent_id="worker",
+        now=now + timedelta(seconds=1),
+        max_no_progress_count=3,
+        respect_wake_interval=False,
+    )
+    assert replay == []
 
 
 def test_context_handoff_does_not_consume_exhausted_inbox_attempt(
