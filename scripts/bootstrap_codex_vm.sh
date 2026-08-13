@@ -330,6 +330,7 @@ url = "${CODEX_GATEWAY_URL}"
 CONFIG
 cat >> "${CODEX_CONFIG_PATH}" <<CONFIG
 enabled = true
+required = true
 
 [projects."/home/${VM_USER}"]
 trust_level = "trusted"
