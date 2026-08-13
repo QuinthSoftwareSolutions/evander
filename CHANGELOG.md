@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-08-13 - Bokio Failure Explanations
+
+- Surface Bokio validation field paths and messages directly in prepared-action failure
+  notices, while retaining the structured upstream payload for audit.
+- Explain partial journal-entry outcomes explicitly, including the created journal entry,
+  evidence attachment counts, and retry scope so an evidence retry cannot be mistaken for
+  another bookkeeping entry.
+
 ## 2026-08-13 - Dependency-Preserving Verification Recovery
 
 - Allowed an accepted, fully verified downstream remediation to create a rejected-candidate

@@ -34,7 +34,11 @@ async function requestJson(path, options = {}) {
     ...options,
   });
   const payload = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(payload.error || response.statusText);
+  if (!response.ok) {
+    const error = new Error(bokioFailureMessage(payload) || payload.error || response.statusText);
+    error.payload = payload;
+    throw error;
+  }
   return payload;
 }
 
@@ -68,6 +72,34 @@ function statusLabel(status) {
 function setNotice(message = "", tone = "info") {
   els.notice.textContent = message;
   els.notice.className = message ? `notice ${tone}` : "notice hidden";
+}
+
+function bokioFailureMessage(error) {
+  const storedMessage = text(error?.operator_message);
+  let message = storedMessage;
+  if (!message) {
+    const details = Array.isArray(error?.payload?.errors) ? error.payload.errors : [];
+    const fields = details
+      .map((item) => {
+        const field = text(item?.field);
+        const detail = text(item?.message);
+        return field && detail ? `${field} - ${detail}` : field || detail;
+      })
+      .filter(Boolean);
+    if (fields.length) {
+      const status = Number.isInteger(error?.status_code) ? ` (HTTP ${error.status_code})` : "";
+      message = `Bokio validation failed${status}: ${fields.join("; ")}.`;
+    } else {
+      message = text(error?.error);
+    }
+  }
+  const operation = error?.evidence_operation || {};
+  const journalEntryId = text(operation.journal_entry_id);
+  if (!journalEntryId && !error?.journal_entry_created) return message;
+  const number = text(operation?.result?.journalEntryNumber);
+  const entry = number ? `journal entry ${number} (${journalEntryId})` : `journal entry ${journalEntryId}`;
+  if (message.includes("only evidence attachment failed")) return message;
+  return `${message} ${entry[0].toUpperCase()}${entry.slice(1)} was created; only evidence attachment failed. A retry resumes evidence attachment and will not create another journal entry.`;
 }
 
 function setPrivilegedUnlocked(unlocked) {
@@ -206,7 +238,9 @@ async function runActionMutation(action, suffix, payload = {}) {
     setNotice("Bokio action updated.", "success");
     await refresh({ preserveNotice: true });
   } catch (error) {
-    setNotice(error.message, "error");
+    await refresh({ preserveNotice: true });
+    const current = state.actions.find((item) => item.action_id === action.action_id);
+    setNotice(bokioFailureMessage(current?.error) || error.message, "error");
   } finally {
     state.busy = false;
     renderActionDetail();
@@ -254,6 +288,13 @@ function renderActionDetail() {
     warning.textContent = "The request may have reached Bokio. Reconcile the action in Bokio before recovering it.";
     els.actionDetail.append(warning);
   }
+  const failureMessage = bokioFailureMessage(action.error);
+  if (failureMessage) {
+    const failure = document.createElement("div");
+    failure.className = "notice danger inline";
+    failure.textContent = failureMessage;
+    els.actionDetail.append(failure);
+  }
 
   const properties = document.createElement("dl");
   properties.className = "property-grid";
@@ -276,8 +317,9 @@ function renderActionDetail() {
       rejectionButton(action),
     );
   } else if (action.status === "failed") {
+    const retryLabel = action.error?.journal_entry_created ? "Retry evidence attachment" : "Retry";
     controls.append(
-      mutationButton("Retry", "primary", () => runActionMutation(action, "retry")),
+      mutationButton(retryLabel, "primary", () => runActionMutation(action, "retry")),
       rejectionButton(action),
     );
   } else if (action.status === "needs_attention" || action.status === "executing") {
