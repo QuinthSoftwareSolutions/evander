@@ -507,12 +507,14 @@ as `http://<worker-private-ip>:11990` with token env
 `EVANDER_MSSQL_SEED_SIDECAR_TOKEN`.
 
 Enabling worker MSSQL also enables the offline MSSQL client toolchain by default. The playbook
-packages host-installed `sqlcmd` and ODBC Driver 18, stores them under
+packages the worker-installed `sqlcmd` and ODBC Driver 18 after installing those packages, stores them under
 `{{ evander_worker_toolchain_cache_root }}/mssql-client`, and mounts that cache read-only at
-`/opt/evander/toolchains/mssql-client` in runner containers. Override the local sources with
-`HOST_MSSQL_TOOLS_ROOT` and `HOST_MSSQL_ODBC_ROOT`, or provide a prebuilt archive with
-`HOST_MSSQL_CLIENT_ARCHIVE`. Set `evander_worker_mssql_client_toolchain_enabled: false` only when
-agents do not need direct SQL access to their session-owned databases.
+`/opt/evander/toolchains/mssql-client` in runner containers. Provide a prebuilt archive with
+`HOST_MSSQL_CLIENT_ARCHIVE` to override the worker build. For a standalone client toolchain with
+worker MSSQL disabled, set `evander_worker_mssql_client_toolchain_build_on_worker: false` and
+provide `HOST_MSSQL_TOOLS_ROOT` and `HOST_MSSQL_ODBC_ROOT` on the Ansible control machine. Set
+`evander_worker_mssql_client_toolchain_enabled: false` only when agents do not need direct SQL
+access to their session-owned databases.
 
 The worker playbook also provisions restricted SSH for Git mirrors. It generates
 `~agent-worker/.ssh/evander-git`, renders an SSH config entry for

@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-08-13 - Worker-Local MSSQL Client Toolchain Packaging
+
+- Build the default runner `sqlcmd`/ODBC archive on the worker after its Microsoft client packages
+  are installed, removing the unintended SQL client prerequisite from the Ansible control machine.
+  Prebuilt archives remain supported, and standalone client-toolchain deployments can explicitly
+  retain controller-side packaging.
+
 ## 2026-08-13 - Polling and Reference Repository Review Hardening
 
 - Prevented persistent assistants from redirecting host Git through symlinked administrative
