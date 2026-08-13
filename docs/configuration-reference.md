@@ -2117,7 +2117,7 @@ The following environment variables are consumed directly by scripts as runtime 
 | `evander-worker-daemon --mssql-enabled` | `EVANDER_WORKER_MSSQL_ADMIN_PASSWORD` |
 | `evander-mssql-seed-sidecar` | `EVANDER_MSSQL_SEED_SIDECAR_HOST`, `EVANDER_MSSQL_SEED_SIDECAR_PORT`, `EVANDER_MSSQL_SEED_SIDECAR_TOKEN_ENV`, `EVANDER_MSSQL_SEED_SIDECAR_TOKEN`, `EVANDER_WORKER_MSSQL_ADMIN_PASSWORD_ENV`, `EVANDER_WORKER_MSSQL_ADMIN_PASSWORD`, `EVANDER_WORKER_MSSQL_ADMIN_USER`, `EVANDER_WORKER_MSSQL_ADMIN_HOST`, `EVANDER_WORKER_MSSQL_PORT`, `EVANDER_WORKER_MSSQL_SQLCMD_PATH`, `EVANDER_MSSQL_SEED_DATA_DIR` |
 | `ansible/worker.yml` MSSQL seed sidecar | `vault_evander_worker_mssql_seed_sidecar_token`, `evander_worker_mssql_seed_sidecar_*` inventory variables |
-| `ansible/worker.yml` MSSQL client cache | `HOST_MSSQL_CLIENT_ARCHIVE`, `HOST_MSSQL_TOOLS_ROOT`, `HOST_MSSQL_ODBC_ROOT`, `evander_worker_mssql_client_toolchain_*` inventory variables |
+| `ansible/worker.yml` MSSQL client cache | `HOST_MSSQL_CLIENT_ARCHIVE`; `HOST_MSSQL_TOOLS_ROOT` and `HOST_MSSQL_ODBC_ROOT` only when `evander_worker_mssql_client_toolchain_build_on_worker=false`; `evander_worker_mssql_client_toolchain_*` inventory variables |
 | `scripts/bootstrap_nuget_vm.sh` | `SSH_KEY_PATH`, `NUGET_RELAY_BASE_URL`, `NUGET_FALLBACK_PACKAGES`, `NUGET_PACKAGES_DIR`, `NUGET_HTTP_CACHE_DIR` |
 | `scripts/bootstrap_playwright_vm.sh` | `SSH_KEY_PATH`, `HOST_NODE_ROOT`, `HOST_PLAYWRIGHT_NODE_MODULES`, `HOST_PLAYWRIGHT_BROWSERS` |
 | `scripts/bootstrap_python_packages_vm.sh` | `SSH_KEY_PATH`, `HOST_PYTHON_BIN`, `GUEST_PYTHON_BIN`, `GUEST_WHEELHOUSE_DIR` |

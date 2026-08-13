@@ -206,9 +206,21 @@ evander_worker_nuget_fallback_cache_path: "{{ evander_worker_toolchain_cache_roo
 evander_worker_mssql_client_cache_path: "{{ evander_worker_toolchain_cache_root }}/mssql-client"
 
 # Seed an offline sqlcmd/ODBC toolchain into a read-only runner mount whenever
-# worker MSSQL is enabled. A prebuilt archive avoids requiring the Microsoft
-# packages on the Ansible control machine.
+# worker MSSQL is enabled. By default the archive is built on the worker after
+# its Microsoft client packages are installed, so the Ansible control machine
+# does not need those packages. A prebuilt archive remains an explicit override.
 evander_worker_mssql_client_toolchain_enabled: "{{ evander_worker_mssql_enabled }}"
+evander_worker_mssql_client_toolchain_build_on_worker: "{{ evander_worker_mssql_enabled }}"
+evander_worker_mssql_client_toolchain_worker_tools_path: >-
+  {{ evander_worker_mssql_sqlcmd_path | dirname | dirname }}
+evander_worker_mssql_client_toolchain_worker_odbc_path: "/opt/microsoft/msodbcsql18"
+evander_worker_mssql_client_toolchain_worker_runtime_libs:
+  - /lib/x86_64-linux-gnu/libodbc.so.2
+  - /lib/x86_64-linux-gnu/libodbcinst.so.2
+  - /lib/x86_64-linux-gnu/libltdl.so.7
+# When building off-worker (for example, a standalone client-toolchain
+# deployment with worker MSSQL disabled), these source paths resolve on the
+# Ansible control machine.
 evander_worker_mssql_client_toolchain_local_tools_path: >-
   {{ lookup('env', 'HOST_MSSQL_TOOLS_ROOT') | default('/opt/mssql-tools18', true) }}
 evander_worker_mssql_client_toolchain_local_odbc_path: >-

@@ -6,6 +6,8 @@
         (evander_worker_mssql_client_toolchain_archive_path | default('') | string | trim | length)
         > 0
       }}
+    evander_worker_mssql_client_toolchain_builds_on_worker: >-
+      {{ evander_worker_mssql_client_toolchain_build_on_worker | bool }}
 
 - name: Check local MSSQL client toolchain archive
   ansible.builtin.stat:
@@ -42,6 +44,7 @@
   when:
     - evander_worker_mssql_client_toolchain_enabled | bool
     - not (evander_worker_mssql_client_toolchain_uses_archive | bool)
+    - not (evander_worker_mssql_client_toolchain_builds_on_worker | bool)
 
 - name: Build local MSSQL client toolchain archive
   ansible.builtin.command:
@@ -59,6 +62,23 @@
   when:
     - evander_worker_mssql_client_toolchain_enabled | bool
     - not (evander_worker_mssql_client_toolchain_uses_archive | bool)
+    - not (evander_worker_mssql_client_toolchain_builds_on_worker | bool)
+
+- name: Build MSSQL client toolchain archive from packages installed on worker
+  ansible.builtin.command:
+    argv:
+      - "{{ evander_deploy_path }}/scripts/build_mssql_client_toolchain_archive.sh"
+      - --output
+      - "{{ evander_worker_mssql_client_toolchain_remote_archive_path }}"
+  environment:
+    HOST_MSSQL_TOOLS_ROOT: "{{ evander_worker_mssql_client_toolchain_worker_tools_path }}"
+    HOST_MSSQL_ODBC_ROOT: "{{ evander_worker_mssql_client_toolchain_worker_odbc_path }}"
+    HOST_MSSQL_RUNTIME_LIBS: "{{ evander_worker_mssql_client_toolchain_worker_runtime_libs | join(' ') }}"
+  changed_when: false
+  when:
+    - evander_worker_mssql_client_toolchain_enabled | bool
+    - not (evander_worker_mssql_client_toolchain_uses_archive | bool)
+    - evander_worker_mssql_client_toolchain_builds_on_worker | bool
 
 - name: Resolve MSSQL client toolchain archive to copy
   ansible.builtin.set_fact:
@@ -68,7 +88,11 @@
         if (evander_worker_mssql_client_toolchain_uses_archive | bool)
         else evander_worker_mssql_client_archive_tmp.path ~ '/mssql-client.tar.gz'
       }}
-  when: evander_worker_mssql_client_toolchain_enabled | bool
+  when:
+    - evander_worker_mssql_client_toolchain_enabled | bool
+    - >-
+      (evander_worker_mssql_client_toolchain_uses_archive | bool)
+      or not (evander_worker_mssql_client_toolchain_builds_on_worker | bool)
 
 - name: Copy MSSQL client toolchain archive to worker
   ansible.builtin.copy:
@@ -77,7 +101,11 @@
     owner: "{{ evander_run_user }}"
     group: "{{ evander_run_user }}"
     mode: "0640"
-  when: evander_worker_mssql_client_toolchain_enabled | bool
+  when:
+    - evander_worker_mssql_client_toolchain_enabled | bool
+    - >-
+      (evander_worker_mssql_client_toolchain_uses_archive | bool)
+      or not (evander_worker_mssql_client_toolchain_builds_on_worker | bool)
 
 - name: Reset worker MSSQL client toolchain cache
   ansible.builtin.file:
@@ -143,4 +171,5 @@
   when:
     - evander_worker_mssql_client_toolchain_enabled | bool
     - not (evander_worker_mssql_client_toolchain_uses_archive | bool)
+    - not (evander_worker_mssql_client_toolchain_builds_on_worker | bool)
     - evander_worker_mssql_client_archive_tmp.path is defined

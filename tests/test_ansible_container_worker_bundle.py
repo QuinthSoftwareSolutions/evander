@@ -411,13 +411,11 @@ def test_worker_mssql_role_installs_sql_server_and_verifies_sqlcmd() -> None:
 
 def test_worker_mssql_client_toolchain_role_seeds_and_verifies_sqlcmd_cache() -> None:
     worker = (ROOT / "ansible" / "worker.yml").read_text(encoding="utf-8")
+    defaults = (ROOT / "ansible" / "group_vars" / "evander_worker_hosts.yml").read_text(
+        encoding="utf-8"
+    )
     role = (
-        ROOT
-        / "ansible"
-        / "roles"
-        / "worker_mssql_client_toolchain"
-        / "tasks"
-        / "main.yml"
+        ROOT / "ansible" / "roles" / "worker_mssql_client_toolchain" / "tasks" / "main.yml"
     ).read_text(encoding="utf-8")
 
     assert worker.index("- role: worker_mssql") < worker.index(
@@ -426,8 +424,17 @@ def test_worker_mssql_client_toolchain_role_seeds_and_verifies_sqlcmd_cache() ->
     assert worker.index("- role: worker_mssql_client_toolchain") < worker.index(
         "- role: container_worker_service"
     )
-    assert "Build local MSSQL client toolchain archive" in role
+    assert "Build MSSQL client toolchain archive from packages installed on worker" in role
     assert "build_mssql_client_toolchain_archive.sh" in role
+    assert "evander_worker_mssql_client_toolchain_build_on_worker" in role
+    assert '"{{ evander_deploy_path }}/scripts/build_mssql_client_toolchain_archive.sh"' in role
+    assert role.index(
+        "Build MSSQL client toolchain archive from packages installed on worker"
+    ) < role.index("Resolve MSSQL client toolchain archive to copy")
+    assert (
+        'evander_worker_mssql_client_toolchain_build_on_worker: "{{ evander_worker_mssql_enabled }}"'
+        in defaults
+    )
     assert "Copy MSSQL client toolchain archive to worker" in role
     assert "Unpack MSSQL client toolchain into worker cache" in role
     assert "Verify worker MSSQL client toolchain on host cache" in role

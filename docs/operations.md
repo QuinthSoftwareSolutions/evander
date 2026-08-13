@@ -858,11 +858,13 @@ Storage layout for directory config:
 
 ## Container Worker MSSQL Client Toolchain
 
-When worker MSSQL is enabled, the worker playbook packages host-installed `sqlcmd` and ODBC Driver
-18 into a worker cache and mounts it read-only at `/opt/evander/toolchains/mssql-client` in runner
-containers. The runner profile loads the cache automatically when present. Supply a prebuilt
-archive with `HOST_MSSQL_CLIENT_ARCHIVE`, or let the playbook build one from
-`HOST_MSSQL_TOOLS_ROOT` and `HOST_MSSQL_ODBC_ROOT`.
+When worker MSSQL is enabled, the worker playbook packages the worker-installed `sqlcmd` and ODBC
+Driver 18 into a worker cache after installing them, then mounts the cache read-only at
+`/opt/evander/toolchains/mssql-client` in runner containers. The runner profile loads the cache
+automatically when present. Supply a prebuilt archive with `HOST_MSSQL_CLIENT_ARCHIVE` to override
+the worker build. For a standalone client toolchain with worker MSSQL disabled, set
+`evander_worker_mssql_client_toolchain_build_on_worker: false` and provide
+`HOST_MSSQL_TOOLS_ROOT` and `HOST_MSSQL_ODBC_ROOT` on the Ansible control machine.
 
 The client does not grant database access by itself. An authorized session first provisions a
 session-owned database with `mssql_provision_database` or `mssql_seed_provision_database`, then
