@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-08-13 - Teams Direct-Message Trigger Targeting
+
+- Required explicit one-on-one Teams chat targets for direct-message triggers and filtered their
+  trigger-side polling to those targets before sender or content matching, preventing an
+  allowlisted sender's message in an unrelated direct chat from waking an agent.
+
 ## 2026-08-13 - Worker-Local MSSQL Client Toolchain Packaging
 
 - Build the default runner `sqlcmd`/ODBC archive on the worker after its Microsoft client packages

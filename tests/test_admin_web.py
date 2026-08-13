@@ -1316,9 +1316,16 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
         node for node in catalog_payload["nodes"] if node["type"] == "trigger:teams:direct-message"
     )
     assert [field["key"] for field in teams_direct_message["fields"]] == [
+        "targets",
         "sender_user_ids",
         "message_filter",
     ]
+    targets_field = next(
+        field for field in teams_direct_message["fields"] if field["key"] == "targets"
+    )
+    assert targets_field["kind"] == "object_list"
+    assert targets_field["required"] is True
+    assert targets_field["item_fields"][0]["placeholder"] == "chat:<chat-id>"
     sender_user_ids_field = next(
         field for field in teams_direct_message["fields"] if field["key"] == "sender_user_ids"
     )

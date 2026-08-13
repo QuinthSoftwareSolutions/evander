@@ -573,6 +573,7 @@ class TeamsNewMessageTriggerDefinition(TriggerDefinition):
 
 class TeamsDirectMessageTriggerDefinition(TriggerDefinition):
     type: Literal["trigger:teams:direct-message"]
+    targets: list[TeamsTargetDefinition] = Field(min_length=1)
     sender_user_ids: list[str] = Field(min_length=1)
     message_filter: TeamsMessageFilterDefinition | None = None
 

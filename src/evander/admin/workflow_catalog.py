@@ -1216,13 +1216,41 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
         label="Teams direct message",
         fields=[
             _field(
+                "targets",
+                "Chat targets",
+                "object_list",
+                required=True,
+                description=(
+                    "One-on-one Teams chat targets allowed to wake this workflow, with optional "
+                    "per-target message filters."
+                ),
+                item_fields=[
+                    _field(
+                        "target",
+                        "Target",
+                        "string",
+                        required=True,
+                        placeholder="chat:<chat-id>",
+                    ),
+                    _field(
+                        "message_filter",
+                        "Message filter",
+                        "json",
+                        description=(
+                            'Optional per-target wake filter, for example '
+                            '{"content":{"contains":"literal text","case_sensitive":false}}.'
+                        ),
+                    ),
+                ],
+            ),
+            _field(
                 "sender_user_ids",
                 "Sender user IDs or emails",
                 "string_list",
                 required=True,
                 description=(
                     "Microsoft Graph user IDs, UPNs, or mail addresses allowed to wake this "
-                    "workflow from one-on-one Teams chats."
+                    "workflow from the configured one-on-one Teams chats."
                 ),
             ),
             _field(
