@@ -1467,7 +1467,6 @@ def _verification_downstream_recovery_base(
         or recovery_task is None
         or recovery_task.originating_task_id != correction_task.id
         or recovery_task.parent_task_id is not None
-        or recovery_task.dependency_task_ids
         or deliverable.state != TeamRecordState.ACCEPTED
         or deliverable.superseded_by_deliverable_id is not None
         or deliverable.verification is None
@@ -1488,23 +1487,48 @@ def _verification_downstream_recovery_base(
     )
     if recovery_branch is None or recovery_commit is None:
         return None
+    recovery_context = (
+        state.git_work_contexts.get(deliverable.git_refs.branch_context_id)
+        if deliverable.git_refs.branch_context_id is not None
+        else None
+    )
     for correction_deliverable in state.deliverables.values():
         if (
             correction_deliverable.task_id != correction_task.id
             or correction_deliverable.state != TeamRecordState.ACCEPTED
             or correction_deliverable.superseded_by_deliverable_id is not None
-            or correction_deliverable.git_refs.agent_branch != recovery_branch
         ):
             continue
+        correction_branch = correction_deliverable.git_refs.agent_branch
         correction_commit = (
             correction_deliverable.git_refs.submitted_commit_sha
             or correction_deliverable.git_refs.commit_sha
         )
         if (
-            correction_commit is not None
-            and correction_commit.casefold() == recovery_commit.casefold()
-            and recovery_task.git_base_branch == recovery_branch
-            and deliverable.created_at >= correction_deliverable.created_at
+            correction_branch is None
+            or correction_commit is None
+            or correction_commit.casefold() != recovery_commit.casefold()
+            or recovery_task.git_base_branch != recovery_branch
+            or deliverable.created_at < correction_deliverable.created_at
+        ):
+            continue
+        if not recovery_task.dependency_task_ids:
+            if correction_branch == recovery_branch:
+                return recovery_branch, correction_commit
+            continue
+        if (
+            recovery_task.dependency_task_ids != [correction_task.id]
+            or recovery_context is None
+            or recovery_context.manual_dependency_git_sources
+            or len(recovery_context.dependency_git_sources) != 1
+        ):
+            continue
+        dependency_source = recovery_context.dependency_git_sources[0]
+        if (
+            dependency_source.dependency_task_id == correction_task.id
+            and dependency_source.deliverable_id == correction_deliverable.id
+            and dependency_source.branch == correction_branch
+            and dependency_source.commit_sha == correction_commit.casefold()
         ):
             return recovery_branch, correction_commit
     return None
@@ -1581,7 +1605,7 @@ def _verification_correction_successor_request_error(
     if invalid_ids:
         return (
             f"verification correction task {correction_task.id} did not produce "
-            "correction deliverables or verified dependency-free downstream "
+            "correction deliverables or lineage-verified downstream "
             "recovery deliverables: " + ", ".join(invalid_ids)
         )
     return None

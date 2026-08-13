@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-08-13 - Dependency-Preserving Verification Recovery
+
+- Allowed an accepted, fully verified downstream remediation to create a rejected-candidate
+  successor when its sole task dependency and immutable Git work context both name the exact
+  accepted verification-correction deliverable, branch, and commit. Extra, manual, or unpinned
+  dependency lineage remains ineligible.
+
 ## 2026-08-11 - Release Candidate Input Validation
 
 - Reject release packages for Git-backed projects when their direct inputs contain only

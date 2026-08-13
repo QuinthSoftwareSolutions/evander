@@ -10,10 +10,12 @@ import evander_team_addon.services.candidate_correction_reconciliation_service a
 from evander_team_addon.models import (
     AgentTask,
     AgentRuntime,
+    DependencyGitSource,
     Deliverable,
     DeliverableGitRefs,
     DeliverableReviewManifest,
     DeliverableVerification,
+    GitWorkContext,
     PersistentAgent,
     Project,
     ProjectGitConfig,
@@ -569,6 +571,93 @@ def test_passed_downstream_recovery_deliverable_creates_successor_without_waiver
     assert result["created_successor_release_package_ids"] == [successor.id]
     assert successor.deliverable_ids == ["downstream-recovery-deliverable"]
     assert successor.verification_waivers == []
+    assert state.blockers[blocker.id].state == TeamBlockerState.RESOLVED
+
+
+def test_passed_dependency_backed_recovery_deliverable_creates_successor(
+    tmp_path: Path,
+) -> None:
+    repository = TeamStateRepository(tmp_path)
+    seeded = _candidate_correction_state(gate_kind="verification")
+    seeded.deliverables["correction-deliverable"].verification = DeliverableVerification(
+        status="partial", summary="A separate client fixture still fails."
+    )
+    repository.update(lambda _state: seeded, expected_revision=0)
+    CandidateCorrectionReconciliationService(repository).reconcile()
+    blocked = repository.read()
+    blocker = next(iter(blocked.blockers.values()))
+
+    recovery_task = AgentTask(
+        id="dependency-backed-recovery-task",
+        owner_agent_id="coder",
+        project_id="project",
+        priority=0,
+        state=TeamTaskState.FINISHED,
+        title="Repair the downstream client fixture",
+        description="Preserve the accepted correction as the sole dependency.",
+        created_by_agent_id="lead",
+        originating_task_id="correction-task",
+        git_base_branch="main",
+        dependency_task_ids=["correction-task"],
+        deliverable_ids=["dependency-backed-recovery-deliverable"],
+    )
+    recovery_deliverable = Deliverable(
+        id="dependency-backed-recovery-deliverable",
+        task_id=recovery_task.id,
+        producer_agent_id="coder",
+        summary="Verified the correction and downstream fixture together.",
+        git_refs=DeliverableGitRefs(
+            agent_branch="agents/session-coder/dependency-backed-recovery",
+            commit_sha=RECOVERY_COMMIT,
+            submitted_commit_sha=RECOVERY_COMMIT,
+            branch_context_id="dependency-backed-recovery-context",
+        ),
+        verification=DeliverableVerification(status="passed"),
+        review_request_ids=["dependency-backed-recovery-review"],
+        state=TeamRecordState.ACCEPTED,
+    )
+    blocked.tasks[recovery_task.id] = recovery_task
+    blocked.deliverables[recovery_deliverable.id] = recovery_deliverable
+    blocked.git_work_contexts["dependency-backed-recovery-context"] = GitWorkContext(
+        id="dependency-backed-recovery-context",
+        agent_id="coder",
+        task_id=recovery_task.id,
+        agent_branch=recovery_deliverable.git_refs.agent_branch or "",
+        base_branch="main",
+        base_commit=CORRECTION_COMMIT,
+        commit_sha=RECOVERY_COMMIT,
+        dependency_git_sources=[
+            DependencyGitSource(
+                dependency_task_id="correction-task",
+                deliverable_id="correction-deliverable",
+                branch="agents/session-coder/correction",
+                commit_sha=CORRECTION_COMMIT,
+            )
+        ],
+    )
+    blocked.review_requests["dependency-backed-recovery-review"] = ReviewRequest(
+        id="dependency-backed-recovery-review",
+        deliverable_id=recovery_deliverable.id,
+        reviewer_agent_id="reviewer",
+        state=TeamRecordState.ACCEPTED,
+        reviewed_commit_sha=RECOVERY_COMMIT,
+    )
+    repository.update(lambda _state: blocked, expected_revision=blocked.revision)
+
+    result = CandidateCorrectionReconciliationService(repository).reconcile()
+    state = repository.read()
+    successor = next(
+        release
+        for release in state.release_packages.values()
+        if release.supersedes_release_package_id == "release-predecessor"
+    )
+
+    assert result["created_successor_release_package_ids"] == [successor.id]
+    assert successor.deliverable_ids == ["dependency-backed-recovery-deliverable"]
+    assert successor.verification_waivers == []
+    promotion = state.git_promotions[successor.git_promotion_record_ids[0]]
+    assert promotion.base_commit_sha == CANDIDATE_COMMIT
+    assert promotion.sources[0].expected_commit_sha == RECOVERY_COMMIT
     assert state.blockers[blocker.id].state == TeamBlockerState.RESOLVED
 
 
