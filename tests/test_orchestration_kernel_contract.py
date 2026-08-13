@@ -266,6 +266,35 @@ def test_host_wake_notifier_noops_when_receiver_is_missing(tmp_path: Path) -> No
     assert HostWakeNotifier(tmp_path / "missing.wake.sock").notify() is False
 
 
+def test_host_wake_notifier_drops_notification_when_socket_would_block(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _FullWakeSocket:
+        def __init__(self) -> None:
+            self.blocking: bool | None = None
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb) -> None:
+            return None
+
+        def setblocking(self, blocking: bool) -> None:
+            self.blocking = blocking
+
+        def sendto(self, payload: bytes, path: str) -> None:
+            assert payload == b"wake"
+            assert path == str(tmp_path / "full.wake.sock")
+            assert self.blocking is False
+            raise BlockingIOError
+
+    wake_socket = _FullWakeSocket()
+    monkeypatch.setattr(socket, "socket", lambda family, kind: wake_socket)
+
+    assert HostWakeNotifier(tmp_path / "full.wake.sock").notify() is False
+
+
 def test_kernel_module_has_no_platform_specific_imports() -> None:
     source = Path("src/evander/orchestration/kernels.py").read_text(encoding="utf-8")
     tree = ast.parse(source)

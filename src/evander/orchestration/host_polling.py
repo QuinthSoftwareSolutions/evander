@@ -183,6 +183,7 @@ class HostWakeNotifier:
             return False
         try:
             with socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM) as notifier:
+                notifier.setblocking(False)
                 notifier.sendto(b"wake", str(self.path))
         except OSError:
             return False

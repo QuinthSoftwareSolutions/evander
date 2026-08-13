@@ -13,7 +13,9 @@
 
 - Woke the effect orchestrator as soon as an in-process effect or query future completes, including
   futures resubmitted during recovery. Durable execution state and periodic polling remain the
-  fallback when the best-effort Unix wake signal cannot be delivered.
+  fallback when the best-effort Unix wake signal cannot be delivered. Wake notifications use
+  nonblocking datagram sends so a full socket queue cannot stall provider executor threads or the
+  orchestrator cycle.
 
 ## 2026-08-13 - Required Codex MCP Startup
 
