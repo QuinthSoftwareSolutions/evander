@@ -2503,8 +2503,8 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
         type="effect:agent:prepare-reference-repositories",
         label="Prepare reference repositories",
         description=(
-            "Refresh managed mirrors concurrently and prepare clean, detached, read-only "
-            "repository snapshots at the exact refreshed commits."
+            "Verify requested upstream branches concurrently and prepare clean, detached, "
+            "read-only repository snapshots at the exact verified commits."
         ),
         fields=[
             _field("target", "Target", "string", bindable=True),

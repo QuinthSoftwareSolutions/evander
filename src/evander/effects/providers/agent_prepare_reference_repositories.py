@@ -5,6 +5,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import UTC, datetime
 import json
+import logging
 from pathlib import Path
 from typing import Any
 
@@ -29,6 +30,7 @@ from .base import EffectProviderBase, scoped_effect_directory_path
 
 _REFERENCE_REPO_CONFIG_VERSION = "1"
 _MAX_PARALLEL_REPOSITORIES = 4
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -40,6 +42,8 @@ class _ResolvedReferenceRepository:
     source_ref: str
     commit_sha: str
     clone_url: str
+    probe_performed: bool
+    probe_reused: bool
     refresh_performed: bool
 
 
@@ -182,11 +186,26 @@ class AgentPrepareReferenceRepositoriesEffectProvider(EffectProviderBase):
                     "source_ref": repository.source_ref,
                     "commit_sha": repository.commit_sha,
                     "target_dir": record.target_dir,
+                    "probe_performed": repository.probe_performed,
+                    "probe_reused": repository.probe_reused,
                     "refresh_performed": repository.refresh_performed,
                     "checkout_updated": bool(record.cloned or record.checkout_updated),
                     "configuration_updated": bool(record.configuration_updated),
                     "access_reused": access_reused,
                 }
+                logger.info(
+                    "metric_agent_prepare_reference_repository "
+                    "session_id=%s managed_repo_id=%s branch=%s "
+                    "probe_performed=%s probe_reused=%s refresh_performed=%s "
+                    "checkout_updated=%s",
+                    session_id,
+                    repository.managed_repo_id,
+                    repository.source_ref.removeprefix("refs/heads/"),
+                    repository.probe_performed,
+                    repository.probe_reused,
+                    repository.refresh_performed,
+                    result["checkout_updated"],
+                )
                 results[repository.index] = result
 
         bind_repository = getattr(context.admin_service, "bind_managed_git_repository", None)
@@ -251,24 +270,43 @@ class AgentPrepareReferenceRepositoriesEffectProvider(EffectProviderBase):
     ) -> _ResolvedReferenceRepository:
         admin_service = self._context().admin_service
         ensure = getattr(admin_service, "ensure_managed_git_repository", None)
+        refresh_branch = getattr(
+            admin_service,
+            "refresh_managed_git_repository_if_branch_changed",
+            None,
+        )
         resolve_branch = getattr(admin_service, "resolve_managed_git_branch_commit", None)
         clone_resolver = getattr(admin_service, "resolve_managed_git_clone", None)
-        if not all(callable(method) for method in (ensure, resolve_branch, clone_resolver)):
+        if not all(
+            callable(method) for method in (ensure, refresh_branch, resolve_branch, clone_resolver)
+        ):
             raise RuntimeError("managed Git reference-repository operations are unavailable")
         repo_source = required_string(repository.get("repo_source"), "repo_source is required")
-        refreshed = _mapping_result(
+        registered = _mapping_result(
             ensure(
                 directory_path=directory_path,
                 repo_source=repo_source,
-                refresh=True,
-                reuse_if_refreshed_after=requested_at,
+                refresh=False,
             )
         )
         managed_repo_id = required_string(
-            refreshed.get("managed_repo_id"),
+            registered.get("managed_repo_id"),
             "managed Git registration did not return managed_repo_id",
         )
-        branch = str(repository.get("branch") or refreshed.get("default_branch") or "main").strip()
+        verification = _mapping_result(
+            refresh_branch(
+                managed_repo_id,
+                directory_path=directory_path,
+                branch=repository.get("branch"),
+                reuse_if_verified_after=requested_at,
+            )
+        )
+        branch = required_string(
+            verification.get("branch")
+            or repository.get("branch")
+            or registered.get("default_branch"),
+            f"managed repository {managed_repo_id} has no default branch",
+        )
         commit_sha = required_string(
             resolve_branch(
                 managed_repo_id,
@@ -300,7 +338,9 @@ class AgentPrepareReferenceRepositoriesEffectProvider(EffectProviderBase):
                 clone_info.get("clone_url") or clone_info.get("worker_repo_source"),
                 "managed Git clone URL is unavailable",
             ),
-            refresh_performed=not bool(refreshed.get("refresh_reused")),
+            probe_performed=bool(verification.get("probe_performed")),
+            probe_reused=bool(verification.get("probe_reused")),
+            refresh_performed=bool(verification.get("refresh_performed")),
         )
 
     def _effect(self) -> AgentPrepareReferenceRepositoriesEffectDefinition:

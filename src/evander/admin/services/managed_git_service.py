@@ -125,6 +125,13 @@ class _SourceInfo:
 
 
 @dataclass(frozen=True, slots=True)
+class _BranchProbeObservation:
+    branch: str
+    observed_sha: str | None
+    default_branch_identity: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class _MigrationFileRewrite:
     path: Path
     kind: str
@@ -915,6 +922,131 @@ class ManagedGitAdminService:
             reuse_if_refreshed_after=reuse_if_refreshed_after,
         )
 
+    def refresh_repository_if_branch_changed(
+        self,
+        managed_repo_id: str,
+        *,
+        branch: str | None = None,
+        directory_path: str,
+        reuse_if_verified_after: datetime | str | None = None,
+    ) -> dict[str, Any]:
+        """Probe one upstream branch and run a full refresh only when it changed."""
+
+        explicit_branch = str(branch or "").strip() or None
+        normalized_explicit_branch = (
+            _normalize_branch(explicit_branch, field_name="branch")
+            if explicit_branch is not None
+            else None
+        )
+        self._require_scoped_record(managed_repo_id, directory_path)
+        with (
+            self._repo_lock(managed_repo_id, exclusive=False),
+            self._target_lock(managed_repo_id, "canonical-refresh"),
+        ):
+            current = self._require_scoped_record(managed_repo_id, directory_path)
+            probe_default = (
+                normalized_explicit_branch is None
+                and current.get("default_branch_source") != "override"
+            )
+            requested_branch = normalized_explicit_branch or _normalize_branch(
+                str(current.get("default_branch") or ""),
+                field_name="default_branch",
+            )
+            verification_key = "default" if probe_default else f"branch:{requested_branch}"
+            verification = self._coalesced_branch_probe_verification(
+                current,
+                verification_key=verification_key,
+                reuse_if_verified_after=reuse_if_verified_after,
+            )
+            if verification is not None:
+                return self._branch_probe_result(
+                    current,
+                    verification,
+                    probe_performed=False,
+                    probe_reused=True,
+                    refresh_performed=False,
+                )
+
+            local = self._local_branch_probe_observation(
+                current,
+                branch=requested_branch,
+                probe_default=probe_default,
+            )
+            initialized = (
+                _parse_optional_utc_datetime(current.get("refreshed_at")) is not None
+                and local.observed_sha is not None
+            )
+            probe_performed = False
+            refresh_performed = False
+            if initialized:
+                observed = self._probe_upstream_branch(
+                    current,
+                    branch=requested_branch,
+                    probe_default=probe_default,
+                )
+                if normalized_explicit_branch is None and not probe_default:
+                    observed = _BranchProbeObservation(
+                        branch=observed.branch,
+                        observed_sha=observed.observed_sha,
+                        default_branch_identity=requested_branch,
+                    )
+                probe_performed = True
+                branch_changed = (
+                    observed.observed_sha is None
+                    or observed.observed_sha != local.observed_sha
+                    or (
+                        probe_default
+                        and observed.default_branch_identity != local.default_branch_identity
+                    )
+                )
+            else:
+                observed = local
+                branch_changed = True
+
+            if branch_changed:
+                self._refresh_repository_under_target_lock(managed_repo_id, None)
+                refresh_performed = True
+                current = self._require_scoped_record(managed_repo_id, directory_path)
+                refreshed_branch = observed.branch if probe_performed else requested_branch
+                refreshed = self._local_branch_probe_observation(
+                    current,
+                    branch=refreshed_branch,
+                    probe_default=probe_default,
+                )
+                if observed.observed_sha is None and probe_performed:
+                    raise ManagedGitNotFoundError(
+                        f"Upstream branch {observed.branch!r} does not exist"
+                    )
+                if refreshed.observed_sha is None:
+                    raise ManagedGitNotFoundError(
+                        f"Upstream branch {refreshed_branch!r} does not exist"
+                    )
+                if probe_performed and (
+                    refreshed.observed_sha != observed.observed_sha
+                    or (
+                        probe_default
+                        and refreshed.default_branch_identity != observed.default_branch_identity
+                    )
+                ):
+                    raise ManagedGitConflictError(
+                        "Upstream branch advertisement changed during managed Git refresh"
+                    )
+                observed = refreshed
+
+            verification = self._record_branch_probe_verification(
+                managed_repo_id,
+                verification_key=verification_key,
+                observation=observed,
+            )
+            current = self._require_scoped_record(managed_repo_id, directory_path)
+            return self._branch_probe_result(
+                current,
+                verification,
+                probe_performed=probe_performed,
+                probe_reused=False,
+                refresh_performed=refresh_performed,
+            )
+
     def _refresh_repository_with_override(
         self,
         managed_repo_id: str,
@@ -922,45 +1054,239 @@ class ManagedGitAdminService:
         *,
         reuse_if_refreshed_after: datetime | str | None = None,
     ) -> dict[str, Any]:
-        record = self._require_record(managed_repo_id)
-        effective_record = dict(record)
-        if default_branch_override is not None:
-            effective_record["default_branch"] = default_branch_override
-            effective_record["default_branch_source"] = "override"
         with (
             self._repo_lock(managed_repo_id, exclusive=False),
             self._target_lock(managed_repo_id, "canonical-refresh"),
         ):
-            if reuse_if_refreshed_after is not None:
-                current = self._require_record(managed_repo_id)
-                refreshed_at = _parse_optional_utc_datetime(current.get("refreshed_at"))
-                requested_at = _parse_optional_utc_datetime(reuse_if_refreshed_after)
-                if (
-                    refreshed_at is not None
-                    and requested_at is not None
-                    and refreshed_at >= requested_at
-                ):
-                    return {**self._public_record(current), "refresh_reused": True}
-            result = self._refresh_record(effective_record)
-            now = result["refreshed_at"]
+            return self._refresh_repository_under_target_lock(
+                managed_repo_id,
+                default_branch_override,
+                reuse_if_refreshed_after=reuse_if_refreshed_after,
+            )
 
-            def update(payload: dict[str, Any]):
-                current = payload["repositories"].get(managed_repo_id)
-                if not isinstance(current, dict):
-                    raise ManagedGitNotFoundError(f"Unknown managed repository: {managed_repo_id}")
-                current["refreshed_at"] = now
-                current["updated_at"] = now
-                if default_branch_override is not None:
-                    current["default_branch"] = default_branch_override
-                    current["default_branch_source"] = "override"
-                elif current.get("default_branch_source") != "override" and result.get(
-                    "default_branch"
-                ):
-                    current["default_branch"] = result["default_branch"]
-                return dict(current)
+    def _refresh_repository_under_target_lock(
+        self,
+        managed_repo_id: str,
+        default_branch_override: str | None,
+        *,
+        reuse_if_refreshed_after: datetime | str | None = None,
+    ) -> dict[str, Any]:
+        current = self._require_record(managed_repo_id)
+        if reuse_if_refreshed_after is not None:
+            refreshed_at = _parse_optional_utc_datetime(current.get("refreshed_at"))
+            requested_at = _parse_optional_utc_datetime(reuse_if_refreshed_after)
+            if (
+                refreshed_at is not None
+                and requested_at is not None
+                and refreshed_at >= requested_at
+            ):
+                return {**self._public_record(current), "refresh_reused": True}
+        effective_record = dict(current)
+        if default_branch_override is not None:
+            effective_record["default_branch"] = default_branch_override
+            effective_record["default_branch_source"] = "override"
+        result = self._refresh_record(effective_record)
+        now = result["refreshed_at"]
 
-            updated = self._update_registry(update)
-            return {**self._public_record(updated), "refresh_reused": False}
+        def update(payload: dict[str, Any]):
+            stored = payload["repositories"].get(managed_repo_id)
+            if not isinstance(stored, dict):
+                raise ManagedGitNotFoundError(f"Unknown managed repository: {managed_repo_id}")
+            stored["refreshed_at"] = now
+            stored["updated_at"] = now
+            if default_branch_override is not None:
+                stored["default_branch"] = default_branch_override
+                stored["default_branch_source"] = "override"
+            elif stored.get("default_branch_source") != "override" and result.get("default_branch"):
+                stored["default_branch"] = result["default_branch"]
+            return dict(stored)
+
+        updated = self._update_registry(update)
+        return {**self._public_record(updated), "refresh_reused": False}
+
+    @staticmethod
+    def _coalesced_branch_probe_verification(
+        record: Mapping[str, Any],
+        *,
+        verification_key: str,
+        reuse_if_verified_after: datetime | str | None,
+    ) -> dict[str, Any] | None:
+        requested_at = _parse_optional_utc_datetime(reuse_if_verified_after)
+        if requested_at is None:
+            return None
+        verifications = record.get("branch_probe_verifications")
+        if not isinstance(verifications, Mapping):
+            return None
+        verification = verifications.get(verification_key)
+        if not isinstance(verification, Mapping):
+            return None
+        verified_at = _parse_optional_utc_datetime(verification.get("verified_at"))
+        if verified_at is None or verified_at < requested_at:
+            return None
+        branch = str(verification.get("branch") or "").strip()
+        observed_sha = str(verification.get("observed_sha") or "").strip().lower()
+        if not branch or not _HEX_OBJECT_ID.fullmatch(observed_sha):
+            return None
+        return dict(verification)
+
+    def _local_branch_probe_observation(
+        self,
+        record: Mapping[str, Any],
+        *,
+        branch: str,
+        probe_default: bool,
+    ) -> _BranchProbeObservation:
+        bare_path = self._bare_path(record)
+        if probe_default:
+            symbolic = self._run_git(
+                ["git", f"--git-dir={bare_path}", "symbolic-ref", "--short", "HEAD"],
+                check=False,
+            )
+            default_branch = str(symbolic.stdout or "").strip()
+            if default_branch.startswith("refs/heads/"):
+                default_branch = default_branch[len("refs/heads/") :]
+            try:
+                normalized_default = _normalize_branch(
+                    default_branch,
+                    field_name="managed repository default branch",
+                )
+            except ValueError:
+                normalized_default = branch
+                default_identity = None
+            else:
+                default_identity = normalized_default
+            return _BranchProbeObservation(
+                branch=normalized_default,
+                observed_sha=self._resolve_ref(
+                    bare_path,
+                    f"refs/heads/{normalized_default}",
+                ),
+                default_branch_identity=default_identity,
+            )
+        return _BranchProbeObservation(
+            branch=branch,
+            observed_sha=self._resolve_ref(bare_path, f"refs/heads/{branch}"),
+            default_branch_identity=(
+                branch if record.get("default_branch_source") == "override" else None
+            ),
+        )
+
+    def _probe_upstream_branch(
+        self,
+        record: Mapping[str, Any],
+        *,
+        branch: str,
+        probe_default: bool,
+    ) -> _BranchProbeObservation:
+        source = str(record["refresh_source"])
+        env = self._git_environment(record)
+        if probe_default:
+            result = self._run_git(
+                ["git", "ls-remote", "--symref", source, "HEAD"],
+                env=env,
+            )
+            return self._parse_default_branch_advertisement(result.stdout)
+        result = self._run_git(
+            ["git", "ls-remote", "--refs", source, f"refs/heads/{branch}"],
+            env=env,
+        )
+        return self._parse_explicit_branch_advertisement(result.stdout, branch=branch)
+
+    @staticmethod
+    def _parse_explicit_branch_advertisement(
+        output: str,
+        *,
+        branch: str,
+    ) -> _BranchProbeObservation:
+        lines = [line.strip() for line in output.splitlines() if line.strip()]
+        if not lines:
+            return _BranchProbeObservation(branch=branch, observed_sha=None)
+        expected_ref = f"refs/heads/{branch}"
+        if len(lines) != 1:
+            raise ManagedGitConflictError(f"Malformed upstream advertisement for branch {branch!r}")
+        fields = lines[0].split()
+        if len(fields) != 2 or fields[1] != expected_ref or not _HEX_OBJECT_ID.fullmatch(fields[0]):
+            raise ManagedGitConflictError(f"Malformed upstream advertisement for branch {branch!r}")
+        return _BranchProbeObservation(branch=branch, observed_sha=fields[0].lower())
+
+    @staticmethod
+    def _parse_default_branch_advertisement(output: str) -> _BranchProbeObservation:
+        default_branch: str | None = None
+        observed_sha: str | None = None
+        for line in (line.strip() for line in output.splitlines() if line.strip()):
+            fields = line.split()
+            if len(fields) == 3 and fields[0] == "ref:" and fields[2] == "HEAD":
+                if default_branch is not None or not fields[1].startswith("refs/heads/"):
+                    raise ManagedGitConflictError("Malformed upstream default-branch advertisement")
+                default_branch = fields[1][len("refs/heads/") :]
+                continue
+            if len(fields) == 2 and fields[1] == "HEAD" and _HEX_OBJECT_ID.fullmatch(fields[0]):
+                if observed_sha is not None:
+                    raise ManagedGitConflictError("Malformed upstream default-branch advertisement")
+                observed_sha = fields[0].lower()
+                continue
+            raise ManagedGitConflictError("Malformed upstream default-branch advertisement")
+        if default_branch is None:
+            raise ManagedGitConflictError("Malformed upstream default-branch advertisement")
+        normalized_branch = _normalize_branch(
+            default_branch,
+            field_name="upstream default branch",
+        )
+        return _BranchProbeObservation(
+            branch=normalized_branch,
+            observed_sha=observed_sha,
+            default_branch_identity=normalized_branch,
+        )
+
+    def _record_branch_probe_verification(
+        self,
+        managed_repo_id: str,
+        *,
+        verification_key: str,
+        observation: _BranchProbeObservation,
+    ) -> dict[str, Any]:
+        if observation.observed_sha is None:
+            raise ManagedGitNotFoundError(f"Upstream branch {observation.branch!r} does not exist")
+        verified_at = _utc_now()
+        verification = {
+            "branch": observation.branch,
+            "observed_sha": observation.observed_sha,
+            "default_branch_identity": observation.default_branch_identity,
+            "verified_at": verified_at,
+        }
+
+        def update(payload: dict[str, Any]) -> None:
+            current = payload["repositories"].get(managed_repo_id)
+            if not isinstance(current, dict):
+                raise ManagedGitNotFoundError(f"Unknown managed repository: {managed_repo_id}")
+            existing = current.get("branch_probe_verifications")
+            verifications = dict(existing) if isinstance(existing, Mapping) else {}
+            verifications[verification_key] = dict(verification)
+            current["branch_probe_verifications"] = verifications
+            current["updated_at"] = verified_at
+
+        self._update_registry(update)
+        return verification
+
+    def _branch_probe_result(
+        self,
+        record: Mapping[str, Any],
+        verification: Mapping[str, Any],
+        *,
+        probe_performed: bool,
+        probe_reused: bool,
+        refresh_performed: bool,
+    ) -> dict[str, Any]:
+        return {
+            **self._public_record(record),
+            "branch": verification.get("branch"),
+            "observed_sha": verification.get("observed_sha"),
+            "default_branch_identity": verification.get("default_branch_identity"),
+            "verified_at": verification.get("verified_at"),
+            "probe_performed": probe_performed,
+            "probe_reused": probe_reused,
+            "refresh_performed": refresh_performed,
+        }
 
     def delete_repository(self, managed_repo_id: str) -> dict[str, Any]:
         initial = self._require_record(managed_repo_id)

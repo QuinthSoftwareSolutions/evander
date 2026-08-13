@@ -3065,12 +3065,26 @@ page. The workflow equivalents are `effect:agent:grant-repo-access`,
 
 For persistent read-only assistants, prefer
 `effect:agent:prepare-reference-repositories` over a serial `gate:for` containing ensure and clone
-effects. The batch effect refreshes independent mirrors concurrently, pins each resulting commit,
-and updates only clean detached checkouts. Do not migrate a deployed workflow until the control
-plane and container-worker daemon containing this effect have passed normal CI/CD and are deployed.
-After deployment, save the workflow through the revision-gated Admin Web/API, replace the serial
-loop with the batch node, retain the existing agent/file/debounce nodes, and verify one controlled
-message before removing the old path. Roll back by restoring the prior workflow-pack revision.
+effects. The batch effect checks independent mirrors concurrently and pins each resulting commit.
+For an existing initialized mirror, it probes only the requested upstream branch; an omitted branch
+uses symbolic `HEAD` so an upstream default-branch change is detected, unless an operator default
+override selects an exact branch. An unchanged advertisement reuses the canonical mirror without
+fetching. A changed or missing branch, changed default branch, or uninitialized mirror runs the
+existing full staged fetch and atomic ref transaction, including reserved-namespace and
+configured-default validation. Probe, authentication, network, malformed advertisement, and timeout
+failures fail closed instead of serving a cached ref.
+
+Every independent effect execution performs a live probe. The stored branch verification timestamp
+only lets requests that began before the same successful probe reuse it; it is not a freshness TTL
+and does not mark other branches or tags as refreshed. Preparation outputs and structured logs
+include `probe_performed`, `probe_reused`, and `refresh_performed`. Worker checkouts remain clean,
+detached, and exact-SHA pinned; a dirty checkout still fails closed.
+
+Do not migrate a deployed workflow until the control plane and container-worker daemon containing
+this effect have passed normal CI/CD and are deployed. After deployment, save the workflow through
+the revision-gated Admin Web/API, replace the serial loop with the batch node, retain the existing
+agent/file/debounce nodes, and verify one controlled message before removing the old path. Roll back
+by restoring the prior workflow-pack revision.
 
 The cloned guest repo receives `AGENTS.md`, the issue task file when applicable, a local coding
 branch, and the `git sync-base`, `git push-agent`, and `git agent-pr-note` helpers. Optional

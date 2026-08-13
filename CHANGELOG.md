@@ -1,5 +1,14 @@
 # Changelog
 
+## 2026-08-13 - Branch-Probed Reference Repository Refresh
+
+- Replaced unconditional full managed-Git fetches during persistent-assistant reference repository
+  preparation with live branch probes. Unchanged requested refs reuse the verified canonical mirror;
+  changed, missing, default-branch-moved, and first-use repositories retain the existing full
+  transactional refresh and validation path.
+- Recorded branch-scoped probe evidence separately from repository-wide refresh timestamps and
+  exposed probe, coalescing, and full-refresh decisions in preparation outputs and logs.
+
 ## 2026-08-13 - Immediate Effect Completion Wakeups
 
 - Woke the effect orchestrator as soon as an in-process effect or query future completes, including

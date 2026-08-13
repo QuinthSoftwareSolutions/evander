@@ -182,6 +182,18 @@ class AdminRuntimeProviderAdapter:
             **kwargs,
         )
 
+    def refresh_managed_git_repository_if_branch_changed(
+        self,
+        *args: Any,
+        **kwargs: Any,
+    ) -> Any:
+        return self._call_required(
+            self._managed_git_method("refresh_repository_if_branch_changed"),
+            "refresh_managed_git_repository_if_branch_changed",
+            *args,
+            **kwargs,
+        )
+
     def resolve_managed_git_branch_commit(self, *args: Any, **kwargs: Any) -> Any:
         return self._call_required(
             self._managed_git_method("resolve_branch_commit"),
