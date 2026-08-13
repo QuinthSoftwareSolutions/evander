@@ -321,7 +321,7 @@ Type-specific keys:
 | `trigger:discord:new-message` | `discord_bot_token_env` | `channel_ids`, `user_ids` |
 | `trigger:communication:new-message` | `communication_target_ids` | `directory_path`, `author_ids`, `content_contains`, `content_starts_with`, `case_sensitive` |
 | `trigger:teams:new-message` | `targets` | `user_ids` |
-| `trigger:teams:direct-message` | `sender_user_ids` | `message_filter` |
+| `trigger:teams:direct-message` | `targets`, `sender_user_ids` | `message_filter` |
 | `trigger:email:new-message` | `mailbox_ids` | `folder` |
 | `trigger:host-directory:file-added` | `directory_id` | `path`, `recursive`, `include_globs`, `exclude_globs`, `settle_seconds` |
 | `trigger:pull-request:new-feedback` | `provider` | `repo`, `directory_path`, `ado_organization`, `project`, `status`, `creator_id`, `reviewer_id`, `source_ref_name`, `target_ref_name`, `source_repository_id`, `repository_id`, `min_time`, `max_time`, `query_time_range_type`, `include_links`, `max_comment_length`, `tags`, `top`, `skip`, `cursor`, `agent_author_names`, `agent_mention_names`, `agent_author_ids`, `agent_mention_ids`, `suppress_agent_authored_feedback` |
@@ -2003,8 +2003,8 @@ mode remains supported for compatibility through `teams_graph_access_token_env` 
 `GRAPH_TEAMS_ACCESS_TOKEN`).
 The same delegated Teams identity/configuration is also used by the host-side Teams ingest worker
 that feeds `trigger:teams:new-message` for both channel threads and group chats, plus
-`trigger:teams:direct-message` for one-on-one direct messages sent by configured sender user ids,
-UPNs, or mail addresses.
+`trigger:teams:direct-message` for one-on-one direct messages in configured chat targets from
+configured sender user ids, UPNs, or mail addresses.
 
 Session and `effect:agent:create` manifests can use either legacy raw Teams/Discord IDs or the
 canonical nullable `communication_target_ids` field. Declared target IDs are
@@ -2031,8 +2031,9 @@ targets with `teams_chat_allowlist`, and one-on-one user send targets with
 Teams reads, reactions, attachment downloads, or `trigger:teams:new-message` polling.
 `teams_post_status` can mention Graph users in channel posts, channel thread replies, and chat
 posts; user targets are resolved into one-on-one chats before sending.
-Direct-message trigger polling is configured with `sender_user_ids` on
-`trigger:teams:direct-message`; entries can be Graph user IDs, UPNs, or mail addresses.
+Direct-message trigger polling requires `targets` and `sender_user_ids` on
+`trigger:teams:direct-message`. Each target is a `chat:<chat-id>` value; sender entries can be
+Graph user IDs, UPNs, or mail addresses.
 The Teams ingest worker persists backoff independently for each channel, chat, discovery endpoint,
 and user lookup. Retryable failure of one target does not delay healthy targets. Configure the
 initial and maximum target cooldown with `target_backoff_initial_seconds` (default `60`) and

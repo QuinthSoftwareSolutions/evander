@@ -203,6 +203,7 @@ def _trigger_adapter() -> _MaterializingTriggerAdapter:
                 "id": "teams-dm",
                 "display_name": "Teams direct message",
                 "type": "trigger:teams:direct-message",
+                "targets": [{"target": "chat:dm-chat"}],
                 "sender_user_ids": ["user-a"],
             },
             "trigger:teams:direct-message",
@@ -750,6 +751,7 @@ def test_conformance_provider_payload_contracts_and_secret_redaction(
                 "id": "teams-dm",
                 "display_name": "Teams direct message",
                 "type": "trigger:teams:direct-message",
+                "targets": [{"target": "chat:dm-chat"}],
                 "sender_user_ids": ["user-a"],
             }
         ),

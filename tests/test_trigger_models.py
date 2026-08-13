@@ -446,6 +446,7 @@ def test_teams_direct_message_trigger_requires_sender_user_ids() -> None:
                 "id": "t-teams-dm",
                 "display_name": "Teams direct message",
                 "type": "trigger:teams:direct-message",
+                "targets": [{"target": "chat:dm-chat"}],
                 "sender_user_ids": [" 143e5b02-868f-4f0c-a262-cf509b6c09e5 "],
                 "message_filter": {"content": {"contains": "hello"}},
             }
@@ -453,6 +454,7 @@ def test_teams_direct_message_trigger_requires_sender_user_ids() -> None:
     )
 
     assert trigger.sender_user_ids == ["143e5b02-868f-4f0c-a262-cf509b6c09e5"]
+    assert [target.target for target in trigger.targets] == ["chat:dm-chat"]
     assert trigger.message_filter is not None
     assert trigger.message_filter.content is not None
     assert trigger.message_filter.content.contains == "hello"
@@ -463,6 +465,16 @@ def test_teams_direct_message_trigger_requires_sender_user_ids() -> None:
                 "id": "t-teams-dm-missing",
                 "display_name": "Teams direct message",
                 "type": "trigger:teams:direct-message",
+            }
+        )
+
+    with pytest.raises(ValueError, match="targets"):
+        adapter.validate_python(
+            {
+                "id": "t-teams-dm-targets-missing",
+                "display_name": "Teams direct message",
+                "type": "trigger:teams:direct-message",
+                "sender_user_ids": ["user-a"],
             }
         )
 

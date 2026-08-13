@@ -8,9 +8,10 @@ Usage: build_evander_runner_image.sh [--force]
 Build the repo-local evander runner image and save it as a Docker tarball.
 The script writes a sidecar manifest next to the tarball and reuses the cached
 archive when the manifest still matches the Dockerfile, build script, resolved
-Codex binary, and package metadata. Moving base-image tags such as ubuntu:24.04
-are part of that manifest, so use --force or RUNNER_FORCE_REBUILD=true to
-refresh an upstream tag that changed without a Dockerfile text edit.
+Codex binary, code-mode host, and package metadata. Moving base-image tags such
+as ubuntu:24.04 are part of that manifest, so use --force or
+RUNNER_FORCE_REBUILD=true to refresh an upstream tag that changed without a
+Dockerfile text edit.
 
 Flags:
   --force                  Force a rebuild even when the manifest matches.
@@ -19,6 +20,9 @@ Environment:
   HOST_CODEX_ROOT          Host Codex package root.
                            Default: ~/.nvm/versions/node/v24.14.0/lib/node_modules/@openai/codex
   HOST_CODEX_BINARY_PATH   Direct path to the Codex binary to copy into the image.
+  HOST_CODEX_CODE_MODE_HOST_PATH
+                           Direct path to the codex-code-mode-host executable.
+                           Default: the sibling of the resolved Codex binary.
   HOST_CODEX_PLATFORM_PACKAGE
                            Codex platform package to resolve. Default: @openai/codex-linux-x64
   CODEX_TARGET_TRIPLE      Codex target triple to copy. Default: x86_64-unknown-linux-musl
@@ -58,6 +62,7 @@ CALLER_HOME="$(getent passwd "${CALLER_USER}" | cut -d: -f6)"
 
 HOST_CODEX_ROOT="${HOST_CODEX_ROOT:-${CALLER_HOME}/.nvm/versions/node/v24.14.0/lib/node_modules/@openai/codex}"
 HOST_CODEX_BINARY_PATH="${HOST_CODEX_BINARY_PATH:-}"
+HOST_CODEX_CODE_MODE_HOST_PATH="${HOST_CODEX_CODE_MODE_HOST_PATH:-}"
 HOST_CODEX_PLATFORM_PACKAGE="${HOST_CODEX_PLATFORM_PACKAGE:-@openai/codex-linux-x64}"
 CODEX_TARGET_TRIPLE="${CODEX_TARGET_TRIPLE:-x86_64-unknown-linux-musl}"
 CODEX_BINARY_RELATIVE_PATH="vendor/${CODEX_TARGET_TRIPLE}/bin/codex"
@@ -79,6 +84,8 @@ if [[ "${RUNNER_FORCE_REBUILD:-}" != "" ]]; then
   esac
 fi
 
+REQUESTED_CODEX_BINARY_PATH="${HOST_CODEX_BINARY_PATH}"
+REQUESTED_CODEX_CODE_MODE_HOST_PATH="${HOST_CODEX_CODE_MODE_HOST_PATH}"
 declare -a HOST_CODEX_BINARY_CANDIDATES=()
 declare -A SEEN_PACKAGE_JSON_PATHS=()
 
@@ -91,7 +98,7 @@ add_codex_binary_candidates() {
   done
 }
 
-if [[ -z "${HOST_CODEX_BINARY_PATH}" ]]; then
+if [[ -z "${REQUESTED_CODEX_BINARY_PATH}" ]]; then
   add_codex_binary_candidates "${HOST_CODEX_ROOT}/node_modules/${HOST_CODEX_PLATFORM_PACKAGE}"
   add_codex_binary_candidates "${HOST_CODEX_ROOT}"
 
@@ -127,27 +134,33 @@ try {
     fi
   fi
 else
-  HOST_CODEX_BINARY_CANDIDATES+=("${HOST_CODEX_BINARY_PATH}")
+  HOST_CODEX_BINARY_CANDIDATES+=("${REQUESTED_CODEX_BINARY_PATH}")
 fi
 
 HOST_CODEX_BINARY_PATH=""
+HOST_CODEX_CODE_MODE_HOST_PATH=""
 for candidate in "${HOST_CODEX_BINARY_CANDIDATES[@]}"; do
-  if [[ -x "${candidate}" ]]; then
+  code_mode_host_candidate="${REQUESTED_CODEX_CODE_MODE_HOST_PATH:-$(dirname "${candidate}")/codex-code-mode-host}"
+  if [[ -x "${candidate}" && -x "${code_mode_host_candidate}" ]]; then
     HOST_CODEX_BINARY_PATH="${candidate}"
+    HOST_CODEX_CODE_MODE_HOST_PATH="${code_mode_host_candidate}"
     break
   fi
 done
 
-if [[ ! -x "${HOST_CODEX_BINARY_PATH}" ]]; then
-  echo "Missing executable Codex binary. Checked:" >&2
+if [[ ! -x "${HOST_CODEX_BINARY_PATH}" || ! -x "${HOST_CODEX_CODE_MODE_HOST_PATH}" ]]; then
+  echo "Missing executable Codex runtime pair. Checked:" >&2
   for candidate in "${HOST_CODEX_BINARY_CANDIDATES[@]}"; do
-    echo "  - ${candidate}" >&2
+    code_mode_host_candidate="${REQUESTED_CODEX_CODE_MODE_HOST_PATH:-$(dirname "${candidate}")/codex-code-mode-host}"
+    echo "  - codex: ${candidate}" >&2
+    echo "    code-mode host: ${code_mode_host_candidate}" >&2
   done
-  echo "Install @openai/codex with optional dependencies, or set HOST_CODEX_BINARY_PATH or HOST_CODEX_ROOT." >&2
+  echo "Install @openai/codex with optional dependencies, or set HOST_CODEX_BINARY_PATH, HOST_CODEX_CODE_MODE_HOST_PATH, or HOST_CODEX_ROOT." >&2
   exit 1
 fi
 
 RESOLVED_CODEX_BINARY_PATH="$(readlink -f "${HOST_CODEX_BINARY_PATH}")"
+RESOLVED_CODEX_CODE_MODE_HOST_PATH="$(readlink -f "${HOST_CODEX_CODE_MODE_HOST_PATH}")"
 DOCKERFILE_PATH="${ROOT_DIR}/docker/evander-runner/Dockerfile"
 BUILD_SCRIPT_PATH="${SCRIPT_DIR}/build_evander_runner_image.sh"
 
@@ -207,6 +220,8 @@ append_manifest_line "dockerfile_sha256" "$(hash_file "${DOCKERFILE_PATH}")"
 append_manifest_line "build_script_sha256" "$(hash_file "${BUILD_SCRIPT_PATH}")"
 append_manifest_line "codex_binary_realpath" "${RESOLVED_CODEX_BINARY_PATH}"
 append_manifest_line "codex_binary_sha256" "$(hash_file "${RESOLVED_CODEX_BINARY_PATH}")"
+append_manifest_line "codex_code_mode_host_realpath" "${RESOLVED_CODEX_CODE_MODE_HOST_PATH}"
+append_manifest_line "codex_code_mode_host_sha256" "$(hash_file "${RESOLVED_CODEX_CODE_MODE_HOST_PATH}")"
 # The Dockerfile may keep the same text while a moving base-image tag refreshes
 # upstream, so the manifest records the exact FROM policy and operators can use
 # --force or RUNNER_FORCE_REBUILD=true for an intentional refresh.
@@ -255,7 +270,8 @@ trap cleanup EXIT
 BUILD_CONTEXT="$(mktemp -d)"
 cp "${ROOT_DIR}/docker/evander-runner/Dockerfile" "${BUILD_CONTEXT}/Dockerfile"
 cp "${HOST_CODEX_BINARY_PATH}" "${BUILD_CONTEXT}/codex"
-chmod 0755 "${BUILD_CONTEXT}/codex"
+cp "${HOST_CODEX_CODE_MODE_HOST_PATH}" "${BUILD_CONTEXT}/codex-code-mode-host"
+chmod 0755 "${BUILD_CONTEXT}/codex" "${BUILD_CONTEXT}/codex-code-mode-host"
 
 build_args=(build -t "${RUNNER_IMAGE_NAME}")
 if [[ -n "${RUNNER_BUILD_NETWORK}" ]]; then
