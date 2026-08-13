@@ -498,6 +498,9 @@ def test_worker_runtime_and_verification_roles_cover_docker_health_and_no_contro
     assert "scripts/build_evander_runner_image.sh" in runtime
     assert "docker\n      - load" in runtime
     assert "docker\n      - image\n      - inspect" in runtime
+    assert "Verify Codex runner runtime executables" in runtime
+    assert "/usr/local/bin/codex-code-mode-host" in runtime
+    assert "--network\n      - none" in runtime
     assert "evander_worker_toolchain_cache_root" in runtime
     assert "evander_worker_preload_images" in runtime
     assert "evander_worker_egress_policy_active" in egress

@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-08-13 - Codex Code-Mode Host Runner Packaging
+
+- Packaged the matching `codex-code-mode-host` executable with the Codex runner and made runner
+  builds fail closed when the binary pair is incomplete. The artifact manifest now fingerprints
+  both executables so a changed tool host invalidates the cached image archive, and worker
+  deployment verifies the pair inside the loaded image.
+
 ## 2026-08-13 - Worker-Local MSSQL Client Toolchain Packaging
 
 - Build the default runner `sqlcmd`/ODBC archive on the worker after its Microsoft client packages

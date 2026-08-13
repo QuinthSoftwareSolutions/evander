@@ -298,8 +298,9 @@ The selected agent pool must have Python and Docker for the runner-image build. 
 in the Azure VNet or on the control-plane host is usually the lowest-friction option for private
 worker access.
 
-The worker stage installs Node.js 24.14.0 before building `dist/evander-runner.tar` from a
-host-seeded Codex binary and `dist/evander-runner-claude.tar` from a host-resolved Claude Code
+The worker stage installs Node.js 24.14.0 before building `dist/evander-runner.tar` from the
+host-seeded Codex binary and matching `codex-code-mode-host`, and
+`dist/evander-runner-claude.tar` from a host-resolved Claude Code
 command. On hosted agents the pipeline installs the npm package named by
 `hostCodexNpmPackage`, then explicitly installs `@openai/codex-linux-x64` at the version declared by
 the installed Codex package into `$(Pipeline.Workspace)/host-codex`. It exports that directory as
@@ -311,8 +312,8 @@ the build host PATH.
 Those scripts write `dist/evander-runner.tar.manifest` and
 `dist/evander-runner-claude.tar.manifest` beside their tarballs and reuse cached archives when
 the manifests still match. The manifest keys cover the Dockerfile text, the build script text,
-`RUNNER_IMAGE_NAME`, the resolved agent executable path and SHA-256, provider package identity where
-applicable, and the base-image policy from the Dockerfile `FROM` line. Use
+`RUNNER_IMAGE_NAME`, the resolved agent executable paths and SHA-256 values, provider package
+identity where applicable, and the base-image policy from the Dockerfile `FROM` line. Use
 `RUNNER_FORCE_REBUILD=1 ./scripts/build_evander_runner_image.sh` or
 `./scripts/build_evander_runner_image.sh --force` for Codex, and
 `RUNNER_FORCE_REBUILD=1 ./scripts/build_evander_claude_runner_image.sh` or

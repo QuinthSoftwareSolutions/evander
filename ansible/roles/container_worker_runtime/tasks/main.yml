@@ -134,6 +134,23 @@
     label: "{{ item.image_name }}"
   changed_when: false
 
+- name: Verify Codex runner runtime executables
+  ansible.builtin.command:
+    argv:
+      - docker
+      - run
+      - --rm
+      - --network
+      - none
+      - --entrypoint
+      - /bin/sh
+      - "{{ evander_runner_image_name }}"
+      - -c
+      - >-
+        test -x /usr/local/bin/codex &&
+        test -x /usr/local/bin/codex-code-mode-host
+  changed_when: false
+
 - name: Preload configured worker images
   ansible.builtin.command:
     argv:
