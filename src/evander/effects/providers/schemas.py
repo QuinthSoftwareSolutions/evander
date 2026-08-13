@@ -359,6 +359,7 @@ class AgentPrepareReferenceRepositoriesEffectDefinition(EffectDefinition):
     vm_name: ConfigValue | None = None
     directory_path: ConfigValue
     repositories: ConfigValue
+    refresh_upstream: ConfigValue = False
 
     @model_validator(mode="after")
     def validate_target_selector(self) -> "AgentPrepareReferenceRepositoriesEffectDefinition":

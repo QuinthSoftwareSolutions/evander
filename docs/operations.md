@@ -3065,20 +3065,29 @@ page. The workflow equivalents are `effect:agent:grant-repo-access`,
 
 For persistent read-only assistants, prefer
 `effect:agent:prepare-reference-repositories` over a serial `gate:for` containing ensure and clone
-effects. The batch effect checks independent mirrors concurrently and pins each resulting commit.
-For an existing initialized mirror, it probes only the requested upstream branch; an omitted branch
-uses symbolic `HEAD` so an upstream default-branch change is detected, unless an operator default
-override selects an exact branch. An unchanged advertisement reuses the canonical mirror without
-fetching. A changed or missing branch, changed default branch, or uninitialized mirror runs the
-existing full staged fetch and atomic ref transaction, including reserved-namespace and
-configured-default validation. Probe, authentication, network, malformed advertisement, and timeout
-failures fail closed instead of serving a cached ref.
+effects. By default, the batch effect checks independent managed mirrors concurrently without
+an explicit upstream probe or refresh. It creates a missing worker checkout at the cached branch
+commit and otherwise leaves the checkout at its current commit, while still enforcing source
+identity, a clean working tree, detached HEAD, read-only configuration, and session access. If both
+the worker checkout and a cached branch commit are missing, preparation fails and tells the operator
+to opt in to refresh. First-time checkout materialization still fetches through the managed Git read
+endpoint and is subject to that endpoint's freshness enforcement; existing checkouts perform no Git
+network request during preparation.
 
-Every independent effect execution performs a live probe. The stored branch verification timestamp
-only lets requests that began before the same successful probe reuse it; it is not a freshness TTL
-and does not mark other branches or tags as refreshed. Preparation outputs and structured logs
-include `probe_performed`, `probe_reused`, and `refresh_performed`. Worker checkouts remain clean,
-detached, and exact-SHA pinned; a dirty checkout still fails closed.
+Set `refresh_upstream: true` when the workflow must advance repositories before every prompt. The
+effect then probes only each requested upstream branch; an omitted branch uses symbolic `HEAD` so an
+upstream default-branch change is detected, unless an operator default override selects an exact
+branch. An unchanged advertisement reuses the canonical mirror without fetching. A changed or
+missing branch, changed default branch, or uninitialized mirror runs the existing full staged fetch
+and atomic ref transaction, including reserved-namespace and configured-default validation. Probe,
+authentication, network, malformed advertisement, and timeout failures fail closed instead of
+serving a cached ref.
+
+With refresh enabled, the stored branch verification timestamp only lets requests that began before
+the same successful probe reuse it; it is not a freshness TTL and does not mark other branches or
+tags as refreshed. Preparation outputs and structured logs include `probe_performed`, `probe_reused`,
+and `refresh_performed`; the default cached path reports all three as false. A dirty checkout still
+fails closed.
 
 Do not migrate a deployed workflow until the control plane and container-worker daemon containing
 this effect have passed normal CI/CD and are deployed. After deployment, save the workflow through

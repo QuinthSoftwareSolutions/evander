@@ -1,5 +1,14 @@
 # Changelog
 
+## 2026-08-14 - Opt-In Assistant Repository Refresh
+
+- Made upstream refresh opt-in for persistent-assistant reference repository preparation. The
+  default path reuses cached managed-mirror state and retains an existing clean worker checkout;
+  `refresh_upstream: true` preserves branch probing, changed-mirror refresh, and exact-commit
+  advancement.
+- Kept first-time cached checkout materialization, read-only configuration, source validation,
+  access provisioning, parallel setup, and dirty-checkout failure behavior in both modes.
+
 ## 2026-08-13 - Branch-Probed Reference Repository Refresh
 
 - Replaced unconditional full managed-Git fetches during persistent-assistant reference repository

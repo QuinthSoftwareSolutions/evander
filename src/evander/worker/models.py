@@ -337,8 +337,9 @@ class WorkerReferenceRepoPrepareRequest(BaseModel):
     repo_source: str
     repo_name: str
     source_ref: str
-    commit_sha: str
+    commit_sha: str | None = None
     configuration_version: str = "1"
+    update_existing: bool = True
 
     @field_validator("repo_source", "source_ref", "configuration_version", mode="before")
     @classmethod
@@ -355,11 +356,19 @@ class WorkerReferenceRepoPrepareRequest(BaseModel):
 
     @field_validator("commit_sha", mode="before")
     @classmethod
-    def normalize_commit_sha(cls, value: object) -> str:
+    def normalize_commit_sha(cls, value: object) -> str | None:
+        if value is None:
+            return None
         text = str(value or "").strip().lower()
         if not re.fullmatch(r"[0-9a-f]{40,64}", text):
             raise ValueError("commit_sha must be a full hexadecimal Git object ID")
         return text
+
+    @model_validator(mode="after")
+    def validate_commit_requirement(self) -> "WorkerReferenceRepoPrepareRequest":
+        if self.update_existing and self.commit_sha is None:
+            raise ValueError("commit_sha is required when update_existing is true")
+        return self
 
 
 class WorkerReferenceRepoPrepareRecord(BaseModel):

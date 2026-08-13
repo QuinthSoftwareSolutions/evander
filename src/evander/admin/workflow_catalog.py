@@ -720,7 +720,7 @@ _WORKFLOW_EDITOR_NODE_DESCRIPTIONS: dict[str, str] = {
     "effect:agent:destroy": "Destroy an agent session and its backend resources.",
     "effect:agent:clone-repo": "Clone a repository into an agent session workspace.",
     "effect:agent:prepare-reference-repositories": (
-        "Refresh and prepare exact read-only repository snapshots for an assistant."
+        "Ensure read-only assistant repositories are present, optionally refreshing upstream."
     ),
     "effect:agent:grant-repo-access": "Grant exact-repository Git access to an agent.",
     "effect:agent:revoke-repo-access": "Revoke one agent repository grant.",
@@ -2503,8 +2503,8 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
         type="effect:agent:prepare-reference-repositories",
         label="Prepare reference repositories",
         description=(
-            "Verify requested upstream branches concurrently and prepare clean, detached, "
-            "read-only repository snapshots at the exact verified commits."
+            "Prepare clean, detached, read-only assistant repositories from cached managed "
+            "mirrors, optionally refreshing and advancing them first."
         ),
         fields=[
             _field("target", "Target", "string", bindable=True),
@@ -2526,6 +2526,17 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
                 json_value_type="array",
                 description=(
                     "Array of objects with repo_source and an optional branch override."
+                ),
+            ),
+            _field(
+                "refresh_upstream",
+                "Refresh upstream",
+                "boolean",
+                bindable=True,
+                default_value=False,
+                description=(
+                    "Opt in to probing each upstream branch, refreshing changed managed mirrors, "
+                    "and advancing existing worker checkouts to the verified commits."
                 ),
             ),
         ],

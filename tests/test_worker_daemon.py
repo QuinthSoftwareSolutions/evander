@@ -87,6 +87,19 @@ def test_worker_prepares_and_refreshes_clean_reference_repo_but_rejects_dirty_ch
         token="test-token",
         allowed_git_source_prefixes=[str(tmp_path)],
     )
+    with pytest.raises(ValueError, match="set refresh_upstream=true"):
+        daemon.prepare_reference_repo(
+            "session-without-cache",
+            WorkerReferenceRepoPrepareRequest(
+                repo_source=str(source),
+                repo_name="repo",
+                source_ref="refs/heads/main",
+                commit_sha=None,
+                configuration_version="1",
+                update_existing=False,
+            ),
+        )
+
     first = daemon.prepare_reference_repo(
         "session-1",
         WorkerReferenceRepoPrepareRequest(
@@ -118,6 +131,20 @@ def test_worker_prepares_and_refreshes_clean_reference_repo_but_rejects_dirty_ch
     tracked.write_text("two\n", encoding="utf-8")
     subprocess.run(["git", "add", "README.md"], cwd=source, check=True)
     subprocess.run(["git", "commit", "-q", "-m", "two"], cwd=source, check=True)
+    retained = daemon.prepare_reference_repo(
+        "session-1",
+        WorkerReferenceRepoPrepareRequest(
+            repo_source=str(source),
+            repo_name="repo",
+            source_ref="refs/heads/main",
+            commit_sha=source_commit(),
+            configuration_version="1",
+            update_existing=False,
+        ),
+    )
+    assert retained.checkout_updated is False
+    assert retained.commit_sha == first.commit_sha
+
     refreshed = daemon.prepare_reference_repo(
         "session-1",
         WorkerReferenceRepoPrepareRequest(

@@ -1250,10 +1250,15 @@ class WorkerDaemon:
             current_commit = self._git_commit_sha(target_dir, paths.agent_home)
         except subprocess.CalledProcessError:
             current_commit = None
+        if current_commit is None and request.commit_sha is None:
+            raise ValueError(
+                f"reference repo {request.repo_name} is missing and no cached commit is "
+                "available; set refresh_upstream=true"
+            )
         has_user_changes = self._reference_repo_has_user_changes(target_dir, git_env=git_env)
         if has_user_changes:
             raise ValueError(
-                f"reference repo checkout is dirty and cannot be updated: {request.repo_name}"
+                f"reference repo checkout is dirty and cannot be prepared: {request.repo_name}"
             )
         detached = (
             subprocess.run(
@@ -1265,8 +1270,14 @@ class WorkerDaemon:
             ).returncode
             != 0
         )
-        checkout_updated = current_commit != request.commit_sha or not detached
-        if current_commit != request.commit_sha:
+        fetch_requested_commit = current_commit is None or (
+            request.update_existing and current_commit != request.commit_sha
+        )
+        checkout_updated = fetch_requested_commit or not detached
+        if fetch_requested_commit:
+            requested_commit = request.commit_sha
+            if requested_commit is None:
+                raise RuntimeError("reference repo requested commit unexpectedly missing")
             subprocess.run(
                 [
                     "git",
@@ -1293,10 +1304,10 @@ class WorkerDaemon:
                 .stdout.strip()
                 .lower()
             )
-            if fetched_commit != request.commit_sha:
+            if fetched_commit != requested_commit:
                 raise ValueError(
                     f"reference repo {request.repo_name} fetched {fetched_commit}, "
-                    f"expected {request.commit_sha}"
+                    f"expected {requested_commit}"
                 )
             subprocess.run(
                 [
@@ -1306,7 +1317,7 @@ class WorkerDaemon:
                     "checkout",
                     "--quiet",
                     "--detach",
-                    request.commit_sha,
+                    requested_commit,
                 ],
                 env=git_env,
                 check=True,
@@ -1314,6 +1325,9 @@ class WorkerDaemon:
                 text=True,
             )
         elif not detached:
+            detach_commit = current_commit or request.commit_sha
+            if detach_commit is None:
+                raise RuntimeError("reference repo detach commit unexpectedly missing")
             subprocess.run(
                 [
                     "git",
@@ -1322,7 +1336,7 @@ class WorkerDaemon:
                     "checkout",
                     "--quiet",
                     "--detach",
-                    request.commit_sha,
+                    detach_commit,
                 ],
                 env=git_env,
                 check=True,
@@ -1379,7 +1393,7 @@ class WorkerDaemon:
                     )
 
         resolved_commit = self._git_commit_sha(target_dir, paths.agent_home)
-        if resolved_commit != request.commit_sha:
+        if fetch_requested_commit and resolved_commit != request.commit_sha:
             raise ValueError(
                 f"reference repo {request.repo_name} is at {resolved_commit}, "
                 f"expected {request.commit_sha}"
@@ -1390,7 +1404,7 @@ class WorkerDaemon:
             guest_repo_name=request.repo_name,
             remote_url=request.repo_source,
             source_ref=request.source_ref,
-            commit_sha=request.commit_sha,
+            commit_sha=resolved_commit,
             cloned=cloned,
             checkout_updated=checkout_updated,
             configuration_updated=configuration_updated,
