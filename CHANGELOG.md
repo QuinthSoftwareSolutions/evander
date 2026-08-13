@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-08-13 - Immediate Effect Completion Wakeups
+
+- Woke the effect orchestrator as soon as an in-process effect or query future completes, including
+  futures resubmitted during recovery. Durable execution state and periodic polling remain the
+  fallback when the best-effort Unix wake signal cannot be delivered.
+
 ## 2026-08-13 - Required Codex MCP Startup
 
 - Marked the Evander MCP server as required in container, subscription, and VM Codex

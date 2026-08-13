@@ -48,6 +48,7 @@ from evander.gate_runtime import (
 )
 from evander.orchestration.host_polling import (
     HostFileLockManager,
+    HostWakeNotifier,
     HostWakeSleeper,
     wake_socket_path_for_lock,
 )
@@ -555,7 +556,9 @@ class EffectOrchestratorWorker:
         self._completion_dispatch_hooks = resolved_wiring.completion_dispatch_hooks
         self.event_queue.reset_inflight()
         self._reconcile_managed_git_worktrees(force=True, strict=True)
-        self._wake_sleeper = HostWakeSleeper(wake_socket_path_for_lock(self.lock_path))
+        wake_path = wake_socket_path_for_lock(self.lock_path)
+        self._wake_sleeper = HostWakeSleeper(wake_path)
+        self._wake_notifier = HostWakeNotifier(wake_path)
         self._kernel = PollingOrchestratorKernel(
             config=PollingKernelConfig(
                 poll_interval_seconds=self.worker_config.poll_interval_seconds,
@@ -581,6 +584,26 @@ class EffectOrchestratorWorker:
 
     def _configure_managed_git_runtime(self, maintenance: ManagedGitMaintenancePort) -> None:
         self._managed_git_lifecycle.configure(maintenance)
+
+    def _register_inflight_future(
+        self,
+        *,
+        idempotency_key: str,
+        future: Future[dict[str, Any]],
+        config_revision: str,
+    ) -> None:
+        with self._inflight_lock:
+            self._inflight[idempotency_key] = InflightExecution(
+                future=future,
+                config_revision=config_revision,
+            )
+        future.add_done_callback(self._notify_inflight_completion)
+
+    def _notify_inflight_completion(self, _future: Future[dict[str, Any]]) -> None:
+        try:
+            self._wake_notifier.notify()
+        except Exception:  # noqa: BLE001
+            pass
 
     def _reconcile_managed_git_worktrees(
         self, *, force: bool = False, strict: bool = False
@@ -700,7 +723,9 @@ class EffectOrchestratorWorker:
                     )
                     self._last_snapshot_revision = None
                     self.queued_agent_prompt_store = store_wiring.queued_agent_prompt_store
-                    self._wake_sleeper.set_path(wake_socket_path_for_lock(self.lock_path))
+                    wake_path = wake_socket_path_for_lock(self.lock_path)
+                    self._wake_sleeper.set_path(wake_path)
+                    self._wake_notifier = HostWakeNotifier(wake_path)
                     self._kernel.config = PollingKernelConfig(
                         poll_interval_seconds=self.worker_config.poll_interval_seconds,
                         jitter_seconds=self.worker_config.jitter_seconds,
@@ -1710,10 +1735,11 @@ class EffectOrchestratorWorker:
                     resolved_config=dict(existing.resolved_config),
                     graph_metadata=graph_metadata,
                 )
-                with self._inflight_lock:
-                    self._inflight[idempotency_key] = InflightExecution(
-                        future=future, config_revision=config_revision
-                    )
+                self._register_inflight_future(
+                    idempotency_key=idempotency_key,
+                    future=future,
+                    config_revision=config_revision,
+                )
                 return True
             return False
         with self._inflight_lock:
@@ -1784,10 +1810,11 @@ class EffectOrchestratorWorker:
             resolved_config=resolved_config,
             graph_metadata=graph_metadata,
         )
-        with self._inflight_lock:
-            self._inflight[idempotency_key] = InflightExecution(
-                future=future, config_revision=config_revision
-            )
+        self._register_inflight_future(
+            idempotency_key=idempotency_key,
+            future=future,
+            config_revision=config_revision,
+        )
         return True
 
     def _dispatch_effect(
@@ -1818,10 +1845,11 @@ class EffectOrchestratorWorker:
                         graph_metadata=graph_metadata,
                     ),
                 )
-                with self._inflight_lock:
-                    self._inflight[idempotency_key] = InflightExecution(
-                        future=future, config_revision=config_revision
-                    )
+                self._register_inflight_future(
+                    idempotency_key=idempotency_key,
+                    future=future,
+                    config_revision=config_revision,
+                )
                 return True
             return False
         with self._inflight_lock:
@@ -1936,10 +1964,11 @@ class EffectOrchestratorWorker:
                 graph_metadata=graph_metadata,
             ),
         )
-        with self._inflight_lock:
-            self._inflight[idempotency_key] = InflightExecution(
-                future=future, config_revision=config_revision
-            )
+        self._register_inflight_future(
+            idempotency_key=idempotency_key,
+            future=future,
+            config_revision=config_revision,
+        )
         return True
 
     def _execute_gate(
