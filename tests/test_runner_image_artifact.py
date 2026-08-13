@@ -50,6 +50,7 @@ def _create_codex_fixture(
     layout: str = "current",
     version: str = "1.0.0",
     binary_text: str = "#!/usr/bin/env bash\nexit 0\n",
+    include_code_mode_host: bool = True,
 ) -> tuple[Path, Path, Path]:
     host_codex_root = tmp_path.joinpath(
         "host-codex", "node_modules", *HOST_CODEX_PACKAGE.split("/")
@@ -68,6 +69,10 @@ def _create_codex_fixture(
     binary_path.parent.mkdir(parents=True, exist_ok=True)
     binary_path.write_text(binary_text, encoding="utf-8")
     binary_path.chmod(0o755)
+    if include_code_mode_host:
+        code_mode_host_path = binary_path.parent / "codex-code-mode-host"
+        code_mode_host_path.write_text(binary_text, encoding="utf-8")
+        code_mode_host_path.chmod(0o755)
     _write_package_json(host_codex_root / "package.json", name=HOST_CODEX_PACKAGE, version=version)
     _write_package_json(
         platform_root / "package.json", name=RUNNER_PLATFORM_PACKAGE, version=version
@@ -176,6 +181,8 @@ def test_runner_dockerfile_contains_minimal_runtime_contract() -> None:
 
     assert "FROM ubuntu:24.04" in dockerfile
     assert "COPY codex /usr/local/bin/codex" in dockerfile
+    assert "COPY codex-code-mode-host /usr/local/bin/codex-code-mode-host" in dockerfile
+    assert "chmod 0755 /usr/local/bin/codex /usr/local/bin/codex-code-mode-host" in dockerfile
     assert "bubblewrap" in dockerfile
     assert "ENV HOME=/home/agent" in dockerfile
     assert "WORKDIR /home/agent" in dockerfile
@@ -226,6 +233,7 @@ def test_runner_build_script_builds_tag_and_saves_tarball() -> None:
     script = RUNNER_SCRIPT.read_text(encoding="utf-8")
 
     assert "HOST_CODEX_BINARY_PATH" in script
+    assert "HOST_CODEX_CODE_MODE_HOST_PATH" in script
     assert "HOST_CODEX_PLATFORM_PACKAGE" in script
     assert "CODEX_BINARY_RELATIVE_PATH" in script
     assert "CODEX_LEGACY_BINARY_RELATIVE_PATH" in script
@@ -241,6 +249,8 @@ def test_runner_build_script_builds_tag_and_saves_tarball() -> None:
     assert "RUNNER_FORCE_REBUILD" in script
     assert "evander-runner:latest" in script
     assert "dist/evander-runner.tar" in script
+    assert "codex_code_mode_host_sha256" in script
+    assert 'cp "${HOST_CODEX_CODE_MODE_HOST_PATH}" "${BUILD_CONTEXT}/codex-code-mode-host"' in script
     assert 'build_args=(build -t "${RUNNER_IMAGE_NAME}")' in script
     assert 'build_args+=(--network "${RUNNER_BUILD_NETWORK}")' in script
     assert "build_args+=(--pull)" in script
@@ -432,7 +442,7 @@ def test_runner_build_script_rebuilds_when_copied_dockerfile_changes(
     assert manifest_path.read_text(encoding="utf-8") != first_manifest
 
 
-@pytest.mark.parametrize("mutation", ["package_json", "binary"])
+@pytest.mark.parametrize("mutation", ["package_json", "binary", "code_mode_host"])
 def test_runner_build_script_rebuilds_when_codex_identity_changes(
     tmp_path: Path,
     mutation: str,
@@ -460,17 +470,52 @@ def test_runner_build_script_rebuilds_when_codex_identity_changes(
             name=RUNNER_PLATFORM_PACKAGE,
             version="2.0.0",
         )
-    else:
+    elif mutation == "binary":
         binary_path.write_text(
             "#!/usr/bin/env bash\nprintf 'changed binary\\n'\n",
             encoding="utf-8",
         )
         binary_path.chmod(0o755)
+    else:
+        code_mode_host_path = binary_path.parent / "codex-code-mode-host"
+        code_mode_host_path.write_text(
+            "#!/usr/bin/env bash\nprintf 'changed code mode host\\n'\n",
+            encoding="utf-8",
+        )
+        code_mode_host_path.chmod(0o755)
 
     _run_runner_script(script_path, repo_root, env)
 
     assert _docker_invocations(docker_log_path) == ["build", "save", "build", "save"]
     assert manifest_path.read_text(encoding="utf-8") != first_manifest
+
+
+def test_runner_build_script_rejects_missing_code_mode_host(tmp_path: Path) -> None:
+    repo_root = _copy_runner_repo(tmp_path)
+    script_path = repo_root / "scripts" / "build_evander_runner_image.sh"
+    codex_root, _, _ = _create_codex_fixture(
+        tmp_path,
+        layout="current",
+        include_code_mode_host=False,
+    )
+    fake_docker, docker_log_path = _write_fake_docker(tmp_path)
+
+    result = _run_runner_script_raw(
+        script_path,
+        repo_root,
+        {
+            "DOCKER": str(fake_docker),
+            "FAKE_DOCKER_LOG": str(docker_log_path),
+            "HOST_CODEX_ROOT": str(codex_root),
+            "HOST_CODEX_PLATFORM_PACKAGE": RUNNER_PLATFORM_PACKAGE,
+            "CODEX_TARGET_TRIPLE": RUNNER_TARGET_TRIPLE,
+        },
+    )
+
+    assert result.returncode == 1
+    assert "Missing executable Codex runtime pair" in result.stderr
+    assert "code-mode host:" in result.stderr
+    assert _docker_invocations(docker_log_path) == []
 
 
 @pytest.mark.parametrize("mutation", ["dockerfile", "binary"])

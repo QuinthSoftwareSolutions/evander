@@ -61,8 +61,9 @@ RUN apt-get -o Acquire::ForceIPv4=true -o Acquire::Retries=3 -o Acquire::http::T
     && rm -rf /var/lib/apt/lists/*
 
 COPY codex /usr/local/bin/codex
+COPY codex-code-mode-host /usr/local/bin/codex-code-mode-host
 
-RUN chmod 0755 /usr/local/bin/codex \
+RUN chmod 0755 /usr/local/bin/codex /usr/local/bin/codex-code-mode-host \
     && install -d -m 0775 /home/agent /home/agent/repos /artifacts \
     && install -d -m 0700 /home/agent/.evander /home/agent/.codex \
       /home/agent/.config/evander/codex \

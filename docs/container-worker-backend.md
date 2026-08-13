@@ -107,14 +107,18 @@ ${EDITOR:-vi} ansible/inventory/prod.yml
 ansible-playbook -i ansible/inventory/prod.yml ansible/worker.yml
 ```
 
-The Codex build script writes a sidecar manifest at `dist/evander-runner.tar.manifest` next to
+The Codex build copies both `codex` and its matching `codex-code-mode-host` executable from the
+resolved platform package. The build fails when either executable is missing so a code-mode-only
+model cannot deploy without its MCP tool host. The worker playbook repeats that check inside the
+loaded image before restarting the daemon. The script writes a sidecar manifest at
+`dist/evander-runner.tar.manifest` next to
 `dist/evander-runner.tar`. The Claude build script writes
 `dist/evander-runner-claude.tar.manifest` next to
 `dist/evander-runner-claude.tar`. If those manifests still match the tarball inputs, rerunning
 the scripts reuse the cached archives, print that the cached archive was reused, and skip Docker
 build/save entirely. The cache keys include the Dockerfile text, the build script text,
-`RUNNER_IMAGE_NAME`, the resolved agent executable path and SHA-256, provider package identity where
-applicable, and the Dockerfile base-image policy from the `FROM` line. Use
+`RUNNER_IMAGE_NAME`, the resolved agent executable paths and SHA-256 values, provider package
+identity where applicable, and the Dockerfile base-image policy from the `FROM` line. Use
 `RUNNER_FORCE_REBUILD=1 ./scripts/build_evander_runner_image.sh` or
 `./scripts/build_evander_runner_image.sh --force` for Codex, and
 `RUNNER_FORCE_REBUILD=1 ./scripts/build_evander_claude_runner_image.sh` or
@@ -235,8 +239,9 @@ If the host Docker bridge cannot reach Ubuntu apt mirrors during the image build
 with `RUNNER_BUILD_NETWORK=host`. That option only affects the host-side artifact build; worker
 runtime containers still use the daemon sandbox profile and must not use Docker `host` networking.
 
-The runner image intentionally contains only stable base tools, the vendored Codex binary, and
-Playwright operating-system libraries. .NET, Node, Playwright packages, browser caches, and NuGet
+The runner image intentionally contains only stable base tools, the vendored Codex binary and
+matching code-mode host, and Playwright operating-system libraries. .NET, Node, Playwright
+packages, browser caches, and NuGet
 fallback packages are worker-level caches mounted read-only into containers:
 
 - `/opt/evander/toolchains/dotnet`
