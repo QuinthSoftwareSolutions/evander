@@ -7,6 +7,26 @@
   accepted verification-correction deliverable, branch, and commit. Extra, manual, or unpinned
   dependency lineage remains ineligible.
 
+## 2026-08-13 - Bounded Team Inbox and Review Replays
+
+- Stopped unchanged pending inbox and review work from bypassing the Team
+  no-progress limit. Exhausted agents now receive at most one attempt for a
+  newly changed work snapshot while context rotation and recovery wakes remain
+  available.
+- Applied the same edge-triggered limit to manager-fallback work using a
+  separate, full-fidelity team-wide snapshot; direct manager work remains in
+  the ordinary wake domain.
+- Hardened assigned-review prompts to hydrate deferred Team tools by exact
+  logical name and retry before reporting the review interface unavailable.
+
+## 2026-08-13 - Inspectable Bokio Duplicate-Check Evidence
+
+- Added the read-only `bokio_get_duplicate_check` add-on MCP tool so an independent
+  reviewer can dereference a durable `bokio-duplicate-check:...` result without
+  rerunning or trusting a producer's prose summary.
+- Documented that existing bookkeeping and review sessions must be granted the
+  duplicate-check creation and read tools explicitly.
+
 ## 2026-08-11 - Release Candidate Input Validation
 
 - Reject release packages for Git-backed projects when their direct inputs contain only

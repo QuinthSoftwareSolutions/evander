@@ -22,6 +22,7 @@ from evander_team_addon.models import (
     TeamInboxItemType,
     TeamRecordState,
     TeamTaskState,
+    runtime_operations_payload,
 )
 from evander_team_addon.repository import TeamStateRepository
 from evander_team_addon.services.admin_service import TeamAdminService
@@ -1537,6 +1538,123 @@ def test_dispatch_failure_and_expiry_are_durable_terminal_states(
     assert expired_state.agent_runtimes["worker"].active_dispatch_id is None
 
 
+def test_preparation_failure_does_not_consume_fresh_exhausted_inbox_attempt(
+    tmp_path: Path,
+) -> None:
+    repository = _seed_agent_with_task(tmp_path)
+    runtime = TeamRuntimeService(repository)
+    now = LEASE_NOW
+
+    def _seed_exhausted_inbox(state):
+        state.agent_runtimes["worker"].no_progress_count = 3
+        state.dispatches["prior-attempt"] = TeamDispatch(
+            id="prior-attempt",
+            agent_id="worker",
+            session_id="session-worker",
+            cause_kind="scheduled",
+            status=TeamDispatchStatus.COMPLETED,
+            created_at=now - timedelta(minutes=2),
+            prepared_at=now - timedelta(minutes=2),
+            leased_at=now - timedelta(minutes=2),
+            lease_expires_at=now - timedelta(minutes=1),
+            completed_at=now - timedelta(minutes=1),
+        )
+        state.inbox["fresh-inbox"] = AgentInboxItem(
+            id="fresh-inbox",
+            recipient_agent_id="worker",
+            sender_agent_id="lead",
+            item_type=TeamInboxItemType.STATUS_REQUEST,
+            payload={"message": "Fresh work must survive preparation failure."},
+            created_at=now,
+            updated_at=now,
+        )
+        return state
+
+    repository.update(_seed_exhausted_inbox)
+    _state, leases = runtime.lease_due_agents(
+        agent_id="worker",
+        now=now,
+        max_no_progress_count=3,
+        respect_wake_interval=False,
+        defer_activation=True,
+    )
+    assert len(leases) == 1
+    failed_dispatch_id = leases[0]["dispatch_id"]
+
+    runtime.fail_agent_dispatch(
+        agent_id="worker",
+        dispatch_id=failed_dispatch_id,
+        error="prompt enqueue failed before delivery",
+        now=now + timedelta(seconds=1),
+    )
+    failed = repository.read().dispatches[failed_dispatch_id]
+    assert failed.status == TeamDispatchStatus.FAILED
+    assert failed.leased_at is None
+    assert failed.activation_completed_at is None
+
+    _state, retry = runtime.lease_due_agents(
+        agent_id="worker",
+        now=now + timedelta(seconds=2),
+        max_no_progress_count=3,
+        respect_wake_interval=False,
+        defer_activation=True,
+    )
+    assert len(retry) == 1
+    assert retry[0]["dispatch_id"] != failed_dispatch_id
+    assert retry[0]["dispatch"]["inbox_item_ids"] == ["fresh-inbox"]
+
+
+def test_first_preparation_failure_does_not_consume_exhausted_inbox_attempt(
+    tmp_path: Path,
+) -> None:
+    repository = _seed_agent_with_task(tmp_path)
+    runtime = TeamRuntimeService(repository)
+    now = LEASE_NOW
+
+    def _seed_exhausted_inbox_without_dispatch_history(state):
+        state.agent_runtimes["worker"].no_progress_count = 3
+        state.inbox["first-fresh-inbox"] = AgentInboxItem(
+            id="first-fresh-inbox",
+            recipient_agent_id="worker",
+            sender_agent_id="lead",
+            item_type=TeamInboxItemType.STATUS_REQUEST,
+            payload={"message": "Fresh work has not reached inference yet."},
+            created_at=now,
+            updated_at=now,
+        )
+        return state
+
+    repository.update(_seed_exhausted_inbox_without_dispatch_history)
+    _state, first = runtime.lease_due_agents(
+        agent_id="worker",
+        now=now,
+        max_no_progress_count=3,
+        respect_wake_interval=False,
+        defer_activation=True,
+    )
+    assert len(first) == 1
+    failed_dispatch_id = first[0]["dispatch_id"]
+
+    runtime.fail_agent_dispatch(
+        agent_id="worker",
+        dispatch_id=failed_dispatch_id,
+        error="first prompt enqueue failed before delivery",
+        now=now + timedelta(seconds=1),
+    )
+    assert repository.read().dispatches[failed_dispatch_id].leased_at is None
+
+    _state, retry = runtime.lease_due_agents(
+        agent_id="worker",
+        now=now + timedelta(seconds=2),
+        max_no_progress_count=3,
+        respect_wake_interval=False,
+        defer_activation=True,
+    )
+    assert len(retry) == 1
+    assert retry[0]["dispatch_id"] != failed_dispatch_id
+    assert retry[0]["dispatch"]["inbox_item_ids"] == ["first-fresh-inbox"]
+
+
 def test_no_progress_limit_creates_one_routed_execution_stall(
     tmp_path: Path,
 ) -> None:
@@ -1656,13 +1774,78 @@ def test_no_progress_limit_creates_one_routed_execution_stall(
         "task-created-during-stall",
     ]
 
-    def _resolve_stall(state):
+    def _add_fresh_inbox_after_stall(state):
+        state.inbox["fresh-after-stall"] = AgentInboxItem(
+            id="fresh-after-stall",
+            recipient_agent_id="worker",
+            sender_agent_id="lead",
+            task_id="task",
+            item_type=TeamInboxItemType.STATUS_REQUEST,
+            payload={"message": "New evidence arrived after the stalled attempt."},
+            created_at=LEASE_NOW + timedelta(seconds=3),
+            updated_at=LEASE_NOW + timedelta(seconds=3),
+        )
         _mark_agent_work_due(
             state,
             agent_id="worker",
             now=LEASE_NOW + timedelta(seconds=3),
         )
-        assert state.agent_runtimes["worker"].no_progress_count == 3
+        return state
+
+    repo_state = repository.update(_add_fresh_inbox_after_stall)
+    assert repo_state.agent_runtimes["worker"].no_progress_count == 3
+    worker_operations = next(
+        row
+        for row in runtime_operations_payload(repo_state, now=LEASE_NOW + timedelta(seconds=3))[
+            "agents"
+        ]
+        if row["id"] == "worker"
+    )
+    assert worker_operations["wake_due"] is True
+
+    _state, fresh_work_leases = runtime.lease_due_agents(
+        agent_id="worker",
+        now=LEASE_NOW + timedelta(seconds=4),
+        max_no_progress_count=3,
+        respect_wake_interval=False,
+    )
+    assert len(fresh_work_leases) == 1
+    assert fresh_work_leases[0]["reason"] == "inbox"
+    assert fresh_work_leases[0]["dispatch"]["inbox_item_ids"] == ["fresh-after-stall"]
+    fresh_dispatch_id = fresh_work_leases[0]["dispatch_id"]
+    assert fresh_work_leases[0]["dispatch"]["wake_work_fingerprint"] is not None
+
+    finalized_state, finalized = runtime.finalize_agent_dispatch_from_activity(
+        session_id="session-worker",
+        dispatch_id=fresh_dispatch_id,
+    )
+    assert finalized["progress_made"] is False
+    assert finalized_state.agent_runtimes["worker"].no_progress_count == 4
+
+    _state, unchanged_replay = runtime.lease_due_agents(
+        agent_id="worker",
+        now=LEASE_NOW + timedelta(seconds=5),
+        max_no_progress_count=3,
+        respect_wake_interval=False,
+    )
+    assert unchanged_replay == []
+    worker_operations = next(
+        row
+        for row in runtime_operations_payload(
+            repository.read(),
+            now=LEASE_NOW + timedelta(seconds=5),
+        )["agents"]
+        if row["id"] == "worker"
+    )
+    assert worker_operations["wake_due"] is False
+
+    def _resolve_stall(state):
+        _mark_agent_work_due(
+            state,
+            agent_id="worker",
+            now=LEASE_NOW + timedelta(seconds=6),
+        )
+        assert state.agent_runtimes["worker"].no_progress_count == 4
         resolve_blocker(
             state,
             blocker=state.blockers[blocker.id],
@@ -1670,7 +1853,7 @@ def test_no_progress_limit_creates_one_routed_execution_stall(
             dispatch_id=None,
             note="The owner reassigned and clarified the stalled work.",
             reference_ids=["incident:resolved"],
-            now=LEASE_NOW + timedelta(seconds=4),
+            now=LEASE_NOW + timedelta(seconds=7),
         )
         return state
 

@@ -675,9 +675,7 @@ class Team(TeamModel):
         gt=Decimal("0"),
         le=Decimal("1"),
     )
-    cost_budget_renewal_mode: TeamCostBudgetRenewalMode = (
-        TeamCostBudgetRenewalMode.MANUAL
-    )
+    cost_budget_renewal_mode: TeamCostBudgetRenewalMode = TeamCostBudgetRenewalMode.MANUAL
     cost_budget_windows: list[TeamCostBudgetWindow] = Field(default_factory=list)
     escalate_to_governance: bool = False
     project_ids: list[str] = Field(default_factory=list)
@@ -718,7 +716,9 @@ class Team(TeamModel):
         try:
             ratio = Decimal(text)
         except (InvalidOperation, ValueError):
-            raise ValueError("cost_warning_ratio must be greater than 0 and no more than 1") from None
+            raise ValueError(
+                "cost_warning_ratio must be greater than 0 and no more than 1"
+            ) from None
         if ratio <= 0 or ratio > 1:
             raise ValueError("cost_warning_ratio must be greater than 0 and no more than 1")
         return ratio
@@ -2564,6 +2564,8 @@ class TeamDispatch(TeamModel):
     activation_completed_at: datetime | None = None
     session_metadata_mirrored_at: datetime | None = None
     role_description_fingerprint: str | None = None
+    wake_work_fingerprint: str | None = None
+    wake_work_record_fingerprints: dict[str, str] = Field(default_factory=dict)
     action_feedback_dispatch_ids: list[str] = Field(default_factory=list)
     prepared_at: datetime | None = None
     leased_at: datetime | None = None
@@ -2576,10 +2578,31 @@ class TeamDispatch(TeamModel):
     def _required_text(cls, value: object, info) -> str:
         return _required_text(value, info.field_name)
 
-    @field_validator("cause_id", "error", "role_description_fingerprint", mode="before")
+    @field_validator(
+        "cause_id",
+        "error",
+        "role_description_fingerprint",
+        "wake_work_fingerprint",
+        mode="before",
+    )
     @classmethod
     def _optional_text(cls, value: object) -> str | None:
         return _optional_text(value)
+
+    @field_validator("wake_work_record_fingerprints", mode="before")
+    @classmethod
+    def _wake_work_record_fingerprints(cls, value: object) -> dict[str, str]:
+        if value is None:
+            return {}
+        if not isinstance(value, Mapping):
+            raise ValueError("wake_work_record_fingerprints must be an object")
+        return {
+            _required_text(key, "wake work record id"): _required_text(
+                fingerprint,
+                "wake work record fingerprint",
+            )
+            for key, fingerprint in value.items()
+        }
 
     @field_validator(
         "task_ids",
@@ -7597,6 +7620,36 @@ def _runtime_agent_wake_due(
     wake_inbox = [item for item in pending_inbox if _runtime_inbox_item_can_wake(item)]
     immediate_inbox = [item for item in wake_inbox if item.priority != TeamInboxPriority.LOW]
     low_priority_inbox = [item for item in wake_inbox if item.priority == TeamInboxPriority.LOW]
+    pending_reviews = [
+        review
+        for review in state.review_requests.values()
+        if review.reviewer_agent_id == agent.id
+        and review.state in {TeamRecordState.PENDING, TeamRecordState.IN_PROGRESS}
+        and review.superseded_by_review_request_id is None
+        and review.retired_at is None
+    ]
+    pending_reviews.sort(
+        key=lambda item: (
+            item.created_at or datetime.min.replace(tzinfo=UTC),
+            item.id,
+        )
+    )
+    blocked_review_ids = _runtime_mcp_capability_blocked_review_ids(
+        state,
+        agent_id=agent.id,
+    )
+    if blocked_review_ids:
+        pending_inbox = [
+            item
+            for item in pending_inbox
+            if not _runtime_inbox_references_review_ids(item, blocked_review_ids)
+        ]
+        wake_inbox = [item for item in pending_inbox if _runtime_inbox_item_can_wake(item)]
+        immediate_inbox = [item for item in wake_inbox if item.priority != TeamInboxPriority.LOW]
+        low_priority_inbox = [item for item in wake_inbox if item.priority == TeamInboxPriority.LOW]
+        pending_reviews = [
+            review for review in pending_reviews if review.id not in blocked_review_ids
+        ]
     action_feedback = _latest_undelivered_action_feedback_for_agent(state, agent.id)
     due_blockers = _runtime_blockers_due_for_agent(
         state,
@@ -7615,26 +7668,195 @@ def _runtime_agent_wake_due(
     wake_eligible = (
         rotation_pending
         or bool(wake_inbox)
+        or bool(pending_reviews)
         or bool(action_feedback)
         or bool(due_blockers)
         or task_work_ready
     )
     if not wake_eligible:
         return False
+    no_progress_exhausted = (
+        _DEFAULT_MAX_NO_PROGRESS_COUNT >= 0
+        and runtime.no_progress_count >= _DEFAULT_MAX_NO_PROGRESS_COUNT
+    )
+    if (
+        no_progress_exhausted
+        and not rotation_pending
+        and not action_feedback
+        and not due_blockers
+        and not wake_work_changed_since_latest_attempt(
+            state,
+            agent_id=agent.id,
+            inbox_items=wake_inbox,
+            reviews=pending_reviews,
+        )
+    ):
+        return False
     due_by_time = runtime.next_wake_at is None or _ensure_utc(runtime.next_wake_at) <= now
-    if rotation_pending or immediate_inbox or action_feedback or due_blockers:
+    if rotation_pending or immediate_inbox or pending_reviews or action_feedback or due_blockers:
         return True
     if task_work_ready and due_by_time:
-        if (
-            _DEFAULT_MAX_NO_PROGRESS_COUNT >= 0
-            and runtime.no_progress_count >= _DEFAULT_MAX_NO_PROGRESS_COUNT
-            and not wake_inbox
-        ):
+        if no_progress_exhausted:
             return False
         return True
     if low_priority_inbox:
         return _runtime_low_priority_batch_due(runtime)
     return False
+
+
+def _runtime_mcp_capability_blocked_review_ids(
+    state: TeamState,
+    *,
+    agent_id: str,
+) -> set[str]:
+    blocked_review_ids: set[str] = set()
+    for blocker in state.blockers.values():
+        if (
+            blocker.state != TeamBlockerState.OPEN
+            or blocker.source_kind != TeamBlockerSourceKind.MCP_CAPABILITY
+        ):
+            continue
+        identity = blocker.mcp_capability_identity
+        if identity is not None:
+            if identity.agent_id == agent_id:
+                blocked_review_ids.update(identity.review_request_ids)
+            continue
+        prefix = f"{agent_id}:"
+        if blocker.source_id.startswith(prefix):
+            blocked_review_ids.update(
+                review_id for review_id in blocker.source_id[len(prefix) :].split("|") if review_id
+            )
+    return blocked_review_ids
+
+
+def _runtime_inbox_references_review_ids(
+    item: AgentInboxItem,
+    review_request_ids: set[str],
+) -> bool:
+    if not review_request_ids:
+        return False
+    review_id = item.payload.get("review_request_id")
+    return isinstance(review_id, str) and review_id.strip() in review_request_ids
+
+
+def wake_work_fingerprint(
+    *,
+    inbox_items: Sequence[AgentInboxItem],
+    reviews: Sequence[ReviewRequest],
+) -> str | None:
+    """Return a stable snapshot of the inbox and review work offered on a wake."""
+
+    if not inbox_items and not reviews:
+        return None
+    payload = wake_work_record_fingerprints(
+        inbox_items=inbox_items,
+        reviews=reviews,
+    )
+    serialized = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+
+
+def wake_work_record_fingerprints(
+    *,
+    inbox_items: Sequence[AgentInboxItem],
+    reviews: Sequence[ReviewRequest],
+) -> dict[str, str]:
+    records: dict[str, str] = {}
+    for kind, rows in (("inbox", inbox_items), ("review", reviews)):
+        for row in rows:
+            serialized = json.dumps(
+                row.model_dump(mode="json"),
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            records[f"{kind}:{row.id}"] = hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+    return records
+
+
+def wake_work_changed_since_latest_attempt(
+    state: TeamState,
+    *,
+    agent_id: str,
+    inbox_items: Sequence[AgentInboxItem],
+    reviews: Sequence[ReviewRequest],
+) -> bool:
+    """Whether pending inbox/review work changed since its latest terminal attempt.
+
+    With no prior delivered dispatch, pending work receives one bounded attempt.
+    Legacy dispatches without a stored fingerprint still recognize newly added
+    or updated work from their durable scope and completion timestamp.
+    """
+
+    current_fingerprint = wake_work_fingerprint(
+        inbox_items=inbox_items,
+        reviews=reviews,
+    )
+    if current_fingerprint is None:
+        return False
+    terminal_statuses = {
+        TeamDispatchStatus.COMPLETED,
+        TeamDispatchStatus.EXPIRED,
+        TeamDispatchStatus.FAILED,
+    }
+    terminal_dispatches = [
+        dispatch
+        for dispatch in state.dispatches.values()
+        if dispatch.agent_id == agent_id
+        and dispatch.cause_kind != "manager_fallback"
+        and dispatch.status in terminal_statuses
+        and dispatch.completed_at is not None
+    ]
+    if not terminal_dispatches:
+        return True
+    wake_attempts = [
+        dispatch
+        for dispatch in terminal_dispatches
+        if (dispatch.leased_at is not None or dispatch.activation_completed_at is not None)
+        and (
+            dispatch.wake_work_record_fingerprints
+            or dispatch.wake_work_fingerprint is not None
+            or (
+                dispatch.cause_kind not in {"blocker", "context_handoff"}
+                and (dispatch.inbox_item_ids or dispatch.review_request_ids)
+            )
+        )
+    ]
+    if not wake_attempts:
+        return True
+    previous = max(
+        wake_attempts,
+        key=lambda dispatch: (
+            _ensure_utc(dispatch.leased_at or dispatch.activation_completed_at),
+            dispatch.id,
+        ),
+    )
+    if previous.wake_work_record_fingerprints:
+        current_records = wake_work_record_fingerprints(
+            inbox_items=inbox_items,
+            reviews=reviews,
+        )
+        if set(current_records) - set(previous.wake_work_record_fingerprints):
+            return True
+        return any(
+            previous.wake_work_record_fingerprints.get(record_id) != fingerprint
+            for record_id, fingerprint in current_records.items()
+        )
+    if previous.wake_work_fingerprint == current_fingerprint:
+        return False
+
+    current_inbox_ids = {item.id for item in inbox_items}
+    current_review_ids = {review.id for review in reviews}
+    if current_inbox_ids - set(previous.inbox_item_ids):
+        return True
+    if current_review_ids - set(previous.review_request_ids):
+        return True
+    completed_at = _ensure_utc(previous.completed_at)
+    if any(_ensure_utc(item.updated_at) > completed_at for item in inbox_items):
+        return True
+    return any(
+        review.created_at is not None and _ensure_utc(review.created_at) > completed_at
+        for review in reviews
+    )
 
 
 def _runtime_blockers_due_for_agent(

@@ -285,6 +285,16 @@ tools are the only Team action path.
    `team_reply_to_chat`, governance wakes only see governance tools, and
    ephemeral workers only report through `team_report_ephemeral_result`.
 
+   The Team no-progress limit also bounds inbox and review replays. Once an
+   agent reaches the configured limit, an unchanged pending work snapshot must
+   not lease again. Newly added or updated inbox/review work receives one
+   bounded attempt; removing or partially handling an item does not make the
+   remaining unchanged work new. Pre-delivery preparation failures do not
+   consume that attempt, and context rotation plus routed recovery work remain
+   independently wakeable. Manager fallback uses a separate, uncapped trigger
+   snapshot of team-wide work while its prompt remains bounded; manager-owned
+   tasks, inbox, reviews, and action feedback stay in the ordinary wake domain.
+
 ### External Team Chat bridge smoke check
 
 For a configured disposable communication target, send one allowlisted human

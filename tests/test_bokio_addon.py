@@ -1374,6 +1374,57 @@ def test_bokio_duplicate_check_requires_exact_permission_and_supported_criteria(
         )
 
 
+def test_bokio_get_duplicate_check_reads_exact_durable_record_by_evidence_ref(
+    tmp_path: Path,
+) -> None:
+    record = BokioDuplicateCheckStore(tmp_path).record(
+        criteria={"account": "1930", "amount": "194.98"},
+        criteria_digest="criteria-digest",
+        source_identity={
+            "api_base_url": "https://api.bokio.se/v1",
+            "company_id": "company-1",
+        },
+        source_fingerprint="source-fingerprint",
+        total_scanned=1015,
+        matching_entry_ids=[],
+    )
+    server = _register_bokio_mcp(
+        tmp_path,
+        allowed_tools=["bokio_get_duplicate_check"],
+    )
+
+    result = server.tools["bokio_get_duplicate_check"](
+        check_id=record["evidence_ref"],
+        session_id="session-1",
+    )["result"]
+
+    assert result == record
+    assert result["criteria"] == {"account": "1930", "amount": "194.98"}
+    assert result["total_scanned"] == 1015
+    assert result["matching_entry_ids"] == []
+
+
+def test_bokio_get_duplicate_check_requires_exact_permission_and_known_id(
+    tmp_path: Path,
+) -> None:
+    denied = _register_bokio_mcp(tmp_path / "denied", allowed_tools=[])
+    with pytest.raises(ToolError, match="bokio_get_duplicate_check"):
+        denied.tools["bokio_get_duplicate_check"](
+            check_id="bokio_duplicate_check_unknown",
+            session_id="session-1",
+        )
+
+    allowed = _register_bokio_mcp(
+        tmp_path / "allowed",
+        allowed_tools=["bokio_get_duplicate_check"],
+    )
+    with pytest.raises(ToolError, match="unknown Bokio duplicate check"):
+        allowed.tools["bokio_get_duplicate_check"](
+            check_id="bokio-duplicate-check:bokio_duplicate_check_unknown",
+            session_id="session-1",
+        )
+
+
 def test_bokio_mcp_lists_and_gets_remote_uploads_with_separate_permissions(
     tmp_path: Path,
     monkeypatch,

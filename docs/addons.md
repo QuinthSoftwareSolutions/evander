@@ -383,6 +383,13 @@ The Bokio add-on is intentionally an assisted-bookkeeping layer:
   Bokio companies or endpoints; set `refresh=true` to force a new scan. The
   durable records live in
   `runtime/addons/bokio-addon/duplicate-checks/duplicate-checks.db`.
+  Grant `bokio_check_journal_duplicates` to the agent producing the evidence and
+  `bokio_get_duplicate_check` to reviewers that must dereference the resulting
+  `bokio-duplicate-check:...` ID. The read tool returns the exact retained
+  criteria, source identity and fingerprint, scanned count, matching entry IDs,
+  and creation time without querying Bokio again. Existing sessions do not gain
+  newly added tools automatically; add these grants in **Sessions** by editing
+  the session's allowed MCP tools.
 - `bokio_attach_evidence` uploads managed evidence with a Bokio journal-entry ID,
   linking it to an existing transaction or entry. `bokio_create_journal_entry_with_evidence`
   creates an entry and attaches one or more evidence records with a durable

@@ -225,7 +225,9 @@ def test_team_runtime_pack_leaves_governance_warning_policy_to_teams() -> None:
     ]
 
     assert len(governance_effects) == 2
-    assert all("cost_warning_ratio" not in effect.get("config", {}) for effect in governance_effects)
+    assert all(
+        "cost_warning_ratio" not in effect.get("config", {}) for effect in governance_effects
+    )
 
 
 def test_project_git_identity_defaults_to_evander_bot() -> None:
@@ -4732,6 +4734,11 @@ def test_build_prompt_instructs_assigned_reviewer_to_read_leaf_or_composite_spec
     assert "coverage alone is not proof of correct integration" in prompt
     assert "decide blocked and name the missing record IDs" in prompt
     assert TEAM_DECIDE_REVIEW_TOOL in prompt
+    assert "matching its exact logical name" in prompt
+    assert "tools[toolName](...)" in prompt
+    assert "Do not use dotted access such as tools.team_decide_review(...)" in prompt
+    assert "repeat the exact-name lookup" in prompt
+    assert "Do not declare the Team interface unavailable" in prompt
 
     non_review_prompt = _build_prompt(
         {

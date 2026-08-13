@@ -30,7 +30,6 @@ from ..models import (
     GovernanceRuntime,
     PersistentAgent,
     TaskAssessmentReadiness,
-    TeamBlockerSourceKind,
     TeamBlockerRoute,
     TeamBlocker,
     TeamBlockerState,
@@ -50,6 +49,9 @@ from ..models import (
     agent_project_assignment_payloads,
     agent_project_ids,
     effective_role_permissions,
+    wake_work_changed_since_latest_attempt,
+    wake_work_fingerprint,
+    wake_work_record_fingerprints,
 )
 from .domain.action_feedback_payloads import _latest_action_feedback_for_agent
 from .domain.task_assessment import task_payload_with_assessment
@@ -94,6 +96,8 @@ from .domain.dispatch_scope import (
     actionable_dispatch_tasks,
     build_agent_dispatch_scope,
     build_preparation_recovery_dispatch_scope,
+    inbox_references_review_ids,
+    mcp_capability_blocked_review_ids,
 )
 from .domain.dispatch_progress import (
     _dispatch_activity_counts_as_progress,
@@ -118,6 +122,8 @@ from .domain.manager_fallback import (
     _manager_fallback_initial_release_decision_ids,
     _manager_fallback_summary_payload,
     _manager_fallback_summary_has_actionable_work,
+    manager_fallback_work_fingerprint,
+    manager_fallback_work_record_fingerprints,
 )
 from .domain.initial_release import (
     manager_fallback_initial_release_authority_error,
@@ -141,6 +147,7 @@ from .domain.wake import (
     _append_follow_up_agent_wake_requested_event,
     _case_payloads_for_agent,
     _case_payloads_for_team,
+    _ordinary_wake_work_for_agent,
     _pending_inbox_for_agent,
     _pending_reviews_for_agent,
     _release_package_payloads_for_agent,
@@ -662,25 +669,10 @@ class TeamRuntimeService:
                     state_model,
                     agent=agent,
                 )
-                pending_inbox = _pending_inbox_for_agent(state_model, agent.id)
-                wake_inbox = _wakeable_inbox_items(pending_inbox)
-                pending_reviews = actionable_dispatch_reviews(
-                    _pending_reviews_for_agent(state_model, agent.id)
-                )
-                blocked_review_ids = _mcp_capability_blocked_review_ids(
+                pending_inbox, wake_inbox, pending_reviews = _ordinary_wake_work_for_agent(
                     state_model,
-                    agent_id=agent.id,
+                    agent.id,
                 )
-                if blocked_review_ids:
-                    pending_inbox = [
-                        item
-                        for item in pending_inbox
-                        if not _inbox_references_review_ids(item, blocked_review_ids)
-                    ]
-                    wake_inbox = _wakeable_inbox_items(pending_inbox)
-                    pending_reviews = [
-                        review for review in pending_reviews if review.id not in blocked_review_ids
-                    ]
                 due_blockers = blockers_due_for_agent(
                     state_model,
                     agent_id=agent.id,
@@ -732,16 +724,22 @@ class TeamRuntimeService:
                     state_model,
                     agent.id,
                 )
-                if (
+                no_progress_exhausted = (
                     max_no_progress_count >= 0
                     and runtime.no_progress_count >= max_no_progress_count
-                    and (
-                        active_owned_tasks
-                        or wake_inbox
-                        or pending_reviews
-                        or action_feedback
-                        or due_blockers
-                    )
+                )
+                wake_work_changed = wake_work_changed_since_latest_attempt(
+                    state_model,
+                    agent_id=agent.id,
+                    inbox_items=wake_inbox,
+                    reviews=pending_reviews,
+                )
+                if no_progress_exhausted and (
+                    active_owned_tasks
+                    or wake_inbox
+                    or pending_reviews
+                    or action_feedback
+                    or due_blockers
                 ):
                     exhausted_dispatch = _latest_terminal_dispatch_for_agent(
                         state_model,
@@ -821,10 +819,8 @@ class TeamRuntimeService:
                 if wake_inbox and not immediate_wake_ready and not low_priority_wake_ready:
                     continue
                 if (
-                    max_no_progress_count >= 0
-                    and runtime.no_progress_count >= max_no_progress_count
-                    and not wake_inbox
-                    and not pending_reviews
+                    no_progress_exhausted
+                    and not wake_work_changed
                     and not rotation_pending
                     and not action_feedback
                     and not due_blockers
@@ -936,6 +932,22 @@ class TeamRuntimeService:
                         review_request_ids=(
                             dispatch_scope.review_request_ids if dispatch_scope is not None else ()
                         ),
+                    ),
+                    wake_work_fingerprint=(
+                        wake_work_fingerprint(
+                            inbox_items=wake_inbox,
+                            reviews=pending_reviews,
+                        )
+                        if not context_handoff_preparation and not preparation_recovery_dispatch
+                        else None
+                    ),
+                    wake_work_record_fingerprints=(
+                        wake_work_record_fingerprints(
+                            inbox_items=wake_inbox,
+                            reviews=pending_reviews,
+                        )
+                        if not context_handoff_preparation and not preparation_recovery_dispatch
+                        else {}
                     ),
                     **(dispatch_scope.model_fields() if dispatch_scope is not None else {}),
                 )
@@ -1091,17 +1103,14 @@ class TeamRuntimeService:
                     manager.id,
                     AgentRuntime(agent_id=manager.id),
                 )
-                due_by_time = (
-                    manager_runtime.next_wake_at is None
-                    or _ensure_utc(manager_runtime.next_wake_at) <= effective_now
-                )
-                if not due_by_time:
-                    continue
                 dispatch_id = f"team-dispatch-{uuid4().hex}"
                 manager_tasks = actionable_dispatch_tasks(
                     state_model,
                     agent=manager,
                 )
+                manager_active_task_ids = {
+                    task.id for task in _active_tasks_for_agent(state_model, manager.id)
+                }
                 manager_inbox = _pending_inbox_for_agent(
                     state_model,
                     manager.id,
@@ -1109,7 +1118,7 @@ class TeamRuntimeService:
                 manager_reviews = actionable_dispatch_reviews(
                     _pending_reviews_for_agent(state_model, manager.id)
                 )
-                manager_blocked_review_ids = _mcp_capability_blocked_review_ids(
+                manager_blocked_review_ids = mcp_capability_blocked_review_ids(
                     state_model,
                     agent_id=manager.id,
                 )
@@ -1117,7 +1126,7 @@ class TeamRuntimeService:
                     manager_inbox = [
                         item
                         for item in manager_inbox
-                        if not _inbox_references_review_ids(
+                        if not inbox_references_review_ids(
                             item,
                             manager_blocked_review_ids,
                         )
@@ -1141,6 +1150,64 @@ class TeamRuntimeService:
                 )
                 if not _manager_fallback_summary_has_actionable_work(manager_fallback_summary):
                     continue
+                manager_fallback_trigger_summary = _manager_fallback_summary_payload(
+                    state_model,
+                    team=team,
+                    manager=manager,
+                    now=effective_now,
+                    limit_rows=False,
+                    excluded_review_request_ids=(
+                        set(manager_blocked_review_ids) | {review.id for review in manager_reviews}
+                    ),
+                    excluded_inbox_item_ids={item.id for item in manager_inbox},
+                    excluded_task_ids=manager_active_task_ids,
+                    excluded_action_record_ids={
+                        record.id
+                        for record in state_model.action_records.values()
+                        if record.agent_id == manager.id
+                    },
+                )
+                if not _manager_fallback_summary_has_actionable_work(
+                    manager_fallback_trigger_summary
+                ):
+                    continue
+                manager_work_fingerprint = manager_fallback_work_fingerprint(
+                    manager_fallback_trigger_summary,
+                    state=state_model,
+                )
+                manager_work_record_fingerprints = manager_fallback_work_record_fingerprints(
+                    manager_fallback_trigger_summary,
+                    state=state_model,
+                )
+                latest_manager_attempt = _latest_delivered_wake_work_attempt_for_agent(
+                    state_model,
+                    agent_id=manager.id,
+                    cause_kind="manager_fallback",
+                )
+                if (
+                    max_no_progress_count >= 0
+                    and manager_runtime.no_progress_count >= max_no_progress_count
+                    and latest_manager_attempt is not None
+                    and not _wake_record_snapshot_has_additions_or_updates(
+                        current=manager_work_record_fingerprints,
+                        previous=latest_manager_attempt.wake_work_record_fingerprints,
+                        current_aggregate=manager_work_fingerprint,
+                        previous_aggregate=latest_manager_attempt.wake_work_fingerprint,
+                    )
+                ):
+                    continue
+                due_by_time = (
+                    manager_runtime.next_wake_at is None
+                    or _ensure_utc(manager_runtime.next_wake_at) <= effective_now
+                )
+                if not due_by_time and latest_manager_attempt is not None:
+                    if not _wake_record_snapshot_has_additions_or_updates(
+                        current=manager_work_record_fingerprints,
+                        previous=latest_manager_attempt.wake_work_record_fingerprints,
+                        current_aggregate=manager_work_fingerprint,
+                        previous_aggregate=latest_manager_attempt.wake_work_fingerprint,
+                    ):
+                        continue
                 manager_fallback_routing_authorities = _manager_fallback_review_routing_authorities(
                     state_model,
                     summary=manager_fallback_summary,
@@ -1214,6 +1281,8 @@ class TeamRuntimeService:
                         agent_id=manager.id,
                         review_request_ids=manager_scope.review_request_ids,
                     ),
+                    wake_work_fingerprint=manager_work_fingerprint,
+                    wake_work_record_fingerprints=manager_work_record_fingerprints,
                 )
                 state_model.dispatches[dispatch_id] = durable_dispatch
                 manager_runtime.active_dispatch_id = dispatch_id
@@ -2766,6 +2835,54 @@ def _latest_terminal_dispatch_for_agent(
     )
 
 
+def _latest_delivered_wake_work_attempt_for_agent(
+    state: TeamState,
+    *,
+    agent_id: str,
+    cause_kind: str | None = None,
+) -> TeamDispatch | None:
+    attempts = [
+        dispatch
+        for dispatch in state.dispatches.values()
+        if dispatch.agent_id == agent_id
+        and (cause_kind is None or dispatch.cause_kind == cause_kind)
+        and dispatch.completed_at is not None
+        and dispatch.status
+        in {
+            TeamDispatchStatus.COMPLETED,
+            TeamDispatchStatus.EXPIRED,
+            TeamDispatchStatus.FAILED,
+        }
+        and dispatch.wake_work_fingerprint is not None
+        and (dispatch.leased_at is not None or dispatch.activation_completed_at is not None)
+    ]
+    if not attempts:
+        return None
+    return max(
+        attempts,
+        key=lambda dispatch: (
+            _ensure_utc(dispatch.leased_at or dispatch.activation_completed_at),
+            dispatch.id,
+        ),
+    )
+
+
+def _wake_record_snapshot_has_additions_or_updates(
+    *,
+    current: Mapping[str, str],
+    previous: Mapping[str, str],
+    current_aggregate: str | None,
+    previous_aggregate: str | None,
+) -> bool:
+    if previous:
+        if set(current) - set(previous):
+            return True
+        return any(
+            previous.get(record_id) != fingerprint for record_id, fingerprint in current.items()
+        )
+    return current_aggregate != previous_aggregate
+
+
 def _release_blocker_dispatch_reservations(
     state: TeamState,
     *,
@@ -2842,43 +2959,6 @@ def _new_review_mcp_capability_receipt(
             review_request_ids=tuple(review_request_ids),
         ),
     )
-
-
-def _mcp_capability_blocked_review_ids(
-    state: TeamState,
-    *,
-    agent_id: str,
-) -> set[str]:
-    blocked_review_ids: set[str] = set()
-    for blocker in state.blockers.values():
-        if (
-            blocker.state != TeamBlockerState.OPEN
-            or blocker.source_kind != TeamBlockerSourceKind.MCP_CAPABILITY
-        ):
-            continue
-        identity = blocker.mcp_capability_identity
-        if identity is not None:
-            if identity.agent_id == agent_id:
-                blocked_review_ids.update(identity.review_request_ids)
-            continue
-        # Compatibility for blockers created before capability identity was
-        # stored structurally.
-        prefix = f"{agent_id}:"
-        if blocker.source_id.startswith(prefix):
-            blocked_review_ids.update(
-                review_id for review_id in blocker.source_id[len(prefix) :].split("|") if review_id
-            )
-    return blocked_review_ids
-
-
-def _inbox_references_review_ids(item: AgentInboxItem, review_request_ids: set[str]) -> bool:
-    """Return whether an inbox item is only the already-blocked review notice."""
-
-    if not review_request_ids:
-        return False
-    payload = item.payload if isinstance(item.payload, Mapping) else {}
-    review_id = _optional_text(payload.get("review_request_id"))
-    return review_id in review_request_ids
 
 
 def _review_dispatch_task_ids(state: TeamState, dispatch: TeamDispatch) -> list[str]:
