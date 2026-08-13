@@ -1625,6 +1625,7 @@ def test_personal_assistant_workflow_accepts_batched_reference_repository_prepar
                     "id": "teams-dm",
                     "display_name": "Teams DM",
                     "type": "trigger:teams:direct-message",
+                    "targets": [{"target": "chat:dm-chat"}],
                     "sender_user_ids": ["user-1"],
                 }
             ],

@@ -659,6 +659,7 @@ def test_teams_ingest_worker_uses_cached_direct_chats_when_discovery_fails(
                 "id": "teams-dm-trigger",
                 "display_name": "Teams direct message",
                 "type": "trigger:teams:direct-message",
+                "targets": [{"target": "chat:dm-chat"}],
                 "sender_user_ids": ["user-allowed"],
             }
         ],
@@ -815,6 +816,7 @@ def test_teams_ingest_worker_polls_allowlisted_direct_messages_from_configured_t
                 "id": "teams-dm-trigger",
                 "display_name": "Teams direct message",
                 "type": "trigger:teams:direct-message",
+                "targets": [{"target": "chat:dm-chat"}],
                 "sender_user_ids": ["user-allowed"],
             }
         ],
@@ -902,6 +904,7 @@ def test_teams_ingest_worker_resolves_direct_message_sender_email(
                 "id": "teams-dm-trigger",
                 "display_name": "Teams direct message",
                 "type": "trigger:teams:direct-message",
+                "targets": [{"target": "chat:dm-chat"}],
                 "sender_user_ids": ["operator@example.com"],
             }
         ],
@@ -978,6 +981,7 @@ def test_teams_ingest_worker_skips_unresolved_direct_message_sender_email(
                 "id": "teams-dm-trigger",
                 "display_name": "Teams direct message",
                 "type": "trigger:teams:direct-message",
+                "targets": [{"target": "chat:dm-chat"}],
                 "sender_user_ids": ["missing@example.com"],
             }
         ],
@@ -1029,6 +1033,7 @@ def test_teams_ingest_worker_polls_direct_messages_without_active_sessions(
                 "id": "teams-dm-trigger",
                 "display_name": "Teams direct message",
                 "type": "trigger:teams:direct-message",
+                "targets": [{"target": "chat:dm-chat"}],
                 "sender_user_ids": ["user-allowed"],
             }
         ],
@@ -1096,6 +1101,7 @@ def test_teams_ingest_worker_skips_disabled_direct_message_triggers(
                 "display_name": "Teams direct message",
                 "type": "trigger:teams:direct-message",
                 "enabled": False,
+                "targets": [{"target": "chat:dm-chat"}],
                 "sender_user_ids": ["user-allowed"],
             }
         ],
@@ -1134,6 +1140,7 @@ def test_teams_ingest_worker_marks_allowlisted_one_on_one_chat_as_direct_message
                 "id": "teams-dm-trigger",
                 "display_name": "Teams direct message",
                 "type": "trigger:teams:direct-message",
+                "targets": [{"target": "chat:dm-chat"}],
                 "sender_user_ids": ["user-allowed"],
             }
         ],

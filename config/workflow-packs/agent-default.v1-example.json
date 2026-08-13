@@ -316,6 +316,11 @@
         "config": {
           "sender_user_ids": [
             "operator@example.com"
+          ],
+          "targets": [
+            {
+              "target": "chat:19:0e7e2c2f6c964b9eb1a4b09d2b09578f@thread.v2"
+            }
           ]
         },
         "display_name": "Teams direct message",

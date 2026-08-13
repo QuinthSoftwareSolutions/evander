@@ -817,8 +817,8 @@ migration contract. See [live-smoke-tests.md](docs/live-smoke-tests.md) for live
   target type, and a normalized `message` object for the corresponding message, not just the
   latest matching message in the batch. Agents that need surrounding context should call
   `teams_get_messages` with that `channel_target`.
-- `trigger:teams:direct-message` emits one event per new one-on-one Teams direct message sent to
-  the configured Teams identity by an explicitly allowlisted Graph sender user id, UPN, or mail
+- `trigger:teams:direct-message` emits one event per new one-on-one Teams direct message in an
+  explicitly configured chat target from an allowlisted Graph sender user id, UPN, or mail
   address. It reuses the same host-side Teams ingest worker and emits `channel_target` as the
   resolved `chat:<chat-id>`.
 - `trigger:teams:new-message` defines `targets`, where each target can optionally narrow wakes
@@ -834,8 +834,8 @@ migration contract. See [live-smoke-tests.md](docs/live-smoke-tests.md) for live
   targets. The host-side Teams and Discord ingest workers feed their host-owned inbox stores; email
   targets are read through the configured mailbox provider during trigger polling. Trigger outputs
   do not expose communication target auth profile references.
-- Direct-message triggers use a separate sender allowlist:
-  - `{"type":"trigger:teams:direct-message","sender_user_ids":["<graph-user-id-or-email>"]}`
+- Direct-message triggers require both chat targets and a sender allowlist:
+  - `{"type":"trigger:teams:direct-message","targets":[{"target":"chat:<chat-id>"}],"sender_user_ids":["<graph-user-id-or-email>"]}`
   - optional `message_filter` with the same content or mention filter shape
 - Session manifests opt into Teams access explicitly:
 

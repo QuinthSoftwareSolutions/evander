@@ -13,8 +13,10 @@ from evander.triggers.providers._cursor_state import (
 )
 from evander.triggers.providers.base import TriggerProviderBase
 from evander.triggers.providers.teams_new_message import (
+    _message_channel_target,
     _message_matches_filter,
     _message_payload,
+    _normalize_channel_target,
     _parse_dt,
 )
 
@@ -36,16 +38,25 @@ class TeamsDirectMessageTriggerProvider(TriggerProviderBase):
         sender_filter = {
             _sender_ref_match_key(value) for value in trigger.sender_user_ids if value.strip()
         }
+        target_filters = {
+            _normalize_channel_target(item.target): item.message_filter
+            for item in trigger.targets
+            if item.target.strip()
+        }
 
         inbox_store = JsonTeamsInboxCursorRepository(
             self._resolved_config().runtime_dir / "teams-inbox-store.json"
         )
         candidates: list[TeamsInboxMessage] = []
         for message in inbox_store.list_all_messages(
+            channel_targets=list(target_filters),
             created_at_from=cursor,
             direct_messages_only=True,
         ):
             if not _is_direct_message(message):
+                continue
+            channel_target = _message_channel_target(message)
+            if channel_target not in target_filters:
                 continue
             if sender_filter and not sender_filter.intersection(_message_sender_ref_keys(message)):
                 continue
@@ -53,6 +64,8 @@ class TeamsDirectMessageTriggerProvider(TriggerProviderBase):
             if cursor is not None and occurred_at < cursor:
                 continue
             if cursor is not None and occurred_at == cursor and message.cursor in recent_cursor_set:
+                continue
+            if not _message_matches_filter(message, target_filters[channel_target]):
                 continue
             if not _message_matches_filter(message, trigger.message_filter):
                 continue

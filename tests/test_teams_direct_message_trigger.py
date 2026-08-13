@@ -29,6 +29,7 @@ def _trigger_definition() -> TeamsDirectMessageTriggerDefinition:
             "id": "teams-dm-trigger",
             "display_name": "Teams direct message",
             "type": "trigger:teams:direct-message",
+            "targets": [{"target": "chat:dm-chat"}],
             "sender_user_ids": ["user-a"],
         }
     )
@@ -93,8 +94,23 @@ def test_teams_direct_message_trigger_filters_to_allowlisted_direct_messages(
             },
         ),
         TeamsInboxMessage(
-            cursor="chat:group-chat/msg-3",
+            cursor="chat:other-dm-chat/msg-3",
             message_id="msg-3",
+            author_id="user-a",
+            author_name="User A",
+            chat_id="other-dm-chat",
+            content="wrong direct chat",
+            created_at=created_at,
+            metadata={
+                "source": "teams_graph_api",
+                "target": "chat:other-dm-chat",
+                "target_type": "direct_message",
+                "chat_type": "oneOnOne",
+            },
+        ),
+        TeamsInboxMessage(
+            cursor="chat:group-chat/msg-4",
+            message_id="msg-4",
             author_id="user-a",
             author_name="User A",
             chat_id="group-chat",
@@ -156,6 +172,7 @@ def test_teams_direct_message_trigger_matches_resolved_sender_refs(
                 "id": "teams-dm-trigger",
                 "display_name": "Teams direct message",
                 "type": "trigger:teams:direct-message",
+                "targets": [{"target": "chat:dm-chat"}],
                 "sender_user_ids": ["operator@example.com"],
             }
         ),
@@ -200,6 +217,7 @@ def test_teams_direct_message_trigger_applies_filter_and_acknowledges_cursor(
                 "id": "teams-dm-trigger",
                 "display_name": "Teams direct message",
                 "type": "trigger:teams:direct-message",
+                "targets": [{"target": "chat:dm-chat"}],
                 "sender_user_ids": ["user-a"],
                 "message_filter": {"content": {"contains": "help"}},
             }
