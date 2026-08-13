@@ -127,6 +127,11 @@ Moving tags such as
 `ubuntu:24.04` require a force rebuild when you want a base-image refresh, because the Dockerfile
 text can stay the same while the upstream image changes.
 
+Container session bootstrap marks the Evander MCP server as required, and prompt commands repeat
+that requirement alongside their session-scoped gateway URL. Codex therefore waits for tool
+discovery before starting the model turn instead of allowing a fast model response to race optional
+MCP startup. Subscription-mode overlays apply the same requirement.
+
 ### Optional Godot runner images
 
 Three additive images provide progressively broader Godot capabilities without enlarging the

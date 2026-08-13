@@ -74,6 +74,7 @@ def test_bootstrap_script_enforces_codex_config_and_placeholder_key() -> None:
     assert "AZURE_OPENAI_API_KEY" not in script
     assert "deployment-gpt-5-4" not in script
     assert "enabled = true" in script
+    assert "required = true" in script
     assert "if [ -f ~/.agent/config.env ]; then" in script
     assert "if [ -f /etc/agent-sandbox/session.env ]; then" in script
     assert "if [ -f /etc/evander/session.env ]; then" in script

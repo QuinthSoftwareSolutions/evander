@@ -1108,6 +1108,8 @@ def container_prompt_command(
             [
                 "-c",
                 f"mcp_servers.evander.url={_toml_string(mcp_gateway_url)}",
+                "-c",
+                "mcp_servers.evander.required=true",
             ]
         )
     if effective_resume_thread_id:
@@ -1950,6 +1952,7 @@ def _codex_config_content(
         "[mcp_servers.evander]\n"
         f"url = {_toml_string(gateway_url)}\n"
         "enabled = true\n"
+        "required = true\n"
         "\n"
         '[projects."/home/agent"]\n'
         'trust_level = "trusted"\n'

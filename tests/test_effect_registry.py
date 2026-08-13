@@ -3163,6 +3163,18 @@ def test_container_prompt_command_does_not_resume_synthetic_chat_thread_id() -> 
     assert "-C /home/agent" in command
 
 
+def test_container_prompt_command_requires_configured_mcp_server_startup() -> None:
+    command = container_prompt_command(
+        prompt="check teams",
+        model="gpt-5.6-sol",
+        resume_thread_id=None,
+        mcp_gateway_url="http://gateway.test:8000/mcp?session_id=session-1",
+    )
+
+    assert 'mcp_servers.evander.url="http://gateway.test:8000/mcp?session_id=session-1"' in command
+    assert "mcp_servers.evander.required=true" in command
+
+
 def test_container_prompt_command_uses_resume_last_for_same_context_without_thread() -> None:
     command = container_prompt_command(
         prompt="check teams",
@@ -3287,6 +3299,7 @@ def test_container_session_files_do_not_leak_azure_openai_settings() -> None:
         "[mcp_servers.evander]\n"
         'url = "http://relay.test:8000/mcp?session_id=session-1"\n'
         "enabled = true\n"
+        "required = true\n"
         "\n"
         '[projects."/home/agent"]\n'
         'trust_level = "trusted"\n'
