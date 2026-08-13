@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from datetime import datetime
+import hashlib
+import json
 from typing import Any
 from ...models import (
     AgentActionRecord,
@@ -95,9 +97,16 @@ def _manager_fallback_summary_payload(
     manager: PersistentAgent,
     now: datetime,
     routing_gap_limit: int | None = _MANAGER_FALLBACK_ROUTING_GAP_LIMIT,
+    limit_rows: bool = True,
     excluded_review_request_ids: set[str] | None = None,
+    excluded_inbox_item_ids: set[str] | None = None,
+    excluded_task_ids: set[str] | None = None,
+    excluded_action_record_ids: set[str] | None = None,
 ) -> dict[str, Any]:
     excluded_review_ids = set(excluded_review_request_ids or ())
+    excluded_inbox_ids = set(excluded_inbox_item_ids or ())
+    excluded_tasks = set(excluded_task_ids or ())
+    excluded_action_ids = set(excluded_action_record_ids or ())
     project_ids = {project.id for project in state.projects.values() if project.team_id == team.id}
     team_agents = sorted(
         (
@@ -113,6 +122,7 @@ def _manager_fallback_summary_payload(
             task
             for task in state.tasks.values()
             if _manager_fallback_task_visible_for_work(state, task, project_ids)
+            and task.id not in excluded_tasks
         ),
         key=lambda item: (item.priority, item.created_at, item.id),
     )
@@ -135,6 +145,7 @@ def _manager_fallback_summary_payload(
             and (item.sender_agent_id is None or item.sender_agent_id in team_agent_ids)
             and (item.task_id is None or item.task_id in visible_task_ids)
             and item.state == TeamInboxItemState.PENDING
+            and item.id not in excluded_inbox_ids
             and not _manager_fallback_inbox_references_review_ids(
                 item,
                 excluded_review_ids,
@@ -149,6 +160,7 @@ def _manager_fallback_summary_payload(
             if record.agent_id in team_agent_ids
             and not record.success
             and record.dismissed_at is None
+            and record.id not in excluded_action_ids
         ),
         key=lambda item: (item.created_at, item.id),
         reverse=True,
@@ -251,32 +263,32 @@ def _manager_fallback_summary_payload(
     )
     limited_open_work, omitted_open_work = _manager_fallback_limited_rows(
         open_work_rows,
-        _MANAGER_FALLBACK_OPEN_WORK_LIMIT,
+        _MANAGER_FALLBACK_OPEN_WORK_LIMIT if limit_rows else None,
     )
     limited_deliverables, omitted_deliverables = _manager_fallback_limited_rows(
         deliverable_rows,
-        _MANAGER_FALLBACK_OPEN_WORK_LIMIT,
+        _MANAGER_FALLBACK_OPEN_WORK_LIMIT if limit_rows else None,
     )
     limited_reviews, omitted_reviews = _manager_fallback_limited_rows(
         review_rows,
-        _MANAGER_FALLBACK_OPEN_WORK_LIMIT,
+        _MANAGER_FALLBACK_OPEN_WORK_LIMIT if limit_rows else None,
     )
     limited_inbox, omitted_inbox = _manager_fallback_limited_rows(
         inbox_rows,
-        _MANAGER_FALLBACK_PENDING_INBOX_LIMIT,
+        _MANAGER_FALLBACK_PENDING_INBOX_LIMIT if limit_rows else None,
     )
     limited_failed_actions, omitted_failed_actions = _manager_fallback_limited_rows(
         failed_action_rows,
-        _MANAGER_FALLBACK_FAILED_ACTION_LIMIT,
+        _MANAGER_FALLBACK_FAILED_ACTION_LIMIT if limit_rows else None,
     )
     (
         limited_initial_release_rows,
         omitted_initial_release_rows,
     ) = _manager_fallback_limited_rows(
         pending_initial_release_rows,
-        MAX_MANAGER_FALLBACK_ROWS,
+        MAX_MANAGER_FALLBACK_ROWS if limit_rows else None,
     )
-    if routing_gap_limit is None:
+    if routing_gap_limit is None or not limit_rows:
         limited_routing_gaps = list(routing_gaps)
         omitted_routing_gaps = 0
     else:
@@ -370,6 +382,135 @@ def _manager_fallback_summary_has_actionable_work(
             "pending_initial_release_decision_count",
         )
     )
+
+
+def manager_fallback_work_fingerprint(
+    summary: Mapping[str, Any],
+    *,
+    state: TeamState | None = None,
+) -> str:
+    """Fingerprint actionable fallback work without volatile runtime timestamps."""
+
+    material = manager_fallback_work_record_fingerprints(summary, state=state)
+    serialized = json.dumps(material, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+
+
+def manager_fallback_work_record_fingerprints(
+    summary: Mapping[str, Any],
+    *,
+    state: TeamState | None = None,
+) -> dict[str, str]:
+    """Return full-fidelity semantic fingerprints for actionable fallback work.
+
+    The summary rows are intentionally prompt-bounded. When source state is
+    available, include the corresponding raw semantic record so changes beyond
+    the prompt truncation boundary still count as changed work.
+    """
+
+    records: dict[str, str] = {}
+    id_fields = {
+        "open_work": "id",
+        "deliverables": "id",
+        "review_requests": "id",
+        "pending_inbox": "id",
+        "latest_failed_actions": "id",
+        "pending_initial_release_decisions": "deliverable_id",
+    }
+    for category, id_field in id_fields.items():
+        rows = summary.get(category)
+        if not isinstance(rows, Sequence) or isinstance(rows, (str, bytes, bytearray)):
+            continue
+        for row in rows:
+            if not isinstance(row, Mapping):
+                continue
+            record_id = _optional_text(row.get(id_field))
+            if record_id is None:
+                continue
+            material: dict[str, Any] = {
+                "summary": _manager_fallback_semantic_fingerprint_value(row),
+            }
+            source = _manager_fallback_source_fingerprint_value(
+                state,
+                category=category,
+                record_id=record_id,
+            )
+            if source is not None:
+                material["source"] = source
+            records[f"{category}:{record_id}"] = _manager_fallback_row_fingerprint(material)
+    routing_gaps = summary.get("routing_gaps")
+    if isinstance(routing_gaps, Sequence) and not isinstance(
+        routing_gaps,
+        (str, bytes, bytearray),
+    ):
+        for row in routing_gaps:
+            if not isinstance(row, Mapping):
+                continue
+            identity = {
+                "kind": row.get("kind"),
+                "agent_id": row.get("agent_id"),
+                "project_ids": row.get("project_ids"),
+                "task_ids": row.get("task_ids"),
+                "deliverable_ids": row.get("deliverable_ids"),
+            }
+            identity_digest = _manager_fallback_row_fingerprint(identity)
+            records[f"routing_gaps:{identity_digest}"] = _manager_fallback_row_fingerprint(
+                _manager_fallback_semantic_fingerprint_value(row)
+            )
+    return records
+
+
+def _manager_fallback_source_fingerprint_value(
+    state: TeamState | None,
+    *,
+    category: str,
+    record_id: str,
+) -> object | None:
+    if state is None:
+        return None
+    source_maps: dict[str, Mapping[str, Any]] = {
+        "open_work": state.tasks,
+        "deliverables": state.deliverables,
+        "review_requests": state.review_requests,
+        "pending_inbox": state.inbox,
+        "latest_failed_actions": state.action_records,
+        "pending_initial_release_decisions": state.deliverables,
+    }
+    source = source_maps.get(category, {}).get(record_id)
+    if source is None:
+        return None
+    material: dict[str, Any] = {
+        "record": _manager_fallback_semantic_fingerprint_value(source),
+    }
+    if category == "pending_initial_release_decisions" and isinstance(source, Deliverable):
+        task = state.tasks.get(source.task_id)
+        if task is not None:
+            material["task"] = _manager_fallback_semantic_fingerprint_value(task)
+            project = state.projects.get(task.project_id)
+            if project is not None:
+                material["release_policy"] = _manager_fallback_semantic_fingerprint_value(
+                    project.release_policy
+                )
+    return material
+
+
+def _manager_fallback_semantic_fingerprint_value(value: object) -> object:
+    if hasattr(value, "model_dump"):
+        value = value.model_dump(mode="json")
+    if isinstance(value, Mapping):
+        return {
+            str(key): _manager_fallback_semantic_fingerprint_value(item)
+            for key, item in value.items()
+            if not str(key).endswith("_at")
+        }
+    if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
+        return [_manager_fallback_semantic_fingerprint_value(item) for item in value]
+    return value
+
+
+def _manager_fallback_row_fingerprint(row: Mapping[str, Any]) -> str:
+    serialized = json.dumps(dict(row), sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
 
 
 def _manager_fallback_initial_release_decision_ids(
@@ -575,8 +716,10 @@ def _manager_fallback_short_text(
 
 def _manager_fallback_limited_rows(
     rows: list[dict[str, Any]],
-    limit: int,
+    limit: int | None,
 ) -> tuple[list[dict[str, Any]], int]:
+    if limit is None:
+        return list(rows), 0
     return rows[:limit], max(0, len(rows) - limit)
 
 
@@ -1126,6 +1269,8 @@ __all__ = [
     "_manager_fallback_task_visible_for_work",
     "_manager_fallback_summary_payload",
     "_manager_fallback_summary_has_actionable_work",
+    "manager_fallback_work_fingerprint",
+    "manager_fallback_work_record_fingerprints",
     "_manager_fallback_initial_release_decision_ids",
     "_manager_fallback_review_routing_authorities",
     "_manager_fallback_review_routing_authority_error",

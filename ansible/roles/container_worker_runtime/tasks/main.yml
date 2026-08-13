@@ -37,6 +37,8 @@
       mode: "0755"
     - path: "{{ evander_worker_nuget_fallback_cache_path }}"
       mode: "0755"
+    - path: "{{ evander_worker_mssql_client_cache_path }}"
+      mode: "0755"
 
 - name: Resolve worker service user uid
   ansible.builtin.command:

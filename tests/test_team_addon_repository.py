@@ -13,6 +13,7 @@ import evander_team_addon.services.domain.common as team_domain_common
 import evander_team_addon.services.admin_service as admin_service_module
 import evander_team_addon.costs as costs_module
 from evander_team_addon.models import (
+    AgentActionRecord,
     AgentTask,
     AgentAvatar,
     AgentContextClearingPolicy,
@@ -84,6 +85,8 @@ from evander_team_addon.models import (
     effective_outcome_kind_definitions,
     project_lead_agent_id,
     runtime_operations_payload,
+    wake_work_fingerprint,
+    wake_work_record_fingerprints,
 )
 from evander_team_addon.repository import (
     TeamStateConflictError,
@@ -108,6 +111,7 @@ from evander_team_addon.services.domain.task_assessment import (
     assess_task,
     require_release_scope,
 )
+from evander_team_addon.services.domain.work_due import _mark_agent_work_due
 from evander_team_addon.services.domain.wake import AGENT_WAKE_REQUESTED_EVENT_TYPE
 from evander_team_addon.services.agent_action_service import TeamAgentActionService
 from evander_team_addon.services.admin_service import TeamAdminService
@@ -5634,6 +5638,153 @@ def test_finalize_reemits_wake_request_for_inbox_arriving_during_active_lease(
     assert wake_events[0]["payload"]["reason"] == "inbox"
 
 
+def test_finalize_reemits_inbox_wake_before_configured_no_progress_lease_check(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    now = datetime(2026, 1, 1, tzinfo=UTC)
+
+    def _seed_active_inbox_dispatch(state):
+        existing = AgentInboxItem(
+            id="inbox-existing",
+            recipient_agent_id="backend",
+            sender_agent_id="lead",
+            item_type=TeamInboxItemType.QUESTION,
+            response_requested=True,
+            priority=TeamInboxPriority.HIGH,
+            state=TeamInboxItemState.PENDING,
+            created_at=now - timedelta(minutes=1),
+            updated_at=now - timedelta(minutes=1),
+        )
+        state.inbox[existing.id] = existing
+        state.dispatches["dispatch-active"] = TeamDispatch(
+            id="dispatch-active",
+            agent_id="backend",
+            session_id="session-backend",
+            cause_kind="inbox",
+            cause_id=existing.id,
+            inbox_item_ids=[existing.id],
+            wake_work_fingerprint=wake_work_fingerprint(
+                inbox_items=[existing],
+                reviews=[],
+            ),
+            wake_work_record_fingerprints=wake_work_record_fingerprints(
+                inbox_items=[existing],
+                reviews=[],
+            ),
+            status=TeamDispatchStatus.LEASED,
+            created_at=now - timedelta(minutes=1),
+            prepared_at=now - timedelta(minutes=1),
+            leased_at=now - timedelta(minutes=1),
+            lease_expires_at=now + timedelta(minutes=14),
+        )
+        runtime = state.agent_runtimes.setdefault(
+            "backend",
+            AgentRuntime(agent_id="backend"),
+        )
+        runtime.active_dispatch_id = "dispatch-active"
+        runtime.wake_reason = "inbox"
+        runtime.wake_leased_until = now + timedelta(minutes=14)
+        runtime.no_progress_count = 2
+        return state
+
+    repo.update(_seed_active_inbox_dispatch)
+
+    def _add_new_inbox_during_lease(state):
+        state.agent_runtimes["backend"].no_progress_count = 2
+        state.inbox["inbox-new"] = AgentInboxItem(
+            id="inbox-new",
+            recipient_agent_id="backend",
+            sender_agent_id="lead",
+            item_type=TeamInboxItemType.QUESTION,
+            response_requested=True,
+            priority=TeamInboxPriority.HIGH,
+            state=TeamInboxItemState.PENDING,
+            created_at=now,
+            updated_at=now,
+        )
+        _mark_agent_work_due(state, agent_id="backend", now=now)
+        state.agent_runtimes["backend"].no_progress_count = 2
+        return state
+
+    repo.update(_add_new_inbox_during_lease)
+    state, result = _team_runtime_service(repo).finalize_agent_dispatch_from_activity(
+        session_id="session-backend",
+        dispatch_id="dispatch-active",
+    )
+
+    assert state.agent_runtimes["backend"].no_progress_count == 3
+    wake_events = [
+        event
+        for event in result["events"]
+        if event["event_type"] == AGENT_WAKE_REQUESTED_EVENT_TYPE
+    ]
+    assert len(wake_events) == 1
+    assert wake_events[0]["payload"]["reason"] == "inbox"
+
+    state, leases = _team_runtime_service(repo).lease_due_agents(
+        agent_id="backend",
+        now=now + timedelta(seconds=1),
+        max_no_progress_count=3,
+        respect_wake_interval=False,
+    )
+    assert len(leases) == 1
+    assert leases[0]["dispatch"]["inbox_item_ids"] == ["inbox-existing", "inbox-new"]
+    changed_dispatch_id = leases[0]["dispatch_id"]
+
+    state, finalized = _team_runtime_service(repo).finalize_agent_dispatch_from_activity(
+        session_id="session-backend",
+        dispatch_id=changed_dispatch_id,
+    )
+    assert finalized["progress_made"] is False
+    assert state.agent_runtimes["backend"].no_progress_count == 4
+    unchanged_wake_events = [
+        event
+        for event in finalized["events"]
+        if event["event_type"] == AGENT_WAKE_REQUESTED_EVENT_TYPE
+    ]
+    assert len(unchanged_wake_events) == 1
+    assert unchanged_wake_events[0]["payload"]["reason"] == "inbox"
+
+    _state, bounded_replay = _team_runtime_service(repo).lease_due_agents(
+        agent_id="backend",
+        now=now + timedelta(seconds=2),
+        max_no_progress_count=3,
+        respect_wake_interval=False,
+    )
+    assert bounded_replay == []
+
+    state, configured_replay = _team_runtime_service(repo).lease_due_agents(
+        agent_id="backend",
+        now=now + timedelta(seconds=3),
+        max_no_progress_count=5,
+        respect_wake_interval=False,
+    )
+    assert len(configured_replay) == 1
+    assert configured_replay[0]["reason"] == "inbox"
+
+    state, configured_finalized = _team_runtime_service(repo).finalize_agent_dispatch_from_activity(
+        session_id="session-backend",
+        dispatch_id=configured_replay[0]["dispatch_id"],
+    )
+    assert configured_finalized["progress_made"] is False
+    assert state.agent_runtimes["backend"].no_progress_count == 5
+    assert any(
+        event["event_type"] == AGENT_WAKE_REQUESTED_EVENT_TYPE
+        and event["payload"]["reason"] == "inbox"
+        for event in configured_finalized["events"]
+    )
+
+    _state, unlimited_replay = _team_runtime_service(repo).lease_due_agents(
+        agent_id="backend",
+        now=now + timedelta(seconds=4),
+        max_no_progress_count=-1,
+        respect_wake_interval=False,
+    )
+    assert len(unlimited_replay) == 1
+    assert unlimited_replay[0]["reason"] == "inbox"
+
+
 def test_repository_finalize_agent_dispatch_validation_failure_has_no_action_feedback(
     tmp_path: Path,
 ) -> None:
@@ -7808,6 +7959,9 @@ def test_repository_migrates_action_feedback_inbox_and_low_priority_columns(
         runtime_columns = {
             str(row[1]) for row in connection.execute("PRAGMA table_info(team_agent_runtimes)")
         }
+        dispatch_columns = {
+            str(row[1]) for row in connection.execute("PRAGMA table_info(team_dispatches)")
+        }
         agent_columns = {
             str(row[1]) for row in connection.execute("PRAGMA table_info(team_agents)")
         }
@@ -7845,6 +7999,10 @@ def test_repository_migrates_action_feedback_inbox_and_low_priority_columns(
     assert "context_idle_since_at" in runtime_columns
     assert "context_idle_rotation_due_at" in runtime_columns
     assert "last_delivered_role_description_fingerprint" in runtime_columns
+    assert {
+        "wake_work_fingerprint",
+        "wake_work_record_fingerprints_json",
+    } <= dispatch_columns
     assert "voice_profile_json" in agent_columns
     assert "last_cost_signal_fingerprints_json" in governance_runtime_columns
     assert "last_blocked_signal_fingerprints_json" in governance_runtime_columns
@@ -12810,7 +12968,7 @@ def test_normal_no_reply_inbox_wakes_recipient(tmp_path: Path) -> None:
     assert [item["id"] for item in leases[0]["inbox"]] == ["normal-note"]
 
 
-def test_manager_wakes_when_team_has_open_tasks_and_no_member_is_wakeable(
+def test_exhausted_manager_does_not_replay_unchanged_pending_review(
     tmp_path: Path,
 ) -> None:
     repo = _seed_hierarchy(tmp_path)
@@ -12874,20 +13032,422 @@ def test_manager_wakes_when_team_has_open_tasks_and_no_member_is_wakeable(
     repo.update(_throttle_manager)
     repo.update(_add_manager_non_wakeable_inbox)
 
+    def _seed_prior_manager_review_attempt(state_model):
+        review = state_model.review_requests["review-stalled"]
+        state_model.dispatches["prior-manager-review"] = TeamDispatch(
+            id="prior-manager-review",
+            agent_id="manager",
+            session_id="session-manager",
+            cause_kind="review",
+            review_request_ids=[review.id],
+            wake_work_fingerprint=wake_work_fingerprint(
+                inbox_items=[],
+                reviews=[review],
+            ),
+            wake_work_record_fingerprints=wake_work_record_fingerprints(
+                inbox_items=[],
+                reviews=[review],
+            ),
+            status=TeamDispatchStatus.COMPLETED,
+            created_at=datetime(2025, 12, 31, 23, 58, tzinfo=UTC),
+            prepared_at=datetime(2025, 12, 31, 23, 58, tzinfo=UTC),
+            leased_at=datetime(2025, 12, 31, 23, 58, tzinfo=UTC),
+            lease_expires_at=datetime(2025, 12, 31, 23, 59, tzinfo=UTC),
+            completed_at=datetime(2025, 12, 31, 23, 59, tzinfo=UTC),
+        )
+        return state_model
+
+    repo.update(_seed_prior_manager_review_attempt)
+
     state, leases = _team_runtime_service(repo).lease_due_agents(
         now=datetime(2026, 1, 1, tzinfo=UTC),
     )
 
-    assert [lease["agent"]["id"] for lease in leases] == ["manager"]
+    assert leases == []
+    assert state.agent_runtimes["manager"].wake_reason is None
+    stalls = [
+        blocker
+        for blocker in state.blockers.values()
+        if blocker.source_kind == TeamBlockerSourceKind.AGENT_EXECUTION_STALL
+        and blocker.source_id == "manager"
+    ]
+    assert len(stalls) == 1
+
+
+def test_review_dispatch_at_no_progress_limit_does_not_replay_same_review(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _seed_task(repo, task_id="review-task")
+    state, submitted = _team_agent_action_service(repo).apply_agent_action(
+        action={
+            "agent_id": "backend",
+            "deliverables": [
+                {
+                    "id": "review-deliverable",
+                    "task_id": "review-task",
+                    "summary": "Ready for bounded review.",
+                }
+            ],
+        },
+    )
+    assert submitted["success"] is True
+    state = _team_admin_service(repo).record_review_request(
+        review_request_id="review-bounded",
+        deliverable_id="review-deliverable",
+        reviewer_agent_id="worker",
+        expected_revision=state.revision,
+    )
+
+    def _start_at_limit_minus_one(state_model):
+        runtime = state_model.agent_runtimes.setdefault(
+            "worker",
+            AgentRuntime(agent_id="worker"),
+        )
+        runtime.no_progress_count = 2
+        return state_model
+
+    repo.update(_start_at_limit_minus_one)
+    _state, leases = _team_runtime_service(repo).lease_due_agents(
+        agent_id="worker",
+        now=datetime(2026, 1, 1, tzinfo=UTC),
+        max_no_progress_count=3,
+        respect_wake_interval=False,
+    )
+
+    assert len(leases) == 1
     assert leases[0]["reason"] == "review"
-    assert state.agent_runtimes["manager"].wake_reason == "review"
-    assert leases[0]["tasks"] == []
-    assert leases[0]["inbox"][0]["id"] == "manager-note"
-    assert leases[0]["inbox"][0]["response_requested"] is False
-    assert [review["id"] for review in leases[0]["reviews"]] == ["review-stalled"]
-    assert leases[0]["dispatch"]["review_request_ids"] == ["review-stalled"]
-    assert "manager_fallback_summary" not in leases[0]
-    json.dumps(leases[0])
+    assert leases[0]["dispatch"]["review_request_ids"] == ["review-bounded"]
+    assert leases[0]["dispatch"]["wake_work_fingerprint"] is not None
+    persisted_dispatch = TeamStateRepository(tmp_path).read().dispatches[leases[0]["dispatch_id"]]
+    assert (
+        persisted_dispatch.wake_work_fingerprint == leases[0]["dispatch"]["wake_work_fingerprint"]
+    )
+    assert (
+        persisted_dispatch.wake_work_record_fingerprints
+        == leases[0]["dispatch"]["wake_work_record_fingerprints"]
+    )
+
+    state, finalized = _team_runtime_service(repo).finalize_agent_dispatch_from_activity(
+        session_id="session-worker",
+        dispatch_id=leases[0]["dispatch_id"],
+    )
+    assert finalized["progress_made"] is False
+    assert state.agent_runtimes["worker"].no_progress_count == 3
+    assert state.review_requests["review-bounded"].state == TeamRecordState.PENDING
+
+    _state, replay = _team_runtime_service(repo).lease_due_agents(
+        agent_id="worker",
+        now=datetime(2026, 1, 1, tzinfo=UTC) + timedelta(seconds=1),
+        max_no_progress_count=3,
+        respect_wake_interval=False,
+    )
+    assert replay == []
+
+
+def test_partial_inbox_handling_does_not_make_unchanged_review_look_new(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _seed_task(repo, task_id="partial-task")
+    state, submitted = _team_agent_action_service(repo).apply_agent_action(
+        action={
+            "agent_id": "backend",
+            "deliverables": [
+                {
+                    "id": "partial-deliverable",
+                    "task_id": "partial-task",
+                    "summary": "Review remains after its notice is handled.",
+                }
+            ],
+        },
+    )
+    assert submitted["success"] is True
+    state = _team_admin_service(repo).record_review_request(
+        review_request_id="partial-review",
+        deliverable_id="partial-deliverable",
+        reviewer_agent_id="worker",
+        expected_revision=state.revision,
+    )
+
+    def _add_notice(state_model):
+        state_model.inbox["partial-notice"] = AgentInboxItem(
+            id="partial-notice",
+            recipient_agent_id="worker",
+            sender_agent_id="lead",
+            task_id="partial-task",
+            item_type=TeamInboxItemType.STATUS_REQUEST,
+            response_requested=True,
+            payload={"review_request_id": "partial-review"},
+        )
+        return state_model
+
+    repo.update(_add_notice)
+    notice_id = "partial-notice"
+
+    def _start_at_limit_minus_one(state_model):
+        state_model.agent_runtimes["worker"] = AgentRuntime(
+            agent_id="worker",
+            no_progress_count=2,
+        )
+        return state_model
+
+    repo.update(_start_at_limit_minus_one)
+    _state, leases = _team_runtime_service(repo).lease_due_agents(
+        agent_id="worker",
+        now=datetime(2026, 1, 1, tzinfo=UTC),
+        respect_wake_interval=False,
+    )
+    assert len(leases) == 1
+
+    def _handle_only_notice(state_model):
+        state_model.inbox[notice_id].state = TeamInboxItemState.HANDLED
+        return state_model
+
+    repo.update(_handle_only_notice)
+    state, finalized = _team_runtime_service(repo).finalize_agent_dispatch_from_activity(
+        session_id="session-worker",
+        dispatch_id=leases[0]["dispatch_id"],
+    )
+    assert finalized["progress_made"] is False
+    assert state.agent_runtimes["worker"].no_progress_count == 3
+    assert state.review_requests["partial-review"].state == TeamRecordState.PENDING
+
+    _state, replay = _team_runtime_service(repo).lease_due_agents(
+        agent_id="worker",
+        now=datetime(2026, 1, 1, tzinfo=UTC) + timedelta(seconds=1),
+        respect_wake_interval=False,
+    )
+    assert replay == []
+
+
+def test_configured_no_progress_lease_ignores_review_becoming_blocked(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    now = datetime(2026, 1, 1, tzinfo=UTC)
+    _seed_task(repo, task_id="blocked-follow-up-task")
+    _seed_deliverable(
+        repo,
+        deliverable_id="blocked-follow-up-deliverable",
+        task_id="blocked-follow-up-task",
+    )
+    _team_admin_service(repo).record_review_request(
+        review_request_id="blocked-follow-up-review",
+        deliverable_id="blocked-follow-up-deliverable",
+        reviewer_agent_id="worker",
+        expected_revision=repo.read().revision,
+    )
+
+    def _seed_active_dispatch(state_model):
+        state_model.inbox = {}
+        inbox = AgentInboxItem(
+            id="unchanged-follow-up-inbox",
+            recipient_agent_id="worker",
+            sender_agent_id="lead",
+            item_type=TeamInboxItemType.QUESTION,
+            response_requested=True,
+            priority=TeamInboxPriority.HIGH,
+            state=TeamInboxItemState.PENDING,
+            created_at=now,
+            updated_at=now,
+        )
+        state_model.inbox[inbox.id] = inbox
+        review = state_model.review_requests["blocked-follow-up-review"]
+        state_model.dispatches["blocked-follow-up-dispatch"] = TeamDispatch(
+            id="blocked-follow-up-dispatch",
+            agent_id="worker",
+            session_id="session-worker",
+            cause_kind="inbox",
+            inbox_item_ids=[inbox.id],
+            review_request_ids=[review.id],
+            wake_work_fingerprint=wake_work_fingerprint(
+                inbox_items=[inbox],
+                reviews=[review],
+            ),
+            wake_work_record_fingerprints=wake_work_record_fingerprints(
+                inbox_items=[inbox],
+                reviews=[review],
+            ),
+            status=TeamDispatchStatus.LEASED,
+            created_at=now,
+            prepared_at=now,
+            leased_at=now,
+            lease_expires_at=now + timedelta(minutes=15),
+        )
+        state_model.agent_runtimes["worker"] = AgentRuntime(
+            agent_id="worker",
+            active_dispatch_id="blocked-follow-up-dispatch",
+            wake_reason="inbox",
+            wake_leased_until=now + timedelta(minutes=15),
+            no_progress_count=2,
+        )
+        return state_model
+
+    repo.update(_seed_active_dispatch)
+
+    def _block_review_during_dispatch(state_model):
+        state_model.review_requests["blocked-follow-up-review"].state = TeamRecordState.BLOCKED
+        return state_model
+
+    repo.update(_block_review_during_dispatch)
+    state, result = _team_runtime_service(repo).finalize_agent_dispatch_from_activity(
+        session_id="session-worker",
+        dispatch_id="blocked-follow-up-dispatch",
+    )
+
+    assert state.agent_runtimes["worker"].no_progress_count == 3
+    wake_events = [
+        event
+        for event in result["events"]
+        if event["event_type"] == AGENT_WAKE_REQUESTED_EVENT_TYPE
+    ]
+    assert len(wake_events) == 1
+    assert wake_events[0]["payload"]["reason"] == "inbox"
+
+    _state, replay = _team_runtime_service(repo).lease_due_agents(
+        agent_id="worker",
+        now=now + timedelta(seconds=1),
+        max_no_progress_count=3,
+        respect_wake_interval=False,
+    )
+    assert replay == []
+
+
+def test_context_handoff_does_not_consume_exhausted_inbox_attempt(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    now = datetime.now(UTC)
+
+    def _seed_handoff_with_pending_inbox(state_model):
+        state_model.agent_runtimes["worker"] = AgentRuntime(
+            agent_id="worker",
+            no_progress_count=3,
+            context_rotation_pending=True,
+            context_handoff_preparation_pending=True,
+        )
+        state_model.inbox["inbox-during-handoff"] = AgentInboxItem(
+            id="inbox-during-handoff",
+            recipient_agent_id="worker",
+            sender_agent_id="lead",
+            item_type=TeamInboxItemType.QUESTION,
+            response_requested=True,
+            priority=TeamInboxPriority.HIGH,
+            state=TeamInboxItemState.PENDING,
+            created_at=now,
+            updated_at=now,
+        )
+        return state_model
+
+    repo.update(_seed_handoff_with_pending_inbox)
+    runtime = _team_runtime_service(repo)
+    _state, handoff = runtime.lease_due_agents(
+        agent_id="worker",
+        now=now,
+        max_no_progress_count=3,
+        respect_wake_interval=False,
+    )
+    assert len(handoff) == 1
+    assert handoff[0]["reason"] == "context_handoff"
+    assert handoff[0]["dispatch"]["wake_work_fingerprint"] is None
+    assert handoff[0]["dispatch"]["wake_work_record_fingerprints"] == {}
+    runtime.record_agent_context_handoff(
+        agent_id="worker",
+        dispatch_id=handoff[0]["dispatch_id"],
+        summary="No non-durable context to preserve.",
+    )
+
+    def _finish_rotation(state_model):
+        worker_runtime = state_model.agent_runtimes["worker"]
+        worker_runtime.context_rotation_pending = False
+        worker_runtime.next_wake_at = None
+        return state_model
+
+    repo.update(_finish_rotation)
+    _state, inbox_attempt = runtime.lease_due_agents(
+        agent_id="worker",
+        now=now + timedelta(seconds=1),
+        max_no_progress_count=3,
+        respect_wake_interval=False,
+    )
+
+    assert len(inbox_attempt) == 1
+    assert inbox_attempt[0]["reason"] == "inbox"
+    assert inbox_attempt[0]["dispatch"]["inbox_item_ids"] == ["inbox-during-handoff"]
+
+
+def test_preparation_recovery_subset_does_not_eclipse_ordinary_wake_snapshot(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    now = datetime(2026, 1, 1, tzinfo=UTC)
+
+    def _seed_ordinary_and_recovery_attempts(state_model):
+        inbox_items = []
+        for item_id in ("ordinary-a", "ordinary-b"):
+            item = AgentInboxItem(
+                id=item_id,
+                recipient_agent_id="worker",
+                sender_agent_id="lead",
+                item_type=TeamInboxItemType.QUESTION,
+                response_requested=True,
+                priority=TeamInboxPriority.HIGH,
+                state=TeamInboxItemState.PENDING,
+                created_at=now,
+                updated_at=now,
+            )
+            state_model.inbox[item.id] = item
+            inbox_items.append(item)
+        state_model.dispatches["ordinary-attempt"] = TeamDispatch(
+            id="ordinary-attempt",
+            agent_id="worker",
+            session_id="session-worker",
+            cause_kind="inbox",
+            inbox_item_ids=[item.id for item in inbox_items],
+            wake_work_fingerprint=wake_work_fingerprint(
+                inbox_items=inbox_items,
+                reviews=[],
+            ),
+            wake_work_record_fingerprints=wake_work_record_fingerprints(
+                inbox_items=inbox_items,
+                reviews=[],
+            ),
+            status=TeamDispatchStatus.COMPLETED,
+            created_at=now - timedelta(minutes=2),
+            prepared_at=now - timedelta(minutes=2),
+            leased_at=now - timedelta(minutes=2),
+            lease_expires_at=now - timedelta(minutes=1),
+            completed_at=now - timedelta(minutes=1),
+        )
+        state_model.dispatches["preparation-recovery"] = TeamDispatch(
+            id="preparation-recovery",
+            agent_id="worker",
+            session_id="session-worker",
+            cause_kind="blocker",
+            inbox_item_ids=["ordinary-a"],
+            status=TeamDispatchStatus.COMPLETED,
+            created_at=now - timedelta(seconds=30),
+            prepared_at=now - timedelta(seconds=30),
+            leased_at=now - timedelta(seconds=30),
+            lease_expires_at=now - timedelta(seconds=15),
+            completed_at=now - timedelta(seconds=15),
+        )
+        state_model.agent_runtimes["worker"] = AgentRuntime(
+            agent_id="worker",
+            no_progress_count=3,
+        )
+        return state_model
+
+    repo.update(_seed_ordinary_and_recovery_attempts)
+    _state, leases = _team_runtime_service(repo).lease_due_agents(
+        agent_id="worker",
+        now=now,
+        max_no_progress_count=3,
+        respect_wake_interval=False,
+    )
+
+    assert leases == []
 
 
 def test_manager_fallback_skips_pending_deliverable_on_accepted_task(
@@ -12918,6 +13478,351 @@ def test_manager_fallback_skips_pending_deliverable_on_accepted_task(
     assert state.agent_runtimes["manager"].wake_reason is None
     assert state.tasks["done-task"].state == TeamTaskState.ACCEPTED
     assert state.deliverables["deliverable-pending"].state == TeamRecordState.PENDING
+
+
+def test_exhausted_manager_owned_task_does_not_fall_through_to_manager_fallback(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _seed_task(repo, task_id="manager-owned", owner_agent_id="manager")
+
+    def _exhaust_manager(state_model):
+        state_model.inbox = {
+            item_id: item
+            for item_id, item in state_model.inbox.items()
+            if item.recipient_agent_id != "manager"
+        }
+        state_model.agent_runtimes["manager"] = AgentRuntime(
+            agent_id="manager",
+            no_progress_count=3,
+        )
+        return state_model
+
+    repo.update(_exhaust_manager)
+    state, leases = _team_runtime_service(repo).lease_due_agents(
+        now=datetime(2026, 1, 1, tzinfo=UTC),
+        max_no_progress_count=3,
+        respect_wake_interval=False,
+    )
+
+    assert leases == []
+    stalls = [
+        blocker
+        for blocker in state.blockers.values()
+        if blocker.source_kind == TeamBlockerSourceKind.AGENT_EXECUTION_STALL
+        and blocker.source_id == "manager"
+    ]
+    assert len(stalls) == 1
+    assert stalls[0].affected_task_ids == ["manager-owned"]
+
+
+def test_delivered_manager_action_feedback_does_not_trigger_manager_fallback(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    now = datetime(2026, 1, 1, tzinfo=UTC)
+
+    def _seed_delivered_manager_feedback(state_model):
+        state_model.action_records["manager-feedback"] = AgentActionRecord(
+            id="manager-feedback",
+            agent_id="manager",
+            dispatch_id="manager-ordinary-dispatch",
+            action={"agent_id": "manager"},
+            success=False,
+            error="Already delivered ordinary action feedback.",
+            created_at=now - timedelta(minutes=1),
+            feedback_delivered_at=now,
+            feedback_delivered_by_dispatch_id="manager-feedback-dispatch",
+        )
+        state_model.agent_runtimes["manager"] = AgentRuntime(
+            agent_id="manager",
+            no_progress_count=3,
+        )
+        return state_model
+
+    repo.update(_seed_delivered_manager_feedback)
+    _state, leases = _team_runtime_service(repo).lease_due_agents(
+        agent_id="manager",
+        now=now,
+        max_no_progress_count=3,
+        respect_wake_interval=False,
+    )
+
+    assert leases == []
+
+
+def test_exhausted_manager_gets_one_attempt_for_changed_fallback_snapshot(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    now = datetime(2026, 1, 1, tzinfo=UTC)
+    _seed_task(repo, task_id="fallback-work", owner_agent_id="backend")
+
+    def _exhaust_manager_with_baseline(state_model):
+        state_model.agent_runtimes["manager"] = AgentRuntime(
+            agent_id="manager",
+            no_progress_count=3,
+        )
+        return state_model
+
+    repo.update(_exhaust_manager_with_baseline)
+    _state, baseline = _team_runtime_service(repo).lease_due_agents(
+        now=now,
+        max_no_progress_count=3,
+        respect_wake_interval=False,
+        session_is_busy=lambda session_id: session_id != "session-manager",
+    )
+    assert len(baseline) == 1
+    assert baseline[0]["reason"] == "manager_fallback"
+    _state, finalized = _team_runtime_service(repo).finalize_agent_dispatch_from_activity(
+        session_id="session-manager",
+        dispatch_id=baseline[0]["dispatch_id"],
+    )
+    assert finalized["progress_made"] is False
+
+    _state, unchanged = _team_runtime_service(repo).lease_due_agents(
+        now=now + timedelta(milliseconds=500),
+        max_no_progress_count=3,
+        respect_wake_interval=False,
+        session_is_busy=lambda session_id: session_id != "session-manager",
+    )
+    assert unchanged == []
+
+    def _add_changed_team_work(state_model):
+        state_model.tasks["fallback-work-2"] = state_model.tasks["fallback-work"].model_copy(
+            update={
+                "id": "fallback-work-2",
+                "title": "New subordinate work after fallback exhaustion",
+                "created_at": now + timedelta(seconds=1),
+                "updated_at": now + timedelta(seconds=1),
+            },
+            deep=True,
+        )
+        return state_model
+
+    repo.update(_add_changed_team_work)
+    _state, changed = _team_runtime_service(repo).lease_due_agents(
+        now=now + timedelta(seconds=1),
+        max_no_progress_count=3,
+        respect_wake_interval=False,
+        session_is_busy=lambda session_id: session_id != "session-manager",
+    )
+    assert len(changed) == 1
+    assert changed[0]["reason"] == "manager_fallback"
+    assert changed[0]["dispatch"]["wake_work_record_fingerprints"]
+
+    state, finalized_changed = _team_runtime_service(repo).finalize_agent_dispatch_from_activity(
+        session_id="session-manager",
+        dispatch_id=changed[0]["dispatch_id"],
+    )
+    assert finalized_changed["progress_made"] is False
+    assert state.agent_runtimes["manager"].no_progress_count == 5
+
+    _state, replay = _team_runtime_service(repo).lease_due_agents(
+        now=now + timedelta(seconds=2),
+        max_no_progress_count=3,
+        respect_wake_interval=False,
+        session_is_busy=lambda session_id: session_id != "session-manager",
+    )
+    assert replay == []
+
+
+def test_exhausted_manager_detects_new_fallback_work_beyond_payload_row_limit(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    now = datetime(2026, 1, 1, tzinfo=UTC)
+    _seed_task(repo, task_id="fallback-capped-01", owner_agent_id="backend")
+
+    def _seed_capped_fallback_work(state_model):
+        template = state_model.tasks["fallback-capped-01"]
+        for index in range(2, 22):
+            task_id = f"fallback-capped-{index:02d}"
+            state_model.tasks[task_id] = template.model_copy(
+                update={
+                    "id": task_id,
+                    "title": f"Fallback capped task {index}",
+                    "created_at": now + timedelta(microseconds=index),
+                    "updated_at": now + timedelta(microseconds=index),
+                },
+                deep=True,
+            )
+        state_model.agent_runtimes["manager"] = AgentRuntime(
+            agent_id="manager",
+            no_progress_count=3,
+        )
+        return state_model
+
+    repo.update(_seed_capped_fallback_work)
+    runtime = _team_runtime_service(repo)
+    _state, baseline = runtime.lease_due_agents(
+        now=now,
+        max_no_progress_count=3,
+        respect_wake_interval=False,
+        session_is_busy=lambda session_id: session_id != "session-manager",
+    )
+    assert len(baseline) == 1
+    assert len(baseline[0]["manager_fallback_summary"]["open_work"]) == 20
+    assert (
+        len(
+            {
+                key
+                for key in baseline[0]["dispatch"]["wake_work_record_fingerprints"]
+                if key.startswith("open_work:")
+            }
+        )
+        == 21
+    )
+    runtime.finalize_agent_dispatch_from_activity(
+        session_id="session-manager",
+        dispatch_id=baseline[0]["dispatch_id"],
+    )
+
+    def _add_work_beyond_payload_limit(state_model):
+        template = state_model.tasks["fallback-capped-01"]
+        state_model.tasks["fallback-capped-22"] = template.model_copy(
+            update={
+                "id": "fallback-capped-22",
+                "title": "Fallback capped task 22",
+                "created_at": now + timedelta(seconds=1),
+                "updated_at": now + timedelta(seconds=1),
+            },
+            deep=True,
+        )
+        return state_model
+
+    repo.update(_add_work_beyond_payload_limit)
+    _state, changed = runtime.lease_due_agents(
+        now=now + timedelta(seconds=1),
+        max_no_progress_count=3,
+        respect_wake_interval=False,
+        session_is_busy=lambda session_id: session_id != "session-manager",
+    )
+
+    assert len(changed) == 1
+    assert changed[0]["reason"] == "manager_fallback"
+    assert "open_work:fallback-capped-22" in changed[0]["dispatch"]["wake_work_record_fingerprints"]
+    runtime.finalize_agent_dispatch_from_activity(
+        session_id="session-manager",
+        dispatch_id=changed[0]["dispatch_id"],
+    )
+    _state, replay = runtime.lease_due_agents(
+        now=now + timedelta(seconds=2),
+        max_no_progress_count=3,
+        respect_wake_interval=False,
+        session_is_busy=lambda session_id: session_id != "session-manager",
+    )
+    assert replay == []
+
+
+def test_exhausted_manager_detects_task_update_beyond_prompt_truncation(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    now = datetime(2026, 1, 1, tzinfo=UTC)
+    _seed_task(repo, task_id="fallback-long-title", owner_agent_id="backend")
+
+    def _seed_long_title_and_exhaust_manager(state_model):
+        task = state_model.tasks["fallback-long-title"]
+        task.title = f"{'A' * 200} one"
+        state_model.agent_runtimes["manager"] = AgentRuntime(
+            agent_id="manager",
+            no_progress_count=3,
+        )
+        return state_model
+
+    repo.update(_seed_long_title_and_exhaust_manager)
+    runtime = _team_runtime_service(repo)
+    _state, baseline = runtime.lease_due_agents(
+        now=now,
+        max_no_progress_count=3,
+        respect_wake_interval=False,
+        session_is_busy=lambda session_id: session_id != "session-manager",
+    )
+    assert len(baseline) == 1
+    baseline_prompt_title = baseline[0]["manager_fallback_summary"]["open_work"][0]["title"]
+    runtime.finalize_agent_dispatch_from_activity(
+        session_id="session-manager",
+        dispatch_id=baseline[0]["dispatch_id"],
+    )
+
+    def _change_only_beyond_truncation(state_model):
+        task = state_model.tasks["fallback-long-title"]
+        task.title = f"{'A' * 200} two"
+        task.updated_at = now + timedelta(seconds=1)
+        return state_model
+
+    repo.update(_change_only_beyond_truncation)
+    _state, changed = runtime.lease_due_agents(
+        now=now + timedelta(seconds=1),
+        max_no_progress_count=3,
+        respect_wake_interval=False,
+        session_is_busy=lambda session_id: session_id != "session-manager",
+    )
+
+    assert len(changed) == 1
+    assert changed[0]["reason"] == "manager_fallback"
+    assert changed[0]["manager_fallback_summary"]["open_work"][0]["title"] == baseline_prompt_title
+    runtime.finalize_agent_dispatch_from_activity(
+        session_id="session-manager",
+        dispatch_id=changed[0]["dispatch_id"],
+    )
+    _state, replay = runtime.lease_due_agents(
+        now=now + timedelta(seconds=2),
+        max_no_progress_count=3,
+        respect_wake_interval=False,
+        session_is_busy=lambda session_id: session_id != "session-manager",
+    )
+    assert replay == []
+
+
+def test_manager_fallback_preparation_failure_does_not_consume_changed_snapshot(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    now = datetime(2026, 1, 1, tzinfo=UTC)
+    _seed_task(repo, task_id="fallback-preparation", owner_agent_id="backend")
+
+    def _exhaust_manager(state_model):
+        state_model.agent_runtimes["manager"] = AgentRuntime(
+            agent_id="manager",
+            no_progress_count=3,
+        )
+        return state_model
+
+    repo.update(_exhaust_manager)
+    runtime = _team_runtime_service(repo)
+    _state, first = runtime.lease_due_agents(
+        now=now,
+        max_no_progress_count=3,
+        respect_wake_interval=False,
+        session_is_busy=lambda session_id: session_id != "session-manager",
+        defer_activation=True,
+    )
+    assert len(first) == 1
+    assert first[0]["reason"] == "manager_fallback"
+    failed_dispatch_id = first[0]["dispatch_id"]
+
+    runtime.fail_agent_dispatch(
+        agent_id="manager",
+        dispatch_id=failed_dispatch_id,
+        error="manager fallback enqueue failed before delivery",
+        now=now + timedelta(milliseconds=500),
+    )
+    failed = repo.read().dispatches[failed_dispatch_id]
+    assert failed.status == TeamDispatchStatus.FAILED
+    assert failed.leased_at is None
+
+    _state, retry = runtime.lease_due_agents(
+        now=now + timedelta(seconds=1),
+        max_no_progress_count=3,
+        respect_wake_interval=False,
+        session_is_busy=lambda session_id: session_id != "session-manager",
+        defer_activation=True,
+    )
+    assert len(retry) == 1
+    assert retry[0]["reason"] == "manager_fallback"
+    assert retry[0]["dispatch_id"] != failed_dispatch_id
 
 
 def test_every_wake_context_policy_preserves_low_priority_batching(
@@ -21429,6 +22334,44 @@ def test_apply_agent_action_git_release_request_artifact_only(tmp_path: Path) ->
     assert release.git_promotion_record_ids == []
     assert result["git_promotion_event_ids"] == []
     assert state.git_promotions == {}
+
+
+def test_git_project_rejects_artifact_only_release_before_mutation(tmp_path: Path) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _set_project_git(repo)
+    _seed_accepted_feature_deliverable(
+        repo,
+        deliverable_id="deliverable",
+        task_id="task",
+        feature=None,
+        artifact_refs=["artifact-space:/teams/team/result"],
+    )
+    before = repo.read()
+
+    state, result = _team_agent_action_service(repo).apply_agent_action(
+        action={
+            "agent_id": "lead",
+            "git_release_requests": [
+                {"id": "rel-1", "project_id": "project", "deliverable_ids": ["deliverable"]}
+            ],
+        },
+    )
+
+    assert result["success"] is False
+    assert result["error_code"] == "candidate_git_inputs_required"
+    assert "source_deliverable_ids are supporting evidence" in result["errors"][0]
+    assert "explicit integration task" in result["errors"][0]
+    assert state.release_packages == before.release_packages == {}
+    assert state.git_promotions == before.git_promotions == {}
+
+    with pytest.raises(ValueError) as excinfo:
+        _team_admin_service(repo).create_release_package_with_result(
+            project_id="project",
+            deliverable_ids=["deliverable"],
+            release_id="rel-admin",
+        )
+    assert getattr(excinfo.value, "code", None) == "candidate_git_inputs_required"
+    assert repo.read().release_packages == {}
 
 
 def test_apply_agent_action_git_release_request_mixed_deliverables_requires_git(

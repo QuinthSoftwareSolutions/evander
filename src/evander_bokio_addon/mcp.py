@@ -36,6 +36,7 @@ GET_COMPANY_TOOL = "bokio_get_company"
 LIST_ACCOUNTS_TOOL = "bokio_list_accounts"
 LIST_JOURNAL_ENTRIES_TOOL = "bokio_list_journal_entries"
 CHECK_JOURNAL_DUPLICATES_TOOL = "bokio_check_journal_duplicates"
+GET_DUPLICATE_CHECK_TOOL = "bokio_get_duplicate_check"
 LIST_CUSTOMERS_TOOL = "bokio_list_customers"
 GET_CUSTOMER_TOOL = "bokio_get_customer"
 LIST_INVOICES_TOOL = "bokio_list_invoices"
@@ -64,6 +65,7 @@ READ_TOOLS = (
     LIST_ACCOUNTS_TOOL,
     LIST_JOURNAL_ENTRIES_TOOL,
     CHECK_JOURNAL_DUPLICATES_TOOL,
+    GET_DUPLICATE_CHECK_TOOL,
     LIST_CUSTOMERS_TOOL,
     GET_CUSTOMER_TOOL,
     LIST_INVOICES_TOOL,
@@ -108,6 +110,11 @@ MCP_TOOL_CATALOG = (
         CHECK_JOURNAL_DUPLICATES_TOOL,
         "Check journal duplicates",
         "Scan all Bokio journal pages for matching entries and retain durable check evidence.",
+    ),
+    _catalog(
+        GET_DUPLICATE_CHECK_TOOL,
+        "Get duplicate check",
+        "Read one retained Bokio journal duplicate-check evidence record by ID.",
     ),
     _catalog(
         LIST_CUSTOMERS_TOOL,
@@ -295,6 +302,30 @@ def register_mcp_tools(server: Any, context: AddonContext) -> tuple[str, ...]:
                 )
             }
         except BokioDuplicateCheckError as exc:
+            raise ToolError(str(exc)) from exc
+
+    @server.tool(
+        name=GET_DUPLICATE_CHECK_TOOL,
+        description=(
+            "Read one durable Bokio journal duplicate-check evidence record by its check ID "
+            "or bokio-duplicate-check evidence reference. This does not query Bokio again."
+        ),
+    )
+    def bokio_get_duplicate_check(
+        check_id: str,
+        session_id: str | None = None,
+        ctx: Context | None = None,
+    ) -> dict[str, Any]:
+        _require_tool(session_id, ctx, GET_DUPLICATE_CHECK_TOOL)
+        normalized_check_id = str(check_id or "").strip()
+        evidence_prefix = "bokio-duplicate-check:"
+        if normalized_check_id.startswith(evidence_prefix):
+            normalized_check_id = normalized_check_id[len(evidence_prefix) :]
+        try:
+            return {
+                "result": BokioDuplicateCheckStore(context.runtime_dir).get(normalized_check_id)
+            }
+        except (KeyError, ValueError) as exc:
             raise ToolError(str(exc)) from exc
 
     @server.tool(

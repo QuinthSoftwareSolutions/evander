@@ -36,6 +36,7 @@ from .domain.release_packages import (
     _build_release_package,
     _reviewed_commit_for_release,
     _successor_release_request_error,
+    _verification_downstream_recovery_base,
 )
 from .domain.task_assessment import TaskAssessmentBoundaryError, require_task_resolved
 from .domain.work_due import _mark_agent_work_due
@@ -135,10 +136,12 @@ def _current_successor_deliverable_ids(
             and deliverable.superseded_by_deliverable_id is None
             and deliverable.verification is not None
             and deliverable.verification.status == "passed"
-            and (recovery_task := state.tasks.get(deliverable.task_id)) is not None
-            and recovery_task.originating_task_id == correction_task.id
-            and recovery_task.parent_task_id is None
-            and not recovery_task.dependency_task_ids
+            and _verification_downstream_recovery_base(
+                state,
+                predecessor=predecessor,
+                deliverable=deliverable,
+            )
+            is not None
         )
         if recovery_ids:
             return recovery_ids

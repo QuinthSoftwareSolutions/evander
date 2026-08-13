@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import UTC, datetime
 import re
+from collections.abc import Mapping
 from typing import Iterable
 
 from ...models import (
@@ -99,6 +100,48 @@ def actionable_dispatch_reviews(
         )
     )
     return rows
+
+
+def mcp_capability_blocked_review_ids(
+    state: TeamState,
+    *,
+    agent_id: str,
+) -> set[str]:
+    """Return review work already quarantined by an open MCP capability blocker."""
+
+    blocked_review_ids: set[str] = set()
+    for blocker in state.blockers.values():
+        if (
+            blocker.state != TeamBlockerState.OPEN
+            or blocker.source_kind != TeamBlockerSourceKind.MCP_CAPABILITY
+        ):
+            continue
+        identity = blocker.mcp_capability_identity
+        if identity is not None:
+            if identity.agent_id == agent_id:
+                blocked_review_ids.update(identity.review_request_ids)
+            continue
+        # Compatibility for blockers created before capability identity was
+        # stored structurally.
+        prefix = f"{agent_id}:"
+        if blocker.source_id.startswith(prefix):
+            blocked_review_ids.update(
+                review_id for review_id in blocker.source_id[len(prefix) :].split("|") if review_id
+            )
+    return blocked_review_ids
+
+
+def inbox_references_review_ids(
+    item: AgentInboxItem,
+    review_request_ids: set[str],
+) -> bool:
+    """Return whether an inbox item is only an already-blocked review notice."""
+
+    if not review_request_ids:
+        return False
+    payload = item.payload if isinstance(item.payload, Mapping) else {}
+    review_id = payload.get("review_request_id")
+    return isinstance(review_id, str) and review_id.strip() in review_request_ids
 
 
 def build_agent_dispatch_scope(
@@ -478,4 +521,7 @@ __all__ = [
     "actionable_dispatch_reviews",
     "actionable_dispatch_tasks",
     "build_agent_dispatch_scope",
+    "build_preparation_recovery_dispatch_scope",
+    "inbox_references_review_ids",
+    "mcp_capability_blocked_review_ids",
 ]

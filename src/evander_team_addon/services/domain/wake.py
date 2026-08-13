@@ -21,6 +21,7 @@ from ...models import (
     TeamRecordState,
     TeamState,
     TeamTaskState,
+    wake_work_changed_since_latest_attempt,
     release_package_payload_with_derived,
     runtime_operations_payload,
 )
@@ -35,6 +36,11 @@ from .common import (
     _priority_sort_value,
 )
 from .deliverables import _active_task_deliverables
+from .dispatch_scope import (
+    actionable_dispatch_reviews,
+    inbox_references_review_ids,
+    mcp_capability_blocked_review_ids,
+)
 from .preparation_failures import inbox_has_current_preparation_blocker
 from .stand_down import _active_stand_downs_for_agent
 
@@ -197,6 +203,27 @@ def _pending_inbox_for_agent(state: TeamState, agent_id: str) -> list[AgentInbox
     return items
 
 
+def _ordinary_wake_work_for_agent(
+    state: TeamState,
+    agent_id: str,
+) -> tuple[list[AgentInboxItem], list[AgentInboxItem], list[ReviewRequest]]:
+    """Return the inbox and review work an ordinary lease can actually offer."""
+
+    pending_inbox = _pending_inbox_for_agent(state, agent_id)
+    pending_reviews = actionable_dispatch_reviews(_pending_reviews_for_agent(state, agent_id))
+    blocked_review_ids = mcp_capability_blocked_review_ids(state, agent_id=agent_id)
+    if blocked_review_ids:
+        pending_inbox = [
+            item
+            for item in pending_inbox
+            if not inbox_references_review_ids(item, blocked_review_ids)
+        ]
+        pending_reviews = [
+            review for review in pending_reviews if review.id not in blocked_review_ids
+        ]
+    return pending_inbox, _wakeable_inbox_items(pending_inbox), pending_reviews
+
+
 def _append_agent_wake_requested_event_for_inbox_item(
     state: TeamState,
     *,
@@ -232,13 +259,26 @@ def _append_follow_up_agent_wake_requested_event(
     reason, delay_seconds = wake
     if not progress_made and reason != "inbox":
         return
-    if (
-        reason == "task_ready"
-        and max_no_progress_count >= 0
-        and state.agent_runtimes.get(agent_id, AgentRuntime(agent_id=agent_id)).no_progress_count
-        >= max_no_progress_count
-    ):
-        return
+    # Inbox events stay policy-neutral because lease_due_agents owns the operator's
+    # configured no-progress limit. Keep the existing task-ready event bound here.
+    if reason == "task_ready":
+        runtime = state.agent_runtimes.get(agent_id, AgentRuntime(agent_id=agent_id))
+        _pending_inbox, wake_inbox, pending_reviews = _ordinary_wake_work_for_agent(
+            state,
+            agent_id,
+        )
+        wake_work_changed = wake_work_changed_since_latest_attempt(
+            state,
+            agent_id=agent_id,
+            inbox_items=wake_inbox,
+            reviews=pending_reviews,
+        )
+        if (
+            max_no_progress_count >= 0
+            and runtime.no_progress_count >= max_no_progress_count
+            and not wake_work_changed
+        ):
+            return
     _append_agent_wake_requested_event(
         state,
         agent_id=agent_id,
@@ -421,6 +461,7 @@ __all__ = [
     "_pending_reviews_for_agent",
     "_pending_ephemeral_acceptances_for_agent",
     "_pending_inbox_for_agent",
+    "_ordinary_wake_work_for_agent",
     "_append_agent_wake_requested_event_for_inbox_item",
     "_append_follow_up_agent_wake_requested_event",
     "_agent_immediate_wake_request",

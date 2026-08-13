@@ -1,5 +1,55 @@
 # Changelog
 
+## 2026-08-13 - Dependency-Preserving Verification Recovery
+
+- Allowed an accepted, fully verified downstream remediation to create a rejected-candidate
+  successor when its sole task dependency and immutable Git work context both name the exact
+  accepted verification-correction deliverable, branch, and commit. Extra, manual, or unpinned
+  dependency lineage remains ineligible.
+
+## 2026-08-13 - Bounded Team Inbox and Review Replays
+
+- Stopped unchanged pending inbox and review work from bypassing the Team
+  no-progress limit. Exhausted agents now receive at most one attempt for a
+  newly changed work snapshot while context rotation and recovery wakes remain
+  available.
+- Kept immediate inbox follow-up events policy-neutral so the configured
+  `max_no_progress_count`, including custom and unlimited values, is enforced by
+  the lease decision instead of a hard-coded finalization default.
+- Applied the same edge-triggered limit to manager-fallback work using a
+  separate, full-fidelity team-wide snapshot; direct manager work remains in
+  the ordinary wake domain.
+- Hardened assigned-review prompts to hydrate deferred Team tools by exact
+  logical name and retry before reporting the review interface unavailable.
+
+## 2026-08-13 - Inspectable Bokio Duplicate-Check Evidence
+
+- Added the read-only `bokio_get_duplicate_check` add-on MCP tool so an independent
+  reviewer can dereference a durable `bokio-duplicate-check:...` result without
+  rerunning or trusting a producer's prose summary.
+- Documented that existing bookkeeping and review sessions must be granted the
+  duplicate-check creation and read tools explicitly.
+
+## 2026-08-11 - Release Candidate Input Validation
+
+- Reject release packages for Git-backed projects when their direct inputs contain only
+  supporting artifacts or source-deliverable lineage and therefore cannot produce a pinned
+  candidate. The error now directs managers to create an explicit Git integration task for
+  mixed-base contributions, and the release UI identifies historical dead-end packages as
+  blocked instead of indefinitely waiting for a candidate.
+- Treat policy-v2 artifact-only releases for projects without Git as candidate-not-required in
+  both release progress and detail views instead of mislabeling them as blocked Git releases.
+
+## 2026-08-11 - Container Worker MSSQL Client Toolchain
+
+- Added an optional host-seeded, read-only `sqlcmd` and ODBC Driver 18 toolchain cache for
+  container workers. It is enabled with worker MSSQL by default, is verified inside the runner
+  image during deployment, and lets agents query only databases provisioned through existing
+  session-scoped MSSQL tools without putting a SQL Server engine in each container.
+- Documented snapshot-backed query-plan evidence using the existing MSSQL Seed add-on, including
+  local `.bak` placement, versioned aliases, Query Store warmup, artifact capture, and explicit
+  fixture-derived evidence labeling.
+
 ## 2026-08-11 - GitHub Managed Git Refresh Authentication
 
 - Rewrote token-backed GitHub SSH refresh sources to their canonical HTTPS URLs at Git invocation

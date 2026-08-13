@@ -27,6 +27,7 @@ def test_worker_playbook_exists_with_expected_roles() -> None:
     assert "- role: worker_node_toolchain" in worker
     assert "- role: worker_playwright_toolchain" in worker
     assert "- role: worker_mssql" in worker
+    assert "- role: worker_mssql_client_toolchain" in worker
     assert "- role: worker_container_egress_policy" in worker
     assert "- role: container_worker_service" in worker
     assert "- role: container_worker_verification" in worker
@@ -36,6 +37,9 @@ def test_worker_playbook_exists_with_expected_roles() -> None:
     assert "Assert worker egress allowlist endpoints are concrete" in worker
     assert worker.index("- role: container_worker_runtime") < worker.index("- role: worker_mssql")
     assert worker.index("- role: worker_mssql") < worker.index(
+        "- role: worker_mssql_client_toolchain"
+    )
+    assert worker.index("- role: worker_mssql_client_toolchain") < worker.index(
         "- role: worker_container_egress_policy"
     )
     assert worker.index("- role: worker_container_egress_policy") < worker.index(
@@ -50,6 +54,7 @@ def test_worker_playbook_exists_with_expected_roles() -> None:
         "worker_node_toolchain",
         "worker_playwright_toolchain",
         "worker_mssql",
+        "worker_mssql_client_toolchain",
         "worker_container_egress_policy",
         "container_worker_service",
         "container_worker_verification",
@@ -66,6 +71,7 @@ def test_worker_role_task_files_are_not_ignored_by_git() -> None:
         "ansible/roles/worker_node_toolchain/tasks/main.yml",
         "ansible/roles/worker_playwright_toolchain/tasks/main.yml",
         "ansible/roles/worker_mssql/tasks/main.yml",
+        "ansible/roles/worker_mssql_client_toolchain/tasks/main.yml",
         "ansible/roles/worker_container_egress_policy/tasks/main.yml",
         "ansible/roles/container_worker_service/tasks/main.yml",
         "ansible/roles/container_worker_verification/tasks/main.yml",
@@ -98,6 +104,7 @@ def test_worker_group_vars_define_docker_and_durable_state_contract() -> None:
     assert "ansible/roles/worker_node_toolchain" in text
     assert "ansible/roles/worker_playwright_toolchain" in text
     assert "ansible/roles/worker_mssql" in text
+    assert "ansible/roles/worker_mssql_client_toolchain" in text
     assert "ansible/roles/worker_container_egress_policy" in text
     assert "ansible/roles/container_worker_service" in text
     assert "  - docker" in text
@@ -174,6 +181,9 @@ def test_worker_group_vars_define_docker_and_durable_state_contract() -> None:
     assert "/opt/evander/playwright-runtime" in text
     assert "/opt/evander/ms-playwright" in text
     assert "/opt/evander/nuget-cache-ro" in text
+    assert "evander_worker_mssql_client_toolchain_enabled" in text
+    assert "HOST_MSSQL_CLIENT_ARCHIVE" in text
+    assert "/opt/evander/toolchains/mssql-client" in text
     assert "evander_worker_preload_images" in text
     assert "evander_worker_mssql_enabled: false" in text
     assert "evander_worker_mssql_container_host" in text
@@ -397,6 +407,33 @@ def test_worker_mssql_role_installs_sql_server_and_verifies_sqlcmd() -> None:
     assert "until: evander_worker_mssql_admin_connectivity.rc == 0" in role
     assert "evander_worker_mssql_allowed_source_cidr" in role
     assert "DROP" in role
+
+
+def test_worker_mssql_client_toolchain_role_seeds_and_verifies_sqlcmd_cache() -> None:
+    worker = (ROOT / "ansible" / "worker.yml").read_text(encoding="utf-8")
+    role = (
+        ROOT
+        / "ansible"
+        / "roles"
+        / "worker_mssql_client_toolchain"
+        / "tasks"
+        / "main.yml"
+    ).read_text(encoding="utf-8")
+
+    assert worker.index("- role: worker_mssql") < worker.index(
+        "- role: worker_mssql_client_toolchain"
+    )
+    assert worker.index("- role: worker_mssql_client_toolchain") < worker.index(
+        "- role: container_worker_service"
+    )
+    assert "Build local MSSQL client toolchain archive" in role
+    assert "build_mssql_client_toolchain_archive.sh" in role
+    assert "Copy MSSQL client toolchain archive to worker" in role
+    assert "Unpack MSSQL client toolchain into worker cache" in role
+    assert "Verify worker MSSQL client toolchain on host cache" in role
+    assert "Verify MSSQL client is available inside runner container" in role
+    assert "/opt/evander/toolchains/mssql-client:ro" in role
+    assert "sqlcmd -?" in role
 
 
 def test_python_env_role_accepts_private_package_index_environment() -> None:

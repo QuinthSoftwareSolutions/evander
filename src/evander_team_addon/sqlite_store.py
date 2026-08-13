@@ -1111,6 +1111,18 @@ class TeamStateSqliteStore:
                 _ensure_column(
                     connection,
                     table_name="team_dispatches",
+                    column_name="wake_work_fingerprint",
+                    definition="TEXT",
+                )
+                _ensure_column(
+                    connection,
+                    table_name="team_dispatches",
+                    column_name="wake_work_record_fingerprints_json",
+                    definition="TEXT NOT NULL DEFAULT '{}'",
+                )
+                _ensure_column(
+                    connection,
+                    table_name="team_dispatches",
                     column_name="action_feedback_dispatch_ids_json",
                     definition="TEXT NOT NULL DEFAULT '[]'",
                 )
@@ -4421,6 +4433,10 @@ class TeamStateSqliteStore:
                 "activation_completed_at": row["activation_completed_at"],
                 "session_metadata_mirrored_at": row["session_metadata_mirrored_at"],
                 "role_description_fingerprint": row["role_description_fingerprint"],
+                "wake_work_fingerprint": row["wake_work_fingerprint"],
+                "wake_work_record_fingerprints": _json_loads(
+                    row["wake_work_record_fingerprints_json"] or "{}"
+                ),
                 "action_feedback_dispatch_ids": _json_loads(
                     row["action_feedback_dispatch_ids_json"] or "[]"
                 ),
@@ -4448,10 +4464,12 @@ class TeamStateSqliteStore:
                     created_at, preparation_expires_at, queued_at,
                     requested_lease_seconds, activation_completed_at,
                     session_metadata_mirrored_at, role_description_fingerprint,
+                    wake_work_fingerprint,
+                    wake_work_record_fingerprints_json,
                     action_feedback_dispatch_ids_json,
                     prepared_at, leased_at, lease_expires_at,
                     completed_at, error
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     dispatch["id"],
@@ -4471,6 +4489,8 @@ class TeamStateSqliteStore:
                     dispatch.get("activation_completed_at"),
                     dispatch.get("session_metadata_mirrored_at"),
                     dispatch.get("role_description_fingerprint"),
+                    dispatch.get("wake_work_fingerprint"),
+                    _json_dumps(dispatch.get("wake_work_record_fingerprints", {})),
                     _json_dumps(dispatch.get("action_feedback_dispatch_ids", [])),
                     dispatch.get("prepared_at"),
                     dispatch.get("leased_at"),
@@ -8575,6 +8595,8 @@ CREATE TABLE IF NOT EXISTS team_dispatches (
     activation_completed_at TEXT,
     session_metadata_mirrored_at TEXT,
     role_description_fingerprint TEXT,
+    wake_work_fingerprint TEXT,
+    wake_work_record_fingerprints_json TEXT NOT NULL DEFAULT '{}',
     action_feedback_dispatch_ids_json TEXT NOT NULL DEFAULT '[]',
     prepared_at TEXT,
     leased_at TEXT,

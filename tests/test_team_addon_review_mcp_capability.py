@@ -27,6 +27,7 @@ from evander_team_addon.models import (
     TeamInboxItemType,
     TeamMcpCapabilityBlockerIdentity,
     TeamTaskState,
+    runtime_operations_payload,
 )
 from evander_team_addon.repository import TeamStateRepository
 from evander_team_addon.services.admin_service import TeamAdminService
@@ -302,6 +303,12 @@ def test_review_capability_mismatch_retries_once_then_blocks_without_rewaking_re
         now=second_at + timedelta(seconds=1),
     )
     assert blocked_review_leases == []
+    [backend_runtime] = runtime_operations_payload(
+        repo.read(),
+        now=second_at + timedelta(seconds=1),
+        agent_ids={"backend"},
+    )["agents"]
+    assert backend_runtime["wake_due"] is False
 
 
 def test_policy_grant_failure_does_not_complete_unstarted_dispatch_scope(
