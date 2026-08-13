@@ -662,6 +662,7 @@ class DockerContainerRuntime:
                 "[mcp_servers.evander]\n"
                 f"url = {json.dumps(str(turn.mcp_gateway_url))}\n"
                 "enabled = true\n"
+                "required = true\n"
             )
         _write_worker_owned_config(config_path, config_content)
         _write_worker_owned_config(

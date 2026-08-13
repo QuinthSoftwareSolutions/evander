@@ -292,6 +292,7 @@ def test_subscription_app_server_gets_only_restricted_proxy_configuration(
     assert "[mcp_servers.evander]" in subscription_config_text
     assert 'url = "http://10.20.30.40:8000/mcp"' in subscription_config_text
     assert "enabled = true" in subscription_config_text
+    assert "required = true" in subscription_config_text
     assert "model_provider" not in subscription_config_text
     assert "model_providers" not in subscription_config_text
     assert "OPENAI_API_KEY" not in subscription_config_text

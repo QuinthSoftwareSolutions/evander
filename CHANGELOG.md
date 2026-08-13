@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-08-13 - Required Codex MCP Startup
+
+- Marked the Evander MCP server as required in container, subscription, and VM Codex
+  configuration, and repeated the requirement on session-scoped prompt commands. Fast model turns
+  now wait for tool discovery instead of incorrectly concluding that Teams and other MCP tools are
+  unavailable while optional startup is still in progress.
+
 ## 2026-08-13 - Codex Code-Mode Host Runner Packaging
 
 - Packaged the matching `codex-code-mode-host` executable with the Codex runner and made runner
