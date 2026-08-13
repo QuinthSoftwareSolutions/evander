@@ -150,6 +150,69 @@ def test_refresh_coalesces_waiters_that_started_before_completed_refresh(
     assert second["refresh_reused"] is True
 
 
+def test_refresh_publishes_freshness_before_releasing_target_lock(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source, _, _ = _source_repository(tmp_path)
+    service = _service(tmp_path)
+    record = service.register_repository("root", str(source))
+    repo_id = str(record["managed_repo_id"])
+    requested_at = datetime.now(UTC)
+    original_refresh = service._refresh_record
+    original_update = service._update_registry
+    refresh_calls = 0
+    refresh_calls_lock = threading.Lock()
+    first_update_entered = threading.Event()
+    allow_first_update = threading.Event()
+    second_refresh_entered = threading.Event()
+    results: dict[str, dict[str, object]] = {}
+    errors: list[BaseException] = []
+
+    def counted_refresh(current: dict[str, object]) -> dict[str, object]:
+        nonlocal refresh_calls
+        with refresh_calls_lock:
+            refresh_calls += 1
+            if refresh_calls > 1:
+                second_refresh_entered.set()
+        return original_refresh(current)
+
+    def delayed_update(updater):
+        if threading.current_thread().name == "first-refresh":
+            first_update_entered.set()
+            allow_first_update.wait(timeout=5)
+        return original_update(updater)
+
+    def refresh(name: str) -> None:
+        try:
+            results[name] = service.refresh_repository(
+                repo_id,
+                reuse_if_refreshed_after=requested_at,
+            )
+        except BaseException as exc:  # noqa: BLE001
+            errors.append(exc)
+
+    monkeypatch.setattr(service, "_refresh_record", counted_refresh)
+    monkeypatch.setattr(service, "_update_registry", delayed_update)
+    first = threading.Thread(target=refresh, args=("first",), name="first-refresh")
+    first.start()
+    assert first_update_entered.wait(timeout=5)
+    second = threading.Thread(target=refresh, args=("second",), name="second-refresh")
+    second.start()
+    second_started_refresh_early = second_refresh_entered.wait(timeout=0.2)
+    allow_first_update.set()
+    first.join(timeout=5)
+    second.join(timeout=5)
+
+    assert not first.is_alive()
+    assert not second.is_alive()
+    assert errors == []
+    assert second_started_refresh_early is False
+    assert refresh_calls == 1
+    assert results["first"]["refresh_reused"] is False
+    assert results["second"]["refresh_reused"] is True
+
+
 def test_resolve_branch_commit_uses_scoped_managed_repository_ref(tmp_path: Path) -> None:
     source, _, first = _source_repository(tmp_path)
     service = _service(tmp_path)

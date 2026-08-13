@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from pydantic import ValidationError
@@ -117,9 +118,23 @@ def test_debounce_exposes_earliest_persisted_release_deadline(tmp_path: Path) ->
     provider = _debounce_provider(worker)
     states = list(provider.load_state().read_all().values())
 
-    assert provider.next_reconcile_at() == min(
+    assert provider.next_reconcile_at(graph=worker._build_execution_graph()) == min(
         min(state.scheduled_release_at, state.max_release_at) for state in states
     )
+
+
+def test_debounce_ignores_persisted_deadlines_for_removed_gates(tmp_path: Path) -> None:
+    worker = _worker(tmp_path)
+    _publish(worker, "event-1", "a", 1)
+    worker.run_once()
+    provider = _debounce_provider(worker)
+    active_graph = SimpleNamespace(
+        gates_by_id={
+            "debounce-2": SimpleNamespace(type="gate:debounce"),
+        }
+    )
+
+    assert provider.next_reconcile_at(graph=active_graph) is None
 
 
 def test_effect_cycle_sleep_never_extends_gate_deadline() -> None:

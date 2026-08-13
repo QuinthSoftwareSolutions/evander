@@ -1,5 +1,16 @@
 # Changelog
 
+## 2026-08-13 - Polling and Reference Repository Review Hardening
+
+- Prevented persistent assistants from redirecting host Git through symlinked administrative
+  metadata or executing checkout hooks, filesystem monitors, and configured content filters;
+  tracked `.evander/` edits now also block reference-repository refreshes.
+- Kept removed debounce gates out of effect-worker deadlines, bounded Teams retry arithmetic,
+  separated directory credential failures from resource-level authorization failures, and scoped
+  delegated polling state to the selected identity.
+- Published managed-Git refresh freshness while the coalescing lock is still held so concurrent
+  callers reuse the completed fetch.
+
 ## 2026-08-13 - Isolated Teams Polling and Faster Assistant Preparation
 
 - Persisted Microsoft Graph retry cooldowns per directory credential scope and logical target so

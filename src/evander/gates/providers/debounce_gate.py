@@ -272,10 +272,21 @@ class DebounceGateProvider(GateProviderBase):
             released += 1
         return released
 
-    def next_reconcile_at(self, **_: Any) -> datetime | None:
+    def next_reconcile_at(self, **kwargs: Any) -> datetime | None:
+        graph = kwargs.get("graph")
+        active_gate_ids = (
+            {
+                gate_id
+                for gate_id, gate in graph.gates_by_id.items()
+                if getattr(gate, "type", "") == "gate:debounce"
+            }
+            if graph is not None
+            else None
+        )
         deadlines = [
             min(_coerce_utc(state.scheduled_release_at), _coerce_utc(state.max_release_at))
             for state in self.load_state().read_all().values()
+            if active_gate_ids is None or state.gate_id in active_gate_ids
         ]
         return min(deadlines) if deadlines else None
 

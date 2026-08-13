@@ -942,25 +942,25 @@ class ManagedGitAdminService:
                 ):
                     return {**self._public_record(current), "refresh_reused": True}
             result = self._refresh_record(effective_record)
-        now = result["refreshed_at"]
+            now = result["refreshed_at"]
 
-        def update(payload: dict[str, Any]):
-            current = payload["repositories"].get(managed_repo_id)
-            if not isinstance(current, dict):
-                raise ManagedGitNotFoundError(f"Unknown managed repository: {managed_repo_id}")
-            current["refreshed_at"] = now
-            current["updated_at"] = now
-            if default_branch_override is not None:
-                current["default_branch"] = default_branch_override
-                current["default_branch_source"] = "override"
-            elif current.get("default_branch_source") != "override" and result.get(
-                "default_branch"
-            ):
-                current["default_branch"] = result["default_branch"]
-            return dict(current)
+            def update(payload: dict[str, Any]):
+                current = payload["repositories"].get(managed_repo_id)
+                if not isinstance(current, dict):
+                    raise ManagedGitNotFoundError(f"Unknown managed repository: {managed_repo_id}")
+                current["refreshed_at"] = now
+                current["updated_at"] = now
+                if default_branch_override is not None:
+                    current["default_branch"] = default_branch_override
+                    current["default_branch_source"] = "override"
+                elif current.get("default_branch_source") != "override" and result.get(
+                    "default_branch"
+                ):
+                    current["default_branch"] = result["default_branch"]
+                return dict(current)
 
-        updated = self._update_registry(update)
-        return {**self._public_record(updated), "refresh_reused": False}
+            updated = self._update_registry(update)
+            return {**self._public_record(updated), "refresh_reused": False}
 
     def delete_repository(self, managed_repo_id: str) -> dict[str, Any]:
         initial = self._require_record(managed_repo_id)

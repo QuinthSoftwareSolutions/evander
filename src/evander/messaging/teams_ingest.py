@@ -4,6 +4,7 @@ import argparse
 import hashlib
 import json
 import logging
+import math
 import os
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -50,6 +51,7 @@ from evander.runtime import (
 from evander.repositories.records import SqliteTeamsRecordsRepository, teams_records_db_path
 from evander.services import (
     GraphTeamsService,
+    TeamsAuthenticationError,
     normalize_teams_target,
     parse_teams_target,
 )
@@ -634,9 +636,10 @@ class TeamsIngestWorker:
             failure_count = (
                 previous_failure.consecutive_failures if previous_failure is not None else 0
             ) + 1
-            computed_backoff = min(
-                self.worker_config.target_backoff_max_seconds,
-                self.worker_config.target_backoff_initial_seconds * (2 ** (failure_count - 1)),
+            computed_backoff = _compute_target_backoff_seconds(
+                failure_count=failure_count,
+                initial_seconds=self.worker_config.target_backoff_initial_seconds,
+                max_seconds=self.worker_config.target_backoff_max_seconds,
             )
             backoff_seconds = max(computed_backoff, retry_after_seconds or 0.0)
             failed_at = datetime.now(UTC)
@@ -979,6 +982,7 @@ def _teams_graph_poll_scope(provider_config: GatewayConfig, *, directory_path: s
             provider_config.teams_backend,
             provider_config.teams_graph_api_base_url.rstrip("/").casefold(),
             provider_config.teams_graph_access_token_env.strip(),
+            (provider_config.teams_delegated_identity_id or "").strip(),
         )
     )
     digest = hashlib.sha256(identity.encode("utf-8")).hexdigest()[:20]
@@ -1013,11 +1017,13 @@ def _one_on_one_chat_targets(payloads: object) -> set[str]:
 def _classify_graph_poll_error(
     exc: Exception,
 ) -> tuple[str, float | None, bool] | None:
+    if isinstance(exc, TeamsAuthenticationError):
+        return ("authentication", None, True)
     if isinstance(exc, httpx.HTTPStatusError):
         status_code = exc.response.status_code
         retry_after = _retry_after_seconds(exc.response)
-        if status_code in {401, 403}:
-            return (f"http_{status_code}", retry_after, True)
+        if status_code == 401:
+            return ("http_401", retry_after, True)
         if 400 <= status_code <= 599:
             return (f"http_{status_code}", retry_after, False)
     if isinstance(exc, httpx.TimeoutException):
@@ -1027,6 +1033,23 @@ def _classify_graph_poll_error(
     if isinstance(exc, TimeoutError):
         return ("retry_budget_timeout", None, False)
     return None
+
+
+def _compute_target_backoff_seconds(
+    *,
+    failure_count: int,
+    initial_seconds: float,
+    max_seconds: float,
+) -> float:
+    initial = max(0.0, float(initial_seconds))
+    maximum = max(initial, float(max_seconds))
+    exponent = max(0, int(failure_count) - 1)
+    if initial == 0.0 or initial >= maximum:
+        return min(initial, maximum)
+    exponent_until_cap = max(0, math.ceil(math.log2(maximum) - math.log2(initial)))
+    if exponent >= exponent_until_cap:
+        return maximum
+    return min(maximum, math.ldexp(initial, exponent))
 
 
 def _retry_after_seconds(response: httpx.Response) -> float | None:

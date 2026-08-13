@@ -15,8 +15,14 @@ from evander.messaging.targets import (
     communication_targets_db_path,
 )
 from evander.models import SessionManifest, TeamsMessageEnvelope, ToolName
-from evander.messaging.teams_ingest import build_teams_ingest_worker
+from evander.messaging.teams_ingest import (
+    _classify_graph_poll_error,
+    _compute_target_backoff_seconds,
+    _teams_graph_poll_scope,
+    build_teams_ingest_worker,
+)
 from evander.orchestration.host_polling import HostWakeSleeper, wake_socket_path_for_lock
+from evander.services import TeamsAuthenticationError
 
 
 def ensure_directory(worker, directory_path: str) -> None:
@@ -1273,6 +1279,130 @@ def test_teams_ingest_worker_uses_history_page_budget_per_target(
     assert worker.store.get_cursor("team-a/channel-1") == "team-a/channel-1/msg-1"
     assert worker.store.get_cursor("team-a/channel-2") == "team-a/channel-2/msg-2"
     assert result.channel_targets_polled == 2
+
+
+def test_teams_graph_poll_errors_keep_authentication_and_resource_scopes_distinct() -> None:
+    request = httpx.Request("GET", "https://graph.microsoft.test/resource")
+    unauthorized = httpx.HTTPStatusError(
+        "unauthorized",
+        request=request,
+        response=httpx.Response(401, request=request),
+    )
+    forbidden = httpx.HTTPStatusError(
+        "forbidden",
+        request=request,
+        response=httpx.Response(403, request=request),
+    )
+
+    assert _classify_graph_poll_error(TeamsAuthenticationError("revoked")) == (
+        "authentication",
+        None,
+        True,
+    )
+    assert _classify_graph_poll_error(unauthorized) == ("http_401", None, True)
+    assert _classify_graph_poll_error(forbidden) == ("http_403", None, False)
+
+
+def test_teams_target_backoff_caps_before_large_exponentiation() -> None:
+    assert (
+        _compute_target_backoff_seconds(
+            failure_count=1,
+            initial_seconds=60,
+            max_seconds=900,
+        )
+        == 60
+    )
+    assert (
+        _compute_target_backoff_seconds(
+            failure_count=1025,
+            initial_seconds=60,
+            max_seconds=900,
+        )
+        == 900
+    )
+
+
+def test_teams_delegated_poll_scope_changes_with_identity(tmp_path: Path) -> None:
+    base = GatewayConfig.model_validate(
+        {
+            "runtime_dir": str(tmp_path / "runtime"),
+            "teams_backend": "delegated_graph_api",
+            "teams_delegated_identity_id": "identity-1",
+            "teams_delegated_client_id": "client-1",
+        }
+    )
+
+    first = _teams_graph_poll_scope(base, directory_path="root/team-a")
+    second = _teams_graph_poll_scope(
+        base.model_copy(update={"teams_delegated_identity_id": "identity-2"}),
+        directory_path="root/team-a",
+    )
+
+    assert first != second
+
+
+def test_teams_ingest_worker_keeps_delegated_auth_failure_to_its_directory(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(200, json={"value": []}, request=request)
+
+    patch_worker_httpx_client(monkeypatch, httpx.MockTransport(handler))
+
+    def delegated_token_provider(provider_config: GatewayConfig):
+        def resolve() -> str:
+            if provider_config.teams_delegated_identity_id == "identity-broken":
+                raise TeamsAuthenticationError("delegated credential was revoked")
+            return "delegated-token"
+
+        return resolve
+
+    monkeypatch.setattr(
+        "evander.messaging.teams_ingest._build_delegated_teams_token_provider",
+        delegated_token_provider,
+    )
+    config = GatewayConfig.model_validate(
+        {
+            "runtime_dir": str(tmp_path / "runtime"),
+            "teams_backend": "delegated_graph_api",
+            "teams_delegated_identity_id": "identity-broken",
+            "teams_delegated_client_id": "client-1",
+            "teams_retry_count": 0,
+        }
+    )
+    healthy_config = config.model_copy(update={"teams_delegated_identity_id": "identity-healthy"})
+    worker = build_teams_ingest_worker(config, project_dir=tmp_path)
+    ensure_directory(worker, "root/team-a")
+    ensure_directory(worker, "root/team-b")
+    monkeypatch.setattr(
+        worker.runtime.provider_config,
+        "resolve_for_directory",
+        lambda directory_path: config if directory_path == "root/team-a" else healthy_config,
+    )
+    for session_id, directory_path, channel_target in (
+        ("session-broken", "root/team-a", "team-a/channel-1"),
+        ("session-healthy", "root/team-b", "team-b/channel-1"),
+    ):
+        worker.session_repository.upsert_session(
+            SessionManifest(
+                session_id=session_id,
+                directory_path=directory_path,
+                allowed_tools=[ToolName.TEAMS_GET_MESSAGES],
+                teams_channel_allowlist=[channel_target],
+                expires_at=datetime.now(UTC) + timedelta(hours=1),
+            ),
+        )
+
+    result = worker.run_once()
+
+    assert result.targets_failed == 1
+    assert [request.url.path for request in requests] == [
+        "/v1.0/teams/team-b/channels/channel-1/messages"
+    ]
 
 
 def test_teams_ingest_worker_uses_delegated_token_provider(
