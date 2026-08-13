@@ -78,6 +78,22 @@ _LEGACY_MANAGED_GIT_FIELDS = frozenset(
 _LEGACY_MANAGED_GIT_ROUTING_FIELDS = frozenset(
     {*_LEGACY_MANAGED_GIT_FIELDS, "repo_path", "authorized_repo_path"}
 )
+
+
+def _parse_optional_utc_datetime(value: object) -> datetime | None:
+    if isinstance(value, datetime):
+        parsed = value
+    else:
+        text = str(value or "").strip()
+        if not text:
+            return None
+        try:
+            parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=UTC)
+    return parsed.astimezone(UTC)
 _MANAGED_GIT_NODE_PREFIXES = (
     "trigger:git:",
     "effect:git:",
@@ -566,6 +582,7 @@ class ManagedGitAdminService:
         default_branch: str | None = None,
         refresh: bool = True,
         *,
+        reuse_if_refreshed_after: datetime | str | None = None,
         _canonical_source: str | None = None,
         authorize_existing_owner: Callable[[str], None] | None = None,
     ) -> dict[str, Any]:
@@ -614,6 +631,7 @@ class ManagedGitAdminService:
                         return self._refresh_repository_with_override(
                             str(existing["managed_repo_id"]),
                             requested_default,
+                            reuse_if_refreshed_after=reuse_if_refreshed_after,
                         )
                     self._update_record_fields(
                         existing["managed_repo_id"],
@@ -630,7 +648,10 @@ class ManagedGitAdminService:
                         ]
                     )
                 if refresh:
-                    return self.refresh_repository(existing["managed_repo_id"])
+                    return self.refresh_repository(
+                        existing["managed_repo_id"],
+                        reuse_if_refreshed_after=reuse_if_refreshed_after,
+                    )
                 return self.get_repository(existing["managed_repo_id"], directory)
 
             descendant = self._find_descendant_identity(
@@ -655,6 +676,7 @@ class ManagedGitAdminService:
                         return self._refresh_repository_with_override(
                             str(descendant["managed_repo_id"]),
                             requested_default,
+                            reuse_if_refreshed_after=reuse_if_refreshed_after,
                         )
                     self._update_record_fields(
                         descendant["managed_repo_id"],
@@ -671,7 +693,10 @@ class ManagedGitAdminService:
                         ]
                     )
                 if refresh:
-                    return self.refresh_repository(str(descendant["managed_repo_id"]))
+                    return self.refresh_repository(
+                        str(descendant["managed_repo_id"]),
+                        reuse_if_refreshed_after=reuse_if_refreshed_after,
+                    )
                 return self.get_repository(str(descendant["managed_repo_id"]), directory)
 
             managed_repo_id = self._managed_repo_id(directory, source.canonical_identity)
@@ -684,6 +709,11 @@ class ManagedGitAdminService:
                 ):
                     raise ManagedGitConflictError(
                         f"Managed repository ID collision for {managed_repo_id}"
+                    )
+                if refresh:
+                    return self.refresh_repository(
+                        managed_repo_id,
+                        reuse_if_refreshed_after=reuse_if_refreshed_after,
                     )
                 return self.get_repository(managed_repo_id, directory)
 
@@ -873,13 +903,24 @@ class ManagedGitAdminService:
             updated = self._update_registry(update)
         return self._public_record(updated)
 
-    def refresh_repository(self, managed_repo_id: str) -> dict[str, Any]:
-        return self._refresh_repository_with_override(managed_repo_id, None)
+    def refresh_repository(
+        self,
+        managed_repo_id: str,
+        *,
+        reuse_if_refreshed_after: datetime | str | None = None,
+    ) -> dict[str, Any]:
+        return self._refresh_repository_with_override(
+            managed_repo_id,
+            None,
+            reuse_if_refreshed_after=reuse_if_refreshed_after,
+        )
 
     def _refresh_repository_with_override(
         self,
         managed_repo_id: str,
         default_branch_override: str | None,
+        *,
+        reuse_if_refreshed_after: datetime | str | None = None,
     ) -> dict[str, Any]:
         record = self._require_record(managed_repo_id)
         effective_record = dict(record)
@@ -890,6 +931,16 @@ class ManagedGitAdminService:
             self._repo_lock(managed_repo_id, exclusive=False),
             self._target_lock(managed_repo_id, "canonical-refresh"),
         ):
+            if reuse_if_refreshed_after is not None:
+                current = self._require_record(managed_repo_id)
+                refreshed_at = _parse_optional_utc_datetime(current.get("refreshed_at"))
+                requested_at = _parse_optional_utc_datetime(reuse_if_refreshed_after)
+                if (
+                    refreshed_at is not None
+                    and requested_at is not None
+                    and refreshed_at >= requested_at
+                ):
+                    return {**self._public_record(current), "refresh_reused": True}
             result = self._refresh_record(effective_record)
         now = result["refreshed_at"]
 
@@ -909,7 +960,7 @@ class ManagedGitAdminService:
             return dict(current)
 
         updated = self._update_registry(update)
-        return self._public_record(updated)
+        return {**self._public_record(updated), "refresh_reused": False}
 
     def delete_repository(self, managed_repo_id: str) -> dict[str, Any]:
         initial = self._require_record(managed_repo_id)

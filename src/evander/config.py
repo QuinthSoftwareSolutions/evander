@@ -1299,7 +1299,18 @@ class TeamsIngestWorkerGlobalConfig(BaseModel):
     poll_interval_seconds: float = Field(default=2.0, gt=0)
     jitter_seconds: float = Field(default=5.0, ge=0)
     backoff_seconds: float = Field(default=60.0, ge=0)
+    target_backoff_initial_seconds: float = Field(default=60.0, ge=0)
+    target_backoff_max_seconds: float = Field(default=900.0, ge=0)
     lock_path: Path | None = None
+
+    @model_validator(mode="after")
+    def validate_target_backoff(self) -> TeamsIngestWorkerGlobalConfig:
+        if self.target_backoff_max_seconds < self.target_backoff_initial_seconds:
+            raise ValueError(
+                "target_backoff_max_seconds must be greater than or equal to "
+                "target_backoff_initial_seconds"
+            )
+        return self
 
     @field_validator("directories", mode="before")
     @classmethod

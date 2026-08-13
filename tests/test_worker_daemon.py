@@ -36,6 +36,7 @@ from evander.worker.service import (
 from evander.worker.models import (
     WorkerGitWriteKeyRequest,
     WorkerRepoCloneRequest,
+    WorkerReferenceRepoPrepareRequest,
     WorkerSessionPrepareRequest,
     WorkerTaskWorktreeCleanupRecord,
     WorkerTaskWorktreeCleanupRequest,
@@ -52,6 +53,105 @@ from evander.worker_daemon import (
     WorkerTelemetryPayload,
     create_app,
 )
+
+
+def test_worker_prepares_and_refreshes_clean_reference_repo_but_rejects_dirty_checkout(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "source"
+    source.mkdir()
+    subprocess.run(["git", "init", "-q", "-b", "main"], cwd=source, check=True)
+    subprocess.run(["git", "config", "user.email", "test@example.invalid"], cwd=source, check=True)
+    subprocess.run(["git", "config", "user.name", "Worker Test"], cwd=source, check=True)
+    tracked = source / "README.md"
+    tracked.write_text("one\n", encoding="utf-8")
+    subprocess.run(["git", "add", "README.md"], cwd=source, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "one"], cwd=source, check=True)
+
+    def source_commit() -> str:
+        return subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=source,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+
+    daemon = WorkerDaemon(
+        runtime_dir=tmp_path / "runtime",
+        worker_root=tmp_path / "worker-root",
+        container_runtime=FakeContainerRuntime(),
+        token="test-token",
+        allowed_git_source_prefixes=[str(tmp_path)],
+    )
+    first = daemon.prepare_reference_repo(
+        "session-1",
+        WorkerReferenceRepoPrepareRequest(
+            repo_source=str(source),
+            repo_name="repo",
+            source_ref="refs/heads/main",
+            commit_sha=source_commit(),
+            configuration_version="1",
+        ),
+    )
+    assert first.cloned is True
+    assert first.checkout_updated is True
+    assert first.configuration_updated is True
+
+    unchanged = daemon.prepare_reference_repo(
+        "session-1",
+        WorkerReferenceRepoPrepareRequest(
+            repo_source=str(source),
+            repo_name="repo",
+            source_ref="refs/heads/main",
+            commit_sha=source_commit(),
+            configuration_version="1",
+        ),
+    )
+    assert unchanged.cloned is False
+    assert unchanged.checkout_updated is False
+    assert unchanged.configuration_updated is False
+
+    tracked.write_text("two\n", encoding="utf-8")
+    subprocess.run(["git", "add", "README.md"], cwd=source, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "two"], cwd=source, check=True)
+    refreshed = daemon.prepare_reference_repo(
+        "session-1",
+        WorkerReferenceRepoPrepareRequest(
+            repo_source=str(source),
+            repo_name="repo",
+            source_ref="refs/heads/main",
+            commit_sha=source_commit(),
+            configuration_version="1",
+        ),
+    )
+    assert refreshed.checkout_updated is True
+    assert refreshed.commit_sha == source_commit()
+
+    checkout = (
+        tmp_path
+        / "worker-root"
+        / "sessions"
+        / "session-1"
+        / "agent_home"
+        / "repos"
+        / "repo"
+    )
+    (checkout / "README.md").write_text("dirty\n", encoding="utf-8")
+    tracked.write_text("three\n", encoding="utf-8")
+    subprocess.run(["git", "add", "README.md"], cwd=source, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "three"], cwd=source, check=True)
+    with pytest.raises(ValueError, match="checkout is dirty"):
+        daemon.prepare_reference_repo(
+            "session-1",
+            WorkerReferenceRepoPrepareRequest(
+                repo_source=str(source),
+                repo_name="repo",
+                source_ref="refs/heads/main",
+                commit_sha=source_commit(),
+                configuration_version="1",
+            ),
+        )
 
 
 _TEST_MANAGED_REPO_ID = "mr_0123456789abcdefabcd"

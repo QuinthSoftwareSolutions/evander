@@ -458,6 +458,267 @@ def test_teams_ingest_worker_resolves_communication_target_allowlists(
     assert wake_calls == []
 
 
+def test_teams_ingest_worker_backs_off_only_the_failing_graph_target(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    requests: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request.url.path)
+        if request.url.path.endswith("/channels/bad/messages"):
+            raise httpx.ReadTimeout("unhealthy endpoint", request=request)
+        if request.url.path.endswith("/channels/good/messages"):
+            return httpx.Response(
+                200,
+                json={
+                    "value": [
+                        {
+                            "id": "healthy-message",
+                            "createdDateTime": "2026-08-13T10:00:00Z",
+                            "body": {"content": "healthy", "contentType": "text"},
+                            "from": {"user": {"id": "user-1", "displayName": "Ada"}},
+                        }
+                    ]
+                },
+                request=request,
+            )
+        raise AssertionError(f"Unexpected path: {request.url.path}")
+
+    patch_worker_httpx_client(monkeypatch, httpx.MockTransport(handler))
+    monkeypatch.setenv("GRAPH_TEAMS_ACCESS_TOKEN", "graph-token")
+    config = GatewayConfig.model_validate(
+        {
+            "runtime_dir": str(tmp_path / "runtime"),
+            "teams_backend": "graph_api",
+            "teams_retry_count": 0,
+        }
+    )
+    wake_calls: list[str] = []
+    worker = build_teams_ingest_worker(
+        config,
+        project_dir=tmp_path,
+        trigger_wake_notifier=lambda: wake_calls.append("wake") or True,
+    )
+    ensure_directory(worker, "root/team-a")
+    worker.session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-1",
+            directory_path="root/team-a",
+            allowed_tools=[ToolName.TEAMS_GET_MESSAGES],
+            teams_channel_allowlist=["team-a/bad", "team-a/good"],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        ),
+    )
+
+    first = worker.run_once()
+
+    assert first.targets_failed == 1
+    assert first.new_messages_discovered == 1
+    assert first.trigger_wake_notified is True
+    assert wake_calls == ["wake"]
+    assert worker.store.list_all_messages(channel_targets=["team-a/good"])
+    assert any(
+        state["consecutive_failures"] == 1
+        for state in worker.store.read_raw()["poll_health"].values()
+    )
+
+    requests.clear()
+    second_worker = build_teams_ingest_worker(
+        config,
+        project_dir=tmp_path,
+        trigger_wake_notifier=lambda: wake_calls.append("wake") or True,
+    )
+    second = second_worker.run_once()
+
+    assert second.targets_skipped_backoff == 1
+    assert requests == ["/v1.0/teams/team-a/channels/good/messages"]
+
+
+def test_teams_ingest_worker_honors_retry_after_for_only_the_throttled_target(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/channels/throttled/messages"):
+            return httpx.Response(
+                429,
+                headers={"Retry-After": "120"},
+                request=request,
+            )
+        if request.url.path.endswith("/channels/healthy/messages"):
+            return httpx.Response(200, json={"value": []}, request=request)
+        raise AssertionError(f"Unexpected path: {request.url.path}")
+
+    patch_worker_httpx_client(monkeypatch, httpx.MockTransport(handler))
+    monkeypatch.setenv("GRAPH_TEAMS_ACCESS_TOKEN", "graph-token")
+    config = GatewayConfig.model_validate(
+        {
+            "runtime_dir": str(tmp_path / "runtime"),
+            "teams_backend": "graph_api",
+            "teams_retry_count": 0,
+        }
+    )
+    worker = build_teams_ingest_worker(config, project_dir=tmp_path)
+    ensure_directory(worker, "root/team-a")
+    worker.session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-1",
+            directory_path="root/team-a",
+            allowed_tools=[ToolName.TEAMS_GET_MESSAGES],
+            teams_channel_allowlist=["team-a/throttled", "team-a/healthy"],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        ),
+    )
+
+    before = datetime.now(UTC)
+    result = worker.run_once()
+
+    unhealthy = next(
+        state
+        for key, state in worker.store.read_raw()["poll_health"].items()
+        if key.endswith("|channel|team-a/throttled")
+    )
+    assert result.targets_failed == 1
+    assert result.channel_targets_polled == 2
+    assert datetime.fromisoformat(unhealthy["next_attempt_at"]) >= before + timedelta(seconds=119)
+
+
+def test_teams_ingest_worker_resets_target_backoff_after_recovery(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config_path = tmp_path / "config" / "teams-ingest" / "config.json"
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    config_path.write_text(
+        json.dumps(
+            {
+                "target_backoff_initial_seconds": 0,
+                "target_backoff_max_seconds": 0,
+            }
+        ),
+        encoding="utf-8",
+    )
+    healthy = False
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if not healthy:
+            raise httpx.ReadTimeout("temporary failure", request=request)
+        return httpx.Response(200, json={"value": []}, request=request)
+
+    patch_worker_httpx_client(monkeypatch, httpx.MockTransport(handler))
+    monkeypatch.setenv("GRAPH_TEAMS_ACCESS_TOKEN", "graph-token")
+    config = GatewayConfig.model_validate(
+        {
+            "runtime_dir": str(tmp_path / "runtime"),
+            "teams_backend": "graph_api",
+            "teams_retry_count": 0,
+        }
+    )
+    worker = build_teams_ingest_worker(config, project_dir=tmp_path)
+    ensure_directory(worker, "root/team-a")
+    worker.session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-1",
+            directory_path="root/team-a",
+            allowed_tools=[ToolName.TEAMS_GET_MESSAGES],
+            teams_channel_allowlist=["team-a/channel-1"],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        ),
+    )
+
+    first = worker.run_once()
+    healthy = True
+    second = worker.run_once()
+
+    target_health = next(
+        state
+        for key, state in worker.store.read_raw()["poll_health"].items()
+        if key.endswith("|channel|team-a/channel-1")
+    )
+    assert first.targets_failed == 1
+    assert second.targets_recovered == 1
+    assert target_health["consecutive_failures"] == 0
+    assert target_health["next_attempt_at"] is None
+
+
+def test_teams_ingest_worker_uses_cached_direct_chats_when_discovery_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    write_trigger_config(
+        tmp_path,
+        [
+            {
+                "id": "teams-dm-trigger",
+                "display_name": "Teams direct message",
+                "type": "trigger:teams:direct-message",
+                "sender_user_ids": ["user-allowed"],
+            }
+        ],
+    )
+    discovery_healthy = True
+    requests: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request.url.path)
+        if request.url.path.endswith("/me/chats"):
+            if not discovery_healthy:
+                raise httpx.ReadTimeout("discovery unavailable", request=request)
+            return httpx.Response(
+                200,
+                json={"value": [{"id": "dm-chat", "chatType": "oneOnOne"}]},
+                request=request,
+            )
+        if request.url.path.endswith("/chats/dm-chat/messages"):
+            return httpx.Response(
+                200,
+                json={
+                    "value": []
+                    if discovery_healthy
+                    else [
+                        {
+                            "id": "msg-after-discovery-failure",
+                            "createdDateTime": "2026-08-13T10:01:00Z",
+                            "body": {"content": "still healthy", "contentType": "text"},
+                            "from": {
+                                "user": {"id": "user-allowed", "displayName": "Ada"}
+                            },
+                        }
+                    ]
+                },
+                request=request,
+            )
+        raise AssertionError(f"Unexpected path: {request.url.path}")
+
+    patch_worker_httpx_client(monkeypatch, httpx.MockTransport(handler))
+    monkeypatch.setenv("GRAPH_TEAMS_ACCESS_TOKEN", "graph-token")
+    config = GatewayConfig.model_validate(
+        {
+            "runtime_dir": str(tmp_path / "runtime"),
+            "teams_backend": "graph_api",
+            "teams_retry_count": 0,
+        }
+    )
+    wake_calls: list[str] = []
+    worker = build_teams_ingest_worker(
+        config,
+        project_dir=tmp_path,
+        trigger_wake_notifier=lambda: wake_calls.append("wake") or True,
+    )
+    worker.run_once()
+
+    discovery_healthy = False
+    requests.clear()
+    result = worker.run_once()
+
+    assert result.targets_failed == 1
+    assert result.new_messages_discovered == 1
+    assert result.trigger_wake_notified is True
+    assert requests == ["/v1.0/me/chats", "/v1.0/chats/dm-chat/messages"]
+    assert wake_calls == ["wake"]
+
+
 def test_teams_ingest_worker_polls_communication_trigger_targets_without_active_sessions(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

@@ -352,6 +352,27 @@ class AgentCloneRepoEffectDefinition(EffectDefinition):
         return _normalize_managed_git_access_lifetime(value, effect_type="effect:agent:clone-repo")
 
 
+class AgentPrepareReferenceRepositoriesEffectDefinition(EffectDefinition):
+    type: Literal["effect:agent:prepare-reference-repositories"]
+    target: ConfigValue | None = None
+    session_id: ConfigValue | None = None
+    vm_name: ConfigValue | None = None
+    directory_path: ConfigValue
+    repositories: ConfigValue
+
+    @model_validator(mode="after")
+    def validate_target_selector(self) -> "AgentPrepareReferenceRepositoriesEffectDefinition":
+        if not any(value is not None for value in (self.target, self.session_id, self.vm_name)):
+            raise ValueError(
+                "effect:agent:prepare-reference-repositories requires target, session_id, or vm_name"
+            )
+        if isinstance(self.repositories, list) and not self.repositories:
+            raise ValueError(
+                "effect:agent:prepare-reference-repositories requires at least one repository"
+            )
+        return self
+
+
 class AgentGrantRepoAccessEffectDefinition(EffectDefinition):
     type: Literal["effect:agent:grant-repo-access"]
     target: ConfigValue | None = None

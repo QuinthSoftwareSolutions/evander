@@ -24,6 +24,8 @@ from evander.worker.models import (
     WorkerMssqlDatabaseRequest,
     WorkerRepoCloneRecord,
     WorkerRepoCloneRequest,
+    WorkerReferenceRepoPrepareRecord,
+    WorkerReferenceRepoPrepareRequest,
     WorkerSessionPrepareRequest,
     WorkerSessionRecord,
     WorkerTaskWorktreeCleanupRecord,
@@ -139,6 +141,20 @@ class ContainerWorkerClient:
         )
         return WorkerRepoCloneRecord.model_validate(
             self._json_dict(response, operation="clone repo")
+        )
+
+    def prepare_reference_repo(
+        self,
+        session_id: str,
+        request: WorkerReferenceRepoPrepareRequest,
+    ) -> WorkerReferenceRepoPrepareRecord:
+        response = self._request(
+            "POST",
+            f"/v1/sessions/{session_id}/reference-repo",
+            json=request.model_dump(mode="json", exclude_none=True),
+        )
+        return WorkerReferenceRepoPrepareRecord.model_validate(
+            self._json_dict(response, operation="prepare reference repo")
         )
 
     def prepare_task_worktree(

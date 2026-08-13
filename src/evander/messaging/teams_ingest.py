@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import logging
 import os
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
+from email.utils import parsedate_to_datetime
 from pathlib import Path
 from typing import Any
 
@@ -77,6 +79,9 @@ class TeamsIngestCycleResult:
     new_messages_discovered: int
     trigger_wake_notified: bool
     next_sleep_seconds: float
+    targets_skipped_backoff: int = 0
+    targets_failed: int = 0
+    targets_recovered: int = 0
 
 
 @dataclass(frozen=True)
@@ -89,6 +94,13 @@ class _TeamsDirectoryPollResult:
 class _TeamsDirectChatsPollResult:
     targets_polled: set[str]
     new_messages_discovered: int
+
+
+@dataclass(frozen=True)
+class _GraphPollAttempt:
+    attempted: bool
+    succeeded: bool
+    value: Any = None
 
 
 class TeamsIngestWorker:
@@ -111,6 +123,10 @@ class TeamsIngestWorker:
             config.runtime_dir / "teams-inbox-store.json"
         )
         self._trigger_wake_notifier = trigger_wake_notifier
+        self._cycle_trigger_wake_notified = False
+        self._cycle_targets_skipped_backoff = 0
+        self._cycle_targets_failed = 0
+        self._cycle_targets_recovered = 0
         self._kernel = PollingOrchestratorKernel(
             config=PollingKernelConfig(
                 poll_interval_seconds=self.worker_config.poll_interval_seconds,
@@ -134,6 +150,10 @@ class TeamsIngestWorker:
         return self._kernel.run_once_with_lock()
 
     def run_once(self) -> TeamsIngestCycleResult:
+        self._cycle_trigger_wake_notified = False
+        self._cycle_targets_skipped_backoff = 0
+        self._cycle_targets_failed = 0
+        self._cycle_targets_recovered = 0
         now = datetime.now(UTC)
         active_sessions = self.runtime.session_repository.list_active_sessions(now=now)
         channel_targets_polled = 0
@@ -177,15 +197,17 @@ class TeamsIngestWorker:
             poll_interval_seconds=self.worker_config.poll_interval_seconds,
             jitter_seconds=self.worker_config.jitter_seconds,
         )
-        trigger_wake_notified = self._notify_trigger_orchestrator_if_needed(new_messages_discovered)
         return TeamsIngestCycleResult(
             directories_polled=len(directories),
             channel_targets_polled=channel_targets_polled,
             direct_chats_polled=direct_chats_polled,
             sessions_seen=len(matching_sessions),
             new_messages_discovered=new_messages_discovered,
-            trigger_wake_notified=trigger_wake_notified,
+            trigger_wake_notified=self._cycle_trigger_wake_notified,
             next_sleep_seconds=next_sleep_seconds,
+            targets_skipped_backoff=self._cycle_targets_skipped_backoff,
+            targets_failed=self._cycle_targets_failed,
+            targets_recovered=self._cycle_targets_recovered,
         )
 
     def _log_start(self) -> None:
@@ -202,7 +224,8 @@ class TeamsIngestWorker:
             (
                 "Teams ingest worker cycle complete directories=%d channel_targets=%d "
                 "direct_chats=%d sessions=%d new_messages=%d "
-                "trigger_wake_notified=%s sleep_seconds=%.3f"
+                "trigger_wake_notified=%s targets_skipped_backoff=%d targets_failed=%d "
+                "targets_recovered=%d sleep_seconds=%.3f"
             ),
             result.directories_polled,
             result.channel_targets_polled,
@@ -210,6 +233,9 @@ class TeamsIngestWorker:
             result.sessions_seen,
             result.new_messages_discovered,
             result.trigger_wake_notified,
+            result.targets_skipped_backoff,
+            result.targets_failed,
+            result.targets_recovered,
             result.next_sleep_seconds,
         )
 
@@ -217,10 +243,16 @@ class TeamsIngestWorker:
         logger.exception("Teams ingest worker cycle failed")
 
     def _notify_trigger_orchestrator_if_needed(self, new_messages_discovered: int) -> bool:
-        if new_messages_discovered <= 0 or self._trigger_wake_notifier is None:
+        if (
+            new_messages_discovered <= 0
+            or self._trigger_wake_notifier is None
+            or self._cycle_trigger_wake_notified
+        ):
             return False
         try:
-            return self._trigger_wake_notifier()
+            notified = self._trigger_wake_notifier()
+            self._cycle_trigger_wake_notified = self._cycle_trigger_wake_notified or notified
+            return notified
         except Exception:
             logger.warning("Failed to notify trigger orchestrator wake socket", exc_info=True)
             return False
@@ -384,6 +416,7 @@ class TeamsIngestWorker:
             channel_targets=channel_targets,
             directory_path=directory_path,
         )
+        poll_scope = _teams_graph_poll_scope(provider_config, directory_path=directory_path)
         direct_chats_polled = 0
         new_messages_discovered = 0
         with httpx.Client(timeout=provider_config.teams_timeout_seconds) as client:
@@ -393,28 +426,72 @@ class TeamsIngestWorker:
                 service=service,
                 sender_refs=direct_sender_refs,
                 directory_path=directory_path,
+                poll_scope=poll_scope,
             )
             if direct_sender_refs_by_id:
-                direct_chats_result = self._poll_direct_chats(
-                    client,
-                    service=service,
-                    sender_refs_by_id=direct_sender_refs_by_id,
-                    allowlisted_chat_targets={
-                        target for target in channel_targets if target.startswith("chat:")
-                    },
+                discovery = self._run_graph_poll_target(
+                    poll_scope=poll_scope,
+                    target_kind="discovery",
+                    target="/me/chats",
+                    operation=lambda: list(
+                        service._iter_one_on_one_chats(
+                            client,
+                            budget=service.new_pagination_budget(),
+                        )
+                    ),
                 )
-                direct_chat_targets_polled = direct_chats_result.targets_polled
-                direct_chats_polled = len(direct_chat_targets_polled)
-                new_messages_discovered += direct_chats_result.new_messages_discovered
+                if discovery.succeeded:
+                    discovered_targets = _one_on_one_chat_targets(discovery.value)
+                    self.store.replace_discovered_chat_targets(
+                        poll_scope,
+                        discovered_targets,
+                        discovered_at=datetime.now(UTC),
+                    )
+                else:
+                    discovered_targets = self.store.get_discovered_chat_targets(poll_scope)
+                direct_targets = discovered_targets | {
+                    target for target in channel_targets if target.startswith("chat:")
+                }
+                for chat_target in sorted(direct_targets):
+                    attempt = self._run_graph_poll_target(
+                        poll_scope=poll_scope,
+                        target_kind="chat",
+                        target=chat_target,
+                        operation=lambda target=chat_target: self._poll_channel(
+                            client,
+                            service=service,
+                            channel_target=target,
+                            budget=service.new_pagination_budget(),
+                            direct_message_sender_refs_by_id=direct_sender_refs_by_id,
+                            store_unmatched_direct_messages=target in channel_targets,
+                        ),
+                    )
+                    direct_chat_targets_polled.add(chat_target)
+                    if not attempt.succeeded:
+                        continue
+                    direct_chats_polled += 1
+                    discovered = int(attempt.value or 0)
+                    new_messages_discovered += discovered
+                    self._notify_trigger_orchestrator_if_needed(discovered)
             for channel_target in channel_targets:
                 if channel_target in direct_chat_targets_polled:
                     continue
-                new_messages_discovered += self._poll_channel(
-                    client,
-                    service=service,
-                    channel_target=channel_target,
-                    budget=service.new_pagination_budget(),
+                parsed_target = parse_teams_target(channel_target)
+                attempt = self._run_graph_poll_target(
+                    poll_scope=poll_scope,
+                    target_kind=parsed_target.kind,
+                    target=channel_target,
+                    operation=lambda target=channel_target: self._poll_channel(
+                        client,
+                        service=service,
+                        channel_target=target,
+                        budget=service.new_pagination_budget(),
+                    ),
                 )
+                if attempt.succeeded:
+                    discovered = int(attempt.value or 0)
+                    new_messages_discovered += discovered
+                    self._notify_trigger_orchestrator_if_needed(discovered)
         return _TeamsDirectoryPollResult(
             direct_chats_polled=direct_chats_polled,
             new_messages_discovered=new_messages_discovered,
@@ -479,6 +556,7 @@ class TeamsIngestWorker:
         service: GraphTeamsService,
         sender_refs: set[str],
         directory_path: str,
+        poll_scope: str,
     ) -> dict[str, set[str]]:
         sender_refs_by_id: dict[str, set[str]] = {}
         for raw_ref in sorted(sender_refs):
@@ -496,16 +574,15 @@ class TeamsIngestWorker:
                     aliases=aliases,
                 )
                 continue
-            try:
-                resolved_id = service.resolve_user_id(client, sender_ref)
-            except Exception:
-                logger.warning(
-                    "Failed to resolve Teams direct-message sender user ref %r for directory=%s",
-                    raw_ref,
-                    directory_path,
-                    exc_info=True,
-                )
+            attempt = self._run_graph_poll_target(
+                poll_scope=poll_scope,
+                target_kind="user",
+                target=sender_ref,
+                operation=lambda ref=sender_ref: service.resolve_user_id(client, ref),
+            )
+            if not attempt.succeeded:
                 continue
+            resolved_id = attempt.value
             if resolved_id:
                 _add_direct_message_sender_ref_aliases(
                     sender_refs_by_id,
@@ -519,6 +596,76 @@ class TeamsIngestWorker:
                 directory_path,
             )
         return sender_refs_by_id
+
+    def _run_graph_poll_target(
+        self,
+        *,
+        poll_scope: str,
+        target_kind: str,
+        target: str,
+        operation: Callable[[], Any],
+    ) -> _GraphPollAttempt:
+        target_key = _teams_poll_health_key(poll_scope, target_kind, target)
+        auth_key = _teams_poll_health_key(poll_scope, "auth", "credential-set")
+        now = datetime.now(UTC)
+        for health_key in (auth_key, target_key):
+            health = self.store.get_poll_health(health_key)
+            if health is not None and health.next_attempt_at is not None:
+                next_attempt_at = _coerce_utc(health.next_attempt_at)
+                if next_attempt_at > now:
+                    self._cycle_targets_skipped_backoff += 1
+                    logger.debug(
+                        "Skipping Teams Graph poll target due to backoff target=%s next_attempt_at=%s",
+                        health_key,
+                        next_attempt_at.isoformat(),
+                    )
+                    return _GraphPollAttempt(attempted=False, succeeded=False)
+
+        previous = self.store.get_poll_health(target_key)
+        try:
+            value = operation()
+        except Exception as exc:
+            classification = _classify_graph_poll_error(exc)
+            if classification is None:
+                raise
+            error_class, retry_after_seconds, directory_scoped = classification
+            failure_key = auth_key if directory_scoped else target_key
+            previous_failure = self.store.get_poll_health(failure_key)
+            failure_count = (
+                previous_failure.consecutive_failures if previous_failure is not None else 0
+            ) + 1
+            computed_backoff = min(
+                self.worker_config.target_backoff_max_seconds,
+                self.worker_config.target_backoff_initial_seconds * (2 ** (failure_count - 1)),
+            )
+            backoff_seconds = max(computed_backoff, retry_after_seconds or 0.0)
+            failed_at = datetime.now(UTC)
+            state = self.store.record_poll_failure(
+                failure_key,
+                next_attempt_at=failed_at + timedelta(seconds=backoff_seconds),
+                error_class=error_class,
+                error_message=str(exc),
+                failed_at=failed_at,
+            )
+            self._cycle_targets_failed += 1
+            logger.warning(
+                "Teams Graph poll target failed target=%s failures=%d next_attempt_at=%s error=%s",
+                failure_key,
+                state.consecutive_failures,
+                state.next_attempt_at.isoformat() if state.next_attempt_at else None,
+                error_class,
+            )
+            return _GraphPollAttempt(attempted=True, succeeded=False)
+
+        succeeded_at = datetime.now(UTC)
+        self.store.record_poll_success(target_key, succeeded_at=succeeded_at)
+        auth_health = self.store.get_poll_health(auth_key)
+        if auth_health is not None:
+            self.store.record_poll_success(auth_key, succeeded_at=succeeded_at)
+        if previous is not None and previous.consecutive_failures > 0:
+            self._cycle_targets_recovered += 1
+            logger.info("Teams Graph poll target recovered target=%s", target_key)
+        return _GraphPollAttempt(attempted=True, succeeded=True, value=value)
 
     def _poll_channel(
         self,
@@ -825,6 +972,85 @@ def build_teams_ingest_worker(
     )
 
 
+def _teams_graph_poll_scope(provider_config: GatewayConfig, *, directory_path: str) -> str:
+    identity = "\0".join(
+        (
+            DirectoryPath(segments=directory_path).as_posix(),
+            provider_config.teams_backend,
+            provider_config.teams_graph_api_base_url.rstrip("/").casefold(),
+            provider_config.teams_graph_access_token_env.strip(),
+        )
+    )
+    digest = hashlib.sha256(identity.encode("utf-8")).hexdigest()[:20]
+    return f"{DirectoryPath(segments=directory_path).as_posix()}:{digest}"
+
+
+def _teams_poll_health_key(poll_scope: str, target_kind: str, target: str) -> str:
+    return "|".join(
+        (
+            str(poll_scope).strip(),
+            str(target_kind).strip().casefold(),
+            str(target).strip().strip("/"),
+        )
+    )
+
+
+def _one_on_one_chat_targets(payloads: object) -> set[str]:
+    if not isinstance(payloads, list):
+        return set()
+    targets: set[str] = set()
+    for payload in payloads:
+        if not isinstance(payload, dict):
+            continue
+        if str(payload.get("chatType") or "oneOnOne").strip() != "oneOnOne":
+            continue
+        chat_id = str(payload.get("id") or "").strip()
+        if chat_id:
+            targets.add(f"chat:{chat_id}")
+    return targets
+
+
+def _classify_graph_poll_error(
+    exc: Exception,
+) -> tuple[str, float | None, bool] | None:
+    if isinstance(exc, httpx.HTTPStatusError):
+        status_code = exc.response.status_code
+        retry_after = _retry_after_seconds(exc.response)
+        if status_code in {401, 403}:
+            return (f"http_{status_code}", retry_after, True)
+        if 400 <= status_code <= 599:
+            return (f"http_{status_code}", retry_after, False)
+    if isinstance(exc, httpx.TimeoutException):
+        return ("timeout", None, False)
+    if isinstance(exc, httpx.TransportError):
+        return ("transport", None, False)
+    if isinstance(exc, TimeoutError):
+        return ("retry_budget_timeout", None, False)
+    return None
+
+
+def _retry_after_seconds(response: httpx.Response) -> float | None:
+    raw_value = str(response.headers.get("Retry-After") or "").strip()
+    if not raw_value:
+        return None
+    try:
+        return max(0.0, float(raw_value))
+    except ValueError:
+        pass
+    try:
+        retry_at = parsedate_to_datetime(raw_value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    retry_at = _coerce_utc(retry_at)
+    return max(0.0, (retry_at - datetime.now(UTC)).total_seconds())
+
+
+def _coerce_utc(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        return value.replace(tzinfo=UTC)
+    return value.astimezone(UTC)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run the Teams ingest worker.")
     parser.add_argument("--runtime-dir", default="runtime")
@@ -851,6 +1077,9 @@ def main() -> None:
             f"direct_chats={result.direct_chats_polled} "
             f"new_messages={result.new_messages_discovered} "
             f"trigger_wake_notified={result.trigger_wake_notified} "
+            f"targets_skipped_backoff={result.targets_skipped_backoff} "
+            f"targets_failed={result.targets_failed} "
+            f"targets_recovered={result.targets_recovered} "
             f"sleep_seconds={result.next_sleep_seconds:.3f}"
         )
         return

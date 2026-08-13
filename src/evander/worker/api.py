@@ -20,6 +20,7 @@ from .models import (
     WorkerJobRequest,
     WorkerMssqlDatabaseRequest,
     WorkerRepoCloneRequest,
+    WorkerReferenceRepoPrepareRequest,
     WorkerSessionPrepareRequest,
     WorkerTaskWorktreeCleanupRequest,
     WorkerTaskWorktreeRequest,
@@ -134,6 +135,21 @@ def build_worker_app(daemon: WorkerDaemon) -> Starlette:
             )
         except ValueError as exc:
             return JSONResponse({"error": str(exc)}, status_code=400)
+        except subprocess.CalledProcessError as exc:
+            return JSONResponse({"error": safe_subprocess_error(exc)}, status_code=502)
+        return JSONResponse(record.model_dump(mode="json"))
+
+    async def prepare_session_reference_repo(request: Request) -> JSONResponse:
+        try:
+            payload = await request.json()
+            prepare_request = WorkerReferenceRepoPrepareRequest.model_validate(payload)
+            record = await run_in_threadpool(
+                daemon.prepare_reference_repo,
+                request.path_params["session_id"],
+                prepare_request,
+            )
+        except ValueError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=409)
         except subprocess.CalledProcessError as exc:
             return JSONResponse({"error": safe_subprocess_error(exc)}, status_code=502)
         return JSONResponse(record.model_dump(mode="json"))
@@ -414,6 +430,11 @@ def build_worker_app(daemon: WorkerDaemon) -> Starlette:
             Route("/v1/codex-auth", logout_codex_auth, methods=["DELETE"]),
             Route("/v1/sessions", prepare_session, methods=["POST"]),
             Route("/v1/sessions/{session_id}/repo", clone_session_repo, methods=["POST"]),
+            Route(
+                "/v1/sessions/{session_id}/reference-repo",
+                prepare_session_reference_repo,
+                methods=["POST"],
+            ),
             Route(
                 "/v1/sessions/{session_id}/worktrees",
                 prepare_task_worktree,

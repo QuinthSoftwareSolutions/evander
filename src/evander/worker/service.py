@@ -78,6 +78,8 @@ from .models import (
     WorkerMssqlSessionDeleteRecord,
     WorkerRepoCloneRecord,
     WorkerRepoCloneRequest,
+    WorkerReferenceRepoPrepareRecord,
+    WorkerReferenceRepoPrepareRequest,
     SAFE_ID_PATTERN,
     WorkerSessionPrepareRequest,
     WorkerSessionPaths,
@@ -1176,6 +1178,211 @@ class WorkerDaemon:
             remote_url=request.repo_source,
             cloned=cloned,
             commit_sha=self._git_commit_sha(_target_dir, paths.agent_home),
+        )
+
+    def prepare_reference_repo(
+        self,
+        session_id: str,
+        request: WorkerReferenceRepoPrepareRequest,
+    ) -> WorkerReferenceRepoPrepareRecord:
+        paths = WorkerSessionPaths.resolve(self.worker_root, session_id)
+        self._ensure_allowed_git_source(request.repo_source)
+        self._sync_git_ssh_into_agent_home(
+            paths, required=_repo_source_requires_git_ssh(request.repo_source)
+        )
+        with task_worktree_repository_lock(
+            paths.root / ".locks" / f"reference-repo-{request.repo_name}.lock"
+        ):
+            return self._prepare_reference_repo_locked(paths, request)
+
+    def _prepare_reference_repo_locked(
+        self,
+        paths: WorkerSessionPaths,
+        request: WorkerReferenceRepoPrepareRequest,
+    ) -> WorkerReferenceRepoPrepareRecord:
+        target_dir = paths.repo_root / request.repo_name
+        ensure_resolved_path_within(
+            base=paths.repo_root,
+            candidate=target_dir,
+            description="reference repo target",
+        )
+        if target_dir.is_symlink() or (target_dir.exists() and not target_dir.is_dir()):
+            raise ValueError(
+                f"reference repo target is not a directory: /home/agent/repos/{request.repo_name}"
+            )
+        git_env = _git_subprocess_env(paths.agent_home)
+        cloned = False
+        if target_dir.exists() and any(target_dir.iterdir()):
+            if not self._is_git_checkout_for_source(
+                target_dir,
+                request.repo_source,
+                agent_home=paths.agent_home,
+            ):
+                raise ValueError(
+                    "reference repo target is not a checkout for requested source: "
+                    f"/home/agent/repos/{request.repo_name}"
+                )
+        else:
+            target_dir.mkdir(parents=True, exist_ok=True)
+            subprocess.run(
+                ["git", "init", "--quiet", str(target_dir)],
+                env=git_env,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            subprocess.run(
+                ["git", "-C", str(target_dir), "remote", "add", "origin", request.repo_source],
+                env=git_env,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            cloned = True
+
+        try:
+            current_commit = self._git_commit_sha(target_dir, paths.agent_home)
+        except subprocess.CalledProcessError:
+            current_commit = None
+        has_user_changes = self._reference_repo_has_user_changes(target_dir, git_env=git_env)
+        if has_user_changes:
+            raise ValueError(
+                f"reference repo checkout is dirty and cannot be updated: {request.repo_name}"
+            )
+        detached = subprocess.run(
+            ["git", "-C", str(target_dir), "symbolic-ref", "-q", "HEAD"],
+            env=git_env,
+            check=False,
+            capture_output=True,
+            text=True,
+        ).returncode != 0
+        checkout_updated = current_commit != request.commit_sha or not detached
+        if current_commit != request.commit_sha:
+            subprocess.run(
+                [
+                    "git",
+                    "-C",
+                    str(target_dir),
+                    "fetch",
+                    "--no-tags",
+                    "origin",
+                    request.source_ref,
+                ],
+                env=git_env,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            fetched_commit = subprocess.run(
+                ["git", "-C", str(target_dir), "rev-parse", "FETCH_HEAD"],
+                env=git_env,
+                check=True,
+                capture_output=True,
+                text=True,
+            ).stdout.strip().lower()
+            if fetched_commit != request.commit_sha:
+                raise ValueError(
+                    f"reference repo {request.repo_name} fetched {fetched_commit}, "
+                    f"expected {request.commit_sha}"
+                )
+            subprocess.run(
+                ["git", "-C", str(target_dir), "checkout", "--quiet", "--detach", request.commit_sha],
+                env=git_env,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+        elif not detached:
+            subprocess.run(
+                ["git", "-C", str(target_dir), "checkout", "--quiet", "--detach", request.commit_sha],
+                env=git_env,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+
+        current_version = subprocess.run(
+            [
+                "git",
+                "-C",
+                str(target_dir),
+                "config",
+                "--get",
+                "evander.referenceRepoConfigVersion",
+            ],
+            env=git_env,
+            check=False,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+        configuration_updated = current_version != request.configuration_version
+        if configuration_updated:
+            config_commands = (
+                ("remote", "set-url", "origin", request.repo_source),
+                ("remote", "remove", "agent"),
+                ("config", "--unset-all", "alias.push-agent"),
+                ("config", "evander.pushAgentAvailable", "false"),
+                ("config", "evander.gitAccessMode", "read-only"),
+                ("config", "evander.referenceRepo", "true"),
+                (
+                    "config",
+                    "evander.referenceRepoConfigVersion",
+                    request.configuration_version,
+                ),
+            )
+            for command in config_commands:
+                completed = subprocess.run(
+                    ["git", "-C", str(target_dir), *command],
+                    env=git_env,
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                )
+                if completed.returncode != 0 and command not in {
+                    ("remote", "remove", "agent"),
+                    ("config", "--unset-all", "alias.push-agent"),
+                }:
+                    raise subprocess.CalledProcessError(
+                        completed.returncode,
+                        completed.args,
+                        output=completed.stdout,
+                        stderr=completed.stderr,
+                    )
+
+        resolved_commit = self._git_commit_sha(target_dir, paths.agent_home)
+        if resolved_commit != request.commit_sha:
+            raise ValueError(
+                f"reference repo {request.repo_name} is at {resolved_commit}, "
+                f"expected {request.commit_sha}"
+            )
+        return WorkerReferenceRepoPrepareRecord(
+            session_id=paths.session_id,
+            target_dir=f"/home/agent/repos/{request.repo_name}",
+            guest_repo_name=request.repo_name,
+            remote_url=request.repo_source,
+            source_ref=request.source_ref,
+            commit_sha=request.commit_sha,
+            cloned=cloned,
+            checkout_updated=checkout_updated,
+            configuration_updated=configuration_updated,
+        )
+
+    @staticmethod
+    def _reference_repo_has_user_changes(
+        target_dir: Path,
+        *,
+        git_env: dict[str, str],
+    ) -> bool:
+        completed = subprocess.run(
+            ["git", "-C", str(target_dir), "status", "--porcelain", "--untracked-files=all"],
+            env=git_env,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        return any(
+            line and not line[3:].startswith(".evander/")
+            for line in completed.stdout.splitlines()
         )
 
     def prepare_task_worktree(

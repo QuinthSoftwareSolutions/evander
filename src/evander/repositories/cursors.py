@@ -10,6 +10,7 @@ from evander.models import DiscordMessageEnvelope
 from evander.messaging.teams_inbox_store import (
     TeamsInboxCursorState,
     TeamsInboxMessage,
+    TeamsInboxPollHealth,
     TeamsInboxStore,
 )
 
@@ -77,6 +78,35 @@ class TeamsInboxCursorRepository(Protocol):
         direct_messages_only: bool = False,
         limit: int | None = None,
     ) -> list[TeamsInboxMessage]: ...
+
+    def get_poll_health(self, target_key: str) -> TeamsInboxPollHealth | None: ...
+
+    def record_poll_failure(
+        self,
+        target_key: str,
+        *,
+        next_attempt_at: datetime,
+        error_class: str,
+        error_message: str,
+        failed_at: datetime,
+    ) -> TeamsInboxPollHealth: ...
+
+    def record_poll_success(
+        self,
+        target_key: str,
+        *,
+        succeeded_at: datetime,
+    ) -> TeamsInboxPollHealth: ...
+
+    def get_discovered_chat_targets(self, scope_key: str) -> set[str]: ...
+
+    def replace_discovered_chat_targets(
+        self,
+        scope_key: str,
+        channel_targets: set[str],
+        *,
+        discovered_at: datetime,
+    ) -> None: ...
 
 
 class JsonEmailCursorRepository(DurableCursorStore):

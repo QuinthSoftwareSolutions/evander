@@ -119,6 +119,37 @@ def test_registration_deduplicates_ancestor_and_isolates_siblings(tmp_path: Path
         service.get_repository(owner["managed_repo_id"], "root/team-b")
 
 
+def test_refresh_coalesces_waiters_that_started_before_completed_refresh(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source, _, _ = _source_repository(tmp_path)
+    service = _service(tmp_path)
+    record = service.register_repository("root", str(source))
+    requested_at = datetime.now(UTC)
+    original_refresh = service._refresh_record
+    calls: list[str] = []
+
+    def counted_refresh(current: dict[str, object]) -> dict[str, object]:
+        calls.append(str(current["managed_repo_id"]))
+        return original_refresh(current)
+
+    monkeypatch.setattr(service, "_refresh_record", counted_refresh)
+
+    first = service.refresh_repository(
+        record["managed_repo_id"],
+        reuse_if_refreshed_after=requested_at,
+    )
+    second = service.refresh_repository(
+        record["managed_repo_id"],
+        reuse_if_refreshed_after=requested_at,
+    )
+
+    assert calls == [record["managed_repo_id"]]
+    assert first["refresh_reused"] is False
+    assert second["refresh_reused"] is True
+
+
 def test_resolve_branch_commit_uses_scoped_managed_repository_ref(tmp_path: Path) -> None:
     source, _, first = _source_repository(tmp_path)
     service = _service(tmp_path)

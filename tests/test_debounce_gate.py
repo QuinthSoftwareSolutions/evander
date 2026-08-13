@@ -8,7 +8,10 @@ import pytest
 from pydantic import ValidationError
 
 from evander.config import GatewayConfig, TriggerOrchestratorWorkerGlobalConfig
-from evander.daemons.effect_orchestrator import EffectOrchestratorWorker
+from evander.daemons.effect_orchestrator import (
+    EffectOrchestratorWorker,
+    _compute_effect_cycle_sleep_seconds,
+)
 from evander.events.models import TriggerEvent
 
 
@@ -104,6 +107,33 @@ def test_debounce_single_event_releases_after_quiet_period(tmp_path: Path) -> No
     assert records[0]["event_id"] == "event-1"
     assert records[0]["outputs"] == {"group": "a", "value": 1}
     assert records[0]["resolved_config"]["release_reason"] == "quiet_period"
+
+
+def test_debounce_exposes_earliest_persisted_release_deadline(tmp_path: Path) -> None:
+    worker = _worker(tmp_path)
+    _publish(worker, "event-1", "a", 1)
+    _publish(worker, "event-2", "b", 2)
+    worker.run_once()
+    provider = _debounce_provider(worker)
+    states = list(provider.load_state().read_all().values())
+
+    assert provider.next_reconcile_at() == min(
+        min(state.scheduled_release_at, state.max_release_at) for state in states
+    )
+
+
+def test_effect_cycle_sleep_never_extends_gate_deadline() -> None:
+    deadline = datetime.now(UTC) + timedelta(seconds=0.25)
+
+    sleep_seconds = _compute_effect_cycle_sleep_seconds(
+        events_processed=0,
+        completion_events_published=0,
+        poll_interval_seconds=30,
+        jitter_seconds=10,
+        next_reconcile_at=deadline,
+    )
+
+    assert 0 <= sleep_seconds <= 0.25
 
 
 def test_debounce_multiple_events_with_same_key_release_once_with_latest_payload(

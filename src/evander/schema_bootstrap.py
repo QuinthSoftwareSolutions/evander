@@ -773,6 +773,11 @@ _EFFECT_OUTPUT_SCHEMAS = {
         "execution_backend": {"type": "string"},
         "vm_name": {"type": "string"},
     },
+    "effect:agent:prepare-reference-repositories": {
+        "success": {"type": "boolean"},
+        "session_id": {"type": "string"},
+        "repositories": {"type": "array"},
+    },
     "effect:agent:grant-repo-access": {
         "success": {"type": "boolean"},
         "grant": {"type": "object"},

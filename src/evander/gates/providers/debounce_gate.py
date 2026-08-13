@@ -272,6 +272,13 @@ class DebounceGateProvider(GateProviderBase):
             released += 1
         return released
 
+    def next_reconcile_at(self, **_: Any) -> datetime | None:
+        deadlines = [
+            min(_coerce_utc(state.scheduled_release_at), _coerce_utc(state.max_release_at))
+            for state in self.load_state().read_all().values()
+        ]
+        return min(deadlines) if deadlines else None
+
 
 def _release_reason(
     *, state: DebounceGateStateRecord, now: datetime

@@ -18,6 +18,9 @@ from evander.effects.providers.agent_bootstrap_frontend import (
     AgentBootstrapFrontendEffectProvider,
 )
 from evander.effects.providers.agent_clone_repo import AgentCloneRepoEffectProvider
+from evander.effects.providers.agent_prepare_reference_repositories import (
+    AgentPrepareReferenceRepositoriesEffectProvider,
+)
 from evander.effects.providers.agent_repo_access import (
     AgentGrantRepoAccessEffectProvider,
     AgentRevokeRepoAccessEffectProvider,
@@ -242,6 +245,9 @@ def register_providers() -> dict[str, dict[str, type]]:
             "effect:agent:create": AgentCreateEffectProvider,
             "effect:agent:destroy": AgentDestroyEffectProvider,
             "effect:agent:clone-repo": AgentCloneRepoEffectProvider,
+            "effect:agent:prepare-reference-repositories": (
+                AgentPrepareReferenceRepositoriesEffectProvider
+            ),
             "effect:agent:grant-repo-access": AgentGrantRepoAccessEffectProvider,
             "effect:agent:revoke-repo-access": AgentRevokeRepoAccessEffectProvider,
             "effect:agent:bootstrap-frontend": AgentBootstrapFrontendEffectProvider,

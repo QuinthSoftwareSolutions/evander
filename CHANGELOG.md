@@ -1,5 +1,16 @@
 # Changelog
 
+## 2026-08-13 - Isolated Teams Polling and Faster Assistant Preparation
+
+- Persisted Microsoft Graph retry cooldowns per directory credential scope and logical target so
+  one unhealthy chat, channel, discovery endpoint, or user lookup no longer delays healthy Teams
+  intake; healthy messages now wake trigger orchestration before the remaining scan completes.
+- Made effect-worker sleeps honor the nearest persisted gate deadline, preserving debounce quiet
+  periods and maximum delays without adding the ordinary polling interval as scheduler slack.
+- Added batched, pull-time-fresh read-only reference-repository preparation for persistent
+  container assistants, including concurrent refresh, cross-process refresh coalescing, exact
+  detached commits, reusable session Git grants, and fail-closed dirty-checkout handling.
+
 ## 2026-08-13 - Dependency-Preserving Verification Recovery
 
 - Allowed an accepted, fully verified downstream remediation to create a rejected-candidate

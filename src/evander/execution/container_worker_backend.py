@@ -19,6 +19,8 @@ from evander.worker.models import (
     WorkerMssqlDatabaseRequest,
     WorkerRepoCloneRecord,
     WorkerRepoCloneRequest,
+    WorkerReferenceRepoPrepareRecord,
+    WorkerReferenceRepoPrepareRequest,
     WorkerResourceLimits,
     WorkerSessionPrepareRequest,
     WorkerSessionRecord,
@@ -332,6 +334,27 @@ class ContainerWorkerVmExecutionBackend:
                 clone_branch=clone_branch,
                 repo_name=repo_name,
                 reconcile_existing_remote=reconcile_existing_remote,
+            ),
+        )
+
+    def prepare_reference_repo(
+        self,
+        *,
+        session_id: str,
+        repo_source: str,
+        repo_name: str,
+        source_ref: str,
+        commit_sha: str,
+        configuration_version: str,
+    ) -> WorkerReferenceRepoPrepareRecord:
+        return self.client.prepare_reference_repo(
+            session_id,
+            WorkerReferenceRepoPrepareRequest(
+                repo_source=repo_source,
+                repo_name=repo_name,
+                source_ref=source_ref,
+                commit_sha=commit_sha,
+                configuration_version=configuration_version,
             ),
         )
 
