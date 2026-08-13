@@ -1,5 +1,27 @@
 # Changelog
 
+## 2026-08-13 - Polling and Reference Repository Review Hardening
+
+- Prevented persistent assistants from redirecting host Git through symlinked administrative
+  metadata or executing checkout hooks, filesystem monitors, and configured content filters;
+  tracked `.evander/` edits now also block reference-repository refreshes.
+- Kept removed debounce gates out of effect-worker deadlines, bounded Teams retry arithmetic,
+  separated directory credential failures from resource-level authorization failures, and scoped
+  delegated polling state to the selected identity.
+- Published managed-Git refresh freshness while the coalescing lock is still held so concurrent
+  callers reuse the completed fetch.
+
+## 2026-08-13 - Isolated Teams Polling and Faster Assistant Preparation
+
+- Persisted Microsoft Graph retry cooldowns per directory credential scope and logical target so
+  one unhealthy chat, channel, discovery endpoint, or user lookup no longer delays healthy Teams
+  intake; healthy messages now wake trigger orchestration before the remaining scan completes.
+- Made effect-worker sleeps honor the nearest persisted gate deadline, preserving debounce quiet
+  periods and maximum delays without adding the ordinary polling interval as scheduler slack.
+- Added batched, pull-time-fresh read-only reference-repository preparation for persistent
+  container assistants, including concurrent refresh, cross-process refresh coalescing, exact
+  detached commits, reusable session Git grants, and fail-closed dirty-checkout handling.
+
 ## 2026-08-13 - Dependency-Preserving Verification Recovery
 
 - Allowed an accepted, fully verified downstream remediation to create a rejected-candidate

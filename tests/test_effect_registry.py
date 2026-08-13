@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import threading
 import time
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -20,6 +21,9 @@ from evander.effects.providers.agent_clone_repo import (
     AgentCloneRepoEffectProvider,
     GitAuthorIdentity,
     _container_reachable_git_remote_url,
+)
+from evander.effects.providers.agent_prepare_reference_repositories import (
+    AgentPrepareReferenceRepositoriesEffectProvider,
 )
 from evander.effects.providers.agent_session import (
     build_container_session_files,
@@ -70,6 +74,7 @@ from evander.directory_config import ContactDirectoryConfig
 from evander.events.models import WorkflowNodeEnvelope
 from evander.events.provider_models import (
     AgentCloneRepoEffectDefinition,
+    AgentPrepareReferenceRepositoriesEffectDefinition,
     AgentCopyFilesEffectDefinition,
     AgentCreateEffectDefinition,
     AgentDestroyEffectDefinition,
@@ -216,6 +221,8 @@ class _FakeContainerBackend:
         self.write_files_error: Exception | None = None
         self.start_error: Exception | None = None
         self.clone_result_cloned = True
+        self.prepared_reference_repos: list[dict[str, object]] = []
+        self.reference_repo_barrier: threading.Barrier | None = None
 
     def prepare_session(self, **kwargs):
         if self.prepare_error is not None:
@@ -234,6 +241,17 @@ class _FakeContainerBackend:
             guest_repo_name=repo_name,
             remote_url=kwargs["repo_source"],
             cloned=self.clone_result_cloned,
+        )
+
+    def prepare_reference_repo(self, **kwargs):
+        if self.reference_repo_barrier is not None:
+            self.reference_repo_barrier.wait(timeout=5)
+        self.prepared_reference_repos.append(kwargs)
+        return SimpleNamespace(
+            target_dir=f"/home/agent/repos/{kwargs['repo_name']}",
+            cloned=True,
+            checkout_updated=True,
+            configuration_updated=True,
         )
 
     def provision_git_write_key(self, **kwargs):
@@ -522,6 +540,7 @@ def test_default_registry_includes_all_known_effect_types() -> None:
         "effect:agent:create",
         "effect:agent:destroy",
         "effect:agent:clone-repo",
+        "effect:agent:prepare-reference-repositories",
         "effect:agent:grant-repo-access",
         "effect:agent:revoke-repo-access",
         "effect:agent:bootstrap-frontend",
@@ -575,7 +594,8 @@ def test_default_registry_includes_all_known_effect_types() -> None:
         is RuntimeDiagnosticsSnapshotEffectProvider
     )
     assert (
-        DEFAULT_EFFECT_PROVIDER_REGISTRY["effect:ado:pipeline-run"] is AdoPipelineRunEffectProvider
+        DEFAULT_EFFECT_PROVIDER_REGISTRY["effect:ado:pipeline-run"]
+        is AdoPipelineRunEffectProvider
     )
     assert (
         DEFAULT_EFFECT_PROVIDER_REGISTRY["effect:ado:post-work-item-comment"]
@@ -602,6 +622,115 @@ def test_default_registry_includes_all_known_effect_types() -> None:
         is SessionRevokeMcpToolApprovalLeaseEffectProvider
     )
     assert DEFAULT_EFFECT_PROVIDER_REGISTRY["effect:git:push-branch"] is GitPushBranchEffectProvider
+
+
+def test_prepare_reference_repositories_batches_exact_read_only_checkouts(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = GatewayConfig(
+        runtime_dir=tmp_path,
+        execution_backend="container_worker_vm",
+        container_worker_base_url="http://worker.test",
+    )
+    session_repository = JsonSessionManifestRepository(config.session_store_path)
+    session_repository.upsert_session(
+        SessionManifest(
+            session_id="assistant-1",
+            directory_path="root/personal",
+            execution_backend="container_worker_vm",
+            allowed_tools=[],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        )
+    )
+    bind_calls: list[dict[str, object]] = []
+    ensure_calls: list[dict[str, object]] = []
+    admin_service = SimpleNamespace(
+        runtime=SimpleNamespace(
+            session_repository=session_repository,
+            provider_config=_ContainerResolverStub(config),
+        ),
+        ensure_managed_git_repository=lambda **kwargs: (
+            ensure_calls.append(kwargs)
+            or {
+                "managed_repo_id": (
+                    "mr-one" if kwargs["repo_source"].endswith("one.git") else "mr-two"
+                ),
+                "default_branch": "main",
+                "refresh_reused": False,
+            }
+        ),
+        resolve_managed_git_branch_commit=lambda managed_repo_id, **kwargs: (
+            "a" * 40 if managed_repo_id == "mr-one" else "b" * 40
+        ),
+        resolve_managed_git_clone=lambda managed_repo_id, **kwargs: {
+            "managed_repo_id": managed_repo_id,
+            "clone_url": f"https://example.invalid/{managed_repo_id}.git",
+            "repo_name": managed_repo_id,
+        },
+        bind_managed_git_repository=lambda **kwargs: bind_calls.append(kwargs),
+    )
+    backend = _FakeContainerBackend()
+    backend.reference_repo_barrier = threading.Barrier(2)
+    monkeypatch.setattr(
+        "evander.effects.providers.agent_prepare_reference_repositories.container_backend",
+        lambda context, config: backend,
+    )
+    provider = AgentPrepareReferenceRepositoriesEffectProvider()
+    provider.initialize(
+        AgentPrepareReferenceRepositoriesEffectDefinition(
+            id="prepare-repositories",
+            display_name="Prepare repositories",
+            type="effect:agent:prepare-reference-repositories",
+            session_id="assistant-1",
+            directory_path="root/personal",
+            repositories=[
+                {"repo_source": "https://example.invalid/one.git"},
+                {"repo_source": "https://example.invalid/two.git"},
+            ],
+        ),
+        EffectRuntimeContext(
+            resolved_config=config,
+            metadata={"directory_path": "root/personal"},
+            admin_service=admin_service,
+        ),
+    )
+
+    result = provider.execute()
+
+    assert result["success"] is True
+    assert [item["managed_repo_id"] for item in result["repositories"]] == [
+        "mr-one",
+        "mr-two",
+    ]
+    assert {call["commit_sha"] for call in backend.prepared_reference_repos} == {
+        "a" * 40,
+        "b" * 40,
+    }
+    assert {call["source_ref"] for call in backend.prepared_reference_repos} == {
+        "refs/heads/main"
+    }
+    assert all(call["refresh"] is True for call in ensure_calls)
+    assert len({call["reuse_if_refreshed_after"] for call in ensure_calls}) == 1
+    assert len(backend.prepared_sessions) == 1
+    assert {call["kind"] for call in bind_calls} == {"sessions"}
+
+    backend.reference_repo_barrier = None
+    original_prepare = backend.prepare_reference_repo
+
+    def fail_second_repository(**kwargs):
+        if kwargs["repo_name"] == "mr-two":
+            raise RuntimeError("second repository unavailable")
+        return original_prepare(**kwargs)
+
+    monkeypatch.setattr(backend, "prepare_reference_repo", fail_second_repository)
+    bind_calls.clear()
+    with pytest.raises(RuntimeError, match="second repository unavailable") as exc_info:
+        provider.execute()
+    error_payload = json.loads(str(exc_info.value).split(": ", 1)[1])
+    assert [item["managed_repo_id"] for item in error_payload["completed"]] == ["mr-one"]
+    assert error_payload["failures"][0]["managed_repo_id"] == "mr-two"
+    assert [call["managed_repo_id"] for call in bind_calls] == ["mr-one"]
 
 
 def test_agent_repo_grant_and_revoke_effects_use_persistent_exact_repo_access() -> None:

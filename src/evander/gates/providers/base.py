@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any
 
 from evander.provider_runtime.contracts import GateVmInventory, ProviderRuntimeBase
@@ -35,6 +36,9 @@ class GateProviderBase:
 
     def reconcile(self, **_: Any) -> int:
         return 0
+
+    def next_reconcile_at(self, **_: Any) -> datetime | None:
+        return None
 
     def handle_completion_event(self, **_: Any) -> int:
         return 0

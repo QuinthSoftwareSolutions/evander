@@ -11,6 +11,7 @@ __all__ = [
     "AdoUpdateWorkItemEffectProvider",
     "AgentBootstrapFrontendEffectProvider",
     "AgentCloneRepoEffectProvider",
+    "AgentPrepareReferenceRepositoriesEffectProvider",
     "AgentCopyFilesEffectProvider",
     "AgentCreateEffectProvider",
     "AgentDestroyEffectProvider",
@@ -60,6 +61,9 @@ _EXPORT_MODULES = {
     "AdoUpdateWorkItemEffectProvider": ".ado_update_work_item",
     "AgentBootstrapFrontendEffectProvider": ".agent_bootstrap_frontend",
     "AgentCloneRepoEffectProvider": ".agent_clone_repo",
+    "AgentPrepareReferenceRepositoriesEffectProvider": (
+        ".agent_prepare_reference_repositories"
+    ),
     "AgentCopyFilesEffectProvider": ".agent_copy_files",
     "AgentCreateEffectProvider": ".agent_create",
     "AgentDestroyEffectProvider": ".agent_destroy",

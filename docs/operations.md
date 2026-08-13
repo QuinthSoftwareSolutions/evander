@@ -2837,6 +2837,9 @@ compatibility with older live workflow packs and should not be used for new prov
   host-side Teams ingest worker that polls Microsoft Graph on the host and writes into the Teams
   message store consumed by trigger orchestration.
 - The ingest worker uses the same delegated Teams auth settings described above.
+- Graph retry cooldowns are stored per logical endpoint/target. Inspect the Teams inbox
+  `poll_health` diagnostics before changing service-wide polling; an unhealthy channel, chat,
+  discovery request, or user lookup must not back off unrelated targets.
 - The Discord ingest worker polls the Discord Bot API on the host and writes into the Discord inbox
   store. Its target set comes from active sessions with `discord_get_commands` plus read-capable
   Discord session allowlists, and from enabled provider-neutral communication triggers that name
@@ -3055,6 +3058,15 @@ evander-cli git-repos revoke-grant session-123 \
 Admin Web exposes the same list, grant, grant-and-clone, and revoke actions on the session detail
 page. The workflow equivalents are `effect:agent:grant-repo-access`,
 `effect:agent:clone-repo`, and `effect:agent:revoke-repo-access`.
+
+For persistent read-only assistants, prefer
+`effect:agent:prepare-reference-repositories` over a serial `gate:for` containing ensure and clone
+effects. The batch effect refreshes independent mirrors concurrently, pins each resulting commit,
+and updates only clean detached checkouts. Do not migrate a deployed workflow until the control
+plane and container-worker daemon containing this effect have passed normal CI/CD and are deployed.
+After deployment, save the workflow through the revision-gated Admin Web/API, replace the serial
+loop with the batch node, retain the existing agent/file/debounce nodes, and verify one controlled
+message before removing the old path. Roll back by restoring the prior workflow-pack revision.
 
 The cloned guest repo receives `AGENTS.md`, the issue task file when applicable, a local coding
 branch, and the `git sync-base`, `git push-agent`, and `git agent-pr-note` helpers. Optional

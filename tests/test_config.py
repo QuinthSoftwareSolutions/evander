@@ -1616,6 +1616,54 @@ def test_trigger_orchestrator_await_agent_gate_accepts_linear_flow_without_compl
     assert config.gates[0].type == "gate:await-agent"
 
 
+def test_personal_assistant_workflow_accepts_batched_reference_repository_preparation() -> None:
+    config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+        {
+            "runtime_dir": "/tmp/evander-runtime",
+            "triggers": [
+                {
+                    "id": "teams-dm",
+                    "display_name": "Teams DM",
+                    "type": "trigger:teams:direct-message",
+                    "sender_user_ids": ["user-1"],
+                }
+            ],
+            "gates": [
+                {
+                    "id": "debounce",
+                    "display_name": "Debounce",
+                    "type": "gate:debounce",
+                    "key": "user-1",
+                    "quiet_period": "PT2S",
+                    "max_delay": "PT10S",
+                }
+            ],
+            "effects": [
+                {
+                    "id": "prepare-repositories",
+                    "display_name": "Prepare repositories",
+                    "type": "effect:agent:prepare-reference-repositories",
+                    "session_id": "personal-assistant-user-1",
+                    "directory_path": "root/personal",
+                    "repositories": [
+                        {"repo_source": "https://example.invalid/one.git"},
+                        {
+                            "repo_source": "https://example.invalid/two.git",
+                            "branch": "trunk",
+                        },
+                    ],
+                }
+            ],
+            "edges": [
+                {"source_id": "teams-dm", "target_id": "debounce"},
+                {"source_id": "debounce", "target_id": "prepare-repositories"},
+            ],
+        }
+    )
+
+    assert config.effects[0].type == "effect:agent:prepare-reference-repositories"
+
+
 def test_trigger_orchestrator_for_gate_accepts_body_done_ports_and_cycle_return() -> None:
     config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
         {

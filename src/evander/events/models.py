@@ -521,6 +521,9 @@ def _builtin_node_schema_resolvers() -> dict[str, Any]:
         "effect:agent:create": provider_models.AgentCreateEffectDefinition,
         "effect:agent:destroy": provider_models.AgentDestroyEffectDefinition,
         "effect:agent:clone-repo": provider_models.AgentCloneRepoEffectDefinition,
+        "effect:agent:prepare-reference-repositories": (
+            provider_models.AgentPrepareReferenceRepositoriesEffectDefinition
+        ),
         "effect:agent:grant-repo-access": provider_models.AgentGrantRepoAccessEffectDefinition,
         "effect:agent:revoke-repo-access": provider_models.AgentRevokeRepoAccessEffectDefinition,
         "effect:agent:bootstrap-frontend": provider_models.AgentBootstrapFrontendEffectDefinition,

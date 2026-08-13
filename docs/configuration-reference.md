@@ -635,6 +635,8 @@ activation for that key has arrived for the ISO-8601 `quiet_period`, and caps ea
 ISO-8601 `max_delay`. It forwards the latest payload in the burst and records debounce
 diagnostics including key, first/last seen times, scheduled release time, and release reason.
 Delayed debounce releases preserve the inherited workflow binding context.
+The effect worker sleeps to the earliest persisted debounce deadline, so the configured quiet
+period is not rounded up to the ordinary orchestrator polling interval.
 
 `gate:buffer` groups inbound activations by its bindable `key` and stores forwardable upstream
 payloads in arrival order. It releases one batch when `count` activations have accumulated, or
@@ -675,6 +677,7 @@ Type-specific keys:
 | `effect:vm:stop` | _none beyond envelope_ | `target`, `session_id`, `vm_name`, `timeout_seconds`, `outputs` |
 | `effect:agent:create` | _none beyond envelope_ | `provider`, `execution_backend`, `vm_image`, `vm_name`, `session_id`, `existing_agent_behavior`, `labels`, `model`, `codex_auth_mode`, `vm_user`, `ttl_hours`, `allowed_tools`, `host_directory_grants`, `allowed_script_names`, `communication_target_ids`, `email_mailbox_grants`, legacy `discord_channels`/Teams/email allowlists, `communication_file_receive_enabled`, `communication_file_send_enabled`, `communication_file_require_approval_for_send`, `communication_file_max_bytes`, `web_search_enabled`, `dotnet`, `nuget`, `mssql`, `mssql_init_root`, `playwright`, `codex_skills`, `directory_path`, `metadata`, `outputs` |
 | `effect:agent:clone-repo` | one of `target`, `session_id`, `vm_name`; `managed_repo_id` | `clone_branch`, `vm_user`, `directory_path`, `git_access_mode`, `git_author_name`, `git_author_email`, `git_committer_name`, `git_committer_email`, `outputs` |
+| `effect:agent:prepare-reference-repositories` | one of `target`, `session_id`, `vm_name`; `directory_path`; `repositories` | `outputs` |
 | `effect:agent:prompt` | `prompt` | `target`, `session_id`, `vm_name`, `vm_user`, `resume_thread_id`, `resume_thread_metadata_key`, `resume_thread_metadata_collection`, `mcp_tool_approval_lease_id`, `outputs` |
 | `effect:agent:enqueue-prompt` | `prompt` | `target`, `session_id`, `vm_name`, `model`, `vm_user`, `resume_thread_id`, `resume_thread_metadata_key`, `resume_thread_metadata_collection`, `mcp_tool_approval_lease_id`, `queue_key`, `outputs` |
 | `effect:agent:exec` | `command` | `target`, `session_id`, `vm_name`, `vm_user`, `working_directory`, `environment`, `stdin`, `timeout_seconds`, `check`, `outputs` |
@@ -736,6 +739,12 @@ For `container_worker_vm`, `effect:agent:clone-repo` defaults `git_access_mode`
 to `write`, which provisions a session-scoped Git SSH key and enables
 `git push-agent`. Set `git_access_mode` to `read-only` for fetch-only sessions
 that should use only the worker's shared read-only Git key.
+
+`effect:agent:prepare-reference-repositories` is the persistent-assistant read path. Its
+`repositories` array contains `repo_source` and an optional `branch` per entry. It resolves and
+refreshes managed mirrors concurrently, coalesces simultaneous refreshes without a freshness TTL,
+and prepares detached read-only checkouts at the exact refreshed commits. A dirty existing
+checkout fails closed and is never reset. Existing coding-agent clone effects are unchanged.
 
 `effect:agent:create` accepts `metadata` as a JSON object patch. The workflow
 runtime deep-merges that patch into the created session manifest after built-in
@@ -2024,6 +2033,11 @@ Teams reads, reactions, attachment downloads, or `trigger:teams:new-message` pol
 posts; user targets are resolved into one-on-one chats before sending.
 Direct-message trigger polling is configured with `sender_user_ids` on
 `trigger:teams:direct-message`; entries can be Graph user IDs, UPNs, or mail addresses.
+The Teams ingest worker persists backoff independently for each channel, chat, discovery endpoint,
+and user lookup. Retryable failure of one target does not delay healthy targets. Configure the
+initial and maximum target cooldown with `target_backoff_initial_seconds` (default `60`) and
+`target_backoff_max_seconds` (default `900`) in `config/teams-ingest/config.json`; the older
+`backoff_seconds` remains reserved for worker-wide configuration or store failures.
 
 Key delegated Teams provider settings now include:
 

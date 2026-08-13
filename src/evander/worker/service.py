@@ -14,7 +14,7 @@ import subprocess
 import threading
 import time
 import uuid
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -78,6 +78,8 @@ from .models import (
     WorkerMssqlSessionDeleteRecord,
     WorkerRepoCloneRecord,
     WorkerRepoCloneRequest,
+    WorkerReferenceRepoPrepareRecord,
+    WorkerReferenceRepoPrepareRequest,
     SAFE_ID_PATTERN,
     WorkerSessionPrepareRequest,
     WorkerSessionPaths,
@@ -1176,6 +1178,240 @@ class WorkerDaemon:
             remote_url=request.repo_source,
             cloned=cloned,
             commit_sha=self._git_commit_sha(_target_dir, paths.agent_home),
+        )
+
+    def prepare_reference_repo(
+        self,
+        session_id: str,
+        request: WorkerReferenceRepoPrepareRequest,
+    ) -> WorkerReferenceRepoPrepareRecord:
+        paths = WorkerSessionPaths.resolve(self.worker_root, session_id)
+        self._ensure_allowed_git_source(request.repo_source)
+        self._sync_git_ssh_into_agent_home(
+            paths, required=_repo_source_requires_git_ssh(request.repo_source)
+        )
+        with task_worktree_repository_lock(
+            paths.root / ".locks" / f"reference-repo-{request.repo_name}.lock"
+        ):
+            return self._prepare_reference_repo_locked(paths, request)
+
+    def _prepare_reference_repo_locked(
+        self,
+        paths: WorkerSessionPaths,
+        request: WorkerReferenceRepoPrepareRequest,
+    ) -> WorkerReferenceRepoPrepareRecord:
+        target_dir = paths.repo_root / request.repo_name
+        ensure_resolved_path_within(
+            base=paths.repo_root,
+            candidate=target_dir,
+            description="reference repo target",
+        )
+        if target_dir.is_symlink() or (target_dir.exists() and not target_dir.is_dir()):
+            raise ValueError(
+                f"reference repo target is not a directory: /home/agent/repos/{request.repo_name}"
+            )
+        git_env = _git_subprocess_env(paths.agent_home)
+        cloned = False
+        if target_dir.exists() and any(target_dir.iterdir()):
+            if _resolved_git_dir_within_checkout(target_dir, env=git_env) is None:
+                raise ValueError(
+                    "reference repo Git metadata is missing or unsafe: "
+                    f"/home/agent/repos/{request.repo_name}"
+                )
+            if not self._is_git_checkout_for_source(
+                target_dir,
+                request.repo_source,
+                agent_home=paths.agent_home,
+            ):
+                raise ValueError(
+                    "reference repo target is not a checkout for requested source: "
+                    f"/home/agent/repos/{request.repo_name}"
+                )
+        else:
+            target_dir.mkdir(parents=True, exist_ok=True)
+            subprocess.run(
+                ["git", "init", "--quiet", str(target_dir)],
+                env=git_env,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            subprocess.run(
+                ["git", "-C", str(target_dir), "remote", "add", "origin", request.repo_source],
+                env=git_env,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            cloned = True
+
+        git_env = _reference_repo_git_environment(target_dir, agent_home=paths.agent_home)
+        try:
+            current_commit = self._git_commit_sha(target_dir, paths.agent_home)
+        except subprocess.CalledProcessError:
+            current_commit = None
+        has_user_changes = self._reference_repo_has_user_changes(target_dir, git_env=git_env)
+        if has_user_changes:
+            raise ValueError(
+                f"reference repo checkout is dirty and cannot be updated: {request.repo_name}"
+            )
+        detached = (
+            subprocess.run(
+                ["git", "-C", str(target_dir), "symbolic-ref", "-q", "HEAD"],
+                env=git_env,
+                check=False,
+                capture_output=True,
+                text=True,
+            ).returncode
+            != 0
+        )
+        checkout_updated = current_commit != request.commit_sha or not detached
+        if current_commit != request.commit_sha:
+            subprocess.run(
+                [
+                    "git",
+                    "-C",
+                    str(target_dir),
+                    "fetch",
+                    "--no-tags",
+                    request.repo_source,
+                    request.source_ref,
+                ],
+                env=git_env,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            fetched_commit = (
+                subprocess.run(
+                    ["git", "-C", str(target_dir), "rev-parse", "FETCH_HEAD"],
+                    env=git_env,
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                )
+                .stdout.strip()
+                .lower()
+            )
+            if fetched_commit != request.commit_sha:
+                raise ValueError(
+                    f"reference repo {request.repo_name} fetched {fetched_commit}, "
+                    f"expected {request.commit_sha}"
+                )
+            subprocess.run(
+                [
+                    "git",
+                    "-C",
+                    str(target_dir),
+                    "checkout",
+                    "--quiet",
+                    "--detach",
+                    request.commit_sha,
+                ],
+                env=git_env,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+        elif not detached:
+            subprocess.run(
+                [
+                    "git",
+                    "-C",
+                    str(target_dir),
+                    "checkout",
+                    "--quiet",
+                    "--detach",
+                    request.commit_sha,
+                ],
+                env=git_env,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+
+        current_version = subprocess.run(
+            [
+                "git",
+                "-C",
+                str(target_dir),
+                "config",
+                "--get",
+                "evander.referenceRepoConfigVersion",
+            ],
+            env=git_env,
+            check=False,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+        configuration_updated = current_version != request.configuration_version
+        if configuration_updated:
+            config_commands = (
+                ("remote", "set-url", "origin", request.repo_source),
+                ("remote", "remove", "agent"),
+                ("config", "--unset-all", "alias.push-agent"),
+                ("config", "evander.pushAgentAvailable", "false"),
+                ("config", "evander.gitAccessMode", "read-only"),
+                ("config", "evander.referenceRepo", "true"),
+                (
+                    "config",
+                    "evander.referenceRepoConfigVersion",
+                    request.configuration_version,
+                ),
+            )
+            for command in config_commands:
+                completed = subprocess.run(
+                    ["git", "-C", str(target_dir), *command],
+                    env=git_env,
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                )
+                if completed.returncode != 0 and command not in {
+                    ("remote", "remove", "agent"),
+                    ("config", "--unset-all", "alias.push-agent"),
+                }:
+                    raise subprocess.CalledProcessError(
+                        completed.returncode,
+                        completed.args,
+                        output=completed.stdout,
+                        stderr=completed.stderr,
+                    )
+
+        resolved_commit = self._git_commit_sha(target_dir, paths.agent_home)
+        if resolved_commit != request.commit_sha:
+            raise ValueError(
+                f"reference repo {request.repo_name} is at {resolved_commit}, "
+                f"expected {request.commit_sha}"
+            )
+        return WorkerReferenceRepoPrepareRecord(
+            session_id=paths.session_id,
+            target_dir=f"/home/agent/repos/{request.repo_name}",
+            guest_repo_name=request.repo_name,
+            remote_url=request.repo_source,
+            source_ref=request.source_ref,
+            commit_sha=request.commit_sha,
+            cloned=cloned,
+            checkout_updated=checkout_updated,
+            configuration_updated=configuration_updated,
+        )
+
+    @staticmethod
+    def _reference_repo_has_user_changes(
+        target_dir: Path,
+        *,
+        git_env: dict[str, str],
+    ) -> bool:
+        completed = subprocess.run(
+            ["git", "-C", str(target_dir), "status", "--porcelain", "--untracked-files=all"],
+            env=git_env,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        return any(
+            line and not (line.startswith("?? ") and line[3:].startswith(".evander/"))
+            for line in completed.stdout.splitlines()
         )
 
     def prepare_task_worktree(
@@ -2924,8 +3160,13 @@ class WorkerDaemon:
                 agent_home=paths.agent_home,
             ):
                 return target_dir, False
-            if reconcile_existing_remote and (target_dir / ".git").exists():
+            if reconcile_existing_remote:
                 git_env = _git_subprocess_env(paths.agent_home)
+                if _resolved_git_dir_within_checkout(target_dir, env=git_env) is None:
+                    raise ValueError(
+                        "repo target Git metadata is missing or unsafe: "
+                        f"/home/agent/repos/{repo_name}"
+                    )
                 has_origin = subprocess.run(
                     ["git", "-C", str(target_dir), "remote", "get-url", "origin"],
                     env=git_env,
@@ -3928,12 +4169,13 @@ class WorkerDaemon:
         *,
         agent_home: Path,
     ) -> bool:
-        if not (target_dir / ".git").exists():
+        git_env = _git_subprocess_env(agent_home)
+        if _resolved_git_dir_within_checkout(target_dir, env=git_env) is None:
             return False
         try:
             completed = subprocess.run(
                 ["git", "-C", str(target_dir), "remote", "get-url", "origin"],
-                env=_git_subprocess_env(agent_home),
+                env=git_env,
                 check=True,
                 capture_output=True,
                 text=True,
@@ -3956,7 +4198,11 @@ def _git_write_ssh_alias(read_git_ssh_alias: str) -> str:
     return f"{read_git_ssh_alias}-write"
 
 
-def _git_subprocess_env(agent_home: Path) -> dict[str, str]:
+def _git_subprocess_env(
+    agent_home: Path,
+    *,
+    extra_config: Mapping[str, str] | None = None,
+) -> dict[str, str]:
     host_config_path = _host_git_ssh_config_path(agent_home)
     try:
         host_config_stat = host_config_path.lstat()
@@ -3966,10 +4212,129 @@ def _git_subprocess_env(agent_home: Path) -> dict[str, str]:
         if not stat.S_ISREG(host_config_stat.st_mode):
             raise ValueError("Host Git SSH config must be a regular file")
         config_path = host_config_path
-    return os.environ | {
-        "HOME": str(agent_home),
-        "GIT_SSH_COMMAND": f"ssh -F {config_path}",
+    empty_hooks_path = agent_home.parent / "host-git-empty-hooks"
+    try:
+        empty_hooks_stat = empty_hooks_path.lstat()
+    except FileNotFoundError:
+        empty_hooks_path.mkdir(parents=True, mode=0o700)
+    else:
+        if not stat.S_ISDIR(empty_hooks_stat.st_mode) or stat.S_ISLNK(empty_hooks_stat.st_mode):
+            raise ValueError("Host Git hooks path must be a directory")
+        empty_hooks_path.chmod(0o700)
+
+    env = os.environ.copy()
+    for key in list(env):
+        if (
+            key in {"GIT_CONFIG_COUNT", "GIT_CONFIG_PARAMETERS"}
+            or re.fullmatch(r"GIT_CONFIG_(?:KEY|VALUE)_\d+", key)
+            or key.startswith("GIT_TRACE")
+            or key in {"GIT_CURL_VERBOSE", "GIT_TRANSPORT_HELPER_DEBUG"}
+        ):
+            env.pop(key, None)
+    env.update(
+        {
+            "HOME": str(agent_home),
+            "GIT_SSH_COMMAND": f"ssh -F {config_path}",
+            "GIT_TERMINAL_PROMPT": "0",
+            "GCM_INTERACTIVE": "never",
+            "GIT_LFS_SKIP_SMUDGE": "1",
+            "GIT_CONFIG_NOSYSTEM": "1",
+            "GIT_CONFIG_GLOBAL": os.devnull,
+            "GIT_ATTR_NOSYSTEM": "1",
+        }
+    )
+    config = {
+        "credential.helper": "",
+        "core.hooksPath": str(empty_hooks_path),
+        "core.fsmonitor": "false",
+        "core.attributesFile": os.devnull,
+        "filter.lfs.clean": "",
+        "filter.lfs.smudge": "",
+        "filter.lfs.process": "",
+        "filter.lfs.required": "false",
+        "protocol.ext.allow": "never",
+        "submodule.recurse": "false",
     }
+    config.update(extra_config or {})
+    env["GIT_CONFIG_COUNT"] = str(len(config))
+    for index, (key, value) in enumerate(config.items()):
+        env[f"GIT_CONFIG_KEY_{index}"] = key
+        env[f"GIT_CONFIG_VALUE_{index}"] = value
+    return env
+
+
+def _resolved_git_dir_within_checkout(
+    target_dir: Path,
+    *,
+    env: Mapping[str, str],
+) -> Path | None:
+    metadata_path = target_dir / ".git"
+    try:
+        metadata_stat = metadata_path.lstat()
+        resolved_target = target_dir.resolve(strict=True)
+    except OSError:
+        return None
+    if not stat.S_ISDIR(metadata_stat.st_mode) or stat.S_ISLNK(metadata_stat.st_mode):
+        return None
+    completed = subprocess.run(
+        ["git", "-C", str(target_dir), "rev-parse", "--absolute-git-dir"],
+        env=dict(env),
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if completed.returncode != 0:
+        return None
+    try:
+        resolved_git_dir = Path(completed.stdout.strip()).resolve(strict=True)
+        resolved_git_dir.relative_to(resolved_target)
+    except (OSError, ValueError):
+        return None
+    return resolved_git_dir
+
+
+def _reference_repo_git_environment(target_dir: Path, *, agent_home: Path) -> dict[str, str]:
+    base_env = _git_subprocess_env(agent_home)
+    if _resolved_git_dir_within_checkout(target_dir, env=base_env) is None:
+        raise ValueError("reference repo Git metadata is missing or unsafe")
+    configured_filters = subprocess.run(
+        [
+            "git",
+            "-C",
+            str(target_dir),
+            "config",
+            "--local",
+            "--name-only",
+            "--get-regexp",
+            r"^filter\..*\.(clean|smudge|process|required)$",
+        ],
+        env=base_env,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if configured_filters.returncode not in {0, 1}:
+        raise subprocess.CalledProcessError(
+            configured_filters.returncode,
+            configured_filters.args,
+            output=configured_filters.stdout,
+            stderr=configured_filters.stderr,
+        )
+    disabled_filters: dict[str, str] = {}
+    for key in configured_filters.stdout.splitlines():
+        match = re.fullmatch(r"(?P<prefix>filter\..*)\.(?:clean|smudge|process|required)", key)
+        if match is None:
+            continue
+        prefix = match.group("prefix")
+        disabled_filters.update(
+            {
+                f"{prefix}.clean": "",
+                f"{prefix}.smudge": "",
+                f"{prefix}.process": "",
+                f"{prefix}.required": "false",
+            }
+        )
+    return _git_subprocess_env(agent_home, extra_config=disabled_filters)
 
 
 def _host_git_ssh_config_path(agent_home: Path) -> Path:

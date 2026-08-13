@@ -331,6 +331,51 @@ class WorkerRepoCloneRecord(BaseModel):
     commit_sha: str | None = None
 
 
+class WorkerReferenceRepoPrepareRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    repo_source: str
+    repo_name: str
+    source_ref: str
+    commit_sha: str
+    configuration_version: str = "1"
+
+    @field_validator("repo_source", "source_ref", "configuration_version", mode="before")
+    @classmethod
+    def normalize_required_text(cls, value: object, info: ValidationInfo) -> str:
+        text = str(value or "").strip()
+        if not text or "\n" in text or "\r" in text:
+            raise ValueError(f"{info.field_name} must be non-empty single-line text")
+        return text
+
+    @field_validator("repo_name", mode="before")
+    @classmethod
+    def normalize_repo_name(cls, value: object) -> str:
+        return str(validate_worker_component_id(value, field_name="repo_name"))
+
+    @field_validator("commit_sha", mode="before")
+    @classmethod
+    def normalize_commit_sha(cls, value: object) -> str:
+        text = str(value or "").strip().lower()
+        if not re.fullmatch(r"[0-9a-f]{40,64}", text):
+            raise ValueError("commit_sha must be a full hexadecimal Git object ID")
+        return text
+
+
+class WorkerReferenceRepoPrepareRecord(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    session_id: str
+    target_dir: str
+    guest_repo_name: str
+    remote_url: str
+    source_ref: str
+    commit_sha: str
+    cloned: bool
+    checkout_updated: bool
+    configuration_updated: bool
+
+
 class WorkerTaskDependencyGitSource(BaseModel):
     """One server-authorized Git contribution required by a task dependency."""
 

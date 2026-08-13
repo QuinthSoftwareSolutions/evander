@@ -719,6 +719,9 @@ _WORKFLOW_EDITOR_NODE_DESCRIPTIONS: dict[str, str] = {
     "effect:agent:create": "Create an agent session using the selected execution backend.",
     "effect:agent:destroy": "Destroy an agent session and its backend resources.",
     "effect:agent:clone-repo": "Clone a repository into an agent session workspace.",
+    "effect:agent:prepare-reference-repositories": (
+        "Refresh and prepare exact read-only repository snapshots for an assistant."
+    ),
     "effect:agent:grant-repo-access": "Grant exact-repository Git access to an agent.",
     "effect:agent:revoke-repo-access": "Revoke one agent repository grant.",
     "effect:agent:bootstrap-frontend": "Bootstrap frontend dependencies for an agent session.",
@@ -2463,6 +2466,38 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
                 description=(
                     "Optional committer.email for cloned repositories. "
                     "Set together with git_committer_name."
+                ),
+            ),
+        ],
+    ),
+    WorkflowEditorNodeCatalogEntry(
+        kind="effect",
+        type="effect:agent:prepare-reference-repositories",
+        label="Prepare reference repositories",
+        description=(
+            "Refresh managed mirrors concurrently and prepare clean, detached, read-only "
+            "repository snapshots at the exact refreshed commits."
+        ),
+        fields=[
+            _field("target", "Target", "string", bindable=True),
+            _field("session_id", "Session ID", "string", bindable=True),
+            _field("vm_name", "VM name", "string", bindable=True),
+            _field(
+                "directory_path",
+                "Directory path",
+                "string",
+                required=True,
+                bindable=True,
+            ),
+            _field(
+                "repositories",
+                "Repositories",
+                "json",
+                required=True,
+                bindable=True,
+                json_value_type="array",
+                description=(
+                    "Array of objects with repo_source and an optional branch override."
                 ),
             ),
         ],

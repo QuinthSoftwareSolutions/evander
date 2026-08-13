@@ -899,6 +899,7 @@ class EffectOrchestratorWorker:
             completion_events_published=completion_events_published,
             poll_interval_seconds=self.worker_config.poll_interval_seconds,
             jitter_seconds=self.worker_config.jitter_seconds,
+            next_reconcile_at=self._next_gate_reconcile_at(graph=graph),
         )
 
         return EffectOrchestratorCycleResult(
@@ -1628,6 +1629,27 @@ class EffectOrchestratorWorker:
                     provider_name,
                 )
         return reconciled
+
+    def _next_gate_reconcile_at(self, *, graph: ExecutionGraph) -> datetime | None:
+        deadlines: list[datetime] = []
+        for gate_type in {gate.type for gate in graph.gates_by_id.values()}:
+            provider: Any | None = None
+            try:
+                provider = self._get_gate_provider(gate_type)
+                if provider is None:
+                    continue
+                deadline = provider.next_reconcile_at(worker=self, graph=graph)
+                if deadline is not None:
+                    deadlines.append(_normalize_started_at(deadline))
+            except Exception:  # noqa: BLE001
+                provider_name = provider.__class__.__name__ if provider is not None else None
+                logger.exception(
+                    "Effect orchestrator deadline lookup failed "
+                    "gate_type=%s provider=%s",
+                    gate_type,
+                    provider_name,
+                )
+        return min(deadlines) if deadlines else None
 
     @staticmethod
     def _require_object_payload(value: Any, *, gate_type: str) -> dict[str, Any]:
@@ -3278,13 +3300,21 @@ def _compute_effect_cycle_sleep_seconds(
     completion_events_published: int,
     poll_interval_seconds: float,
     jitter_seconds: float,
+    next_reconcile_at: datetime | None = None,
 ) -> float:
     if events_processed > 0 or completion_events_published > 0:
         return 0.0
-    return _compute_next_sleep_seconds(
+    ordinary_sleep = _compute_next_sleep_seconds(
         poll_interval_seconds=poll_interval_seconds,
         jitter_seconds=jitter_seconds,
     )
+    if next_reconcile_at is None:
+        return ordinary_sleep
+    deadline_sleep = max(
+        0.0,
+        (_normalize_started_at(next_reconcile_at) - datetime.now(UTC)).total_seconds(),
+    )
+    return min(ordinary_sleep, deadline_sleep)
 
 
 def _compute_backoff_sleep_seconds(*, poll_interval_seconds: float, jitter_seconds: float) -> float:

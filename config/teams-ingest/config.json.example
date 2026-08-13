@@ -4,5 +4,7 @@
   "poll_interval_seconds": 2,
   "jitter_seconds": 5,
   "backoff_seconds": 60,
+  "target_backoff_initial_seconds": 60,
+  "target_backoff_max_seconds": 900,
   "lock_path": null
 }

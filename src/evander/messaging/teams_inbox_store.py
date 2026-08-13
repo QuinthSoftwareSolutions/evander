@@ -31,6 +31,16 @@ class TeamsInboxCursorState(BaseModel):
     created_at: datetime | None = None
 
 
+class TeamsInboxPollHealth(BaseModel):
+    target_key: str
+    consecutive_failures: int = Field(default=0, ge=0)
+    next_attempt_at: datetime | None = None
+    last_error_class: str | None = None
+    last_error_message: str | None = None
+    last_failed_at: datetime | None = None
+    last_success_at: datetime | None = None
+
+
 class TeamsInboxMessage(BaseModel):
     cursor: str
     message_id: str
@@ -114,6 +124,145 @@ class TeamsInboxStore:
                     self._cursor_row(normalized_target, state),
                 )
             self._compact_messages(connection)
+
+    def get_poll_health(self, target_key: str) -> TeamsInboxPollHealth | None:
+        normalized_key = str(target_key or "").strip()
+        if not normalized_key:
+            return None
+        with self._lock, self._connect() as connection:
+            row = connection.execute(
+                "SELECT payload_json FROM teams_inbox_poll_health WHERE target_key = ?",
+                (normalized_key,),
+            ).fetchone()
+        if row is None:
+            return None
+        return TeamsInboxPollHealth.model_validate_json(row["payload_json"])
+
+    def record_poll_failure(
+        self,
+        target_key: str,
+        *,
+        next_attempt_at: datetime,
+        error_class: str,
+        error_message: str,
+        failed_at: datetime,
+    ) -> TeamsInboxPollHealth:
+        normalized_key = str(target_key or "").strip()
+        if not normalized_key:
+            raise ValueError("target_key is required")
+        with self._lock, self._connect() as connection:
+            row = connection.execute(
+                "SELECT payload_json FROM teams_inbox_poll_health WHERE target_key = ?",
+                (normalized_key,),
+            ).fetchone()
+            previous = (
+                TeamsInboxPollHealth.model_validate_json(row["payload_json"])
+                if row is not None
+                else None
+            )
+            state = TeamsInboxPollHealth(
+                target_key=normalized_key,
+                consecutive_failures=(previous.consecutive_failures if previous else 0) + 1,
+                next_attempt_at=next_attempt_at,
+                last_error_class=str(error_class or "").strip() or None,
+                last_error_message=str(error_message or "").strip()[:1000] or None,
+                last_failed_at=failed_at,
+                last_success_at=previous.last_success_at if previous else None,
+            )
+            connection.execute(
+                """
+                INSERT INTO teams_inbox_poll_health(target_key, next_attempt_at, payload_json)
+                VALUES (?, ?, ?)
+                ON CONFLICT(target_key) DO UPDATE SET
+                    next_attempt_at = excluded.next_attempt_at,
+                    payload_json = excluded.payload_json
+                """,
+                (
+                    normalized_key,
+                    self._datetime_to_storage(next_attempt_at),
+                    _json_dumps(state.model_dump(mode="json")),
+                ),
+            )
+        return state
+
+    def record_poll_success(
+        self,
+        target_key: str,
+        *,
+        succeeded_at: datetime,
+    ) -> TeamsInboxPollHealth:
+        normalized_key = str(target_key or "").strip()
+        if not normalized_key:
+            raise ValueError("target_key is required")
+        state = TeamsInboxPollHealth(
+            target_key=normalized_key,
+            consecutive_failures=0,
+            last_success_at=succeeded_at,
+        )
+        with self._lock, self._connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO teams_inbox_poll_health(target_key, next_attempt_at, payload_json)
+                VALUES (?, NULL, ?)
+                ON CONFLICT(target_key) DO UPDATE SET
+                    next_attempt_at = NULL,
+                    payload_json = excluded.payload_json
+                """,
+                (normalized_key, _json_dumps(state.model_dump(mode="json"))),
+            )
+        return state
+
+    def get_discovered_chat_targets(self, scope_key: str) -> set[str]:
+        normalized_scope = str(scope_key or "").strip()
+        if not normalized_scope:
+            return set()
+        with self._lock, self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT channel_target
+                FROM teams_inbox_discovered_chats
+                WHERE scope_key = ?
+                ORDER BY channel_target ASC
+                """,
+                (normalized_scope,),
+            ).fetchall()
+        return {str(row["channel_target"]) for row in rows}
+
+    def replace_discovered_chat_targets(
+        self,
+        scope_key: str,
+        channel_targets: set[str],
+        *,
+        discovered_at: datetime,
+    ) -> None:
+        normalized_scope = str(scope_key or "").strip()
+        if not normalized_scope:
+            raise ValueError("scope_key is required")
+        normalized_targets = {
+            str(target or "").strip().strip("/")
+            for target in channel_targets
+            if str(target or "").strip()
+        }
+        with self._lock, self._connect() as connection:
+            connection.execute(
+                "DELETE FROM teams_inbox_discovered_chats WHERE scope_key = ?",
+                (normalized_scope,),
+            )
+            connection.executemany(
+                """
+                INSERT INTO teams_inbox_discovered_chats(
+                    scope_key, channel_target, discovered_at
+                ) VALUES (?, ?, ?)
+                """,
+                [
+                    (
+                        normalized_scope,
+                        target,
+                        self._datetime_to_storage(discovered_at),
+                    )
+                    for target in sorted(normalized_targets)
+                ],
+            )
 
     def add_message_if_new(self, message: TeamsInboxMessage) -> bool:
         validated = TeamsInboxMessage.model_validate(message)
@@ -216,6 +365,13 @@ class TeamsInboxStore:
                 ORDER BY created_at ASC, cursor ASC
                 """
             ).fetchall()
+            health_rows = connection.execute(
+                """
+                SELECT target_key, payload_json
+                FROM teams_inbox_poll_health
+                ORDER BY target_key ASC
+                """
+            ).fetchall()
         return {
             "cursors": {
                 str(row["channel_target"]): TeamsInboxCursorState.model_validate_json(
@@ -228,6 +384,12 @@ class TeamsInboxStore:
                     row["payload_json"]
                 ).model_dump(mode="json")
                 for row in message_rows
+            },
+            "poll_health": {
+                str(row["target_key"]): TeamsInboxPollHealth.model_validate_json(
+                    row["payload_json"]
+                ).model_dump(mode="json")
+                for row in health_rows
             },
         }
 
@@ -256,6 +418,19 @@ class TeamsInboxStore:
                     cursor TEXT NOT NULL,
                     created_at TEXT,
                     payload_json TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS teams_inbox_poll_health (
+                    target_key TEXT PRIMARY KEY,
+                    next_attempt_at TEXT,
+                    payload_json TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_teams_inbox_poll_health_next_attempt
+                    ON teams_inbox_poll_health(next_attempt_at, target_key);
+                CREATE TABLE IF NOT EXISTS teams_inbox_discovered_chats (
+                    scope_key TEXT NOT NULL,
+                    channel_target TEXT NOT NULL,
+                    discovered_at TEXT NOT NULL,
+                    PRIMARY KEY(scope_key, channel_target)
                 );
                 """
             )

@@ -15,6 +15,7 @@ from evander.worker.models import (
     WorkerFileWriteRequest,
     WorkerMssqlDatabaseRequest,
     WorkerRepoCloneRequest,
+    WorkerReferenceRepoPrepareRequest,
     WorkerSessionPrepareRequest,
     WorkerTaskWorktreeCleanupRequest,
     WorkerTaskWorktreeRequest,
@@ -285,7 +286,7 @@ def test_container_worker_client_prepares_session_clones_repo_and_writes_files(
                 },
                 request=request,
             )
-        if request.url.path.endswith("/repo"):
+        if request.url.path == "/v1/sessions/session-1/repo":
             return httpx.Response(
                 200,
                 json={
@@ -294,6 +295,22 @@ def test_container_worker_client_prepares_session_clones_repo_and_writes_files(
                     "guest_repo_name": "repo",
                     "remote_url": "/tmp/repo",
                     "cloned": True,
+                },
+                request=request,
+            )
+        if request.url.path.endswith("/reference-repo"):
+            return httpx.Response(
+                200,
+                json={
+                    "session_id": "session-1",
+                    "target_dir": "/home/agent/repos/repo",
+                    "guest_repo_name": "repo",
+                    "remote_url": "/tmp/repo",
+                    "source_ref": "refs/heads/main",
+                    "commit_sha": "a" * 40,
+                    "cloned": False,
+                    "checkout_updated": True,
+                    "configuration_updated": False,
                 },
                 request=request,
             )
@@ -334,6 +351,16 @@ def test_container_worker_client_prepares_session_clones_repo_and_writes_files(
         ).target_dir
         == "/home/agent/repos/repo"
     )
+    assert worker.prepare_reference_repo(
+        "session-1",
+        WorkerReferenceRepoPrepareRequest(
+            repo_source="/tmp/repo",
+            repo_name="repo",
+            source_ref="refs/heads/main",
+            commit_sha="a" * 40,
+            configuration_version="1",
+        ),
+    ).checkout_updated
     assert (
         worker.write_files(
             "session-1",
@@ -355,6 +382,7 @@ def test_container_worker_client_prepares_session_clones_repo_and_writes_files(
     assert seen == [
         ("POST", "/v1/sessions"),
         ("POST", "/v1/sessions/session-1/repo"),
+        ("POST", "/v1/sessions/session-1/reference-repo"),
         ("POST", "/v1/sessions/session-1/files"),
         ("GET", "/v1/sessions/session-1/artifacts/reports/summary.txt"),
         ("DELETE", "/v1/sessions/session-1"),

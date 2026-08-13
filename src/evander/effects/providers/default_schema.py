@@ -12,6 +12,7 @@ from evander.effects.providers.schemas import (
     AdoUpdateWorkItemEffectDefinition,
     AgentBootstrapFrontendEffectDefinition,
     AgentCloneRepoEffectDefinition,
+    AgentPrepareReferenceRepositoriesEffectDefinition,
     AgentGrantRepoAccessEffectDefinition,
     AgentRevokeRepoAccessEffectDefinition,
     AgentCopyFilesEffectDefinition,
@@ -78,6 +79,9 @@ _EFFECT_MODEL_BY_TYPE = {
     "effect:agent:create": AgentCreateEffectDefinition,
     "effect:agent:destroy": AgentDestroyEffectDefinition,
     "effect:agent:clone-repo": AgentCloneRepoEffectDefinition,
+    "effect:agent:prepare-reference-repositories": (
+        AgentPrepareReferenceRepositoriesEffectDefinition
+    ),
     "effect:agent:grant-repo-access": AgentGrantRepoAccessEffectDefinition,
     "effect:agent:revoke-repo-access": AgentRevokeRepoAccessEffectDefinition,
     "effect:agent:bootstrap-frontend": AgentBootstrapFrontendEffectDefinition,
