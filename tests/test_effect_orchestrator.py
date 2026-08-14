@@ -992,23 +992,21 @@ def test_build_effect_orchestrator_worker_accepts_injected_services(tmp_path: Pa
     assert worker.runtime is not None
 
 
-def test_build_effect_orchestrator_worker_runs_managed_git_preflight(
+def test_build_effect_orchestrator_worker_skips_managed_git_legacy_inventory(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    class _PreflightReached(RuntimeError):
-        pass
+    def _fail_inventory(_service: ManagedGitAdminService) -> None:
+        raise AssertionError("managed Git legacy inventory reached")
 
-    def _fail_preflight(_service: ManagedGitAdminService) -> None:
-        raise _PreflightReached("managed Git preflight reached")
+    monkeypatch.setattr(ManagedGitAdminService, "_legacy_state_inventory", _fail_inventory)
 
-    monkeypatch.setattr(ManagedGitAdminService, "preflight", _fail_preflight)
+    worker = build_effect_orchestrator_worker(
+        GatewayConfig(runtime_dir=tmp_path / "runtime"),
+        project_dir=tmp_path,
+    )
 
-    with pytest.raises(_PreflightReached, match="managed Git preflight reached"):
-        build_effect_orchestrator_worker(
-            GatewayConfig(runtime_dir=tmp_path / "runtime"),
-            project_dir=tmp_path,
-        )
+    assert worker.runtime is not None
 
 
 def test_effect_orchestrator_run_once_uses_reloaded_worker_config_for_sleep(tmp_path: Path) -> None:

@@ -119,7 +119,6 @@ class TriggerOrchestratorWorker:
         self.event_queue = resolved_wiring.event_queue
         self.provider_factory = resolved_wiring.provider_factory
         self.managed_git_maintenance = resolved_wiring.managed_git_maintenance
-        self.managed_git_maintenance.preflight()
         self.cursor_repository: GateCursorRepository = resolved_wiring.gate_cursor_repository
         self._wal_checkpoint_maintenance = OrchestrationWalCheckpointMaintenance()
         self._wake_sleeper = HostWakeSleeper(
@@ -177,7 +176,6 @@ class TriggerOrchestratorWorker:
                     )
                     latest_config = previous_config
                 else:
-                    runtime_wiring.managed_git_maintenance.preflight()
                     self.provider_config_resolver = runtime_wiring.provider_config_resolver
                     self.provider_factory = runtime_wiring.provider_factory
                     self.managed_git_maintenance = runtime_wiring.managed_git_maintenance

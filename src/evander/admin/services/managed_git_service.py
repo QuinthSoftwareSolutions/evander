@@ -228,7 +228,7 @@ class ManagedGitAdminService:
         self._worktree_root = self.runtime_dir / "git-worktrees"
         self._lock_root = self.runtime_dir / "managed-git-locks"
         self._migration_root = self.runtime_dir / "managed-git-migrations"
-        self._migration_preflight_context = threading.local()
+        self._migration_context = threading.local()
         self._worktrees = ManagedGitWorktreeService(
             ManagedGitWorktreeDependencies(
                 stale_worktree_seconds=float(
@@ -242,7 +242,6 @@ class ManagedGitAdminService:
                 managed_root=self._managed_root,
                 worktree_root=self._worktree_root,
                 require_record=lambda managed_repo_id: self._require_record(managed_repo_id),
-                require_migration_preflight=lambda: self._require_migration_preflight(),
                 read_registry=lambda: self._read_registry(),
                 repo_lock=lambda managed_repo_id, *, exclusive: self._repo_lock(
                     managed_repo_id,
@@ -263,14 +262,6 @@ class ManagedGitAdminService:
 
     def set_agent_inventory_admin(self, agent_inventory_admin: Any) -> None:
         self._agent_inventory_admin = agent_inventory_admin
-
-    def preflight(self) -> dict[str, Any]:
-        self._require_migration_preflight()
-        registry = self._read_registry()
-        return {
-            "schema": registry["schema"],
-            "repository_count": len(registry["repositories"]),
-        }
 
     @staticmethod
     def _new_registry() -> dict[str, Any]:
@@ -594,7 +585,6 @@ class ManagedGitAdminService:
         _canonical_source: str | None = None,
         authorize_existing_owner: Callable[[str], None] | None = None,
     ) -> dict[str, Any]:
-        self._require_migration_preflight()
         directory = self._normalize_directory_path(directory_path)
         refresh_source = self._source_info(repo_source)
         if _canonical_source:
@@ -770,7 +760,6 @@ class ManagedGitAdminService:
         directory_path: str | None = None,
         include_descendants: bool = True,
     ) -> list[dict[str, Any]]:
-        self._require_migration_preflight()
         records = list(self._read_registry()["repositories"].values())
         if directory_path is not None:
             directory = self._normalize_directory_path(directory_path)
@@ -1357,7 +1346,6 @@ class ManagedGitAdminService:
         return {"success": True, "managed_repo_id": managed_repo_id, "deleted": True}
 
     def maintenance(self, managed_repo_id: str | None = None) -> dict[str, Any]:
-        self._require_migration_preflight()
         reconciliation = self.reconcile_stale_worktrees(managed_repo_id)
         records = (
             [self._require_record(managed_repo_id)]
@@ -1937,7 +1925,6 @@ class ManagedGitAdminService:
         return validated
 
     def bind(self, managed_repo_id: str, kind: str, binding_id: str) -> dict[str, Any]:
-        self._require_migration_preflight()
         normalized_kind = str(kind or "").strip().casefold()
         normalized_id = str(binding_id or "").strip()
         if not normalized_kind or not re.fullmatch(r"[a-z][a-z0-9_-]*", normalized_kind):
@@ -1968,7 +1955,6 @@ class ManagedGitAdminService:
             return self._public_record(self._update_registry(update))
 
     def unbind(self, managed_repo_id: str, kind: str, binding_id: str) -> dict[str, Any]:
-        self._require_migration_preflight()
         normalized_kind = str(kind or "").strip().casefold()
         normalized_id = str(binding_id or "").strip()
         if not normalized_kind or not normalized_id:
@@ -1996,7 +1982,6 @@ class ManagedGitAdminService:
             return self._public_record(self._update_registry(update))
 
     def unbind_all(self, kind: str, binding_id: str) -> list[str]:
-        self._require_migration_preflight()
         normalized_kind = str(kind or "").strip().casefold()
         normalized_id = str(binding_id or "").strip()
         if not normalized_kind or not re.fullmatch(r"[a-z][a-z0-9_-]*", normalized_kind):
@@ -3589,12 +3574,10 @@ class ManagedGitAdminService:
     ) -> dict[str, Any]:
         normalized_stage = str(stage or "").strip().removeprefix("--").replace("_", "-")
         if normalized_stage == "dry-run":
-            with self._migration_preflight_bypass():
-                return self._migrate(normalized_stage, migration_id=migration_id)
+            return self._migrate(normalized_stage, migration_id=migration_id)
         with self._file_lock(self._lock_root / "migration.lock"):
             with self._migration_worker_lock_guard():
-                with self._migration_preflight_bypass():
-                    return self._migrate(normalized_stage, migration_id=migration_id)
+                return self._migrate(normalized_stage, migration_id=migration_id)
 
     def _migrate(
         self,
@@ -4834,7 +4817,7 @@ class ManagedGitAdminService:
         return specs
 
     def _migration_worker_lock_states(self) -> dict[str, str]:
-        guarded = set(getattr(self._migration_preflight_context, "guarded_worker_locks", set()))
+        guarded = set(getattr(self._migration_context, "guarded_worker_locks", set()))
         states: dict[str, str] = {}
         for label, path in self._migration_worker_lock_specs():
             if path in guarded or not path.exists():
@@ -4871,10 +4854,10 @@ class ManagedGitAdminService:
                     ) from exc
                 handles.append(handle)
                 guarded_paths.add(path)
-            self._migration_preflight_context.guarded_worker_locks = guarded_paths
+            self._migration_context.guarded_worker_locks = guarded_paths
             yield
         finally:
-            self._migration_preflight_context.guarded_worker_locks = set()
+            self._migration_context.guarded_worker_locks = set()
             for handle in reversed(handles):
                 try:
                     fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
@@ -6869,7 +6852,6 @@ class ManagedGitAdminService:
         return dict(record) if isinstance(record, dict) else None
 
     def _require_record(self, managed_repo_id: str) -> dict[str, Any]:
-        self._require_migration_preflight()
         normalized = str(managed_repo_id or "").strip()
         record = self._record_or_none(normalized)
         if record is None:
@@ -6891,34 +6873,6 @@ class ManagedGitAdminService:
                 f"Managed repository {managed_repo_id!r} is not available to {directory!r}"
             )
         return record
-
-    @contextmanager
-    def _migration_preflight_bypass(self):
-        depth = int(getattr(self._migration_preflight_context, "depth", 0))
-        self._migration_preflight_context.depth = depth + 1
-        try:
-            yield
-        finally:
-            self._migration_preflight_context.depth = depth
-
-    def _require_migration_preflight(self) -> None:
-        if int(getattr(self._migration_preflight_context, "depth", 0)) > 0:
-            return
-        registry = self._read_registry()
-        migration_applied = any(
-            isinstance(migration, dict) and migration.get("status") in {"applied", "finalized"}
-            for migration in registry.get("migrations", {}).values()
-        )
-        if not self._legacy_managed_git_artifacts_present(
-            allow_declared_rollback=migration_applied
-        ):
-            return
-        raise ManagedGitConflictError(
-            "Legacy managed Git state requires explicit migration before managed Git can run. "
-            "Stop trigger/effect workers, run "
-            "'evander-cli git-repos migrate --dry-run', then "
-            "'evander-cli git-repos migrate --apply'."
-        )
 
     def _legacy_managed_git_artifacts_present(
         self,

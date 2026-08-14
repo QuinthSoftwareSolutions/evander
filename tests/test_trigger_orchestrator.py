@@ -136,26 +136,24 @@ def test_build_trigger_orchestrator_worker_accepts_injected_services(tmp_path: P
     assert worker.runtime is not None
 
 
-def test_build_trigger_orchestrator_worker_runs_managed_git_preflight(
+def test_build_trigger_orchestrator_worker_skips_managed_git_legacy_inventory(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    class _PreflightReached(RuntimeError):
-        pass
+    def _fail_inventory(_service: ManagedGitAdminService) -> None:
+        raise AssertionError("managed Git legacy inventory reached")
 
-    def _fail_preflight(_service: ManagedGitAdminService) -> None:
-        raise _PreflightReached("managed Git preflight reached")
+    monkeypatch.setattr(ManagedGitAdminService, "_legacy_state_inventory", _fail_inventory)
 
-    monkeypatch.setattr(ManagedGitAdminService, "preflight", _fail_preflight)
+    worker = build_trigger_orchestrator_worker(
+        GatewayConfig(runtime_dir=tmp_path / "runtime"),
+        project_dir=tmp_path,
+    )
 
-    with pytest.raises(_PreflightReached, match="managed Git preflight reached"):
-        build_trigger_orchestrator_worker(
-            GatewayConfig(runtime_dir=tmp_path / "runtime"),
-            project_dir=tmp_path,
-        )
+    assert worker.runtime is not None
 
 
-def test_trigger_orchestrator_provider_reload_runs_managed_git_preflight(
+def test_trigger_orchestrator_provider_reload_skips_managed_git_legacy_inventory(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -168,19 +166,14 @@ def test_trigger_orchestrator_provider_reload_runs_managed_git_preflight(
     updated_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(updated_payload)
     worker._config_reloader = _StaticReloader(updated_config, changed=True)
 
-    class _ReloadPreflightReached(RuntimeError):
-        pass
+    def _fail_inventory(_service: ManagedGitAdminService) -> None:
+        raise AssertionError("managed Git legacy inventory reached")
 
-    def _fail_reload_preflight(_service: ManagedGitAdminService) -> None:
-        raise _ReloadPreflightReached("reloaded managed Git preflight reached")
+    monkeypatch.setattr(ManagedGitAdminService, "_legacy_state_inventory", _fail_inventory)
 
-    monkeypatch.setattr(ManagedGitAdminService, "preflight", _fail_reload_preflight)
+    worker.run_once()
 
-    with pytest.raises(
-        _ReloadPreflightReached,
-        match="reloaded managed Git preflight reached",
-    ):
-        worker.run_once()
+    assert worker.worker_config == updated_config
 
 
 def test_build_trigger_orchestrator_worker_uses_sqlite_default_from_loader(
@@ -1036,7 +1029,7 @@ def test_trigger_orchestrator_reloads_provider_factory_after_provider_loader_cha
         return SimpleNamespace(
             provider_config_resolver=object(),
             provider_factory=provider_factory,
-            managed_git_maintenance=SimpleNamespace(preflight=lambda: None),
+            managed_git_maintenance=SimpleNamespace(),
         )
 
     monkeypatch.setattr(

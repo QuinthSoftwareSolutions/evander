@@ -81,7 +81,6 @@ def _service(
             managed_root=managed_root,
             worktree_root=worktree_root,
             require_record=require_record,
-            require_migration_preflight=lambda: preflights.append("reconcile"),
             read_registry=lambda: {"repositories": {_REPO_ID: record}},
             repo_lock=lambda _managed_repo_id, *, exclusive: nullcontext(),
             run_git=fake_git,
@@ -146,6 +145,6 @@ def test_worktree_service_reconciles_stale_manifest_without_admin_facade(
         "skipped_recent": [],
         "invalid": [],
     }
-    assert preflights == ["reconcile"]
+    assert preflights == []
     assert operation_ref not in fake_git.refs
     assert not operation_dir.exists()

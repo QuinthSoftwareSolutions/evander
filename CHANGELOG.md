@@ -1,5 +1,14 @@
 # Changelog
 
+## 2026-08-14 - Remove Managed-Git Legacy Preflight From Runtime Paths
+
+- Removed the legacy managed-Git migration inventory from repository operations and orchestrator
+  startup/reload paths now that supported installations have completed migration.
+- Retained the explicit `git-repos migrate` dry-run, apply, recovery, verification, and finalize
+  safeguards for operators who deliberately invoke the migration workflow.
+- Kept managed registry schema validation, scoped repository authorization, repository locking,
+  worktree reconciliation, and all Git integrity checks unchanged.
+
 ## 2026-08-14 - Globally Bounded Teams-Ingest Polling
 
 - Added `max_concurrent_target_polls` to the Teams ingest worker configuration. It defaults to
