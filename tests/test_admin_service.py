@@ -8628,6 +8628,7 @@ def test_admin_service_reads_and_writes_teams_ingest_worker_global_config(tmp_pa
     )
     assert read_result.config["directories"] == []
     assert read_result.config["backoff_seconds"] == 60.0
+    assert read_result.config["max_concurrent_target_polls"] == 1
 
     write_result = service.workflow_config_admin.write_worker_global_config(
         "teams-ingest",
@@ -8637,6 +8638,7 @@ def test_admin_service_reads_and_writes_teams_ingest_worker_global_config(tmp_pa
             "poll_interval_seconds": 15.0,
             "jitter_seconds": 2.0,
             "backoff_seconds": 90.0,
+            "max_concurrent_target_polls": 2,
             "lock_path": None,
         },
     )
@@ -8648,10 +8650,12 @@ def test_admin_service_reads_and_writes_teams_ingest_worker_global_config(tmp_pa
     assert payload["directories"] == ["root/team-a", "root/team-b"]
     assert payload["poll_interval_seconds"] == 15.0
     assert payload["backoff_seconds"] == 90.0
+    assert payload["max_concurrent_target_polls"] == 2
 
     reread = service.workflow_config_admin.read_worker_global_config("teams-ingest")
     assert reread.config["directories"] == ["root/team-a", "root/team-b"]
     assert reread.config["backoff_seconds"] == 90.0
+    assert reread.config["max_concurrent_target_polls"] == 2
 
 
 def test_admin_service_can_read_and_mutate_trigger_orchestrator_triggers_by_id(

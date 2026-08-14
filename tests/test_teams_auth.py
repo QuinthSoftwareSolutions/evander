@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from threading import Barrier, Lock, Thread
 from urllib.parse import parse_qs
 
 import httpx
@@ -297,6 +298,59 @@ def test_get_bearer_token_refreshes_expiring_credentials_and_reuses_prior_refres
     form = parse_qs(requests[0].content.decode("utf-8"))
     assert form["grant_type"] == ["refresh_token"]
     assert form["refresh_token"] == ["refresh-token-old"]
+
+
+def test_get_bearer_token_serializes_concurrent_refreshes(tmp_path: Path) -> None:
+    clock = Clock(datetime(2026, 4, 9, 12, 0, tzinfo=UTC))
+    requests: list[httpx.Request] = []
+    request_lock = Lock()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        with request_lock:
+            requests.append(request)
+        return httpx.Response(
+            200,
+            json={
+                "access_token": "access-token-refreshed",
+                "token_type": "Bearer",
+                "scope": "offline_access https://graph.microsoft.com/ChannelMessage.Send",
+                "expires_in": 7200,
+            },
+            request=request,
+        )
+
+    provider, store = make_provider(tmp_path, transport=httpx.MockTransport(handler), clock=clock)
+    store.save(
+        TeamsAuthCredentials(
+            client_id="client-123",
+            tenant_id="tenant-abc",
+            access_token="access-token-old",
+            refresh_token="refresh-token-old",
+            token_type="Bearer",
+            scopes=["offline_access", "https://graph.microsoft.com/ChannelMessage.Send"],
+            issued_at=clock.now() - timedelta(hours=1),
+            expires_at=clock.now() + timedelta(seconds=120),
+        )
+    )
+    start = Barrier(3)
+    tokens: list[str] = []
+    token_lock = Lock()
+
+    def get_token() -> None:
+        start.wait(timeout=5)
+        token = provider.get_bearer_token()
+        with token_lock:
+            tokens.append(token)
+
+    threads = [Thread(target=get_token) for _ in range(3)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=5)
+
+    assert all(not thread.is_alive() for thread in threads)
+    assert tokens == ["access-token-refreshed"] * 3
+    assert len(requests) == 1
 
 
 def test_refresh_access_token_clears_store_when_refresh_token_is_revoked(tmp_path: Path) -> None:

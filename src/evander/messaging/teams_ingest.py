@@ -6,11 +6,13 @@ import json
 import logging
 import math
 import os
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from email.utils import parsedate_to_datetime
 from pathlib import Path
+from threading import RLock
 from typing import Any
 
 import httpx
@@ -55,7 +57,7 @@ from evander.services import (
     normalize_teams_target,
     parse_teams_target,
 )
-from evander.messaging.teams_inbox_store import TeamsInboxMessage
+from evander.messaging.teams_inbox_store import TeamsInboxMessage, TeamsInboxPollHealth
 from evander.workflow.runtime_config import load_trigger_orchestrator_worker_global_config
 from evander.workflow.node_state import workflow_node_is_enabled
 
@@ -105,6 +107,14 @@ class _GraphPollAttempt:
     value: Any = None
 
 
+@dataclass(frozen=True)
+class _GraphTargetPollRequest:
+    target_kind: str
+    target: str
+    operation: Callable[[], Any]
+    is_direct_chat: bool = False
+
+
 class TeamsIngestWorker:
     def __init__(
         self,
@@ -125,10 +135,12 @@ class TeamsIngestWorker:
             config.runtime_dir / "teams-inbox-store.json"
         )
         self._trigger_wake_notifier = trigger_wake_notifier
+        self._cycle_state_lock = RLock()
         self._cycle_trigger_wake_notified = False
         self._cycle_targets_skipped_backoff = 0
         self._cycle_targets_failed = 0
         self._cycle_targets_recovered = 0
+        self._cycle_auth_failures: set[str] = set()
         self._kernel = PollingOrchestratorKernel(
             config=PollingKernelConfig(
                 poll_interval_seconds=self.worker_config.poll_interval_seconds,
@@ -152,10 +164,12 @@ class TeamsIngestWorker:
         return self._kernel.run_once_with_lock()
 
     def run_once(self) -> TeamsIngestCycleResult:
-        self._cycle_trigger_wake_notified = False
-        self._cycle_targets_skipped_backoff = 0
-        self._cycle_targets_failed = 0
-        self._cycle_targets_recovered = 0
+        with self._cycle_state_lock:
+            self._cycle_trigger_wake_notified = False
+            self._cycle_targets_skipped_backoff = 0
+            self._cycle_targets_failed = 0
+            self._cycle_targets_recovered = 0
+            self._cycle_auth_failures = set()
         now = datetime.now(UTC)
         active_sessions = self.runtime.session_repository.list_active_sessions(now=now)
         channel_targets_polled = 0
@@ -199,25 +213,34 @@ class TeamsIngestWorker:
             poll_interval_seconds=self.worker_config.poll_interval_seconds,
             jitter_seconds=self.worker_config.jitter_seconds,
         )
+        with self._cycle_state_lock:
+            trigger_wake_notified = self._cycle_trigger_wake_notified
+            targets_skipped_backoff = self._cycle_targets_skipped_backoff
+            targets_failed = self._cycle_targets_failed
+            targets_recovered = self._cycle_targets_recovered
         return TeamsIngestCycleResult(
             directories_polled=len(directories),
             channel_targets_polled=channel_targets_polled,
             direct_chats_polled=direct_chats_polled,
             sessions_seen=len(matching_sessions),
             new_messages_discovered=new_messages_discovered,
-            trigger_wake_notified=self._cycle_trigger_wake_notified,
+            trigger_wake_notified=trigger_wake_notified,
             next_sleep_seconds=next_sleep_seconds,
-            targets_skipped_backoff=self._cycle_targets_skipped_backoff,
-            targets_failed=self._cycle_targets_failed,
-            targets_recovered=self._cycle_targets_recovered,
+            targets_skipped_backoff=targets_skipped_backoff,
+            targets_failed=targets_failed,
+            targets_recovered=targets_recovered,
         )
 
     def _log_start(self) -> None:
         logger.info(
-            "Teams ingest worker started poll_interval=%.3f jitter=%.3f backoff=%.3f lock=%s",
+            (
+                "Teams ingest worker started poll_interval=%.3f jitter=%.3f backoff=%.3f "
+                "max_concurrent_target_polls=%d lock=%s"
+            ),
             self.worker_config.poll_interval_seconds,
             self.worker_config.jitter_seconds,
             self.worker_config.backoff_seconds,
+            self.worker_config.max_concurrent_target_polls,
             self.worker_config.lock_path,
         )
 
@@ -245,19 +268,20 @@ class TeamsIngestWorker:
         logger.exception("Teams ingest worker cycle failed")
 
     def _notify_trigger_orchestrator_if_needed(self, new_messages_discovered: int) -> bool:
-        if (
-            new_messages_discovered <= 0
-            or self._trigger_wake_notifier is None
-            or self._cycle_trigger_wake_notified
-        ):
-            return False
-        try:
-            notified = self._trigger_wake_notifier()
-            self._cycle_trigger_wake_notified = self._cycle_trigger_wake_notified or notified
-            return notified
-        except Exception:
-            logger.warning("Failed to notify trigger orchestrator wake socket", exc_info=True)
-            return False
+        with self._cycle_state_lock:
+            if (
+                new_messages_discovered <= 0
+                or self._trigger_wake_notifier is None
+                or self._cycle_trigger_wake_notified
+            ):
+                return False
+            try:
+                notified = self._trigger_wake_notifier()
+                self._cycle_trigger_wake_notified = self._cycle_trigger_wake_notified or notified
+                return notified
+            except Exception:
+                logger.warning("Failed to notify trigger orchestrator wake socket", exc_info=True)
+                return False
 
     def _directories_to_scan(
         self,
@@ -422,6 +446,7 @@ class TeamsIngestWorker:
         direct_chats_polled = 0
         new_messages_discovered = 0
         with httpx.Client(timeout=provider_config.teams_timeout_seconds) as client:
+            target_poll_requests: list[_GraphTargetPollRequest] = []
             direct_chat_targets_polled: set[str] = set()
             direct_sender_refs_by_id = self._resolve_direct_message_sender_refs_by_id(
                 client,
@@ -455,42 +480,45 @@ class TeamsIngestWorker:
                     target for target in channel_targets if target.startswith("chat:")
                 }
                 for chat_target in sorted(direct_targets):
-                    attempt = self._run_graph_poll_target(
-                        poll_scope=poll_scope,
-                        target_kind="chat",
-                        target=chat_target,
-                        operation=lambda target=chat_target: self._poll_channel(
-                            client,
-                            service=service,
-                            channel_target=target,
-                            budget=service.new_pagination_budget(),
-                            direct_message_sender_refs_by_id=direct_sender_refs_by_id,
-                            store_unmatched_direct_messages=target in channel_targets,
-                        ),
+                    target_poll_requests.append(
+                        _GraphTargetPollRequest(
+                            target_kind="chat",
+                            target=chat_target,
+                            is_direct_chat=True,
+                            operation=lambda target=chat_target: self._poll_channel(
+                                client,
+                                service=service,
+                                channel_target=target,
+                                budget=service.new_pagination_budget(),
+                                direct_message_sender_refs_by_id=direct_sender_refs_by_id,
+                                store_unmatched_direct_messages=target in channel_targets,
+                            ),
+                        )
                     )
                     direct_chat_targets_polled.add(chat_target)
-                    if not attempt.succeeded:
-                        continue
-                    direct_chats_polled += 1
-                    discovered = int(attempt.value or 0)
-                    new_messages_discovered += discovered
-                    self._notify_trigger_orchestrator_if_needed(discovered)
             for channel_target in channel_targets:
                 if channel_target in direct_chat_targets_polled:
                     continue
                 parsed_target = parse_teams_target(channel_target)
-                attempt = self._run_graph_poll_target(
-                    poll_scope=poll_scope,
-                    target_kind=parsed_target.kind,
-                    target=channel_target,
-                    operation=lambda target=channel_target: self._poll_channel(
-                        client,
-                        service=service,
-                        channel_target=target,
-                        budget=service.new_pagination_budget(),
-                    ),
+                target_poll_requests.append(
+                    _GraphTargetPollRequest(
+                        target_kind=parsed_target.kind,
+                        target=channel_target,
+                        operation=lambda target=channel_target: self._poll_channel(
+                            client,
+                            service=service,
+                            channel_target=target,
+                            budget=service.new_pagination_budget(),
+                        ),
+                    )
                 )
+            for target_poll_request, attempt in self._run_target_poll_requests(
+                poll_scope=poll_scope,
+                target_poll_requests=target_poll_requests,
+            ):
                 if attempt.succeeded:
+                    if target_poll_request.is_direct_chat:
+                        direct_chats_polled += 1
                     discovered = int(attempt.value or 0)
                     new_messages_discovered += discovered
                     self._notify_trigger_orchestrator_if_needed(discovered)
@@ -498,6 +526,48 @@ class TeamsIngestWorker:
             direct_chats_polled=direct_chats_polled,
             new_messages_discovered=new_messages_discovered,
         )
+
+    def _run_target_poll_requests(
+        self,
+        *,
+        poll_scope: str,
+        target_poll_requests: list[_GraphTargetPollRequest],
+    ) -> Iterator[tuple[_GraphTargetPollRequest, _GraphPollAttempt]]:
+        if self.worker_config.max_concurrent_target_polls == 1:
+            for target_poll_request in target_poll_requests:
+                yield target_poll_request, self._run_graph_poll_target(
+                    poll_scope=poll_scope,
+                    target_kind=target_poll_request.target_kind,
+                    target=target_poll_request.target,
+                    operation=target_poll_request.operation,
+                )
+            return
+
+        with ThreadPoolExecutor(
+            max_workers=self.worker_config.max_concurrent_target_polls,
+            thread_name_prefix="teams-ingest",
+        ) as executor:
+            futures = {
+                executor.submit(
+                    self._run_graph_poll_target,
+                    poll_scope=poll_scope,
+                    target_kind=target_poll_request.target_kind,
+                    target=target_poll_request.target,
+                    operation=target_poll_request.operation,
+                ): target_poll_request
+                for target_poll_request in target_poll_requests
+            }
+            first_exception: Exception | None = None
+            for future in as_completed(futures):
+                try:
+                    attempt = future.result()
+                except Exception as exc:
+                    if first_exception is None:
+                        first_exception = exc
+                    continue
+                yield futures[future], attempt
+            if first_exception is not None:
+                raise first_exception
 
     def _build_graph_service(
         self,
@@ -615,7 +685,8 @@ class TeamsIngestWorker:
             if health is not None and health.next_attempt_at is not None:
                 next_attempt_at = _coerce_utc(health.next_attempt_at)
                 if next_attempt_at > now:
-                    self._cycle_targets_skipped_backoff += 1
+                    with self._cycle_state_lock:
+                        self._cycle_targets_skipped_backoff += 1
                     logger.debug(
                         "Skipping Teams Graph poll target due to backoff target=%s next_attempt_at=%s",
                         health_key,
@@ -632,43 +703,84 @@ class TeamsIngestWorker:
                 raise
             error_class, retry_after_seconds, directory_scoped = classification
             failure_key = auth_key if directory_scoped else target_key
-            previous_failure = self.store.get_poll_health(failure_key)
-            failure_count = (
-                previous_failure.consecutive_failures if previous_failure is not None else 0
-            ) + 1
-            computed_backoff = _compute_target_backoff_seconds(
-                failure_count=failure_count,
-                initial_seconds=self.worker_config.target_backoff_initial_seconds,
-                max_seconds=self.worker_config.target_backoff_max_seconds,
-            )
-            backoff_seconds = max(computed_backoff, retry_after_seconds or 0.0)
-            failed_at = datetime.now(UTC)
-            state = self.store.record_poll_failure(
-                failure_key,
-                next_attempt_at=failed_at + timedelta(seconds=backoff_seconds),
-                error_class=error_class,
-                error_message=str(exc),
-                failed_at=failed_at,
-            )
-            self._cycle_targets_failed += 1
-            logger.warning(
-                "Teams Graph poll target failed target=%s failures=%d next_attempt_at=%s error=%s",
-                failure_key,
-                state.consecutive_failures,
-                state.next_attempt_at.isoformat() if state.next_attempt_at else None,
-                error_class,
-            )
+            if directory_scoped:
+                with self._cycle_state_lock:
+                    if auth_key in self._cycle_auth_failures:
+                        state = None
+                    else:
+                        state = self._record_graph_poll_failure(
+                            failure_key=failure_key,
+                            error_class=error_class,
+                            error_message=str(exc),
+                            retry_after_seconds=retry_after_seconds,
+                        )
+                        self._cycle_auth_failures.add(auth_key)
+            else:
+                state = self._record_graph_poll_failure(
+                    failure_key=failure_key,
+                    error_class=error_class,
+                    error_message=str(exc),
+                    retry_after_seconds=retry_after_seconds,
+                )
+            with self._cycle_state_lock:
+                self._cycle_targets_failed += 1
+            if state is None:
+                logger.warning(
+                    "Teams Graph poll target failed target=%s error=%s "
+                    "credential_failure_already_recorded=true",
+                    failure_key,
+                    error_class,
+                )
+            else:
+                logger.warning(
+                    "Teams Graph poll target failed target=%s failures=%d "
+                    "next_attempt_at=%s error=%s",
+                    failure_key,
+                    state.consecutive_failures,
+                    state.next_attempt_at.isoformat() if state.next_attempt_at else None,
+                    error_class,
+                )
             return _GraphPollAttempt(attempted=True, succeeded=False)
 
         succeeded_at = datetime.now(UTC)
         self.store.record_poll_success(target_key, succeeded_at=succeeded_at)
-        auth_health = self.store.get_poll_health(auth_key)
-        if auth_health is not None:
-            self.store.record_poll_success(auth_key, succeeded_at=succeeded_at)
+        with self._cycle_state_lock:
+            auth_health = self.store.get_poll_health(auth_key)
+            auth_failed_this_cycle = auth_key in self._cycle_auth_failures
+            if auth_health is not None and not auth_failed_this_cycle:
+                self.store.record_poll_success(auth_key, succeeded_at=succeeded_at)
         if previous is not None and previous.consecutive_failures > 0:
-            self._cycle_targets_recovered += 1
+            with self._cycle_state_lock:
+                self._cycle_targets_recovered += 1
             logger.info("Teams Graph poll target recovered target=%s", target_key)
         return _GraphPollAttempt(attempted=True, succeeded=True, value=value)
+
+    def _record_graph_poll_failure(
+        self,
+        *,
+        failure_key: str,
+        error_class: str,
+        error_message: str,
+        retry_after_seconds: float | None,
+    ) -> TeamsInboxPollHealth:
+        previous_failure = self.store.get_poll_health(failure_key)
+        failure_count = (
+            previous_failure.consecutive_failures if previous_failure is not None else 0
+        ) + 1
+        computed_backoff = _compute_target_backoff_seconds(
+            failure_count=failure_count,
+            initial_seconds=self.worker_config.target_backoff_initial_seconds,
+            max_seconds=self.worker_config.target_backoff_max_seconds,
+        )
+        backoff_seconds = max(computed_backoff, retry_after_seconds or 0.0)
+        failed_at = datetime.now(UTC)
+        return self.store.record_poll_failure(
+            failure_key,
+            next_attempt_at=failed_at + timedelta(seconds=backoff_seconds),
+            error_class=error_class,
+            error_message=error_message,
+            failed_at=failed_at,
+        )
 
     def _poll_channel(
         self,

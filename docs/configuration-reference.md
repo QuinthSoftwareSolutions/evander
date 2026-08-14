@@ -2076,6 +2076,11 @@ and user lookup. Retryable failure of one target does not delay healthy targets.
 initial and maximum target cooldown with `target_backoff_initial_seconds` (default `60`) and
 `target_backoff_max_seconds` (default `900`) in `config/teams-ingest/config.json`; the older
 `backoff_seconds` remains reserved for worker-wide configuration or store failures.
+`max_concurrent_target_polls` in that same worker configuration bounds concurrent channel and chat
+polls across the worker (range `1`–`32`, default `1`). Directory selection, sender resolution, and
+direct-chat discovery remain serial; directories are processed one at a time, so the configured
+limit is global to the worker cycle. Set it to `2` for the initial production trial and restart
+`evander-teams-ingest.service` for the change to apply.
 
 Key delegated Teams provider settings now include:
 
