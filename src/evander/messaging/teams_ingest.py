@@ -57,7 +57,7 @@ from evander.services import (
     normalize_teams_target,
     parse_teams_target,
 )
-from evander.messaging.teams_inbox_store import TeamsInboxMessage
+from evander.messaging.teams_inbox_store import TeamsInboxMessage, TeamsInboxPollHealth
 from evander.workflow.runtime_config import load_trigger_orchestrator_worker_global_config
 from evander.workflow.node_state import workflow_node_is_enabled
 
@@ -557,8 +557,17 @@ class TeamsIngestWorker:
                 ): target_poll_request
                 for target_poll_request in target_poll_requests
             }
+            first_exception: Exception | None = None
             for future in as_completed(futures):
-                yield futures[future], future.result()
+                try:
+                    attempt = future.result()
+                except Exception as exc:
+                    if first_exception is None:
+                        first_exception = exc
+                    continue
+                yield futures[future], attempt
+            if first_exception is not None:
+                raise first_exception
 
     def _build_graph_service(
         self,
@@ -694,50 +703,84 @@ class TeamsIngestWorker:
                 raise
             error_class, retry_after_seconds, directory_scoped = classification
             failure_key = auth_key if directory_scoped else target_key
-            with self._cycle_state_lock:
-                if directory_scoped:
-                    self._cycle_auth_failures.add(auth_key)
-            previous_failure = self.store.get_poll_health(failure_key)
-            failure_count = (
-                previous_failure.consecutive_failures if previous_failure is not None else 0
-            ) + 1
-            computed_backoff = _compute_target_backoff_seconds(
-                failure_count=failure_count,
-                initial_seconds=self.worker_config.target_backoff_initial_seconds,
-                max_seconds=self.worker_config.target_backoff_max_seconds,
-            )
-            backoff_seconds = max(computed_backoff, retry_after_seconds or 0.0)
-            failed_at = datetime.now(UTC)
-            state = self.store.record_poll_failure(
-                failure_key,
-                next_attempt_at=failed_at + timedelta(seconds=backoff_seconds),
-                error_class=error_class,
-                error_message=str(exc),
-                failed_at=failed_at,
-            )
+            if directory_scoped:
+                with self._cycle_state_lock:
+                    if auth_key in self._cycle_auth_failures:
+                        state = None
+                    else:
+                        state = self._record_graph_poll_failure(
+                            failure_key=failure_key,
+                            error_class=error_class,
+                            error_message=str(exc),
+                            retry_after_seconds=retry_after_seconds,
+                        )
+                        self._cycle_auth_failures.add(auth_key)
+            else:
+                state = self._record_graph_poll_failure(
+                    failure_key=failure_key,
+                    error_class=error_class,
+                    error_message=str(exc),
+                    retry_after_seconds=retry_after_seconds,
+                )
             with self._cycle_state_lock:
                 self._cycle_targets_failed += 1
-            logger.warning(
-                "Teams Graph poll target failed target=%s failures=%d next_attempt_at=%s error=%s",
-                failure_key,
-                state.consecutive_failures,
-                state.next_attempt_at.isoformat() if state.next_attempt_at else None,
-                error_class,
-            )
+            if state is None:
+                logger.warning(
+                    "Teams Graph poll target failed target=%s error=%s "
+                    "credential_failure_already_recorded=true",
+                    failure_key,
+                    error_class,
+                )
+            else:
+                logger.warning(
+                    "Teams Graph poll target failed target=%s failures=%d "
+                    "next_attempt_at=%s error=%s",
+                    failure_key,
+                    state.consecutive_failures,
+                    state.next_attempt_at.isoformat() if state.next_attempt_at else None,
+                    error_class,
+                )
             return _GraphPollAttempt(attempted=True, succeeded=False)
 
         succeeded_at = datetime.now(UTC)
         self.store.record_poll_success(target_key, succeeded_at=succeeded_at)
-        auth_health = self.store.get_poll_health(auth_key)
         with self._cycle_state_lock:
+            auth_health = self.store.get_poll_health(auth_key)
             auth_failed_this_cycle = auth_key in self._cycle_auth_failures
-        if auth_health is not None and not auth_failed_this_cycle:
-            self.store.record_poll_success(auth_key, succeeded_at=succeeded_at)
+            if auth_health is not None and not auth_failed_this_cycle:
+                self.store.record_poll_success(auth_key, succeeded_at=succeeded_at)
         if previous is not None and previous.consecutive_failures > 0:
             with self._cycle_state_lock:
                 self._cycle_targets_recovered += 1
             logger.info("Teams Graph poll target recovered target=%s", target_key)
         return _GraphPollAttempt(attempted=True, succeeded=True, value=value)
+
+    def _record_graph_poll_failure(
+        self,
+        *,
+        failure_key: str,
+        error_class: str,
+        error_message: str,
+        retry_after_seconds: float | None,
+    ) -> TeamsInboxPollHealth:
+        previous_failure = self.store.get_poll_health(failure_key)
+        failure_count = (
+            previous_failure.consecutive_failures if previous_failure is not None else 0
+        ) + 1
+        computed_backoff = _compute_target_backoff_seconds(
+            failure_count=failure_count,
+            initial_seconds=self.worker_config.target_backoff_initial_seconds,
+            max_seconds=self.worker_config.target_backoff_max_seconds,
+        )
+        backoff_seconds = max(computed_backoff, retry_after_seconds or 0.0)
+        failed_at = datetime.now(UTC)
+        return self.store.record_poll_failure(
+            failure_key,
+            next_attempt_at=failed_at + timedelta(seconds=backoff_seconds),
+            error_class=error_class,
+            error_message=error_message,
+            failed_at=failed_at,
+        )
 
     def _poll_channel(
         self,

@@ -8,6 +8,9 @@
 - Reused each directory's Graph client across concurrent target polls, synchronized per-cycle
   accounting and trigger wake delivery, and made delegated credential refresh single-flight to
   prevent concurrent refresh-token requests.
+- Coalesced credential-wide authentication backoff updates per polling cycle and drained successful
+  concurrent target results before propagating sibling errors, preserving trigger wake delivery for
+  messages that were already persisted.
 
 ## 2026-08-14 - Keyed Fixed-Window Workflow Counter Gate
 

@@ -1591,6 +1591,120 @@ def test_teams_ingest_worker_concurrent_throttle_does_not_block_healthy_target(
     assert throttled_health["consecutive_failures"] == 1
 
 
+def test_teams_ingest_worker_coalesces_concurrent_credential_failures(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    write_teams_ingest_worker_config(tmp_path, max_concurrent_target_polls=3)
+    requests_started = threading.Barrier(3)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests_started.wait(timeout=5)
+        return httpx.Response(401, request=request)
+
+    patch_worker_httpx_client(monkeypatch, httpx.MockTransport(handler))
+    monkeypatch.setenv("GRAPH_TEAMS_ACCESS_TOKEN", "graph-token")
+    config = GatewayConfig.model_validate(
+        {
+            "runtime_dir": str(tmp_path / "runtime"),
+            "teams_backend": "graph_api",
+            "teams_retry_count": 0,
+        }
+    )
+    worker = build_teams_ingest_worker(config, project_dir=tmp_path)
+    ensure_directory(worker, "root/team-a")
+    worker.session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-1",
+            directory_path="root/team-a",
+            allowed_tools=[ToolName.TEAMS_GET_MESSAGES],
+            teams_channel_allowlist=[
+                "team-a/channel-1",
+                "team-a/channel-2",
+                "team-a/channel-3",
+            ],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        )
+    )
+
+    result = worker.run_once()
+
+    auth_health = [
+        state
+        for key, state in worker.store.read_raw()["poll_health"].items()
+        if key.endswith("|auth|credential-set")
+    ]
+    assert result.targets_failed == 3
+    assert len(auth_health) == 1
+    assert auth_health[0]["consecutive_failures"] == 1
+
+
+def test_teams_ingest_worker_drains_successful_futures_before_propagating_error(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    write_teams_ingest_worker_config(tmp_path, max_concurrent_target_polls=2)
+    monkeypatch.setattr(
+        "evander.messaging.teams_ingest.as_completed",
+        lambda futures: iter(futures),
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/channels/broken/messages"):
+            return httpx.Response(200, content=b"{", request=request)
+        if request.url.path.endswith("/channels/healthy/messages"):
+            return httpx.Response(
+                200,
+                json={
+                    "value": [
+                        {
+                            "id": "healthy-message",
+                            "createdDateTime": "2026-08-14T10:02:00Z",
+                            "body": {"content": "healthy", "contentType": "text"},
+                            "from": {"user": {"id": "user-1"}},
+                        }
+                    ]
+                },
+                request=request,
+            )
+        raise AssertionError(f"Unexpected path: {request.url.path}")
+
+    patch_worker_httpx_client(monkeypatch, httpx.MockTransport(handler))
+    monkeypatch.setenv("GRAPH_TEAMS_ACCESS_TOKEN", "graph-token")
+    config = GatewayConfig.model_validate(
+        {
+            "runtime_dir": str(tmp_path / "runtime"),
+            "teams_backend": "graph_api",
+            "teams_retry_count": 0,
+        }
+    )
+    wake_calls: list[str] = []
+    worker = build_teams_ingest_worker(
+        config,
+        project_dir=tmp_path,
+        trigger_wake_notifier=lambda: wake_calls.append("wake") or True,
+    )
+    ensure_directory(worker, "root/team-a")
+    worker.session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-1",
+            directory_path="root/team-a",
+            allowed_tools=[ToolName.TEAMS_GET_MESSAGES],
+            teams_channel_allowlist=["team-a/broken", "team-a/healthy"],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        )
+    )
+
+    with pytest.raises(json.JSONDecodeError):
+        worker.run_once()
+
+    assert [message.cursor for message in worker.store.list_all_messages()] == [
+        "team-a/healthy/healthy-message"
+    ]
+    assert worker.store.get_cursor("team-a/healthy") == "team-a/healthy/healthy-message"
+    assert wake_calls == ["wake"]
+
+
 def test_teams_ingest_worker_finishes_discovery_before_concurrent_unique_chat_polls(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
