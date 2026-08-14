@@ -18,10 +18,6 @@ class _ManagedGitOperations:
     def __init__(self) -> None:
         self.calls: list[object] = []
 
-    def preflight(self) -> dict[str, object]:
-        self.calls.append("preflight")
-        return {"repository_count": 2}
-
     def reconcile_stale_worktrees(self) -> dict[str, object]:
         self.calls.append("reconcile")
         return {"removed": []}
@@ -40,14 +36,12 @@ def test_managed_git_runtime_services_expose_narrow_operation_views() -> None:
     maintenance = ManagedGitMaintenanceService(operations)
     repository_refresh = ManagedGitRepositoryRefreshService(operations)
 
-    assert maintenance.preflight() == {"repository_count": 2}
     assert maintenance.reconcile_stale_worktrees() == {"removed": []}
     assert maintenance.cleanup_active_worktrees() == {"cleaned": 0, "failed": 0}
     assert repository_refresh.refresh_repository("mr_0123456789abcdef0123") == {
         "managed_repo_id": "mr_0123456789abcdef0123"
     }
     assert operations.calls == [
-        "preflight",
         "reconcile",
         "cleanup",
         ("refresh", "mr_0123456789abcdef0123"),
@@ -89,7 +83,7 @@ def test_refresh_authorization_uses_preassembled_directory_config_collaborators(
     assert service.configured_git_uids() == {2001, 2002}
 
 
-def test_worker_lifecycle_owns_preflight_reconciliation_and_cleanup() -> None:
+def test_worker_lifecycle_owns_reconciliation_and_cleanup() -> None:
     first_operations = _ManagedGitOperations()
     second_operations = _ManagedGitOperations()
     now = [100.0]
@@ -106,8 +100,8 @@ def test_worker_lifecycle_owns_preflight_reconciliation_and_cleanup() -> None:
     lifecycle.configure(ManagedGitMaintenanceService(second_operations))
     lifecycle.cleanup_active_worktrees()
 
-    assert first_operations.calls == ["preflight", "reconcile", "reconcile", "cleanup"]
-    assert second_operations.calls == ["preflight", "cleanup"]
+    assert first_operations.calls == ["reconcile", "reconcile", "cleanup"]
+    assert second_operations.calls == ["cleanup"]
 
 
 def test_effect_wiring_shares_one_composed_admin_runtime(tmp_path: Path) -> None:

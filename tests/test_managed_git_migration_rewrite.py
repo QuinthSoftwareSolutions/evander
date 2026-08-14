@@ -634,7 +634,7 @@ def test_apply_updates_team_sqlite_in_place_with_wal_connection(tmp_path: Path) 
     ]
 
 
-def test_dry_run_blocks_active_target_workers_and_preflight_requires_apply(
+def test_dry_run_blocks_active_target_workers_but_registration_remains_available(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     source, _upstream, _legacy = _repositories(tmp_path)
@@ -651,8 +651,8 @@ def test_dry_run_blocks_active_target_workers_and_preflight_requires_apply(
     dry_run = service.migrate("dry-run")
     assert dry_run["can_apply"] is False
     assert "must be stopped" in " ".join(dry_run["blockers"])
-    with pytest.raises(ManagedGitConflictError, match="git-repos migrate --dry-run"):
-        service.register_repository("root", str(source))
+    registered = service.register_repository("root", str(source))
+    assert service.list_repositories()[0]["managed_repo_id"] == registered["managed_repo_id"]
 
     monkeypatch.setattr(
         service,
@@ -663,7 +663,7 @@ def test_dry_run_blocks_active_target_workers_and_preflight_requires_apply(
         },
     )
     applied = service.migrate("apply")
-    assert service.list_repositories()[0]["managed_repo_id"] == applied["managed_repo_ids"][0]
+    assert registered["managed_repo_id"] == applied["managed_repo_ids"][0]
 
 
 def test_apply_recovers_prepared_manifest_after_state_replacement(tmp_path: Path) -> None:

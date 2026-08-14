@@ -16,7 +16,7 @@ LOGGER = logging.getLogger(__name__)
 
 
 class ManagedGitWorkerLifecycle:
-    """Owns managed-Git worker preflight, reconciliation, and process cleanup."""
+    """Owns managed-Git worker reconciliation and process cleanup."""
 
     def __init__(
         self,
@@ -35,7 +35,6 @@ class ManagedGitWorkerLifecycle:
         self._last_reconcile_at = 0.0
 
     def configure(self, maintenance: ManagedGitMaintenancePort) -> None:
-        maintenance.preflight()
         if all(existing is not maintenance for existing in self._cleanup_ports):
             self._cleanup_ports.append(maintenance)
         self._maintenance = maintenance

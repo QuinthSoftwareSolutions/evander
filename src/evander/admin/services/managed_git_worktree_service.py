@@ -46,10 +46,6 @@ class _ReadRegistry(Protocol):
     def __call__(self) -> dict[str, Any]: ...
 
 
-class _RequireMigrationPreflight(Protocol):
-    def __call__(self) -> None: ...
-
-
 class _RepoLock(Protocol):
     def __call__(self, managed_repo_id: str, *, exclusive: bool) -> AbstractContextManager[Any]: ...
 
@@ -61,7 +57,6 @@ class ManagedGitWorktreeDependencies:
     managed_root: Path
     worktree_root: Path
     require_record: _RequireRecord
-    require_migration_preflight: _RequireMigrationPreflight
     read_registry: _ReadRegistry
     repo_lock: _RepoLock
     run_git: _RunGit
@@ -223,7 +218,6 @@ class ManagedGitWorktreeService:
         *,
         older_than_seconds: float | None = None,
     ) -> dict[str, Any]:
-        self._deps.require_migration_preflight()
         threshold = (
             float(older_than_seconds)
             if older_than_seconds is not None

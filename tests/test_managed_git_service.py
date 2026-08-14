@@ -120,6 +120,28 @@ def test_registration_deduplicates_ancestor_and_isolates_siblings(tmp_path: Path
         service.get_repository(owner["managed_repo_id"], "root/team-b")
 
 
+def test_normal_operations_do_not_run_legacy_migration_inventory(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source, _, _ = _source_repository(tmp_path)
+    service = _service(tmp_path)
+
+    def fail_inventory() -> dict[str, object]:
+        raise AssertionError("legacy migration inventory reached")
+
+    monkeypatch.setattr(service, "_legacy_state_inventory", fail_inventory)
+
+    registered = service.register_repository("root", str(source))
+    repo_id = str(registered["managed_repo_id"])
+    service.list_repositories("root")
+    service.resolve_branch_commit(repo_id, directory_path="root", branch="main")
+    service.clone_info(repo_id, directory_path="root", session_id="session-1")
+    service.bind(repo_id, "sessions", "session-1")
+    service.unbind(repo_id, "sessions", "session-1")
+    service.reconcile_stale_worktrees(repo_id)
+
+
 def test_refresh_coalesces_waiters_that_started_before_completed_refresh(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

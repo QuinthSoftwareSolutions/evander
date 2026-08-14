@@ -19,8 +19,6 @@ LOGGER = logging.getLogger(__name__)
 
 
 class ManagedGitMaintenanceOperationsPort(Protocol):
-    def preflight(self) -> dict[str, Any]: ...
-
     def reconcile_stale_worktrees(self) -> dict[str, Any]: ...
 
     def cleanup_active_worktrees(self) -> dict[str, int]: ...
@@ -31,8 +29,6 @@ class ManagedGitRepositoryOperationsPort(Protocol):
 
 
 class ManagedGitMaintenancePort(Protocol):
-    def preflight(self) -> Mapping[str, Any]: ...
-
     def reconcile_stale_worktrees(self) -> Mapping[str, Any]: ...
 
     def cleanup_active_worktrees(self) -> Mapping[str, int]: ...
@@ -51,9 +47,6 @@ class ManagedGitMaintenanceService:
     """Narrow lifecycle view over the managed-Git domain service."""
 
     managed_git: ManagedGitMaintenanceOperationsPort
-
-    def preflight(self) -> Mapping[str, Any]:
-        return self.managed_git.preflight()
 
     def reconcile_stale_worktrees(self) -> Mapping[str, Any]:
         return self.managed_git.reconcile_stale_worktrees()
