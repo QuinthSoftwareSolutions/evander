@@ -16345,3 +16345,37 @@ def test_admin_web_create_vm_from_issue_runs_in_threadpool(
     payload = response.json()
     assert payload["vm_name"] == "issue-vm-1"
     assert threadpool_calls == ["create_issue_vm"]
+
+
+def test_admin_web_workflow_catalog_exposes_throttle_gate(tmp_path: Path) -> None:
+    client = TestClient(create_app(build_admin_runtime(write_config(tmp_path))))
+
+    response = client.get("/api/workflow-editor/catalog")
+
+    assert response.status_code == 200
+    throttle_gate = next(node for node in response.json()["nodes"] if node["type"] == "gate:throttle")
+    throttle_fields = {field["key"]: field for field in throttle_gate["fields"]}
+    assert throttle_gate["label"] == "Throttle"
+    assert [field["key"] for field in throttle_gate["fields"]] == [
+        "key",
+        "window",
+        "limit",
+        "outputs",
+    ]
+    assert throttle_fields["key"]["required"]
+    assert throttle_fields["key"]["bindable"]
+    assert throttle_fields["window"]["default_value"] == "PT1M"
+    assert throttle_fields["limit"]["required"]
+    assert throttle_fields["limit"]["bindable"]
+    assert throttle_fields["limit"]["default_value"] == 10
+    assert throttle_gate["output_ports"] == [
+        {
+            "key": "default",
+            "label": "Default",
+            "description": "Allowed activations within the window limit.",
+        },
+        {
+            "key": "dropped",
+            "label": "Dropped",
+            "description": "Activations after the window limit is reached.",
+        },

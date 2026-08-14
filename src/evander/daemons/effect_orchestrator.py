@@ -1713,6 +1713,28 @@ class EffectOrchestratorWorker:
             event_id=event_id,
         )
 
+    def claim_throttle_window(
+        self,
+        *,
+        gate_id: str,
+        key: str,
+        window: timedelta,
+        window_text: str,
+        limit: int,
+        now: datetime,
+        event_id: str,
+    ) -> dict[str, Any]:
+        return _claim_throttle_window(
+            self.worker_config.runtime_dir / "gate-throttle-windows.json",
+            gate_id=gate_id,
+            key=key,
+            window=window,
+            window_text=window_text,
+            limit=limit,
+            now=now,
+            event_id=event_id,
+        )
+
     def _dispatch_query(
         self,
         queue_record: TriggerQueueRecord,
@@ -2754,6 +2776,157 @@ def _claim_dedupe_key(
             if not isinstance(entries, dict):
                 entries = {}
                 payload["entries"] = entries
+def _claim_throttle_window(
+    store_path: Path,
+    *,
+    gate_id: str,
+    key: str,
+    window: timedelta,
+    window_text: str,
+    limit: int,
+    now: datetime,
+    event_id: str,
+) -> dict[str, Any]:
+    now_utc = _ensure_utc(now)
+    store_path.parent.mkdir(parents=True, exist_ok=True)
+    lock_path = store_path.with_suffix(f"{store_path.suffix}.lock")
+    lock_path.touch(exist_ok=True)
+    with lock_path.open("r+") as lock_file:
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+        try:
+            payload = _read_throttle_payload(store_path)
+            entries = payload.setdefault("entries", {})
+            if not isinstance(entries, dict):
+                entries = {}
+                payload["entries"] = entries
+            entry_id = _throttle_entry_id(gate_id=gate_id, key=key)
+            existing = entries.get(entry_id)
+            if isinstance(existing, dict):
+                replayed_claim = _throttle_replayed_claim(existing, event_id=event_id)
+                if replayed_claim is not None:
+                    _write_throttle_payload(store_path, payload)
+                    return replayed_claim
+
+            _prune_expired_throttle_entries(entries, now=now_utc)
+            existing = entries.get(entry_id)
+            expires_at = (
+                _parse_dedupe_timestamp(existing.get("window_expires_at"))
+                if isinstance(existing, dict)
+                else None
+            )
+            if existing is None or expires_at is None or expires_at <= now_utc:
+                window_opened_at = now_utc
+                expires_at = window_opened_at + window
+                existing = {
+                    "gate_id": gate_id,
+                    "key": key,
+                    "window": window_text,
+                    "window_opened_at": _format_dedupe_timestamp(window_opened_at),
+                    "window_expires_at": _format_dedupe_timestamp(expires_at),
+                    "limit": limit,
+                    "accepted_count": 0,
+                    "decisions": {},
+                }
+                entries[entry_id] = existing
+
+            frozen_limit = _coerce_stored_throttle_limit(existing.get("limit"), fallback=limit)
+            accepted_count = _coerce_stored_throttle_count(existing.get("accepted_count"))
+            allowed = accepted_count < frozen_limit
+            if allowed:
+                accepted_count += 1
+            existing["accepted_count"] = accepted_count
+            existing["limit"] = frozen_limit
+            decisions = existing.get("decisions")
+            if not isinstance(decisions, dict):
+                decisions = {}
+                existing["decisions"] = decisions
+            decisions[event_id] = {
+                "allowed": allowed,
+                "accepted_count": accepted_count,
+            }
+            _write_throttle_payload(store_path, payload)
+            return {
+                "allowed": allowed,
+                "accepted_count": accepted_count,
+                "decision_replayed": False,
+                "limit": frozen_limit,
+                "window": str(existing.get("window") or window_text),
+                "window_opened_at": str(existing["window_opened_at"]),
+                "window_expires_at": str(existing["window_expires_at"]),
+            }
+        finally:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+
+
+def _read_throttle_payload(store_path: Path) -> dict[str, Any]:
+    if not store_path.exists():
+        return {"version": 1, "entries": {}}
+    try:
+        payload = json.loads(store_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        logger.warning("Unable to read gate throttle state path=%s", store_path, exc_info=True)
+        return {"version": 1, "entries": {}}
+    if not isinstance(payload, dict):
+        return {"version": 1, "entries": {}}
+    payload.setdefault("version", 1)
+    payload.setdefault("entries", {})
+    return payload
+
+
+def _write_throttle_payload(store_path: Path, payload: dict[str, Any]) -> None:
+    tmp_path = store_path.with_suffix(f"{store_path.suffix}.tmp")
+    tmp_path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+    tmp_path.replace(store_path)
+
+
+def _prune_expired_throttle_entries(entries: dict[str, Any], *, now: datetime) -> None:
+    expired_entry_ids = [
+        entry_id
+        for entry_id, entry in entries.items()
+        if not isinstance(entry, dict)
+        or (expires_at := _parse_dedupe_timestamp(entry.get("window_expires_at"))) is None
+        or expires_at <= now
+    ]
+    for entry_id in expired_entry_ids:
+        entries.pop(entry_id, None)
+
+
+def _throttle_replayed_claim(entry: dict[str, Any], *, event_id: str) -> dict[str, Any] | None:
+    decisions = entry.get("decisions")
+    decision = decisions.get(event_id) if isinstance(decisions, dict) else None
+    if not isinstance(decision, dict) or not isinstance(decision.get("allowed"), bool):
+        return None
+    window_opened_at = entry.get("window_opened_at")
+    window_expires_at = entry.get("window_expires_at")
+    if not isinstance(window_opened_at, str) or not isinstance(window_expires_at, str):
+        return None
+    return {
+        "allowed": decision["allowed"],
+        "accepted_count": _coerce_stored_throttle_count(decision.get("accepted_count")),
+        "decision_replayed": True,
+        "limit": _coerce_stored_throttle_limit(entry.get("limit"), fallback=1),
+        "window": str(entry.get("window") or ""),
+        "window_opened_at": window_opened_at,
+        "window_expires_at": window_expires_at,
+    }
+
+
+def _coerce_stored_throttle_limit(value: Any, *, fallback: int) -> int:
+    if isinstance(value, int) and not isinstance(value, bool) and value > 0:
+        return value
+    return fallback
+
+
+def _coerce_stored_throttle_count(value: Any) -> int:
+    if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+        return value
+    return 0
+
+
+def _throttle_entry_id(*, gate_id: str, key: str) -> str:
+    digest = hashlib.sha256(f"{gate_id}\0{key}".encode("utf-8")).hexdigest()
+    return digest[:32]
+
             _prune_expired_dedupe_entries(entries, now=now_utc)
             entry_id = _dedupe_entry_id(gate_id=gate_id, key=key)
             existing = entries.get(entry_id)

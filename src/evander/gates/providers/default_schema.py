@@ -17,6 +17,7 @@ from evander.events.models import (
     GateMergeDefinition,
     GateSerializeDefinition,
     GateSwitchDefinition,
+    GateThrottleDefinition,
     GateWhileDefinition,
 )
 from evander.schema_bootstrap import _GATE_OUTPUT_SCHEMAS
@@ -26,6 +27,7 @@ _GATE_MODEL_BY_TYPE = {
     "gate:filter": GateFilterDefinition,
     "gate:debounce": GateDebounceDefinition,
     "gate:buffer": GateBufferDefinition,
+    "gate:throttle": GateThrottleDefinition,
     "gate:deserialize": GateDeserializeDefinition,
     "gate:serialize": GateSerializeDefinition,
     "gate:map": GateMapDefinition,

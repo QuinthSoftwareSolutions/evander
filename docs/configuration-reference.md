@@ -568,7 +568,7 @@ Each gate entry requires the shared envelope keys:
 - `id` (string, required, unique across all gates)
 - `display_name` (string, required)
 - `type` (required discriminator)
-- `gate_type` (string, required; one of `filter`, `map`, `merge`, `debounce`, `buffer`, `dedupe`, `switch`)
+- `gate_type` (string, required; one of `filter`, `map`, `merge`, `debounce`, `buffer`, `throttle`, `dedupe`, `switch`)
 
 Type-specific keys:
 
@@ -585,6 +585,7 @@ Type-specific keys:
 | `gate:merge` | _none beyond envelope_ | `outputs` |
 | `gate:debounce` | `key`, `quiet_period`, `max_delay` | `outputs` |
 | `gate:buffer` | `key`, `count` | `timeout`, `outputs` |
+| `gate:throttle` | `key`, `window`, `limit` | `outputs` |
 | `gate:dedupe` | `key`, `ttl` | `outputs` |
 
 `gate:dedupe` resolves `key` with the same `${{node.output}}` binding syntax used by other
@@ -592,6 +593,13 @@ nodes, then atomically records the key for the ISO-8601 `ttl` window (for exampl
 or `PT1H`). The first activation for a key is forwarded; duplicate activations inside the
 TTL are recorded as dropped and do not publish downstream completion events. Expired keys are
 cleaned up opportunistically during later dedupe checks.
+`gate:throttle` applies a fixed-window quota to each resolved `key`. The first host-received
+activation opens the ISO-8601 `window`; up to the positive-integer `limit` is forwarded unchanged
+through the default path. The resolved limit and window remain frozen until that window expires,
+even when `limit` is bound from later inbound events. Overflow is recorded as dropped and is
+forwarded unchanged only when an edge uses `source_port: "dropped"`. A following activation at or
+after expiry opens a fresh window. Window claims are persisted under a file lock so concurrent
+effect workers cannot exceed the configured limit.
 
 `gate:switch` evaluates its `cases` in list order and forwards the first case whose `when` or
 `match` condition matches the inbound payload. Each case must define a non-blank `port`, optional
