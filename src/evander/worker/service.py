@@ -111,6 +111,26 @@ class WorkerDependencyCompositionConflict(ValueError):
         self.details = details
 
 
+class WorkerReferenceRepoTrustConflict(ValueError):
+    """Structured conflict for a clean reference checkout that moved outside preparation."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        repo_name: str,
+        current_commit: str,
+        trusted_commit: str,
+    ) -> None:
+        super().__init__(message)
+        self.details = {
+            "code": "reference_repo_trust_mismatch",
+            "repo_name": repo_name,
+            "current_commit": current_commit,
+            "trusted_commit": trusted_commit,
+        }
+
+
 _CODEX_SESSION_ID_LOG_PATTERN = re.compile(
     r"^session id:\s*(?P<thread_id>\S+)\s*$", re.IGNORECASE | re.MULTILINE
 )
@@ -1273,9 +1293,12 @@ class WorkerDaemon:
                     )
                 trusted_commit = current_commit
             elif current_commit != trusted_commit:
-                raise ValueError(
+                raise WorkerReferenceRepoTrustConflict(
                     f"reference repo {request.repo_name} is at untrusted commit "
-                    f"{current_commit}; last trusted prepared commit is {trusted_commit}"
+                    f"{current_commit}; last trusted prepared commit is {trusted_commit}",
+                    repo_name=request.repo_name,
+                    current_commit=current_commit,
+                    trusted_commit=trusted_commit,
                 )
         detached = (
             subprocess.run(

@@ -31,6 +31,7 @@ from evander.worker.codex_auth_broker import CodexExternalAuthTokens
 from evander.worker.service import (
     WorkerDaemon,
     WorkerDependencyCompositionConflict,
+    WorkerReferenceRepoTrustConflict,
     _git_subprocess_env,
 )
 from evander.worker.models import (
@@ -305,6 +306,99 @@ def test_worker_reference_repo_rejects_clean_agent_commit_when_retaining_checkou
     )
     assert retained.commit_sha == trusted_commit
     assert retained.checkout_updated is False
+
+
+def test_worker_reference_repo_reports_clean_cached_commit_for_control_plane_verification(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "source"
+    source.mkdir()
+    subprocess.run(["git", "init", "-q", "-b", "main"], cwd=source, check=True)
+    subprocess.run(["git", "config", "user.email", "test@example.invalid"], cwd=source, check=True)
+    subprocess.run(["git", "config", "user.name", "Worker Test"], cwd=source, check=True)
+    tracked = source / "README.md"
+    tracked.write_text("trusted\n", encoding="utf-8")
+    subprocess.run(["git", "add", "README.md"], cwd=source, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "trusted"], cwd=source, check=True)
+    trusted_commit = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=source,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+
+    daemon = WorkerDaemon(
+        runtime_dir=tmp_path / "runtime",
+        worker_root=tmp_path / "worker-root",
+        container_runtime=FakeContainerRuntime(),
+        token="test-token",
+        allowed_git_source_prefixes=[str(tmp_path)],
+    )
+    initial_request = WorkerReferenceRepoPrepareRequest(
+        repo_source=str(source),
+        repo_name="repo",
+        source_ref="refs/heads/main",
+        commit_sha=trusted_commit,
+        configuration_version="1",
+        update_existing=False,
+    )
+    daemon.prepare_reference_repo("session-1", initial_request)
+    paths = WorkerSessionPaths.resolve(daemon.worker_root, "session-1")
+    checkout = paths.repo_root / "repo"
+
+    tracked.write_text("refreshed\n", encoding="utf-8")
+    subprocess.run(["git", "add", "README.md"], cwd=source, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "refreshed"], cwd=source, check=True)
+    refreshed_commit = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=source,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    subprocess.run(
+        ["git", "fetch", "--no-tags", str(source), "refs/heads/main"],
+        cwd=checkout,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    subprocess.run(
+        ["git", "checkout", "--quiet", "--detach", "FETCH_HEAD"],
+        cwd=checkout,
+        check=True,
+    )
+
+    with pytest.raises(WorkerReferenceRepoTrustConflict) as raised:
+        daemon.prepare_reference_repo(
+            "session-1",
+            initial_request.model_copy(update={"commit_sha": refreshed_commit}),
+        )
+
+    assert raised.value.details == {
+        "code": "reference_repo_trust_mismatch",
+        "repo_name": "repo",
+        "current_commit": refreshed_commit,
+        "trusted_commit": trusted_commit,
+    }
+    trusted_state = json.loads(
+        (paths.root / "reference-repository-state" / "repo.json").read_text(encoding="utf-8")
+    )
+    assert trusted_state["commit_sha"] == trusted_commit
+
+    reconciled = daemon.prepare_reference_repo(
+        "session-1",
+        initial_request.model_copy(
+            update={"commit_sha": refreshed_commit, "update_existing": True}
+        ),
+    )
+
+    assert reconciled.commit_sha == refreshed_commit
+    trusted_state = json.loads(
+        (paths.root / "reference-repository-state" / "repo.json").read_text(encoding="utf-8")
+    )
+    assert trusted_state["commit_sha"] == refreshed_commit
 
 
 def test_worker_reference_repo_first_materialization_pins_post_fetch_commit(
@@ -2803,6 +2897,55 @@ def test_worker_worktree_endpoint_returns_structured_dependency_conflict(
     assert response.json() == {
         "error": "dependency Git composition conflict",
         "dependency_composition_conflict": details,
+    }
+
+
+def test_worker_reference_repo_endpoint_returns_structured_trust_conflict(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    daemon = WorkerDaemon(
+        runtime_dir=tmp_path / "runtime",
+        worker_root=tmp_path / "worker-root",
+        container_runtime=FakeContainerRuntime(),
+        token="test-token",
+    )
+    current_commit = "b" * 40
+    trusted_commit = "a" * 40
+
+    def _prepare(_session_id: str, _request: WorkerReferenceRepoPrepareRequest) -> None:
+        raise WorkerReferenceRepoTrustConflict(
+            "reference repo repo is at an untrusted commit",
+            repo_name="repo",
+            current_commit=current_commit,
+            trusted_commit=trusted_commit,
+        )
+
+    monkeypatch.setattr(daemon, "prepare_reference_repo", _prepare)
+
+    with TestClient(daemon.create_app()) as client:
+        response = client.post(
+            "/v1/sessions/session-1/reference-repo",
+            headers=_auth(),
+            json={
+                "repo_source": "/tmp/repo",
+                "repo_name": "repo",
+                "source_ref": "refs/heads/main",
+                "commit_sha": "c" * 40,
+                "configuration_version": "1",
+                "update_existing": False,
+            },
+        )
+
+    assert response.status_code == 409
+    assert response.json() == {
+        "error": "reference repo repo is at an untrusted commit",
+        "reference_repo_trust_conflict": {
+            "code": "reference_repo_trust_mismatch",
+            "repo_name": "repo",
+            "current_commit": current_commit,
+            "trusted_commit": trusted_commit,
+        },
     }
 
 

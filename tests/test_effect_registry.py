@@ -16,6 +16,7 @@ from evander.codex_auth import CodexAuthMode
 from evander.config import GatewayConfig
 from evander.directories import DirectoryStore
 from evander.execution import ExecutionStatusKind
+from evander.execution.container_worker_client import ContainerWorkerClientError
 from evander.execution.container_worker_repository import ContainerWorkerExecutionRecord
 from evander.effects.providers.agent_clone_repo import (
     AgentCloneRepoEffectProvider,
@@ -832,6 +833,7 @@ def test_prepare_reference_repositories_reuses_cached_checkout_by_default(
     assert result["repositories"][0]["probe_performed"] is False
     assert result["repositories"][0]["probe_reused"] is False
     assert result["repositories"][0]["refresh_performed"] is False
+    assert result["repositories"][0]["trust_reconciled"] is False
     assert ensure_calls == [
         {
             "directory_path": "root/personal",
@@ -845,6 +847,141 @@ def test_prepare_reference_repositories_reuses_cached_checkout_by_default(
     cached_checkout_result = provider.execute()
     assert cached_checkout_result["repositories"][0]["commit_sha"] == "9" * 40
     assert backend.prepared_reference_repos[-1]["commit_sha"] is None
+
+
+def test_prepare_reference_repositories_reconciles_forward_trust_transitions_in_parallel(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = GatewayConfig(
+        runtime_dir=tmp_path,
+        execution_backend="container_worker_vm",
+        container_worker_base_url="http://worker.test",
+    )
+    session_repository = JsonSessionManifestRepository(config.session_store_path)
+    session_repository.upsert_session(
+        SessionManifest(
+            session_id="assistant-1",
+            directory_path="root/personal",
+            execution_backend="container_worker_vm",
+            allowed_tools=[],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        )
+    )
+    commits = {
+        "mr-one": {"trusted": "a" * 40, "current": "b" * 40, "cached": "c" * 40},
+        "mr-two": {"trusted": "d" * 40, "current": "e" * 40, "cached": "f" * 40},
+    }
+    verification_barrier = threading.Barrier(2)
+    verification_calls: list[tuple[str, dict[str, object]]] = []
+
+    def verify_transition(managed_repo_id: str, **kwargs: object) -> dict[str, object]:
+        verification_calls.append((managed_repo_id, kwargs))
+        verification_barrier.wait(timeout=5)
+        return {
+            "managed_repo_id": managed_repo_id,
+            "current_commit_sha": kwargs["current_commit_sha"],
+        }
+
+    admin_service = SimpleNamespace(
+        runtime=SimpleNamespace(
+            session_repository=session_repository,
+            provider_config=_ContainerResolverStub(config),
+        ),
+        ensure_managed_git_repository=lambda **kwargs: {
+            "managed_repo_id": (
+                "mr-one" if kwargs["repo_source"].endswith("one.git") else "mr-two"
+            ),
+            "default_branch": "main",
+        },
+        resolve_managed_git_branch_commit=lambda managed_repo_id, **kwargs: commits[
+            managed_repo_id
+        ]["cached"],
+        resolve_managed_git_clone=lambda managed_repo_id, **kwargs: {
+            "managed_repo_id": managed_repo_id,
+            "clone_url": f"https://example.invalid/{managed_repo_id}.git",
+            "repo_name": managed_repo_id,
+        },
+        verify_managed_git_reference_repo_commit_transition=verify_transition,
+    )
+    backend = _FakeContainerBackend()
+    prepare_attempts: dict[str, int] = {}
+
+    def prepare_reference_repo(**kwargs: object) -> SimpleNamespace:
+        repo_name = str(kwargs["repo_name"])
+        backend.prepared_reference_repos.append(kwargs)
+        prepare_attempts[repo_name] = prepare_attempts.get(repo_name, 0) + 1
+        repo_commits = commits[repo_name]
+        if prepare_attempts[repo_name] == 1:
+            raise ContainerWorkerClientError(
+                "reference repository trust conflict",
+                status_code=409,
+                payload={
+                    "error": "reference repository trust conflict",
+                    "reference_repo_trust_conflict": {
+                        "code": "reference_repo_trust_mismatch",
+                        "repo_name": repo_name,
+                        "current_commit": repo_commits["current"],
+                        "trusted_commit": repo_commits["trusted"],
+                    },
+                },
+            )
+        assert kwargs["update_existing"] is True
+        assert kwargs["commit_sha"] == repo_commits["current"]
+        return SimpleNamespace(
+            target_dir=f"/home/agent/repos/{repo_name}",
+            commit_sha=repo_commits["current"],
+            cloned=False,
+            checkout_updated=False,
+            configuration_updated=False,
+        )
+
+    monkeypatch.setattr(backend, "prepare_reference_repo", prepare_reference_repo)
+    monkeypatch.setattr(
+        "evander.effects.providers.agent_prepare_reference_repositories.container_backend",
+        lambda context, config: backend,
+    )
+    provider = AgentPrepareReferenceRepositoriesEffectProvider()
+    provider.initialize(
+        AgentPrepareReferenceRepositoriesEffectDefinition(
+            id="prepare-repositories",
+            display_name="Prepare repositories",
+            type="effect:agent:prepare-reference-repositories",
+            session_id="assistant-1",
+            directory_path="root/personal",
+            repositories=[
+                {"repo_source": "https://example.invalid/one.git"},
+                {"repo_source": "https://example.invalid/two.git"},
+            ],
+        ),
+        EffectRuntimeContext(
+            resolved_config=config,
+            metadata={"directory_path": "root/personal"},
+            admin_service=admin_service,
+        ),
+    )
+
+    result = provider.execute()
+
+    assert [item["managed_repo_id"] for item in result["repositories"]] == [
+        "mr-one",
+        "mr-two",
+    ]
+    assert all(item["trust_reconciled"] is True for item in result["repositories"])
+    assert [item["commit_sha"] for item in result["repositories"]] == [
+        commits["mr-one"]["current"],
+        commits["mr-two"]["current"],
+    ]
+    assert prepare_attempts == {"mr-one": 2, "mr-two": 2}
+    assert {call[0] for call in verification_calls} == {"mr-one", "mr-two"}
+    for managed_repo_id, kwargs in verification_calls:
+        assert kwargs == {
+            "directory_path": "root/personal",
+            "branch": "main",
+            "cached_branch_commit_sha": commits[managed_repo_id]["cached"],
+            "trusted_commit_sha": commits[managed_repo_id]["trusted"],
+            "current_commit_sha": commits[managed_repo_id]["current"],
+        }
 
 
 def test_agent_repo_grant_and_revoke_effects_use_persistent_exact_repo_access() -> None:

@@ -7,9 +7,11 @@ from datetime import UTC, datetime
 import json
 import logging
 from pathlib import Path
+import re
 from typing import Any
 
 from evander.events.provider_models import AgentPrepareReferenceRepositoriesEffectDefinition
+from evander.execution.container_worker_client import ContainerWorkerClientError
 from evander.managed_git_grants import managed_git_grants_from_metadata
 
 from .agent_clone_repo import (
@@ -31,6 +33,7 @@ from .base import EffectProviderBase, scoped_effect_directory_path
 
 _REFERENCE_REPO_CONFIG_VERSION = "1"
 _MAX_PARALLEL_REPOSITORIES = 4
+_OBJECT_ID_PATTERN = re.compile(r"[0-9a-f]{40}|[0-9a-f]{64}")
 logger = logging.getLogger(__name__)
 
 
@@ -46,6 +49,12 @@ class _ResolvedReferenceRepository:
     probe_performed: bool
     probe_reused: bool
     refresh_performed: bool
+
+
+@dataclass(frozen=True)
+class _PreparedReferenceRepository:
+    record: Any
+    trust_reconciled: bool
 
 
 class AgentPrepareReferenceRepositoriesEffectProvider(EffectProviderBase):
@@ -159,21 +168,20 @@ class AgentPrepareReferenceRepositoriesEffectProvider(EffectProviderBase):
         ) as executor:
             futures = {
                 executor.submit(
-                    backend.prepare_reference_repo,
+                    self._prepare_reference_repository,
+                    backend=backend,
                     session_id=session_id,
-                    repo_source=clone_source,
-                    repo_name=repository.repo_name,
-                    source_ref=repository.source_ref,
-                    commit_sha=repository.commit_sha,
-                    configuration_version=_REFERENCE_REPO_CONFIG_VERSION,
-                    update_existing=refresh_upstream,
+                    directory_path=session_directory_path,
+                    repository=repository,
+                    clone_source=clone_source,
+                    refresh_upstream=refresh_upstream,
                 ): (repository, access_reused)
                 for repository, clone_source, access_reused in prepared_inputs
             }
             for future in as_completed(futures):
                 repository, access_reused = futures[future]
                 try:
-                    record = future.result()
+                    prepared = future.result()
                 except Exception as exc:  # noqa: BLE001
                     failures.append(
                         {
@@ -184,6 +192,7 @@ class AgentPrepareReferenceRepositoriesEffectProvider(EffectProviderBase):
                         }
                     )
                     continue
+                record = prepared.record
                 resolved_commit_sha = required_string(
                     getattr(record, "commit_sha", None),
                     f"worker did not return a commit for {repository.repo_name}",
@@ -201,12 +210,13 @@ class AgentPrepareReferenceRepositoriesEffectProvider(EffectProviderBase):
                     "checkout_updated": bool(record.cloned or record.checkout_updated),
                     "configuration_updated": bool(record.configuration_updated),
                     "access_reused": access_reused,
+                    "trust_reconciled": prepared.trust_reconciled,
                 }
                 logger.info(
                     "metric_agent_prepare_reference_repository "
                     "session_id=%s managed_repo_id=%s branch=%s "
                     "probe_performed=%s probe_reused=%s refresh_performed=%s "
-                    "checkout_updated=%s",
+                    "checkout_updated=%s trust_reconciled=%s",
                     session_id,
                     repository.managed_repo_id,
                     repository.source_ref.removeprefix("refs/heads/"),
@@ -214,6 +224,7 @@ class AgentPrepareReferenceRepositoriesEffectProvider(EffectProviderBase):
                     repository.probe_reused,
                     repository.refresh_performed,
                     result["checkout_updated"],
+                    result["trust_reconciled"],
                 )
                 results[repository.index] = result
 
@@ -243,6 +254,80 @@ class AgentPrepareReferenceRepositoriesEffectProvider(EffectProviderBase):
             "session_id": session_id,
             "repositories": ordered_results,
         }
+
+    def _prepare_reference_repository(
+        self,
+        *,
+        backend: Any,
+        session_id: str,
+        directory_path: str,
+        repository: _ResolvedReferenceRepository,
+        clone_source: str,
+        refresh_upstream: bool,
+    ) -> _PreparedReferenceRepository:
+        try:
+            record = backend.prepare_reference_repo(
+                session_id=session_id,
+                repo_source=clone_source,
+                repo_name=repository.repo_name,
+                source_ref=repository.source_ref,
+                commit_sha=repository.commit_sha,
+                configuration_version=_REFERENCE_REPO_CONFIG_VERSION,
+                update_existing=refresh_upstream,
+            )
+        except ContainerWorkerClientError as exc:
+            transition = (
+                None
+                if refresh_upstream
+                else _reference_repo_trust_transition_from_error(
+                    exc,
+                    expected_repo_name=repository.repo_name,
+                )
+            )
+            if transition is None or repository.commit_sha is None:
+                raise
+            trusted_commit, current_commit = transition
+            verify_transition = getattr(
+                self._context().admin_service,
+                "verify_managed_git_reference_repo_commit_transition",
+                None,
+            )
+            if not callable(verify_transition):
+                raise RuntimeError(
+                    "managed Git reference-repository trust verification is unavailable"
+                ) from exc
+            try:
+                verification = _mapping_result(
+                    verify_transition(
+                        repository.managed_repo_id,
+                        directory_path=directory_path,
+                        branch=repository.source_ref.removeprefix("refs/heads/"),
+                        cached_branch_commit_sha=repository.commit_sha,
+                        trusted_commit_sha=trusted_commit,
+                        current_commit_sha=current_commit,
+                    )
+                )
+            except Exception as verification_error:
+                raise RuntimeError(
+                    f"reference repository {repository.repo_name} trust transition was "
+                    f"rejected: {verification_error}"
+                ) from verification_error
+            if verification.get("current_commit_sha") != current_commit:
+                raise RuntimeError(
+                    "managed Git reference-repository trust verification returned an "
+                    "unexpected commit"
+                )
+            record = backend.prepare_reference_repo(
+                session_id=session_id,
+                repo_source=clone_source,
+                repo_name=repository.repo_name,
+                source_ref=repository.source_ref,
+                commit_sha=current_commit,
+                configuration_version=_REFERENCE_REPO_CONFIG_VERSION,
+                update_existing=True,
+            )
+            return _PreparedReferenceRepository(record=record, trust_reconciled=True)
+        return _PreparedReferenceRepository(record=record, trust_reconciled=False)
 
     def _resolve_repositories(
         self,
@@ -411,6 +496,31 @@ def _mapping_result(value: Any) -> dict[str, Any]:
         if isinstance(dumped, Mapping):
             return dict(dumped)
     raise RuntimeError("managed Git operation returned an invalid response")
+
+
+def _reference_repo_trust_transition_from_error(
+    error: ContainerWorkerClientError,
+    *,
+    expected_repo_name: str,
+) -> tuple[str, str] | None:
+    if error.status_code != 409 or not isinstance(error.payload, Mapping):
+        return None
+    details = error.payload.get("reference_repo_trust_conflict")
+    if not isinstance(details, Mapping):
+        return None
+    if details.get("code") != "reference_repo_trust_mismatch":
+        return None
+    if details.get("repo_name") != expected_repo_name:
+        return None
+    trusted_commit = str(details.get("trusted_commit") or "").strip().casefold()
+    current_commit = str(details.get("current_commit") or "").strip().casefold()
+    if (
+        _OBJECT_ID_PATTERN.fullmatch(trusted_commit) is None
+        or _OBJECT_ID_PATTERN.fullmatch(current_commit) is None
+        or trusted_commit == current_commit
+    ):
+        return None
+    return trusted_commit, current_commit
 
 
 def _validate_resolved_repositories(

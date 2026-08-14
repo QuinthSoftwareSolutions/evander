@@ -1,5 +1,15 @@
 # Changelog
 
+## 2026-08-14 - Persistent Assistant Self-Refresh Recovery
+
+- Reconciled clean persistent-assistant reference checkouts after an agent-requested refresh by
+  verifying, in the control-plane managed mirror, that the previous trusted commit is an ancestor
+  of the checkout and the checkout is an ancestor of the cached configured-branch tip.
+- Kept the normal cached preparation path free of additional Git work and ran mismatch-only
+  ancestry verification inside the existing per-repository parallel tasks, while retaining
+  fail-closed rejection for dirty checkouts, source changes, divergent history, and commits outside
+  the configured branch.
+
 ## 2026-08-14 - Bokio Multi-Evidence Journal Attachments
 
 - Compiled multiple prepared journal-entry evidence records into one PDF before the single Bokio

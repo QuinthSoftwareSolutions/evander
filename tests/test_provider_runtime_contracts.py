@@ -148,6 +148,49 @@ def test_admin_runtime_adapter_exposes_branch_aware_managed_git_refresh() -> Non
     ]
 
 
+def test_admin_runtime_adapter_exposes_reference_repo_commit_transition_verification() -> None:
+    calls: list[tuple[str, dict[str, object]]] = []
+
+    class _ManagedGit:
+        def verify_reference_repo_commit_transition(
+            self,
+            managed_repo_id: str,
+            **kwargs: object,
+        ) -> dict[str, object]:
+            calls.append((managed_repo_id, kwargs))
+            return {
+                "managed_repo_id": managed_repo_id,
+                "current_commit_sha": kwargs["current_commit_sha"],
+            }
+
+    adapter = AdminRuntimeProviderAdapter(SimpleNamespace(managed_git_admin=_ManagedGit()))
+    current_commit = "b" * 40
+
+    assert adapter.verify_managed_git_reference_repo_commit_transition(
+        "mr_0123456789abcdef0123",
+        directory_path="root/team",
+        branch="main",
+        cached_branch_commit_sha="c" * 40,
+        trusted_commit_sha="a" * 40,
+        current_commit_sha=current_commit,
+    ) == {
+        "managed_repo_id": "mr_0123456789abcdef0123",
+        "current_commit_sha": current_commit,
+    }
+    assert calls == [
+        (
+            "mr_0123456789abcdef0123",
+            {
+                "directory_path": "root/team",
+                "branch": "main",
+                "cached_branch_commit_sha": "c" * 40,
+                "trusted_commit_sha": "a" * 40,
+                "current_commit_sha": current_commit,
+            },
+        )
+    ]
+
+
 @dataclass
 class _FakeQueryServices:
     def list_vms(self, **kwargs: Any) -> list[VmSummary]:
