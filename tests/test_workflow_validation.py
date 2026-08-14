@@ -7,6 +7,55 @@ from evander.workflow.validation import (
 )
 
 
+def test_counter_output_schema_preserves_upstream_outputs_and_adds_count() -> None:
+    config = {
+        "triggers": [
+            {
+                "id": "trigger-message",
+                "display_name": "Message",
+                "type": "trigger:manual",
+                "outputs": {
+                    "sender_name": {"type": "string"},
+                    "body": {"type": "string"},
+                },
+            }
+        ],
+        "gates": [
+            {
+                "id": "gate-counter",
+                "display_name": "Counter",
+                "type": "gate:counter",
+                "key": "user:${{trigger-message.sender_name}}",
+                "window": "PT1H",
+            }
+        ],
+        "effects": [
+            {
+                "id": "effect-prompt",
+                "display_name": "Prompt",
+                "type": "effect:agent:prompt",
+                "session_id": "session-1",
+                "prompt": "${{gate-counter.body}} is message ${{gate-counter.count}}",
+            }
+        ],
+        "queries": [],
+        "edges": [
+            {"source_id": "trigger-message", "target_id": "gate-counter"},
+            {"source_id": "gate-counter", "target_id": "effect-prompt"},
+        ],
+    }
+
+    output_schemas = derive_workflow_output_schemas(config)
+    diagnostics = validate_workflow_binding_diagnostics(config)
+
+    assert output_schemas["gate-counter"] == {
+        "sender_name": {"type": "string"},
+        "body": {"type": "string"},
+        "count": {"type": "integer"},
+    }
+    assert diagnostics == []
+
+
 def test_validate_workflow_graph_runs_with_empty_capability_map() -> None:
     nodes = [
         type("Node", (), {"id": "trigger-1", "type": "trigger:cron"})(),

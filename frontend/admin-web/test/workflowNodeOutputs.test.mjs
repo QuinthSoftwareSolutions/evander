@@ -62,6 +62,11 @@ function createWorkflowConfig() {
         type: "gate:throttle",
       },
       {
+        id: "gate-counter-1",
+        display_name: "Count tickets",
+        type: "gate:counter",
+      },
+      {
         id: "gate-switch-1",
         display_name: "Switch tickets",
         type: "gate:switch",
@@ -97,6 +102,7 @@ function createWorkflowConfig() {
       { source_id: "gate-debounce-1", target_id: "gate-switch-1" },
       { source_id: "gate-debounce-1", target_id: "effect-1" },
       { source_id: "trigger-1", target_id: "gate-throttle-1" },
+      { source_id: "trigger-1", target_id: "gate-counter-1" },
       { source_id: "trigger-1", target_id: "gate-merge-1" },
       { source_id: "trigger-2", target_id: "gate-merge-1" },
     ],
@@ -137,6 +143,16 @@ test("derives pass-through outputs for filter, debounce, throttle, and switch ga
   assert.deepEqual(outputSchemas["gate-debounce-1"], outputSchemas["trigger-1"]);
   assert.deepEqual(outputSchemas["gate-switch-1"], outputSchemas["trigger-1"]);
   assert.deepEqual(outputSchemas["gate-throttle-1"], outputSchemas["trigger-1"]);
+});
+
+test("derives counter outputs from its upstream schema with a count", () => {
+  const config = createWorkflowConfig();
+  const outputSchemas = deriveWorkflowOutputSchemas(config);
+
+  assert.deepEqual(outputSchemas["gate-counter-1"], {
+    ...outputSchemas["trigger-1"],
+    count: { type: "integer" },
+  });
 });
 
 test("builds a selected-node output contract for declared outputs", () => {

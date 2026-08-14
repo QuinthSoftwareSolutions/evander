@@ -36,6 +36,10 @@ export function isPassThroughGateType(type: string | null | undefined): boolean 
   return type === "gate:filter" || type === "gate:dedupe" || type === "gate:debounce" || type === "gate:throttle" || type === "gate:switch";
 }
 
+function isCounterGateType(type: string | null | undefined): boolean {
+  return type === "gate:counter";
+}
+
 const SYSTEM_BINDING_OPTIONS: ReadonlyArray<WorkflowBindingOption> = [
   { value: "${{system.now.utc_timestamp}}", label: "[System] now.utc_timestamp" },
   { value: "${{system.now.utc_timestamp_compact}}", label: "[System] now.utc_timestamp_compact" },
@@ -131,6 +135,11 @@ export function deriveWorkflowOutputSchemas(
     let schema: Record<string, unknown>;
     if (isPassThroughGateType(node.type)) {
       schema = copyOutputSchema(resolve(directUpstreamNodeIds(config, node.id)[0] ?? ""));
+    } else if (isCounterGateType(node.type)) {
+      schema = {
+        ...copyOutputSchema(resolve(directUpstreamNodeIds(config, node.id)[0] ?? "")),
+        count: { type: "integer" },
+      };
     } else if (node.type === "gate:merge") {
       schema = mergeDeclaredOutputIntersection(
         directUpstreamNodeIds(config, node.id).map((upstreamNodeId) => resolve(upstreamNodeId)),

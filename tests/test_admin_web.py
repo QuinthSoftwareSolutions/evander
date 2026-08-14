@@ -16379,3 +16379,20 @@ def test_admin_web_workflow_catalog_exposes_throttle_gate(tmp_path: Path) -> Non
             "label": "Dropped",
             "description": "Activations after the window limit is reached.",
         },
+    ]
+
+
+def test_admin_web_workflow_catalog_exposes_counter_gate(tmp_path: Path) -> None:
+    client = TestClient(create_app(build_admin_runtime(write_config(tmp_path))))
+
+    response = client.get("/api/workflow-editor/catalog")
+
+    assert response.status_code == 200
+    counter_gate = next(node for node in response.json()["nodes"] if node["type"] == "gate:counter")
+    counter_fields = {field["key"]: field for field in counter_gate["fields"]}
+    assert counter_gate["label"] == "Counter"
+    assert [field["key"] for field in counter_gate["fields"]] == ["key", "window", "outputs"]
+    assert counter_fields["key"]["required"]
+    assert counter_fields["key"]["bindable"]
+    assert counter_fields["window"]["default_value"] == "PT1M"
+    assert counter_fields["outputs"]["read_only"]

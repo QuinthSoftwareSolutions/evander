@@ -306,16 +306,18 @@ Execution model:
    window and drop duplicate activations until the key expires.
 8. `gate:throttle` nodes atomically pass a configured number of activations per resolved key in a
    fixed window; overflow activations are dropped or sent through their `dropped` port.
-9. `gate:switch` nodes evaluate ordered cases, forward the first matching branch through the case
+9. `gate:counter` nodes atomically count each activation for a resolved key in a fixed window and
+   forward the original payload with its current `count`.
+10. `gate:switch` nodes evaluate ordered cases, forward the first matching branch through the case
    `source_port`, and fall back to `default_port` when present.
-10. `gate:merge` nodes behave like a Reactive Extensions `merge`: each inbound event is forwarded
+11. `gate:merge` nodes behave like a Reactive Extensions `merge`: each inbound event is forwarded
    independently as it arrives, while the gate records the latest payload seen from every upstream
    source for debugging and conflict inspection.
 
-The complete built-in gate catalog is `gate:filter`, `gate:map`, `gate:deserialize`, `gate:serialize`, `gate:dedupe`, `gate:throttle`, `gate:switch`, `gate:merge`, `gate:debounce`, `gate:buffer`, `gate:aggregate`, `gate:await-agent`, `gate:for`, and `gate:while`.
-11. Effects consume the post-gate payload and still resolve `${{node.output_name}}` bindings against the
+The complete built-in gate catalog is `gate:filter`, `gate:map`, `gate:deserialize`, `gate:serialize`, `gate:dedupe`, `gate:throttle`, `gate:counter`, `gate:switch`, `gate:merge`, `gate:debounce`, `gate:buffer`, `gate:aggregate`, `gate:await-agent`, `gate:for`, and `gate:while`.
+12. Effects consume the post-gate payload and still resolve `${{node.output_name}}` bindings against the
     upstream event payload.
-12. On success, the effect publishes a completion event whose `trigger_id` is the effect id so
+13. On success, the effect publishes a completion event whose `trigger_id` is the effect id so
     downstream edges can continue the chain.
 
 Safety/idempotency guarantees:

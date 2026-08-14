@@ -1,5 +1,10 @@
 # Changelog
 
+## 2026-08-14 - Keyed Fixed-Window Workflow Counter Gate
+
+- Added `gate:counter`, which forwards each event with a keyed fixed-window `count` for friendly
+  activity tracking without throttling or dropping events.
+
 ## 2026-08-14 - Fixed-Window Workflow Throttle Gate
 
 - Added `gate:throttle`, a keyed fixed-window rate limiter that passes a configured number of

@@ -702,6 +702,7 @@ _WORKFLOW_EDITOR_NODE_DESCRIPTIONS: dict[str, str] = {
     "gate:throttle": (
         "Pass a fixed number of keyed activations per fixed time window and route overflow."
     ),
+    "gate:counter": "Count keyed activations in a fixed time window and forward each event.",
     "gate:map": "Project upstream outputs into a new payload shape.",
     "gate:aggregate": "Aggregate numeric fields from an array into flat summary outputs.",
     "gate:deserialize": (
@@ -1599,6 +1600,9 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
                     "release_reason": {"type": "string"},
                 },
                 description="Emits buffered items, released count, and release reason.",
+            ),
+        ],
+    ),
     WorkflowEditorNodeCatalogEntry(
         kind="gate",
         type="gate:throttle",
@@ -1645,6 +1649,35 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
             _port("dropped", "Dropped", description="Activations after the window limit is reached."),
         ],
     ),
+    WorkflowEditorNodeCatalogEntry(
+        kind="gate",
+        type="gate:counter",
+        label="Counter",
+        fields=[
+            _field(
+                "key",
+                "Key",
+                "string",
+                required=True,
+                bindable=True,
+                description="Groups independent fixed-window counts. Supports workflow bindings.",
+                placeholder="user:${{trigger.sender_name}}",
+            ),
+            _field(
+                "window",
+                "Window",
+                "string",
+                required=True,
+                description="Fixed ISO-8601 time window opened by the first activation, for example PT1M.",
+                default_value="PT1M",
+                placeholder="PT1M",
+            ),
+            _field(
+                "outputs",
+                "Outputs",
+                "json",
+                read_only=True,
+                description="Derived from the single upstream node with an integer count added.",
             ),
         ],
     ),

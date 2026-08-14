@@ -636,6 +636,9 @@ _GATE_OUTPUT_SCHEMAS = {
         "count": {"type": "integer"},
         "release_reason": {"type": "string"},
     },
+    "gate:counter": {
+        "count": {"type": "integer"},
+    },
     "gate:for": {
         "current_element": {"type": "object"},
         "current_index": {"type": "integer"},

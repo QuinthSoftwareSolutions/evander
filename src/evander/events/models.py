@@ -394,6 +394,32 @@ class GateThrottleDefinition(GateDefinition):
         raise ValueError("gate:throttle limit must be a positive integer or binding")
 
 
+class GateCounterDefinition(GateDefinition):
+    type: Literal["gate:counter"]
+    key: ConfigValue
+    window: str
+
+    @field_validator("key")
+    @classmethod
+    def validate_key(cls, value: ConfigValue) -> ConfigValue:
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError("gate:counter key must be a non-empty string or binding template")
+        return value
+
+    @field_validator("window")
+    @classmethod
+    def validate_window(cls, value: str) -> str:
+        if not isinstance(value, str) or not value.strip() or "${{" in value:
+            raise ValueError("gate:counter window must be a non-empty ISO-8601 duration")
+        try:
+            window = parse_iso8601_duration(value, field_name="window", gate_type="gate:counter")
+        except GateRuntimeError as exc:
+            raise ValueError(str(exc)) from exc
+        if window.total_seconds() <= 0:
+            raise ValueError("gate:counter window must be greater than zero")
+        return value
+
+
 class GateDedupeDefinition(GateDefinition):
     type: Literal["gate:dedupe"]
     key: ConfigValue
@@ -543,6 +569,7 @@ def _builtin_node_schema_resolvers() -> dict[str, Any]:
         "gate:merge": GateMergeDefinition,
         "gate:debounce": GateDebounceDefinition,
         "gate:buffer": GateBufferDefinition,
+        "gate:counter": GateCounterDefinition,
         "gate:dedupe": GateDedupeDefinition,
         "gate:await-agent": GateAwaitAgentDefinition,
         "gate:for": GateForDefinition,
