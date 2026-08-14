@@ -3066,13 +3066,19 @@ page. The workflow equivalents are `effect:agent:grant-repo-access`,
 For persistent read-only assistants, prefer
 `effect:agent:prepare-reference-repositories` over a serial `gate:for` containing ensure and clone
 effects. By default, the batch effect checks independent managed mirrors concurrently without
-an explicit upstream probe or refresh. It creates a missing worker checkout at the cached branch
-commit and otherwise leaves the checkout at its current commit, while still enforcing source
-identity, a clean working tree, detached HEAD, read-only configuration, and session access. If both
-the worker checkout and a cached branch commit are missing, preparation fails and tells the operator
-to opt in to refresh. First-time checkout materialization still fetches through the managed Git read
-endpoint and is subject to that endpoint's freshness enforcement; existing checkouts perform no Git
-network request during preparation.
+an explicit upstream probe or refresh. It requires a cached branch commit before creating a missing
+worker checkout and otherwise leaves the checkout at its last trusted prepared commit, while still
+enforcing source identity, a clean working tree, detached HEAD, read-only configuration, and session
+access.
+The worker keeps the trusted SHA outside the writable agent home and rejects even a clean checkout
+when its `HEAD` diverges. If both the worker checkout and a cached branch commit are missing,
+preparation fails and tells the operator to opt in to refresh. First-time checkout materialization
+still fetches through the managed Git read endpoint and is subject to that endpoint's freshness
+enforcement; it pins the post-refresh commit actually served by that endpoint rather than a stale
+pre-refresh cached SHA. Existing checkouts perform no Git network request during preparation.
+After upgrading an older worker session, its first preparation seeds missing trusted state only
+when the retained `HEAD` matches the cached managed-mirror commit; a mismatch requires one explicit
+refresh and does not add recurring refresh latency.
 
 Set `refresh_upstream: true` when the workflow must advance repositories before every prompt. The
 effect then probes only each requested upstream branch; an omitted branch uses symbolic `HEAD` so an

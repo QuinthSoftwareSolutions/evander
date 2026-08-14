@@ -144,6 +144,7 @@ _DESTINATION_NOFOLLOW_ERROR = (
 _MANAGED_GIT_REPOSITORY_FILENAME_PATTERN = re.compile(
     r"^(?P<managed_repo_id>mr_[0-9a-f]{20})\.git$"
 )
+_REFERENCE_REPO_TRUST_STATE_VERSION = 1
 
 
 def _git_source_matches_allowed_prefix(repo_source: str, allowed_prefix: str) -> bool:
@@ -1260,6 +1261,22 @@ class WorkerDaemon:
             raise ValueError(
                 f"reference repo checkout is dirty and cannot be prepared: {request.repo_name}"
             )
+        stored_trusted_commit = self._read_reference_repo_trusted_commit(paths, request)
+        trusted_commit = stored_trusted_commit
+        if current_commit is not None and not request.update_existing:
+            if trusted_commit is None:
+                if current_commit != request.commit_sha:
+                    raise ValueError(
+                        f"reference repo {request.repo_name} is at untrusted commit "
+                        f"{current_commit} and has no matching trusted prepared state; "
+                        "set refresh_upstream=true"
+                    )
+                trusted_commit = current_commit
+            elif current_commit != trusted_commit:
+                raise ValueError(
+                    f"reference repo {request.repo_name} is at untrusted commit "
+                    f"{current_commit}; last trusted prepared commit is {trusted_commit}"
+                )
         detached = (
             subprocess.run(
                 ["git", "-C", str(target_dir), "symbolic-ref", "-q", "HEAD"],
@@ -1274,10 +1291,8 @@ class WorkerDaemon:
             request.update_existing and current_commit != request.commit_sha
         )
         checkout_updated = fetch_requested_commit or not detached
+        expected_commit: str
         if fetch_requested_commit:
-            requested_commit = request.commit_sha
-            if requested_commit is None:
-                raise RuntimeError("reference repo requested commit unexpectedly missing")
             subprocess.run(
                 [
                     "git",
@@ -1304,11 +1319,14 @@ class WorkerDaemon:
                 .stdout.strip()
                 .lower()
             )
-            if fetched_commit != requested_commit:
+            if request.update_existing and fetched_commit != request.commit_sha:
                 raise ValueError(
                     f"reference repo {request.repo_name} fetched {fetched_commit}, "
-                    f"expected {requested_commit}"
+                    f"expected {request.commit_sha}"
                 )
+            expected_commit = request.commit_sha if request.update_existing else fetched_commit
+            if expected_commit is None:
+                raise RuntimeError("reference repo expected commit unexpectedly missing")
             subprocess.run(
                 [
                     "git",
@@ -1317,32 +1335,33 @@ class WorkerDaemon:
                     "checkout",
                     "--quiet",
                     "--detach",
-                    requested_commit,
+                    expected_commit,
                 ],
                 env=git_env,
                 check=True,
                 capture_output=True,
                 text=True,
             )
-        elif not detached:
-            detach_commit = current_commit or request.commit_sha
-            if detach_commit is None:
-                raise RuntimeError("reference repo detach commit unexpectedly missing")
-            subprocess.run(
-                [
-                    "git",
-                    "-C",
-                    str(target_dir),
-                    "checkout",
-                    "--quiet",
-                    "--detach",
-                    detach_commit,
-                ],
-                env=git_env,
-                check=True,
-                capture_output=True,
-                text=True,
-            )
+        else:
+            expected_commit = request.commit_sha if request.update_existing else trusted_commit
+            if expected_commit is None:
+                raise RuntimeError("reference repo expected commit unexpectedly missing")
+            if not detached:
+                subprocess.run(
+                    [
+                        "git",
+                        "-C",
+                        str(target_dir),
+                        "checkout",
+                        "--quiet",
+                        "--detach",
+                        expected_commit,
+                    ],
+                    env=git_env,
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                )
 
         current_version = subprocess.run(
             [
@@ -1393,11 +1412,18 @@ class WorkerDaemon:
                     )
 
         resolved_commit = self._git_commit_sha(target_dir, paths.agent_home)
-        if fetch_requested_commit and resolved_commit != request.commit_sha:
+        if resolved_commit != expected_commit:
+            if request.update_existing:
+                raise ValueError(
+                    f"reference repo {request.repo_name} is at {resolved_commit}, "
+                    f"expected {expected_commit}"
+                )
             raise ValueError(
-                f"reference repo {request.repo_name} is at {resolved_commit}, "
-                f"expected {request.commit_sha}"
+                f"reference repo {request.repo_name} resolved to untrusted commit "
+                f"{resolved_commit}; expected trusted commit {expected_commit}"
             )
+        if stored_trusted_commit != resolved_commit:
+            self._write_reference_repo_trusted_commit(paths, request, resolved_commit)
         return WorkerReferenceRepoPrepareRecord(
             session_id=paths.session_id,
             target_dir=f"/home/agent/repos/{request.repo_name}",
@@ -1408,6 +1434,84 @@ class WorkerDaemon:
             cloned=cloned,
             checkout_updated=checkout_updated,
             configuration_updated=configuration_updated,
+        )
+
+    def _reference_repo_trust_state_path(
+        self,
+        paths: WorkerSessionPaths,
+        repo_name: str,
+    ) -> Path:
+        state_dir = paths.root / "reference-repository-state"
+        state_path = state_dir / f"{repo_name}.json"
+        ensure_resolved_path_within(
+            base=paths.root,
+            candidate=state_path,
+            description="reference repo trusted state",
+        )
+        return state_path
+
+    def _read_reference_repo_trusted_commit(
+        self,
+        paths: WorkerSessionPaths,
+        request: WorkerReferenceRepoPrepareRequest,
+    ) -> str | None:
+        state_path = self._reference_repo_trust_state_path(paths, request.repo_name)
+        try:
+            raw_state = self._read_managed_text_file_no_follow(
+                state_path,
+                label="reference repo trusted state",
+            )
+        except FileNotFoundError:
+            return None
+        try:
+            payload = json.loads(raw_state)
+        except ValueError as exc:
+            raise ValueError(
+                f"reference repo trusted state is invalid: {request.repo_name}"
+            ) from exc
+        if not isinstance(payload, dict):
+            raise ValueError(f"reference repo trusted state is invalid: {request.repo_name}")
+        commit_sha = str(payload.get("commit_sha") or "").strip().lower()
+        if (
+            payload.get("version") != _REFERENCE_REPO_TRUST_STATE_VERSION
+            or payload.get("repo_source") != request.repo_source
+            or not re.fullmatch(r"[0-9a-f]{40,64}", commit_sha)
+        ):
+            raise ValueError(f"reference repo trusted state is invalid: {request.repo_name}")
+        return commit_sha
+
+    def _write_reference_repo_trusted_commit(
+        self,
+        paths: WorkerSessionPaths,
+        request: WorkerReferenceRepoPrepareRequest,
+        commit_sha: str,
+    ) -> None:
+        state_path = self._reference_repo_trust_state_path(paths, request.repo_name)
+        state_dir = state_path.parent
+        try:
+            state_dir.mkdir(mode=0o700)
+        except FileExistsError:
+            pass
+        try:
+            state_dir_stat = state_dir.lstat()
+        except OSError as exc:
+            raise ValueError("reference repo trusted state directory is unavailable") from exc
+        if not stat.S_ISDIR(state_dir_stat.st_mode) or stat.S_ISLNK(state_dir_stat.st_mode):
+            raise ValueError("reference repo trusted state directory must be a directory")
+        state_dir.chmod(0o700)
+        self._write_managed_text_file_no_follow(
+            state_path,
+            json.dumps(
+                {
+                    "commit_sha": commit_sha,
+                    "repo_source": request.repo_source,
+                    "version": _REFERENCE_REPO_TRUST_STATE_VERSION,
+                },
+                sort_keys=True,
+            )
+            + "\n",
+            mode=0o600,
+            label="reference repo trusted state",
         )
 
     @staticmethod

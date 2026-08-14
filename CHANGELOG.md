@@ -8,6 +8,12 @@
   advancement.
 - Kept first-time cached checkout materialization, read-only configuration, source validation,
   access provisioning, parallel setup, and dirty-checkout failure behavior in both modes.
+- Persisted each successfully prepared commit in worker-owned state outside the writable agent home;
+  cached reuse now rejects clean assistant-authored commits whose SHA differs from that trusted
+  record without adding a Git network request to the steady-state path.
+- Made first checkout materialization pin the commit actually served after the managed read
+  endpoint's mandatory mirror refresh, avoiding false stale-pin failures when upstream advanced
+  while preserving exact requested-SHA enforcement for `refresh_upstream: true`.
 
 ## 2026-08-13 - Branch-Probed Reference Repository Refresh
 
