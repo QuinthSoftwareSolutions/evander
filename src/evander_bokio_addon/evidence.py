@@ -4,12 +4,16 @@ from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from hashlib import sha256
+from io import BytesIO
 import json
 from pathlib import Path
 import re
 import sqlite3
 from typing import Any
 from uuid import uuid4
+
+from PIL import Image
+from pypdf import PdfReader, PdfWriter
 
 from evander.addons import addon_storage_path
 
@@ -37,6 +41,7 @@ _SUFFIX_BY_CONTENT_TYPE = {
     "image/jpeg": ".jpg",
     "image/png": ".png",
 }
+_EVIDENCE_BUNDLE_SOURCE_TYPE = "bokio_evidence_bundle"
 
 
 class BokioEvidenceError(RuntimeError):
@@ -729,6 +734,7 @@ def create_journal_entry_with_evidence(
     )
     if operation["status"] == "completed":
         return {**operation, "idempotent": True}
+    evidence_bundle: dict[str, Any] | None = None
     if operation["status"] in {"failed", "needs_attention"}:
         operation = store.resume_journal_entry_operation(
             operation_key=operation["operation_key"],
@@ -736,6 +742,11 @@ def create_journal_entry_with_evidence(
             confirm_not_created=confirm_not_created,
         )
     if operation["status"] == "pending_create":
+        evidence_bundle = _create_evidence_bundle_if_needed(
+            store,
+            evidence_ids=normalized_evidence_ids,
+            operation_key=operation["operation_key"],
+        )
         client = BokioClient.from_context(context)
         operation, claimed = store.claim_journal_entry_creation(
             operation_key=operation["operation_key"]
@@ -784,16 +795,24 @@ def create_journal_entry_with_evidence(
     if not journal_entry_id:
         raise BokioEvidenceError("Bokio journal-entry operation is missing its created entry ID")
     try:
-        associations = [
-            attach_evidence(
-                context,
-                evidence_id=evidence_id,
-                journal_entry_id=journal_entry_id,
-                description=None,
-                retry_if_failed=retry_if_failed,
+        _ensure_multi_evidence_is_not_legacy_partial_attachment(
+            store,
+            evidence_ids=normalized_evidence_ids,
+            journal_entry_id=journal_entry_id,
+        )
+        if evidence_bundle is None:
+            evidence_bundle = _create_evidence_bundle_if_needed(
+                store,
+                evidence_ids=normalized_evidence_ids,
+                operation_key=operation["operation_key"],
             )
-            for evidence_id in normalized_evidence_ids
-        ]
+        associations = _attach_journal_entry_evidence(
+            context,
+            evidence_ids=normalized_evidence_ids,
+            journal_entry_id=journal_entry_id,
+            evidence_bundle=evidence_bundle,
+            retry_if_failed=retry_if_failed,
+        )
     except Exception as exc:
         store.mark_journal_entry_operation_needs_attention(
             operation_key=operation["operation_key"],
@@ -805,6 +824,158 @@ def create_journal_entry_with_evidence(
         operation_key=operation["operation_key"]
     )
     return {**operation, "associations": associations}
+
+
+def _attach_journal_entry_evidence(
+    context: Any,
+    *,
+    evidence_ids: list[str],
+    journal_entry_id: str,
+    evidence_bundle: dict[str, Any] | None,
+    retry_if_failed: bool,
+) -> list[dict[str, Any]]:
+    if len(evidence_ids) == 1:
+        return [
+            attach_evidence(
+                context,
+                evidence_id=evidence_ids[0],
+                journal_entry_id=journal_entry_id,
+                description=None,
+                retry_if_failed=retry_if_failed,
+            )
+        ]
+
+    if evidence_bundle is None:
+        raise BokioEvidenceError("Bokio multi-evidence bundle was not prepared")
+    association = attach_evidence(
+        context,
+        evidence_id=evidence_bundle["evidence_id"],
+        journal_entry_id=journal_entry_id,
+        description=None,
+        retry_if_failed=retry_if_failed,
+    )
+    return [{**association, "bundle": evidence_bundle}]
+
+
+def _create_evidence_bundle_if_needed(
+    store: BokioEvidenceStore,
+    *,
+    evidence_ids: list[str],
+    operation_key: str,
+) -> dict[str, Any] | None:
+    if len(evidence_ids) == 1:
+        return None
+    return _create_evidence_bundle(
+        store,
+        evidence_ids=evidence_ids,
+        operation_key=operation_key,
+    )
+
+
+def _ensure_multi_evidence_is_not_legacy_partial_attachment(
+    store: BokioEvidenceStore,
+    *,
+    evidence_ids: list[str],
+    journal_entry_id: str,
+) -> None:
+    if len(evidence_ids) == 1:
+        return
+    existing_associations = [
+        association
+        for evidence_id in evidence_ids
+        for association in store.get(evidence_id)["associations"]
+        if association["journal_entry_id"] == journal_entry_id
+    ]
+    if existing_associations:
+        raise BokioEvidenceError(
+            "Journal entry already has legacy individual evidence associations; Bokio permits "
+            "one linked upload, so reconcile the missing evidence manually instead of retrying"
+        )
+
+
+def _create_evidence_bundle(
+    store: BokioEvidenceStore,
+    *,
+    evidence_ids: list[str],
+    operation_key: str,
+) -> dict[str, Any]:
+    writer = PdfWriter()
+    source_files = [store.get_file(evidence_id) for evidence_id in evidence_ids]
+    try:
+        for source_file in source_files:
+            _append_evidence_to_pdf(writer, source_file)
+        if not writer.pages:
+            raise BokioEvidenceError("Bokio evidence bundle has no PDF pages")
+        output = BytesIO()
+        writer.write(output)
+    except BokioEvidenceError:
+        raise
+    except Exception as exc:
+        raise BokioEvidenceError("Could not create a PDF bundle for Bokio evidence") from exc
+    finally:
+        writer.close()
+
+    operation_digest = sha256(operation_key.encode("utf-8")).hexdigest()
+    source_metadata = {
+        "source_evidence_ids": evidence_ids,
+        "source_filenames": [str(source_file.record["filename"]) for source_file in source_files],
+    }
+    bundle, _created = store.ingest_bytes(
+        content=output.getvalue(),
+        filename=f"bokio-evidence-{operation_digest[:12]}.pdf",
+        source_type=_EVIDENCE_BUNDLE_SOURCE_TYPE,
+        source_key=f"journal-entry-operation:{operation_digest}",
+        source_metadata=source_metadata,
+        mime_type="application/pdf",
+    )
+    return {
+        "evidence_id": bundle["evidence_id"],
+        "filename": bundle["filename"],
+        "source_evidence_ids": evidence_ids,
+        "source_filenames": source_metadata["source_filenames"],
+    }
+
+
+def _append_evidence_to_pdf(writer: PdfWriter, source_file: BokioEvidenceFile) -> None:
+    mime_type = str(source_file.record["mime_type"])
+    if mime_type == "application/pdf":
+        reader = PdfReader(source_file.blob_path)
+        if reader.is_encrypted:
+            raise BokioEvidenceError(
+                f"Bokio evidence PDF is encrypted and cannot be bundled: {source_file.record['filename']}"
+            )
+        writer.append(reader)
+        return
+    if mime_type in {"image/jpeg", "image/png"}:
+        image_pdf = BytesIO()
+        with Image.open(source_file.blob_path) as image:
+            rendered = _render_evidence_image(image)
+        try:
+            rendered.save(image_pdf, format="PDF", resolution=300.0)
+        finally:
+            rendered.close()
+        writer.append(PdfReader(image_pdf))
+        return
+    raise BokioEvidenceError(
+        f"Bokio evidence cannot be bundled: unsupported content type {mime_type}"
+    )
+
+
+def _render_evidence_image(image: Image.Image) -> Image.Image:
+    if image.mode in {"RGBA", "LA"} or (
+        image.mode == "P" and "transparency" in image.info
+    ):
+        rgba = image.convert("RGBA")
+        try:
+            background = Image.new("RGBA", image.size, "white")
+            try:
+                background.alpha_composite(rgba)
+                return background.convert("RGB")
+            finally:
+                background.close()
+        finally:
+            rgba.close()
+    return image.convert("RGB")
 
 
 def validate_evidence_id(value: object) -> str:

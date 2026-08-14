@@ -1,5 +1,14 @@
 # Changelog
 
+## 2026-08-14 - Bokio Multi-Evidence Journal Attachments
+
+- Compiled multiple prepared journal-entry evidence records into one PDF before the single Bokio
+  upload that can be linked to a journal entry, while retaining each original PDF, JPEG, or PNG
+  evidence record and its provenance locally.
+- Exposed the combined-attachment behavior in the prepared-action review UI and Bokio operator
+  guidance, preventing a second evidence upload from leaving a newly created journal entry partial,
+  and fail-closed retries of legacy partial attachments that require manual reconciliation.
+
 ## 2026-08-14 - Direct Teams Trigger Publication
 
 - Published matching Teams-backed workflow trigger events atomically from Teams ingest immediately

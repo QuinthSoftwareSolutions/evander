@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
+from io import BytesIO
 import json
 from pathlib import Path
 import threading
@@ -9,6 +10,8 @@ from types import SimpleNamespace
 
 import httpx
 from mcp.server.fastmcp.exceptions import ToolError
+from PIL import Image
+from pypdf import PdfReader, PdfWriter
 import pytest
 
 from evander.addons import AddonContext
@@ -781,6 +784,169 @@ def test_bokio_mcp_creates_entry_and_attaches_evidence_idempotently(
         "journal-entries",
         "uploads",
     ]
+
+
+def test_bokio_mcp_bundles_multiple_evidence_into_one_upload(
+    tmp_path: Path, monkeypatch
+) -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if request.url.path.endswith("/journal-entries"):
+            return httpx.Response(200, json={"id": "journal-entry-1"})
+        return httpx.Response(200, json={"uploadId": "upload-1"})
+
+    _install_transport(monkeypatch, handler)
+    monkeypatch.setenv("BOKIO_COMPANY_ID", "company-1")
+    monkeypatch.setenv("BOKIO_INTEGRATION_TOKEN", "secret-token")
+    store = BokioEvidenceStore(tmp_path)
+    invoice, _created = store.ingest_bytes(
+        content=_blank_pdf_bytes(),
+        filename="invoice.pdf",
+        source_type="communication_artifact",
+        source_key="invoice",
+        mime_type="application/pdf",
+    )
+    receipt, _created = store.ingest_bytes(
+        content=_png_bytes(),
+        filename="receipt.png",
+        source_type="communication_artifact",
+        source_key="receipt",
+        mime_type="image/png",
+    )
+    evidence_ids = [invoice["evidence_id"], receipt["evidence_id"]]
+    server = _register_bokio_mcp(
+        tmp_path,
+        allowed_tools=["bokio_create_journal_entry_with_evidence"],
+    )
+
+    result = server.tools["bokio_create_journal_entry_with_evidence"](
+        payload={"title": "Invoice and receipt", "items": []},
+        evidence_ids=evidence_ids,
+        operation_key="invoice-and-receipt",
+        session_id="session-1",
+    )
+
+    operation = result["operation"]
+    assert operation["status"] == "completed"
+    assert len(operation["associations"]) == 1
+    association = operation["associations"][0]
+    assert association["bundle"]["source_evidence_ids"] == evidence_ids
+    assert association["bundle"]["source_filenames"] == ["invoice.pdf", "receipt.png"]
+    assert association["evidence_id"] not in evidence_ids
+    assert len(PdfReader(store.get_file(association["evidence_id"]).blob_path).pages) == 2
+    assert [request.url.path.rsplit("/", 1)[-1] for request in requests] == [
+        "journal-entries",
+        "uploads",
+    ]
+    assert store.get(invoice["evidence_id"])["associations"] == []
+    assert store.get(receipt["evidence_id"])["associations"] == []
+
+
+def test_bokio_mcp_builds_multi_evidence_bundle_before_creating_journal_entry(
+    tmp_path: Path, monkeypatch
+) -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(200, json={"id": "journal-entry-1"})
+
+    _install_transport(monkeypatch, handler)
+    monkeypatch.setenv("BOKIO_COMPANY_ID", "company-1")
+    monkeypatch.setenv("BOKIO_INTEGRATION_TOKEN", "secret-token")
+    store = BokioEvidenceStore(tmp_path)
+    invoice, _created = store.ingest_bytes(
+        content=_blank_pdf_bytes(),
+        filename="invoice.pdf",
+        source_type="communication_artifact",
+        source_key="invoice",
+        mime_type="application/pdf",
+    )
+    corrupt_receipt, _created = store.ingest_bytes(
+        content=b"%PDF-1.7\ntruncated",
+        filename="receipt.pdf",
+        source_type="communication_artifact",
+        source_key="receipt",
+        mime_type="application/pdf",
+    )
+    server = _register_bokio_mcp(
+        tmp_path,
+        allowed_tools=["bokio_create_journal_entry_with_evidence"],
+    )
+
+    with pytest.raises(BokioEvidenceError, match="Could not create a PDF bundle"):
+        server.tools["bokio_create_journal_entry_with_evidence"](
+            payload={"title": "Invoice and receipt", "items": []},
+            evidence_ids=[invoice["evidence_id"], corrupt_receipt["evidence_id"]],
+            operation_key="invalid-invoice-and-receipt",
+            session_id="session-1",
+        )
+
+    assert requests == []
+    assert (
+        store.get_journal_entry_operation("invalid-invoice-and-receipt")["status"]
+        == "pending_create"
+    )
+
+
+def test_bokio_mcp_does_not_retry_legacy_partial_multi_evidence_attachment(
+    tmp_path: Path,
+) -> None:
+    store = BokioEvidenceStore(tmp_path)
+    invoice, _created = store.ingest_bytes(
+        content=_blank_pdf_bytes(),
+        filename="invoice.pdf",
+        source_type="communication_artifact",
+        source_key="invoice",
+        mime_type="application/pdf",
+    )
+    receipt, _created = store.ingest_bytes(
+        content=_png_bytes(),
+        filename="receipt.png",
+        source_type="communication_artifact",
+        source_key="receipt",
+        mime_type="image/png",
+    )
+    evidence_ids = [invoice["evidence_id"], receipt["evidence_id"]]
+    operation_key = "legacy-partial-evidence"
+    store.begin_journal_entry_operation(
+        operation_key=operation_key,
+        payload={"title": "Invoice and receipt", "items": []},
+        evidence_ids=evidence_ids,
+    )
+    _operation, claimed = store.claim_journal_entry_creation(operation_key=operation_key)
+    assert claimed is True
+    store.mark_journal_entry_created(
+        operation_key=operation_key,
+        journal_entry_id="journal-entry-1",
+        result={"id": "journal-entry-1"},
+    )
+    store.begin_association(
+        evidence_id=invoice["evidence_id"],
+        journal_entry_id="journal-entry-1",
+    )
+    store.mark_association_attached(
+        evidence_id=invoice["evidence_id"],
+        journal_entry_id="journal-entry-1",
+        bokio_result={"uploadId": "upload-1"},
+    )
+    server = _register_bokio_mcp(
+        tmp_path,
+        allowed_tools=["bokio_create_journal_entry_with_evidence"],
+    )
+
+    with pytest.raises(BokioEvidenceError, match="legacy individual evidence associations"):
+        server.tools["bokio_create_journal_entry_with_evidence"](
+            payload={"title": "Invoice and receipt", "items": []},
+            evidence_ids=evidence_ids,
+            operation_key=operation_key,
+            session_id="session-1",
+        )
+
+    assert store.get(receipt["evidence_id"])["associations"] == []
+    assert store.get_journal_entry_operation(operation_key)["status"] == "needs_attention"
 
 
 def test_bokio_mcp_claims_journal_entry_creation_before_calling_bokio(
@@ -2334,6 +2500,24 @@ def test_prepared_action_store_transitions_without_secrets(tmp_path) -> None:
             payload={"supplierId": "supplier-1"},
             evidence_ids=["bokio_evidence_0123456789abcdef0123456789abcdef"],
         )
+
+
+def _blank_pdf_bytes() -> bytes:
+    output = BytesIO()
+    writer = PdfWriter()
+    try:
+        writer.add_blank_page(width=144, height=144)
+        writer.write(output)
+    finally:
+        writer.close()
+    return output.getvalue()
+
+
+def _png_bytes() -> bytes:
+    output = BytesIO()
+    with Image.new("RGBA", (16, 16), (255, 0, 0, 128)) as image:
+        image.save(output, format="PNG")
+    return output.getvalue()
 
 
 def _install_transport(monkeypatch, handler) -> None:

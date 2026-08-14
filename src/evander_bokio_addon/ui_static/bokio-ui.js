@@ -245,7 +245,9 @@ function renderActionDetail() {
   if (evidenceIds.length) {
     const evidenceNotice = document.createElement("div");
     evidenceNotice.className = "notice info inline";
-    evidenceNotice.textContent = `Execution will attach ${evidenceIds.length} managed evidence ${evidenceIds.length === 1 ? "file" : "files"} to the journal entry.`;
+    evidenceNotice.textContent = evidenceIds.length === 1
+      ? "Execution will attach one managed evidence file to the journal entry."
+      : `Execution will retain ${evidenceIds.length} managed evidence files locally and attach one combined PDF to the journal entry.`;
     els.actionDetail.append(evidenceNotice);
   }
   if (action.status === "needs_attention" || action.status === "executing") {

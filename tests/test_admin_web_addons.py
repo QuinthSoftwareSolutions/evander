@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import importlib
+from io import BytesIO
 import json
 import sys
 from contextlib import contextmanager
@@ -9,6 +10,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import httpx
+from pypdf import PdfWriter
 from starlette.testclient import TestClient
 
 from evander.addons import (
@@ -26,6 +28,18 @@ from evander.admin.web.app import create_app
 from evander.host_config import HostConfig, save_host_config
 from evander_bokio_addon.evidence import BokioEvidenceStore
 from evander_bokio_addon.state import PreparedActionStore
+
+
+def _blank_pdf_bytes(title: str = "Evidence") -> bytes:
+    output = BytesIO()
+    writer = PdfWriter()
+    try:
+        writer.add_blank_page(width=144, height=144)
+        writer.add_metadata({"/Title": title})
+        writer.write(output)
+    finally:
+        writer.close()
+    return output.getvalue()
 
 
 def _write_config(tmp_path: Path, *, module_name: str) -> Path:
@@ -427,6 +441,71 @@ def test_bokio_admin_prepared_journal_attaches_evidence_without_recreating_entry
     assert [request.url.path.rsplit("/", 1)[-1] for request in requests] == [
         "journal-entries",
         "uploads",
+        "uploads",
+    ]
+
+
+def test_bokio_admin_prepared_journal_bundles_multiple_evidence(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    runtime = build_admin_runtime(_write_config(tmp_path, module_name="evander_bokio_addon"))
+    client = TestClient(create_app(runtime))
+    assert client.post("/api/admin/privileged/unlock").status_code == 200
+    store = BokioEvidenceStore(tmp_path / "runtime")
+    invoice, _created = store.ingest_bytes(
+        content=_blank_pdf_bytes("Invoice"),
+        filename="invoice.pdf",
+        source_type="communication_artifact",
+        source_key="comm-invoice",
+        mime_type="application/pdf",
+    )
+    receipt, _created = store.ingest_bytes(
+        content=_blank_pdf_bytes("Receipt"),
+        filename="receipt.pdf",
+        source_type="communication_artifact",
+        source_key="comm-receipt",
+        mime_type="application/pdf",
+    )
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if request.url.path.endswith("/journal-entries"):
+            return httpx.Response(200, json={"id": "journal-entry-1"})
+        return httpx.Response(200, json={"uploadId": "upload-1"})
+
+    real_client = httpx.Client
+    transport = httpx.MockTransport(handler)
+
+    def factory(*args, **kwargs):
+        kwargs["transport"] = transport
+        return real_client(*args, **kwargs)
+
+    monkeypatch.setattr(httpx, "Client", factory)
+    monkeypatch.setenv("BOKIO_COMPANY_ID", "company-1")
+    monkeypatch.setenv("BOKIO_INTEGRATION_TOKEN", "secret-token")
+    evidence_ids = [invoice["evidence_id"], receipt["evidence_id"]]
+    created = client.post(
+        "/api/addons/bokio-addon/prepared-actions",
+        json={
+            "kind": "journal_entry",
+            "payload": {"title": "Invoice and receipt", "items": []},
+            "evidence_ids": evidence_ids,
+        },
+    ).json()["action"]
+
+    response = client.post(
+        f"/api/addons/bokio-addon/prepared-actions/{created['action_id']}/approve-and-execute"
+    )
+
+    assert response.status_code == 200
+    result = response.json()["result"]
+    assert result["action"]["status"] == "executed"
+    association = result["evidence_operation"]["associations"][0]
+    assert association["bundle"]["source_evidence_ids"] == evidence_ids
+    assert [request.url.path.rsplit("/", 1)[-1] for request in requests] == [
+        "journal-entries",
         "uploads",
     ]
 

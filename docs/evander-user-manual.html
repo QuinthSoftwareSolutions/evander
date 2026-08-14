@@ -8776,6 +8776,11 @@ artifact still exists to create or reuse a managed evidence record.
 <code>bokio_list_evidence</code> and <code>bokio_get_evidence</code>
 inspect that local durable store; they do not query Bokio&#39;s remote
 uploads.</p>
+<p>Bokio permits one linked upload per journal entry. When an approved
+journal-entry action includes multiple managed evidence files, Evander
+retains every original local evidence record and compiles the supported
+PDF, JPEG, and PNG inputs into one PDF before making its one linked
+Bokio upload.</p>
 <p>Remote download is fail-closed. The client accepts only an exact HTTP
 <code>200</code>: partial-content <code>206</code> and redirects are
 errors rather than usable files. It streams at most 100 MiB into a
