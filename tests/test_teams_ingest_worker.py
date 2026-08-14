@@ -2197,6 +2197,229 @@ def test_teams_ingest_worker_directly_publishes_all_matching_teams_trigger_types
     assert len(queue.list_pending()) == 3
 
 
+def test_teams_ingest_worker_polls_teams_trigger_in_workflow_graph_directory(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    write_trigger_config(
+        tmp_path,
+        [
+            {
+                "id": "teams-new",
+                "display_name": "Teams message",
+                "type": "trigger:teams:new-message",
+                "targets": [{"target": "team-a/channel-1"}],
+            }
+        ],
+        extra={
+            "workflow_graphs": [
+                {
+                    "id": "graph-teams-new",
+                    "name": "Scoped Teams trigger",
+                    "directory_path": "root/team-a",
+                    "node_ids": ["teams-new"],
+                }
+            ]
+        },
+    )
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(
+            200,
+            json={
+                "value": [
+                    {
+                        "id": "msg-1",
+                        "createdDateTime": "2026-08-14T10:00:00Z",
+                        "body": {"content": "hello", "contentType": "text"},
+                        "from": {"user": {"id": "user-a", "displayName": "Ada"}},
+                    }
+                ]
+            },
+            request=request,
+        )
+
+    patch_worker_httpx_client(monkeypatch, httpx.MockTransport(handler))
+    monkeypatch.setenv("TEAM_GRAPH_TEAMS_ACCESS_TOKEN", "team-graph-token")
+    config = GatewayConfig.model_validate(
+        {
+            "runtime_dir": str(tmp_path / "runtime"),
+            "teams_backend": "stub",
+        }
+    )
+    team_config = config.model_copy(
+        update={
+            "teams_backend": "graph_api",
+            "teams_graph_access_token_env": "TEAM_GRAPH_TEAMS_ACCESS_TOKEN",
+        }
+    )
+    queue = TriggerEventQueue(tmp_path / "runtime" / "direct-events.json")
+    worker = build_teams_ingest_worker(
+        config,
+        project_dir=tmp_path,
+        event_queue=queue,
+        effect_wake_notifier=lambda: True,
+        trigger_wake_notifier=lambda: True,
+    )
+    ensure_directory(worker, "root/team-a")
+    resolved_directories: list[str] = []
+
+    def resolve_for_directory(directory_path: str) -> GatewayConfig:
+        resolved_directories.append(directory_path)
+        return team_config if directory_path == "root/team-a" else config
+
+    monkeypatch.setattr(
+        worker.runtime.provider_config,
+        "resolve_for_directory",
+        resolve_for_directory,
+    )
+
+    result = worker.run_once()
+
+    assert resolved_directories == ["root/team-a"]
+    assert requests[0].headers["Authorization"] == "Bearer team-graph-token"
+    assert result.directories_polled == 1
+    assert result.new_messages_discovered == 1
+    assert result.events_created == 1
+    assert [message.message_id for message in worker.store.list_all_messages()] == ["msg-1"]
+
+
+def test_teams_ingest_worker_falls_back_when_direct_queue_setup_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    write_trigger_config(
+        tmp_path,
+        [
+            {
+                "id": "teams-new",
+                "display_name": "Teams message",
+                "type": "trigger:teams:new-message",
+                "targets": [{"target": "team-a/channel-1"}],
+            }
+        ],
+    )
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(
+            200,
+            json={
+                "value": [
+                    {
+                        "id": "msg-1",
+                        "createdDateTime": "2026-08-14T10:00:00Z",
+                        "body": {"content": "hello", "contentType": "text"},
+                        "from": {"user": {"id": "user-a", "displayName": "Ada"}},
+                    }
+                ]
+            },
+            request=request,
+        )
+
+    def fail_queue_setup(_trigger_config) -> None:
+        raise PermissionError("simulated orchestration store failure")
+
+    patch_worker_httpx_client(monkeypatch, httpx.MockTransport(handler))
+    monkeypatch.setenv("GRAPH_TEAMS_ACCESS_TOKEN", "graph-token")
+    config = GatewayConfig.model_validate(
+        {
+            "runtime_dir": str(tmp_path / "runtime"),
+            "teams_backend": "graph_api",
+        }
+    )
+    trigger_wakes: list[str] = []
+    worker = build_teams_ingest_worker(
+        config,
+        project_dir=tmp_path,
+        trigger_wake_notifier=lambda: trigger_wakes.append("wake") or True,
+    )
+    monkeypatch.setattr(worker, "_event_queue_for", fail_queue_setup)
+
+    with caplog.at_level(logging.WARNING):
+        result = worker.run_once()
+
+    assert len(requests) == 1
+    assert result.new_messages_discovered == 1
+    assert result.events_created == 0
+    assert result.trigger_wake_notified is True
+    assert trigger_wakes == ["wake"]
+    assert [message.message_id for message in worker.store.list_all_messages()] == ["msg-1"]
+    assert "continuing with inbox persistence and trigger wake recovery" in caplog.text
+
+
+def test_teams_ingest_worker_wakes_effect_after_all_cycle_publications(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    write_trigger_config(
+        tmp_path,
+        [
+            {
+                "id": "teams-new",
+                "display_name": "Teams message",
+                "type": "trigger:teams:new-message",
+                "targets": [
+                    {"target": "team-a/channel-1"},
+                    {"target": "team-a/channel-2"},
+                ],
+            }
+        ],
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        channel_id = request.url.path.split("/")[-2]
+        message_number = channel_id.rsplit("-", 1)[-1]
+        return httpx.Response(
+            200,
+            json={
+                "value": [
+                    {
+                        "id": f"msg-{message_number}",
+                        "createdDateTime": f"2026-08-14T10:0{message_number}:00Z",
+                        "body": {"content": "hello", "contentType": "text"},
+                        "from": {"user": {"id": "user-a", "displayName": "Ada"}},
+                    }
+                ]
+            },
+            request=request,
+        )
+
+    patch_worker_httpx_client(monkeypatch, httpx.MockTransport(handler))
+    monkeypatch.setenv("GRAPH_TEAMS_ACCESS_TOKEN", "graph-token")
+    config = GatewayConfig.model_validate(
+        {
+            "runtime_dir": str(tmp_path / "runtime"),
+            "teams_backend": "graph_api",
+        }
+    )
+    queue = TriggerEventQueue(tmp_path / "runtime" / "direct-events.json")
+    pending_counts_at_wake: list[int] = []
+    worker = build_teams_ingest_worker(
+        config,
+        project_dir=tmp_path,
+        event_queue=queue,
+        effect_wake_notifier=lambda: (
+            pending_counts_at_wake.append(len(queue.list_pending())) or True
+        ),
+        trigger_wake_notifier=lambda: True,
+    )
+
+    result = worker.run_once()
+
+    assert result.events_created == 2
+    assert result.effect_wake_notified is True
+    assert pending_counts_at_wake == [2]
+    assert [record.event_id for record in queue.list_pending()] == [
+        "teams-new:team-a/channel-1/msg-1",
+        "teams-new:team-a/channel-2/msg-2",
+    ]
+
+
 def test_teams_ingest_worker_direct_publication_can_be_disabled(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

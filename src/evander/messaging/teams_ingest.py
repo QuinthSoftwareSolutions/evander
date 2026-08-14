@@ -71,6 +71,7 @@ from evander.triggers.providers.teams_message_events import (
     TeamsNewMessageEventMatcher,
 )
 from evander.triggers.queue import SqliteTriggerEventQueue, TriggerEventQueue
+from evander.workflow.graph_metadata import resolve_workflow_graph_metadata
 from evander.workflow.runtime_config import load_trigger_orchestrator_worker_global_config
 from evander.workflow.node_state import workflow_node_is_enabled
 
@@ -251,23 +252,26 @@ class TeamsIngestWorker:
             include_default_directory=bool(direct_sender_refs),
             include_directories=set(trigger_targets_by_directory),
         )
-        for directory_path in directories:
-            channel_targets = self._channel_targets_for_directory(
-                directory_path,
-                active_sessions=active_sessions,
-                trigger_targets_by_directory=trigger_targets_by_directory,
-            )
-            if not channel_targets and not direct_sender_refs:
-                continue
-            channel_targets_polled += len(channel_targets)
-            directory_result = self._poll_directory(
-                directory_path,
-                channel_targets=channel_targets,
-                direct_sender_refs=direct_sender_refs,
-                trigger_snapshot=trigger_snapshot,
-            )
-            direct_chats_polled += directory_result.direct_chats_polled
-            new_messages_discovered += directory_result.new_messages_discovered
+        try:
+            for directory_path in directories:
+                channel_targets = self._channel_targets_for_directory(
+                    directory_path,
+                    active_sessions=active_sessions,
+                    trigger_targets_by_directory=trigger_targets_by_directory,
+                )
+                if not channel_targets and not direct_sender_refs:
+                    continue
+                channel_targets_polled += len(channel_targets)
+                directory_result = self._poll_directory(
+                    directory_path,
+                    channel_targets=channel_targets,
+                    direct_sender_refs=direct_sender_refs,
+                    trigger_snapshot=trigger_snapshot,
+                )
+                direct_chats_polled += directory_result.direct_chats_polled
+                new_messages_discovered += directory_result.new_messages_discovered
+        finally:
+            self._notify_effect_orchestrator_if_needed(trigger_snapshot=trigger_snapshot)
         if self.worker_config.directories:
             matching_sessions = {
                 session.session_id
@@ -387,7 +391,7 @@ class TeamsIngestWorker:
         trigger_snapshot: _TeamsTriggerConfigSnapshot,
     ) -> bool:
         with self._cycle_state_lock:
-            if self._cycle_effect_wake_attempted:
+            if self._cycle_events_created <= 0 or self._cycle_effect_wake_attempted:
                 return False
             self._cycle_effect_wake_attempted = True
             try:
@@ -475,6 +479,20 @@ class TeamsIngestWorker:
         targets_by_directory: dict[str, set[str]] = {}
         matchers: list[_CapturedTeamsMessageMatcher] = []
         communication_targets_by_directory: dict[str, dict[str, Any]] = {}
+        nodes_by_id = {
+            node.id: node
+            for node in (
+                *trigger_config.triggers,
+                *trigger_config.gates,
+                *trigger_config.effects,
+                *trigger_config.queries,
+            )
+        }
+        node_graph_metadata_by_id = resolve_workflow_graph_metadata(
+            nodes_by_id=nodes_by_id,
+            edges=trigger_config.edges,
+            workflow_graphs=trigger_config.workflow_graphs,
+        )
 
         for trigger in trigger_config.triggers:
             if not workflow_node_is_enabled(trigger):
@@ -505,7 +523,13 @@ class TeamsIngestWorker:
                             materialized.id,
                         ),
                     )
-                    targets_by_directory.setdefault("root", set()).update(matcher.target_filters)
+                    graph_metadata = node_graph_metadata_by_id.get(materialized.id)
+                    directory_path = DirectoryPath(
+                        segments=(graph_metadata.directory_path if graph_metadata else "root")
+                    ).as_posix()
+                    targets_by_directory.setdefault(directory_path, set()).update(
+                        matcher.target_filters
+                    )
                 elif isinstance(materialized, CommunicationNewMessageTriggerDefinition):
                     directory_path = DirectoryPath(
                         segments=materialized.directory_path or "root"
@@ -551,11 +575,17 @@ class TeamsIngestWorker:
                     exc_info=True,
                 )
 
-        event_queue = (
-            self._event_queue_for(trigger_config)
-            if self.worker_config.publish_trigger_events_directly and matchers
-            else None
-        )
+        event_queue = None
+        if self.worker_config.publish_trigger_events_directly and matchers:
+            try:
+                event_queue = self._event_queue_for(trigger_config)
+            except Exception:
+                logger.warning(
+                    "Failed to initialize direct Teams trigger event queue revision=%s; "
+                    "continuing with inbox persistence and trigger wake recovery",
+                    revision,
+                    exc_info=True,
+                )
         return _TeamsTriggerConfigSnapshot(
             revision=revision,
             captured_at=captured_at,
@@ -1070,7 +1100,6 @@ class TeamsIngestWorker:
             return
 
         message_matched = False
-        event_created = False
         for captured_matcher in trigger_snapshot.matchers:
             try:
                 events = captured_matcher.events_for(message)
@@ -1124,13 +1153,10 @@ class TeamsIngestWorker:
                         self._cycle_events_created += 1
                     else:
                         self._cycle_events_deduplicated += 1
-                event_created = event_created or publish_result.created
 
         if message_matched:
             with self._cycle_state_lock:
                 self._cycle_messages_matched += 1
-        if event_created:
-            self._notify_effect_orchestrator_if_needed(trigger_snapshot=trigger_snapshot)
 
     def _poll_direct_chats(
         self,
