@@ -45,7 +45,6 @@ from .agent_session import (
 from .base import EffectProviderBase
 
 
-GitAuthorIdentity = GitIdentity
 _DEFAULT_GIT_IDENTITY = DEFAULT_AGENT_GIT_IDENTITY
 
 

@@ -5472,36 +5472,20 @@ def proxy_issue_sync(
 @app.command(
     "poll-ado-backlog",
     rich_help_panel="Background Workers",
-    short_help="Poll Azure DevOps backlog.",
+    short_help="Poll Azure DevOps PR feedback and completion state.",
 )
 def poll_ado_backlog(
     log_level: Annotated[str, typer.Option("--log-level", help="Python logging level.")] = "INFO",
-    reprocess: Annotated[
-        int | None,
-        typer.Option(
-            "--reprocess",
-            help="Force reprocess a specific work item ID by forgetting previous state first.",
-        ),
-    ] = None,
     forget: Annotated[
         int | None,
         typer.Option(
             "--forget", help="Forget a specific work item ID in the processed store, then exit."
         ),
     ] = None,
-    list_unprocessed: Annotated[
-        bool,
-        typer.Option(
-            "--list-unprocessed",
-            help="List eligible work items that match the worker query but are not yet in the processed store.",
-        ),
-    ] = False,
 ) -> None:
     run_worker_command(
         log_level=log_level,
-        reprocess=reprocess,
         forget=forget,
-        list_unprocessed=list_unprocessed,
     )
 
 

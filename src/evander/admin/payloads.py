@@ -39,22 +39,6 @@ class AdminRevisionConflict(ValueError):
         self.details = details
 
 
-class TriggerConfigMutationPayload(BaseModel):
-    worker_id: str = "trigger-orchestrator"
-    trigger_id: str
-    operation: str
-    path: str
-    config: dict[str, object]
-
-
-class EffectConfigMutationPayload(BaseModel):
-    worker_id: str = "trigger-orchestrator"
-    effect_id: str
-    operation: str
-    path: str
-    config: dict[str, object]
-
-
 class WorkflowEditorNodeLayout(BaseModel):
     x: float
     y: float

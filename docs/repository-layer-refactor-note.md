@@ -16,7 +16,7 @@
   - finding the latest gate execution for a gate
 - `wake_store.py` owns due-wake discovery through `find_due_requests(...)`.
 - `pr_feedback_worker.py` now exposes semantic feedback listing and session-read advancement operations used by `PrFeedbackService`.
-- `review_request_store.py` keeps the existing workflow model and now exposes `claim_review_requests(...)` as the semantic leasing entrypoint, with the older name retained as a transitional alias.
+- `review_request_store.py` keeps the existing workflow model and exposes `claim_ready_requests(...)` as the semantic leasing entrypoint.
 
 ## Still transitional
 

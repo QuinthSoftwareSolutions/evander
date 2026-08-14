@@ -23,6 +23,7 @@ from evander.admin.services import (
     WorkerControlAdminService,
     WorkflowGenerationAdminDependencies,
     WorkflowGenerationAdminService,
+    WorkflowConfigAdminService,
     WorkflowReportsAdminDependencies,
     WorkflowReportsAdminService,
 )
@@ -234,11 +235,19 @@ def test_worker_control_service_does_not_delegate_workflow_config() -> None:
         "read_workflow_editor_document",
         "read_workflow_run_search",
         "clear_workflow_run",
-        "upsert_trigger_config",
-        "delete_effect_config",
     )
     for method_name in forbidden:
         assert not hasattr(WorkerControlAdminService, method_name)
+
+
+def test_workflow_config_service_does_not_expose_legacy_node_mutations() -> None:
+    for method_name in (
+        "upsert_trigger_config",
+        "delete_trigger_config",
+        "upsert_effect_config",
+        "delete_effect_config",
+    ):
+        assert not hasattr(WorkflowConfigAdminService, method_name)
 
 
 def test_workflow_generation_service_enforces_in_flight_and_cooldown() -> None:

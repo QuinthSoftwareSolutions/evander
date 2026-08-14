@@ -8658,171 +8658,42 @@ def test_admin_service_reads_and_writes_teams_ingest_worker_global_config(tmp_pa
     assert reread.config["max_concurrent_target_polls"] == 2
 
 
-def test_admin_service_can_read_and_mutate_trigger_orchestrator_triggers_by_id(
-    tmp_path: Path,
-) -> None:
-    service = build_admin_runtime(write_config(tmp_path))
-
-    read_result = service.workflow_config_admin.read_worker_global_config("trigger-orchestrator")
-    assert read_result.exists is False
-    assert read_result.path == str(tmp_path / "config" / "trigger-orchestrator" / "config.json")
-    assert read_result.config["triggers"] == []
-    assert read_result.config["effects"] == []
-
-    added = service.workflow_config_admin.upsert_trigger_config(
-        "cron-15m",
-        {
-            "display_name": "Every 15 minutes",
-            "type": "trigger:cron",
-            "expression": "*/15 * * * *",
-        },
-    )
-    assert added.operation == "added"
-    assert added.config["triggers"][0]["id"] == "cron-15m"
-
-    updated = service.workflow_config_admin.upsert_trigger_config(
-        "cron-15m",
-        {
-            "display_name": "Every 30 minutes",
-            "type": "trigger:cron",
-            "expression": "*/30 * * * *",
-        },
-    )
-    assert updated.operation == "updated"
-    assert updated.config["triggers"] == [
-        {
-            "id": "cron-15m",
-            "display_name": "Every 30 minutes",
-            "type": "trigger:cron",
-            "expression": "*/30 * * * *",
-        }
-    ]
-
-    removed = service.workflow_config_admin.delete_trigger_config("cron-15m")
-    assert removed.operation == "deleted"
-    assert removed.config["triggers"] == []
-
-
-def test_trigger_upsert_baselines_retyped_message_trigger(tmp_path: Path) -> None:
+def test_worker_config_write_baselines_retyped_message_trigger(tmp_path: Path) -> None:
     service = build_admin_runtime(write_config(tmp_path))
     runtime_dir = tmp_path / "runtime"
-    service.workflow_config_admin.upsert_trigger_config(
-        "retyped-trigger",
+    config = dict(
+        service.workflow_config_admin.read_worker_global_config("trigger-orchestrator").config
+    )
+    config["triggers"] = [
         {
+            "id": "retyped-trigger",
             "display_name": "Scheduled before retyping",
             "type": "trigger:cron",
             "expression": "*/15 * * * *",
-        },
-    )
+        }
+    ]
+    service.workflow_config_admin.write_worker_global_config("trigger-orchestrator", config)
     before_retype = datetime.now(UTC)
-    service.workflow_config_admin.upsert_trigger_config(
-        "retyped-trigger",
+    config["triggers"] = [
         {
+            "id": "retyped-trigger",
             "display_name": "Email after retyping",
             "type": "trigger:email:new-message",
             "mailbox_ids": ["default"],
-        },
-    )
+        }
+    ]
+    service.workflow_config_admin.write_worker_global_config("trigger-orchestrator", config)
     after_retype = datetime.now(UTC)
 
-    email_cursor_path = runtime_dir / "trigger-cursors-email.json"
-    email_cursors = json.loads(email_cursor_path.read_text(encoding="utf-8"))
+    email_cursors = json.loads(
+        (runtime_dir / "trigger-cursors-email.json").read_text(encoding="utf-8")
+    )
     _assert_cursor_seeded_during_operation(
         email_cursors["retyped-trigger"]["initialized_at"],
         before=before_retype,
         after=after_retype,
     )
     assert email_cursors["retyped-trigger"]["recent_message_ids"] == []
-
-
-def test_trigger_mutations_do_not_reenter_admin_config_mutation_lock(
-    tmp_path: Path,
-) -> None:
-    class NonReentrantLock:
-        def __init__(self) -> None:
-            self.depth = 0
-            self.enter_count = 0
-
-        def __call__(self):
-            return self
-
-        def __enter__(self):
-            if self.depth:
-                raise AssertionError("admin config mutation lock was re-entered")
-            self.depth += 1
-            self.enter_count += 1
-
-        def __exit__(self, exc_type, exc, traceback):
-            self.depth -= 1
-
-    service = build_admin_runtime(write_config(tmp_path))
-    lock = NonReentrantLock()
-    service.operations_admin._admin_config_mutation_lock = lock
-
-    service.workflow_config_admin.upsert_trigger_config(
-        "cron-15m",
-        {
-            "display_name": "Every 15 minutes",
-            "type": "trigger:cron",
-            "expression": "*/15 * * * *",
-        },
-    )
-    service.workflow_config_admin.delete_trigger_config("cron-15m")
-    service.operations_admin.ensure_chat_assistant_workflow()
-
-    assert lock.enter_count == 2
-
-
-def test_admin_service_can_read_and_mutate_trigger_orchestrator_effects_by_id(
-    tmp_path: Path,
-) -> None:
-    service = build_admin_runtime(write_config(tmp_path))
-    service.workflow_config_admin.upsert_trigger_config(
-        "cron-15m",
-        {
-            "display_name": "Every 15 minutes",
-            "type": "trigger:cron",
-            "expression": "*/15 * * * *",
-        },
-    )
-
-    added = service.workflow_config_admin.upsert_effect_config(
-        "prompt-agent",
-        {
-            "display_name": "Prompt agent",
-            "type": "effect:agent:prompt",
-            "source_id": "cron-15m",
-            "prompt": "Summarize",
-        },
-    )
-    assert added.operation == "added"
-    assert added.config["effects"][0]["id"] == "prompt-agent"
-    assert added.config["edges"] == [{"source_id": "cron-15m", "target_id": "prompt-agent"}]
-
-    updated = service.workflow_config_admin.upsert_effect_config(
-        "prompt-agent",
-        {
-            "display_name": "Prompt agent updated",
-            "type": "effect:agent:prompt",
-            "source_id": "cron-15m",
-            "prompt": "Summarize latest",
-        },
-    )
-    assert updated.operation == "updated"
-    assert updated.config["effects"] == [
-        {
-            "id": "prompt-agent",
-            "display_name": "Prompt agent updated",
-            "type": "effect:agent:prompt",
-            "prompt": "Summarize latest",
-        }
-    ]
-    assert updated.config["edges"] == [{"source_id": "cron-15m", "target_id": "prompt-agent"}]
-
-    removed = service.workflow_config_admin.delete_effect_config("prompt-agent")
-    assert removed.operation == "deleted"
-    assert removed.config["effects"] == []
-    assert removed.config["edges"] == []
 
 
 def test_admin_service_rejects_duplicate_trigger_ids_with_safe_error_message(
@@ -8856,51 +8727,26 @@ def test_admin_service_rejects_duplicate_trigger_ids_with_safe_error_message(
         )
 
     with pytest.raises(ValueError) as excinfo:
-        service.workflow_config_admin.upsert_trigger_config(
-            "email-invalid",
+        service.workflow_config_admin.write_worker_global_config(
+            "trigger-orchestrator",
             {
-                "display_name": "Bad email provider",
-                "type": "trigger:email:new-message",
-                "provider": "not-real",
-                "account_identifier": "acct",
-                "mailbox_ids": ["inbox"],
-                "auth_secret_refs": {"token": "VERY_SECRET_TOKEN"},
+                "runtime_dir": str(tmp_path / "runtime"),
+                "triggers": [
+                    {
+                        "id": "email-invalid",
+                        "display_name": "Bad email provider",
+                        "type": "trigger:email:new-message",
+                        "provider": "not-real",
+                        "account_identifier": "acct",
+                        "mailbox_ids": ["inbox"],
+                        "auth_secret_refs": {"token": "VERY_SECRET_TOKEN"},
+                    }
+                ],
             },
         )
     message = str(excinfo.value)
-    assert "Invalid trigger config:" in message
     assert "Unsupported email provider" in message
     assert "VERY_SECRET_TOKEN" not in message
-
-
-def test_admin_service_rejects_system_managed_trigger_mutations(tmp_path: Path) -> None:
-    service = build_admin_runtime(write_config(tmp_path))
-
-    with pytest.raises(ValueError, match="system-managed"):
-        service.workflow_config_admin.upsert_trigger_config(
-            "system.chat_assistant",
-            {
-                "display_name": "System Chat Assistant",
-                "type": "trigger:manual",
-            },
-        )
-
-    with pytest.raises(ValueError, match="system-managed"):
-        service.workflow_config_admin.delete_trigger_config("system.chat_assistant")
-
-    with pytest.raises(ValueError, match="system-managed"):
-        service.workflow_config_admin.upsert_effect_config(
-            "system.chat_assistant.enqueue_prompt",
-            {
-                "display_name": "System enqueue",
-                "type": "effect:agent:enqueue-prompt",
-                "prompt": "hello",
-                "target": "assistant",
-            },
-        )
-
-    with pytest.raises(ValueError, match="system-managed"):
-        service.workflow_config_admin.delete_effect_config("system.chat_assistant.enqueue_prompt")
 
 
 def test_admin_service_chat_post_publishes_hidden_trigger_event(tmp_path: Path) -> None:

@@ -25,8 +25,6 @@ from evander.admin.common import (
 )
 from evander.admin.payloads import (
     AdminRevisionConflict,
-    EffectConfigMutationPayload,
-    TriggerConfigMutationPayload,
     WorkerGlobalConfigPayload,
     WorkerGlobalConfigWritePayload,
     WorkflowEditorDocumentPayload,
@@ -70,7 +68,6 @@ from evander.admin.workflow_catalog import (
     _tool_field_options,
     _workflow_agent_create_diagnostics,
     _workflow_binding_diagnostics_for_graphs,
-    _workflow_config_for_legacy_mutation_response,
 )
 from evander.config import TriggerOrchestratorWorkerGlobalConfig
 from evander.events.internal import (
@@ -424,22 +421,6 @@ class WorkflowConfigAdminService:
 
     def workflow_event_journal(self) -> WorkflowEventJournal | SqliteWorkflowEventJournal:
         return self._workflow_event_journal()
-
-    def upsert_trigger_config(
-        self, trigger_id: str, payload: dict[str, object]
-    ) -> TriggerConfigMutationPayload:
-        return self._upsert_trigger_config(trigger_id, payload)
-
-    def delete_trigger_config(self, trigger_id: str) -> TriggerConfigMutationPayload:
-        return self._delete_trigger_config(trigger_id)
-
-    def upsert_effect_config(
-        self, effect_id: str, payload: dict[str, object]
-    ) -> EffectConfigMutationPayload:
-        return self._upsert_effect_config(effect_id, payload)
-
-    def delete_effect_config(self, effect_id: str) -> EffectConfigMutationPayload:
-        return self._delete_effect_config(effect_id)
 
     def _worker_global_config_path(self, worker_id: str) -> Path | None:
         relative = _WORKER_GLOBAL_CONFIG_PATHS.get(worker_id)
@@ -3446,204 +3427,3 @@ class WorkflowConfigAdminService:
     ) -> dict[str, object]:
         del base_config
         return self._strip_system_managed_workflows(editable_config)
-
-    def _upsert_trigger_config(
-        self, trigger_id: str, payload: dict[str, object]
-    ) -> TriggerConfigMutationPayload:
-        normalized_trigger_id = str(trigger_id).strip()
-        if not normalized_trigger_id:
-            raise ValueError("trigger_id is required")
-        if _is_system_managed_workflow_node_id(normalized_trigger_id):
-            raise ValueError(
-                f"Trigger is system-managed and cannot be mutated: {normalized_trigger_id}"
-            )
-        normalized_payload = dict(payload)
-        payload_trigger_id = str(normalized_payload.get("id", "")).strip()
-        if payload_trigger_id and payload_trigger_id != normalized_trigger_id:
-            raise ValueError("trigger_id must match payload.id when payload.id is provided")
-        normalized_payload["id"] = normalized_trigger_id
-        try:
-            validated_trigger = _TRIGGER_DEFINITION_ADAPTER.validate_python(normalized_payload)
-        except ValidationError as exc:
-            raise _safe_validation_error(exc, context="Invalid trigger config") from exc
-        normalized_payload = validated_trigger.model_dump(mode="json", exclude_none=True)
-
-        with self.admin_config_mutation_lock():
-            current = self._read_trigger_document()
-            config = dict(current.config)
-            existing_triggers_raw = config.get("triggers", [])
-            if not isinstance(existing_triggers_raw, list):
-                raise ValueError(
-                    "Invalid trigger-orchestrator config: triggers must be a JSON array."
-                )
-            existing_triggers = [
-                entry for entry in existing_triggers_raw if isinstance(entry, dict)
-            ]
-            replacing = False
-            for index, existing in enumerate(existing_triggers):
-                existing_id = str(existing.get("id", "")).strip()
-                if existing_id == normalized_trigger_id:
-                    existing_triggers[index] = normalized_payload
-                    replacing = True
-                    break
-            if not replacing:
-                existing_triggers.append(normalized_payload)
-            config["triggers"] = existing_triggers
-            write_result = self._write_trigger_document_unlocked(config)
-        return TriggerConfigMutationPayload(
-            trigger_id=normalized_trigger_id,
-            operation="updated" if replacing else "added",
-            path=write_result.path,
-            config=_workflow_config_for_legacy_mutation_response(write_result.config),
-        )
-
-    def _delete_trigger_config(self, trigger_id: str) -> TriggerConfigMutationPayload:
-        normalized_trigger_id = str(trigger_id).strip()
-        if not normalized_trigger_id:
-            raise ValueError("trigger_id is required")
-        if _is_system_managed_workflow_node_id(normalized_trigger_id):
-            raise ValueError(
-                f"Trigger is system-managed and cannot be mutated: {normalized_trigger_id}"
-            )
-        with self.admin_config_mutation_lock():
-            current = self._read_trigger_document()
-            config = dict(current.config)
-            triggers_raw = config.get("triggers", [])
-            if not isinstance(triggers_raw, list):
-                raise ValueError(
-                    "Invalid trigger-orchestrator config: triggers must be a JSON array."
-                )
-            filtered = []
-            removed = False
-            for entry in triggers_raw:
-                if not isinstance(entry, dict):
-                    continue
-                entry_id = str(entry.get("id", "")).strip()
-                if entry_id == normalized_trigger_id:
-                    removed = True
-                    continue
-                filtered.append(entry)
-            if not removed:
-                raise ValueError(f"Trigger not found: {normalized_trigger_id}")
-            config["triggers"] = filtered
-            write_result = self._write_trigger_document_unlocked(config)
-        return TriggerConfigMutationPayload(
-            trigger_id=normalized_trigger_id,
-            operation="deleted",
-            path=write_result.path,
-            config=_workflow_config_for_legacy_mutation_response(write_result.config),
-        )
-
-    def _upsert_effect_config(
-        self, effect_id: str, payload: dict[str, object]
-    ) -> EffectConfigMutationPayload:
-        normalized_effect_id = str(effect_id).strip()
-        if not normalized_effect_id:
-            raise ValueError("effect_id is required")
-        if _is_system_managed_workflow_node_id(normalized_effect_id):
-            raise ValueError(
-                f"Effect is system-managed and cannot be mutated: {normalized_effect_id}"
-            )
-        normalized_payload = dict(payload)
-        normalized_source_id = str(normalized_payload.pop("source_id", "")).strip()
-        payload_effect_id = str(normalized_payload.get("id", "")).strip()
-        if payload_effect_id and payload_effect_id != normalized_effect_id:
-            raise ValueError("effect_id must match payload.id when payload.id is provided")
-        normalized_payload["id"] = normalized_effect_id
-        try:
-            validated_effect = _EFFECT_DEFINITION_ADAPTER.validate_python(normalized_payload)
-        except ValidationError as exc:
-            raise _safe_validation_error(exc, context="Invalid effect config") from exc
-        normalized_payload = validated_effect.model_dump(mode="json", exclude_none=True)
-
-        with self.admin_config_mutation_lock():
-            current = self._read_worker_global_config_unlocked("trigger-orchestrator")
-            config = dict(current.config)
-            existing_effects_raw = config.get("effects", [])
-            if not isinstance(existing_effects_raw, list):
-                raise ValueError(
-                    "Invalid trigger-orchestrator config: effects must be a JSON array."
-                )
-            existing_effects = [entry for entry in existing_effects_raw if isinstance(entry, dict)]
-            existing_edges_raw = config.get("edges", [])
-            if not isinstance(existing_edges_raw, list):
-                existing_edges_raw = []
-            existing_edges = [entry for entry in existing_edges_raw if isinstance(entry, dict)]
-            replacing = False
-            for index, existing in enumerate(existing_effects):
-                existing_id = str(existing.get("id", "")).strip()
-                if existing_id == normalized_effect_id:
-                    existing_effects[index] = normalized_payload
-                    replacing = True
-                    break
-            if not replacing:
-                existing_effects.append(normalized_payload)
-
-            filtered_edges: list[dict[str, object]] = []
-            for edge in existing_edges:
-                target_id = str(edge.get("target_id", "")).strip()
-                if target_id == normalized_effect_id:
-                    continue
-                filtered_edges.append(edge)
-            if normalized_source_id:
-                filtered_edges.append(
-                    {"source_id": normalized_source_id, "target_id": normalized_effect_id}
-                )
-            config["effects"] = existing_effects
-            config["edges"] = filtered_edges
-            write_result = self._write_worker_global_config_unlocked("trigger-orchestrator", config)
-        return EffectConfigMutationPayload(
-            effect_id=normalized_effect_id,
-            operation="updated" if replacing else "added",
-            path=write_result.path,
-            config=_workflow_config_for_legacy_mutation_response(write_result.config),
-        )
-
-    def _delete_effect_config(self, effect_id: str) -> EffectConfigMutationPayload:
-        normalized_effect_id = str(effect_id).strip()
-        if not normalized_effect_id:
-            raise ValueError("effect_id is required")
-        if _is_system_managed_workflow_node_id(normalized_effect_id):
-            raise ValueError(
-                f"Effect is system-managed and cannot be mutated: {normalized_effect_id}"
-            )
-        with self.admin_config_mutation_lock():
-            current = self._read_worker_global_config_unlocked("trigger-orchestrator")
-            config = dict(current.config)
-            effects_raw = config.get("effects", [])
-            if not isinstance(effects_raw, list):
-                raise ValueError(
-                    "Invalid trigger-orchestrator config: effects must be a JSON array."
-                )
-            filtered = []
-            removed = False
-            for entry in effects_raw:
-                if not isinstance(entry, dict):
-                    continue
-                entry_id = str(entry.get("id", "")).strip()
-                if entry_id == normalized_effect_id:
-                    removed = True
-                    continue
-                filtered.append(entry)
-            if not removed:
-                raise ValueError(f"Effect not found: {normalized_effect_id}")
-            edges_raw = config.get("edges", [])
-            filtered_edges = []
-            if isinstance(edges_raw, list):
-                for entry in edges_raw:
-                    if not isinstance(entry, dict):
-                        continue
-                    source_id = str(entry.get("source_id", "")).strip()
-                    target_id = str(entry.get("target_id", "")).strip()
-                    if source_id == normalized_effect_id or target_id == normalized_effect_id:
-                        continue
-                    filtered_edges.append(entry)
-            config["effects"] = filtered
-            config["edges"] = filtered_edges
-            write_result = self._write_worker_global_config_unlocked("trigger-orchestrator", config)
-        return EffectConfigMutationPayload(
-            effect_id=normalized_effect_id,
-            operation="deleted",
-            path=write_result.path,
-            config=_workflow_config_for_legacy_mutation_response(write_result.config),
-        )

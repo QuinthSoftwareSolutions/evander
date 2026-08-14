@@ -2741,7 +2741,6 @@ GitHub issue intake example:
 
 Failure recovery:
 
-- `--reprocess` and `--list-unprocessed` are deprecated with workflow-owned work-item intake.
 - `--forget` remains available only for removing legacy processed-store entries during migration.
 - To backfill ADO proxy issues, run `query:remote-issues` with `provider=azure_devops`
   or the compatibility `query:ado:work-items`, then feed its `items` array into

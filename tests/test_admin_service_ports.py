@@ -84,21 +84,6 @@ class FakeWorkflowConfig:
     def workflow_event_journal(self) -> object:
         return object()
 
-    def upsert_trigger_config(
-        self, trigger_id: str, payload: dict[str, object]
-    ) -> dict[str, object]:
-        return {"trigger_id": trigger_id, "payload": payload}
-
-    def delete_trigger_config(self, trigger_id: str) -> dict[str, str]:
-        return {"trigger_id": trigger_id}
-
-    def upsert_effect_config(self, effect_id: str, payload: dict[str, object]) -> dict[str, object]:
-        return {"effect_id": effect_id, "payload": payload}
-
-    def delete_effect_config(self, effect_id: str) -> dict[str, str]:
-        return {"effect_id": effect_id}
-
-
 class FakePrivilegedHelperPort:
     def __init__(self) -> None:
         self.helper: Any | None = None

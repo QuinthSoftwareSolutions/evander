@@ -19,7 +19,7 @@ from evander.execution import ExecutionStatusKind
 from evander.execution.container_worker_repository import ContainerWorkerExecutionRecord
 from evander.effects.providers.agent_clone_repo import (
     AgentCloneRepoEffectProvider,
-    GitAuthorIdentity,
+    GitIdentity,
     _container_reachable_git_remote_url,
 )
 from evander.effects.providers.agent_prepare_reference_repositories import (
@@ -7216,7 +7216,7 @@ def test_agent_clone_container_configures_git_author_identity() -> None:
         repo_source="https://dev.azure.com/org/project/_git/repo",
         remote_url="ssh://evander-git-host/opt/evander/runtime/managed-git/mr_0123456789abcdefabcd.git",
         clone_branch="main",
-        git_identity=GitAuthorIdentity(
+        git_identity=GitIdentity(
             name="Ada Lovelace",
             email="ada@example.com",
         ),
@@ -7243,11 +7243,11 @@ def test_agent_clone_container_configures_separate_git_committer_identity() -> N
         repo_source="https://dev.azure.com/org/project/_git/repo",
         remote_url="ssh://evander-git-host/opt/evander/runtime/managed-git/mr_0123456789abcdefabcd.git",
         clone_branch="main",
-        git_author_identity=GitAuthorIdentity(
+        git_author_identity=GitIdentity(
             name="Ada Lovelace",
             email="ada@example.com",
         ),
-        git_committer_identity=GitAuthorIdentity(
+        git_committer_identity=GitIdentity(
             name="Truman Bot",
             email="truman@example.com",
         ),

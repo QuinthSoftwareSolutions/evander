@@ -2339,9 +2339,7 @@ def run_worker(config: WorkerConfig) -> None:
 def run_worker_command(
     *,
     log_level: str = "INFO",
-    reprocess: int | None = None,
     forget: int | None = None,
-    list_unprocessed: bool = False,
 ) -> None:
     logging.basicConfig(
         level=getattr(logging, log_level.upper(), logging.INFO),
@@ -2356,18 +2354,6 @@ def run_worker_command(
 
     config = WorkerConfig.load_from_env()
 
-    if reprocess is not None:
-        raise SystemExit(
-            "--reprocess is deprecated because ADO work-item intake now belongs to workflows; "
-            "use query:ado:work-items with effect:issue:upsert-ado-proxy instead."
-        )
-
-    if list_unprocessed:
-        raise SystemExit(
-            "--list-unprocessed is deprecated because ADO work-item intake now belongs to "
-            "workflows; use trigger:ado:work-item-matching or query:ado:work-items instead."
-        )
-
     run_worker(config)
 
 
@@ -2377,27 +2363,15 @@ def main() -> None:
     )
     parser.add_argument("--log-level", default="INFO", help="Python logging level.")
     parser.add_argument(
-        "--reprocess",
-        type=int,
-        help="Deprecated; use workflow ADO work-item query/upsert nodes instead.",
-    )
-    parser.add_argument(
         "--forget",
         type=int,
         help="Forget a specific work item ID in the processed store, then exit.",
-    )
-    parser.add_argument(
-        "--list-unprocessed",
-        action="store_true",
-        help="Deprecated; use workflow ADO work-item trigger/query nodes instead.",
     )
     args = parser.parse_args()
 
     run_worker_command(
         log_level=args.log_level,
-        reprocess=args.reprocess,
         forget=args.forget,
-        list_unprocessed=args.list_unprocessed,
     )
 
 

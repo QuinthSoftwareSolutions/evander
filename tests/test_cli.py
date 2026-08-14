@@ -319,6 +319,15 @@ def test_help_groups_commands_by_panel_then_alphabetically() -> None:
     assert "trigger-orchestrator" in output and "Run the trigger orchestrator worker." in output
 
 
+def test_poll_ado_backlog_help_exposes_only_current_worker_options() -> None:
+    result = CliRunner().invoke(app, ["poll-ado-backlog", "--help"])
+
+    assert result.exit_code == 0
+    assert "--forget" in result.output
+    assert "--reprocess" not in result.output
+    assert "--list-unprocessed" not in result.output
+
+
 def test_team_checkout_release_candidate_resolves_pinned_release_and_managed_repo(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

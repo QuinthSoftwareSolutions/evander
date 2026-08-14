@@ -8748,7 +8748,7 @@ UI state is a projection. For a disputed operational fact, prefer the Team Admin
 | Runtime assembly | `src/evander/admin/composition.py` (`build_admin_runtime`, `AdminRuntimeComponents`) |
 | Admin domain logic | `src/evander/admin/services/` |
 | Admin Web routes | `src/evander/admin/web/app.py` and domain route modules |
-| MCP gateway | `src/evander/gateway/server.py`, `app.py`, and `cli.py`; `src/evander/gateway.py` is a compatibility shim |
+| MCP gateway | `src/evander/gateway/server.py`, `app.py`, and `cli.py` |
 | Policy and approval | `src/evander/policy.py`, approval services under `src/evander/admin/services/` |
 | Trigger runtime | `src/evander/orchestration/`, `src/evander/triggers/`, and `src/evander/daemons/trigger_orchestrator.py` |
 | Effects | `src/evander/effects/` and `src/evander/daemons/effect_orchestrator.py` |
