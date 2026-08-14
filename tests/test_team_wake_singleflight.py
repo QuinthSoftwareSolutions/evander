@@ -299,7 +299,7 @@ def test_team_wake_lease_summary_is_bounded_and_omits_release_history() -> None:
         "release_packages": release_packages,
     }
 
-    summary = _team_wake_lease_summary(lease)
+    summary = _team_wake_lease_summary(lease, state=TeamState.empty())
     serialized = json.dumps(summary, sort_keys=True)
 
     assert summary["agent_id"] == "agent"

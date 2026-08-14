@@ -1302,6 +1302,7 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
         "directory_path",
         "author_ids",
         "content_contains",
+        "content_starts_with",
         "case_sensitive",
     ]
     assert (

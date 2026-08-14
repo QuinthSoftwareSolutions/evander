@@ -1830,10 +1830,8 @@ def test_routed_ambiguous_finding_rejects_artifact_only_successor() -> None:
         )
         is None
     )
-    assert completed_result["errors"] == [
-        "successor release correction deliverables must include reviewed Git "
-        "content so a changed candidate can enter release gates"
-    ]
+    assert completed_result["error_code"] == "candidate_git_inputs_required"
+    assert "requires at least one accepted Git-backed deliverable" in completed_result["errors"][0]
     assert "successor-with-artifact-only-correction" not in state.release_packages
 
 
