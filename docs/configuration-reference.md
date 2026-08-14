@@ -2082,6 +2082,15 @@ direct-chat discovery remain serial; directories are processed one at a time, so
 limit is global to the worker cycle. Set it to `2` for the initial production trial and restart
 `evander-teams-ingest.service` for the change to apply.
 
+`publish_trigger_events_directly` defaults to `true`. Each Teams ingest cycle captures one compiled
+workflow configuration revision, then uses that immutable snapshot for polling targets, direct-message
+sender resolution, and matching `trigger:teams:new-message`, `trigger:teams:direct-message`, and the
+Teams targets of `trigger:communication:new-message`. Newly persisted matching messages are published
+atomically to the configured orchestration queue and wake the effect orchestrator once per cycle. The
+trigger orchestrator is still notified and remains authoritative for cursor advancement and recovery.
+Set the field to `false` and restart `evander-teams-ingest.service` to restore the prior
+persist-and-wake path without direct queue publication.
+
 Key delegated Teams provider settings now include:
 
 - `teams_backend: delegated_graph_api`

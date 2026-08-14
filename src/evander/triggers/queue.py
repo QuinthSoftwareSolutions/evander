@@ -1,10 +1,11 @@
 from __future__ import annotations
 
-from uuid import uuid4
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from threading import RLock
 from typing import Any, Literal
+from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -44,6 +45,12 @@ class TriggerQueueRecord(BaseModel):
     error: str | None = None
 
 
+@dataclass(frozen=True)
+class TriggerQueuePublishResult:
+    record: TriggerQueueRecord
+    created: bool
+
+
 class TriggerEventQueue:
     """Durable trigger event queue backed by the shared JSON store conventions."""
 
@@ -63,6 +70,11 @@ class TriggerEventQueue:
     def publish(
         self, event: TriggerEvent, *, idempotency_key: str | None = None
     ) -> TriggerQueueRecord:
+        return self.publish_result(event, idempotency_key=idempotency_key).record
+
+    def publish_result(
+        self, event: TriggerEvent, *, idempotency_key: str | None = None
+    ) -> TriggerQueuePublishResult:
         normalized_key = self._normalize_idempotency_key(idempotency_key)
         trace_id = self._normalize_trace_id(event.trace_id)
         published = False
@@ -95,14 +107,14 @@ class TriggerEventQueue:
 
             record = self._store.update_all(update)
             if not published:
-                return record
+                return TriggerQueuePublishResult(record=record, created=False)
             self._journal.append(
                 "workflow.trigger_event.published",
                 source="trigger_queue",
                 subject_id=event.event_id,
                 payload={"trigger_id": event.trigger_id, "trigger_type": event.trigger_type},
             )
-            return record
+            return TriggerQueuePublishResult(record=record, created=True)
 
     def contains(self, event_id: str) -> bool:
         normalized_event_id = event_id.strip()
@@ -275,6 +287,11 @@ class SqliteTriggerEventQueue:
     def publish(
         self, event: TriggerEvent, *, idempotency_key: str | None = None
     ) -> TriggerQueueRecord:
+        return self.publish_result(event, idempotency_key=idempotency_key).record
+
+    def publish_result(
+        self, event: TriggerEvent, *, idempotency_key: str | None = None
+    ) -> TriggerQueuePublishResult:
         normalized_key = TriggerEventQueue._normalize_idempotency_key(idempotency_key)
         trace_id = TriggerEventQueue._normalize_trace_id(event.trace_id)
         published = False
@@ -283,10 +300,10 @@ class SqliteTriggerEventQueue:
                 if normalized_key is not None:
                     existing = self._fetch_record_by_idempotency_key(connection, normalized_key)
                     if existing is not None:
-                        return existing
+                        return TriggerQueuePublishResult(record=existing, created=False)
                 existing = self._fetch_record(connection, event.event_id)
                 if existing is not None:
-                    return existing
+                    return TriggerQueuePublishResult(record=existing, created=False)
 
                 created = TriggerQueueRecord(
                     event_id=event.event_id,
@@ -307,7 +324,7 @@ class SqliteTriggerEventQueue:
                     if existing is None and normalized_key is not None:
                         existing = self._fetch_record_by_idempotency_key(connection, normalized_key)
                     if existing is not None:
-                        return existing
+                        return TriggerQueuePublishResult(record=existing, created=False)
                     raise
 
         if published:
@@ -317,7 +334,7 @@ class SqliteTriggerEventQueue:
                 subject_id=event.event_id,
                 payload={"trigger_id": event.trigger_id, "trigger_type": event.trigger_type},
             )
-        return created
+        return TriggerQueuePublishResult(record=created, created=True)
 
     def contains(self, event_id: str) -> bool:
         normalized_event_id = event_id.strip()

@@ -5,19 +5,15 @@ from datetime import UTC, datetime
 from evander.repositories.cursors import JsonTeamsInboxCursorRepository
 from evander.events.models import TriggerEvent
 from evander.events.provider_models import TeamsDirectMessageTriggerDefinition
-from evander.messaging.teams_inbox_store import TeamsInboxMessage
 from evander.triggers.providers._cursor_state import (
     TriggerCursorStore,
     latest_cursor_timestamp_text,
     merge_cursor_ids,
 )
 from evander.triggers.providers.base import TriggerProviderBase
-from evander.triggers.providers.teams_new_message import (
-    _message_channel_target,
-    _message_matches_filter,
-    _message_payload,
-    _normalize_channel_target,
-    _parse_dt,
+from evander.triggers.providers.teams_message_events import (
+    TeamsDirectMessageEventMatcher,
+    parse_trigger_datetime,
 )
 
 
@@ -28,60 +24,19 @@ class TeamsDirectMessageTriggerProvider(TriggerProviderBase):
         trigger = self._trigger()
         cursor_store = self._cursor_store()
         state = cursor_store.update(trigger.id, _initialize_cursor_if_needed)
-        cursor = _parse_dt(state.get("last_created_at"))
-        recent_cursors = [
-            value
-            for value in state.get("recent_cursors", [])
-            if isinstance(value, str) and value.strip()
-        ]
-        recent_cursor_set = set(recent_cursors)
-        sender_filter = {
-            _sender_ref_match_key(value) for value in trigger.sender_user_ids if value.strip()
-        }
-        target_filters = {
-            _normalize_channel_target(item.target): item.message_filter
-            for item in trigger.targets
-            if item.target.strip()
-        }
+        matcher = TeamsDirectMessageEventMatcher.from_cursor_state(trigger, state)
 
         inbox_store = JsonTeamsInboxCursorRepository(
             self._resolved_config().runtime_dir / "teams-inbox-store.json"
         )
-        candidates: list[TeamsInboxMessage] = []
-        for message in inbox_store.list_all_messages(
-            channel_targets=list(target_filters),
-            created_at_from=cursor,
+        raw_messages = inbox_store.list_all_messages(
+            channel_targets=list(matcher.target_filters),
+            created_at_from=matcher.cursor,
             direct_messages_only=True,
-        ):
-            if not _is_direct_message(message):
-                continue
-            channel_target = _message_channel_target(message)
-            if channel_target not in target_filters:
-                continue
-            if sender_filter and not sender_filter.intersection(_message_sender_ref_keys(message)):
-                continue
-            occurred_at = message.created_at.astimezone(UTC)
-            if cursor is not None and occurred_at < cursor:
-                continue
-            if cursor is not None and occurred_at == cursor and message.cursor in recent_cursor_set:
-                continue
-            if not _message_matches_filter(message, target_filters[channel_target]):
-                continue
-            if not _message_matches_filter(message, trigger.message_filter):
-                continue
-            candidates.append(message)
-
-        candidates.sort(key=lambda message: (message.created_at, message.cursor))
-        return [
-            TriggerEvent(
-                event_id=f"{trigger.id}:{message.cursor}",
-                trigger_id=trigger.id,
-                trigger_type=trigger.type,
-                occurred_at=message.created_at.astimezone(UTC),
-                payload=_message_payload(message, target_type="direct_message"),
-            )
-            for message in candidates
-        ]
+        )
+        events = [event for message in raw_messages if (event := matcher.event_for(message))]
+        events.sort(key=lambda event: (event.occurred_at, event.event_id))
+        return events
 
     def acknowledge_published_event(self, event: TriggerEvent) -> None:
         trigger = self._trigger()
@@ -89,7 +44,7 @@ class TeamsDirectMessageTriggerProvider(TriggerProviderBase):
             return
         payload = event.payload
         cursor = str(payload.get("cursor") or "").strip()
-        created_at = _parse_dt(payload.get("created_at")) or event.occurred_at
+        created_at = parse_trigger_datetime(payload.get("created_at")) or event.occurred_at
         if not cursor or created_at is None:
             return
         self._cursor_store().update(
@@ -115,36 +70,8 @@ class TeamsDirectMessageTriggerProvider(TriggerProviderBase):
         )
 
 
-def _is_direct_message(message: TeamsInboxMessage) -> bool:
-    if not message.chat_id:
-        return False
-    target_type = str(message.metadata.get("target_type") or "").strip()
-    chat_type = str(message.metadata.get("chat_type") or "").strip()
-    return target_type == "direct_message" or chat_type == "oneOnOne"
-
-
-def _message_sender_ref_keys(message: TeamsInboxMessage) -> set[str]:
-    refs = {
-        message.author_id,
-        str(message.metadata.get("author_id") or ""),
-    }
-    metadata_refs = message.metadata.get("direct_message_sender_refs")
-    if isinstance(metadata_refs, str):
-        refs.add(metadata_refs)
-    elif isinstance(metadata_refs, (list, tuple, set)):
-        refs.update(str(value) for value in metadata_refs)
-    return {_sender_ref_match_key(ref) for ref in refs if str(ref).strip()}
-
-
-def _sender_ref_match_key(value: str) -> str:
-    normalized = str(value or "").strip().strip("/")
-    if normalized.startswith("user:"):
-        normalized = normalized.removeprefix("user:").strip()
-    return normalized.casefold()
-
-
 def _initialize_cursor_if_needed(state: dict[str, object]) -> dict[str, object]:
-    if _parse_dt(state.get("last_created_at")) is not None:
+    if parse_trigger_datetime(state.get("last_created_at")) is not None:
         return state
     initialized_at = datetime.now(UTC).isoformat().replace("+00:00", "Z")
     state["initialized_at"] = initialized_at

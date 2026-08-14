@@ -463,9 +463,9 @@ class OperationsAdminService:
                 "assistant_capability_mode": normalized_capability_mode,
             },
         )
-        already_queued = queue.contains(event_id)
-        record = queue.publish(event, idempotency_key=event_id)
-        if not already_queued and record.event_id == event_id:
+        publish_result = queue.publish_result(event, idempotency_key=event_id)
+        record = publish_result.record
+        if publish_result.created and record.event_id == event_id:
             notify_wake_socket_for_lock(worker_config.effect_lock_path)
         return record.model_dump(mode="json")
 

@@ -11,6 +11,11 @@ import pytest
 
 from evander.config import GatewayConfig
 from evander.directories import DirectoryService
+from evander.events.provider_models import (
+    CommunicationNewMessageTriggerDefinition,
+    TeamsDirectMessageTriggerDefinition,
+    TeamsNewMessageTriggerDefinition,
+)
 from evander.messaging.targets import (
     SqliteCommunicationTargetsRepository,
     communication_targets_db_path,
@@ -24,6 +29,13 @@ from evander.messaging.teams_ingest import (
 )
 from evander.orchestration.host_polling import HostWakeSleeper, wake_socket_path_for_lock
 from evander.services import TeamsAuthenticationError
+from evander.triggers.providers.base import TriggerRuntimeContext
+from evander.triggers.providers.communication_new_message import (
+    CommunicationNewMessageTriggerProvider,
+)
+from evander.triggers.providers.teams_direct_message import TeamsDirectMessageTriggerProvider
+from evander.triggers.providers.teams_new_message import TeamsNewMessageTriggerProvider
+from evander.triggers.queue import TriggerEventQueue
 
 
 def ensure_directory(worker, directory_path: str) -> None:
@@ -71,7 +83,9 @@ def write_trigger_config(
     trigger_config_path.write_text(json.dumps(payload), encoding="utf-8")
 
 
-def write_teams_ingest_worker_config(project_dir: Path, *, max_concurrent_target_polls: int) -> None:
+def write_teams_ingest_worker_config(
+    project_dir: Path, *, max_concurrent_target_polls: int
+) -> None:
     config_path = project_dir / "config" / "teams-ingest" / "config.json"
     config_path.parent.mkdir(parents=True, exist_ok=True)
     config_path.write_text(
@@ -698,9 +712,7 @@ def test_teams_ingest_worker_uses_cached_direct_chats_when_discovery_fails(
                             "id": "msg-after-discovery-failure",
                             "createdDateTime": "2026-08-13T10:01:00Z",
                             "body": {"content": "still healthy", "contentType": "text"},
-                            "from": {
-                                "user": {"id": "user-allowed", "displayName": "Ada"}
-                            },
+                            "from": {"user": {"id": "user-allowed", "displayName": "Ada"}},
                         }
                     ]
                 },
@@ -2011,3 +2023,607 @@ def test_teams_ingest_worker_ignores_graph_echo_of_agent_status_post(
     assert result.new_messages_discovered == 0
     assert result.trigger_wake_notified is False
     assert wake_calls == []
+
+
+def test_teams_ingest_worker_directly_publishes_all_matching_teams_trigger_types(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    created_at = datetime.now(UTC) + timedelta(minutes=5)
+    created_at_text = created_at.isoformat().replace("+00:00", "Z")
+    trigger_payloads: list[dict[str, object]] = [
+        {
+            "id": "teams-new",
+            "display_name": "Teams message",
+            "type": "trigger:teams:new-message",
+            "targets": [
+                {
+                    "target": "chat:dm-chat",
+                    "message_filter": {"content": {"contains": "deploy"}},
+                }
+            ],
+            "user_ids": ["user-a"],
+        },
+        {
+            "id": "teams-dm",
+            "display_name": "Teams direct message",
+            "type": "trigger:teams:direct-message",
+            "targets": [{"target": "chat:dm-chat"}],
+            "sender_user_ids": ["user-a"],
+            "message_filter": {"content": {"contains": "deploy"}},
+        },
+        {
+            "id": "communication-teams",
+            "display_name": "Communication message",
+            "type": "trigger:communication:new-message",
+            "communication_target_ids": ["teams-chat"],
+            "directory_path": "root",
+            "author_ids": ["user-a"],
+            "content_starts_with": "Deploy",
+        },
+        {
+            "id": "disabled-teams",
+            "display_name": "Disabled Teams message",
+            "type": "trigger:teams:new-message",
+            "enabled": False,
+            "targets": [{"target": "chat:dm-chat"}],
+        },
+        {
+            "id": "unmatched-teams",
+            "display_name": "Unmatched Teams message",
+            "type": "trigger:teams:new-message",
+            "targets": [
+                {
+                    "target": "chat:dm-chat",
+                    "message_filter": {"content": {"contains": "never-match"}},
+                }
+            ],
+        },
+    ]
+    write_trigger_config(tmp_path, trigger_payloads)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/me/chats"):
+            return httpx.Response(
+                200,
+                json={"value": [{"id": "dm-chat", "chatType": "oneOnOne"}]},
+                request=request,
+            )
+        if request.url.path.endswith("/chats/dm-chat/messages"):
+            return httpx.Response(
+                200,
+                json={
+                    "value": [
+                        {
+                            "id": "msg-1",
+                            "createdDateTime": created_at_text,
+                            "body": {"content": "Deploy the release", "contentType": "text"},
+                            "from": {"user": {"id": "user-a", "displayName": "Ada"}},
+                        }
+                    ]
+                },
+                request=request,
+            )
+        raise AssertionError(f"Unexpected path: {request.url.path}")
+
+    patch_worker_httpx_client(monkeypatch, httpx.MockTransport(handler))
+    monkeypatch.setenv("GRAPH_TEAMS_ACCESS_TOKEN", "graph-token")
+    config = GatewayConfig.model_validate(
+        {
+            "runtime_dir": str(tmp_path / "runtime"),
+            "teams_backend": "graph_api",
+        }
+    )
+    queue = TriggerEventQueue(tmp_path / "runtime" / "direct-events.json")
+    effect_wakes: list[str] = []
+    trigger_wakes: list[str] = []
+    worker = build_teams_ingest_worker(
+        config,
+        project_dir=tmp_path,
+        event_queue=queue,
+        effect_wake_notifier=lambda: effect_wakes.append("wake") or True,
+        trigger_wake_notifier=lambda: trigger_wakes.append("wake") or True,
+    )
+    write_root_communication_targets(
+        worker,
+        [
+            {
+                "id": "teams-chat",
+                "provider": "teams",
+                "kind": "teams",
+                "address": "chat:dm-chat",
+                "policy": {"capabilities": ["read"]},
+            }
+        ],
+    )
+
+    first = worker.run_once()
+
+    assert first.new_messages_discovered == 1
+    assert first.messages_matched == 1
+    assert first.events_created == 3
+    assert first.events_deduplicated == 0
+    assert first.publication_failures == 0
+    assert first.effect_wake_notified is True
+    assert first.trigger_wake_notified is True
+    assert effect_wakes == ["wake"]
+    assert trigger_wakes == ["wake"]
+    assert not (tmp_path / "runtime" / "trigger-cursors-teams.json").exists()
+    assert not (tmp_path / "runtime" / "trigger-cursors-communication.json").exists()
+
+    queued = {record.event_id: record for record in queue.list_pending()}
+    assert set(queued) == {
+        "teams-new:chat:dm-chat/msg-1",
+        "teams-dm:chat:dm-chat/msg-1",
+        (f"communication-teams:teams:teams-chat:msg-1:{created_at_text}"),
+    }
+
+    second = worker.run_once()
+
+    assert second.new_messages_discovered == 0
+    assert second.events_created == 0
+    assert second.events_deduplicated == 0
+    assert effect_wakes == ["wake"]
+    assert trigger_wakes == ["wake"]
+
+    context = TriggerRuntimeContext(resolved_config=worker.config, env={})
+    provider_events = []
+    providers = [
+        (
+            TeamsNewMessageTriggerProvider(),
+            TeamsNewMessageTriggerDefinition.model_validate(trigger_payloads[0]),
+        ),
+        (
+            TeamsDirectMessageTriggerProvider(),
+            TeamsDirectMessageTriggerDefinition.model_validate(trigger_payloads[1]),
+        ),
+        (
+            CommunicationNewMessageTriggerProvider(),
+            CommunicationNewMessageTriggerDefinition.model_validate(trigger_payloads[2]),
+        ),
+    ]
+    for provider, definition in providers:
+        provider.initialize(definition, context)
+        events = provider.poll()
+        assert len(events) == 1
+        event = events[0]
+        provider_events.append(event)
+        assert queue.publish_result(event).created is False
+        provider.acknowledge_published_event(event)
+
+    assert {event.event_id: event.payload for event in provider_events} == {
+        event_id: record.payload for event_id, record in queued.items()
+    }
+    assert len(queue.list_pending()) == 3
+
+
+def test_teams_ingest_worker_direct_publication_can_be_disabled(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    write_trigger_config(
+        tmp_path,
+        [
+            {
+                "id": "teams-new",
+                "display_name": "Teams message",
+                "type": "trigger:teams:new-message",
+                "targets": [{"target": "team-a/channel-1"}],
+            }
+        ],
+    )
+    teams_config_path = tmp_path / "config" / "teams-ingest" / "config.json"
+    teams_config_path.parent.mkdir(parents=True, exist_ok=True)
+    teams_config_path.write_text(
+        json.dumps({"publish_trigger_events_directly": False}),
+        encoding="utf-8",
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "value": [
+                    {
+                        "id": "msg-1",
+                        "createdDateTime": "2026-08-14T10:00:00Z",
+                        "body": {"content": "hello", "contentType": "text"},
+                        "from": {"user": {"id": "user-a", "displayName": "Ada"}},
+                    }
+                ]
+            },
+            request=request,
+        )
+
+    patch_worker_httpx_client(monkeypatch, httpx.MockTransport(handler))
+    monkeypatch.setenv("GRAPH_TEAMS_ACCESS_TOKEN", "graph-token")
+    config = GatewayConfig.model_validate(
+        {
+            "runtime_dir": str(tmp_path / "runtime"),
+            "teams_backend": "graph_api",
+        }
+    )
+    queue = TriggerEventQueue(tmp_path / "runtime" / "direct-events.json")
+    effect_wakes: list[str] = []
+    trigger_wakes: list[str] = []
+    worker = build_teams_ingest_worker(
+        config,
+        project_dir=tmp_path,
+        event_queue=queue,
+        effect_wake_notifier=lambda: effect_wakes.append("wake") or True,
+        trigger_wake_notifier=lambda: trigger_wakes.append("wake") or True,
+    )
+    ensure_directory(worker, "root/team-a")
+    worker.session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-1",
+            directory_path="root/team-a",
+            allowed_tools=[ToolName.TEAMS_GET_MESSAGES],
+            teams_channel_allowlist=["team-a/channel-1"],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        )
+    )
+
+    result = worker.run_once()
+
+    assert result.new_messages_discovered == 1
+    assert result.messages_matched == 0
+    assert result.events_created == 0
+    assert result.effect_wake_notified is False
+    assert result.trigger_wake_notified is True
+    assert queue.list_pending() == []
+    assert effect_wakes == []
+    assert trigger_wakes == ["wake"]
+
+
+def test_teams_ingest_worker_keeps_message_durable_when_direct_queue_publish_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    write_trigger_config(
+        tmp_path,
+        [
+            {
+                "id": "teams-new",
+                "display_name": "Teams message",
+                "type": "trigger:teams:new-message",
+                "targets": [{"target": "team-a/channel-1"}],
+            }
+        ],
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "value": [
+                    {
+                        "id": "msg-1",
+                        "createdDateTime": "2026-08-14T10:00:00Z",
+                        "body": {"content": "hello", "contentType": "text"},
+                        "from": {"user": {"id": "user-a", "displayName": "Ada"}},
+                    }
+                ]
+            },
+            request=request,
+        )
+
+    class FailingQueue:
+        def publish_result(self, _event):
+            raise RuntimeError("simulated queue failure")
+
+    patch_worker_httpx_client(monkeypatch, httpx.MockTransport(handler))
+    monkeypatch.setenv("GRAPH_TEAMS_ACCESS_TOKEN", "graph-token")
+    config = GatewayConfig.model_validate(
+        {
+            "runtime_dir": str(tmp_path / "runtime"),
+            "teams_backend": "graph_api",
+        }
+    )
+    trigger_wakes: list[str] = []
+    worker = build_teams_ingest_worker(
+        config,
+        project_dir=tmp_path,
+        event_queue=FailingQueue(),
+        trigger_wake_notifier=lambda: trigger_wakes.append("wake") or True,
+    )
+
+    result = worker.run_once()
+
+    assert result.new_messages_discovered == 1
+    assert result.messages_matched == 1
+    assert result.events_created == 0
+    assert result.publication_failures == 1
+    assert result.effect_wake_notified is False
+    assert result.trigger_wake_notified is True
+    assert trigger_wakes == ["wake"]
+    stored = worker.store.list_all_messages(channel_targets=["team-a/channel-1"])
+    assert [message.message_id for message in stored] == ["msg-1"]
+    assert not (tmp_path / "runtime" / "trigger-cursors-teams.json").exists()
+
+    provider = TeamsNewMessageTriggerProvider()
+    provider.initialize(
+        TeamsNewMessageTriggerDefinition.model_validate(
+            {
+                "id": "teams-new",
+                "display_name": "Teams message",
+                "type": "trigger:teams:new-message",
+                "targets": [{"target": "team-a/channel-1"}],
+            }
+        ),
+        TriggerRuntimeContext(resolved_config=worker.config, env={}),
+    )
+    assert [event.event_id for event in provider.poll()] == ["teams-new:team-a/channel-1/msg-1"]
+
+
+def test_teams_ingest_worker_direct_publication_honors_saved_trigger_baseline(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    write_trigger_config(
+        tmp_path,
+        [
+            {
+                "id": "teams-new",
+                "display_name": "Teams message",
+                "type": "trigger:teams:new-message",
+                "targets": [{"target": "team-a/channel-1"}],
+            }
+        ],
+    )
+    runtime_dir = tmp_path / "runtime"
+    runtime_dir.mkdir(parents=True)
+    cursor_path = runtime_dir / "trigger-cursors-teams.json"
+    cursor_payload = {
+        "teams-new": {
+            "last_created_at": "2026-08-14T11:00:00Z",
+            "recent_cursors": [],
+        }
+    }
+    cursor_path.write_text(json.dumps(cursor_payload), encoding="utf-8")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "value": [
+                    {
+                        "id": "msg-before-baseline",
+                        "createdDateTime": "2026-08-14T10:00:00Z",
+                        "body": {"content": "hello", "contentType": "text"},
+                        "from": {"user": {"id": "user-a", "displayName": "Ada"}},
+                    }
+                ]
+            },
+            request=request,
+        )
+
+    patch_worker_httpx_client(monkeypatch, httpx.MockTransport(handler))
+    monkeypatch.setenv("GRAPH_TEAMS_ACCESS_TOKEN", "graph-token")
+    config = GatewayConfig.model_validate(
+        {"runtime_dir": str(runtime_dir), "teams_backend": "graph_api"}
+    )
+    queue = TriggerEventQueue(runtime_dir / "direct-events.json")
+    worker = build_teams_ingest_worker(
+        config,
+        project_dir=tmp_path,
+        event_queue=queue,
+        trigger_wake_notifier=lambda: True,
+    )
+
+    result = worker.run_once()
+
+    assert result.new_messages_discovered == 1
+    assert result.messages_matched == 0
+    assert result.events_created == 0
+    assert queue.list_pending() == []
+    assert json.loads(cursor_path.read_text(encoding="utf-8")) == cursor_payload
+
+
+def test_teams_ingest_worker_applies_trigger_config_change_on_next_cycle(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    old_trigger = {
+        "id": "teams-old",
+        "display_name": "Old Teams message",
+        "type": "trigger:teams:new-message",
+        "targets": [{"target": "team-a/channel-1"}],
+        "user_ids": ["user-old"],
+    }
+    new_trigger = {
+        "id": "teams-new",
+        "display_name": "New Teams message",
+        "type": "trigger:teams:new-message",
+        "targets": [{"target": "team-a/channel-1"}],
+        "user_ids": ["user-new"],
+    }
+    write_trigger_config(tmp_path, [old_trigger])
+    request_count = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal request_count
+        request_count += 1
+        if request_count == 1:
+            write_trigger_config(tmp_path, [new_trigger])
+            message_id = "msg-old"
+            author_id = "user-old"
+            created_at = "2026-08-14T10:00:00Z"
+        else:
+            message_id = "msg-new"
+            author_id = "user-new"
+            created_at = "2026-08-14T10:01:00Z"
+        return httpx.Response(
+            200,
+            json={
+                "value": [
+                    {
+                        "id": message_id,
+                        "createdDateTime": created_at,
+                        "body": {"content": "hello", "contentType": "text"},
+                        "from": {"user": {"id": author_id, "displayName": author_id}},
+                    }
+                ]
+            },
+            request=request,
+        )
+
+    patch_worker_httpx_client(monkeypatch, httpx.MockTransport(handler))
+    monkeypatch.setenv("GRAPH_TEAMS_ACCESS_TOKEN", "graph-token")
+    config = GatewayConfig.model_validate(
+        {
+            "runtime_dir": str(tmp_path / "runtime"),
+            "teams_backend": "graph_api",
+        }
+    )
+    queue = TriggerEventQueue(tmp_path / "runtime" / "direct-events.json")
+    worker = build_teams_ingest_worker(
+        config,
+        project_dir=tmp_path,
+        event_queue=queue,
+        effect_wake_notifier=lambda: True,
+        trigger_wake_notifier=lambda: True,
+    )
+
+    first = worker.run_once()
+    second = worker.run_once()
+
+    assert first.workflow_config_revision != second.workflow_config_revision
+    assert first.events_created == 1
+    assert second.events_created == 1
+    assert [record.event_id for record in queue.list_pending()] == [
+        "teams-old:team-a/channel-1/msg-old",
+        "teams-new:team-a/channel-1/msg-new",
+    ]
+
+
+def test_teams_ingest_worker_recovers_from_materialization_and_trigger_wake_failures(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    trigger_payload = {
+        "id": "teams-new",
+        "display_name": "Teams message",
+        "type": "trigger:teams:new-message",
+        "targets": [{"target": "team-a/channel-1"}],
+    }
+    write_trigger_config(tmp_path, [trigger_payload])
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "value": [
+                    {
+                        "id": "msg-1",
+                        "createdDateTime": "2026-08-14T10:00:00Z",
+                        "body": {"content": "hello", "contentType": "text"},
+                        "from": {"user": {"id": "user-a", "displayName": "Ada"}},
+                    }
+                ]
+            },
+            request=request,
+        )
+
+    def fail_materialization(_matcher, _message):
+        raise RuntimeError("simulated materialization failure")
+
+    patch_worker_httpx_client(monkeypatch, httpx.MockTransport(handler))
+    monkeypatch.setattr(
+        "evander.messaging.teams_ingest.TeamsNewMessageEventMatcher.event_for",
+        fail_materialization,
+    )
+    monkeypatch.setenv("GRAPH_TEAMS_ACCESS_TOKEN", "graph-token")
+    config = GatewayConfig.model_validate(
+        {
+            "runtime_dir": str(tmp_path / "runtime"),
+            "teams_backend": "graph_api",
+        }
+    )
+    queue = TriggerEventQueue(tmp_path / "runtime" / "direct-events.json")
+    worker = build_teams_ingest_worker(
+        config,
+        project_dir=tmp_path,
+        event_queue=queue,
+        effect_wake_notifier=lambda: (_ for _ in ()).throw(RuntimeError("effect wake failed")),
+        trigger_wake_notifier=lambda: (_ for _ in ()).throw(RuntimeError("trigger wake failed")),
+    )
+
+    result = worker.run_once()
+
+    assert result.new_messages_discovered == 1
+    assert result.messages_matched == 0
+    assert result.publication_failures == 1
+    assert result.effect_wake_notified is False
+    assert result.trigger_wake_notified is False
+    assert queue.list_pending() == []
+    assert [message.message_id for message in worker.store.list_all_messages()] == ["msg-1"]
+    assert not (tmp_path / "runtime" / "trigger-cursors-teams.json").exists()
+
+    provider = TeamsNewMessageTriggerProvider()
+    provider.initialize(
+        TeamsNewMessageTriggerDefinition.model_validate(trigger_payload),
+        TriggerRuntimeContext(resolved_config=worker.config, env={}),
+    )
+    monkeypatch.undo()
+    assert [event.event_id for event in provider.poll()] == ["teams-new:team-a/channel-1/msg-1"]
+
+
+def test_teams_ingest_worker_keeps_durable_event_when_wake_notifications_fail(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    trigger_payload = {
+        "id": "teams-new",
+        "display_name": "Teams message",
+        "type": "trigger:teams:new-message",
+        "targets": [{"target": "team-a/channel-1"}],
+    }
+    write_trigger_config(tmp_path, [trigger_payload])
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "value": [
+                    {
+                        "id": "msg-1",
+                        "createdDateTime": "2026-08-14T10:00:00Z",
+                        "body": {"content": "hello", "contentType": "text"},
+                        "from": {"user": {"id": "user-a", "displayName": "Ada"}},
+                    }
+                ]
+            },
+            request=request,
+        )
+
+    def fail_wake() -> bool:
+        raise RuntimeError("simulated wake failure")
+
+    patch_worker_httpx_client(monkeypatch, httpx.MockTransport(handler))
+    monkeypatch.setenv("GRAPH_TEAMS_ACCESS_TOKEN", "graph-token")
+    config = GatewayConfig.model_validate(
+        {
+            "runtime_dir": str(tmp_path / "runtime"),
+            "teams_backend": "graph_api",
+        }
+    )
+    queue = TriggerEventQueue(tmp_path / "runtime" / "direct-events.json")
+    worker = build_teams_ingest_worker(
+        config,
+        project_dir=tmp_path,
+        event_queue=queue,
+        effect_wake_notifier=fail_wake,
+        trigger_wake_notifier=fail_wake,
+    )
+
+    result = worker.run_once()
+
+    assert result.events_created == 1
+    assert result.publication_failures == 0
+    assert result.effect_wake_notified is False
+    assert result.trigger_wake_notified is False
+    assert [record.event_id for record in queue.list_pending()] == [
+        "teams-new:team-a/channel-1/msg-1"
+    ]
+    assert not (tmp_path / "runtime" / "trigger-cursors-teams.json").exists()
