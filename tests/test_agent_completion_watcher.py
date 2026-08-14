@@ -162,13 +162,13 @@ def test_await_agent_completion_publishes_when_dispatch_settles(
         def __init__(self, path: Path) -> None:
             self.path = path
 
-        def contains(self, event_id: str) -> bool:
-            return False
-
-        def publish(self, event: TriggerEvent, *, idempotency_key: str | None = None):
+        def publish_result(self, event: TriggerEvent, *, idempotency_key: str | None = None):
             published["event"] = event
             published["idempotency_key"] = idempotency_key
-            return SimpleNamespace(event_id=event.event_id)
+            return SimpleNamespace(
+                record=SimpleNamespace(event_id=event.event_id),
+                created=True,
+            )
 
     monkeypatch.setattr(
         watcher, "build_admin_runtime", lambda runtime_dir: _AdminServiceStub(runtime_dir)
@@ -261,13 +261,13 @@ def test_await_agent_completion_marks_matching_wake_request_completed(
         def __init__(self, path: Path) -> None:
             self.path = path
 
-        def contains(self, event_id: str) -> bool:
-            return False
-
-        def publish(self, event: TriggerEvent, *, idempotency_key: str | None = None):
+        def publish_result(self, event: TriggerEvent, *, idempotency_key: str | None = None):
             published["event"] = event
             published["idempotency_key"] = idempotency_key
-            return SimpleNamespace(event_id=event.event_id)
+            return SimpleNamespace(
+                record=SimpleNamespace(event_id=event.event_id),
+                created=True,
+            )
 
     monkeypatch.setattr(
         watcher, "build_admin_runtime", lambda runtime_dir: _AdminServiceStub(runtime_dir)
@@ -332,13 +332,13 @@ def test_await_agent_completion_uses_configured_event_queue_path(
         def __init__(self, path: Path) -> None:
             published["path"] = path
 
-        def contains(self, event_id: str) -> bool:
-            return False
-
-        def publish(self, event: TriggerEvent, *, idempotency_key: str | None = None):
+        def publish_result(self, event: TriggerEvent, *, idempotency_key: str | None = None):
             published["event"] = event
             published["idempotency_key"] = idempotency_key
-            return SimpleNamespace(event_id=event.event_id)
+            return SimpleNamespace(
+                record=SimpleNamespace(event_id=event.event_id),
+                created=True,
+            )
 
     monkeypatch.setattr(
         watcher, "build_admin_runtime", lambda runtime_dir: _AdminServiceStub(runtime_dir)

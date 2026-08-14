@@ -176,10 +176,13 @@ def await_agent_completion_and_publish(
                 session_id=session_id,
                 directory_path=directory_path,
             )
-            already_queued = event_queue.contains(event.event_id)
-            record = event_queue.publish(event, idempotency_key=f"{trigger_id}:{dispatch_id}")
+            publish_result = event_queue.publish_result(
+                event,
+                idempotency_key=f"{trigger_id}:{dispatch_id}",
+            )
+            record = publish_result.record
             _mark_wake_completed_from_event(admin_service=admin_runtime, event=event)
-            if not already_queued and record.event_id == event.event_id:
+            if publish_result.created and record.event_id == event.event_id:
                 notify_wake_socket_for_lock(resolved_effect_lock_path)
             if local_inference_slot_id:
                 local_inference_capacity_store(runtime_dir).release(local_inference_slot_id)

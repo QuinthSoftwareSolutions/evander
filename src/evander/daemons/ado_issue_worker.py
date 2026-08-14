@@ -2083,9 +2083,9 @@ def _publish_directory_pr_feedback_events(
                     else {}
                 ),
             )
-            already_queued = event_queue.contains(event.event_id)
-            record = event_queue.publish(event)
-            if not already_queued and record.event_id == event.event_id:
+            publish_result = event_queue.publish_result(event)
+            record = publish_result.record
+            if publish_result.created and record.event_id == event.event_id:
                 published_count += 1
                 notify_wake_socket_for_lock(effect_wake_lock_path)
         cursor_store.put(trigger.id, {"stream_cursors": next_cursors})
@@ -2235,8 +2235,8 @@ def _publish_directory_pr_completion_events(
                 occurred_at=_pr_completion_occurred_at(event_entry),
                 payload=completion_event_payload(event_entry),
             )
-            already_queued = event_queue.contains(event.event_id)
-            record = event_queue.publish(event)
+            publish_result = event_queue.publish_result(event)
+            record = publish_result.record
             if record.event_id == event.event_id:
                 if mark_published:
                     pr_map_store.mark_completion_event_published(
@@ -2266,7 +2266,7 @@ def _publish_directory_pr_completion_events(
                     args={"pr": completion_event_payload(event_entry)["pr"]},
                     result={"event_id": event.event_id},
                 )
-            if not already_queued and record.event_id == event.event_id:
+            if publish_result.created and record.event_id == event.event_id:
                 published_count += 1
                 notify_wake_socket_for_lock(effect_wake_lock_path)
 

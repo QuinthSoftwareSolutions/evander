@@ -1,6 +1,7 @@
 {
   "runtime_dir": "runtime",
   "directories": [],
+  "publish_trigger_events_directly": true,
   "poll_interval_seconds": 2,
   "jitter_seconds": 5,
   "backoff_seconds": 60,

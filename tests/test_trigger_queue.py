@@ -1,7 +1,11 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+from concurrent.futures import ThreadPoolExecutor
 import json
+from threading import Barrier
+
+import pytest
 
 from evander.events.models import TriggerEvent
 from evander.triggers.queue import SqliteTriggerEventQueue, TriggerEventQueue
@@ -46,6 +50,30 @@ def test_publish_honors_idempotency_key(tmp_path) -> None:
 
     assert second.event_id == first.event_id
     assert [item.event_id for item in queue.list_pending()] == ["evt-1"]
+
+
+@pytest.mark.parametrize("backend", ["json", "sqlite"])
+def test_publish_result_atomically_reports_one_creator_under_race(tmp_path, backend: str) -> None:
+    path = tmp_path / ("events.json" if backend == "json" else "orchestration.db")
+    queues = [
+        TriggerEventQueue(path) if backend == "json" else SqliteTriggerEventQueue(path)
+        for _ in range(8)
+    ]
+    barrier = Barrier(len(queues))
+
+    def publish(queue):
+        barrier.wait()
+        return queue.publish_result(
+            _event(event_id="evt-race"),
+            idempotency_key="provider:race",
+        )
+
+    with ThreadPoolExecutor(max_workers=len(queues)) as executor:
+        results = list(executor.map(publish, queues))
+
+    assert sum(result.created for result in results) == 1
+    assert {result.record.event_id for result in results} == {"evt-race"}
+    assert [record.event_id for record in queues[0].list_pending()] == ["evt-race"]
 
 
 def test_publish_uses_single_store_update(tmp_path, monkeypatch) -> None:

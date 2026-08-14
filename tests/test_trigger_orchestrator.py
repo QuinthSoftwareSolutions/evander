@@ -68,11 +68,7 @@ class _FailingEventQueue:
     def __init__(self) -> None:
         self.published_event_ids: list[str] = []
 
-    def contains(self, event_id: str) -> bool:
-        _ = event_id
-        return False
-
-    def publish(self, event: TriggerEvent):
+    def publish_result(self, event: TriggerEvent):
         _ = event
         raise RuntimeError("queue publish failed")
 
@@ -82,16 +78,15 @@ class _FailingSecondEventQueue:
         self.published_event_ids: list[str] = []
         self.calls = 0
 
-    def contains(self, event_id: str) -> bool:
-        _ = event_id
-        return False
-
-    def publish(self, event: TriggerEvent):
+    def publish_result(self, event: TriggerEvent):
         self.calls += 1
         if self.calls == 2:
             raise RuntimeError("queue publish failed on second event")
         self.published_event_ids.append(event.event_id)
-        return SimpleNamespace(event_id=event.event_id)
+        return SimpleNamespace(
+            record=SimpleNamespace(event_id=event.event_id),
+            created=True,
+        )
 
 
 class _StaticReloader:

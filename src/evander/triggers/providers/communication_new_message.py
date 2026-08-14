@@ -25,7 +25,6 @@ from evander.messaging.discord_inbox_store import DiscordInboxStore
 from evander.services import (
     normalize_teams_target,
     parse_teams_target,
-    teams_target_from_message,
 )
 from evander.messaging.notifications import _email_mailbox_id_from_auth_profile_ref
 from evander.triggers.providers._cursor_state import (
@@ -34,6 +33,14 @@ from evander.triggers.providers._cursor_state import (
     merge_cursor_ids,
 )
 from evander.triggers.providers.base import TriggerProviderBase
+from evander.triggers.providers.teams_message_events import (
+    CommunicationTeamsMessageEventMatcher,
+    build_communication_message_event as _build_event,
+    communication_message_cursor_key as _cursor_key,
+    communication_message_matches_filters as _message_matches_filters,
+    message_is_behind_cursor as _message_is_behind_cursor,
+    parse_trigger_datetime as _parse_dt,
+)
 
 
 @dataclass(frozen=True)
@@ -256,57 +263,25 @@ class CommunicationNewMessageTriggerProvider(TriggerProviderBase):
             created_at_from=cursor,
         )
         candidates: list[_PendingCommunicationEvent] = []
+        matcher = CommunicationTeamsMessageEventMatcher.from_cursor_state(
+            trigger,
+            {
+                "last_created_at": cursor.isoformat() if cursor is not None else None,
+                "recent_message_ids": list(recent_keys),
+            },
+            targets_by_id=self._targets_by_id or {},
+            teams_targets_by_address=self._teams_targets_by_address,
+        )
 
         for message in raw_messages:
-            message_target = normalize_teams_target(
-                teams_target_from_message(
-                    team_id=message.team_id,
-                    channel_id=message.channel_id,
-                    chat_id=message.chat_id,
-                    metadata=message.metadata,
-                )
-            )
-            target_ids = self._teams_targets_by_address.get(message_target, [])
-            if not target_ids:
-                continue
-            if not _message_matches_filters(
-                content=message.content,
-                author_id=message.author_id,
-                trigger=trigger,
-            ):
-                continue
-
-            occurred_at = message.created_at.astimezone(UTC)
-            for target_id in target_ids:
-                target = self._targets_by_id.get(target_id) if self._targets_by_id else None
-                target_address = (
-                    normalize_teams_target(target.address) if target is not None else message_target
-                )
+            for event in matcher.events_for(message):
+                target_id = str(event.payload["communication_target_id"])
                 cursor_key = _cursor_key("teams", target_id, message.message_id)
-                if _message_is_behind_cursor(
-                    cursor,
-                    occurred_at=occurred_at,
-                    cursor_key=cursor_key,
-                    recent_keys=recent_keys,
-                ):
-                    continue
                 candidates.append(
                     _PendingCommunicationEvent(
-                        occurred_at=occurred_at,
+                        occurred_at=event.occurred_at,
                         sort_key=_candidate_sort_key("teams", target_id, message.message_id),
-                        event=_build_event(
-                            trigger=trigger,
-                            provider="teams",
-                            communication_target_id=target_id,
-                            message_id=message.message_id,
-                            thread_id=message.thread_id,
-                            content=message.content,
-                            author_id=message.author_id,
-                            author_name=message.author_name,
-                            target=target_address,
-                            occurred_at=occurred_at,
-                            metadata=dict(message.metadata),
-                        ),
+                        event=event,
                         cursor_key=cursor_key,
                     )
                 )
@@ -340,8 +315,8 @@ class CommunicationNewMessageTriggerProvider(TriggerProviderBase):
                     if _message_is_behind_cursor(
                         cursor,
                         occurred_at=occurred_at,
-                        cursor_key=cursor_key,
-                        recent_keys=recent_keys,
+                        recent_id=cursor_key,
+                        recent_ids=recent_keys,
                     ):
                         continue
                     candidates.append(
@@ -462,8 +437,8 @@ class CommunicationNewMessageTriggerProvider(TriggerProviderBase):
                 if _message_is_behind_cursor(
                     cursor,
                     occurred_at=occurred_at,
-                    cursor_key=cursor_key,
-                    recent_keys=recent_keys,
+                    recent_id=cursor_key,
+                    recent_ids=recent_keys,
                 ):
                     continue
                 candidates.append(
@@ -489,90 +464,6 @@ class CommunicationNewMessageTriggerProvider(TriggerProviderBase):
         return candidates
 
 
-def _build_event(
-    *,
-    trigger: CommunicationNewMessageTriggerDefinition,
-    provider: str,
-    communication_target_id: str,
-    message_id: str,
-    thread_id: str | None,
-    content: str,
-    author_id: str,
-    author_name: str,
-    target: str,
-    occurred_at: datetime,
-    metadata: dict[str, Any],
-) -> TriggerEvent:
-    timestamp = _timestamp_text(occurred_at)
-    message_payload = {
-        "provider": provider,
-        "communication_target_id": communication_target_id,
-        "message_id": message_id,
-        "thread_id": _normalized_optional_text(thread_id),
-        "content": content,
-        "author_id": author_id,
-        "author_name": author_name or author_id,
-        "created_at": timestamp,
-        "received_at": timestamp,
-        "target": target,
-        "metadata": metadata,
-    }
-    payload = {key: value for key, value in message_payload.items() if key != "metadata"}
-    payload["message"] = dict(message_payload)
-    return TriggerEvent(
-        event_id=f"{trigger.id}:{provider}:{communication_target_id}:{message_id}:{timestamp}",
-        trigger_id=trigger.id,
-        trigger_type=trigger.type,
-        occurred_at=occurred_at.astimezone(UTC),
-        payload=payload,
-    )
-
-
-def _message_matches_filters(
-    *,
-    content: str,
-    author_id: str,
-    trigger: CommunicationNewMessageTriggerDefinition,
-) -> bool:
-    author_filter = {value.strip().casefold() for value in trigger.author_ids if value.strip()}
-    if author_filter and author_id.strip().casefold() not in author_filter:
-        return False
-
-    if trigger.content_contains is not None:
-        haystack = content
-        needle = trigger.content_contains
-        if not trigger.case_sensitive:
-            haystack = haystack.casefold()
-            needle = needle.casefold()
-        if needle not in haystack:
-            return False
-
-    if trigger.content_starts_with is None:
-        return True
-
-    haystack = content
-    needle = trigger.content_starts_with
-    if not trigger.case_sensitive:
-        haystack = haystack.casefold()
-        needle = needle.casefold()
-    return haystack.startswith(needle)
-
-
-def _message_is_behind_cursor(
-    cursor: datetime | None,
-    *,
-    occurred_at: datetime,
-    cursor_key: str,
-    recent_keys: set[str],
-) -> bool:
-    if cursor is None:
-        return False
-    occurred_at = occurred_at.astimezone(UTC)
-    if occurred_at < cursor:
-        return True
-    return occurred_at == cursor and cursor_key in recent_keys
-
-
 def _acknowledge_message(
     state: dict[str, object],
     cursor_key: str,
@@ -590,10 +481,6 @@ def _acknowledge_message(
     return state
 
 
-def _cursor_key(provider: str, communication_target_id: str, message_id: str) -> str:
-    return f"{provider}:{communication_target_id}:{message_id}"
-
-
 def _candidate_sort_key(provider: str, communication_target_id: str, message_id: str) -> str:
     return f"{provider}:{communication_target_id}:{message_id}"
 
@@ -602,32 +489,9 @@ def _discord_channel_id(address: str) -> str:
     return str(address).strip().split("/")[-1]
 
 
-def _parse_dt(value: object) -> datetime | None:
-    if not isinstance(value, str) or not value.strip():
-        return None
-    normalized = value.strip()
-    if normalized.endswith("Z"):
-        normalized = normalized[:-1] + "+00:00"
-    parsed = datetime.fromisoformat(normalized)
-    if parsed.tzinfo is None:
-        return parsed.replace(tzinfo=UTC)
-    return parsed.astimezone(UTC)
-
-
-def _normalized_optional_text(value: object | None) -> str | None:
-    if value is None:
-        return None
-    text = str(value).strip()
-    return text or None
-
-
 def _normalized_lookup_key(value: object | None) -> str:
     return str(value or "").strip().casefold()
 
 
 def _normalized_message_id(value: object | None) -> str:
     return str(value or "").strip()
-
-
-def _timestamp_text(value: datetime) -> str:
-    return value.astimezone(UTC).isoformat().replace("+00:00", "Z")

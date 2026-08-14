@@ -1081,6 +1081,7 @@ def test_teams_ingest_worker_global_config_defaults_follow_runtime_dir() -> None
     assert str(config.lock_path) == "/tmp/evander-runtime/teams-ingest.lock"
     assert config.directories == []
     assert config.max_concurrent_target_polls == 1
+    assert config.publish_trigger_events_directly is True
 
 
 @pytest.mark.parametrize("value", [0, 33])

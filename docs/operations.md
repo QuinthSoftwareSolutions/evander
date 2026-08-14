@@ -2854,6 +2854,16 @@ compatibility with older live workflow packs and should not be used for new prov
   the host-owned inbox stores consumed by the trigger.
 - Direct-message triggers require `sender_user_ids`, which accepts Graph user IDs, UPNs, or mail
   addresses so only configured one-on-one senders can wake workflows.
+- Direct Teams trigger publication is enabled by default through
+  `config/teams-ingest/config.json` `publish_trigger_events_directly`. After a new inbox message is
+  durable, the ingest worker publishes every matching Teams-backed trigger event to the configured
+  orchestration queue and wakes the effect worker once for the cycle. It does not advance trigger
+  cursors; the trigger orchestrator still reconciles and acknowledges events and recovers any message
+  missed because matching, queue publication, or a wake notification failed.
+- To roll back the fast path, set `publish_trigger_events_directly` to `false` and restart
+  `evander-teams-ingest.service`. Inspect the Teams ingest cycle log fields `messages_matched`,
+  `events_created`, `events_deduplicated`, `publication_failures`, `effect_wake_notified`,
+  `trigger_wake_notified`, and `workflow_config_revision` when diagnosing delivery.
 - This polling path is independent from the wake workers; Discord/scheduled wake behavior now stays with
   `evander-discord-wake` and `evander-scheduled-wake` while Azure DevOps PR feedback ingestion stays with
   `evander-ado-worker`.

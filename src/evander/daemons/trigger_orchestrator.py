@@ -224,8 +224,8 @@ class TriggerOrchestratorWorker:
                     trace_id,
                 )
                 return None
-            already_queued = self.event_queue.contains(event.event_id)
-            record = self.event_queue.publish(event)
+            publish_result = self.event_queue.publish_result(event)
+            record = publish_result.record
             if record.event_id == event.event_id:
                 _acknowledge_provider_event_published(providers.get(trigger.id), event)
                 published_event_ids = published_event_ids_by_trigger_id.setdefault(trigger.id, [])
@@ -235,7 +235,7 @@ class TriggerOrchestratorWorker:
                     discovered=len(published_event_ids),
                     event_ids=published_event_ids,
                 )
-            if not already_queued and record.event_id == event.event_id:
+            if publish_result.created and record.event_id == event.event_id:
                 logger.debug(
                     "Trigger event published trigger_id=%s trigger_type=%s event_id=%s trace_id=%s",
                     trigger.id,

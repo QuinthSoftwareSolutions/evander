@@ -1284,6 +1284,7 @@ class ScheduledWakeWorkerGlobalConfig(BaseModel):
 class TeamsIngestWorkerGlobalConfig(BaseModel):
     runtime_dir: Path = Path("runtime")
     directories: list[str] = Field(default_factory=list)
+    publish_trigger_events_directly: bool = True
     poll_interval_seconds: float = Field(default=2.0, gt=0)
     jitter_seconds: float = Field(default=5.0, ge=0)
     backoff_seconds: float = Field(default=60.0, ge=0)

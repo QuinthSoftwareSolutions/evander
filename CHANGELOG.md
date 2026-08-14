@@ -1,5 +1,18 @@
 # Changelog
 
+## 2026-08-14 - Direct Teams Trigger Publication
+
+- Published matching Teams-backed workflow trigger events atomically from Teams ingest immediately
+  after inbox persistence, while retaining trigger-orchestrator cursor reconciliation and periodic
+  recovery.
+- Captured one workflow configuration revision per ingest cycle for polling, sender resolution, and
+  matching, and added direct-publication, deduplication, failure, and wake diagnostics.
+- Added `publish_trigger_events_directly` as a default-on Teams ingest setting with a rollback path to
+  the prior persist-and-wake behavior, plus atomic queue publish results for race-free wake decisions.
+- Kept fast-path polling on each workflow graph's directory-scoped Teams configuration, preserved
+  inbox ingestion when direct queue initialization fails, and deferred the effect wake until all
+  event publications for the cycle have completed.
+
 ## 2026-08-14 - Remove Expired Compatibility Surfaces
 
 - Removed unreachable or unreferenced gateway, workflow-graph, schema-bootstrap, review-store, and
