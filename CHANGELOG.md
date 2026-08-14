@@ -1,5 +1,14 @@
 # Changelog
 
+## 2026-08-14 - Globally Bounded Teams-Ingest Polling
+
+- Added `max_concurrent_target_polls` to the Teams ingest worker configuration. It defaults to
+  `1` for serial compatibility and bounds concurrent Graph channel/chat polls to `1`–`32` while
+  directories and prerequisite discovery remain serial.
+- Reused each directory's Graph client across concurrent target polls, synchronized per-cycle
+  accounting and trigger wake delivery, and made delegated credential refresh single-flight to
+  prevent concurrent refresh-token requests.
+
 ## 2026-08-14 - Keyed Fixed-Window Workflow Counter Gate
 
 - Added `gate:counter`, which forwards each event with a keyed fixed-window `count` for friendly

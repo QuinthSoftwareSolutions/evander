@@ -1299,6 +1299,7 @@ class TeamsIngestWorkerGlobalConfig(BaseModel):
     poll_interval_seconds: float = Field(default=2.0, gt=0)
     jitter_seconds: float = Field(default=5.0, ge=0)
     backoff_seconds: float = Field(default=60.0, ge=0)
+    max_concurrent_target_polls: int = Field(default=1, ge=1, le=32)
     target_backoff_initial_seconds: float = Field(default=60.0, ge=0)
     target_backoff_max_seconds: float = Field(default=900.0, ge=0)
     lock_path: Path | None = None

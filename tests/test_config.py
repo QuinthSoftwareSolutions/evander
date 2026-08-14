@@ -1080,6 +1080,13 @@ def test_teams_ingest_worker_global_config_defaults_follow_runtime_dir() -> None
     config = TeamsIngestWorkerGlobalConfig.model_validate({"runtime_dir": "/tmp/evander-runtime"})
     assert str(config.lock_path) == "/tmp/evander-runtime/teams-ingest.lock"
     assert config.directories == []
+    assert config.max_concurrent_target_polls == 1
+
+
+@pytest.mark.parametrize("value", [0, 33])
+def test_teams_ingest_worker_global_config_bounds_concurrent_target_polls(value: int) -> None:
+    with pytest.raises(ValueError, match="max_concurrent_target_polls"):
+        TeamsIngestWorkerGlobalConfig.model_validate({"max_concurrent_target_polls": value})
 
 
 def test_teams_ingest_worker_global_config_directory_paths_are_normalized() -> None:

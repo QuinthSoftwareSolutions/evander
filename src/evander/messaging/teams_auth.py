@@ -325,6 +325,7 @@ class TeamsDeviceCodeTokenProvider:
         self._sleep = sleep or time.sleep
         self._client_factory = client_factory or (lambda timeout: httpx.Client(timeout=timeout))
         self._cached_credentials: TeamsAuthCredentials | None = None
+        self._credentials_lock = RLock()
 
     def load_credentials(self) -> TeamsAuthCredentials | None:
         if self._cached_credentials is not None:
@@ -487,14 +488,18 @@ class TeamsDeviceCodeTokenProvider:
         return self.save_credentials(refreshed)
 
     def get_bearer_token(self, *, force_refresh: bool = False) -> str:
-        credentials = self.load_credentials()
-        if credentials is None:
-            raise TeamsAuthenticationRequiredError(
-                "No Teams delegated credentials are available. Start device-code login first."
-            )
-        if force_refresh or self.credentials_expiring(credentials):
-            credentials = self.refresh_access_token(credentials)
-        return credentials.access_token
+        # A Teams ingest cycle can poll several Graph targets at once. Keep the
+        # read-check-refresh sequence atomic so an expiring credential produces one
+        # refresh request rather than a concurrent refresh-token stampede.
+        with self._credentials_lock:
+            credentials = self.load_credentials()
+            if credentials is None:
+                raise TeamsAuthenticationRequiredError(
+                    "No Teams delegated credentials are available. Start device-code login first."
+                )
+            if force_refresh or self.credentials_expiring(credentials):
+                credentials = self.refresh_access_token(credentials)
+            return credentials.access_token
 
     def _sleep_until_next_poll(
         self,
