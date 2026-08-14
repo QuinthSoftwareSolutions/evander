@@ -392,16 +392,24 @@ The Bokio add-on is intentionally an assisted-bookkeeping layer:
   the session's allowed MCP tools.
 - `bokio_attach_evidence` uploads managed evidence with a Bokio journal-entry ID,
   linking it to an existing transaction or entry. `bokio_create_journal_entry_with_evidence`
-  creates an entry and attaches one or more evidence records with a durable
-  operation key. These outward writes follow the standard per-tool MCP policy;
+  creates an entry and attaches its evidence with a durable operation key. Bokio
+  permits only one linked upload per journal entry, so multiple managed evidence
+  records are retained individually and compiled into one PDF before the single
+  linked upload. Image evidence is EXIF-orientation normalized and rejected above
+  16,000,000 pixels before journal creation, preventing oversized images from
+  exhausting the host. These outward writes follow the standard per-tool MCP policy;
   enable autonomous use only for sessions that are explicitly permitted to make
   those calls.
 - `bokio_prepare_journal_entry` accepts optional `evidence_ids` from the durable
   evidence store. The prepared action keeps that exact evidence list for operator
   review, and approved execution uses the same durable create-and-attach ledger as
-  the direct evidence-aware write. The action becomes `executed` only after every
-  attachment succeeds. If the journal entry succeeds but an upload fails, **Retry**
-  resumes the evidence upload without creating another journal entry.
+  the direct evidence-aware write. A multi-file action retains each original
+  evidence record and attaches one composed PDF. The action becomes `executed`
+  only after that linked upload succeeds. If the journal entry succeeds but an
+  upload fails, **Retry** resumes the evidence upload without creating another
+  journal entry. A journal entry that was partially attached by the former
+  per-file behavior cannot be repaired by retrying: Bokio already has its one
+  upload, so reconcile its missing evidence manually.
 - If an evidence upload has an uncertain failure, its state becomes
   `needs_attention`; an agent can make an explicit `retry_if_failed` call after
   reconciling the existing entry. A definite journal-create rejection becomes
