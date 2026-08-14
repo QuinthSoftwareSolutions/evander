@@ -3342,6 +3342,7 @@ class WorkflowConfigAdminService:
                 "gate:filter",
                 "gate:debounce",
                 "gate:buffer",
+                "gate:throttle",
                 "gate:deserialize",
                 "gate:serialize",
                 "gate:map",

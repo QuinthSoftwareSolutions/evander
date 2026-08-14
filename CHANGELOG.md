@@ -1,5 +1,22 @@
 # Changelog
 
+## 2026-08-14 - Keyed Fixed-Window Workflow Counter Gate
+
+- Added `gate:counter`, which forwards each event with a keyed fixed-window `count` for friendly
+  activity tracking without throttling or dropping events.
+- Kept counter output-schema derivation isolated from its upstream schema, so direct bindings to
+  a trigger or another upstream node cannot incorrectly validate a synthetic `count` output.
+
+## 2026-08-14 - Fixed-Window Workflow Throttle Gate
+
+- Added `gate:throttle`, a keyed fixed-window rate limiter that passes a configured number of
+  activations through its default route and can forward overflow unchanged through a `dropped`
+  route.
+- Made quota decisions durable and cross-process atomic, freeze bound limits for an open window,
+  and expose window, quota, and decision diagnostics in gate execution records.
+- Added the Admin Web catalog fields and explicit Default/Dropped connection routes, alongside
+  validation, registry, documentation, and focused concurrency coverage.
+
 ## 2026-08-14 - Opt-In Assistant Repository Refresh
 
 - Made upstream refresh opt-in for persistent-assistant reference repository preparation. The

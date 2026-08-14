@@ -72,6 +72,7 @@ def test_default_registry_includes_all_known_gate_types() -> None:
         "gate:aggregate",
         "gate:await-agent",
         "gate:buffer",
+        "gate:counter",
         "gate:debounce",
         "gate:deserialize",
         "gate:dedupe",
@@ -81,5 +82,6 @@ def test_default_registry_includes_all_known_gate_types() -> None:
         "gate:merge",
         "gate:serialize",
         "gate:switch",
+        "gate:throttle",
         "gate:while",
     }

@@ -2455,7 +2455,8 @@ function validateConnection(
   if (sourceNode.type === "gate:switch" && allowedPorts.length === 0) {
     return `Node ${sourceId} does not have any configured output ports.`;
   }
-  if ((sourceNode.type === "gate:switch" || allowedPorts.length > 0) && !allowedPorts.some((port) => port.key === sourcePort)) {
+  const selectedPort = sourcePort ?? (sourceNode.type === "gate:throttle" ? "default" : null);
+  if ((sourceNode.type === "gate:switch" || allowedPorts.length > 0) && !allowedPorts.some((port) => port.key === selectedPort)) {
     return `Node ${sourceId} requires selecting one of its named output ports.`;
   }
   const limit = inboundLimit(targetNode);
@@ -6682,7 +6683,10 @@ export default function App() {
   function addWorkflowEdge(sourceId: string, targetId: string, sourcePort?: string | null): boolean {
     const workflowDocument = activeWorkflowDocument;
     if (!workflowDocument) return false;
-    const normalizedSourcePort = normalizeWorkflowSourcePort(sourcePort);
+    const sourceNode = nodeById(workflowDocument.config, sourceId);
+    const normalizedSourcePort = sourceNode?.type === "gate:throttle" && sourcePort === "default"
+      ? null
+      : normalizeWorkflowSourcePort(sourcePort);
     const validationError = validateConnection(
       workflowDocument.config,
       activeWorkflowCatalog,

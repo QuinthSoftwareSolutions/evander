@@ -7,6 +7,7 @@ __all__ = [
     "AggregateGateProvider",
     "AwaitAgentGateProvider",
     "BufferGateProvider",
+    "CounterGateProvider",
     "FilterGateProvider",
     "ForGateProvider",
     "GateProviderBase",
@@ -14,6 +15,7 @@ __all__ = [
     "MapGateProvider",
     "MergeGateProvider",
     "SwitchGateProvider",
+    "ThrottleGateProvider",
     "WhileGateProvider",
 ]
 
@@ -21,6 +23,7 @@ _EXPORT_MODULES = {
     "AggregateGateProvider": ".aggregate_gate",
     "AwaitAgentGateProvider": ".await_agent",
     "BufferGateProvider": ".buffer_gate",
+    "CounterGateProvider": ".counter_gate",
     "FilterGateProvider": ".filter_gate",
     "ForGateProvider": ".for_gate",
     "GateProviderBase": ".base",
@@ -28,6 +31,7 @@ _EXPORT_MODULES = {
     "MapGateProvider": ".map_gate",
     "MergeGateProvider": ".merge_gate",
     "SwitchGateProvider": ".switch_gate",
+    "ThrottleGateProvider": ".throttle_gate",
     "WhileGateProvider": ".while_gate",
 }
 

@@ -99,6 +99,7 @@ from evander.effects.providers.vm_stop import VmStopEffectProvider
 from evander.gates.providers.await_agent import AwaitAgentGateProvider
 from evander.gates.providers.aggregate_gate import AggregateGateProvider
 from evander.gates.providers.buffer_gate import BufferGateProvider
+from evander.gates.providers.counter_gate import CounterGateProvider
 from evander.gates.providers.debounce_gate import DebounceGateProvider
 from evander.gates.providers.deserialize_gate import DeserializeGateProvider
 from evander.gates.providers.dedupe_gate import DedupeGateProvider
@@ -108,6 +109,7 @@ from evander.gates.providers.map_gate import MapGateProvider
 from evander.gates.providers.merge_gate import MergeGateProvider
 from evander.gates.providers.serialize_gate import SerializeGateProvider
 from evander.gates.providers.switch_gate import SwitchGateProvider
+from evander.gates.providers.throttle_gate import ThrottleGateProvider
 from evander.gates.providers.while_gate import WhileGateProvider
 from evander.queries.providers.agent_artifact_text import AgentArtifactTextQueryProvider
 from evander.queries.providers.artifact_space import (
@@ -220,6 +222,7 @@ def register_providers() -> dict[str, dict[str, type]]:
             "gate:aggregate": AggregateGateProvider,
             "gate:await-agent": AwaitAgentGateProvider,
             "gate:buffer": BufferGateProvider,
+            "gate:counter": CounterGateProvider,
             "gate:debounce": DebounceGateProvider,
             "gate:deserialize": DeserializeGateProvider,
             "gate:dedupe": DedupeGateProvider,
@@ -228,6 +231,7 @@ def register_providers() -> dict[str, dict[str, type]]:
             "gate:map": MapGateProvider,
             "gate:merge": MergeGateProvider,
             "gate:serialize": SerializeGateProvider,
+            "gate:throttle": ThrottleGateProvider,
             "gate:switch": SwitchGateProvider,
             "gate:while": WhileGateProvider,
         },

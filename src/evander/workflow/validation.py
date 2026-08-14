@@ -237,7 +237,7 @@ def _derive_workflow_node_output_schema(
 
     visiting.add(node_id)
     node_type = str(output_node.get("type") or "").strip()
-    if node_type in {"gate:filter", "gate:debounce", "gate:switch"}:
+    if node_type in {"gate:filter", "gate:debounce", "gate:throttle", "gate:switch"}:
         upstream_ids = _collect_direct_upstream_node_ids(edges, node_id)
         schema = (
             _derive_workflow_node_output_schema(
@@ -250,6 +250,21 @@ def _derive_workflow_node_output_schema(
             if upstream_ids
             else {}
         )
+    elif node_type == "gate:counter":
+        upstream_ids = _collect_direct_upstream_node_ids(edges, node_id)
+        schema = (
+            _derive_workflow_node_output_schema(
+                node_id=upstream_ids[0],
+                nodes_by_id=nodes_by_id,
+                edges=edges,
+                cache=cache,
+                visiting=visiting,
+            )
+            if upstream_ids
+            else {}
+        )
+        schema = _copy_output_schema(schema)
+        schema["count"] = {"type": "integer"}
     elif node_type == "gate:dedupe":
         upstream_ids = _collect_direct_upstream_node_ids(edges, node_id)
         schema = (

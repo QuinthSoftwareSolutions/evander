@@ -354,6 +354,72 @@ class GateBufferDefinition(GateDefinition):
         return self
 
 
+class GateThrottleDefinition(GateDefinition):
+    type: Literal["gate:throttle"]
+    key: ConfigValue
+    window: str
+    limit: ConfigValue
+
+    @field_validator("key")
+    @classmethod
+    def validate_key(cls, value: ConfigValue) -> ConfigValue:
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError("gate:throttle key must be a non-empty string or binding template")
+        return value
+
+    @field_validator("window")
+    @classmethod
+    def validate_window(cls, value: str) -> str:
+        if not isinstance(value, str) or not value.strip() or "${{" in value:
+            raise ValueError("gate:throttle window must be a non-empty ISO-8601 duration")
+        try:
+            window = parse_iso8601_duration(value, field_name="window", gate_type="gate:throttle")
+        except GateRuntimeError as exc:
+            raise ValueError(str(exc)) from exc
+        if window.total_seconds() <= 0:
+            raise ValueError("gate:throttle window must be greater than zero")
+        return value
+
+    @field_validator("limit")
+    @classmethod
+    def validate_limit(cls, value: ConfigValue) -> ConfigValue:
+        if isinstance(value, bool):
+            raise ValueError("gate:throttle limit must be a positive integer or binding")
+        if isinstance(value, int):
+            if value < 1:
+                raise ValueError("gate:throttle limit must be a positive integer or binding")
+            return value
+        if isinstance(value, str) and value.strip():
+            return value
+        raise ValueError("gate:throttle limit must be a positive integer or binding")
+
+
+class GateCounterDefinition(GateDefinition):
+    type: Literal["gate:counter"]
+    key: ConfigValue
+    window: str
+
+    @field_validator("key")
+    @classmethod
+    def validate_key(cls, value: ConfigValue) -> ConfigValue:
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError("gate:counter key must be a non-empty string or binding template")
+        return value
+
+    @field_validator("window")
+    @classmethod
+    def validate_window(cls, value: str) -> str:
+        if not isinstance(value, str) or not value.strip() or "${{" in value:
+            raise ValueError("gate:counter window must be a non-empty ISO-8601 duration")
+        try:
+            window = parse_iso8601_duration(value, field_name="window", gate_type="gate:counter")
+        except GateRuntimeError as exc:
+            raise ValueError(str(exc)) from exc
+        if window.total_seconds() <= 0:
+            raise ValueError("gate:counter window must be greater than zero")
+        return value
+
+
 class GateDedupeDefinition(GateDefinition):
     type: Literal["gate:dedupe"]
     key: ConfigValue
@@ -503,6 +569,7 @@ def _builtin_node_schema_resolvers() -> dict[str, Any]:
         "gate:merge": GateMergeDefinition,
         "gate:debounce": GateDebounceDefinition,
         "gate:buffer": GateBufferDefinition,
+        "gate:counter": GateCounterDefinition,
         "gate:dedupe": GateDedupeDefinition,
         "gate:await-agent": GateAwaitAgentDefinition,
         "gate:for": GateForDefinition,
@@ -529,6 +596,7 @@ def _builtin_node_schema_resolvers() -> dict[str, Any]:
         "effect:agent:bootstrap-frontend": provider_models.AgentBootstrapFrontendEffectDefinition,
         "effect:agent:copy-files": provider_models.AgentCopyFilesEffectDefinition,
         "effect:artifact:stage": provider_models.ArtifactStageEffectDefinition,
+        "gate:throttle": GateThrottleDefinition,
         "effect:artifact:publish-artifacts": (
             provider_models.ArtifactPublishArtifactsEffectDefinition
         ),
