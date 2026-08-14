@@ -3079,15 +3079,22 @@ an explicit upstream probe or refresh. It requires a cached branch commit before
 worker checkout and otherwise leaves the checkout at its last trusted prepared commit, while still
 enforcing source identity, a clean working tree, detached HEAD, read-only configuration, and session
 access.
-The worker keeps the trusted SHA outside the writable agent home and rejects even a clean checkout
-when its `HEAD` diverges. If both the worker checkout and a cached branch commit are missing,
+The worker keeps the trusted SHA outside the writable agent home and reports a structured conflict
+when a clean checkout has moved. On that mismatch path only, the control plane uses its local
+managed mirror to require `trusted commit <= checkout HEAD <= cached configured-branch tip`, where
+each relation is Git ancestry. It then explicitly advances worker trust to the checkout commit. A
+reference repository refreshed by the assistant therefore remains usable on the next wake even if
+the managed mirror has advanced farther along the same branch, while divergent and arbitrary local
+commits remain rejected. If both the worker checkout and a cached branch commit are missing,
 preparation fails and tells the operator to opt in to refresh. First-time checkout materialization
 still fetches through the managed Git read endpoint and is subject to that endpoint's freshness
 enforcement; it pins the post-refresh commit actually served by that endpoint rather than a stale
-pre-refresh cached SHA. Existing checkouts perform no Git network request during preparation.
-After upgrading an older worker session, its first preparation seeds missing trusted state only
-when the retained `HEAD` matches the cached managed-mirror commit; a mismatch requires one explicit
-refresh and does not add recurring refresh latency.
+pre-refresh cached SHA. Existing trusted checkouts perform no additional Git operation during
+preparation. Mismatch-only ancestry checks and the worker retry run inside the existing concurrent
+per-repository tasks, so one slow reconciliation does not serialize the batch. After upgrading an
+older worker session, its first preparation seeds missing trusted state only when the retained
+`HEAD` matches the cached managed-mirror commit; a mismatch requires one explicit refresh and does
+not add recurring refresh latency.
 
 Set `refresh_upstream: true` when the workflow must advance repositories before every prompt. The
 effect then probes only each requested upstream branch; an omitted branch uses symbolic `HEAD` so an
@@ -3101,8 +3108,9 @@ serving a cached ref.
 With refresh enabled, the stored branch verification timestamp only lets requests that began before
 the same successful probe reuse it; it is not a freshness TTL and does not mark other branches or
 tags as refreshed. Preparation outputs and structured logs include `probe_performed`, `probe_reused`,
-and `refresh_performed`; the default cached path reports all three as false. A dirty checkout still
-fails closed.
+`refresh_performed`, and `trust_reconciled`; the default cached path reports the first three as
+false, while `trust_reconciled` is true only when mismatch ancestry verification succeeds. A dirty
+checkout still fails closed.
 
 Do not migrate a deployed workflow until the control plane and container-worker daemon containing
 this effect have passed normal CI/CD and are deployed. After deployment, save the workflow through

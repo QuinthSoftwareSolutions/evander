@@ -202,6 +202,18 @@ class AdminRuntimeProviderAdapter:
             **kwargs,
         )
 
+    def verify_managed_git_reference_repo_commit_transition(
+        self,
+        *args: Any,
+        **kwargs: Any,
+    ) -> Any:
+        return self._call_required(
+            self._managed_git_method("verify_reference_repo_commit_transition"),
+            "verify_managed_git_reference_repo_commit_transition",
+            *args,
+            **kwargs,
+        )
+
     def bind_managed_git_repository(self, **kwargs: Any) -> Any:
         return self._call_required(
             self._managed_git_method("bind"),

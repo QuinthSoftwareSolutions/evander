@@ -866,6 +866,79 @@ class ManagedGitAdminService:
             "required_ancestor_shas": required,
         }
 
+    def verify_reference_repo_commit_transition(
+        self,
+        managed_repo_id: str,
+        *,
+        directory_path: str,
+        branch: str,
+        cached_branch_commit_sha: str,
+        trusted_commit_sha: str,
+        current_commit_sha: str,
+    ) -> dict[str, Any]:
+        """Verify a worker checkout and any concurrent cache advance stay on one history."""
+
+        record = self._require_scoped_record(managed_repo_id, directory_path)
+        normalized_branch = _normalize_branch(branch, field_name="branch")
+        cached_branch_commit = _normalize_object_id(
+            cached_branch_commit_sha,
+            field_name="cached_branch_commit_sha",
+        )
+        trusted_commit = _normalize_object_id(
+            trusted_commit_sha,
+            field_name="trusted_commit_sha",
+        )
+        current_commit = _normalize_object_id(
+            current_commit_sha,
+            field_name="current_commit_sha",
+        )
+        bare_path = _managed_bare_path(self._managed_root, record)
+        with self._repo_lock(managed_repo_id, exclusive=False):
+            record = self._require_scoped_record(managed_repo_id, directory_path)
+            bare_path = _managed_bare_path(self._managed_root, record)
+            branch_tip_commit = self._resolve_ref(
+                bare_path,
+                f"refs/heads/{normalized_branch}",
+            )
+            if branch_tip_commit is None:
+                raise ValueError(f"managed Git branch {normalized_branch!r} does not exist")
+            branch_tip_commit = branch_tip_commit.casefold()
+            for commit_sha in (
+                cached_branch_commit,
+                trusted_commit,
+                current_commit,
+                branch_tip_commit,
+            ):
+                self._require_commit(bare_path, commit_sha)
+            if cached_branch_commit != branch_tip_commit and not self._is_ancestor(
+                bare_path,
+                cached_branch_commit,
+                branch_tip_commit,
+            ):
+                raise ValueError(
+                    f"managed Git branch {normalized_branch!r} moved outside the cached "
+                    f"history: observed {cached_branch_commit}, found {branch_tip_commit}"
+                )
+            if not self._is_ancestor(bare_path, trusted_commit, current_commit):
+                raise ValueError(
+                    f"reference checkout commit {current_commit} does not descend from "
+                    f"trusted commit {trusted_commit}"
+                )
+            if not self._is_ancestor(bare_path, current_commit, branch_tip_commit):
+                raise ValueError(
+                    f"reference checkout commit {current_commit} is not in the history of "
+                    f"configured branch {normalized_branch!r} at {branch_tip_commit}"
+                )
+        return {
+            "managed_repo_id": managed_repo_id,
+            "directory_path": directory_path,
+            "branch": normalized_branch,
+            "cached_branch_commit_sha": cached_branch_commit,
+            "verified_branch_tip_sha": branch_tip_commit,
+            "trusted_commit_sha": trusted_commit,
+            "current_commit_sha": current_commit,
+        }
+
     def set_host_commit_identity(
         self,
         managed_repo_id: str,

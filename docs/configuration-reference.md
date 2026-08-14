@@ -763,15 +763,22 @@ that should use only the worker's shared read-only Git key.
 uses that cached commit to authorize a missing worker checkout, and otherwise retains the checkout's
 last trusted prepared commit. The worker records that SHA outside the writable agent home, so a
 clean assistant-authored commit is rejected rather than adopted as the next read-only reference. It
-still validates the repository source, clean working tree, detached read-only configuration, and
-session access. If both the worker checkout and a cached managed-mirror commit are missing,
-preparation fails clearly instead of silently initializing the mirror from upstream. Materializing
-a missing worker checkout still uses the managed Git read endpoint and therefore its normal
-freshness enforcement; after that mandatory refresh, the worker pins and returns the commit actually
-served instead of comparing it with the earlier cached SHA. The latency-free path remains the
-steady-state reuse of an existing checkout. On the first preparation after upgrading an older
-worker session, a checkout without trusted state is seeded only when its `HEAD` matches the cached
-managed-mirror commit; otherwise preparation fails closed and requires one explicit refresh.
+reports a structured conflict when a clean checkout has moved. On that mismatch path only, the
+control plane verifies in its managed mirror that the previous trusted commit is an ancestor of the
+checkout and the checkout is an ancestor of the cached configured-branch tip. A successful check
+explicitly advances the worker trust record, allowing an assistant-requested fetch or pull to
+survive even if the control-plane cache has since advanced farther along the same branch. Divergent
+or arbitrary local commits remain rejected. Preparation still validates the repository source,
+clean working tree, detached read-only configuration, and session access. If both the worker
+checkout and a cached managed-mirror commit are missing, preparation fails clearly instead of
+silently initializing the mirror from upstream. Materializing a missing worker checkout still uses
+the managed Git read endpoint and therefore its normal freshness enforcement; after that mandatory
+refresh, the worker pins and returns the commit actually served instead of comparing it with the
+earlier cached SHA. Existing trusted checkouts perform no additional Git work, and mismatch
+verification stays inside the existing parallel per-repository tasks. On the first preparation
+after upgrading an older worker session, a checkout without trusted state is seeded only when its
+`HEAD` matches the cached managed-mirror commit; otherwise preparation fails closed and requires one
+explicit refresh.
 
 Set `refresh_upstream` to `true` to retain the verified-refresh behavior. Existing initialized
 mirrors receive one live `ls-remote` probe for the requested branch; omitted branches probe
@@ -779,9 +786,10 @@ symbolic `HEAD` unless an operator default override selects an exact branch. An 
 skips the fetch, while changed, missing, default-branch-moved, and first-use repositories use the
 full transactional refresh path. Probe failures fail closed. Overlapping callers can reuse only a
 successful verification completed after they began; this is not a time-based cache and does not
-certify unrelated refs. Each repository output includes `probe_performed`, `probe_reused`, and
-`refresh_performed`; all three are false on the default cached path. A dirty existing checkout
-fails closed and is never reset. Existing coding-agent clone effects are unchanged.
+certify unrelated refs. Each repository output includes `probe_performed`, `probe_reused`,
+`refresh_performed`, and `trust_reconciled`; the first three are false on the default cached path,
+and `trust_reconciled` is true only after mismatch ancestry verification succeeds. A dirty existing
+checkout fails closed and is never reset. Existing coding-agent clone effects are unchanged.
 
 `effect:agent:create` accepts `metadata` as a JSON object patch. The workflow
 runtime deep-merges that patch into the created session manifest after built-in

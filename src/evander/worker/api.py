@@ -30,7 +30,11 @@ from .codex_egress_proxy import RestrictedCodexEgressProxy
 from .runtime import ContainerRuntime
 from .sandbox_profile import WorkerSandboxProfile
 from .security import list_relative_files, safe_subprocess_error
-from .service import WorkerDaemon, WorkerDependencyCompositionConflict
+from .service import (
+    WorkerDaemon,
+    WorkerDependencyCompositionConflict,
+    WorkerReferenceRepoTrustConflict,
+)
 
 
 class WorkerAuthMiddleware(BaseHTTPMiddleware):
@@ -147,6 +151,14 @@ def build_worker_app(daemon: WorkerDaemon) -> Starlette:
                 daemon.prepare_reference_repo,
                 request.path_params["session_id"],
                 prepare_request,
+            )
+        except WorkerReferenceRepoTrustConflict as exc:
+            return JSONResponse(
+                {
+                    "error": str(exc),
+                    "reference_repo_trust_conflict": exc.details,
+                },
+                status_code=409,
             )
         except ValueError as exc:
             return JSONResponse({"error": str(exc)}, status_code=409)

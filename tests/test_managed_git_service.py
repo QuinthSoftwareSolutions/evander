@@ -718,6 +718,65 @@ def test_verify_branch_commit_ancestry_pins_tip_and_required_history(
         )
 
 
+def test_verify_reference_repo_commit_transition_requires_two_sided_ancestry(
+    tmp_path: Path,
+) -> None:
+    source, _, first = _source_repository(tmp_path)
+    second = _commit(source, "README.md", "second\n", "second")
+    third = _commit(source, "README.md", "third\n", "third")
+    _run("git", "checkout", "-q", "-b", "side", first, cwd=source)
+    side = _commit(source, "SIDE.md", "side\n", "side")
+    _run("git", "checkout", "-q", "main", cwd=source)
+    fourth = _commit(source, "README.md", "fourth\n", "fourth")
+    service = _service(tmp_path)
+    record = service.register_repository("root/team-a", str(source))
+    repo_id = record["managed_repo_id"]
+
+    assert service.verify_reference_repo_commit_transition(
+        repo_id,
+        directory_path="root/team-a/project",
+        branch="main",
+        cached_branch_commit_sha=third,
+        trusted_commit_sha=first,
+        current_commit_sha=second,
+    ) == {
+        "managed_repo_id": repo_id,
+        "directory_path": "root/team-a/project",
+        "branch": "main",
+        "cached_branch_commit_sha": third,
+        "verified_branch_tip_sha": fourth,
+        "trusted_commit_sha": first,
+        "current_commit_sha": second,
+    }
+    with pytest.raises(ValueError, match="does not descend from trusted commit"):
+        service.verify_reference_repo_commit_transition(
+            repo_id,
+            directory_path="root/team-a/project",
+            branch="main",
+            cached_branch_commit_sha=third,
+            trusted_commit_sha=second,
+            current_commit_sha=first,
+        )
+    with pytest.raises(ValueError, match="is not in the history of configured branch"):
+        service.verify_reference_repo_commit_transition(
+            repo_id,
+            directory_path="root/team-a/project",
+            branch="main",
+            cached_branch_commit_sha=third,
+            trusted_commit_sha=first,
+            current_commit_sha=side,
+        )
+    with pytest.raises(ValueError, match="moved outside the cached history"):
+        service.verify_reference_repo_commit_transition(
+            repo_id,
+            directory_path="root/team-a/project",
+            branch="main",
+            cached_branch_commit_sha=side,
+            trusted_commit_sha=first,
+            current_commit_sha=second,
+        )
+
+
 def test_host_commit_identity_update_is_repository_scoped(tmp_path: Path) -> None:
     source, _, _ = _source_repository(tmp_path)
     service = _service(tmp_path)
