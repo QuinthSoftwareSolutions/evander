@@ -20,7 +20,8 @@ The security model is:
 
 - MCP gateway:
   - Entry point: `evander-gateway`
-  - Code: `src/evander/gateway.py`
+  - Code: `src/evander/gateway/server.py`, `src/evander/gateway/app.py`, and
+    `src/evander/gateway/cli.py`
   - Default guest-reachable port: `8000`
   - Gateway liveness is checked on `/mcp`; a plain GET can return `406 Not Acceptable` and still
     prove the MCP endpoint is reachable.
