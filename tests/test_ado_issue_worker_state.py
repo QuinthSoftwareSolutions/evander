@@ -3498,15 +3498,3 @@ def test_format_work_item_listing_uses_tab_separated_fields() -> None:
     )
 
     assert line == "42\t2026-03-21T00:01:00Z\tCommitted\tStill pending"
-
-
-def test_run_worker_command_list_unprocessed_is_deprecated(
-    worker_config: WorkerConfig,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(
-        "evander.daemons.ado_issue_worker.WorkerConfig.load_from_env", lambda: worker_config
-    )
-
-    with pytest.raises(SystemExit, match="deprecated"):
-        run_worker_command(list_unprocessed=True)

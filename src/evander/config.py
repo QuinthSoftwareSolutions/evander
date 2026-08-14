@@ -56,7 +56,7 @@ from evander.events.models import (
 )
 from evander.workflow.graph_metadata import resolve_workflow_graph_metadata
 from evander.workflow.packs import WorkflowPackGraph
-from evander.schema_bootstrap import bootstrap_default_node_schemas
+from evander.schema_bootstrap import bootstrap_default_output_schemas
 from evander.workflow.validation import validate_workflow_graph
 
 _HTTP_URL_ADAPTER = TypeAdapter(AnyHttpUrl)
@@ -162,7 +162,7 @@ def _normalize_phone_number_list(value: object, *, field_name: str) -> list[str]
     return normalized
 
 
-bootstrap_default_node_schemas()
+bootstrap_default_output_schemas()
 
 
 class MailboxConfig(BaseModel):
@@ -193,18 +193,6 @@ class AssistantSettingsConfig(BaseModel):
     default_profile: AssistantCapabilityProfileName | None = None
     read_only: bool = True
     custom_system_instructions: str | None = None
-
-    @model_validator(mode="before")
-    @classmethod
-    def migrate_legacy_write_tool_profile(cls, data: object) -> object:
-        if not isinstance(data, dict):
-            return data
-        payload = dict(data)
-        legacy_profile = str(payload.pop("allowed_mcp_tool_profile", "") or "").strip()
-        current_profile = str(payload.get("default_profile") or "").strip()
-        if legacy_profile and not current_profile:
-            payload["default_profile"] = legacy_profile
-        return payload
 
     @field_validator(
         "default_model",

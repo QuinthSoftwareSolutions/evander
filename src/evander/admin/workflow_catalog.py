@@ -1,10 +1,9 @@
 from __future__ import annotations
 
-import json
 from collections.abc import Mapping
 from typing import Any
 
-from pydantic import TypeAdapter, ValidationError
+from pydantic import TypeAdapter
 
 from evander.admin.payloads import WorkflowEditorGraphMetadata
 from evander.admin.services import vm_agent_service
@@ -14,7 +13,6 @@ from evander.events.models import (
     GateDefinitionDiscriminated,
     QueryDefinitionDiscriminated,
     TriggerDefinitionDiscriminated,
-    materialize_node_definition,
 )
 from evander.models import ToolName
 from evander.services import parse_teams_target
@@ -148,43 +146,6 @@ def _workflow_config_for_graph_node_ids(
     else:
         graph_config["edges"] = []
     return graph_config
-
-
-def _flatten_workflow_node_for_legacy_response(
-    entry: dict[str, object], adapter: TypeAdapter
-) -> dict[str, object]:
-    try:
-        materialized = materialize_node_definition(adapter.validate_python(entry))
-        payload = materialized.model_dump(mode="json", exclude_none=True)
-    except ValidationError:
-        payload = dict(entry)
-    config = payload.pop("config", None)
-    if isinstance(config, dict):
-        payload.update(config)
-    return payload
-
-
-def _workflow_config_for_legacy_mutation_response(config: dict[str, object]) -> dict[str, object]:
-    response = json.loads(json.dumps(config))
-    if not isinstance(response, dict):
-        return config
-    adapters = {
-        "triggers": _TRIGGER_DEFINITION_ADAPTER,
-        "gates": _GATE_DEFINITION_ADAPTER,
-        "effects": _EFFECT_DEFINITION_ADAPTER,
-        "queries": _QUERY_DEFINITION_ADAPTER,
-    }
-    for collection_name, adapter in adapters.items():
-        entries = response.get(collection_name)
-        if not isinstance(entries, list):
-            continue
-        response[collection_name] = [
-            _flatten_workflow_node_for_legacy_response(entry, adapter)
-            if isinstance(entry, dict)
-            else entry
-            for entry in entries
-        ]
-    return response
 
 
 def _looks_like_declared_output_schema(value: object) -> bool:

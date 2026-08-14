@@ -4,9 +4,9 @@ from copy import deepcopy
 from typing import Any
 
 
-_TEAM_RUNTIME_V1_LEGACY: dict[str, Any] = {
-    "id": "team-runtime.v1",
-    "name": "Team Runtime v1",
+TEAM_RUNTIME_V1: dict[str, Any] = {
+    "pack_id": "team-runtime",
+    "pack_version": "v1",
     "description": "Optional team add-on runtime loop for persistent team agents.",
     "graphs": [
         {
@@ -74,793 +74,906 @@ _TEAM_RUNTIME_V1_LEGACY: dict[str, Any] = {
             ],
         }
     ],
-    "config": {
-        "triggers": [
+    "ir": {
+        "version": "v1",
+        "nodes": [
             {
-                "id": "team-cron",
-                "display_name": "Team runtime tick",
-                "type": "trigger:cron",
-                "expression": "*/15 * * * *",
+                "node": {
+                    "id": "team-cron",
+                    "display_name": "Team runtime tick",
+                    "type": "trigger:cron",
+                    "config": {"expression": "*/15 * * * *"},
+                }
             },
             {
-                "id": "team-agent-run-completed",
-                "display_name": "Team agent run completed",
-                "type": "trigger:agent:run:completed",
+                "node": {
+                    "id": "team-agent-run-completed",
+                    "display_name": "Team agent run completed",
+                    "type": "trigger:agent:run:completed",
+                    "config": {},
+                }
             },
             {
-                "id": "team-chat-message-queued",
-                "display_name": "Team chat message queued",
-                "type": "trigger:event",
-                "event_type": "team.chat.message_queued",
+                "node": {
+                    "id": "team-chat-message-queued",
+                    "display_name": "Team chat message queued",
+                    "type": "trigger:event",
+                    "config": {"event_type": "team.chat.message_queued"},
+                }
             },
             {
-                "id": "team-external-chat-reply-requested",
-                "display_name": "Team external chat reply requested",
-                "type": "trigger:event",
-                "event_type": "team.chat.external_reply_requested",
+                "node": {
+                    "id": "team-external-chat-reply-requested",
+                    "display_name": "Team external chat reply requested",
+                    "type": "trigger:event",
+                    "config": {"event_type": "team.chat.external_reply_requested"},
+                }
             },
             {
-                "id": "team-agent-wake-requested",
-                "display_name": "Team agent wake requested",
-                "type": "trigger:event",
-                "event_type": "team.agent.wake_requested",
+                "node": {
+                    "id": "team-agent-wake-requested",
+                    "display_name": "Team agent wake requested",
+                    "type": "trigger:event",
+                    "config": {"event_type": "team.agent.wake_requested"},
+                }
             },
             {
-                "id": "team-governance-wake-requested",
-                "display_name": "Team governance wake requested",
-                "type": "trigger:event",
-                "event_type": "team.governance.wake_requested",
+                "node": {
+                    "id": "team-governance-wake-requested",
+                    "display_name": "Team governance wake requested",
+                    "type": "trigger:event",
+                    "config": {"event_type": "team.governance.wake_requested"},
+                }
             },
             {
-                "id": "team-outbox-publish-requested",
-                "display_name": "Team outbox publication requested",
-                "type": "trigger:event",
-                "event_type": "team.outbox.publish_requested",
+                "node": {
+                    "id": "team-outbox-publish-requested",
+                    "display_name": "Team outbox publication requested",
+                    "type": "trigger:event",
+                    "config": {"event_type": "team.outbox.publish_requested"},
+                }
             },
             {
-                "id": "team-ephemeral-requested",
-                "display_name": "Team ephemeral assignment requested",
-                "type": "trigger:event",
-                "event_type": "team.ephemeral.requested",
+                "node": {
+                    "id": "team-ephemeral-requested",
+                    "display_name": "Team ephemeral assignment requested",
+                    "type": "trigger:event",
+                    "config": {"event_type": "team.ephemeral.requested"},
+                }
             },
             {
-                "id": "team-operator-escalation",
-                "display_name": "Team operator escalation requested",
-                "type": "trigger:event",
-                "event_type": "team.operator.escalation_requested",
+                "node": {
+                    "id": "team-operator-escalation",
+                    "display_name": "Team operator escalation requested",
+                    "type": "trigger:event",
+                    "config": {"event_type": "team.operator.escalation_requested"},
+                }
             },
             {
-                "id": "team-git-promotion-requested",
-                "display_name": "Team Git promotion requested",
-                "type": "trigger:event",
-                "event_type": "team.git.promotion_requested",
+                "node": {
+                    "id": "team-git-promotion-requested",
+                    "display_name": "Team Git promotion requested",
+                    "type": "trigger:event",
+                    "config": {"event_type": "team.git.promotion_requested"},
+                }
             },
             {
-                "id": "team-git-release-recovery-requested",
-                "display_name": "Team Git release recovery requested",
-                "type": "trigger:event",
-                "event_type": "team.git.release_recovery_requested",
+                "node": {
+                    "id": "team-git-release-recovery-requested",
+                    "display_name": "Team Git release recovery requested",
+                    "type": "trigger:event",
+                    "config": {"event_type": "team.git.release_recovery_requested"},
+                }
             },
             {
-                "id": "team-release-verification-requested",
-                "display_name": "Team release verification requested",
-                "type": "trigger:event",
-                "event_type": "team.release.verification_requested",
+                "node": {
+                    "id": "team-release-verification-requested",
+                    "display_name": "Team release verification requested",
+                    "type": "trigger:event",
+                    "config": {"event_type": "team.release.verification_requested"},
+                }
             },
-        ],
-        "gates": [
             {
-                "id": "team-completed-persistent",
-                "display_name": "Persistent team session completed",
-                "type": "gate:filter",
-                "when": {
-                    "all": [
-                        {
-                            "equals": True,
-                            "left": "${{team-route-completed-session.persistent}}",
+                "node": {
+                    "id": "team-completed-persistent",
+                    "display_name": "Persistent team session completed",
+                    "type": "gate:filter",
+                    "config": {
+                        "when": {
+                            "all": [
+                                {
+                                    "equals": True,
+                                    "left": "${{team-route-completed-session.persistent}}",
+                                }
+                            ]
                         }
-                    ]
-                },
+                    },
+                }
             },
             {
-                "id": "team-completed-ephemeral",
-                "display_name": "Ephemeral team session completed",
-                "type": "gate:filter",
-                "when": {
-                    "all": [
-                        {
-                            "equals": True,
-                            "left": "${{team-route-completed-session.ephemeral}}",
+                "node": {
+                    "id": "team-completed-ephemeral",
+                    "display_name": "Ephemeral team session completed",
+                    "type": "gate:filter",
+                    "config": {
+                        "when": {
+                            "all": [
+                                {
+                                    "equals": True,
+                                    "left": "${{team-route-completed-session.ephemeral}}",
+                                }
+                            ]
                         }
-                    ]
-                },
+                    },
+                }
             },
             {
-                "id": "team-ephemeral-spawned",
-                "display_name": "Ephemeral team agent spawned",
-                "type": "gate:filter",
-                "when": {
-                    "all": [
-                        {
-                            "equals": True,
-                            "left": "${{team-mark-ephemeral-spawned.success}}",
+                "node": {
+                    "id": "team-ephemeral-spawned",
+                    "display_name": "Ephemeral team agent spawned",
+                    "type": "gate:filter",
+                    "config": {
+                        "when": {
+                            "all": [
+                                {"equals": True, "left": "${{team-mark-ephemeral-spawned.success}}"}
+                            ]
                         }
-                    ]
-                },
+                    },
+                }
             },
             {
-                "id": "team-git-promotion-review",
-                "display_name": "Git promotion is a review promotion",
-                "type": "gate:filter",
-                "when": {
-                    "all": [
-                        {
-                            "equals": "review",
-                            "left": "${{team-git-promotion-requested.payload.promotion_kind}}",
+                "node": {
+                    "id": "team-git-promotion-review",
+                    "display_name": "Git promotion is a review promotion",
+                    "type": "gate:filter",
+                    "config": {
+                        "when": {
+                            "all": [
+                                {
+                                    "equals": "review",
+                                    "left": "${{team-git-promotion-requested.payload.promotion_kind}}",
+                                }
+                            ]
                         }
-                    ]
-                },
+                    },
+                }
             },
             {
-                "id": "team-git-promotion-feature",
-                "display_name": "Git promotion is a feature consolidation",
-                "type": "gate:filter",
-                "when": {
-                    "all": [
-                        {
-                            "equals": "feature",
-                            "left": "${{team-git-promotion-requested.payload.promotion_kind}}",
+                "node": {
+                    "id": "team-git-promotion-feature",
+                    "display_name": "Git promotion is a feature consolidation",
+                    "type": "gate:filter",
+                    "config": {
+                        "when": {
+                            "all": [
+                                {
+                                    "equals": "feature",
+                                    "left": "${{team-git-promotion-requested.payload.promotion_kind}}",
+                                }
+                            ]
                         }
-                    ]
-                },
+                    },
+                }
             },
             {
-                "id": "team-git-promotion-correction-aggregate",
-                "display_name": "Git promotion is a correction aggregate",
-                "type": "gate:filter",
-                "when": {
-                    "all": [
-                        {
-                            "equals": "correction_aggregate",
-                            "left": "${{team-git-promotion-requested.payload.promotion_kind}}",
+                "node": {
+                    "id": "team-git-promotion-correction-aggregate",
+                    "display_name": "Git promotion is a correction aggregate",
+                    "type": "gate:filter",
+                    "config": {
+                        "when": {
+                            "all": [
+                                {
+                                    "equals": "correction_aggregate",
+                                    "left": "${{team-git-promotion-requested.payload.promotion_kind}}",
+                                }
+                            ]
                         }
-                    ]
-                },
+                    },
+                }
             },
             {
-                "id": "team-git-promotion-release",
-                "display_name": "Git promotion is a release consolidation",
-                "type": "gate:filter",
-                "when": {
-                    "all": [
-                        {
-                            "equals": "release",
-                            "left": "${{team-git-promotion-requested.payload.promotion_kind}}",
+                "node": {
+                    "id": "team-git-promotion-release",
+                    "display_name": "Git promotion is a release consolidation",
+                    "type": "gate:filter",
+                    "config": {
+                        "when": {
+                            "all": [
+                                {
+                                    "equals": "release",
+                                    "left": "${{team-git-promotion-requested.payload.promotion_kind}}",
+                                }
+                            ]
                         }
-                    ]
-                },
+                    },
+                }
             },
             {
-                "id": "team-git-promotion-canonical",
-                "display_name": "Git promotion is a canonical push",
-                "type": "gate:filter",
-                "when": {
-                    "all": [
-                        {
-                            "equals": "canonical_push",
-                            "left": "${{team-git-promotion-requested.payload.promotion_kind}}",
+                "node": {
+                    "id": "team-git-promotion-canonical",
+                    "display_name": "Git promotion is a canonical push",
+                    "type": "gate:filter",
+                    "config": {
+                        "when": {
+                            "all": [
+                                {
+                                    "equals": "canonical_push",
+                                    "left": "${{team-git-promotion-requested.payload.promotion_kind}}",
+                                }
+                            ]
                         }
-                    ]
-                },
-            },
-        ],
-        "queries": [
-            {
-                "id": "team-route-completed-session",
-                "display_name": "Route completed team session",
-                "type": "query:team:session-routing",
-                "session_id": "${{team-agent-run-completed.session_ids.0 ?? null}}",
-                "dispatch_id": "${{team-agent-run-completed.dispatch_id ?? null}}",
-            }
-        ],
-        "effects": [
-            {
-                "id": "team-wake-due-agents",
-                "display_name": "Wake due team agents",
-                "type": "effect:team:wake-due-agents",
-                "limit": 10,
-                "lease_seconds": 900,
-                "wake_interval_seconds": 900,
-                "max_no_progress_count": 3,
-                "low_priority_wake_after_cycles": 4,
-                "resume_mode": "same_context",
+                    },
+                }
             },
             {
-                "id": "team-wake-queued-chat-message",
-                "display_name": "Wake queued chat message agent",
-                "type": "effect:team:wake-due-agents",
-                "agent_id": "${{team-chat-message-queued.payload.agent_id}}",
-                "limit": 1,
-                "lease_seconds": 900,
-                "wake_interval_seconds": 900,
-                "max_no_progress_count": 3,
-                "low_priority_wake_after_cycles": 4,
-                "run_global_maintenance": False,
-                "resume_mode": "same_context",
+                "node": {
+                    "id": "team-route-completed-session",
+                    "display_name": "Route completed team session",
+                    "type": "query:team:session-routing",
+                    "config": {
+                        "session_id": "${{team-agent-run-completed.session_ids.0 ?? null}}",
+                        "dispatch_id": "${{team-agent-run-completed.dispatch_id ?? null}}",
+                    },
+                }
             },
             {
-                "id": "team-send-external-chat-reply",
-                "display_name": "Send external Team Chat reply",
-                "type": "effect:communication:send-message",
-                "communication_target_id": (
-                    "${{team-external-chat-reply-requested.payload.communication_target_id}}"
-                ),
-                "message": "${{team-external-chat-reply-requested.payload.body}}",
-                "thread_id": (
-                    "${{team-external-chat-reply-requested.payload.source_thread_id ?? null}}"
-                ),
-                "sender_session_id": (
-                    "${{team-external-chat-reply-requested.payload.sender_session_id ?? null}}"
-                ),
+                "node": {
+                    "id": "team-wake-due-agents",
+                    "display_name": "Wake due team agents",
+                    "type": "effect:team:wake-due-agents",
+                    "config": {
+                        "limit": 10,
+                        "lease_seconds": 900,
+                        "wake_interval_seconds": 900,
+                        "max_no_progress_count": 3,
+                        "low_priority_wake_after_cycles": 4,
+                        "resume_mode": "same_context",
+                    },
+                }
             },
             {
-                "id": "team-record-external-chat-delivery",
-                "display_name": "Record external Team Chat delivery",
-                "type": "effect:team:record-external-chat-delivery",
-                "delivery_id": "${{team-external-chat-reply-requested.payload.delivery_id}}",
-                "success": "${{team-send-external-chat-reply.success}}",
-                "provider_message_id": ("${{team-send-external-chat-reply.message_id ?? null}}"),
+                "node": {
+                    "id": "team-wake-queued-chat-message",
+                    "display_name": "Wake queued chat message agent",
+                    "type": "effect:team:wake-due-agents",
+                    "config": {
+                        "agent_id": "${{team-chat-message-queued.payload.agent_id}}",
+                        "limit": 1,
+                        "lease_seconds": 900,
+                        "wake_interval_seconds": 900,
+                        "max_no_progress_count": 3,
+                        "low_priority_wake_after_cycles": 4,
+                        "run_global_maintenance": False,
+                        "resume_mode": "same_context",
+                    },
+                }
             },
             {
-                "id": "team-record-external-chat-delivery-failure",
-                "display_name": "Record failed external Team Chat delivery",
-                "type": "effect:team:record-external-chat-delivery",
-                "delivery_id": "${{team-external-chat-reply-requested.payload.delivery_id}}",
-                "success": False,
-                "provider_message_id": None,
-                "error": "${{team-send-external-chat-reply.error_message ?? null}}",
+                "node": {
+                    "id": "team-send-external-chat-reply",
+                    "display_name": "Send external Team Chat reply",
+                    "type": "effect:communication:send-message",
+                    "config": {
+                        "communication_target_id": "${{team-external-chat-reply-requested.payload.communication_target_id}}",
+                        "message": "${{team-external-chat-reply-requested.payload.body}}",
+                        "thread_id": "${{team-external-chat-reply-requested.payload.source_thread_id "
+                        "?? null}}",
+                        "sender_session_id": "${{team-external-chat-reply-requested.payload.sender_session_id "
+                        "?? null}}",
+                    },
+                }
             },
             {
-                "id": "team-wake-requested-agent",
-                "display_name": "Wake requested team agent",
-                "type": "effect:team:wake-due-agents",
-                "team_id": "${{team-agent-wake-requested.payload.team_id ?? null}}",
-                "agent_id": "${{team-agent-wake-requested.payload.agent_id}}",
-                "limit": 1,
-                "lease_seconds": 900,
-                "wake_interval_seconds": 900,
-                "max_no_progress_count": 3,
-                "low_priority_wake_after_cycles": 4,
-                "respect_wake_interval": False,
-                "run_global_maintenance": False,
-                "resume_mode": "same_context",
+                "node": {
+                    "id": "team-record-external-chat-delivery",
+                    "display_name": "Record external Team Chat delivery",
+                    "type": "effect:team:record-external-chat-delivery",
+                    "config": {
+                        "delivery_id": "${{team-external-chat-reply-requested.payload.delivery_id}}",
+                        "success": "${{team-send-external-chat-reply.success}}",
+                        "provider_message_id": "${{team-send-external-chat-reply.message_id "
+                        "?? null}}",
+                    },
+                }
             },
             {
-                "id": "team-wake-governance-managers",
-                "display_name": "Wake governance managers",
-                "type": "effect:team:wake-governance-managers",
-                "limit": 10,
-                "lease_seconds": 900,
-                "wake_interval_seconds": 3600,
-                "resume_mode": "same_context",
+                "node": {
+                    "id": "team-record-external-chat-delivery-failure",
+                    "display_name": "Record failed external Team Chat delivery",
+                    "type": "effect:team:record-external-chat-delivery",
+                    "config": {
+                        "delivery_id": "${{team-external-chat-reply-requested.payload.delivery_id}}",
+                        "success": False,
+                        "provider_message_id": None,
+                        "error": "${{team-send-external-chat-reply.error_message ?? null}}",
+                    },
+                }
             },
             {
-                "id": "team-wake-requested-governance",
-                "display_name": "Wake requested governance manager",
-                "type": "effect:team:wake-governance-managers",
-                "governance_group_id": (
-                    "${{team-governance-wake-requested.payload.governance_group_id}}"
-                ),
-                "limit": 1,
-                "lease_seconds": 900,
-                "wake_interval_seconds": 3600,
-                "resume_mode": "same_context",
+                "node": {
+                    "id": "team-wake-requested-agent",
+                    "display_name": "Wake requested team agent",
+                    "type": "effect:team:wake-due-agents",
+                    "config": {
+                        "team_id": "${{team-agent-wake-requested.payload.team_id ?? null}}",
+                        "agent_id": "${{team-agent-wake-requested.payload.agent_id}}",
+                        "limit": 1,
+                        "lease_seconds": 900,
+                        "wake_interval_seconds": 900,
+                        "max_no_progress_count": 3,
+                        "low_priority_wake_after_cycles": 4,
+                        "respect_wake_interval": False,
+                        "run_global_maintenance": False,
+                        "resume_mode": "same_context",
+                    },
+                }
             },
             {
-                "id": "team-publish-outbox-events",
-                "display_name": "Publish Team outbox events",
-                "type": "effect:team:publish-outbox-events",
-                "limit": 25,
-                "claim_ttl_seconds": 300,
-                "retry_after_seconds": 60,
+                "node": {
+                    "id": "team-wake-governance-managers",
+                    "display_name": "Wake governance managers",
+                    "type": "effect:team:wake-governance-managers",
+                    "config": {
+                        "limit": 10,
+                        "lease_seconds": 900,
+                        "wake_interval_seconds": 3600,
+                        "resume_mode": "same_context",
+                    },
+                }
             },
             {
-                "id": "team-publish-outbox-on-request",
-                "display_name": "Publish Team outbox after request",
-                "type": "effect:team:publish-outbox-events",
-                "limit": 25,
-                "claim_ttl_seconds": 300,
-                "retry_after_seconds": 60,
-                "worker_id": "team-outbox-immediate-publisher",
+                "node": {
+                    "id": "team-wake-requested-governance",
+                    "display_name": "Wake requested governance manager",
+                    "type": "effect:team:wake-governance-managers",
+                    "config": {
+                        "governance_group_id": "${{team-governance-wake-requested.payload.governance_group_id}}",
+                        "limit": 1,
+                        "lease_seconds": 900,
+                        "wake_interval_seconds": 3600,
+                        "resume_mode": "same_context",
+                    },
+                }
             },
             {
-                "id": "team-publish-outbox-after-dispatch",
-                "display_name": "Publish Team outbox after dispatch",
-                "type": "effect:team:publish-outbox-events",
-                "limit": 25,
-                "claim_ttl_seconds": 300,
-                "retry_after_seconds": 60,
-                "worker_id": "team-outbox-after-dispatch",
+                "node": {
+                    "id": "team-publish-outbox-events",
+                    "display_name": "Publish Team outbox events",
+                    "type": "effect:team:publish-outbox-events",
+                    "config": {"limit": 25, "claim_ttl_seconds": 300, "retry_after_seconds": 60},
+                }
             },
             {
-                "id": "team-create-ephemeral-agent",
-                "display_name": "Create ephemeral team agent",
-                "type": "effect:agent:create",
-                "session_id": "${{team-ephemeral-requested.payload.session_id}}",
-                "vm_name": "${{team-ephemeral-requested.payload.vm_name ?? team-ephemeral-requested.payload.session_id}}",
-                "existing_agent_behavior": "noop",
-                "execution_backend": "${{team-ephemeral-requested.payload.execution_backend}}",
-                "agent_provider": "${{team-ephemeral-requested.payload.agent_provider ?? null}}",
-                "model": "${{team-ephemeral-requested.payload.model ?? null}}",
-                "container_image": "${{team-ephemeral-requested.payload.container_image ?? null}}",
-                "ttl_hours": "${{team-ephemeral-requested.payload.ttl_hours ?? null}}",
-                "directory_path": "${{team-ephemeral-requested.payload.directory_path ?? null}}",
-                "allowed_tools": ["team_report_ephemeral_result"],
-                "metadata": "${{team-ephemeral-requested.payload.metadata}}",
+                "node": {
+                    "id": "team-publish-outbox-on-request",
+                    "display_name": "Publish Team outbox after request",
+                    "type": "effect:team:publish-outbox-events",
+                    "config": {
+                        "limit": 25,
+                        "claim_ttl_seconds": 300,
+                        "retry_after_seconds": 60,
+                        "worker_id": "team-outbox-immediate-publisher",
+                    },
+                }
             },
             {
-                "id": "team-mark-ephemeral-spawned",
-                "display_name": "Mark ephemeral team agent spawned",
-                "type": "effect:team:mark-ephemeral-spawned",
-                "assignment_id": "${{team-ephemeral-requested.payload.assignment_id}}",
-                "session_id": "${{team-create-ephemeral-agent.session_id}}",
-                "create_result": {
-                    "success": "${{team-create-ephemeral-agent.success}}",
-                    "message": "${{team-create-ephemeral-agent.message ?? null}}",
-                    "error": "${{team-create-ephemeral-agent.error ?? null}}",
-                    "execution_backend": "${{team-create-ephemeral-agent.execution_backend ?? null}}",
-                    "vm_name": "${{team-create-ephemeral-agent.vm_name ?? null}}",
-                },
+                "node": {
+                    "id": "team-publish-outbox-after-dispatch",
+                    "display_name": "Publish Team outbox after dispatch",
+                    "type": "effect:team:publish-outbox-events",
+                    "config": {
+                        "limit": 25,
+                        "claim_ttl_seconds": 300,
+                        "retry_after_seconds": 60,
+                        "worker_id": "team-outbox-after-dispatch",
+                    },
+                }
             },
             {
-                "id": "team-prompt-ephemeral-agent",
-                "display_name": "Prompt ephemeral team agent",
-                "type": "effect:agent:prompt",
-                "session_id": "${{team-ephemeral-requested.payload.session_id}}",
-                "prompt": "${{team-ephemeral-requested.payload.prompt}}",
+                "node": {
+                    "id": "team-create-ephemeral-agent",
+                    "display_name": "Create ephemeral team agent",
+                    "type": "effect:agent:create",
+                    "config": {
+                        "session_id": "${{team-ephemeral-requested.payload.session_id}}",
+                        "vm_name": "${{team-ephemeral-requested.payload.vm_name ?? "
+                        "team-ephemeral-requested.payload.session_id}}",
+                        "existing_agent_behavior": "noop",
+                        "execution_backend": "${{team-ephemeral-requested.payload.execution_backend}}",
+                        "agent_provider": "${{team-ephemeral-requested.payload.agent_provider "
+                        "?? null}}",
+                        "model": "${{team-ephemeral-requested.payload.model ?? null}}",
+                        "container_image": "${{team-ephemeral-requested.payload.container_image "
+                        "?? null}}",
+                        "ttl_hours": "${{team-ephemeral-requested.payload.ttl_hours ?? null}}",
+                        "directory_path": "${{team-ephemeral-requested.payload.directory_path "
+                        "?? null}}",
+                        "allowed_tools": ["team_report_ephemeral_result"],
+                        "metadata": "${{team-ephemeral-requested.payload.metadata}}",
+                    },
+                }
             },
             {
-                "id": "team-finalize-persistent-dispatch",
-                "display_name": "Finalize persistent Team dispatch",
-                "type": "effect:team:finalize-agent-dispatch",
-                "session_id": "${{team-route-completed-session.session_id}}",
-                "dispatch_id": "${{team-route-completed-session.dispatch_id}}",
-                "agent_id": "${{team-route-completed-session.agent_id ?? null}}",
+                "node": {
+                    "id": "team-mark-ephemeral-spawned",
+                    "display_name": "Mark ephemeral team agent spawned",
+                    "type": "effect:team:mark-ephemeral-spawned",
+                    "config": {
+                        "assignment_id": "${{team-ephemeral-requested.payload.assignment_id}}",
+                        "session_id": "${{team-create-ephemeral-agent.session_id}}",
+                        "create_result": {
+                            "success": "${{team-create-ephemeral-agent.success}}",
+                            "message": "${{team-create-ephemeral-agent.message ?? null}}",
+                            "error": "${{team-create-ephemeral-agent.error ?? null}}",
+                            "execution_backend": "${{team-create-ephemeral-agent.execution_backend "
+                            "?? null}}",
+                            "vm_name": "${{team-create-ephemeral-agent.vm_name ?? null}}",
+                        },
+                    },
+                }
             },
             {
-                "id": "team-destroy-ephemeral-agent",
-                "display_name": "Destroy ephemeral team agent",
-                "type": "effect:agent:destroy",
-                "session_id": "${{team-route-completed-session.session_id}}",
+                "node": {
+                    "id": "team-prompt-ephemeral-agent",
+                    "display_name": "Prompt ephemeral team agent",
+                    "type": "effect:agent:prompt",
+                    "config": {
+                        "session_id": "${{team-ephemeral-requested.payload.session_id}}",
+                        "prompt": "${{team-ephemeral-requested.payload.prompt}}",
+                    },
+                }
             },
             {
-                "id": "team-mark-ephemeral-cleaned-up",
-                "display_name": "Mark ephemeral team agent cleaned up",
-                "type": "effect:team:mark-ephemeral-cleaned-up",
-                "assignment_id": "${{team-route-completed-session.assignment_id}}",
-                "session_id": "${{team-route-completed-session.session_id}}",
-                "destroy_result": {
-                    "success": "${{team-destroy-ephemeral-agent.success}}",
-                    "message": "${{team-destroy-ephemeral-agent.message ?? null}}",
-                    "status": "${{team-destroy-ephemeral-agent.status ?? null}}",
-                },
+                "node": {
+                    "id": "team-finalize-persistent-dispatch",
+                    "display_name": "Finalize persistent Team dispatch",
+                    "type": "effect:team:finalize-agent-dispatch",
+                    "config": {
+                        "session_id": "${{team-route-completed-session.session_id}}",
+                        "dispatch_id": "${{team-route-completed-session.dispatch_id}}",
+                        "agent_id": "${{team-route-completed-session.agent_id ?? null}}",
+                    },
+                }
             },
             {
-                "id": "team-notify-operator",
-                "display_name": "Notify operator of escalation",
-                "type": "effect:communication:send-message",
-                "communication_target_id": (
-                    "${{team-operator-escalation.payload.communication_target_id}}"
-                ),
-                "message": (
-                    "[Escalation: ${{team-operator-escalation.payload.urgency}}] "
-                    "${{team-operator-escalation.payload.title}}\n\n"
-                    "${{team-operator-escalation.payload.message}}"
-                ),
-                "sender_session_id": (
-                    "${{team-operator-escalation.payload.sender_session_id ?? null}}"
-                ),
+                "node": {
+                    "id": "team-destroy-ephemeral-agent",
+                    "display_name": "Destroy ephemeral team agent",
+                    "type": "effect:agent:destroy",
+                    "config": {"session_id": "${{team-route-completed-session.session_id}}"},
+                }
             },
             {
-                "id": "team-notify-operator-fallback",
-                "display_name": "Notify operator of escalation with host fallback",
-                "type": "effect:communication:send-message",
-                "communication_target_id": (
-                    "${{team-operator-escalation.payload.communication_target_id}}"
-                ),
-                "message": (
-                    "[Escalation delivery fallback: "
-                    "${{team-operator-escalation.payload.urgency}}] "
-                    "${{team-operator-escalation.payload.title}}\n\n"
-                    "${{team-operator-escalation.payload.message}}"
-                ),
-                "sender_session_id": "workflow",
+                "node": {
+                    "id": "team-mark-ephemeral-cleaned-up",
+                    "display_name": "Mark ephemeral team agent cleaned up",
+                    "type": "effect:team:mark-ephemeral-cleaned-up",
+                    "config": {
+                        "assignment_id": "${{team-route-completed-session.assignment_id}}",
+                        "session_id": "${{team-route-completed-session.session_id}}",
+                        "destroy_result": {
+                            "success": "${{team-destroy-ephemeral-agent.success}}",
+                            "message": "${{team-destroy-ephemeral-agent.message ?? null}}",
+                            "status": "${{team-destroy-ephemeral-agent.status ?? null}}",
+                        },
+                    },
+                }
             },
             {
-                "id": "team-record-operator-escalation-delivery",
-                "display_name": "Record operator escalation delivery",
-                "type": "effect:team:record-operator-escalation-delivery",
-                "escalation_id": "${{team-operator-escalation.payload.escalation_id}}",
-                "success": True,
-                "provider_message_id": "${{team-notify-operator.message_id ?? null}}",
-                "fallback_used": False,
+                "node": {
+                    "id": "team-notify-operator",
+                    "display_name": "Notify operator of escalation",
+                    "type": "effect:communication:send-message",
+                    "config": {
+                        "communication_target_id": "${{team-operator-escalation.payload.communication_target_id}}",
+                        "message": "[Escalation: "
+                        "${{team-operator-escalation.payload.urgency}}] "
+                        "${{team-operator-escalation.payload.title}}\n"
+                        "\n"
+                        "${{team-operator-escalation.payload.message}}",
+                        "sender_session_id": "${{team-operator-escalation.payload.sender_session_id "
+                        "?? null}}",
+                    },
+                }
             },
             {
-                "id": "team-record-operator-escalation-fallback-delivery",
-                "display_name": "Record fallback operator escalation delivery",
-                "type": "effect:team:record-operator-escalation-delivery",
-                "escalation_id": "${{team-operator-escalation.payload.escalation_id}}",
-                "success": True,
-                "provider_message_id": (
-                    "${{team-notify-operator-fallback.message_id ?? null}}"
-                ),
-                "fallback_used": True,
+                "node": {
+                    "id": "team-notify-operator-fallback",
+                    "display_name": "Notify operator of escalation with host fallback",
+                    "type": "effect:communication:send-message",
+                    "config": {
+                        "communication_target_id": "${{team-operator-escalation.payload.communication_target_id}}",
+                        "message": "[Escalation delivery fallback: "
+                        "${{team-operator-escalation.payload.urgency}}] "
+                        "${{team-operator-escalation.payload.title}}\n"
+                        "\n"
+                        "${{team-operator-escalation.payload.message}}",
+                        "sender_session_id": "workflow",
+                    },
+                }
             },
             {
-                "id": "team-record-operator-escalation-delivery-failure",
-                "display_name": "Record failed operator escalation delivery",
-                "type": "effect:team:record-operator-escalation-delivery",
-                "escalation_id": "${{team-operator-escalation.payload.escalation_id}}",
-                "success": False,
-                "error": (
-                    "${{team-notify-operator-fallback.error_message ?? null}}"
-                ),
-                "fallback_used": True,
+                "node": {
+                    "id": "team-record-operator-escalation-delivery",
+                    "display_name": "Record operator escalation delivery",
+                    "type": "effect:team:record-operator-escalation-delivery",
+                    "config": {
+                        "escalation_id": "${{team-operator-escalation.payload.escalation_id}}",
+                        "success": True,
+                        "provider_message_id": "${{team-notify-operator.message_id ?? null}}",
+                        "fallback_used": False,
+                    },
+                }
             },
             {
-                "id": "team-git-promote-review-branch",
-                "display_name": "Publish Team review branch",
-                "type": "effect:team:publish-review-branch",
-                "managed_repo_id": ("${{team-git-promotion-requested.payload.managed_repo_id}}"),
-                "directory_path": (
-                    "${{team-git-promotion-requested.payload.directory_path ?? null}}"
-                ),
-                "source_branch": "${{team-git-promotion-requested.payload.source_branch}}",
-                "expected_commit_sha": (
-                    "${{team-git-promotion-requested.payload.expected_commit_sha}}"
-                ),
-                "target_branch": "${{team-git-promotion-requested.payload.target_branch}}",
+                "node": {
+                    "id": "team-record-operator-escalation-fallback-delivery",
+                    "display_name": "Record fallback operator escalation delivery",
+                    "type": "effect:team:record-operator-escalation-delivery",
+                    "config": {
+                        "escalation_id": "${{team-operator-escalation.payload.escalation_id}}",
+                        "success": True,
+                        "provider_message_id": "${{team-notify-operator-fallback.message_id "
+                        "?? null}}",
+                        "fallback_used": True,
+                    },
+                }
             },
             {
-                "id": "team-record-review-promotion",
-                "display_name": "Record review promotion result",
-                "type": "effect:team:record-git-promotion",
-                "promotion_id": "${{team-git-promotion-requested.payload.promotion_id}}",
-                "success": "${{team-git-promote-review-branch.success}}",
-                "commit_sha": "${{team-git-promote-review-branch.commit_sha ?? null}}",
-                "error": "${{team-git-promote-review-branch.error ?? null}}",
-                "result_outputs": {
-                    "review_branch": ("${{team-git-promote-review-branch.review_branch ?? null}}"),
-                    "managed_repo_id": (
-                        "${{team-git-promote-review-branch.managed_repo_id ?? null}}"
-                    ),
-                    "message": "${{team-git-promote-review-branch.message ?? null}}",
-                },
+                "node": {
+                    "id": "team-record-operator-escalation-delivery-failure",
+                    "display_name": "Record failed operator escalation delivery",
+                    "type": "effect:team:record-operator-escalation-delivery",
+                    "config": {
+                        "escalation_id": "${{team-operator-escalation.payload.escalation_id}}",
+                        "success": False,
+                        "error": "${{team-notify-operator-fallback.error_message ?? null}}",
+                        "fallback_used": True,
+                    },
+                }
             },
             {
-                "id": "team-consolidate-feature-branches",
-                "display_name": "Consolidate review branches into feature branch",
-                "type": "effect:team:consolidate-git-branches",
-                "managed_repo_id": "${{team-git-promotion-requested.payload.managed_repo_id}}",
-                "directory_path": (
-                    "${{team-git-promotion-requested.payload.directory_path ?? null}}"
-                ),
-                "source_branches": "${{team-git-promotion-requested.payload.source_branches}}",
-                "target_branch": "${{team-git-promotion-requested.payload.target_branch}}",
-                "base_branch": "${{team-git-promotion-requested.payload.base_branch ?? null}}",
-                "base_commit_sha": (
-                    "${{team-git-promotion-requested.payload.base_commit_sha ?? null}}"
-                ),
-                "required_source_ancestor_commit_sha": (
-                    "${{team-git-promotion-requested.payload.required_source_ancestor_commit_sha ?? null}}"
-                ),
-                "expected_source_commits": (
-                    "${{team-git-promotion-requested.payload.expected_source_commits}}"
-                ),
-                "allowed_changed_paths": (
-                    "${{team-git-promotion-requested.payload.allowed_changed_paths ?? null}}"
-                ),
-                "commit_message": (
-                    "${{team-git-promotion-requested.payload.commit_message ?? null}}"
-                ),
+                "node": {
+                    "id": "team-git-promote-review-branch",
+                    "display_name": "Publish Team review branch",
+                    "type": "effect:team:publish-review-branch",
+                    "config": {
+                        "managed_repo_id": "${{team-git-promotion-requested.payload.managed_repo_id}}",
+                        "directory_path": "${{team-git-promotion-requested.payload.directory_path "
+                        "?? null}}",
+                        "source_branch": "${{team-git-promotion-requested.payload.source_branch}}",
+                        "expected_commit_sha": "${{team-git-promotion-requested.payload.expected_commit_sha}}",
+                        "target_branch": "${{team-git-promotion-requested.payload.target_branch}}",
+                    },
+                }
             },
             {
-                "id": "team-record-feature-promotion",
-                "display_name": "Record feature promotion result",
-                "type": "effect:team:record-git-promotion",
-                "promotion_id": "${{team-git-promotion-requested.payload.promotion_id}}",
-                "success": "${{team-consolidate-feature-branches.success}}",
-                "commit_sha": "${{team-consolidate-feature-branches.commit_sha ?? null}}",
-                "error": "${{team-consolidate-feature-branches.error ?? null}}",
-                "result_outputs": {
-                    "merged_branches": (
-                        "${{team-consolidate-feature-branches.merged_branches ?? null}}"
-                    ),
-                    "conflict_branch": (
-                        "${{team-consolidate-feature-branches.conflict_branch ?? null}}"
-                    ),
-                    "output": "${{team-consolidate-feature-branches.output ?? null}}",
-                    "error_code": ("${{team-consolidate-feature-branches.error_code ?? null}}"),
-                    "unexpected_commit_shas": (
-                        "${{team-consolidate-feature-branches.unexpected_commit_shas ?? null}}"
-                    ),
-                    "base_commit_sha": (
-                        "${{team-consolidate-feature-branches.base_commit_sha ?? null}}"
-                    ),
-                    "source_manifests": (
-                        "${{team-consolidate-feature-branches.source_manifests ?? null}}"
-                    ),
-                    "unexpected_paths": (
-                        "${{team-consolidate-feature-branches.unexpected_paths ?? null}}"
-                    ),
-                    "tree_hash": ("${{team-consolidate-feature-branches.tree_hash ?? null}}"),
-                },
+                "node": {
+                    "id": "team-record-review-promotion",
+                    "display_name": "Record review promotion result",
+                    "type": "effect:team:record-git-promotion",
+                    "config": {
+                        "promotion_id": "${{team-git-promotion-requested.payload.promotion_id}}",
+                        "success": "${{team-git-promote-review-branch.success}}",
+                        "commit_sha": "${{team-git-promote-review-branch.commit_sha ?? null}}",
+                        "error": "${{team-git-promote-review-branch.error ?? null}}",
+                        "result_outputs": {
+                            "review_branch": "${{team-git-promote-review-branch.review_branch "
+                            "?? null}}",
+                            "managed_repo_id": "${{team-git-promote-review-branch.managed_repo_id "
+                            "?? null}}",
+                            "message": "${{team-git-promote-review-branch.message ?? null}}",
+                        },
+                    },
+                }
             },
             {
-                "id": "team-consolidate-correction-branches",
-                "display_name": "Aggregate reviewed corrections",
-                "type": "effect:team:consolidate-git-branches",
-                "managed_repo_id": "${{team-git-promotion-requested.payload.managed_repo_id}}",
-                "directory_path": (
-                    "${{team-git-promotion-requested.payload.directory_path ?? null}}"
-                ),
-                "source_branches": "${{team-git-promotion-requested.payload.source_branches}}",
-                "target_branch": "${{team-git-promotion-requested.payload.target_branch}}",
-                "base_branch": "${{team-git-promotion-requested.payload.base_branch ?? null}}",
-                "base_commit_sha": (
-                    "${{team-git-promotion-requested.payload.base_commit_sha ?? null}}"
-                ),
-                "required_source_ancestor_commit_sha": (
-                    "${{team-git-promotion-requested.payload.required_source_ancestor_commit_sha ?? null}}"
-                ),
-                "expected_source_commits": (
-                    "${{team-git-promotion-requested.payload.expected_source_commits}}"
-                ),
-                "allowed_changed_paths": (
-                    "${{team-git-promotion-requested.payload.allowed_changed_paths ?? null}}"
-                ),
-                "commit_message": (
-                    "${{team-git-promotion-requested.payload.commit_message ?? null}}"
-                ),
+                "node": {
+                    "id": "team-consolidate-feature-branches",
+                    "display_name": "Consolidate review branches into feature branch",
+                    "type": "effect:team:consolidate-git-branches",
+                    "config": {
+                        "managed_repo_id": "${{team-git-promotion-requested.payload.managed_repo_id}}",
+                        "directory_path": "${{team-git-promotion-requested.payload.directory_path "
+                        "?? null}}",
+                        "source_branches": "${{team-git-promotion-requested.payload.source_branches}}",
+                        "target_branch": "${{team-git-promotion-requested.payload.target_branch}}",
+                        "base_branch": "${{team-git-promotion-requested.payload.base_branch "
+                        "?? null}}",
+                        "base_commit_sha": "${{team-git-promotion-requested.payload.base_commit_sha "
+                        "?? null}}",
+                        "required_source_ancestor_commit_sha": "${{team-git-promotion-requested.payload.required_source_ancestor_commit_sha "
+                        "?? null}}",
+                        "expected_source_commits": "${{team-git-promotion-requested.payload.expected_source_commits}}",
+                        "allowed_changed_paths": "${{team-git-promotion-requested.payload.allowed_changed_paths "
+                        "?? null}}",
+                        "commit_message": "${{team-git-promotion-requested.payload.commit_message "
+                        "?? null}}",
+                    },
+                }
             },
             {
-                "id": "team-record-correction-aggregate-promotion",
-                "display_name": "Record correction aggregate result",
-                "type": "effect:team:record-git-promotion",
-                "promotion_id": "${{team-git-promotion-requested.payload.promotion_id}}",
-                "success": "${{team-consolidate-correction-branches.success}}",
-                "commit_sha": ("${{team-consolidate-correction-branches.commit_sha ?? null}}"),
-                "error": "${{team-consolidate-correction-branches.error ?? null}}",
-                "result_outputs": {
-                    "merged_branches": (
-                        "${{team-consolidate-correction-branches.merged_branches ?? null}}"
-                    ),
-                    "conflict_branch": (
-                        "${{team-consolidate-correction-branches.conflict_branch ?? null}}"
-                    ),
-                    "output": "${{team-consolidate-correction-branches.output ?? null}}",
-                    "error_code": ("${{team-consolidate-correction-branches.error_code ?? null}}"),
-                    "unexpected_commit_shas": (
-                        "${{team-consolidate-correction-branches.unexpected_commit_shas ?? null}}"
-                    ),
-                    "base_commit_sha": (
-                        "${{team-consolidate-correction-branches.base_commit_sha ?? null}}"
-                    ),
-                    "source_manifests": (
-                        "${{team-consolidate-correction-branches.source_manifests ?? null}}"
-                    ),
-                    "unexpected_paths": (
-                        "${{team-consolidate-correction-branches.unexpected_paths ?? null}}"
-                    ),
-                    "tree_hash": ("${{team-consolidate-correction-branches.tree_hash ?? null}}"),
-                },
+                "node": {
+                    "id": "team-record-feature-promotion",
+                    "display_name": "Record feature promotion result",
+                    "type": "effect:team:record-git-promotion",
+                    "config": {
+                        "promotion_id": "${{team-git-promotion-requested.payload.promotion_id}}",
+                        "success": "${{team-consolidate-feature-branches.success}}",
+                        "commit_sha": "${{team-consolidate-feature-branches.commit_sha ?? null}}",
+                        "error": "${{team-consolidate-feature-branches.error ?? null}}",
+                        "result_outputs": {
+                            "merged_branches": "${{team-consolidate-feature-branches.merged_branches "
+                            "?? null}}",
+                            "conflict_branch": "${{team-consolidate-feature-branches.conflict_branch "
+                            "?? null}}",
+                            "output": "${{team-consolidate-feature-branches.output ?? null}}",
+                            "error_code": "${{team-consolidate-feature-branches.error_code "
+                            "?? null}}",
+                            "unexpected_commit_shas": "${{team-consolidate-feature-branches.unexpected_commit_shas "
+                            "?? null}}",
+                            "base_commit_sha": "${{team-consolidate-feature-branches.base_commit_sha "
+                            "?? null}}",
+                            "source_manifests": "${{team-consolidate-feature-branches.source_manifests "
+                            "?? null}}",
+                            "unexpected_paths": "${{team-consolidate-feature-branches.unexpected_paths "
+                            "?? null}}",
+                            "tree_hash": "${{team-consolidate-feature-branches.tree_hash ?? null}}",
+                        },
+                    },
+                }
             },
             {
-                "id": "team-consolidate-release-branches",
-                "display_name": "Consolidate feature branches into release branch",
-                "type": "effect:team:consolidate-git-branches",
-                "managed_repo_id": "${{team-git-promotion-requested.payload.managed_repo_id}}",
-                "directory_path": (
-                    "${{team-git-promotion-requested.payload.directory_path ?? null}}"
-                ),
-                "source_branches": "${{team-git-promotion-requested.payload.source_branches}}",
-                "target_branch": "${{team-git-promotion-requested.payload.target_branch}}",
-                "base_branch": "${{team-git-promotion-requested.payload.base_branch ?? null}}",
-                "base_commit_sha": (
-                    "${{team-git-promotion-requested.payload.base_commit_sha ?? null}}"
-                ),
-                "required_source_ancestor_commit_sha": (
-                    "${{team-git-promotion-requested.payload.required_source_ancestor_commit_sha ?? null}}"
-                ),
-                "expected_source_commits": (
-                    "${{team-git-promotion-requested.payload.expected_source_commits}}"
-                ),
-                "allowed_changed_paths": (
-                    "${{team-git-promotion-requested.payload.allowed_changed_paths ?? null}}"
-                ),
-                "commit_message": (
-                    "${{team-git-promotion-requested.payload.commit_message ?? null}}"
-                ),
+                "node": {
+                    "id": "team-consolidate-correction-branches",
+                    "display_name": "Aggregate reviewed corrections",
+                    "type": "effect:team:consolidate-git-branches",
+                    "config": {
+                        "managed_repo_id": "${{team-git-promotion-requested.payload.managed_repo_id}}",
+                        "directory_path": "${{team-git-promotion-requested.payload.directory_path "
+                        "?? null}}",
+                        "source_branches": "${{team-git-promotion-requested.payload.source_branches}}",
+                        "target_branch": "${{team-git-promotion-requested.payload.target_branch}}",
+                        "base_branch": "${{team-git-promotion-requested.payload.base_branch "
+                        "?? null}}",
+                        "base_commit_sha": "${{team-git-promotion-requested.payload.base_commit_sha "
+                        "?? null}}",
+                        "required_source_ancestor_commit_sha": "${{team-git-promotion-requested.payload.required_source_ancestor_commit_sha "
+                        "?? null}}",
+                        "expected_source_commits": "${{team-git-promotion-requested.payload.expected_source_commits}}",
+                        "allowed_changed_paths": "${{team-git-promotion-requested.payload.allowed_changed_paths "
+                        "?? null}}",
+                        "commit_message": "${{team-git-promotion-requested.payload.commit_message "
+                        "?? null}}",
+                    },
+                }
             },
             {
-                "id": "team-record-release-promotion",
-                "display_name": "Record release promotion result",
-                "type": "effect:team:record-git-promotion",
-                "promotion_id": "${{team-git-promotion-requested.payload.promotion_id}}",
-                "success": "${{team-consolidate-release-branches.success}}",
-                "commit_sha": "${{team-consolidate-release-branches.commit_sha ?? null}}",
-                "error": "${{team-consolidate-release-branches.error ?? null}}",
-                "result_outputs": {
-                    "merged_branches": (
-                        "${{team-consolidate-release-branches.merged_branches ?? null}}"
-                    ),
-                    "conflict_branch": (
-                        "${{team-consolidate-release-branches.conflict_branch ?? null}}"
-                    ),
-                    "output": "${{team-consolidate-release-branches.output ?? null}}",
-                    "error_code": ("${{team-consolidate-release-branches.error_code ?? null}}"),
-                    "unexpected_commit_shas": (
-                        "${{team-consolidate-release-branches.unexpected_commit_shas ?? null}}"
-                    ),
-                    "base_commit_sha": (
-                        "${{team-consolidate-release-branches.base_commit_sha ?? null}}"
-                    ),
-                    "source_manifests": (
-                        "${{team-consolidate-release-branches.source_manifests ?? null}}"
-                    ),
-                    "unexpected_paths": (
-                        "${{team-consolidate-release-branches.unexpected_paths ?? null}}"
-                    ),
-                    "tree_hash": ("${{team-consolidate-release-branches.tree_hash ?? null}}"),
-                },
+                "node": {
+                    "id": "team-record-correction-aggregate-promotion",
+                    "display_name": "Record correction aggregate result",
+                    "type": "effect:team:record-git-promotion",
+                    "config": {
+                        "promotion_id": "${{team-git-promotion-requested.payload.promotion_id}}",
+                        "success": "${{team-consolidate-correction-branches.success}}",
+                        "commit_sha": "${{team-consolidate-correction-branches.commit_sha "
+                        "?? null}}",
+                        "error": "${{team-consolidate-correction-branches.error ?? null}}",
+                        "result_outputs": {
+                            "merged_branches": "${{team-consolidate-correction-branches.merged_branches "
+                            "?? null}}",
+                            "conflict_branch": "${{team-consolidate-correction-branches.conflict_branch "
+                            "?? null}}",
+                            "output": "${{team-consolidate-correction-branches.output ?? null}}",
+                            "error_code": "${{team-consolidate-correction-branches.error_code "
+                            "?? null}}",
+                            "unexpected_commit_shas": "${{team-consolidate-correction-branches.unexpected_commit_shas "
+                            "?? null}}",
+                            "base_commit_sha": "${{team-consolidate-correction-branches.base_commit_sha "
+                            "?? null}}",
+                            "source_manifests": "${{team-consolidate-correction-branches.source_manifests "
+                            "?? null}}",
+                            "unexpected_paths": "${{team-consolidate-correction-branches.unexpected_paths "
+                            "?? null}}",
+                            "tree_hash": "${{team-consolidate-correction-branches.tree_hash "
+                            "?? null}}",
+                        },
+                    },
+                }
             },
             {
-                "id": "team-verify-release-candidate",
-                "display_name": "Verify pinned release candidate",
-                "type": "effect:team:verify-release-candidate",
-                "release_package_id": (
-                    "${{team-release-verification-requested.payload.release_package_id}}"
-                ),
-                "verification_run_id": (
-                    "${{team-release-verification-requested.payload.verification_run_id}}"
-                ),
-                "candidate_commit_sha": (
-                    "${{team-release-verification-requested.payload.candidate_commit_sha}}"
-                ),
+                "node": {
+                    "id": "team-consolidate-release-branches",
+                    "display_name": "Consolidate feature branches into release branch",
+                    "type": "effect:team:consolidate-git-branches",
+                    "config": {
+                        "managed_repo_id": "${{team-git-promotion-requested.payload.managed_repo_id}}",
+                        "directory_path": "${{team-git-promotion-requested.payload.directory_path "
+                        "?? null}}",
+                        "source_branches": "${{team-git-promotion-requested.payload.source_branches}}",
+                        "target_branch": "${{team-git-promotion-requested.payload.target_branch}}",
+                        "base_branch": "${{team-git-promotion-requested.payload.base_branch "
+                        "?? null}}",
+                        "base_commit_sha": "${{team-git-promotion-requested.payload.base_commit_sha "
+                        "?? null}}",
+                        "required_source_ancestor_commit_sha": "${{team-git-promotion-requested.payload.required_source_ancestor_commit_sha "
+                        "?? null}}",
+                        "expected_source_commits": "${{team-git-promotion-requested.payload.expected_source_commits}}",
+                        "allowed_changed_paths": "${{team-git-promotion-requested.payload.allowed_changed_paths "
+                        "?? null}}",
+                        "commit_message": "${{team-git-promotion-requested.payload.commit_message "
+                        "?? null}}",
+                    },
+                }
             },
             {
-                "id": "team-promote-release-recovery-branch",
-                "display_name": "Validate and consolidate release recovery branch",
-                "type": "effect:team:consolidate-git-branches",
-                "managed_repo_id": (
-                    "${{team-git-release-recovery-requested.payload.managed_repo_id}}"
-                ),
-                "directory_path": (
-                    "${{team-git-release-recovery-requested.payload.directory_path ?? null}}"
-                ),
-                "source_branches": (
-                    "${{team-git-release-recovery-requested.payload.source_branches}}"
-                ),
-                "target_branch": ("${{team-git-release-recovery-requested.payload.target_branch}}"),
-                "base_branch": (
-                    "${{team-git-release-recovery-requested.payload.base_branch ?? null}}"
-                ),
-                "base_commit_sha": (
-                    "${{team-git-release-recovery-requested.payload.base_commit_sha ?? null}}"
-                ),
-                "required_source_ancestor_commit_sha": (
-                    "${{team-git-release-recovery-requested.payload.required_source_ancestor_commit_sha ?? null}}"
-                ),
-                "expected_source_commits": (
-                    "${{team-git-release-recovery-requested.payload.expected_source_commits}}"
-                ),
-                "allowed_changed_paths": (
-                    "${{team-git-release-recovery-requested.payload.allowed_changed_paths}}"
-                ),
-                "commit_message": (
-                    "${{team-git-release-recovery-requested.payload.commit_message ?? null}}"
-                ),
+                "node": {
+                    "id": "team-record-release-promotion",
+                    "display_name": "Record release promotion result",
+                    "type": "effect:team:record-git-promotion",
+                    "config": {
+                        "promotion_id": "${{team-git-promotion-requested.payload.promotion_id}}",
+                        "success": "${{team-consolidate-release-branches.success}}",
+                        "commit_sha": "${{team-consolidate-release-branches.commit_sha ?? null}}",
+                        "error": "${{team-consolidate-release-branches.error ?? null}}",
+                        "result_outputs": {
+                            "merged_branches": "${{team-consolidate-release-branches.merged_branches "
+                            "?? null}}",
+                            "conflict_branch": "${{team-consolidate-release-branches.conflict_branch "
+                            "?? null}}",
+                            "output": "${{team-consolidate-release-branches.output ?? null}}",
+                            "error_code": "${{team-consolidate-release-branches.error_code "
+                            "?? null}}",
+                            "unexpected_commit_shas": "${{team-consolidate-release-branches.unexpected_commit_shas "
+                            "?? null}}",
+                            "base_commit_sha": "${{team-consolidate-release-branches.base_commit_sha "
+                            "?? null}}",
+                            "source_manifests": "${{team-consolidate-release-branches.source_manifests "
+                            "?? null}}",
+                            "unexpected_paths": "${{team-consolidate-release-branches.unexpected_paths "
+                            "?? null}}",
+                            "tree_hash": "${{team-consolidate-release-branches.tree_hash ?? null}}",
+                        },
+                    },
+                }
             },
             {
-                "id": "team-record-release-recovery-promotion",
-                "display_name": "Record release recovery promotion result",
-                "type": "effect:team:record-git-promotion",
-                "promotion_id": ("${{team-git-release-recovery-requested.payload.promotion_id}}"),
-                "success": "${{team-promote-release-recovery-branch.success}}",
-                "commit_sha": ("${{team-promote-release-recovery-branch.commit_sha ?? null}}"),
-                "error": "${{team-promote-release-recovery-branch.error ?? null}}",
-                "result_outputs": {
-                    "merged_branches": (
-                        "${{team-promote-release-recovery-branch.merged_branches ?? null}}"
-                    ),
-                    "target_branch": (
-                        "${{team-promote-release-recovery-branch.target_branch ?? null}}"
-                    ),
-                    "tree_hash": ("${{team-promote-release-recovery-branch.tree_hash ?? null}}"),
-                    "base_commit_sha": (
-                        "${{team-promote-release-recovery-branch.base_commit_sha ?? null}}"
-                    ),
-                    "source_manifests": (
-                        "${{team-promote-release-recovery-branch.source_manifests ?? null}}"
-                    ),
-                    "error_code": ("${{team-promote-release-recovery-branch.error_code ?? null}}"),
-                    "unexpected_commit_shas": (
-                        "${{team-promote-release-recovery-branch.unexpected_commit_shas ?? null}}"
-                    ),
-                    "unexpected_paths": (
-                        "${{team-promote-release-recovery-branch.unexpected_paths ?? null}}"
-                    ),
-                },
+                "node": {
+                    "id": "team-verify-release-candidate",
+                    "display_name": "Verify pinned release candidate",
+                    "type": "effect:team:verify-release-candidate",
+                    "config": {
+                        "release_package_id": "${{team-release-verification-requested.payload.release_package_id}}",
+                        "verification_run_id": "${{team-release-verification-requested.payload.verification_run_id}}",
+                        "candidate_commit_sha": "${{team-release-verification-requested.payload.candidate_commit_sha}}",
+                    },
+                }
             },
             {
-                "id": "team-push-canonical-branch",
-                "display_name": "Push release branch to canonical remote",
-                "type": "effect:git:push-branch",
-                "managed_repo_id": "${{team-git-promotion-requested.payload.managed_repo_id}}",
-                "directory_path": (
-                    "${{team-git-promotion-requested.payload.directory_path ?? null}}"
-                ),
-                "source_ref": "${{team-git-promotion-requested.payload.source_branch}}",
-                "expected_commit_sha": (
-                    "${{team-git-promotion-requested.payload.expected_commit_sha}}"
-                ),
-                "expected_destination_commit_sha": (
-                    "${{team-git-promotion-requested.payload.base_commit_sha}}"
-                ),
-                "destination_branch": "${{team-git-promotion-requested.payload.target_branch}}",
+                "node": {
+                    "id": "team-promote-release-recovery-branch",
+                    "display_name": "Validate and consolidate release recovery branch",
+                    "type": "effect:team:consolidate-git-branches",
+                    "config": {
+                        "managed_repo_id": "${{team-git-release-recovery-requested.payload.managed_repo_id}}",
+                        "directory_path": "${{team-git-release-recovery-requested.payload.directory_path "
+                        "?? null}}",
+                        "source_branches": "${{team-git-release-recovery-requested.payload.source_branches}}",
+                        "target_branch": "${{team-git-release-recovery-requested.payload.target_branch}}",
+                        "base_branch": "${{team-git-release-recovery-requested.payload.base_branch "
+                        "?? null}}",
+                        "base_commit_sha": "${{team-git-release-recovery-requested.payload.base_commit_sha "
+                        "?? null}}",
+                        "required_source_ancestor_commit_sha": "${{team-git-release-recovery-requested.payload.required_source_ancestor_commit_sha "
+                        "?? null}}",
+                        "expected_source_commits": "${{team-git-release-recovery-requested.payload.expected_source_commits}}",
+                        "allowed_changed_paths": "${{team-git-release-recovery-requested.payload.allowed_changed_paths}}",
+                        "commit_message": "${{team-git-release-recovery-requested.payload.commit_message "
+                        "?? null}}",
+                    },
+                }
             },
             {
-                "id": "team-record-canonical-promotion",
-                "display_name": "Record canonical promotion result",
-                "type": "effect:team:record-git-promotion",
-                "promotion_id": "${{team-git-promotion-requested.payload.promotion_id}}",
-                "success": "${{team-push-canonical-branch.success}}",
-                "commit_sha": "${{team-push-canonical-branch.commit_sha ?? null}}",
-                "error": "${{team-push-canonical-branch.error ?? null}}",
-                "result_outputs": {
-                    "destination_branch": (
-                        "${{team-push-canonical-branch.destination_branch ?? null}}"
-                    ),
-                    "expected_destination_commit_sha": (
-                        "${{team-push-canonical-branch.expected_destination_commit_sha ?? null}}"
-                    ),
-                    "destination_commit": (
-                        "${{team-push-canonical-branch.destination_commit ?? null}}"
-                    ),
-                    "error_code": "${{team-push-canonical-branch.reason ?? null}}",
-                },
+                "node": {
+                    "id": "team-record-release-recovery-promotion",
+                    "display_name": "Record release recovery promotion result",
+                    "type": "effect:team:record-git-promotion",
+                    "config": {
+                        "promotion_id": "${{team-git-release-recovery-requested.payload.promotion_id}}",
+                        "success": "${{team-promote-release-recovery-branch.success}}",
+                        "commit_sha": "${{team-promote-release-recovery-branch.commit_sha "
+                        "?? null}}",
+                        "error": "${{team-promote-release-recovery-branch.error ?? null}}",
+                        "result_outputs": {
+                            "merged_branches": "${{team-promote-release-recovery-branch.merged_branches "
+                            "?? null}}",
+                            "target_branch": "${{team-promote-release-recovery-branch.target_branch "
+                            "?? null}}",
+                            "tree_hash": "${{team-promote-release-recovery-branch.tree_hash "
+                            "?? null}}",
+                            "base_commit_sha": "${{team-promote-release-recovery-branch.base_commit_sha "
+                            "?? null}}",
+                            "source_manifests": "${{team-promote-release-recovery-branch.source_manifests "
+                            "?? null}}",
+                            "error_code": "${{team-promote-release-recovery-branch.error_code "
+                            "?? null}}",
+                            "unexpected_commit_shas": "${{team-promote-release-recovery-branch.unexpected_commit_shas "
+                            "?? null}}",
+                            "unexpected_paths": "${{team-promote-release-recovery-branch.unexpected_paths "
+                            "?? null}}",
+                        },
+                    },
+                }
             },
             {
-                "id": "team-mark-release-published",
-                "display_name": "Mark release package published",
-                "type": "effect:team:mark-release-published",
-                "release_package_id": (
-                    "${{team-git-promotion-requested.payload.release_package_id}}"
-                ),
-                "success": "${{team-push-canonical-branch.success}}",
-                "canonical_branch": "${{team-git-promotion-requested.payload.target_branch}}",
-                "published_commit_sha": ("${{team-push-canonical-branch.commit_sha ?? null}}"),
-                "error": "${{team-push-canonical-branch.error ?? null}}",
-                "result_outputs": {
-                    "destination_branch": (
-                        "${{team-push-canonical-branch.destination_branch ?? null}}"
-                    ),
-                    "expected_destination_commit_sha": (
-                        "${{team-push-canonical-branch.expected_destination_commit_sha ?? null}}"
-                    ),
-                    "destination_commit": (
-                        "${{team-push-canonical-branch.destination_commit ?? null}}"
-                    ),
-                    "error_code": "${{team-push-canonical-branch.reason ?? null}}",
-                },
+                "node": {
+                    "id": "team-push-canonical-branch",
+                    "display_name": "Push release branch to canonical remote",
+                    "type": "effect:git:push-branch",
+                    "config": {
+                        "managed_repo_id": "${{team-git-promotion-requested.payload.managed_repo_id}}",
+                        "directory_path": "${{team-git-promotion-requested.payload.directory_path "
+                        "?? null}}",
+                        "source_ref": "${{team-git-promotion-requested.payload.source_branch}}",
+                        "expected_commit_sha": "${{team-git-promotion-requested.payload.expected_commit_sha}}",
+                        "expected_destination_commit_sha": "${{team-git-promotion-requested.payload.base_commit_sha}}",
+                        "destination_branch": "${{team-git-promotion-requested.payload.target_branch}}",
+                    },
+                }
+            },
+            {
+                "node": {
+                    "id": "team-record-canonical-promotion",
+                    "display_name": "Record canonical promotion result",
+                    "type": "effect:team:record-git-promotion",
+                    "config": {
+                        "promotion_id": "${{team-git-promotion-requested.payload.promotion_id}}",
+                        "success": "${{team-push-canonical-branch.success}}",
+                        "commit_sha": "${{team-push-canonical-branch.commit_sha ?? null}}",
+                        "error": "${{team-push-canonical-branch.error ?? null}}",
+                        "result_outputs": {
+                            "destination_branch": "${{team-push-canonical-branch.destination_branch "
+                            "?? null}}",
+                            "expected_destination_commit_sha": "${{team-push-canonical-branch.expected_destination_commit_sha "
+                            "?? "
+                            "null}}",
+                            "destination_commit": "${{team-push-canonical-branch.destination_commit "
+                            "?? null}}",
+                            "error_code": "${{team-push-canonical-branch.reason ?? null}}",
+                        },
+                    },
+                }
+            },
+            {
+                "node": {
+                    "id": "team-mark-release-published",
+                    "display_name": "Mark release package published",
+                    "type": "effect:team:mark-release-published",
+                    "config": {
+                        "release_package_id": "${{team-git-promotion-requested.payload.release_package_id}}",
+                        "success": "${{team-push-canonical-branch.success}}",
+                        "canonical_branch": "${{team-git-promotion-requested.payload.target_branch}}",
+                        "published_commit_sha": "${{team-push-canonical-branch.commit_sha "
+                        "?? null}}",
+                        "error": "${{team-push-canonical-branch.error ?? null}}",
+                        "result_outputs": {
+                            "destination_branch": "${{team-push-canonical-branch.destination_branch "
+                            "?? null}}",
+                            "expected_destination_commit_sha": "${{team-push-canonical-branch.expected_destination_commit_sha "
+                            "?? "
+                            "null}}",
+                            "destination_commit": "${{team-push-canonical-branch.destination_commit "
+                            "?? null}}",
+                            "error_code": "${{team-push-canonical-branch.reason ?? null}}",
+                        },
+                    },
+                }
             },
         ],
         "edges": [
             {"source_id": "team-cron", "target_id": "team-wake-due-agents"},
-            {
-                "source_id": "team-chat-message-queued",
-                "target_id": "team-wake-queued-chat-message",
-            },
+            {"source_id": "team-chat-message-queued", "target_id": "team-wake-queued-chat-message"},
             {
                 "source_id": "team-external-chat-reply-requested",
                 "target_id": "team-send-external-chat-reply",
@@ -874,10 +987,7 @@ _TEAM_RUNTIME_V1_LEGACY: dict[str, Any] = {
                 "source_port": "error",
                 "target_id": "team-record-external-chat-delivery-failure",
             },
-            {
-                "source_id": "team-agent-wake-requested",
-                "target_id": "team-wake-requested-agent",
-            },
+            {"source_id": "team-agent-wake-requested", "target_id": "team-wake-requested-agent"},
             {
                 "source_id": "team-governance-wake-requested",
                 "target_id": "team-wake-requested-governance",
@@ -1006,41 +1116,6 @@ _TEAM_RUNTIME_V1_LEGACY: dict[str, Any] = {
         ],
     },
 }
-
-
-def _pack_from_legacy_config(source: dict[str, Any]) -> dict[str, Any]:
-    config = source["config"]
-    nodes: list[dict[str, Any]] = []
-    for section_name in ("triggers", "gates", "queries", "effects"):
-        for node in config.get(section_name, []):
-            nodes.append({"node": _ir_node_from_legacy_node(node)})
-    return {
-        "pack_id": "team-runtime",
-        "pack_version": "v1",
-        "description": source.get("description"),
-        "graphs": deepcopy(source.get("graphs", [])),
-        "ir": {
-            "version": "v1",
-            "nodes": nodes,
-            "edges": deepcopy(config.get("edges", [])),
-        },
-    }
-
-
-def _ir_node_from_legacy_node(node: dict[str, Any]) -> dict[str, Any]:
-    return {
-        "id": node["id"],
-        "display_name": node["display_name"],
-        "type": node["type"],
-        "config": {
-            key: deepcopy(value)
-            for key, value in node.items()
-            if key not in {"id", "display_name", "type"}
-        },
-    }
-
-
-TEAM_RUNTIME_V1: dict[str, Any] = _pack_from_legacy_config(_TEAM_RUNTIME_V1_LEGACY)
 
 
 _TEAM_RUNTIME_V1_LAYOUT_NODE_POSITIONS: tuple[tuple[str, float, float], ...] = (

@@ -1635,7 +1635,3 @@ def bootstrap_default_output_schemas() -> None:
         for node_type, outputs in schema_group.items():
             register_node_output_schema(node_type=node_type, outputs=outputs)
     _BOOTSTRAPPED = True
-
-
-# backward compatibility
-bootstrap_default_node_schemas = bootstrap_default_output_schemas

@@ -1,5 +1,17 @@
 # Changelog
 
+## 2026-08-14 - Remove Expired Compatibility Surfaces
+
+- Removed unreachable or unreferenced gateway, workflow-graph, schema-bootstrap, review-store, and
+  Git-identity aliases after migrating the remaining internal and test callers to canonical names.
+- Removed the deprecated ADO work-item listing script and rejected `--reprocess` /
+  `--list-unprocessed` options; workflow-owned ADO intake and the narrowly scoped `--forget`
+  migration cleanup remain supported.
+- Removed the retired Assistant `allowed_mcp_tool_profile` input and the unused per-trigger and
+  per-effect workflow mutation service API, including its legacy flattened response payloads.
+- Re-authored the built-in Team runtime workflow pack directly in canonical IR form instead of
+  rebuilding it from a legacy flat-node document on every import.
+
 ## 2026-08-14 - Remove Managed-Git Legacy Preflight From Runtime Paths
 
 - Removed the legacy managed-Git migration inventory from repository operations and orchestrator

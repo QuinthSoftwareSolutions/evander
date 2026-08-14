@@ -12658,7 +12658,7 @@ def test_admin_web_models_assistant_knowledge_tab_save_preserves_directory_domai
     assert service.operations_admin.read_assistant_settings()["default_model"] == "gpt-test"
 
 
-def test_admin_web_assistant_settings_migrates_legacy_write_tool_profile(
+def test_admin_web_assistant_settings_no_longer_migrates_retired_profile_key(
     tmp_path: Path,
 ) -> None:
     service = build_admin_runtime(write_config(tmp_path, enable_directory_scoped_config=True))
@@ -12677,7 +12677,7 @@ def test_admin_web_assistant_settings_migrates_legacy_write_tool_profile(
 
     settings = service.operations_admin.read_assistant_settings()
 
-    assert settings["default_profile"] == "full-admin"
+    assert "default_profile" not in settings
     assert "allowed_mcp_tool_profile" not in settings
 
 

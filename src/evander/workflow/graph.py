@@ -159,12 +159,6 @@ def compute_downstream_depth(
     )
 
 
-index_downstream_nodes = build_downstream_index
-index_inbound_edges = build_inbound_edge_index
-merge_output_intersection = merge_output_schema_intersection
-compute_depth = compute_downstream_depth
-
-
 def _iter_nodes(*node_groups: Iterable[Any] | Mapping[str, Any]) -> Iterable[Any]:
     for node_group in node_groups:
         if node_group is None:
@@ -247,15 +241,11 @@ __all__ = [
     "WorkflowGraphError",
     "WorkflowGraphCycleError",
     "build_downstream_index",
-    "index_downstream_nodes",
     "build_inbound_edge_index",
-    "index_inbound_edges",
     "index_declared_outputs",
     "merge_declared_output_intersection",
     "merge_output_schema_intersection",
-    "merge_output_intersection",
     "reachable_downstream_nodes",
     "would_form_cycle",
     "compute_downstream_depth",
-    "compute_depth",
 ]

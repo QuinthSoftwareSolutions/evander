@@ -50,7 +50,7 @@ client.
 
 | Parameter | Found in | Consumed by |
 |---|---|---|
-| `AZURE_DEVOPS_PR_PAT` | `config/gateway.env.example` | `src/evander/runtime.py` / `src/evander/gateway.py` when PR reply providers use the default `azure_devops_pr_pat_env`. |
+| `AZURE_DEVOPS_PR_PAT` | `config/gateway.env.example` | `src/evander/runtime.py` / `src/evander/gateway/server.py` when PR reply providers use the default `azure_devops_pr_pat_env`. |
 
 Phone-call tools require provider secrets to exist in the host process environment. Retell uses the
 configured `retell_api_key_env`, which defaults to `RETELL_API_KEY`. The OpenAI Realtime/DIDWW
@@ -1518,8 +1518,8 @@ In the root-only model, this file is an import source for seeding `runtime/direc
 
 | Key | Found in | Consumed by |
 |---|---|---|
-| `host`, `port` | legacy gateway YAML | `src/evander/gateway.py` server bind settings. |
-| `log_level` | legacy gateway YAML | `src/evander/gateway.py` logging setup for gateway process. |
+| `host`, `port` | legacy gateway YAML | `src/evander/gateway/cli.py` server bind settings. |
+| `log_level` | legacy gateway YAML | `src/evander/gateway/cli.py` logging setup for gateway process. |
 | `runtime_dir` | legacy gateway YAML | `src/evander/runtime.py` store locations. |
 | `audit_log_path` | legacy gateway YAML | `src/evander/runtime.py` audit logger destination. |
 | `session_store_path`, `approval_store_path`, `draft_store_path`, `email_store_path`, `email_cursor_store_path`, `discord_command_store_path` | legacy gateway YAML | `src/evander/runtime.py` persistent JSON stores. |
@@ -1538,9 +1538,9 @@ In the root-only model, this file is an import source for seeding `runtime/direc
 | `model_provider_mode`, `openai_api_base_url`, `openai_api_key_env`, `openai_relay_timeout_seconds`, `local_openai_api_base_url`, `local_openai_api_key`, `local_openai_provider_name`, `azure_openai_endpoint`, `azure_openai_auth_mode`, `azure_openai_api_key_env`, `azure_openai_api_version`, `azure_openai_model_deployments`, `anthropic_api_base_url`, `anthropic_api_key_env`, `anthropic_api_version`, `anthropic_relay_timeout_seconds` | root or directory `providers.json` | `src/evander/relays/openai.py` host relay mode selection and upstream routing. Public mode is the default; local mode forwards OpenAI-compatible requests to a host-local endpoint such as Ollama and uses a placeholder configured key rather than a host secret env var. Azure mode requires the endpoint, host env-var name, api-version, and logical-model-to-deployment mapping. Anthropic mode forwards supported Messages API HTTP endpoints and injects host-side `x-api-key`. `azure_openai_auth_mode` currently accepts only `api_key`. Legacy `openai_provider_mode` is accepted as an alias for `model_provider_mode`. |
 | `local_openai_max_concurrency` | root `providers.json` | Optional host-global limit for concurrent agent turns whose fully resolved provider mode is `local_openai`, across VM and container-worker backends. Excess prompts enter the durable FIFO prompt queue and are admitted as running turns finish. Omit the field for unlimited concurrency. Child directories cannot override it. |
 | `communication_artifact_public_base_url`, `communication_artifact_link_secret_env`, `communication_artifact_link_ttl_seconds` | root or directory `providers.json` | Signed public links for staged communication artifacts. `teams_post_file` uses them when a non-image Teams file has no SharePoint/OneDrive `contentUrl`. Discord persona avatars are stored directly on Discord webhooks and do not use these settings. The secret env var must be loaded by both gateway and Admin Web; artifact link TTL is also capped by staged artifact expiry. |
-| `phone_call_backend`, `retell_api_base_url`, `retell_api_key_env`, `retell_from_number`, `retell_default_agent_id`, `retell_request_timeout_seconds`, `openai_realtime_model`, `openai_realtime_api_key_env`, `openai_realtime_api_base_url`, `voice_media_controller_url`, `voice_media_controller_token_env`, `voice_media_controller_request_timeout_seconds`, `didww_sip_bridge_url`, `didww_sip_bridge_token_env`, `didww_from_number`, `inbound_phone_routes` | root or directory `providers.json` | `src/evander/retell_phone.py`, `src/evander/voice_sessions.py`, and `src/evander/gateway.py` for host-side phone calls. |
+| `phone_call_backend`, `retell_api_base_url`, `retell_api_key_env`, `retell_from_number`, `retell_default_agent_id`, `retell_request_timeout_seconds`, `openai_realtime_model`, `openai_realtime_api_key_env`, `openai_realtime_api_base_url`, `voice_media_controller_url`, `voice_media_controller_token_env`, `voice_media_controller_request_timeout_seconds`, `didww_sip_bridge_url`, `didww_sip_bridge_token_env`, `didww_from_number`, `inbound_phone_routes` | root or directory `providers.json` | `src/evander/retell_phone.py`, `src/evander/voice_sessions.py`, and `src/evander/gateway/server.py` for host-side phone calls. |
 | `contacts`, `user_contact_links` | root or directory `contacts.json` | `src/evander/directory_config.py`, `src/evander/retell_phone.py`, `src/evander/voice_sessions.py`, and the admin Users API for directory-scoped contacts and user attachments. |
-| `redacted_keys` | legacy gateway YAML (optional) | `src/evander/gateway.py` request/response redaction in logs. |
+| `redacted_keys` | legacy gateway YAML (optional) | `src/evander/gateway/server.py` request/response redaction in logs. |
 
 The worker ChatGPT account is not directory-scoped. Admin Web account status, device-login
 start/status/cancellation, and logout require both an unlocked privileged-operations session and
@@ -1769,14 +1769,14 @@ aliases for the same provisioned environment.
 | `email_folder_allowlist_by_mailbox` | legacy gateway YAML | `src/evander/cli.py` / `src/evander/policy.py`. |
 | `email_draft_recipient_allowlist` | legacy gateway YAML | `src/evander/policy.py` recipient checks. |
 | `email_draft_domain_allowlist` | legacy gateway YAML | `src/evander/policy.py` domain checks. |
-| `email_send_enabled` | legacy gateway YAML | `src/evander/cli.py`, `src/evander/gateway.py`, `src/evander/policy.py`. |
+| `email_send_enabled` | legacy gateway YAML | `src/evander/cli.py`, `src/evander/gateway/server.py`, `src/evander/policy.py`. |
 | `email_provider_timeout_seconds` | legacy gateway YAML | `src/evander/runtime.py` email + PR provider HTTP client timeouts. |
 
 ### PR/feedback keys
 
 | Key | Found in | Consumed by |
 |---|---|---|
-| `pr_reply_require_approval` | legacy gateway YAML | `src/evander/gateway.py` PR-reply approval gate. |
+| `pr_reply_require_approval` | legacy gateway YAML | `src/evander/gateway/server.py` PR-reply approval gate. |
 | `github_token_env` | legacy gateway YAML | `src/evander/runtime.py`, `src/evander/reviews/request_service.py`, PR feedback trigger providers, and GitHub PR get query providers. |
 | `azure_devops_pr_pat_env` | legacy gateway YAML | `src/evander/runtime.py`, `src/evander/daemons/ado_issue_worker.py`, `src/evander/reviews/request_service.py`, and PR feedback/completion trigger providers. |
 | `ado_organization` | directory provider config | Azure DevOps organization identifier used to construct the trusted `https://dev.azure.com/<org>` origin for credentialed provider clients. |

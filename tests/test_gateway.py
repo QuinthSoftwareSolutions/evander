@@ -3887,32 +3887,12 @@ def test_gateway_app_runs_mounted_mcp_lifespan_on_startup(tmp_path: Path) -> Non
     assert mcp_session_manager._task_group is None
 
 
-def test_gateway_import_paths_expose_migration_entry_points() -> None:
-    import evander.gateway as compatibility_gateway
+def test_gateway_package_exports_entry_points() -> None:
+    import evander.gateway as gateway_package
     from evander.gateway.app import create_app as canonical_create_app
     from evander.gateway.cli import main as canonical_main
     from evander.gateway.server import create_server as canonical_create_server
 
-    assert compatibility_gateway.create_app is canonical_create_app
-    assert compatibility_gateway.create_server is canonical_create_server
-    assert compatibility_gateway.main is canonical_main
-
-
-def test_gateway_legacy_module_shim_exposes_migration_entry_points() -> None:
-    legacy_module_path = Path(__file__).resolve().parents[1] / "src" / "evander" / "gateway.py"
-    spec = importlib.util.spec_from_file_location(
-        "_evander_gateway_legacy_shim",
-        legacy_module_path,
-    )
-    assert spec is not None
-    assert spec.loader is not None
-    legacy_gateway = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(legacy_gateway)
-
-    from evander.gateway.app import create_app as canonical_create_app
-    from evander.gateway.cli import main as canonical_main
-    from evander.gateway.server import create_server as canonical_create_server
-
-    assert legacy_gateway.create_app is canonical_create_app
-    assert legacy_gateway.create_server is canonical_create_server
-    assert legacy_gateway.main is canonical_main
+    assert gateway_package.create_app is canonical_create_app
+    assert gateway_package.create_server is canonical_create_server
+    assert gateway_package.main is canonical_main
