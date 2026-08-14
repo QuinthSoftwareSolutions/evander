@@ -87,6 +87,19 @@ def test_worker_prepares_and_refreshes_clean_reference_repo_but_rejects_dirty_ch
         token="test-token",
         allowed_git_source_prefixes=[str(tmp_path)],
     )
+    with pytest.raises(ValueError, match="set refresh_upstream=true"):
+        daemon.prepare_reference_repo(
+            "session-without-cache",
+            WorkerReferenceRepoPrepareRequest(
+                repo_source=str(source),
+                repo_name="repo",
+                source_ref="refs/heads/main",
+                commit_sha=None,
+                configuration_version="1",
+                update_existing=False,
+            ),
+        )
+
     first = daemon.prepare_reference_repo(
         "session-1",
         WorkerReferenceRepoPrepareRequest(
@@ -118,6 +131,20 @@ def test_worker_prepares_and_refreshes_clean_reference_repo_but_rejects_dirty_ch
     tracked.write_text("two\n", encoding="utf-8")
     subprocess.run(["git", "add", "README.md"], cwd=source, check=True)
     subprocess.run(["git", "commit", "-q", "-m", "two"], cwd=source, check=True)
+    retained = daemon.prepare_reference_repo(
+        "session-1",
+        WorkerReferenceRepoPrepareRequest(
+            repo_source=str(source),
+            repo_name="repo",
+            source_ref="refs/heads/main",
+            commit_sha=source_commit(),
+            configuration_version="1",
+            update_existing=False,
+        ),
+    )
+    assert retained.checkout_updated is False
+    assert retained.commit_sha == first.commit_sha
+
     refreshed = daemon.prepare_reference_repo(
         "session-1",
         WorkerReferenceRepoPrepareRequest(
@@ -174,6 +201,185 @@ def test_worker_prepares_and_refreshes_clean_reference_repo_but_rejects_dirty_ch
                 source_ref="refs/heads/main",
                 commit_sha=source_commit(),
                 configuration_version="1",
+            ),
+        )
+
+
+def test_worker_reference_repo_rejects_clean_agent_commit_when_retaining_checkout(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = tmp_path / "source"
+    source.mkdir()
+    subprocess.run(["git", "init", "-q", "-b", "main"], cwd=source, check=True)
+    subprocess.run(["git", "config", "user.email", "test@example.invalid"], cwd=source, check=True)
+    subprocess.run(["git", "config", "user.name", "Worker Test"], cwd=source, check=True)
+    (source / "README.md").write_text("trusted\n", encoding="utf-8")
+    subprocess.run(["git", "add", "README.md"], cwd=source, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "trusted"], cwd=source, check=True)
+    trusted_commit = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=source,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+
+    daemon = WorkerDaemon(
+        runtime_dir=tmp_path / "runtime",
+        worker_root=tmp_path / "worker-root",
+        container_runtime=FakeContainerRuntime(),
+        token="test-token",
+        allowed_git_source_prefixes=[str(tmp_path)],
+    )
+    request = WorkerReferenceRepoPrepareRequest(
+        repo_source=str(source),
+        repo_name="repo",
+        source_ref="refs/heads/main",
+        commit_sha=trusted_commit,
+        configuration_version="1",
+    )
+    daemon.prepare_reference_repo("session-1", request)
+    paths = WorkerSessionPaths.resolve(daemon.worker_root, "session-1")
+    checkout = paths.repo_root / "repo"
+    trusted_state_path = paths.root / "reference-repository-state" / "repo.json"
+    trusted_state = json.loads(trusted_state_path.read_text(encoding="utf-8"))
+    assert trusted_state["commit_sha"] == trusted_commit
+    assert trusted_state["repo_source"] == str(source)
+    assert paths.agent_home not in trusted_state_path.parents
+    assert stat.S_IMODE(trusted_state_path.stat().st_mode) == 0o600
+
+    (checkout / "README.md").write_text("assistant authored\n", encoding="utf-8")
+    subprocess.run(
+        ["git", "config", "user.email", "assistant@example.invalid"], cwd=checkout, check=True
+    )
+    subprocess.run(["git", "config", "user.name", "Assistant"], cwd=checkout, check=True)
+    subprocess.run(["git", "add", "README.md"], cwd=checkout, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "assistant commit"], cwd=checkout, check=True)
+    assistant_commit = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=checkout,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    assert assistant_commit != trusted_commit
+    assert (
+        subprocess.run(
+            ["git", "status", "--porcelain"],
+            cwd=checkout,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout
+        == ""
+    )
+
+    with pytest.raises(ValueError, match="untrusted commit"):
+        daemon.prepare_reference_repo(
+            "session-1",
+            request.model_copy(update={"update_existing": False}),
+        )
+
+    subprocess.run(
+        ["git", "checkout", "--quiet", "--detach", trusted_commit],
+        cwd=checkout,
+        check=True,
+    )
+    monkeypatch.setattr(
+        daemon,
+        "_write_reference_repo_trusted_commit",
+        lambda *args, **kwargs: pytest.fail("warm retained checkout rewrote trusted state"),
+    )
+    original_subprocess_run = subprocess.run
+
+    def run_without_fetch(command, *args, **kwargs):
+        if "fetch" in command:
+            pytest.fail("warm retained checkout performed a Git fetch")
+        return original_subprocess_run(command, *args, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", run_without_fetch)
+    retained = daemon.prepare_reference_repo(
+        "session-1",
+        request.model_copy(update={"update_existing": False}),
+    )
+    assert retained.commit_sha == trusted_commit
+    assert retained.checkout_updated is False
+
+
+def test_worker_reference_repo_first_materialization_pins_post_fetch_commit(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "source"
+    source.mkdir()
+    subprocess.run(["git", "init", "-q", "-b", "main"], cwd=source, check=True)
+    subprocess.run(["git", "config", "user.email", "test@example.invalid"], cwd=source, check=True)
+    subprocess.run(["git", "config", "user.name", "Worker Test"], cwd=source, check=True)
+    tracked = source / "README.md"
+    tracked.write_text("cached\n", encoding="utf-8")
+    subprocess.run(["git", "add", "README.md"], cwd=source, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "cached"], cwd=source, check=True)
+    cached_commit = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=source,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+
+    tracked.write_text("refreshed before upload-pack\n", encoding="utf-8")
+    subprocess.run(["git", "add", "README.md"], cwd=source, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "refreshed"], cwd=source, check=True)
+    refreshed_commit = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=source,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+
+    daemon = WorkerDaemon(
+        runtime_dir=tmp_path / "runtime",
+        worker_root=tmp_path / "worker-root",
+        container_runtime=FakeContainerRuntime(),
+        token="test-token",
+        allowed_git_source_prefixes=[str(tmp_path)],
+    )
+    prepared = daemon.prepare_reference_repo(
+        "session-1",
+        WorkerReferenceRepoPrepareRequest(
+            repo_source=str(source),
+            repo_name="repo",
+            source_ref="refs/heads/main",
+            commit_sha=cached_commit,
+            configuration_version="1",
+            update_existing=False,
+        ),
+    )
+
+    assert prepared.cloned is True
+    assert prepared.checkout_updated is True
+    assert prepared.commit_sha == refreshed_commit
+    paths = WorkerSessionPaths.resolve(daemon.worker_root, "session-1")
+    checkout = paths.repo_root / "repo"
+    assert (checkout / "README.md").read_text(encoding="utf-8") == (
+        "refreshed before upload-pack\n"
+    )
+    trusted_state = json.loads(
+        (paths.root / "reference-repository-state" / "repo.json").read_text(encoding="utf-8")
+    )
+    assert trusted_state["commit_sha"] == refreshed_commit
+
+    with pytest.raises(ValueError, match=f"expected {cached_commit}"):
+        daemon.prepare_reference_repo(
+            "session-exact-pin",
+            WorkerReferenceRepoPrepareRequest(
+                repo_source=str(source),
+                repo_name="repo",
+                source_ref="refs/heads/main",
+                commit_sha=cached_commit,
+                configuration_version="1",
+                update_existing=True,
             ),
         )
 

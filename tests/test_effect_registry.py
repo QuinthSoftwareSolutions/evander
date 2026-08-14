@@ -249,6 +249,7 @@ class _FakeContainerBackend:
         self.prepared_reference_repos.append(kwargs)
         return SimpleNamespace(
             target_dir=f"/home/agent/repos/{kwargs['repo_name']}",
+            commit_sha=kwargs["commit_sha"],
             cloned=True,
             checkout_updated=True,
             configuration_updated=True,
@@ -701,6 +702,7 @@ def test_prepare_reference_repositories_batches_exact_read_only_checkouts(
                 {"repo_source": "https://example.invalid/one.git"},
                 {"repo_source": "https://example.invalid/two.git"},
             ],
+            refresh_upstream=True,
         ),
         EffectRuntimeContext(
             resolved_config=config,
@@ -720,9 +722,8 @@ def test_prepare_reference_repositories_batches_exact_read_only_checkouts(
         "a" * 40,
         "b" * 40,
     }
-    assert {call["source_ref"] for call in backend.prepared_reference_repos} == {
-        "refs/heads/main"
-    }
+    assert {call["source_ref"] for call in backend.prepared_reference_repos} == {"refs/heads/main"}
+    assert all(call["update_existing"] is True for call in backend.prepared_reference_repos)
     assert all(call["refresh"] is False for call in ensure_calls)
     assert len(refresh_calls) == 2
     assert all(call[1]["branch"] is None for call in refresh_calls)
@@ -749,6 +750,101 @@ def test_prepare_reference_repositories_batches_exact_read_only_checkouts(
     assert [item["managed_repo_id"] for item in error_payload["completed"]] == ["mr-one"]
     assert error_payload["failures"][0]["managed_repo_id"] == "mr-two"
     assert [call["managed_repo_id"] for call in bind_calls] == ["mr-one"]
+
+
+def test_prepare_reference_repositories_reuses_cached_checkout_by_default(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = GatewayConfig(
+        runtime_dir=tmp_path,
+        execution_backend="container_worker_vm",
+        container_worker_base_url="http://worker.test",
+    )
+    session_repository = JsonSessionManifestRepository(config.session_store_path)
+    session_repository.upsert_session(
+        SessionManifest(
+            session_id="assistant-1",
+            directory_path="root/personal",
+            execution_backend="container_worker_vm",
+            allowed_tools=[],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        )
+    )
+    ensure_calls: list[dict[str, object]] = []
+    admin_service = SimpleNamespace(
+        runtime=SimpleNamespace(
+            session_repository=session_repository,
+            provider_config=_ContainerResolverStub(config),
+        ),
+        ensure_managed_git_repository=lambda **kwargs: (
+            ensure_calls.append(kwargs)
+            or {
+                "managed_repo_id": "mr-one",
+                "default_branch": "main",
+            }
+        ),
+        resolve_managed_git_branch_commit=lambda managed_repo_id, **kwargs: "a" * 40,
+        resolve_managed_git_clone=lambda managed_repo_id, **kwargs: {
+            "managed_repo_id": managed_repo_id,
+            "clone_url": f"https://example.invalid/{managed_repo_id}.git",
+            "repo_name": managed_repo_id,
+        },
+    )
+    backend = _FakeContainerBackend()
+
+    def retain_existing_checkout(**kwargs):
+        backend.prepared_reference_repos.append(kwargs)
+        return SimpleNamespace(
+            target_dir=f"/home/agent/repos/{kwargs['repo_name']}",
+            commit_sha="9" * 40,
+            cloned=False,
+            checkout_updated=False,
+            configuration_updated=False,
+        )
+
+    monkeypatch.setattr(backend, "prepare_reference_repo", retain_existing_checkout)
+    monkeypatch.setattr(
+        "evander.effects.providers.agent_prepare_reference_repositories.container_backend",
+        lambda context, config: backend,
+    )
+    provider = AgentPrepareReferenceRepositoriesEffectProvider()
+    provider.initialize(
+        AgentPrepareReferenceRepositoriesEffectDefinition(
+            id="prepare-repositories",
+            display_name="Prepare repositories",
+            type="effect:agent:prepare-reference-repositories",
+            session_id="assistant-1",
+            directory_path="root/personal",
+            repositories=[{"repo_source": "https://example.invalid/one.git"}],
+        ),
+        EffectRuntimeContext(
+            resolved_config=config,
+            metadata={"directory_path": "root/personal"},
+            admin_service=admin_service,
+        ),
+    )
+
+    result = provider.execute()
+
+    assert result["repositories"][0]["commit_sha"] == "9" * 40
+    assert result["repositories"][0]["checkout_updated"] is False
+    assert result["repositories"][0]["probe_performed"] is False
+    assert result["repositories"][0]["probe_reused"] is False
+    assert result["repositories"][0]["refresh_performed"] is False
+    assert ensure_calls == [
+        {
+            "directory_path": "root/personal",
+            "repo_source": "https://example.invalid/one.git",
+            "refresh": False,
+        }
+    ]
+    assert backend.prepared_reference_repos[0]["update_existing"] is False
+
+    admin_service.resolve_managed_git_branch_commit = lambda managed_repo_id, **kwargs: None
+    cached_checkout_result = provider.execute()
+    assert cached_checkout_result["repositories"][0]["commit_sha"] == "9" * 40
+    assert backend.prepared_reference_repos[-1]["commit_sha"] is None
 
 
 def test_agent_repo_grant_and_revoke_effects_use_persistent_exact_repo_access() -> None:

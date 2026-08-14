@@ -1662,7 +1662,12 @@ def test_personal_assistant_workflow_accepts_batched_reference_repository_prepar
         }
     )
 
-    assert config.effects[0].type == "effect:agent:prepare-reference-repositories"
+    effect = materialize_node_definition(config.effects[0])
+    assert effect.type == "effect:agent:prepare-reference-repositories"
+    assert effect.refresh_upstream is False
+
+    refreshed = effect.model_copy(update={"refresh_upstream": True})
+    assert refreshed.refresh_upstream is True
 
 
 def test_trigger_orchestrator_for_gate_accepts_body_done_ports_and_cycle_return() -> None:

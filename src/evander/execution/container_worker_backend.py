@@ -344,8 +344,9 @@ class ContainerWorkerVmExecutionBackend:
         repo_source: str,
         repo_name: str,
         source_ref: str,
-        commit_sha: str,
+        commit_sha: str | None,
         configuration_version: str,
+        update_existing: bool = True,
     ) -> WorkerReferenceRepoPrepareRecord:
         return self.client.prepare_reference_repo(
             session_id,
@@ -355,6 +356,7 @@ class ContainerWorkerVmExecutionBackend:
                 source_ref=source_ref,
                 commit_sha=commit_sha,
                 configuration_version=configuration_version,
+                update_existing=update_existing,
             ),
         )
 

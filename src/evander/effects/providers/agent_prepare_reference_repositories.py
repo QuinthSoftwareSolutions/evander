@@ -19,6 +19,7 @@ from .agent_clone_repo import (
     _remote_url_requires_git_ssh,
 )
 from .agent_session import (
+    as_bool_or_none,
     container_backend,
     effective_config_for_session,
     require_container_session_id,
@@ -40,7 +41,7 @@ class _ResolvedReferenceRepository:
     managed_repo_id: str
     repo_name: str
     source_ref: str
-    commit_sha: str
+    commit_sha: str | None
     clone_url: str
     probe_performed: bool
     probe_reused: bool
@@ -56,6 +57,7 @@ class AgentPrepareReferenceRepositoriesEffectProvider(EffectProviderBase):
             "vm_name": effect.vm_name,
             "directory_path": effect.directory_path,
             "repositories": effect.repositories,
+            "refresh_upstream": effect.refresh_upstream,
         }
         if resolved_config:
             payload.update(dict(resolved_config))
@@ -84,12 +86,14 @@ class AgentPrepareReferenceRepositoriesEffectProvider(EffectProviderBase):
             fallback_directory_path=session_directory_path,
         )
         repositories = _normalize_repository_inputs(payload.get("repositories"))
+        refresh_upstream = as_bool_or_none(payload.get("refresh_upstream")) or False
         requested_at = datetime.now(UTC)
         resolved = self._resolve_repositories(
             repositories,
             directory_path=session_directory_path,
             session_id=session_id,
             requested_at=requested_at,
+            refresh_upstream=refresh_upstream,
         )
         _validate_resolved_repositories(resolved)
 
@@ -162,6 +166,7 @@ class AgentPrepareReferenceRepositoriesEffectProvider(EffectProviderBase):
                     source_ref=repository.source_ref,
                     commit_sha=repository.commit_sha,
                     configuration_version=_REFERENCE_REPO_CONFIG_VERSION,
+                    update_existing=refresh_upstream,
                 ): (repository, access_reused)
                 for repository, clone_source, access_reused in prepared_inputs
             }
@@ -179,12 +184,16 @@ class AgentPrepareReferenceRepositoriesEffectProvider(EffectProviderBase):
                         }
                     )
                     continue
+                resolved_commit_sha = required_string(
+                    getattr(record, "commit_sha", None),
+                    f"worker did not return a commit for {repository.repo_name}",
+                )
                 result = {
                     "repo_source": repository.repo_source,
                     "managed_repo_id": repository.managed_repo_id,
                     "repo_name": repository.repo_name,
                     "source_ref": repository.source_ref,
-                    "commit_sha": repository.commit_sha,
+                    "commit_sha": resolved_commit_sha,
                     "target_dir": record.target_dir,
                     "probe_performed": repository.probe_performed,
                     "probe_reused": repository.probe_reused,
@@ -242,6 +251,7 @@ class AgentPrepareReferenceRepositoriesEffectProvider(EffectProviderBase):
         directory_path: str,
         session_id: str,
         requested_at: datetime,
+        refresh_upstream: bool,
     ) -> list[_ResolvedReferenceRepository]:
         with ThreadPoolExecutor(
             max_workers=min(_MAX_PARALLEL_REPOSITORIES, len(repositories))
@@ -254,6 +264,7 @@ class AgentPrepareReferenceRepositoriesEffectProvider(EffectProviderBase):
                         directory_path=directory_path,
                         session_id=session_id,
                         requested_at=requested_at,
+                        refresh_upstream=refresh_upstream,
                     ),
                     enumerate(repositories),
                 )
@@ -267,6 +278,7 @@ class AgentPrepareReferenceRepositoriesEffectProvider(EffectProviderBase):
         directory_path: str,
         session_id: str,
         requested_at: datetime,
+        refresh_upstream: bool,
     ) -> _ResolvedReferenceRepository:
         admin_service = self._context().admin_service
         ensure = getattr(admin_service, "ensure_managed_git_repository", None)
@@ -277,8 +289,9 @@ class AgentPrepareReferenceRepositoriesEffectProvider(EffectProviderBase):
         )
         resolve_branch = getattr(admin_service, "resolve_managed_git_branch_commit", None)
         clone_resolver = getattr(admin_service, "resolve_managed_git_clone", None)
-        if not all(
-            callable(method) for method in (ensure, refresh_branch, resolve_branch, clone_resolver)
+        required_operations = (ensure, resolve_branch, clone_resolver)
+        if not all(callable(method) for method in required_operations) or (
+            refresh_upstream and not callable(refresh_branch)
         ):
             raise RuntimeError("managed Git reference-repository operations are unavailable")
         repo_source = required_string(repository.get("repo_source"), "repo_source is required")
@@ -293,28 +306,34 @@ class AgentPrepareReferenceRepositoriesEffectProvider(EffectProviderBase):
             registered.get("managed_repo_id"),
             "managed Git registration did not return managed_repo_id",
         )
-        verification = _mapping_result(
-            refresh_branch(
-                managed_repo_id,
-                directory_path=directory_path,
-                branch=repository.get("branch"),
-                reuse_if_verified_after=requested_at,
+        verification: dict[str, Any] = {}
+        if refresh_upstream:
+            verification = _mapping_result(
+                refresh_branch(
+                    managed_repo_id,
+                    directory_path=directory_path,
+                    branch=repository.get("branch"),
+                    reuse_if_verified_after=requested_at,
+                )
             )
-        )
         branch = required_string(
             verification.get("branch")
             or repository.get("branch")
             or registered.get("default_branch"),
             f"managed repository {managed_repo_id} has no default branch",
         )
-        commit_sha = required_string(
-            resolve_branch(
-                managed_repo_id,
-                directory_path=directory_path,
-                branch=branch,
-            ),
-            f"managed repository {managed_repo_id} has no commit for branch {branch}",
+        commit_sha = resolve_branch(
+            managed_repo_id,
+            directory_path=directory_path,
+            branch=branch,
         )
+        if refresh_upstream and not commit_sha:
+            raise ValueError(
+                f"managed repository {managed_repo_id} has no cached commit for branch "
+                f"{branch} after refresh"
+            )
+        if commit_sha:
+            commit_sha = required_string(commit_sha, "managed Git branch commit is unavailable")
         clone_info = _mapping_result(
             clone_resolver(
                 managed_repo_id=managed_repo_id,

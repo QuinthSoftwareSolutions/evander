@@ -268,6 +268,7 @@ def test_container_worker_client_prepares_session_clones_repo_and_writes_files(
 ) -> None:
     monkeypatch.setenv("WORKER_TOKEN", "secret-token")
     seen: list[tuple[str, str]] = []
+    reference_repo_payloads: list[dict[str, object]] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
         seen.append((request.method, request.url.path))
@@ -299,6 +300,7 @@ def test_container_worker_client_prepares_session_clones_repo_and_writes_files(
                 request=request,
             )
         if request.url.path.endswith("/reference-repo"):
+            reference_repo_payloads.append(json.loads(request.content))
             return httpx.Response(
                 200,
                 json={
@@ -359,6 +361,7 @@ def test_container_worker_client_prepares_session_clones_repo_and_writes_files(
             source_ref="refs/heads/main",
             commit_sha="a" * 40,
             configuration_version="1",
+            update_existing=False,
         ),
     ).checkout_updated
     assert (
@@ -379,6 +382,16 @@ def test_container_worker_client_prepares_session_clones_repo_and_writes_files(
         "daily summary\n"
     )
     assert worker.delete_session("session-1") == {"deleted": True, "session_id": "session-1"}
+    assert reference_repo_payloads == [
+        {
+            "repo_source": "/tmp/repo",
+            "repo_name": "repo",
+            "source_ref": "refs/heads/main",
+            "commit_sha": "a" * 40,
+            "configuration_version": "1",
+            "update_existing": False,
+        }
+    ]
     assert seen == [
         ("POST", "/v1/sessions"),
         ("POST", "/v1/sessions/session-1/repo"),

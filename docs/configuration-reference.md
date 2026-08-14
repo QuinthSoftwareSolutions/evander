@@ -741,16 +741,30 @@ to `write`, which provisions a session-scoped Git SSH key and enables
 that should use only the worker's shared read-only Git key.
 
 `effect:agent:prepare-reference-repositories` is the persistent-assistant read path. Its
-`repositories` array contains `repo_source` and an optional `branch` per entry. It resolves and
-checks managed mirrors concurrently, then prepares detached read-only checkouts at the exact
-verified commits. Existing initialized mirrors receive one live `ls-remote` probe for the requested
-branch; omitted branches probe symbolic `HEAD` unless an operator default override selects an exact
-branch. An unchanged branch skips the fetch, while changed, missing, default-branch-moved, and
-first-use repositories use the full transactional refresh path. Probe failures fail closed.
-Overlapping callers can reuse only a successful verification completed after they began; this is
-not a time-based cache and does not certify unrelated refs. Each repository output includes
-`probe_performed`, `probe_reused`, and `refresh_performed`. A dirty existing checkout fails closed
-and is never reset. Existing coding-agent clone effects are unchanged.
+`repositories` array contains `repo_source` and an optional `branch` per entry. By default,
+`refresh_upstream` is `false`: preparation resolves the branch from the existing managed mirror,
+uses that cached commit to authorize a missing worker checkout, and otherwise retains the checkout's
+last trusted prepared commit. The worker records that SHA outside the writable agent home, so a
+clean assistant-authored commit is rejected rather than adopted as the next read-only reference. It
+still validates the repository source, clean working tree, detached read-only configuration, and
+session access. If both the worker checkout and a cached managed-mirror commit are missing,
+preparation fails clearly instead of silently initializing the mirror from upstream. Materializing
+a missing worker checkout still uses the managed Git read endpoint and therefore its normal
+freshness enforcement; after that mandatory refresh, the worker pins and returns the commit actually
+served instead of comparing it with the earlier cached SHA. The latency-free path remains the
+steady-state reuse of an existing checkout. On the first preparation after upgrading an older
+worker session, a checkout without trusted state is seeded only when its `HEAD` matches the cached
+managed-mirror commit; otherwise preparation fails closed and requires one explicit refresh.
+
+Set `refresh_upstream` to `true` to retain the verified-refresh behavior. Existing initialized
+mirrors receive one live `ls-remote` probe for the requested branch; omitted branches probe
+symbolic `HEAD` unless an operator default override selects an exact branch. An unchanged branch
+skips the fetch, while changed, missing, default-branch-moved, and first-use repositories use the
+full transactional refresh path. Probe failures fail closed. Overlapping callers can reuse only a
+successful verification completed after they began; this is not a time-based cache and does not
+certify unrelated refs. Each repository output includes `probe_performed`, `probe_reused`, and
+`refresh_performed`; all three are false on the default cached path. A dirty existing checkout
+fails closed and is never reset. Existing coding-agent clone effects are unchanged.
 
 `effect:agent:create` accepts `metadata` as a JSON object patch. The workflow
 runtime deep-merges that patch into the created session manifest after built-in
