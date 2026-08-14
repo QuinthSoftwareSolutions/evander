@@ -1,15 +1,15 @@
 {
   "edition": "1.0",
-  "generated_at": "2026-08-14T14:17:32.004314+00:00",
+  "generated_at": "2026-08-14T14:36:07.459595+00:00",
   "outputs": {
-    "docs/evander-user-manual.docx": "3d21822200f08e46ff9b4d6444b75d07ea08685bca194db2f04c58e8062ee9fd",
-    "docs/evander-user-manual.html": "190a6442abb9d5d46b7b41d081d2d116caa65cd0a325c8c923d58b39c1f4bee4",
-    "docs/evander-user-manual.md": "e75dc72414a069b5e8e0969be44d8fcccf23ce35acbf7319d9a4241d308e9ff7",
-    "docs/evander-user-manual.pdf": "4b15b97130d4af97fb8810591770f2699fcc71f31b93ca1aeab40f0772100ced"
+    "docs/evander-user-manual.docx": "66a07fdf1af65afb90763d9cdf2c9905d02c5f757bfc89efcead56744812811a",
+    "docs/evander-user-manual.html": "7193330499489b2e362a87f416251721a96b4ed4de3e409926f2d8d2edb4e664",
+    "docs/evander-user-manual.md": "fa52c246de11511bf798fe23c8c625edbf097049cb04fa7c63221081a97525f3",
+    "docs/evander-user-manual.pdf": "95806bdd087e79fb098afd5e58f0c60b970e26def04d52da89527ef4b47c248b"
   },
   "project_version": "0.3.1",
   "schema_version": 1,
-  "source_fingerprint": "d985b635716bc127410e0e8019c6773a052b7ae42a463b4701974a6def85e0de",
+  "source_fingerprint": "e5f3197ab710af9534cb1e707d5a362b7bbf78860c3736278e3c73385aa3d6a3",
   "sources": {
     "docs/assets/evander-user-manual/diagrams/01-system-context.png": "88b5f56516d2fb85a84d3489717a4d48e14aa4192a1b5e51af64e4abb4a75ed9",
     "docs/assets/evander-user-manual/diagrams/01-system-context.svg": "18d491c26e0ce3a23714ed59cbbd78c14a912c2c209dfd906eebcece38c470de",
@@ -73,7 +73,7 @@
     "docs/evander-user-manual/chapters/11-managed-git-artifacts-consultations.md": "b1f0e828fdd1ebb3c3161588c06168be2d0901f4b1f4660bb26d2bce5c436a96",
     "docs/evander-user-manual/chapters/12-issues-provider-integrations.md": "23c86f998b19313c3f24369975c9c983751eab3b597733f1bb26534bc1ea0a53",
     "docs/evander-user-manual/chapters/13-communications-and-wakes.md": "2c99826527f17779c88067b3b825bc9507050717f0192d815246d27e693e59d9",
-    "docs/evander-user-manual/chapters/14-semantic-model-usage-skills-addons.md": "5d815e3287a1ccefe0e6f5f99c2c3caedb92ff51bf10e55a6436a40bd1020235",
+    "docs/evander-user-manual/chapters/14-semantic-model-usage-skills-addons.md": "7dd0acdcb2a8a41240bfe4a22b5ca9d6ca68d990f2e5a70ac3f5cfae39d9fb3b",
     "docs/evander-user-manual/chapters/15-admin-operations-recovery.md": "69ae9f5d1224061b6732f3f3cc0234b5748db58681d0788d378825bb64b25ec8",
     "docs/evander-user-manual/chapters/16-team-boundary-domain.md": "53ba3750b56909fc3a92cc2121256d7107d6f7bf1da260ebae4681c9d7c136ef",
     "docs/evander-user-manual/chapters/17-team-setup-ui.md": "90b4042dd8381a8ee961e3dfbd6ce4ebbca03471efd253cf6baf1caa747c3ff2",

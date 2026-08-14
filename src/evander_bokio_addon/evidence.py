@@ -12,7 +12,7 @@ import sqlite3
 from typing import Any
 from uuid import uuid4
 
-from PIL import Image
+from PIL import Image, ImageOps
 from pypdf import PdfReader, PdfWriter
 
 from evander.addons import addon_storage_path
@@ -42,6 +42,7 @@ _SUFFIX_BY_CONTENT_TYPE = {
     "image/png": ".png",
 }
 _EVIDENCE_BUNDLE_SOURCE_TYPE = "bokio_evidence_bundle"
+MAX_BOKIO_EVIDENCE_IMAGE_PIXELS = 16_000_000
 
 
 class BokioEvidenceError(RuntimeError):
@@ -949,7 +950,12 @@ def _append_evidence_to_pdf(writer: PdfWriter, source_file: BokioEvidenceFile) -
     if mime_type in {"image/jpeg", "image/png"}:
         image_pdf = BytesIO()
         with Image.open(source_file.blob_path) as image:
-            rendered = _render_evidence_image(image)
+            _ensure_evidence_image_size(image, filename=str(source_file.record["filename"]))
+            oriented = ImageOps.exif_transpose(image)
+            try:
+                rendered = _render_evidence_image(oriented)
+            finally:
+                oriented.close()
         try:
             rendered.save(image_pdf, format="PDF", resolution=300.0)
         finally:
@@ -976,6 +982,16 @@ def _render_evidence_image(image: Image.Image) -> Image.Image:
         finally:
             rgba.close()
     return image.convert("RGB")
+
+
+def _ensure_evidence_image_size(image: Image.Image, *, filename: str) -> None:
+    width, height = image.size
+    pixel_count = width * height
+    if pixel_count > MAX_BOKIO_EVIDENCE_IMAGE_PIXELS:
+        raise BokioEvidenceError(
+            f"Bokio evidence image exceeds the {MAX_BOKIO_EVIDENCE_IMAGE_PIXELS:,}-pixel "
+            f"limit: {filename} ({width}x{height})"
+        )
 
 
 def validate_evidence_id(value: object) -> str:

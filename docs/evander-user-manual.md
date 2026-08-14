@@ -4035,6 +4035,8 @@ local durable store; they do not query Bokio's remote uploads.
 Bokio permits one linked upload per journal entry. When an approved journal-entry action includes
 multiple managed evidence files, Evander retains every original local evidence record and compiles
 the supported PDF, JPEG, and PNG inputs into one PDF before making its one linked Bokio upload.
+JPEG orientation is normalized from EXIF metadata, and images larger than 16,000,000 pixels are
+rejected before journal creation to keep bundle rendering within a bounded host-memory budget.
 
 Remote download is fail-closed. The client accepts only an exact HTTP `200`: partial-content `206`
 and redirects are errors rather than usable files. It streams at most 100 MiB into a bounded buffer,

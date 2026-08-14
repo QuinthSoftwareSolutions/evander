@@ -14,6 +14,7 @@ from PIL import Image
 from pypdf import PdfReader, PdfWriter
 import pytest
 
+import evander_bokio_addon.evidence as bokio_evidence
 from evander.addons import AddonContext
 from evander.communication_artifacts import CommunicationArtifactStore
 from evander.config import GatewayConfig
@@ -842,6 +843,102 @@ def test_bokio_mcp_bundles_multiple_evidence_into_one_upload(
     ]
     assert store.get(invoice["evidence_id"])["associations"] == []
     assert store.get(receipt["evidence_id"])["associations"] == []
+
+
+def test_bokio_mcp_transposes_exif_oriented_image_evidence(
+    tmp_path: Path, monkeypatch
+) -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if request.url.path.endswith("/journal-entries"):
+            return httpx.Response(200, json={"id": "journal-entry-1"})
+        return httpx.Response(200, json={"uploadId": "upload-1"})
+
+    _install_transport(monkeypatch, handler)
+    monkeypatch.setenv("BOKIO_COMPANY_ID", "company-1")
+    monkeypatch.setenv("BOKIO_INTEGRATION_TOKEN", "secret-token")
+    store = BokioEvidenceStore(tmp_path)
+    invoice, _created = store.ingest_bytes(
+        content=_blank_pdf_bytes(),
+        filename="invoice.pdf",
+        source_type="communication_artifact",
+        source_key="invoice",
+        mime_type="application/pdf",
+    )
+    receipt, _created = store.ingest_bytes(
+        content=_jpeg_bytes(size=(32, 16), orientation=6),
+        filename="receipt.jpg",
+        source_type="communication_artifact",
+        source_key="receipt",
+        mime_type="image/jpeg",
+    )
+    server = _register_bokio_mcp(
+        tmp_path,
+        allowed_tools=["bokio_create_journal_entry_with_evidence"],
+    )
+
+    result = server.tools["bokio_create_journal_entry_with_evidence"](
+        payload={"title": "Invoice and receipt", "items": []},
+        evidence_ids=[invoice["evidence_id"], receipt["evidence_id"]],
+        operation_key="oriented-invoice-and-receipt",
+        session_id="session-1",
+    )
+
+    bundle_id = result["operation"]["associations"][0]["bundle"]["evidence_id"]
+    receipt_page = PdfReader(store.get_file(bundle_id).blob_path).pages[1]
+    assert float(receipt_page.mediabox.width) < float(receipt_page.mediabox.height)
+    assert [request.url.path.rsplit("/", 1)[-1] for request in requests] == [
+        "journal-entries",
+        "uploads",
+    ]
+
+
+def test_bokio_mcp_rejects_oversized_image_before_creating_journal_entry(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setattr(bokio_evidence, "MAX_BOKIO_EVIDENCE_IMAGE_PIXELS", 4)
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(200, json={"id": "journal-entry-1"})
+
+    _install_transport(monkeypatch, handler)
+    monkeypatch.setenv("BOKIO_COMPANY_ID", "company-1")
+    monkeypatch.setenv("BOKIO_INTEGRATION_TOKEN", "secret-token")
+    store = BokioEvidenceStore(tmp_path)
+    invoice, _created = store.ingest_bytes(
+        content=_blank_pdf_bytes(),
+        filename="invoice.pdf",
+        source_type="communication_artifact",
+        source_key="invoice",
+        mime_type="application/pdf",
+    )
+    receipt, _created = store.ingest_bytes(
+        content=_jpeg_bytes(size=(3, 2)),
+        filename="receipt.jpg",
+        source_type="communication_artifact",
+        source_key="receipt",
+        mime_type="image/jpeg",
+    )
+    operation_key = "oversized-invoice-and-receipt"
+    server = _register_bokio_mcp(
+        tmp_path,
+        allowed_tools=["bokio_create_journal_entry_with_evidence"],
+    )
+
+    with pytest.raises(BokioEvidenceError, match="exceeds the 4-pixel limit"):
+        server.tools["bokio_create_journal_entry_with_evidence"](
+            payload={"title": "Invoice and receipt", "items": []},
+            evidence_ids=[invoice["evidence_id"], receipt["evidence_id"]],
+            operation_key=operation_key,
+            session_id="session-1",
+        )
+
+    assert requests == []
+    assert store.get_journal_entry_operation(operation_key)["status"] == "pending_create"
 
 
 def test_bokio_mcp_builds_multi_evidence_bundle_before_creating_journal_entry(
@@ -2517,6 +2614,20 @@ def _png_bytes() -> bytes:
     output = BytesIO()
     with Image.new("RGBA", (16, 16), (255, 0, 0, 128)) as image:
         image.save(output, format="PNG")
+    return output.getvalue()
+
+
+def _jpeg_bytes(
+    *,
+    size: tuple[int, int],
+    orientation: int | None = None,
+) -> bytes:
+    output = BytesIO()
+    exif = Image.Exif()
+    if orientation is not None:
+        exif[274] = orientation
+    with Image.new("RGB", size, "red") as image:
+        image.save(output, format="JPEG", exif=exif)
     return output.getvalue()
 
 

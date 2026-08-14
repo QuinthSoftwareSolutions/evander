@@ -395,7 +395,9 @@ The Bokio add-on is intentionally an assisted-bookkeeping layer:
   creates an entry and attaches its evidence with a durable operation key. Bokio
   permits only one linked upload per journal entry, so multiple managed evidence
   records are retained individually and compiled into one PDF before the single
-  linked upload. These outward writes follow the standard per-tool MCP policy;
+  linked upload. Image evidence is EXIF-orientation normalized and rejected above
+  16,000,000 pixels before journal creation, preventing oversized images from
+  exhausting the host. These outward writes follow the standard per-tool MCP policy;
   enable autonomous use only for sessions that are explicitly permitted to make
   those calls.
 - `bokio_prepare_journal_entry` accepts optional `evidence_ids` from the durable

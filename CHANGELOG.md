@@ -8,6 +8,8 @@
 - Exposed the combined-attachment behavior in the prepared-action review UI and Bokio operator
   guidance, preventing a second evidence upload from leaving a newly created journal entry partial,
   and fail-closed retries of legacy partial attachments that require manual reconciliation.
+- Normalized EXIF image orientation and rejected images above 16,000,000 pixels before rendering a
+  combined evidence PDF, preserving receipt orientation while bounding host memory use.
 
 ## 2026-08-14 - Direct Teams Trigger Publication
 
