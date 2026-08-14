@@ -4,6 +4,8 @@
 
 - Added `gate:counter`, which forwards each event with a keyed fixed-window `count` for friendly
   activity tracking without throttling or dropping events.
+- Kept counter output-schema derivation isolated from its upstream schema, so direct bindings to
+  a trigger or another upstream node cannot incorrectly validate a synthetic `count` output.
 
 ## 2026-08-14 - Fixed-Window Workflow Throttle Gate
 

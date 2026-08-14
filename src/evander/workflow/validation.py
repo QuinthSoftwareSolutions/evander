@@ -263,6 +263,7 @@ def _derive_workflow_node_output_schema(
             if upstream_ids
             else {}
         )
+        schema = _copy_output_schema(schema)
         schema["count"] = {"type": "integer"}
     elif node_type == "gate:dedupe":
         upstream_ids = _collect_direct_upstream_node_ids(edges, node_id)
