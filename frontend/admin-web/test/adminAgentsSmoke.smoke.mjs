@@ -526,6 +526,14 @@ test("admin shell agents page deep-links to a selected agent", async (t) => {
   await assert.doesNotReject(() => page.getByRole("heading", { name: "Online idle VM" }).waitFor({ state: "visible" }));
   assert.match(await page.locator(".feature-toolbar-actions .status-pill").first().innerText(), /^idle$/i);
 
+  const agentSearch = page.getByRole("searchbox", { name: "Search agents" });
+  await agentSearch.fill("online idle");
+  await assert.doesNotReject(() => idleVmItem.waitFor({ state: "visible" }));
+  assert.equal(await page.locator(".agent-list-item").filter({ hasText: "Dispatch agent" }).count(), 0);
+  await agentSearch.fill("agent-1");
+  await assert.doesNotReject(() => page.locator(".agent-list-item").filter({ hasText: "Dispatch agent" }).waitFor({ state: "visible" }));
+  await agentSearch.fill("");
+
   await page.locator(".agents-filter-grid label").filter({ hasText: "Status" }).locator("select").selectOption("active");
   await assert.doesNotReject(() => page.locator(".agent-list-item").filter({ hasText: "Dispatch agent" }).waitFor({ state: "visible" }));
   await assert.doesNotReject(() => page.locator(".agent-list-item").filter({ hasText: "Container worker" }).waitFor({ state: "visible" }));

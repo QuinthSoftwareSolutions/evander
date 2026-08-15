@@ -1,5 +1,9 @@
 # Changelog
 
+## 2026-08-15 - Searchable Agents Page
+
+- Added a search field to the Agents page for filtering agents by name, ID, session, or directory.
+
 ## 2026-08-14 - Persistent Assistant Self-Refresh Recovery
 
 - Reconciled clean persistent-assistant reference checkouts after an agent-requested refresh by
