@@ -35,6 +35,12 @@ import {
   canToggleWakeScheduleEnabled,
   visibleWakeSchedules as filterVisibleWakeSchedules,
 } from "./wakeScheduleVisibility";
+import {
+  metadataWithoutSessionModelProviderMode,
+  SESSION_MODEL_PROVIDER_MODE_OPTIONS,
+  sessionModelProviderModeFromMetadata,
+  type SessionModelProviderModeSelection,
+} from "./sessionModelProviderMode";
 
 type ApprovalPayloadMode = "exact" | "any";
 
@@ -66,6 +72,7 @@ type SessionRecord = {
   vm_provider?: string | null;
   vm_provider_id?: string | null;
   model: string | null;
+  model_provider_mode?: string | null;
   directory_path: string;
   allowed_tools?: string[];
   connector_grants?: Record<string, string[]>;
@@ -233,6 +240,7 @@ type CatalogOption = {
 type SessionCatalogResponse = {
   tool_options: CatalogOption[];
   model_options?: CatalogOption[];
+  model_provider_modes?: CatalogOption[];
   resume_mode_options: CatalogOption[];
   renew_extension_presets: string[];
 };
@@ -247,6 +255,7 @@ type ToolOption = SessionCatalogResponse["tool_options"][number];
 
 type TabKey = "active" | "expired";
 type SessionPolicyDraft = {
+  modelProviderMode: SessionModelProviderModeSelection;
   allowedScriptNames: string[];
   connectorGrants: Record<string, unknown>;
   hostDirectoryGrants: Record<string, string[]>;
@@ -423,7 +432,11 @@ function normalizeApprovalToolSettings(
 
 function policyDraftFromSession(session: SessionRecord): SessionPolicyDraft {
   const httpTargetsDraft = httpTargetsDraftFromMetadata(session.metadata);
+  const modelProviderMode = sessionModelProviderModeFromMetadata({
+    model_provider_mode: session.model_provider_mode ?? session.metadata?.model_provider_mode,
+  });
   return {
+    modelProviderMode,
     allowedScriptNames: dedupeStrings(session.allowed_script_names ?? []),
     connectorGrants: { ...(session.connector_grants ?? {}) },
     hostDirectoryGrants: { ...(session.host_directory_grants ?? {}) },
@@ -455,7 +468,7 @@ function policyDraftFromSession(session: SessionRecord): SessionPolicyDraft {
     communicationFileBlockedExtensions: dedupeStrings(session.communication_file_blocked_extensions ?? []),
     communicationFileRequireApprovalForSend: Boolean(session.communication_file_require_approval_for_send),
     webSearchEnabled: Boolean(session.web_search_enabled),
-    metadata: metadataWithoutHttpTargets(session.metadata),
+    metadata: metadataWithoutSessionModelProviderMode(metadataWithoutHttpTargets(session.metadata)),
     httpTargets: httpTargetsDraft.entries,
     httpTargetsLegacyFallback: httpTargetsDraft.legacyFallback,
     httpTargetsSourceError: httpTargetsDraft.sourceError,
@@ -1223,6 +1236,7 @@ export function SessionsScreen() {
   const [toolsDirty, setToolsDirty] = useState(false);
   const [toolsBoundSessionId, setToolsBoundSessionId] = useState("");
   const [policyDraft, setPolicyDraft] = useState<SessionPolicyDraft>({
+    modelProviderMode: "",
     allowedScriptNames: [],
     connectorGrants: {},
     hostDirectoryGrants: {},
@@ -2088,6 +2102,7 @@ export function SessionsScreen() {
             method: "PATCH",
             body: JSON.stringify({
               allowed_script_names: policyDraft.allowedScriptNames,
+              model_provider_mode: policyDraft.modelProviderMode || null,
               allowed_contact_ids: policyDraft.allowedContactIds,
               communication_target_ids: policyDraft.communicationTargetIds,
               email_mailbox_grants: policyDraft.emailMailboxGrants,
@@ -2578,6 +2593,32 @@ export function SessionsScreen() {
                         </option>
                       ))}
                     </datalist>
+                  </label>
+                  <label className="field-stack">
+                    <span>Model relay</span>
+                    <p className="field-description">
+                      Select where Codex model requests are routed. Directory default inherits the selected
+                      directory&apos;s provider mode.
+                    </p>
+                    <select
+                      value={policyDraft.modelProviderMode}
+                      onChange={(event) =>
+                        updatePolicyDraft({
+                          modelProviderMode: event.target.value as SessionModelProviderModeSelection,
+                        })
+                      }
+                      disabled={mutationLocked}
+                    >
+                      <option value="">Directory default</option>
+                      {(catalog?.model_provider_modes?.length
+                        ? catalog.model_provider_modes
+                        : SESSION_MODEL_PROVIDER_MODE_OPTIONS
+                      ).map((option) => (
+                        <option key={option.value} value={option.value}>
+                          {option.label}
+                        </option>
+                      ))}
+                    </select>
                   </label>
                   <div className="field-stack">
                     <span>Allowed tools</span>

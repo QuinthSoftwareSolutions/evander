@@ -1,5 +1,10 @@
 # Changelog
 
+## 2026-08-15 - First-Class Session Model Relay
+
+- Added a dedicated session-level model relay selector for public, local, Azure, Anthropic, or
+  directory-default routing without editing raw metadata JSON.
+
 ## 2026-08-15 - Searchable Agents Page
 
 - Added a search field to the Agents page for filtering agents by name, ID, session, or directory.

@@ -1105,6 +1105,12 @@ def test_admin_web_exposes_sessions_catalog_list_detail_and_mutations(tmp_path: 
     assert catalog_response.status_code == 200
     catalog_payload = catalog_response.json()
     assert any(item["value"] == "approval_check" for item in catalog_payload["tool_options"])
+    assert catalog_payload["model_provider_modes"] == [
+        {"value": "openai_public", "label": "Public OpenAI"},
+        {"value": "local_openai", "label": "Local OpenAI"},
+        {"value": "azure_openai", "label": "Azure OpenAI"},
+        {"value": "anthropic", "label": "Anthropic"},
+    ]
     assert any(
         item["field_name"] == "tool_argument_policies"
         and item["kind"] == "json"
@@ -1975,6 +1981,41 @@ def test_admin_web_patches_session_policy_fields(tmp_path: Path) -> None:
     assert updated.communication_file_blocked_extensions == [".exe"]
     assert updated.communication_file_require_approval_for_send is True
     assert updated.metadata == {"keep": "new-value"}
+
+
+def test_admin_web_updates_and_clears_session_model_provider_mode(tmp_path: Path) -> None:
+    service = build_admin_runtime(write_config(tmp_path))
+    service.runtime.session_repository.upsert_session(
+        SessionManifest(
+            session_id="model-provider-session",
+            allowed_tools=[ToolName.APPROVAL_CHECK],
+            expires_at=datetime.now(UTC) + timedelta(hours=2),
+            metadata={"model_provider_mode": "local_openai", "keep": "value"},
+        ),
+    )
+    client = TestClient(create_app(service))
+    _unlock_privileged_operations(client)
+
+    public_response = client.patch(
+        "/api/admin/sessions/model-provider-session",
+        json={"model_provider_mode": "openai_public"},
+    )
+
+    assert public_response.status_code == 200
+    assert public_response.json()["session"]["model_provider_mode"] == "openai_public"
+    assert public_response.json()["session"]["metadata"] == {
+        "model_provider_mode": "openai_public",
+        "keep": "value",
+    }
+
+    default_response = client.patch(
+        "/api/admin/sessions/model-provider-session",
+        json={"model_provider_mode": None},
+    )
+
+    assert default_response.status_code == 200
+    assert default_response.json()["session"]["model_provider_mode"] is None
+    assert default_response.json()["session"]["metadata"] == {"keep": "value"}
 
 
 def test_admin_web_rejects_direct_delete_for_agent_session(tmp_path: Path) -> None:
