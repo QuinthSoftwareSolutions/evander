@@ -1159,6 +1159,53 @@ def test_consultation_snapshot_pin_survives_source_ref_movement_until_release(
     )
 
 
+def test_team_review_snapshot_pin_is_retained_and_rejects_conflicting_commit(
+    tmp_path: Path,
+) -> None:
+    source, _, first_commit = _source_repository(tmp_path)
+    service = _service(tmp_path)
+    record = service.register_repository("root/team-a", str(source))
+    repo_id = record["managed_repo_id"]
+
+    pinned = service.pin_team_review_snapshot(
+        repo_id,
+        "root/team-a",
+        review_id="review/provenance:one",
+        commit_sha=first_commit,
+        source_ref="main",
+    )
+    assert pinned["pin_ref"].startswith("refs/evander/team-reviews/")
+    assert pinned["commit_sha"] == first_commit
+    assert pinned["source_ref"] == "main"
+    assert any(
+        binding.get("kind") == "team_reviews"
+        and binding.get("binding_id") == "review/provenance:one"
+        for binding in service.get_repository(repo_id)["bindings"]
+    )
+
+    repeated = service.pin_team_review_snapshot(
+        repo_id,
+        "root/team-a",
+        review_id="review/provenance:one",
+        commit_sha=first_commit,
+        pinned_ref=pinned["pin_ref"],
+    )
+    assert repeated["pin_ref"] == pinned["pin_ref"]
+    assert repeated["commit_sha"] == first_commit
+
+    second_commit = _commit(source, "README.md", "second\n", "second")
+    _run("git", "push", "origin", "main", cwd=source)
+    service.refresh_repository(repo_id)
+    with pytest.raises(ManagedGitConflictError, match="already pinned"):
+        service.pin_team_review_snapshot(
+            repo_id,
+            "root/team-a",
+            review_id="review/provenance:one",
+            commit_sha=second_commit,
+            pinned_ref=pinned["pin_ref"],
+        )
+
+
 def test_registration_rehomes_unused_descendant_when_ancestor_is_registered_later(
     tmp_path: Path,
 ) -> None:

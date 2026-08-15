@@ -8568,6 +8568,159 @@ def test_repository_migrates_team_review_snapshot_with_reviewed_project_override
     )
 
 
+def test_repository_round_trips_review_repository_snapshot_and_reads_legacy_null(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _seed_task(repo, task_id="snapshot-task")
+    _seed_deliverable(repo, deliverable_id="snapshot-deliverable", task_id="snapshot-task")
+
+    commit_sha = "a" * 40
+
+    def _configure_git_candidate(state: TeamState) -> TeamState:
+        state.projects["project"].git = ProjectGitConfig(
+            managed_repo_id="mr_0123456789abcdefabcd",
+            directory_path="root/project",
+            base_branch="main",
+        )
+        state.deliverables["snapshot-deliverable"].git_refs = DeliverableGitRefs(
+            submitted_commit_sha=commit_sha,
+        )
+        return state
+
+    repo.update(_configure_git_candidate)
+    state = _team_admin_service(repo).record_review_request(
+        review_request_id="review/snapshot:one",
+        deliverable_id="snapshot-deliverable",
+        reviewer_agent_id="worker",
+        expected_revision=repo.read().revision,
+    )
+    snapshot = state.review_requests["review/snapshot:one"].repository_snapshot
+    assert snapshot is not None
+    assert snapshot.commit_sha == commit_sha
+    assert snapshot.source_kind == "deliverable_candidate"
+    assert snapshot.pinned_ref.startswith("refs/evander/team-reviews/")
+
+    persisted = TeamStateRepository(tmp_path).read().review_requests["review/snapshot:one"]
+    assert persisted.repository_snapshot == snapshot
+
+    db_path = tmp_path / "addons" / "team-addon" / "state.db"
+    with sqlite3.connect(db_path) as connection:
+        connection.execute(
+            "UPDATE team_review_requests SET repository_snapshot_json = NULL WHERE id = ?",
+            ("review/snapshot:one",),
+        )
+
+    assert TeamStateRepository(tmp_path).read().review_requests[
+        "review/snapshot:one"
+    ].repository_snapshot is None
+
+
+def test_git_review_snapshot_uses_authoritative_task_base_and_rejects_missing_base(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _set_project_git(repo)
+    _seed_task(repo, task_id="planning-task")
+    _seed_deliverable(
+        repo,
+        deliverable_id="planning-deliverable",
+        task_id="planning-task",
+    )
+    base_commit = "b" * 40
+
+    def _seed_planning_base(state: TeamState) -> TeamState:
+        state.git_work_contexts["planning-context"] = GitWorkContext(
+            id="planning-context",
+            agent_id="backend",
+            task_id="planning-task",
+            dispatch_id="dispatch-planning",
+            worktree_path="/worktrees/planning",
+            base_branch="main",
+            base_commit=base_commit,
+            agent_branch="agents/session-backend/planning",
+            state=GitWorkContextState.ACTIVE,
+        )
+        return state
+
+    repo.update(_seed_planning_base)
+    state = _team_admin_service(repo).record_review_request(
+        review_request_id="review-planning-base",
+        deliverable_id="planning-deliverable",
+        reviewer_agent_id="worker",
+        expected_revision=repo.read().revision,
+    )
+    snapshot = state.review_requests["review-planning-base"].repository_snapshot
+    assert snapshot is not None
+    assert snapshot.commit_sha == base_commit
+    assert snapshot.source_kind == "task_base"
+    assert snapshot.source_ref == "main"
+
+    _seed_task(repo, task_id="missing-base-task")
+    _seed_deliverable(
+        repo,
+        deliverable_id="missing-base-deliverable",
+        task_id="missing-base-task",
+    )
+    with pytest.raises(ValueError, match="no immutable candidate or authoritative task base commit"):
+        _team_admin_service(repo).record_review_request(
+            review_request_id="review-missing-base",
+            deliverable_id="missing-base-deliverable",
+            reviewer_agent_id="worker",
+            expected_revision=repo.read().revision,
+        )
+
+    _seed_task(repo, task_id="ambiguous-base-task")
+    _seed_deliverable(
+        repo,
+        deliverable_id="ambiguous-base-deliverable",
+        task_id="ambiguous-base-task",
+    )
+
+    def _seed_ambiguous_bases(state: TeamState) -> TeamState:
+        for context_id, base_commit in (("ambiguous-one", "c" * 40), ("ambiguous-two", "d" * 40)):
+            state.git_work_contexts[context_id] = GitWorkContext(
+                id=context_id,
+                agent_id="backend",
+                task_id="ambiguous-base-task",
+                dispatch_id=context_id,
+                worktree_path=f"/worktrees/{context_id}",
+                base_branch="main",
+                base_commit=base_commit,
+                agent_branch=f"agents/session-backend/{context_id}",
+                state=GitWorkContextState.ACTIVE,
+            )
+        return state
+
+    repo.update(_seed_ambiguous_bases)
+    with pytest.raises(ValueError, match="ambiguous authoritative base"):
+        _team_admin_service(repo).record_review_request(
+            review_request_id="review-ambiguous-base",
+            deliverable_id="ambiguous-base-deliverable",
+            reviewer_agent_id="worker",
+            expected_revision=repo.read().revision,
+        )
+
+
+def test_non_git_review_has_no_repository_snapshot(tmp_path: Path) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _seed_task(repo, task_id="non-git-task")
+    _seed_deliverable(
+        repo,
+        deliverable_id="non-git-deliverable",
+        task_id="non-git-task",
+    )
+
+    state = _team_admin_service(repo).record_review_request(
+        review_request_id="review-non-git",
+        deliverable_id="non-git-deliverable",
+        reviewer_agent_id="worker",
+        expected_revision=repo.read().revision,
+    )
+
+    assert state.review_requests["review-non-git"].repository_snapshot is None
+
+
 def test_repository_migrates_global_chat_conversation_unique_constraint(
     tmp_path: Path,
 ) -> None:
@@ -15379,7 +15532,6 @@ def test_blocked_legacy_git_review_retry_pins_repaired_deliverable_candidate(
     tmp_path: Path,
 ) -> None:
     repo = _seed_hierarchy(tmp_path)
-    _set_project_git(repo)
     _seed_task(repo, task_id="task", owner_agent_id="backend")
     _seed_deliverable(
         repo,
@@ -15401,6 +15553,11 @@ def test_blocked_legacy_git_review_retry_pins_repaired_deliverable_candidate(
     )
     first_review_id = requested["review_request_id"]
     assert state.review_requests[first_review_id].reviewed_commit_sha is None
+    assert state.review_requests[first_review_id].repository_snapshot is None
+
+    # This row models a pre-deployment review: it was valid without managed
+    # Git, then the project was configured for Git before its retry.
+    _set_project_git(repo)
 
     _lease_agent_dispatch(repo, agent_id="worker", dispatch_id="dispatch-block-review")
     state, blocked = _command_service(repo).decide_review_command(
@@ -15446,6 +15603,8 @@ def test_blocked_legacy_git_review_retry_pins_repaired_deliverable_candidate(
     successor = state.review_requests[retried["replacement_review_request_id"]]
     assert retried["success"] is True
     assert successor.reviewed_commit_sha == candidate_commit
+    assert successor.repository_snapshot is not None
+    assert successor.repository_snapshot.commit_sha == candidate_commit
     assert successor.supersedes_review_request_id == first_review_id
 
 
@@ -20956,6 +21115,9 @@ def test_canonical_push_waits_for_candidate_verification_and_release_review(
     assert review.release_package_id == "release-gated"
     assert review.candidate_commit_sha == "candidate-feedface"
     assert review.reviewed_commit_sha == "candidate-feedface"
+    assert review.repository_snapshot is not None
+    assert review.repository_snapshot.commit_sha == "candidate-feedface"
+    assert review.repository_snapshot.source_kind == "release_candidate"
     state.release_packages["release-gated"].candidate_commit_sha = "different-candidate"
     assert _review_decision_policy_error(
         state,
@@ -21599,6 +21761,9 @@ def test_blocked_release_review_retry_creates_linked_review_for_same_candidate(
     assert second_review.state == TeamRecordState.PENDING
     assert second_review.retry_reason == "Reviewer environment has been repaired."
     assert second_review.retry_requested_by == "operator:release-admin"
+    assert second_review.repository_snapshot is not None
+    assert second_review.repository_snapshot.commit_sha == "candidate-sha"
+    assert second_review.repository_snapshot.source_kind == "release_candidate"
     assert review_blocker.id in retried["resolved_blocker_ids"]
     assert state.blockers[review_blocker.id].state == TeamBlockerState.RESOLVED
     assert state.blockers[review_blocker.id].route == TeamBlockerRoute.RESOLVED

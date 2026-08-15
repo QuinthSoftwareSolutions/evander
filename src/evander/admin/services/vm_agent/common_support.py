@@ -225,10 +225,16 @@ class VmAgentAdminSupport:
         git_committer_email: str | None = None,
         git_access_mode: str = "write",
         git_access_lifetime: str = "session",
+        pinned_ref: str | None = None,
+        pinned_commit_sha: str | None = None,
     ) -> str:
         bootstrap_git_script = self.project_dir / "scripts" / "bootstrap_git_vm.sh"
         normalized_access_mode = normalize_git_access_mode(git_access_mode)
         normalized_access_lifetime = normalize_git_access_lifetime(git_access_lifetime)
+        normalized_pinned_ref = str(pinned_ref or "").strip()
+        normalized_pinned_commit_sha = str(pinned_commit_sha or "").strip()
+        if bool(normalized_pinned_ref) != bool(normalized_pinned_commit_sha):
+            raise ValueError("pinned_ref and pinned_commit_sha must both be set")
         key_name = managed_git_key_name(remote_repo_name)
         git_ssh_alias = managed_git_ssh_alias(issue_setup.git_ssh_alias, remote_repo_name)
         existing_session = self.runtime.session_repository.get_session(session_id)
@@ -404,6 +410,8 @@ GIT_COMMITTER_NAME={shlex.quote(normalized_committer_name)}
 GIT_COMMITTER_EMAIL={shlex.quote(normalized_committer_email)}
 GIT_ACCESS_MODE={shlex.quote(normalized_access_mode)}
 GIT_ACCESS_LIFETIME={shlex.quote(normalized_access_lifetime)}
+PINNED_REF={shlex.quote(normalized_pinned_ref)}
+PINNED_COMMIT_SHA={shlex.quote(normalized_pinned_commit_sha)}
 AGENT_PR_NOTE_HELPER_B64="{agent_pr_note_helper_b64}"
 AGENT_PUSH_HELPER_B64="{agent_push_helper_b64}"
 SYNC_BASE_HELPER_B64="{sync_base_helper_b64}"
@@ -453,6 +461,12 @@ else
 fi
 git -C "${{TARGET_DIR}}" config user.name "${{GIT_USER_NAME}}"
 git -C "${{TARGET_DIR}}" config user.email "${{GIT_USER_EMAIL}}"
+if [[ -n "${{PINNED_REF}}" ]]; then
+  git -C "${{TARGET_DIR}}" fetch --no-tags origin "${{PINNED_REF}}"
+  test "$(git -C "${{TARGET_DIR}}" rev-parse FETCH_HEAD)" = "${{PINNED_COMMIT_SHA}}"
+  git -C "${{TARGET_DIR}}" checkout --detach FETCH_HEAD
+  test "$(git -C "${{TARGET_DIR}}" rev-parse HEAD)" = "${{PINNED_COMMIT_SHA}}"
+fi
 BASE_BRANCH="${{CLONE_BRANCH:-}}"
 if [[ -z "${{BASE_BRANCH}}" ]]; then
   BASE_BRANCH="$(git -C "${{TARGET_DIR}}" branch --show-current || true)"
@@ -461,16 +475,18 @@ if [[ -n "${{BASE_BRANCH}}" ]]; then
   git -C "${{TARGET_DIR}}" config evander.baseBranch "${{BASE_BRANCH}}"
 fi
 if [[ "${{REPO_ALREADY_PREPARED}}" == "0" ]]; then
-  git -C "${{TARGET_DIR}}" config evander.workBranch "${{WORK_BRANCH}}"
-  CURRENT_BRANCH="$(git -C "${{TARGET_DIR}}" branch --show-current || true)"
-  if [[ "${{CURRENT_BRANCH}}" != "${{WORK_BRANCH}}" ]]; then
-    if git -C "${{TARGET_DIR}}" show-ref --verify --quiet "refs/heads/${{WORK_BRANCH}}"; then
-      git -C "${{TARGET_DIR}}" switch "${{WORK_BRANCH}}"
-    else
-      git -C "${{TARGET_DIR}}" switch -c "${{WORK_BRANCH}}"
+  if [[ -z "${{PINNED_REF}}" ]]; then
+    git -C "${{TARGET_DIR}}" config evander.workBranch "${{WORK_BRANCH}}"
+    CURRENT_BRANCH="$(git -C "${{TARGET_DIR}}" branch --show-current || true)"
+    if [[ "${{CURRENT_BRANCH}}" != "${{WORK_BRANCH}}" ]]; then
+      if git -C "${{TARGET_DIR}}" show-ref --verify --quiet "refs/heads/${{WORK_BRANCH}}"; then
+        git -C "${{TARGET_DIR}}" switch "${{WORK_BRANCH}}"
+      else
+        git -C "${{TARGET_DIR}}" switch -c "${{WORK_BRANCH}}"
+      fi
     fi
   fi
-else
+elif [[ -z "${{PINNED_REF}}" ]]; then
   if ! git -C "${{TARGET_DIR}}" config --get evander.workBranch >/dev/null 2>&1; then
     CURRENT_BRANCH="$(git -C "${{TARGET_DIR}}" branch --show-current || true)"
     if [[ -n "${{CURRENT_BRANCH}}" ]]; then

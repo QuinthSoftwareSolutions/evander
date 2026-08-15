@@ -41,6 +41,7 @@ from .blockers import (
 )
 from .review_handoff import queue_actionable_inbox_item
 from .outcome_catalog import snapshot_review_profile_outcomes
+from .review_repository_snapshots import release_review_repository_snapshot
 from .human_reviews import (
     ensure_human_review_request,
     human_review_request_for_release,
@@ -126,8 +127,9 @@ def _create_release_review(
 ) -> ReviewRequest:
     """Create the durable review record shared by initial and retry handoffs."""
 
+    review_id = f"release-review-{release.id}-{uuid4().hex}"
     review = ReviewRequest(
-        id=f"release-review-{release.id}-{uuid4().hex}",
+        id=review_id,
         release_package_id=release.id,
         candidate_commit_sha=candidate_commit_sha,
         reviewer_agent_id=reviewer.id,
@@ -139,6 +141,12 @@ def _create_release_review(
             project_id=release.project_id,
         ),
         reviewed_commit_sha=candidate_commit_sha,
+        repository_snapshot=release_review_repository_snapshot(
+            state,
+            release=release,
+            review_id=review_id,
+            candidate_commit_sha=candidate_commit_sha,
+        ),
         review_cohort_id=review_cohort_id,
         state=TeamRecordState.PENDING,
         supersedes_review_request_id=supersedes.id if supersedes is not None else None,
@@ -189,6 +197,8 @@ def _queue_release_review_handoff(
             ],
         },
     }
+    if review.repository_snapshot is not None:
+        payload["repository_snapshot"] = review.repository_snapshot.model_dump(mode="json")
     if review.supersedes_review_request_id is not None:
         payload["supersedes_review_request_id"] = review.supersedes_review_request_id
     if review.retry_reason is not None:

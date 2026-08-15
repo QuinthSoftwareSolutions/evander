@@ -2511,6 +2511,37 @@ def test_agent_clone_repo_libvirt_uses_explicit_git_author_identity() -> None:
     assert admin_service.clone_repo_into_vm_calls[0]["git_committer_email"] is None
 
 
+def test_agent_clone_repo_libvirt_forwards_pinned_snapshot_checkout() -> None:
+    commit_sha = "a" * 40
+    effect = AgentCloneRepoEffectDefinition(
+        id="agent-clone",
+        display_name="Clone pinned review snapshot",
+        type="effect:agent:clone-repo",
+        session_id="session-42",
+        managed_repo_id=_MANAGED_REPO_ID,
+        pinned_ref="refs/evander/team-reviews/cmV2aWV3LTE",
+        pinned_commit_sha=commit_sha,
+        git_access_mode="read-only",
+    )
+    admin_service = _AdminServiceStub(
+        create_vm_calls=[],
+        clone_repo_into_vm_calls=[],
+        bootstrap_python_in_vm_calls=[],
+        bootstrap_frontend_in_vm_calls=[],
+        resume_calls=[],
+    )
+    factory = EffectProviderFactory(
+        provider_config_resolver=_ResolverStub(), admin_service=admin_service
+    )
+
+    result = factory.build(effect, directory_path="root/team-a").execute()
+
+    assert admin_service.clone_repo_into_vm_calls[0]["pinned_ref"] == effect.pinned_ref
+    assert admin_service.clone_repo_into_vm_calls[0]["pinned_commit_sha"] == commit_sha
+    assert result["pinned_ref"] == effect.pinned_ref
+    assert result["pinned_commit_sha"] == commit_sha
+
+
 def test_agent_clone_repo_libvirt_uses_explicit_git_committer_identity() -> None:
     effect = AgentCloneRepoEffectDefinition(
         id="agent-clone",

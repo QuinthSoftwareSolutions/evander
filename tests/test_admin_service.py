@@ -16215,6 +16215,64 @@ def test_clone_repo_into_vm_generated_script_allows_existing_checkout(
     assert 'config evander.workBranch "${CURRENT_BRANCH}"' in remote_script
 
 
+def test_clone_repo_into_vm_generated_script_pins_detached_review_snapshot(
+    tmp_path: Path,
+    monkeypatch: Any,
+) -> None:
+    service = build_admin_runtime(write_config(tmp_path, enable_directory_scoped_config=True))
+    _stub_vm_managed_repository(service, monkeypatch)
+    captured_ssh_input: list[str] = []
+
+    monkeypatch.setattr(
+        "evander.admin.services.vm_helpers.dominfo_field", lambda vm_name, field_name: None
+    )
+    monkeypatch.setattr(
+        "evander.admin.services.vm_helpers.resolve_vm_ip", lambda vm_name: "192.168.250.10"
+    )
+    monkeypatch.setattr(
+        "evander.admin.services.vm_helpers.resolve_private_key_path",
+        lambda: Path("/tmp/test-key"),
+    )
+
+    def _fake_run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        if cmd[:5] == ["git", "-C", "/src/repo", "symbolic-ref", "--quiet"]:
+            return subprocess.CompletedProcess(
+                args=cmd, returncode=0, stdout="origin/main\n", stderr=""
+            )
+        if cmd[:4] == ["git", "-C", "/src/repo", "branch"]:
+            return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="main\n", stderr="")
+        if cmd[0] == "ssh":
+            captured_ssh_input.append(str(kwargs.get("input") or ""))
+        return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="ok", stderr="")
+
+    monkeypatch.setattr("evander.admin.services.process_helpers.subprocess.run", _fake_run)
+
+    commit_sha = "a" * 40
+    pinned_ref = "refs/evander/team-reviews/cmV2aWV3LXN1cGVyLWJvdW5k"
+    service.vm_agent_admin.create_vm(
+        vm_name="lab-vm",
+        session_id="review-session",
+    )
+    result = service.vm_agent_admin.clone_repo_into_vm(
+        vm_name="lab-vm",
+        session_id="review-session",
+        managed_repo_id=_MANAGED_REPO_ID,
+        git_access_mode="read-only",
+        pinned_ref=pinned_ref,
+        pinned_commit_sha=commit_sha,
+    )
+
+    assert result.success is True
+    remote_script = captured_ssh_input[-1]
+    assert f"PINNED_REF={pinned_ref}" in remote_script
+    assert f"PINNED_COMMIT_SHA={commit_sha}" in remote_script
+    assert 'git -C "${TARGET_DIR}" fetch --no-tags origin "${PINNED_REF}"' in remote_script
+    assert 'git -C "${TARGET_DIR}" checkout --detach FETCH_HEAD' in remote_script
+    assert 'test "$(git -C "${TARGET_DIR}" rev-parse HEAD)" = "${PINNED_COMMIT_SHA}"' in remote_script
+    assert 'if [[ -z "${PINNED_REF}" ]]; then\n    git -C "${TARGET_DIR}" config evander.workBranch' in remote_script
+    assert 'elif [[ -z "${PINNED_REF}" ]]; then' in remote_script
+
+
 def test_clone_repo_into_vm_configures_separate_author_and_committer(
     tmp_path: Path, monkeypatch: Any
 ) -> None:

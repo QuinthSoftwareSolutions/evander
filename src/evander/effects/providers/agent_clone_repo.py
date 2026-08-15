@@ -767,26 +767,34 @@ class AgentCloneRepoEffectProvider(EffectProviderBase):
         vm_name, session_id = resolve_vm_target(
             context, payload, effect_type="effect:agent:clone-repo"
         )
-        result = repo_cloner(
-            vm_name=vm_name,
-            session_id=session_id,
-            managed_repo_id=required_string(
+        clone_kwargs: dict[str, Any] = {
+            "vm_name": vm_name,
+            "session_id": session_id,
+            "managed_repo_id": required_string(
                 payload.get("managed_repo_id"),
                 "effect:agent:clone-repo requires managed_repo_id",
             ),
-            clone_branch=normalize_optional_string(payload.get("clone_branch")),
-            vm_user=normalize_optional_string(payload.get("vm_user")) or "agent",
-            directory_path=str(context.metadata.get("directory_path") or "root"),
-            git_author_name=git_author_identity.name if git_author_identity is not None else None,
-            git_author_email=git_author_identity.email if git_author_identity is not None else None,
-            git_committer_name=(
+            "clone_branch": normalize_optional_string(payload.get("clone_branch")),
+            "vm_user": normalize_optional_string(payload.get("vm_user")) or "agent",
+            "directory_path": str(context.metadata.get("directory_path") or "root"),
+            "git_author_name": git_author_identity.name if git_author_identity is not None else None,
+            "git_author_email": git_author_identity.email if git_author_identity is not None else None,
+            "git_committer_name": (
                 git_committer_identity.name if git_committer_identity is not None else None
             ),
-            git_committer_email=(
+            "git_committer_email": (
                 git_committer_identity.email if git_committer_identity is not None else None
             ),
-            git_access_mode=normalize_git_access_mode(payload.get("git_access_mode")),
-            git_access_lifetime=normalize_git_access_lifetime(payload.get("git_access_lifetime")),
+            "git_access_mode": normalize_git_access_mode(payload.get("git_access_mode")),
+            "git_access_lifetime": normalize_git_access_lifetime(payload.get("git_access_lifetime")),
+        }
+        pinned_ref = normalize_optional_string(payload.get("pinned_ref"))
+        pinned_commit_sha = normalize_optional_string(payload.get("pinned_commit_sha"))
+        if pinned_ref is not None or pinned_commit_sha is not None:
+            clone_kwargs["pinned_ref"] = pinned_ref
+            clone_kwargs["pinned_commit_sha"] = pinned_commit_sha
+        result = repo_cloner(
+            **clone_kwargs,
         )
         return {
             "success": bool(result.success),
@@ -803,6 +811,8 @@ class AgentCloneRepoEffectProvider(EffectProviderBase):
             "git_access_lifetime": normalize_git_access_lifetime(
                 payload.get("git_access_lifetime")
             ),
+            "pinned_ref": normalize_optional_string(payload.get("pinned_ref")),
+            "pinned_commit_sha": normalize_optional_string(payload.get("pinned_commit_sha")),
             "execution_backend": execution_backend,
             "vm_name": result.vm_name or vm_name,
         }

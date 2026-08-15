@@ -30,6 +30,8 @@ class VmAgentBootstrapMixin:
         git_committer_email: str | None = None,
         git_access_mode: str = "write",
         git_access_lifetime: str = "session",
+        pinned_ref: str | None = None,
+        pinned_commit_sha: str | None = None,
     ) -> VmActionResult:
         resolved_vm_name = vm_name.strip()
         if not resolved_vm_name:
@@ -51,6 +53,15 @@ class VmAgentBootstrapMixin:
         normalized_clone_branch = clone_branch.strip() if clone_branch else ""
         normalized_access_mode = normalize_git_access_mode(git_access_mode)
         normalized_access_lifetime = normalize_git_access_lifetime(git_access_lifetime)
+        normalized_pinned_ref = pinned_ref.strip() if pinned_ref else ""
+        normalized_pinned_commit_sha = pinned_commit_sha.strip() if pinned_commit_sha else ""
+        if bool(normalized_pinned_ref) != bool(normalized_pinned_commit_sha):
+            return VmActionResult(
+                success=False,
+                vm_name=resolved_vm_name,
+                action="clone_repo_into_vm",
+                message="pinned_ref and pinned_commit_sha must be supplied together.",
+            )
 
         resolved_session_id, session, normalized_directory_path, error_result = (
             self._resolve_vm_operation_context(
@@ -105,6 +116,8 @@ class VmAgentBootstrapMixin:
                 git_committer_email=git_committer_email,
                 git_access_mode=normalized_access_mode,
                 git_access_lifetime=normalized_access_lifetime,
+                pinned_ref=normalized_pinned_ref or None,
+                pinned_commit_sha=normalized_pinned_commit_sha or None,
             )
             refreshed_session = self._session_repository().get_session(resolved_session_id)
             access_metadata = (

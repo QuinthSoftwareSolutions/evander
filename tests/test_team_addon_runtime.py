@@ -73,6 +73,7 @@ from evander_team_addon.models import (
     ReleaseGateFailure,
     ReleasePackage,
     ReleaseVerificationRun,
+    ReviewRepositorySnapshot,
     ReviewRequest,
     Team,
     TeamBlocker,
@@ -133,6 +134,7 @@ from evander_team_addon.providers import (
     TeamUpdateCaseEffectProvider,
     TeamWakeDueAgentsEffectProvider,
     TeamWakeGovernanceManagersEffectProvider,
+    ReviewRepositoryPreparationError,
     _artifact_space_path_segment,
     _build_prompt,
     _build_team_chat_prompt,
@@ -146,6 +148,7 @@ from evander_team_addon.providers import (
     _resolved_project_git_identity,
     _record_dependency_git_preparation_blocker,
     _record_wake_failure,
+    _validate_review_repository_dispatch_compatibility,
 )
 from evander_team_addon.repository import TeamStateConflictError, TeamStateRepository
 from evander_team_addon.services.domain.chat import (
@@ -8295,6 +8298,168 @@ def test_wake_due_agents_provider_passes_project_bare_repo_to_clone_effect(
     assert getattr(clone_effect, "managed_repo_id") == "mr_0123456789abcdefabcd"
     assert not hasattr(clone_effect, "repo_source")
     assert not hasattr(clone_effect, "bare_repo_path")
+
+
+def test_review_wake_pins_checkout_and_exposes_snapshot_in_prompt(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = _seed_team(tmp_path)
+    commit_sha = "a" * 40
+    pinned_ref = "refs/evander/team-reviews/cmV2aWV3LXNuYXBzaG90"
+
+    def _seed_review(state: TeamState) -> TeamState:
+        state.projects["project"].git = ProjectGitConfig(
+            managed_repo_id="mr_0123456789abcdefabcd",
+            directory_path="root",
+            base_branch="main",
+        )
+        state.tasks["task"].state = TeamTaskState.WAITING_FOR_REVIEW
+        state.deliverables["deliverable"] = Deliverable(
+            id="deliverable",
+            task_id="task",
+            producer_agent_id="backend",
+            summary="Pinned code review.",
+            git_refs=DeliverableGitRefs(submitted_commit_sha=commit_sha),
+        )
+        state.review_requests["review-snapshot"] = ReviewRequest(
+            id="review-snapshot",
+            deliverable_id="deliverable",
+            reviewer_agent_id="backend",
+            reviewed_commit_sha=commit_sha,
+            repository_snapshot=ReviewRepositorySnapshot(
+                managed_repo_id="mr_0123456789abcdefabcd",
+                directory_path="root",
+                commit_sha=commit_sha,
+                pinned_ref=pinned_ref,
+                source_kind="deliverable_candidate",
+                source_ref="review/snapshot",
+            ),
+        )
+        state.deliverables["deliverable"].review_request_ids = ["review-snapshot"]
+        return state
+
+    repo.update(_seed_review)
+    captured_effects: list[object] = []
+
+    class _CapturingCloneProvider:
+        def initialize(self, effect: object, context: object) -> None:
+            del context
+            captured_effects.append(effect)
+
+        def execute(self) -> dict[str, object]:
+            return {
+                "success": True,
+                "target_dir": "/home/agent/Truman",
+                "guest_repo_name": "Truman",
+                "pinned_ref": pinned_ref,
+                "pinned_commit_sha": commit_sha,
+                "commit_sha": commit_sha,
+            }
+
+    class _ManagedGit:
+        def __init__(self) -> None:
+            self.calls: list[dict[str, object]] = []
+
+        def pin_team_review_snapshot(self, *args: object, **kwargs: object) -> dict[str, object]:
+            self.calls.append({"args": args, **kwargs})
+            return {
+                "commit_sha": kwargs["commit_sha"],
+                "pin_ref": kwargs["pinned_ref"],
+            }
+
+    managed_git = _ManagedGit()
+    monkeypatch.setattr(
+        "evander_team_addon.providers.AgentCloneRepoEffectProvider",
+        _CapturingCloneProvider,
+    )
+    resumer = FakeResumer()
+    provider = TeamWakeDueAgentsEffectProvider()
+    provider.initialize(
+        TeamWakeDueAgentsEffectDefinition(
+            id="wake",
+            display_name="Wake",
+            type="effect:team:wake-due-agents",
+        ),
+        EffectRuntimeContext(
+            resolved_config={"runtime_dir": str(tmp_path)},
+            agent_resumer=resumer,
+            vm_file_copier=FakeFileCopier(),
+            session_lookup=FakeSessionStore(),
+            session_metadata_updater=FakeSessionStore(),
+            vm_executor=FakeVmExecutor(),
+            admin_service=SimpleNamespace(managed_git_admin=managed_git),
+        ),
+    )
+
+    result = provider.execute()
+
+    assert result["success"] is True
+    assert len(managed_git.calls) == 1
+    assert managed_git.calls[0]["commit_sha"] == commit_sha
+    assert getattr(captured_effects[0], "pinned_ref") == pinned_ref
+    assert getattr(captured_effects[0], "pinned_commit_sha") == commit_sha
+    assert getattr(captured_effects[0], "git_access_mode") == "read-only"
+    prompt_context = _team_context_from_prompt(str(resumer.calls[0]["prompt"]))
+    assert prompt_context["reviews"][0]["repository_snapshot"]["commit_sha"] == commit_sha
+    assert prompt_context["project_repos"][0]["target_dir"] == "/home/agent/Truman"
+    assert prompt_context["project_repos"][0]["pinned_ref"] == pinned_ref
+
+
+def test_review_dispatch_rejects_divergent_repository_snapshots(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_team(tmp_path)
+    first_commit = "a" * 40
+    second_commit = "b" * 40
+
+    def _seed_reviews(state: TeamState) -> TeamState:
+        state.deliverables["deliverable"] = Deliverable(
+            id="deliverable",
+            task_id="task",
+            producer_agent_id="backend",
+            summary="Two independent review attempts.",
+        )
+        for review_id, commit_sha in (
+            ("review-first", first_commit),
+            ("review-second", second_commit),
+        ):
+            state.review_requests[review_id] = ReviewRequest(
+                id=review_id,
+                deliverable_id="deliverable",
+                reviewer_agent_id="backend",
+                repository_snapshot=ReviewRepositorySnapshot(
+                    managed_repo_id="mr_0123456789abcdefabcd",
+                    directory_path="root",
+                    commit_sha=commit_sha,
+                    pinned_ref=f"refs/evander/team-reviews/{review_id}",
+                    source_kind="deliverable_candidate",
+                ),
+            )
+        state.deliverables["deliverable"].review_request_ids = [
+            "review-first",
+            "review-second",
+        ]
+        return state
+
+    state = repo.update(_seed_reviews)
+    with pytest.raises(ReviewRepositoryPreparationError, match="different immutable commits"):
+        _validate_review_repository_dispatch_compatibility(
+            state,
+            review_request_ids=["review-first", "review-second"],
+        )
+
+    state.review_requests["review-second"].repository_snapshot = ReviewRepositorySnapshot(
+        managed_repo_id="mr_0123456789abcdefabcd",
+        directory_path="root",
+        commit_sha=first_commit,
+        pinned_ref="refs/evander/team-reviews/review-second",
+        source_kind="deliverable_candidate",
+    )
+    _validate_review_repository_dispatch_compatibility(
+        state,
+        review_request_ids=["review-first", "review-second"],
+    )
 
 
 def test_wake_due_agents_provider_ignores_stale_action_contract_metadata(

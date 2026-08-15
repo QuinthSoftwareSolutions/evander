@@ -1,5 +1,16 @@
 # Changelog
 
+## 2026-08-15 - Immutable Team Review Repository Snapshots
+
+- Bound every newly created Git-backed Team review, including retries and release reviews, to its
+  exact deliverable, task-base, or release-candidate commit before a reviewer can be prompted.
+- Persisted the server-owned review snapshot and retained one managed-Git ref per review. Legacy
+  reviews remain readable but cannot be dispatched from a mutable checkout; create a retry or
+  replacement review to obtain current immutable provenance.
+- Made review preparation pin and verify detached reviewer checkouts, reject unavailable,
+  conflicting, or cross-review commit provenance, and include the exact ref, commit, and checkout
+  in reviewer context. Normal task checkout behavior is unchanged.
+
 ## 2026-08-15 - First-Class Session Model Relay
 
 - Added a dedicated session-level model relay selector for public, local, Azure, Anthropic, or

@@ -377,6 +377,21 @@ class ProjectGitPreparationError(RuntimeError):
         self.project_id = project_id
 
 
+class ReviewRepositoryPreparationError(RuntimeError):
+    """One or more review snapshots cannot be prepared safely."""
+
+    def __init__(
+        self,
+        *,
+        project_id: str,
+        review_request_ids: Sequence[str],
+        message: str,
+    ) -> None:
+        super().__init__(message)
+        self.project_id = project_id
+        self.review_request_ids = tuple(sorted(set(review_request_ids)))
+
+
 def _catalog_field(
     key: str,
     label: str,
@@ -2483,9 +2498,27 @@ class TeamWakeDueAgentsEffectProvider(EffectProviderBase):
                         dispatch_id=lease["dispatch_id"],
                         tasks=lease.get("tasks"),
                         project_ids=_string_items(dispatch_scope.get("project_ids")),
+                        review_request_ids=_string_items(dispatch_scope.get("review_request_ids")),
                     )
                 except TeamStateConflictError:
                     raise
+                except ReviewRepositoryPreparationError as exc:
+                    state = TeamRuntimeService(repo).fail_agent_dispatch(
+                        agent_id=agent["id"],
+                        dispatch_id=lease["dispatch_id"],
+                        error=f"review repository preparation failed before inference: {exc}",
+                    )
+                    state, created_blocker_ids = _record_review_repository_preparation_blockers(
+                        repo,
+                        review_request_ids=exc.review_request_ids,
+                        error=str(exc),
+                    )
+                    preparation_blocker_ids.extend(created_blocker_ids)
+                    errors.append(
+                        f"{agent['id']}: review repository preparation failed; "
+                        "the affected review attempts were blocked before inference"
+                    )
+                    continue
                 except Exception as exc:
                     failed_project_repo_preparations.append(
                         _project_repo_prepare_record(
@@ -7248,6 +7281,10 @@ def _assigned_deliverable_review_guidance(context: Mapping[str, Any]) -> str:
     return (
         "Assigned deliverable review procedure for this wake:\n"
         f"- Pending assigned reviews: {labels}.\n"
+        "- When a review has repository_snapshot, inspect only the matching "
+        "project_repos checkout at its pinned_ref and commit_sha. The checkout "
+        "is detached deliberately; never substitute an existing work branch or "
+        "a newer branch tip.\n"
         f"- {TEAM_DECIDE_REVIEW_TOOL} is granted for this review dispatch. "
         "Team tools can be deferred in Codex code mode even after the MCP capability "
         "receipt verifies the grant. Resolve each required callable from ALL_TOOLS by "
@@ -7790,8 +7827,14 @@ def _prepare_project_repos(
     dispatch_id: str,
     tasks: object,
     project_ids: Sequence[str],
+    review_request_ids: Sequence[str] = (),
 ) -> tuple[Any, list[dict[str, Any]]]:
+    _validate_review_repository_dispatch_compatibility(
+        state,
+        review_request_ids=review_request_ids,
+    )
     project_repos: list[dict[str, Any]] = []
+    prepared_review_checkouts: dict[tuple[str, str], Mapping[str, Any]] = {}
     for project_id in sorted(set(project_ids)):
         try:
             state, project_repo = _prepare_project_repo(
@@ -7801,6 +7844,8 @@ def _prepare_project_repos(
                 agent={**agent, "project_ids": [project_id]},
                 dispatch_id=dispatch_id,
                 tasks=tasks,
+                review_request_ids=review_request_ids,
+                prepared_review_checkouts=prepared_review_checkouts,
             )
         except (DependencyGitPreparationError, TeamStateConflictError):
             raise
@@ -7843,6 +7888,8 @@ def _prepare_project_repo(
     agent: Mapping[str, Any],
     dispatch_id: str,
     tasks: object,
+    review_request_ids: Sequence[str] = (),
+    prepared_review_checkouts: dict[tuple[str, str], Mapping[str, Any]] | None = None,
 ) -> tuple[Any, dict[str, Any] | None]:
     projects = getattr(state, "projects", None)
     if not isinstance(projects, Mapping):
@@ -7882,24 +7929,69 @@ def _prepare_project_repo(
             managed_repo_id=managed_repo_id,
             directory_path=(_optional_text(_value(git, "directory_path")) or "root"),
         )
-    provider = AgentCloneRepoEffectProvider()
-    provider.initialize(
-        AgentCloneRepoEffectDefinition(
-            id="team-prepare-project-repo",
-            display_name="Prepare Team project repository",
-            type="effect:agent:clone-repo",
-            session_id=session_id,
-            managed_repo_id=managed_repo_id,
-            clone_branch=clone_branch,
-            vm_user="agent",
-            git_author_name=agent_author_identity.name,
-            git_author_email=agent_author_identity.email,
-            git_committer_name=agent_committer_identity.name,
-            git_committer_email=agent_committer_identity.email,
-        ),
-        context,
+    directory_path = _optional_text(_value(git, "directory_path")) or "root"
+    review_snapshots = _review_repository_snapshots_for_project(
+        state,
+        project_id=project_id,
+        managed_repo_id=managed_repo_id,
+        directory_path=directory_path,
+        review_request_ids=review_request_ids,
     )
-    clone_result = provider.execute()
+    pinned_ref: str | None = None
+    pinned_commit_sha: str | None = None
+    if review_snapshots:
+        pinned_ref, pinned_commit_sha = _pin_review_repository_snapshots(
+            context,
+            project_id=project_id,
+            snapshots=review_snapshots,
+        )
+    checkout_cache_key = (
+        (managed_repo_id, pinned_commit_sha)
+        if pinned_commit_sha is not None
+        else None
+    )
+    clone_result = (
+        prepared_review_checkouts.get(checkout_cache_key)
+        if checkout_cache_key is not None and prepared_review_checkouts is not None
+        else None
+    )
+    if clone_result is None:
+        provider = AgentCloneRepoEffectProvider()
+        provider.initialize(
+            AgentCloneRepoEffectDefinition(
+                id="team-prepare-project-repo",
+                display_name="Prepare Team project repository",
+                type="effect:agent:clone-repo",
+                session_id=session_id,
+                managed_repo_id=managed_repo_id,
+                clone_branch=clone_branch,
+                vm_user="agent",
+                git_author_name=agent_author_identity.name,
+                git_author_email=agent_author_identity.email,
+                git_committer_name=agent_committer_identity.name,
+                git_committer_email=agent_committer_identity.email,
+                git_access_mode=(
+                    "read-only"
+                    if pinned_ref is not None
+                    and not _project_repo_context_tasks(
+                        tasks,
+                        project_id=project_id,
+                        agent_id=agent_id,
+                    )
+                    else None
+                ),
+                pinned_ref=pinned_ref,
+                pinned_commit_sha=pinned_commit_sha,
+            ),
+            context,
+        )
+        clone_result = provider.execute()
+        if (
+            checkout_cache_key is not None
+            and prepared_review_checkouts is not None
+            and bool(clone_result.get("success"))
+        ):
+            prepared_review_checkouts[checkout_cache_key] = clone_result
     if not bool(clone_result.get("success")):
         message = (
             _optional_text(clone_result.get("message"))
@@ -7913,6 +8005,8 @@ def _prepare_project_repo(
         clone_result=clone_result,
         base_branch=clone_branch,
     )
+    if review_snapshots:
+        project_repo["review_repository_snapshots"] = review_snapshots
     state, git_work_contexts, commit_diagnostics = _create_project_repo_git_work_contexts(
         context,
         repo,
@@ -7937,6 +8031,38 @@ def _prepare_project_repo(
     project_repo.update(commit_diagnostics)
     _mark_project_repo_prepared(context, session_id=session_id, project_repo=project_repo)
     return state, project_repo
+
+
+def _validate_review_repository_dispatch_compatibility(
+    state: Any,
+    *,
+    review_request_ids: Sequence[str],
+) -> None:
+    """Reject a dispatch before checkout when one repository has divergent reviews."""
+
+    reviews = getattr(state, "review_requests", {})
+    by_repository: dict[str, list[tuple[str, Any]]] = {}
+    for review_id in sorted(set(_string_items(review_request_ids))):
+        review = reviews.get(review_id)
+        snapshot = getattr(review, "repository_snapshot", None) if review is not None else None
+        if snapshot is None:
+            continue
+        by_repository.setdefault(snapshot.managed_repo_id, []).append((review_id, snapshot))
+    for managed_repo_id, snapshots in by_repository.items():
+        commits = {snapshot.commit_sha.casefold() for _, snapshot in snapshots}
+        if len(commits) <= 1:
+            continue
+        raise ReviewRepositoryPreparationError(
+            project_id="dispatch",
+            review_request_ids=[review_id for review_id, _ in snapshots],
+            message=(
+                f"reviews for managed repository {managed_repo_id} require different immutable "
+                "commits and cannot share one checkout: "
+                + ", ".join(
+                    f"{review_id}={snapshot.commit_sha}" for review_id, snapshot in snapshots
+                )
+            ),
+        )
 
 
 def _managed_repository_default_branch(
@@ -7965,6 +8091,160 @@ def _managed_repository_default_branch(
     return validate_branch_name(default_branch)
 
 
+def _review_repository_snapshots_for_project(
+    state: Any,
+    *,
+    project_id: str,
+    managed_repo_id: str,
+    directory_path: str,
+    review_request_ids: Sequence[str],
+) -> list[dict[str, str]]:
+    """Return immutable review sources for this project or fail before cloning."""
+
+    reviews = getattr(state, "review_requests", {})
+    deliverables = getattr(state, "deliverables", {})
+    tasks = getattr(state, "tasks", {})
+    releases = getattr(state, "release_packages", {})
+    selected: list[tuple[str, Any]] = []
+    for review_id in sorted(set(_string_items(review_request_ids))):
+        review = reviews.get(review_id)
+        if review is None:
+            continue
+        review_project_id: str | None = None
+        deliverable_id = _optional_text(getattr(review, "deliverable_id", None))
+        if deliverable_id is not None:
+            deliverable = deliverables.get(deliverable_id)
+            task = tasks.get(getattr(deliverable, "task_id", None)) if deliverable is not None else None
+            review_project_id = _optional_text(getattr(task, "project_id", None))
+        else:
+            release = releases.get(_optional_text(getattr(review, "release_package_id", None)) or "")
+            review_project_id = _optional_text(getattr(release, "project_id", None))
+        if review_project_id == project_id:
+            selected.append((review_id, review))
+    if not selected:
+        return []
+
+    missing = [review_id for review_id, review in selected if getattr(review, "repository_snapshot", None) is None]
+    if missing:
+        raise ReviewRepositoryPreparationError(
+            project_id=project_id,
+            review_request_ids=missing,
+            message=(
+                "review request(s) have no immutable repository snapshot (legacy reviews must "
+                "be retried or replaced): "
+                + ", ".join(missing)
+            ),
+        )
+
+    snapshots: list[dict[str, str]] = []
+    invalid_ids: list[str] = []
+    for review_id, review in selected:
+        snapshot = review.repository_snapshot
+        assert snapshot is not None
+        if (
+            snapshot.managed_repo_id != managed_repo_id
+            or snapshot.directory_path != directory_path
+        ):
+            invalid_ids.append(review_id)
+            continue
+        snapshots.append(
+            {
+                "review_request_id": review_id,
+                "managed_repo_id": snapshot.managed_repo_id,
+                "directory_path": snapshot.directory_path,
+                "commit_sha": snapshot.commit_sha,
+                "pinned_ref": snapshot.pinned_ref,
+                "source_kind": snapshot.source_kind,
+                **({"source_ref": snapshot.source_ref} if snapshot.source_ref is not None else {}),
+            }
+        )
+    if invalid_ids:
+        raise ReviewRepositoryPreparationError(
+            project_id=project_id,
+            review_request_ids=invalid_ids,
+            message=(
+                f"review snapshot repository provenance does not match project {project_id}: "
+                + ", ".join(invalid_ids)
+            ),
+        )
+    commits = {snapshot["commit_sha"] for snapshot in snapshots}
+    if len(commits) != 1:
+        raise ReviewRepositoryPreparationError(
+            project_id=project_id,
+            review_request_ids=[snapshot["review_request_id"] for snapshot in snapshots],
+            message=(
+                f"reviews for managed repository {managed_repo_id} require different immutable "
+                "commits and cannot share one checkout: "
+                + ", ".join(
+                    f"{snapshot['review_request_id']}={snapshot['commit_sha']}"
+                    for snapshot in snapshots
+                )
+            ),
+        )
+    return snapshots
+
+
+def _pin_review_repository_snapshots(
+    context: Any,
+    *,
+    project_id: str,
+    snapshots: Sequence[Mapping[str, str]],
+) -> tuple[str, str]:
+    """Create every retained review ref and select their shared checkout source."""
+
+    if not snapshots:
+        raise ValueError("review snapshots are required")
+    managed_git = getattr(getattr(context, "admin_service", None), "managed_git_admin", None)
+    pin_snapshot = getattr(managed_git, "pin_team_review_snapshot", None)
+    review_ids = [snapshot["review_request_id"] for snapshot in snapshots]
+    if not callable(pin_snapshot):
+        raise ReviewRepositoryPreparationError(
+            project_id=project_id,
+            review_request_ids=review_ids,
+            message="managed Git Team review snapshot pinning is unavailable",
+        )
+    expected_commit = snapshots[0]["commit_sha"]
+    selected_ref: str | None = None
+    try:
+        for snapshot in snapshots:
+            result = pin_snapshot(
+                snapshot["managed_repo_id"],
+                snapshot["directory_path"],
+                review_id=snapshot["review_request_id"],
+                commit_sha=snapshot["commit_sha"],
+                source_ref=snapshot.get("source_ref"),
+                pinned_ref=snapshot["pinned_ref"],
+            )
+            if not isinstance(result, Mapping):
+                raise RuntimeError("managed Git Team review snapshot pinning returned an invalid result")
+            actual_commit = _required_text(result.get("commit_sha"), "pinned snapshot commit_sha")
+            actual_ref = _required_text(result.get("pin_ref"), "pinned snapshot pin_ref")
+            if actual_commit.casefold() != snapshot["commit_sha"].casefold():
+                raise RuntimeError(
+                    f"review snapshot {snapshot['review_request_id']} pinned {actual_commit}, not "
+                    f"{snapshot['commit_sha']}"
+                )
+            if actual_ref != snapshot["pinned_ref"]:
+                raise RuntimeError(
+                    f"review snapshot {snapshot['review_request_id']} pinned ref {actual_ref}, not "
+                    f"{snapshot['pinned_ref']}"
+                )
+            selected_ref = selected_ref or actual_ref
+    except Exception as exc:
+        raise ReviewRepositoryPreparationError(
+            project_id=project_id,
+            review_request_ids=review_ids,
+            message=f"failed to retain immutable review snapshot: {exc}",
+        ) from exc
+    if selected_ref is None:
+        raise ReviewRepositoryPreparationError(
+            project_id=project_id,
+            review_request_ids=review_ids,
+            message="review snapshot pinning returned no checkout ref",
+        )
+    return selected_ref, expected_commit
+
+
 def _project_repo_payload(
     *,
     project_id: str,
@@ -7985,6 +8265,9 @@ def _project_repo_payload(
         "execution_backend",
         "vm_name",
         "message",
+        "commit_sha",
+        "pinned_ref",
+        "pinned_commit_sha",
     ):
         value = _optional_text(clone_result.get(key))
         if value is not None:
@@ -10506,6 +10789,33 @@ def _record_review_artifact_preparation_blockers(
                 state,
                 review_request_id=review_id,
                 error=f"Review artifact preparation failed: {error}",
+                result=result,
+            )
+        return state
+
+    state = repo.update_with_outbox(
+        _mutate,
+        outbox_records=lambda: _team_event_outbox_records(result.get("events") or []),
+    )
+    return state, list(result.get("created_blocker_ids") or [])
+
+
+def _record_review_repository_preparation_blockers(
+    repo: TeamStateRepository,
+    *,
+    review_request_ids: Sequence[str],
+    error: str,
+) -> tuple[TeamState, list[str]]:
+    """Block only the review attempts whose immutable checkout could not prepare."""
+
+    result: dict[str, Any] = {"events": []}
+
+    def _mutate(state: TeamState) -> TeamState:
+        for review_id in sorted(set(_string_items(review_request_ids))):
+            record_review_preparation_failure(
+                state,
+                review_request_id=review_id,
+                error=f"Review repository snapshot preparation failed: {error}",
                 result=result,
             )
         return state

@@ -49,6 +49,7 @@ from evander.admin.services.managed_git_worktree_service import (
 )
 from evander.admin.services.workflow_pack_history_service import WorkflowPackChangeActor
 from evander.consultations import consultation_snapshot_ref
+from evander.review_snapshots import team_review_snapshot_ref
 from evander.git_pr_notes import agent_pr_notes_ref_for_session
 from evander.git_identity import DEFAULT_AGENT_GIT_IDENTITY
 from evander.managed_git_grants import (
@@ -1764,27 +1765,40 @@ class ManagedGitAdminService:
             raise RuntimeError("Git did not create the requested source archive")
         return snapshot
 
-    def pin_snapshot(
+    def pin_retained_snapshot(
         self,
         managed_repo_id: str,
         directory_path: str,
         *,
-        consultation_id: str,
+        binding_kind: str,
+        binding_id: str,
+        pin_ref: str,
         source_ref: str | None = None,
         commit_sha: str | None = None,
     ) -> dict[str, Any]:
-        """Resolve a snapshot and retain its commit under a consultation-scoped ref."""
+        """Resolve a snapshot and retain it under a caller-owned immutable ref.
+
+        The ref and binding are deliberately supplied together so durable
+        features can share one fail-closed implementation without pretending
+        their retention lifecycles are identical.
+        """
 
         directory = self._normalize_directory_path(directory_path)
         record = self._require_scoped_record(managed_repo_id, directory)
+        normalized_kind = str(binding_kind or "").strip().casefold()
+        normalized_binding_id = str(binding_id or "").strip()
+        normalized_pin_ref = _normalize_ref(pin_ref, field_name="pin_ref")
+        if not normalized_kind or not re.fullmatch(r"[a-z][a-z0-9_-]*", normalized_kind):
+            raise ValueError("binding_kind must be a non-empty lowercase identifier")
+        if not normalized_binding_id:
+            raise ValueError("binding_id is required")
         binding_preexisting = any(
             isinstance(item, dict)
-            and item.get("kind") == "consultations"
-            and item.get("binding_id") == consultation_id
+            and item.get("kind") == normalized_kind
+            and item.get("binding_id") == normalized_binding_id
             for item in record.get("bindings") or []
         )
         bare_path = self._bare_path(record)
-        pin_ref = consultation_snapshot_ref(consultation_id)
         requested_ref = str(source_ref or "").strip()
         if not requested_ref and not commit_sha:
             requested_ref = str(record.get("default_branch") or "").strip()
@@ -1797,17 +1811,17 @@ class ManagedGitAdminService:
             _normalize_ref(requested_ref, field_name="source_ref") if requested_ref else None
         )
         expected = _normalize_object_id(commit_sha, field_name="commit_sha") if commit_sha else None
-        self.bind(managed_repo_id, "consultations", consultation_id)
+        self.bind(managed_repo_id, normalized_kind, normalized_binding_id)
         try:
             with (
                 self._repo_lock(managed_repo_id, exclusive=False),
-                self._target_lock(managed_repo_id, pin_ref),
+                self._target_lock(managed_repo_id, normalized_pin_ref),
             ):
-                existing_pin = self._resolve_ref(bare_path, pin_ref)
+                existing_pin = self._resolve_ref(bare_path, normalized_pin_ref)
                 if existing_pin is not None:
                     if expected is not None and existing_pin != expected:
                         raise ManagedGitConflictError(
-                            f"Consultation snapshot {pin_ref} is already pinned to {existing_pin}, "
+                            f"Retained snapshot {normalized_pin_ref} is already pinned to {existing_pin}, "
                             f"not {expected}"
                         )
                     self._require_commit(bare_path, existing_pin)
@@ -1831,7 +1845,7 @@ class ManagedGitAdminService:
                             },
                         )
                     self._require_commit(bare_path, resolved)
-                    commands = [f"create {pin_ref} {resolved}"]
+                    commands = [f"create {normalized_pin_ref} {resolved}"]
                     if normalized_ref is not None:
                         commands.insert(0, f"verify {normalized_ref} {resolved}")
                     try:
@@ -1844,7 +1858,7 @@ class ManagedGitAdminService:
                         )
                         if normalized_ref is not None and current_source != resolved:
                             raise ManagedGitConflictError(
-                                f"Source ref {normalized_ref} moved while pinning the consultation",
+                                f"Source ref {normalized_ref} moved while pinning the retained snapshot",
                                 details={
                                     "managed_repo_id": managed_repo_id,
                                     "source_ref": normalized_ref,
@@ -1856,17 +1870,70 @@ class ManagedGitAdminService:
         except Exception as exc:
             if not binding_preexisting:
                 try:
-                    self.unbind(managed_repo_id, "consultations", consultation_id)
+                    self.unbind(managed_repo_id, normalized_kind, normalized_binding_id)
                 except Exception as rollback_exc:
-                    exc.add_note(f"consultation binding rollback failed: {rollback_exc}")
+                    exc.add_note(f"retained snapshot binding rollback failed: {rollback_exc}")
             raise
         return {
             "managed_repo_id": managed_repo_id,
             "directory_path": directory,
             "source_ref": normalized_ref,
             "commit_sha": resolved,
-            "pin_ref": pin_ref,
+            "pin_ref": normalized_pin_ref,
         }
+
+    def pin_snapshot(
+        self,
+        managed_repo_id: str,
+        directory_path: str,
+        *,
+        consultation_id: str,
+        source_ref: str | None = None,
+        commit_sha: str | None = None,
+    ) -> dict[str, Any]:
+        """Resolve a snapshot and retain its commit under a consultation-scoped ref."""
+
+        return self.pin_retained_snapshot(
+            managed_repo_id,
+            directory_path,
+            binding_kind="consultations",
+            binding_id=consultation_id,
+            pin_ref=consultation_snapshot_ref(consultation_id),
+            source_ref=source_ref,
+            commit_sha=commit_sha,
+        )
+
+    def pin_team_review_snapshot(
+        self,
+        managed_repo_id: str,
+        directory_path: str,
+        *,
+        review_id: str,
+        commit_sha: str,
+        source_ref: str | None = None,
+        pinned_ref: str | None = None,
+    ) -> dict[str, Any]:
+        """Retain the exact source for one Team review indefinitely.
+
+        ``source_ref`` is returned for audit only.  A Team review's authority
+        is its recorded object ID, never a mutable branch label.
+        """
+
+        expected_ref = team_review_snapshot_ref(review_id)
+        if pinned_ref is not None and _normalize_ref(pinned_ref, field_name="pinned_ref") != expected_ref:
+            raise ManagedGitConflictError(
+                f"Team review {review_id} has unexpected pinned ref {pinned_ref}",
+                details={"review_id": review_id, "expected_pinned_ref": expected_ref},
+            )
+        pinned = self.pin_retained_snapshot(
+            managed_repo_id,
+            directory_path,
+            binding_kind="team_reviews",
+            binding_id=review_id,
+            pin_ref=expected_ref,
+            commit_sha=commit_sha,
+        )
+        return {**pinned, "source_ref": source_ref}
 
     def release_snapshot_pin(
         self,

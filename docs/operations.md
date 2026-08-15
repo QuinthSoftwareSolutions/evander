@@ -2482,6 +2482,26 @@ exhausted are retried once with deterministic reduced context by default.
 Use `agent_context_retry_enabled`, `agent_context_retry_max_attempts`, and
 `agent_context_retry_target_chars` to tune or disable that behavior.
 
+### Team review repository snapshots
+
+For a Team project configured with managed Git, every newly created review is
+bound to an immutable server-owned snapshot before its reviewer is prompted.
+The source is the deliverable candidate when available, the producing task's
+authoritative Git base for planning or artifact-only deliverables, or the
+release candidate for release reviews. The runtime retains a ref under
+`refs/evander/team-reviews/` and checks out the recorded commit detached; a
+review never falls back to the persistent reviewer checkout's `work` branch.
+
+If the snapshot is unavailable, points at a different managed repository, its
+retained ref conflicts, the commit cannot be materialized, or reviews sharing
+one repository name different commits, preparation blocks the affected review
+before prompt delivery. Inspect the Team review blocker and managed-Git record,
+then correct the upstream provenance and create a retry or replacement review.
+Existing review records from before this feature have no snapshot and are
+intentionally not reinterpreted; recover them by creating a new retry or
+replacement review after deployment. Retained Team review refs are not cleaned
+up automatically because Team data currently has no physical deletion lifecycle.
+
 ### Guest repo preparation
 
 After the VM is created and the repo is cloned, prepare the checkout explicitly instead of
