@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-08-15 - Immediate Team Wake After Terminal Blocker Resolution
+
+- Prompted Team's durable outbox publisher after Admin Web resolves a task-backed terminal
+  blocker that creates `task_ready` wake work, so the one-second debounced wake no longer waits
+  for the next 15-minute runtime tick. The committed Team outbox and periodic reconciliation
+  remain authoritative recovery paths if prompt publication fails.
+
 ## 2026-08-15 - Immutable Team Review Repository Snapshots
 
 - Bound every newly created Git-backed Team review, including retries and release reviews, to its

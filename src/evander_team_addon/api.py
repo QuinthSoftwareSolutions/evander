@@ -133,7 +133,10 @@ from .services.domain.context_rotation import (
 from .services.domain.release_packages import ReleasePackageValidationError
 from .services.domain.git_common import GIT_PROMOTION_EVENT_TYPE
 from .services.domain.task_assessment import task_payload_with_assessment
-from .services.domain.wake import _append_agent_wake_requested_event_for_inbox_item
+from .services.domain.wake import (
+    AGENT_WAKE_REQUESTED_EVENT_TYPE,
+    _append_agent_wake_requested_event_for_inbox_item,
+)
 from .services.commands.outbox import TEAM_OUTBOX_PUBLISH_REQUESTED_EVENT_TYPE
 from .services.admin_service import TeamAdminService
 from .services.chat_service import (
@@ -2697,10 +2700,19 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
             operator_actor_id=_operator_actor_from_request(context.auth, request),
             expected_revision=_expected_revision(payload),
         )
+        extra: dict[str, Any] = {"resolved_blocker": result["blocker"]}
+        if any(
+            event.get("event_type") == AGENT_WAKE_REQUESTED_EVENT_TYPE
+            for event in result.get("events") or []
+        ):
+            extra["outbox_publication_wake"] = _request_team_outbox_publication(
+                context,
+                correlation_key=(f"terminal-blocker-resolution:{blocker_id}:{state.revision}"),
+            )
         return _state_response(
             request,
             state,
-            extra={"resolved_blocker": result["blocker"]},
+            extra=extra,
         )
 
     async def recover_candidate_correction_successor(
