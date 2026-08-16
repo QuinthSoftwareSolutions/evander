@@ -147,6 +147,12 @@ async function createSessionsSmokeHarness(t, sessionRecord, routeAssertions = {}
         label: "Gemini 2.5 Pro",
       },
     ],
+    model_provider_modes: [
+      { value: "openai_public", label: "Public OpenAI" },
+      { value: "local_openai", label: "Local OpenAI" },
+      { value: "azure_openai", label: "Azure OpenAI" },
+      { value: "anthropic", label: "Anthropic" },
+    ],
     resume_mode_options: [
       {
         value: "same_context",
@@ -398,6 +404,47 @@ test("admin shell sessions page identifies repository grants with repository met
       "/api/admin/git-repositories?directory_path=root%2Fteam&include_descendants=false",
     ),
   );
+  assert.deepEqual(pageErrors, []);
+  assert.deepEqual(consoleErrors, []);
+});
+
+test("admin shell sessions page exposes model relay as a first-class setting", async (t) => {
+  const sessionRecord = makeSessionRecord({
+    model_provider_mode: "local_openai",
+    metadata: {
+      ...makeSessionRecord().metadata,
+      model_provider_mode: "local_openai",
+    },
+  });
+  const {
+    address,
+    consoleErrors,
+    page,
+    pageErrors,
+    policyBodies,
+  } = await createSessionsSmokeHarness(t, sessionRecord, {
+    assertPolicyBody(body) {
+      assert.equal(body.model_provider_mode, "openai_public");
+      assert.equal(body.metadata, undefined);
+    },
+  });
+
+  await page.goto(`http://127.0.0.1:${address.port}/#sessions?session_id=session-1`, {
+    waitUntil: "domcontentloaded",
+  });
+  await ensureSectionsExpanded(page);
+
+  const modelRelay = page.getByLabel("Model relay");
+  assert.equal(await modelRelay.inputValue(), "local_openai");
+  assert.equal(await page.getByText("model_provider_mode").count(), 0);
+  await modelRelay.selectOption("openai_public");
+  const policySave = page.waitForResponse((response) =>
+    new URL(response.url()).pathname === "/api/admin/sessions/session-1" && response.request().method() === "PATCH",
+  );
+  await page.getByRole("button", { name: "Save changes" }).click();
+  await policySave;
+
+  assert.equal(policyBodies.length, 1);
   assert.deepEqual(pageErrors, []);
   assert.deepEqual(consoleErrors, []);
 });

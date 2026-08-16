@@ -19,7 +19,6 @@ from evander.workflow.compiler import (
     compile_trigger_orchestrator_config,
     compile_trigger_orchestrator_config_with_diagnostics,
 )
-from evander.workflow.migrations import migrate_agent_prompt_lifecycle_ports
 from evander.workflow.transforms import resolve_workflow_transforms
 from evander.workflow.validation import WorkflowValidationDiagnostic
 from evander.workflow.system_nodes import is_system_managed_workflow_node_id
@@ -33,6 +32,30 @@ from evander.workflow.packs import (
 logger = logging.getLogger(__name__)
 
 _WORKFLOW_NODE_COLLECTIONS = ("triggers", "gates", "effects", "queries")
+_WORKFLOW_NODE_ENVELOPE_FIELDS = frozenset({"id", "display_name", "type", "config", "outputs"})
+
+
+def _require_canonical_persisted_node_envelopes(payload: dict[str, Any], *, context: str) -> None:
+    containers: list[tuple[str, dict[str, Any]]] = [("", payload)]
+    workflow_ir = payload.get("workflow_ir")
+    if isinstance(workflow_ir, dict):
+        containers.append(("workflow_ir.", workflow_ir))
+
+    for prefix, container in containers:
+        for collection_name in _WORKFLOW_NODE_COLLECTIONS:
+            entries = container.get(collection_name)
+            if not isinstance(entries, list):
+                continue
+            for index, entry in enumerate(entries):
+                if not isinstance(entry, dict):
+                    continue
+                extra_fields = sorted(set(entry) - _WORKFLOW_NODE_ENVELOPE_FIELDS)
+                if extra_fields:
+                    fields = ", ".join(extra_fields)
+                    raise ValueError(
+                        f"{context} {prefix}{collection_name}[{index}] must place provider "
+                        f"fields under config: {fields}"
+                    )
 
 
 def _worker_global_config_path(project_dir: Path) -> Path:
@@ -66,6 +89,7 @@ def load_trigger_orchestrator_worker_global_config(
     raw = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(raw, dict):
         raise ValueError(f"worker config file {path} must contain a JSON object")
+    _require_canonical_persisted_node_envelopes(raw, context=f"worker config file {path}")
     raw = _compose_configured_workflow_ir(project_dir=project_dir, payload=raw)
     _validate_communication_targets(base_config=base_config, payload=raw)
     return _compile_worker_global_config(
@@ -147,6 +171,10 @@ class TriggerOrchestratorWorkerGlobalConfigReloader:
         raw = json.loads(self._path.read_text(encoding="utf-8"))
         if not isinstance(raw, dict):
             raise ValueError(f"worker config file {self._path} must contain a JSON object")
+        _require_canonical_persisted_node_envelopes(
+            raw,
+            context=f"worker config file {self._path}",
+        )
         raw = _compose_configured_workflow_ir(project_dir=self._project_dir, payload=raw)
         _validate_communication_targets(
             base_config=self._base_config,
@@ -203,7 +231,9 @@ def compile_worker_global_config_with_diagnostics(
 def _compose_configured_workflow_ir(
     *, project_dir: Path, payload: dict[str, Any]
 ) -> dict[str, Any]:
-    payload = migrate_agent_prompt_lifecycle_ports(payload)
+    """Compose a persisted workflow document after enforcing its canonical envelope."""
+
+    _require_canonical_persisted_node_envelopes(payload, context="workflow configuration")
     configured_packs = payload.get("workflow_packs")
     inline_graphs = payload.get("workflow_graphs")
     inline_ir = payload.get("workflow_ir")
@@ -239,7 +269,6 @@ def _append_builtin_hidden_workflows(
     editable_collections: dict[str, list[dict[str, Any]]] | None = None,
     editable_edges: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    payload = migrate_agent_prompt_lifecycle_ports(payload)
     composition = compose_workflow_ir(
         project_dir=project_dir,
         workflow_packs=[],
@@ -282,7 +311,7 @@ def _append_builtin_hidden_workflows(
     )
     editable_edges.extend(composition.edges)
     merged["edges"] = editable_edges
-    return migrate_agent_prompt_lifecycle_ports(merged)
+    return merged
 
 
 def _merge_workflow_graphs(

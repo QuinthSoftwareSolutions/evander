@@ -1093,9 +1093,8 @@ default runtime is `/var/lib/evander`; commands and repository services commonly
 explicitly. Relative runtime paths are resolved, and default store paths follow the selected
 runtime root.
 
-Legacy gateway YAML is accepted as explicit migration or bootstrap input. It is not the current
-live baseline. Once host and root directory configuration exist, diagnose those current surfaces
-rather than repeatedly editing an old YAML file.
+Startup reads only the host bootstrap and root directory configuration. Diagnose those canonical
+surfaces directly; gateway YAML is no longer accepted as bootstrap or migration input.
 
 At startup, `load_runtime_gateway_config` combines the host bootstrap with root directory domains
 into a validated `GatewayConfig`. Broader assembly then adds the repositories and services that a
@@ -1108,7 +1107,7 @@ function) is the supported assembly surface for the
 CLI, gateway integrations, Admin Web, workflow providers, and add-ons that need administration
 services. It:
 
-1. resolves an explicit legacy path only when supplied or when the input is clearly YAML;
+1. resolves the runtime directory;
 2. loads or creates host bootstrap configuration;
 3. opens the directory store and ensures `root` exists;
 4. opens the directory-config store and ensures root domains exist;
@@ -3334,7 +3333,7 @@ evander-cli git-repos maintenance
 evander-cli git-repos maintenance --managed-repo-id <managed-repo-id>
 ```
 
-Delete only after `git-repos show` confirms there are no issue, project, session, SSH, worktree, or migration bindings. There is no force-delete path.
+Delete only after `git-repos show` confirms there are no issue, project, session, SSH, or worktree bindings. There is no force-delete path.
 
 For a consultation, verify that the gateway, trigger orchestrator, effect orchestrator, model relay, and container worker are healthy; confirm the caller has `consult_codebase` and `get_codebase_consultation` (plus `cancel_codebase_consultation` if needed); then request and poll by consultation ID. If it stalls, inspect in this order:
 
@@ -3344,11 +3343,9 @@ For a consultation, verify that the gateway, trigger orchestrator, effect orches
 4. the consultation snapshot ref in the managed repository;
 5. cleanup status and error before attempting to release or delete anything manually.
 
-For a legacy mirror deployment, do not improvise a partial conversion. Stop trigger/effect workers, run `evander-cli git-repos migrate --dry-run`, resolve every blocker, use `--apply`, execute the documented VM and container smoke path, and only then run `--finalize <migration-id>`. Apply and finalize are intentionally separate decisions.
-
 ## Source trail
 
-- `src/evander/admin/services/managed_git_service.py`, `managed_git_runtime_service.py`, and `managed_git_worktree_service.py` — registry identity, ref transactions, restricted SSH integration, runtime grants, worktrees, publication, maintenance, and migration.
+- `src/evander/admin/services/managed_git_service.py`, `managed_git_runtime_service.py`, and `managed_git_worktree_service.py` — registry identity, ref transactions, restricted SSH integration, runtime grants, worktrees, publication, and maintenance.
 - `scripts/git_ssh_command_wrapper.sh`, `scripts/guest/push_agent.sh`, and `scripts/guest/sync_base.sh` — guest capability and helper enforcement.
 - `src/evander/session_artifacts.py`, `src/evander/effects/providers/artifacts.py`, and `src/evander/published_artifacts.py` — safe artifact paths, publication, and immutable storage.
 - `src/evander/artifact_spaces.py` and `src/evander/admin/services/artifact_service.py` — logical spaces, grants, versions, and revision checking.
@@ -8415,14 +8412,13 @@ If an operator encounters one of these names, the safest first step is to record
 
 | Surface | Current status | New work should use |
 |---|---|---|
-| Legacy gateway YAML | import/migration input only | `runtime/host-config.json` plus directory config |
 | Older guest session/config paths | read/repair fallback in selected bootstrap paths | `/etc/evander/session.env`, `/home/agent/.agent/config.env`, and current `/home/agent/.evander` run-state paths |
 | `runtime/pr-map.json` | live compatibility store for session-bound and legacy PR streams; repository-scoped streams can bypass it | explicit PR workflow streams and managed repository identity |
 | JSON wake/inbox/worker/Team stores | one-time import where the owning repository supports it | the current SQLite store |
 | ADO-specific workflow node types | supported compatibility surfaces, and still appropriate for ADO-only semantics | provider-neutral remote issue/PR nodes where semantics match |
 | Historical Team action artifacts and unpinned terminal releases | retained evidence; incomplete unpinned releases do not satisfy current gates | Team MCP commands and exact pinned release evidence |
 | `AdminService` references | historical design or short-lived compatibility guidance | focused services assembled by `build_admin_runtime` |
-| Legacy managed-Git path fields | migration or audit-only residue, not live routing authority | `managed_repo_id`, owned ref, and exact SHA |
+| Legacy managed-Git path fields | unsupported historical residue, not live routing authority | `managed_repo_id`, owned ref, and exact SHA |
 | Old service/firewall/network names | installer/setup cleanup only | `evander-*` services and current network/config names |
 | Checked-in workflow pack examples | examples or built-ins, not assumed live authority | revision-checked live packs through Admin Web/API |
 
@@ -8493,7 +8489,7 @@ When a deployment behaves as if an older design is still active:
 2. **Read the relevant changelog window.** Find both the introduction and later retirement. A June compatibility note may have been superseded days later.
 3. **Inspect current assembly.** Check `pyproject.toml` entry points, systemd templates and install script, `build_admin_runtime`, provider/add-on catalogs, and the owning repository constructor.
 4. **Find migration markers and both candidate stores.** Determine which one current code opens before editing either.
-5. **Run the supported preflight or dry-run.** For managed Git, use the `git-repos migrate` flow; for add-ons, use discovery and enablement diagnostics; for a service rename, use installer preflight.
+5. **Run the supported preflight or diagnostic.** For add-ons, use discovery and enablement diagnostics; for a service rename, use installer preflight.
 6. **Quiesce the writers named by the migrator.** Preserve backups and active lease or operation evidence.
 7. **Apply once and verify through the current API.** Check IDs, counts, SHAs, revisions, and provider state—not merely that the new file exists.
 8. **Finalize only when rollback artifacts are no longer needed.** Do not leave two writable authorities.
@@ -8523,7 +8519,6 @@ When a deployment behaves as if an older design is still active:
 - `tests/test_workflow_plugins.py`
 - `tests/test_container_worker_execution_backend.py`
 - `tests/test_addons.py`
-- `tests/test_managed_git_migration_rewrite.py`
 - `tests/test_team_addon_repository.py`
 
 
@@ -9224,7 +9219,7 @@ checklist, and manual or prepared test target. Only a real eligible Admin user
 with scoped permission and privileged confirmation can decide it.
 
 **Host config**<br>
-The host-global bootstrap settings in `runtime/host-config.json`. It is composed with directory-scoped domains; legacy gateway YAML is import input, not the current baseline.
+The host-global bootstrap settings in `runtime/host-config.json`. It is composed with directory-scoped domains to form the runtime configuration.
 
 **HTTP target relay**<br>
 A session-scoped relay for explicit external HTTP targets. It forwards guest-managed headers/cookies subject to the grant but does not inject host secrets.

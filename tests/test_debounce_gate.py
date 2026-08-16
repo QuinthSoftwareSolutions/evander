@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from config_helpers import canonical_worker_config
+
 import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -8,7 +10,7 @@ from types import SimpleNamespace
 import pytest
 from pydantic import ValidationError
 
-from evander.config import GatewayConfig, TriggerOrchestratorWorkerGlobalConfig
+from evander.config import GatewayConfig
 from evander.daemons.effect_orchestrator import (
     EffectOrchestratorWorker,
     _compute_effect_cycle_sleep_seconds,
@@ -19,7 +21,7 @@ from evander.events.models import TriggerEvent
 def _worker(tmp_path: Path) -> EffectOrchestratorWorker:
     runtime_dir = tmp_path / "runtime"
     config = GatewayConfig(runtime_dir=runtime_dir)
-    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+    worker_config = canonical_worker_config(
         {
             "runtime_dir": runtime_dir,
             "poll_interval_seconds": 1,
@@ -234,7 +236,7 @@ def test_debounce_invalid_config_is_rejected_clearly(tmp_path: Path) -> None:
         ValidationError,
         match="gate:debounce max_delay must be greater than or equal to quiet_period",
     ):
-        TriggerOrchestratorWorkerGlobalConfig.model_validate(
+        canonical_worker_config(
             {
                 "runtime_dir": tmp_path / "runtime",
                 "triggers": [

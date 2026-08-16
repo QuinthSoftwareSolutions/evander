@@ -15,30 +15,18 @@ def _project_root() -> Path:
     return Path(__file__).resolve().parents[3]
 
 
-def _bootstrap_runtime_config(*, legacy_config_path: Path | None = None) -> GatewayConfig:
+def _bootstrap_runtime_config(*, runtime_dir: Path | None = None) -> GatewayConfig:
     return load_runtime_gateway_config(
-        runtime_dir=resolve_runtime_dir(
-            runtime_dir=_project_root() / "runtime", legacy_config_path=legacy_config_path
-        ),
-        legacy_config_path=legacy_config_path,
+        runtime_dir=resolve_runtime_dir(runtime_dir=runtime_dir or _project_root() / "runtime")
     )
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run the Evander MCP gateway.")
-    parser.add_argument(
-        "--legacy-config",
-        help="Optional legacy gateway YAML used only to import root config if root is missing.",
-    )
-    parser.add_argument(
-        "--config",
-        dest="legacy_config",
-        help=argparse.SUPPRESS,
-    )
+    parser.add_argument("--runtime-dir", type=Path, help="Runtime directory root.")
     args = parser.parse_args()
 
-    legacy_config_path = Path(args.legacy_config) if args.legacy_config else None
-    config = _bootstrap_runtime_config(legacy_config_path=legacy_config_path)
+    config = _bootstrap_runtime_config(runtime_dir=args.runtime_dir)
     context = build_runtime(config)
     app = create_app(context)
     uvicorn.run(

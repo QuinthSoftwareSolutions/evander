@@ -36,12 +36,12 @@ from evander.models import (
     ApprovalNotificationDeliveryStatus,
     ApprovalNotificationStatus,
     ApprovalRequest,
-    Directory,
     LocalIssueRecord,
     VmActionResult,
     VmSummary,
 )
 from evander.repositories.audit_index import ToolCallAuditIndex
+from config_helpers import write_runtime_config
 
 UTC = timezone.utc
 
@@ -67,23 +67,10 @@ def write_config(tmp_path: Path, *, enable_directory_scoped_config: bool = False
         ),
         encoding="utf-8",
     )
-    config_path = tmp_path / "gateway.yaml"
-    config_path.write_text(
-        "\n".join(
-            [
-                f'runtime_dir: "{runtime_dir}"',
-                f'audit_log_path: "{runtime_dir / "audit.jsonl"}"',
-                f'session_store_path: "{runtime_dir / "sessions.json"}"',
-                f'approval_store_path: "{runtime_dir / "approvals.json"}"',
-                f'draft_store_path: "{runtime_dir / "drafts.json"}"',
-                f'email_store_path: "{runtime_dir / "emails.json"}"',
-                f'discord_command_store_path: "{runtime_dir / "discord_commands.json"}"',
-                f"enable_directory_scoped_config: {str(enable_directory_scoped_config).lower()}",
-            ]
-        ),
-        encoding="utf-8",
+    return write_runtime_config(
+        tmp_path,
+        enable_directory_scoped_config=enable_directory_scoped_config,
     )
-    return config_path
 
 
 def patch_cli_admin_runtime(monkeypatch, **service_factories):
@@ -100,22 +87,13 @@ def write_container_config(
 ) -> Path:
     tmp_path.mkdir(parents=True, exist_ok=True)
     runtime_dir = tmp_path / "runtime"
-    lines = [
-        f'runtime_dir: "{runtime_dir}"',
-        f'audit_log_path: "{runtime_dir / "audit.jsonl"}"',
-        f'session_store_path: "{runtime_dir / "sessions.json"}"',
-        f'approval_store_path: "{runtime_dir / "approvals.json"}"',
-        f'draft_store_path: "{runtime_dir / "drafts.json"}"',
-        f'email_store_path: "{runtime_dir / "emails.json"}"',
-        f'discord_command_store_path: "{runtime_dir / "discord_commands.json"}"',
-        'execution_backend: "libvirt_vm"',
-        'container_worker_token_env: "TEST_WORKER_TOKEN"',
-        'container_worker_default_image: "runner:latest"',
-    ]
-    if base_url is not None:
-        lines.append(f'container_worker_base_url: "{base_url}"')
-    config_path = tmp_path / "gateway.yaml"
-    config_path.write_text("\n".join(lines), encoding="utf-8")
+    config_path = write_runtime_config(
+        tmp_path,
+        execution_backend="libvirt_vm",
+        container_worker_token_env="TEST_WORKER_TOKEN",
+        container_worker_default_image="runner:latest",
+        container_worker_base_url=base_url,
+    )
     directory_store = DirectoryStore(runtime_dir / "directories.json")
     directory_store.ensure_root()
     provider_payload = {
@@ -303,7 +281,6 @@ def test_help_groups_commands_by_panel_then_alphabetically() -> None:
     )
     assert output.index("seed-discord-channel") < output.index("seed-email")
     assert "init-state" in output and "Create runtime state files." in output
-    assert "migrate-global-config-to-root" in output
     assert "migrate-ado-worker-env-to-root" in output
     assert "migrate-issue-setup-env-to-root" in output
     assert "migrate-pr-template-to-root" in output
@@ -1056,7 +1033,7 @@ def test_migrate_directory_ownership_backfills_missing_fields_only(tmp_path: Pat
     result = runner.invoke(app, ["migrate-directory-ownership", "--config", str(config_path)])
 
     assert result.exit_code == 0
-    assert "Backfilled 3 record(s) across 3 file(s)" in result.output
+    assert "Backfilled 4 record(s) across 4 file(s)" in result.output
 
     sessions = json.loads((runtime_dir / "sessions.json").read_text(encoding="utf-8"))
     assert sessions["session-a"]["directory_path"] == "root"
@@ -1166,38 +1143,6 @@ def test_show_approval_and_approve_record_reason(tmp_path: Path) -> None:
     assert approvals["approval-1"]["decision_history"][0]["reason"] == "looks safe"
 
 
-def test_migrate_global_config_to_root_materializes_all_domain_files(tmp_path: Path) -> None:
-    config_path = write_config(tmp_path, enable_directory_scoped_config=True)
-    runner = CliRunner()
-
-    init_result = runner.invoke(app, ["init-state", "--config", str(config_path)])
-    assert init_result.exit_code == 0
-
-    result = runner.invoke(app, ["migrate-global-config-to-root", "--config", str(config_path)])
-
-    assert result.exit_code == 0
-    assert "written=7 skipped=0 unchanged=0" in result.output
-    runtime_dir = tmp_path / "runtime"
-    assert (runtime_dir / "directory-config" / "root" / "policy.json").exists()
-    assert (runtime_dir / "directory-config" / "root" / "providers.json").exists()
-    assert (runtime_dir / "directory-config" / "root" / "email.json").exists()
-    assert (runtime_dir / "directory-config" / "root" / "wake.json").exists()
-    assert (runtime_dir / "directory-config" / "root" / "ado-worker.json").exists()
-    assert (runtime_dir / "directory-config" / "root" / "issue-setup.json").exists()
-    assert (runtime_dir / "directory-config" / "root" / "vm.json").exists()
-
-    directories = DirectoryStore(runtime_dir / "directories.json").read_all()
-    assert directories["root"].metadata["directory_config"]["domains"] == [
-        "ado_worker",
-        "email",
-        "issue_setup",
-        "policy",
-        "providers",
-        "vm",
-        "wake",
-    ]
-
-
 def test_migrate_heartbeat_config_to_wake_renames_file_and_metadata(tmp_path: Path) -> None:
     config_path = write_config(tmp_path, enable_directory_scoped_config=True)
     runtime_dir = tmp_path / "runtime"
@@ -1269,106 +1214,6 @@ def test_migrate_heartbeat_config_to_wake_preserves_divergent_wake_file(
     assert json.loads(wake_path.read_text(encoding="utf-8")) == {
         "pr_feedback_resume_prompt": "current"
     }
-
-
-def test_migrate_global_config_to_root_skips_existing_divergent_root_domains_without_overwrite(
-    tmp_path: Path,
-) -> None:
-    config_path = write_config(tmp_path, enable_directory_scoped_config=True)
-    runner = CliRunner()
-
-    assert runner.invoke(app, ["init-state", "--config", str(config_path)]).exit_code == 0
-    set_result = runner.invoke(
-        app,
-        [
-            "directories",
-            "config-set",
-            "--config",
-            str(config_path),
-            "--domain",
-            "policy",
-            "root",
-            '{"default_session_ttl_seconds": 120}',
-        ],
-    )
-    assert set_result.exit_code == 0
-
-    result = runner.invoke(app, ["migrate-global-config-to-root", "--config", str(config_path)])
-
-    assert result.exit_code == 0
-    assert "written=0 skipped=2 unchanged=5" in result.output
-    assert "skipped: policy, providers" in result.output
-    policy_payload = json.loads(
-        (tmp_path / "runtime" / "directory-config" / "root" / "policy.json").read_text(
-            encoding="utf-8"
-        )
-    )
-    assert policy_payload == {"default_session_ttl_seconds": 120}
-
-
-def test_migrate_global_config_to_root_overwrites_when_requested(tmp_path: Path) -> None:
-    config_path = write_config(tmp_path, enable_directory_scoped_config=True)
-    runner = CliRunner()
-
-    assert runner.invoke(app, ["init-state", "--config", str(config_path)]).exit_code == 0
-    assert (
-        runner.invoke(
-            app,
-            [
-                "directories",
-                "config-set",
-                "--config",
-                str(config_path),
-                "--domain",
-                "policy",
-                "root",
-                '{"default_session_ttl_seconds": 120}',
-            ],
-        ).exit_code
-        == 0
-    )
-
-    result = runner.invoke(
-        app,
-        ["migrate-global-config-to-root", "--config", str(config_path), "--overwrite"],
-    )
-
-    assert result.exit_code == 0
-    assert "written=2 skipped=0 unchanged=5" in result.output
-    assert "written: policy, providers" in result.output
-    policy_payload = json.loads(
-        (tmp_path / "runtime" / "directory-config" / "root" / "policy.json").read_text(
-            encoding="utf-8"
-        )
-    )
-    assert policy_payload["default_session_ttl_seconds"] == 28800
-
-
-def test_migrate_global_config_to_root_recovers_when_metadata_lists_missing_root_file(
-    tmp_path: Path,
-) -> None:
-    config_path = write_config(tmp_path, enable_directory_scoped_config=True)
-    runner = CliRunner()
-
-    assert runner.invoke(app, ["init-state", "--config", str(config_path)]).exit_code == 0
-    runtime_dir = tmp_path / "runtime"
-    directories_store = DirectoryStore(runtime_dir / "directories.json")
-    directories = directories_store.read_all()
-    root = directories["root"]
-    directories["root"] = Directory(
-        id=root.id,
-        name=root.name,
-        parent_id=root.parent_id,
-        created_at=root.created_at,
-        metadata={"directory_config": {"domains": ["providers"]}},
-    )
-    directories_store.write_all(directories)
-
-    result = runner.invoke(app, ["migrate-global-config-to-root", "--config", str(config_path)])
-
-    assert result.exit_code == 0
-    assert "written=7 skipped=0 unchanged=0" in result.output
-    assert (runtime_dir / "directory-config" / "root" / "providers.json").exists()
 
 
 def test_migrate_ado_worker_env_to_root_materializes_root_domain_file(tmp_path: Path) -> None:
@@ -1920,11 +1765,7 @@ def test_create_session_rejects_existing_session_id(tmp_path: Path) -> None:
 
 
 def test_create_session_uses_configured_default_ttl_when_no_ttl_is_provided(tmp_path: Path) -> None:
-    config_path = write_config(tmp_path)
-    config_path.write_text(
-        config_path.read_text(encoding="utf-8") + "\ndefault_session_ttl_seconds: 172800\n",
-        encoding="utf-8",
-    )
+    config_path = write_runtime_config(tmp_path, default_session_ttl_seconds=172800)
     runner = CliRunner()
 
     init_result = runner.invoke(app, ["init-state", "--config", str(config_path)])

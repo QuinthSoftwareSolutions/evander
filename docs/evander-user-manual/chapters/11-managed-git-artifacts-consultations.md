@@ -342,7 +342,7 @@ evander-cli git-repos maintenance
 evander-cli git-repos maintenance --managed-repo-id <managed-repo-id>
 ```
 
-Delete only after `git-repos show` confirms there are no issue, project, session, SSH, worktree, or migration bindings. There is no force-delete path.
+Delete only after `git-repos show` confirms there are no issue, project, session, SSH, or worktree bindings. There is no force-delete path.
 
 For a consultation, verify that the gateway, trigger orchestrator, effect orchestrator, model relay, and container worker are healthy; confirm the caller has `consult_codebase` and `get_codebase_consultation` (plus `cancel_codebase_consultation` if needed); then request and poll by consultation ID. If it stalls, inspect in this order:
 
@@ -352,11 +352,9 @@ For a consultation, verify that the gateway, trigger orchestrator, effect orches
 4. the consultation snapshot ref in the managed repository;
 5. cleanup status and error before attempting to release or delete anything manually.
 
-For a legacy mirror deployment, do not improvise a partial conversion. Stop trigger/effect workers, run `evander-cli git-repos migrate --dry-run`, resolve every blocker, use `--apply`, execute the documented VM and container smoke path, and only then run `--finalize <migration-id>`. Apply and finalize are intentionally separate decisions.
-
 ## Source trail
 
-- `src/evander/admin/services/managed_git_service.py`, `managed_git_runtime_service.py`, and `managed_git_worktree_service.py` — registry identity, ref transactions, restricted SSH integration, runtime grants, worktrees, publication, maintenance, and migration.
+- `src/evander/admin/services/managed_git_service.py`, `managed_git_runtime_service.py`, and `managed_git_worktree_service.py` — registry identity, ref transactions, restricted SSH integration, runtime grants, worktrees, publication, and maintenance.
 - `scripts/git_ssh_command_wrapper.sh`, `scripts/guest/push_agent.sh`, and `scripts/guest/sync_base.sh` — guest capability and helper enforcement.
 - `src/evander/session_artifacts.py`, `src/evander/effects/providers/artifacts.py`, and `src/evander/published_artifacts.py` — safe artifact paths, publication, and immutable storage.
 - `src/evander/artifact_spaces.py` and `src/evander/admin/services/artifact_service.py` — logical spaces, grants, versions, and revision checking.

@@ -30,11 +30,9 @@ from evander.audit import AuditEventType, AuditLogger
 from evander.bootstrap import (
     load_host_bootstrap_config,
     load_runtime_gateway_config,
-    resolve_project_dir,
-    resolve_runtime_dir,
 )
 from evander.communication_artifacts import CommunicationArtifactStore
-from evander.config import GatewayConfig, load_config
+from evander.config import GatewayConfig
 from evander.connectors.models import normalize_connector_id
 from evander.connectors.service import ConnectorService, connector_registry_from_addons
 from evander.daemons.ado_issue_worker import run_worker_command
@@ -64,7 +62,6 @@ from evander.messaging.teams_auth import TeamsAuthError
 from evander.migrations import (
     migrate_ado_worker_env_to_root,
     migrate_directory_ownership_defaults,
-    migrate_global_config_to_root,
     migrate_heartbeat_config_to_wake,
     migrate_issue_setup_env_to_root,
     migrate_pr_template_to_root,
@@ -172,7 +169,7 @@ ConfigOption = Annotated[
     typer.Option(
         "--runtime-dir",
         "--config",
-        help="Runtime directory root. A legacy gateway YAML path is accepted for bootstrap compatibility.",
+        help="Runtime directory root.",
     ),
 ]
 SetupProjectDirOption = Annotated[
@@ -186,11 +183,8 @@ _discord_seed_sequence = count()
 UTC = timezone.utc
 
 
-def _bootstrap_inputs(config: Path) -> tuple[Path, Path | None]:
-    if config.suffix.casefold() in {".yaml", ".yml"}:
-        legacy = config
-        return resolve_runtime_dir(legacy_config_path=legacy), legacy
-    return Path(config).expanduser().resolve(), None
+def _runtime_dir_for_config_option(config: Path) -> Path:
+    return Path(config).expanduser().resolve()
 
 
 def _workspace_root_for_config_option(config: Path) -> Path:
@@ -198,8 +192,6 @@ def _workspace_root_for_config_option(config: Path) -> Path:
 
 
 def _project_dir_for_config_option(config: Path) -> Path:
-    if config.suffix.casefold() in {".yaml", ".yml"}:
-        return resolve_project_dir(legacy_config_path=config)
     return config.expanduser().resolve().parent
 
 
@@ -214,17 +206,11 @@ def _build_managed_git_admin_for_cli(config: Path):
 
 
 def _load_runtime_config_from_option(config: Path) -> GatewayConfig:
-    runtime_dir, legacy_config_path = _bootstrap_inputs(config)
-    return load_runtime_gateway_config(
-        runtime_dir=runtime_dir, legacy_config_path=legacy_config_path
-    )
+    return load_runtime_gateway_config(runtime_dir=_runtime_dir_for_config_option(config))
 
 
 def _load_host_config_from_option(config: Path):
-    runtime_dir, legacy_config_path = _bootstrap_inputs(config)
-    return load_host_bootstrap_config(
-        runtime_dir=runtime_dir, legacy_config_path=legacy_config_path
-    )
+    return load_host_bootstrap_config(runtime_dir=_runtime_dir_for_config_option(config))
 
 
 @team_app.command(
@@ -251,7 +237,7 @@ def team_checkout_release_candidate(
 ) -> None:
     from evander_team_addon.repository import TeamStateRepository
 
-    runtime_dir, _legacy_config_path = _bootstrap_inputs(config)
+    runtime_dir = _runtime_dir_for_config_option(config)
     state = TeamStateRepository(runtime_dir).read()
     release = state.release_packages.get(str(release_package_id).strip())
     if release is None:
@@ -331,7 +317,7 @@ def team_migrate_historical_lifecycle(
     from evander_team_addon.repository import TeamStateRepository
     from evander_team_addon.services.admin_service import TeamAdminService
 
-    runtime_dir, _legacy = _bootstrap_inputs(config)
+    runtime_dir = _runtime_dir_for_config_option(config)
     service = TeamAdminService(TeamStateRepository(runtime_dir))
     state, plan = service.plan_historical_lifecycle_migration(project_id=project_id)
     payload: dict[str, object] = {
@@ -389,7 +375,7 @@ def team_dispatch_tail(
 
     from evander_team_addon.repository import TeamStateRepository
 
-    runtime_dir, _legacy = _bootstrap_inputs(config)
+    runtime_dir = _runtime_dir_for_config_option(config)
     repository = TeamStateRepository(runtime_dir)
     seen: set[str] = set()
     first = True
@@ -1678,7 +1664,7 @@ def setup_callback(
     """Launch the guided setup checklist when no setup subcommand is provided."""
     if ctx.invoked_subcommand is not None:
         return
-    runtime_dir, _ = _bootstrap_inputs(config)
+    runtime_dir = _runtime_dir_for_config_option(config)
     run_setup_tui(project_dir=project_dir, runtime_dir=runtime_dir)
 
 
@@ -1691,7 +1677,7 @@ def setup_doctor(
         typer.Option("--json", help="Emit machine-readable JSON."),
     ] = False,
 ) -> None:
-    runtime_dir, _ = _bootstrap_inputs(config)
+    runtime_dir = _runtime_dir_for_config_option(config)
     payload = setup_doctor_payload(project_dir=project_dir, runtime_dir=runtime_dir)
     if as_json:
         typer.echo(json.dumps(payload, indent=2, sort_keys=True))
@@ -1709,7 +1695,7 @@ def setup_plan(
         typer.Option("--json", help="Emit machine-readable JSON."),
     ] = False,
 ) -> None:
-    runtime_dir, _ = _bootstrap_inputs(config)
+    runtime_dir = _runtime_dir_for_config_option(config)
     payload = setup_plan_payload(project_dir=project_dir, runtime_dir=runtime_dir)
     if as_json:
         typer.echo(json.dumps(payload, indent=2, sort_keys=True))
@@ -2224,58 +2210,6 @@ def git_repos_clone_into_agent(
     _echo_managed_git_json(result)
 
 
-@git_repos_app.command("migrate", short_help="Migrate legacy managed Git state explicitly.")
-def git_repos_migrate(
-    config: ConfigOption = CLI_DEFAULT_RUNTIME_DIR,
-    dry_run: Annotated[
-        bool,
-        typer.Option(
-            "--dry-run",
-            help="Inventory legacy Git state and report blockers without writing.",
-        ),
-    ] = False,
-    apply_stage: Annotated[
-        bool,
-        typer.Option(
-            "--apply",
-            help="Create managed repositories and rewrite active bindings.",
-        ),
-    ] = False,
-    finalize: Annotated[
-        str | None,
-        typer.Option(
-            "--finalize",
-            metavar="MIGRATION_ID",
-            help="Verify and delete manifest-owned rollback artifacts.",
-        ),
-    ] = None,
-) -> None:
-    selected_stage_count = int(dry_run) + int(apply_stage) + int(finalize is not None)
-    if selected_stage_count != 1:
-        raise typer.BadParameter(
-            "Provide exactly one migration stage: --dry-run, --apply, or --finalize MIGRATION_ID."
-        )
-
-    migration_id: str | None = None
-    if dry_run:
-        stage = "dry-run"
-    elif apply_stage:
-        stage = "apply"
-    else:
-        migration_id = str(finalize or "").strip()
-        if not migration_id:
-            raise typer.BadParameter("--finalize requires a non-empty migration id.")
-        stage = "finalize"
-
-    managed_git = build_admin_runtime(config).managed_git_admin
-    result = _managed_git_call(
-        managed_git.migrate,
-        stage,
-        migration_id=migration_id,
-    )
-    _echo_managed_git_json(result)
-
-
 @app.command(
     "migrate-directory-ownership",
     rich_help_panel="Health and State",
@@ -2289,41 +2223,6 @@ def migrate_directory_ownership(
     typer.echo(
         f"Backfilled {summary.changed_records} record(s) across {summary.changed_files} file(s)"
     )
-
-
-@app.command(
-    "migrate-global-config-to-root",
-    rich_help_panel="Health and State",
-    short_help="Materialize current global config as explicit root directory config.",
-)
-def migrate_global_config_root(
-    config: ConfigOption = CLI_DEFAULT_RUNTIME_DIR,
-    overwrite: Annotated[
-        bool,
-        typer.Option(
-            "--overwrite",
-            help="Replace existing root domain files when they differ from the current global config.",
-        ),
-    ] = False,
-) -> None:
-    runtime_dir, legacy_config_path = _bootstrap_inputs(config)
-    if legacy_config_path is not None and legacy_config_path.exists():
-        cfg = load_config(legacy_config_path)
-    else:
-        cfg = _load_runtime_config_from_option(runtime_dir)
-    summary = migrate_global_config_to_root(cfg, overwrite=overwrite)
-    typer.echo(
-        "Root config migration complete: "
-        f"written={len(summary.written_domains)} "
-        f"skipped={len(summary.skipped_domains)} "
-        f"unchanged={len(summary.unchanged_domains)}"
-    )
-    if summary.written_domains:
-        typer.echo(f"written: {', '.join(summary.written_domains)}")
-    if summary.skipped_domains:
-        typer.echo(f"skipped: {', '.join(summary.skipped_domains)}")
-    if summary.unchanged_domains:
-        typer.echo(f"unchanged: {', '.join(summary.unchanged_domains)}")
 
 
 @app.command(
@@ -2375,11 +2274,7 @@ def migrate_ado_worker_env_root(
         ),
     ] = True,
 ) -> None:
-    runtime_dir, legacy_config_path = _bootstrap_inputs(config)
-    if legacy_config_path is not None and legacy_config_path.exists():
-        cfg = load_config(legacy_config_path)
-    else:
-        cfg = _load_runtime_config_from_option(runtime_dir)
+    cfg = _load_runtime_config_from_option(config)
     resolved_env_file = (
         env_file.expanduser()
         if env_file is not None
@@ -2413,11 +2308,7 @@ def migrate_issue_setup_env_root(
         ),
     ] = True,
 ) -> None:
-    runtime_dir, legacy_config_path = _bootstrap_inputs(config)
-    if legacy_config_path is not None and legacy_config_path.exists():
-        cfg = load_config(legacy_config_path)
-    else:
-        cfg = _load_runtime_config_from_option(runtime_dir)
+    cfg = _load_runtime_config_from_option(config)
     resolved_env_file = env_file.expanduser() if env_file is not None else None
     result = migrate_issue_setup_env_to_root(cfg, env_file=resolved_env_file, overwrite=overwrite)
     typer.echo(
@@ -2447,11 +2338,7 @@ def migrate_pr_template_root(
         ),
     ] = True,
 ) -> None:
-    runtime_dir, legacy_config_path = _bootstrap_inputs(config)
-    if legacy_config_path is not None and legacy_config_path.exists():
-        cfg = load_config(legacy_config_path)
-    else:
-        cfg = _load_runtime_config_from_option(runtime_dir)
+    cfg = _load_runtime_config_from_option(config)
     resolved_template_file = (
         template_file.expanduser()
         if template_file is not None
@@ -4131,7 +4018,7 @@ def _set_agent_control_state(target: str, *, action: str, vm_user: str, config: 
     try:
         cfg = _load_runtime_config_from_option(config)
     except ValueError:
-        runtime_dir, _ = _bootstrap_inputs(config)
+        runtime_dir = _runtime_dir_for_config_option(config)
         cfg = GatewayConfig(runtime_dir=runtime_dir)
     script_path = Path(__file__).resolve().parents[2] / "scripts" / "set_issue_agent_state.sh"
     if normalized.isdigit() or (normalized.startswith("vm-") and normalized[3:].isdigit()):
@@ -5447,7 +5334,7 @@ def proxy_issue_sync(
         level=logging_level,
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
     )
-    runtime_dir, _legacy_config_path = _bootstrap_inputs(config)
+    runtime_dir = _runtime_dir_for_config_option(config)
     if run_once:
         result = run_proxy_issue_sync_once(
             runtime_dir=runtime_dir,

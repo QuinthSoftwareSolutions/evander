@@ -36,30 +36,17 @@ from evander.models import (
     WakeDispatchRecord,
     WakeResumePromptPayload,
 )
+from config_helpers import write_runtime_config
 
 
 ROOT = Path(__file__).resolve().parents[1]
 
 
 def write_config(tmp_path: Path, *, enable_directory_scoped_config: bool = False) -> Path:
-    runtime_dir = tmp_path / "runtime"
-    config_path = tmp_path / "gateway.yaml"
-    config_path.write_text(
-        "\n".join(
-            [
-                f'runtime_dir: "{runtime_dir}"',
-                f'audit_log_path: "{runtime_dir / "audit.jsonl"}"',
-                f'session_store_path: "{runtime_dir / "sessions.json"}"',
-                f'approval_store_path: "{runtime_dir / "approvals.json"}"',
-                f'draft_store_path: "{runtime_dir / "drafts.json"}"',
-                f'email_store_path: "{runtime_dir / "emails.json"}"',
-                f'discord_command_store_path: "{runtime_dir / "discord_commands.json"}"',
-                f"enable_directory_scoped_config: {str(enable_directory_scoped_config).lower()}",
-            ]
-        ),
-        encoding="utf-8",
+    return write_runtime_config(
+        tmp_path,
+        enable_directory_scoped_config=enable_directory_scoped_config,
     )
-    return config_path
 
 
 def _admin_json_request(
@@ -515,7 +502,7 @@ def test_admin_web_mcp_policy_mutation_requires_owner_unlock(
     def stored_mcp_tool_policies() -> dict[str, object]:
         result = service.operations_admin.read_directory_domain_config("root", "policy")
         assert result.data is not None
-        return dict(result.data.config.get("mcp_tool_policies") or {})
+        return dict((result.data.config or {}).get("mcp_tool_policies") or {})
 
     locked_owner = owner_client.put("/api/admin/mcp-tools?directory_path=root", json=payload)
     assert locked_owner.status_code == 403
@@ -1105,6 +1092,12 @@ def test_admin_web_exposes_sessions_catalog_list_detail_and_mutations(tmp_path: 
     assert catalog_response.status_code == 200
     catalog_payload = catalog_response.json()
     assert any(item["value"] == "approval_check" for item in catalog_payload["tool_options"])
+    assert catalog_payload["model_provider_modes"] == [
+        {"value": "openai_public", "label": "Public OpenAI"},
+        {"value": "local_openai", "label": "Local OpenAI"},
+        {"value": "azure_openai", "label": "Azure OpenAI"},
+        {"value": "anthropic", "label": "Anthropic"},
+    ]
     assert any(
         item["field_name"] == "tool_argument_policies"
         and item["kind"] == "json"
@@ -1553,9 +1546,7 @@ def test_admin_web_exposes_runtime_image_payloads_for_session_list_and_detail(
 
 
 def test_admin_web_exposes_mcp_tools_directory_policy_api(tmp_path: Path) -> None:
-    config_path = write_config(tmp_path)
-    with config_path.open("a", encoding="utf-8") as handle:
-        handle.write("\nenable_directory_scoped_config: true\n")
+    config_path = write_config(tmp_path, enable_directory_scoped_config=True)
     service = build_admin_runtime(config_path)
     auth = AdminWebAuth(AdminWebConfig.from_env())
     routes = session_approval_routes(service, auth)
@@ -1975,6 +1966,85 @@ def test_admin_web_patches_session_policy_fields(tmp_path: Path) -> None:
     assert updated.communication_file_blocked_extensions == [".exe"]
     assert updated.communication_file_require_approval_for_send is True
     assert updated.metadata == {"keep": "new-value"}
+
+
+def test_admin_web_updates_and_clears_session_model_provider_mode(tmp_path: Path) -> None:
+    service = build_admin_runtime(write_config(tmp_path))
+    service.runtime.session_repository.upsert_session(
+        SessionManifest(
+            session_id="model-provider-session",
+            allowed_tools=[ToolName.APPROVAL_CHECK],
+            expires_at=datetime.now(UTC) + timedelta(hours=2),
+            metadata={"model_provider_mode": "local_openai", "keep": "value"},
+        ),
+    )
+    client = TestClient(create_app(service))
+    _unlock_privileged_operations(client)
+
+    public_response = client.patch(
+        "/api/admin/sessions/model-provider-session",
+        json={"model_provider_mode": "openai_public"},
+    )
+
+    assert public_response.status_code == 200
+    assert public_response.json()["session"]["model_provider_mode"] == "openai_public"
+    assert public_response.json()["session"]["metadata"] == {
+        "model_provider_mode": "openai_public",
+        "keep": "value",
+    }
+
+    default_response = client.patch(
+        "/api/admin/sessions/model-provider-session",
+        json={"model_provider_mode": None},
+    )
+
+    assert default_response.status_code == 200
+    assert default_response.json()["session"]["model_provider_mode"] is None
+    assert default_response.json()["session"]["metadata"] == {"keep": "value"}
+
+
+def test_admin_web_tolerates_and_can_repair_invalid_session_model_provider_mode(
+    tmp_path: Path,
+) -> None:
+    service = build_admin_runtime(write_config(tmp_path))
+    service.runtime.session_repository.upsert_session(
+        SessionManifest(
+            session_id="invalid-model-provider-session",
+            allowed_tools=[ToolName.APPROVAL_CHECK],
+            expires_at=datetime.now(UTC) + timedelta(hours=2),
+            metadata={"model_provider_mode": "unsupported", "keep": "value"},
+        ),
+    )
+    client = TestClient(create_app(service))
+    _unlock_privileged_operations(client)
+
+    detail_response = client.get(
+        "/api/admin/sessions/invalid-model-provider-session",
+    )
+
+    assert detail_response.status_code == 200
+    assert detail_response.json()["session"]["model_provider_mode"] is None
+    assert detail_response.json()["session"]["metadata"] == {
+        "model_provider_mode": "unsupported",
+        "keep": "value",
+    }
+
+    invalid_response = client.patch(
+        "/api/admin/sessions/invalid-model-provider-session",
+        json={"metadata": {"model_provider_mode": "still-unsupported", "keep": "value"}},
+    )
+
+    assert invalid_response.status_code == 400
+    assert "model_provider_mode must be one of" in invalid_response.json()["error"]
+
+    repaired_response = client.patch(
+        "/api/admin/sessions/invalid-model-provider-session",
+        json={"metadata": {"keep": "value"}},
+    )
+
+    assert repaired_response.status_code == 200
+    assert repaired_response.json()["session"]["model_provider_mode"] is None
+    assert repaired_response.json()["session"]["metadata"] == {"keep": "value"}
 
 
 def test_admin_web_rejects_direct_delete_for_agent_session(tmp_path: Path) -> None:

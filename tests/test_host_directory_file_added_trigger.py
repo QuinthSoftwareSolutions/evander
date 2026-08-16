@@ -15,6 +15,7 @@ from evander.events.models import (
     TriggerDefinitionDiscriminated,
     materialize_node_definition,
 )
+from config_helpers import canonical_workflow_node
 from evander.events.provider_models import HostDirectoryFileAddedTriggerDefinition
 from evander.host_directories.models import (
     HostDirectoryDefinition,
@@ -340,18 +341,20 @@ def test_trigger_model_and_catalog_expose_host_directory_fields() -> None:
     adapter = TypeAdapter(TriggerDefinitionDiscriminated)
     trigger = materialize_node_definition(
         adapter.validate_python(
-            {
-                "id": "watch",
-                "display_name": "Watch",
-                "type": "trigger:host-directory:file-added",
-                "config": {
-                    "directory_id": " INBOX ",
-                    "path": ".hidden/incoming",
-                    "recursive": True,
-                    "include_globs": [" *.pdf ", ""],
-                    "exclude_globs": ["archive/**"],
-                },
-            }
+            canonical_workflow_node(
+                {
+                    "id": "watch",
+                    "display_name": "Watch",
+                    "type": "trigger:host-directory:file-added",
+                    "config": {
+                        "directory_id": " INBOX ",
+                        "path": ".hidden/incoming",
+                        "recursive": True,
+                        "include_globs": [" *.pdf ", ""],
+                        "exclude_globs": ["archive/**"],
+                    },
+                }
+            )
         )
     )
 

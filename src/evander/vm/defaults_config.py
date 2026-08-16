@@ -8,7 +8,7 @@ from pydantic import BaseModel, Field, field_validator
 
 from evander.admin.services.vm_helpers import validate_environment_variable_name
 from evander.bootstrap import load_runtime_gateway_config
-from evander.config import GatewayConfig, load_config
+from evander.config import GatewayConfig
 from evander.directory_config import (
     DirectoryConfigResolver,
     DirectoryConfigStore,
@@ -123,10 +123,6 @@ class VmDefaultsConfigResolver:
             base_gateway_config=config,
             config_store=self.config_store,
         )
-
-    @classmethod
-    def from_config_path(cls, path: str | Path) -> "VmDefaultsConfigResolver":
-        return cls(load_config(path))
 
     def resolve_for_directory(self, directory_path: str | None) -> EffectiveVmDefaultsConfig:
         normalized_path = self.directory_scope_resolver.resolve_directory_path(directory_path)

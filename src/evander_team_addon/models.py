@@ -2072,6 +2072,54 @@ class ReviewCriterionResult(TeamModel):
         return _required_text(value, info.field_name)
 
 
+class ReviewRepositorySnapshot(TeamModel):
+    """Server-owned immutable source provenance for one Team review."""
+
+    managed_repo_id: str
+    directory_path: str
+    commit_sha: str
+    pinned_ref: str
+    source_kind: Literal["deliverable_candidate", "task_base", "release_candidate"]
+    source_ref: str | None = None
+
+    @field_validator("managed_repo_id", mode="before")
+    @classmethod
+    def _managed_repo_id(cls, value: object) -> str:
+        normalized = _required_text(value, "managed_repo_id")
+        if re.fullmatch(r"mr_[0-9a-f]{20}", normalized) is None:
+            raise ValueError("managed_repo_id must match mr_<20-hex>")
+        return normalized
+
+    @field_validator("directory_path", mode="before")
+    @classmethod
+    def _directory_path(cls, value: object) -> str:
+        return DirectoryPath(segments=str(value or "root").strip() or "root").as_posix()
+
+    @field_validator("commit_sha", mode="before")
+    @classmethod
+    def _commit_sha(cls, value: object) -> str:
+        normalized = _required_text(value, "commit_sha").casefold()
+        # The managed-Git pin operation is the authoritative object-ID
+        # validator. Retaining this permissive field validator keeps old
+        # persisted Team rows and offline migration fixtures readable; an
+        # incomplete value fails closed before a reviewer can receive a
+        # checkout.
+        return normalized
+
+    @field_validator("pinned_ref", mode="before")
+    @classmethod
+    def _pinned_ref(cls, value: object) -> str:
+        normalized = _required_text(value, "pinned_ref")
+        if re.fullmatch(r"refs/evander/team-reviews/[A-Za-z0-9_-]+", normalized) is None:
+            raise ValueError("pinned_ref must be a Team review snapshot ref")
+        return normalized
+
+    @field_validator("source_ref", mode="before")
+    @classmethod
+    def _source_ref(cls, value: object) -> str | None:
+        return _optional_text(value)
+
+
 class ReviewRequest(TeamModel):
     id: str
     deliverable_id: str | None = None
@@ -2088,6 +2136,7 @@ class ReviewRequest(TeamModel):
     instructions: str | None = None
     criteria: list[ReviewCriterionResult] = Field(default_factory=list)
     reviewed_commit_sha: str | None = None
+    repository_snapshot: ReviewRepositorySnapshot | None = None
     review_cohort_id: str | None = None
     supersedes_review_request_id: str | None = None
     superseded_by_review_request_id: str | None = None

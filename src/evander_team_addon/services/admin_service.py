@@ -155,6 +155,7 @@ from .domain.deliverables import (
     _validate_deliverable_outcomes_against_task_contract,
 )
 from .domain.git_work_contexts import finalize_active_git_work_contexts_for_task
+from .domain.review_repository_snapshots import deliverable_review_repository_snapshot
 from .domain.governance import (
     _governance_agenda_effective_team_id,
     _governance_goals_with_generated_ids,
@@ -4749,6 +4750,11 @@ class TeamAdminService:
                     deliverable.git_refs.reviewed_commit_sha
                     or deliverable.git_refs.submitted_commit_sha
                     or deliverable.git_refs.commit_sha
+                ),
+                repository_snapshot=deliverable_review_repository_snapshot(
+                    state_model,
+                    deliverable=deliverable,
+                    review_id=effective_review_request_id,
                 ),
                 created_at=now,
                 decision_at=decision_at,

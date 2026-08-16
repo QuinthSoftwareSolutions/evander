@@ -28,7 +28,7 @@ from .models import (
 ADDON_ID = "team-addon"
 STATE_DB_FILE = "state.db"
 LEGACY_STATE_FILE = "state.json"
-SQLITE_SCHEMA_VERSION = 56
+SQLITE_SCHEMA_VERSION = 57
 _SQLITE_WAL_ENABLE_TIMEOUT_SECONDS = 5.0
 
 T = TypeVar("T")
@@ -1414,6 +1414,12 @@ class TeamStateSqliteStore:
                     connection,
                     table_name="team_review_requests",
                     column_name="reviewed_commit_sha",
+                    definition="TEXT",
+                )
+                _ensure_column(
+                    connection,
+                    table_name="team_review_requests",
+                    column_name="repository_snapshot_json",
                     definition="TEXT",
                 )
                 _ensure_column(
@@ -3220,6 +3226,11 @@ class TeamStateSqliteStore:
                 "instructions": row["instructions"],
                 "criteria": criteria.get(row["id"], []),
                 "reviewed_commit_sha": row["reviewed_commit_sha"],
+                "repository_snapshot": (
+                    _json_loads(row["repository_snapshot_json"])
+                    if row["repository_snapshot_json"] is not None
+                    else None
+                ),
                 "review_cohort_id": row["review_cohort_id"],
                 "supersedes_review_request_id": row["supersedes_review_request_id"],
                 "superseded_by_review_request_id": row["superseded_by_review_request_id"],
@@ -3243,13 +3254,13 @@ class TeamStateSqliteStore:
                     reviewer_agent_id, requested_by_agent_id, requested_by_actor,
                     state, review_profile_id, criteria_snapshot_json,
                     required_outcome_kind_definitions_json, instructions,
-                    reviewed_commit_sha, review_cohort_id,
+                    reviewed_commit_sha, repository_snapshot_json, review_cohort_id,
                     supersedes_review_request_id,
                     superseded_by_review_request_id, retry_reason,
                     retry_requested_by, block_kind, retired_at, retired_by,
                     retirement_reason, created_at, decision_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     request["id"],
@@ -3269,6 +3280,11 @@ class TeamStateSqliteStore:
                     _json_dumps(request.get("required_outcome_kind_definitions", [])),
                     request.get("instructions"),
                     request.get("reviewed_commit_sha"),
+                    (
+                        _json_dumps(request.get("repository_snapshot"))
+                        if request.get("repository_snapshot") is not None
+                        else None
+                    ),
                     request.get("review_cohort_id"),
                     request.get("supersedes_review_request_id"),
                     request.get("superseded_by_review_request_id"),
@@ -8105,6 +8121,7 @@ CREATE TABLE IF NOT EXISTS team_review_requests (
     required_outcome_kind_definitions_json TEXT NOT NULL DEFAULT '[]',
     instructions TEXT,
     reviewed_commit_sha TEXT,
+    repository_snapshot_json TEXT,
     review_cohort_id TEXT,
     supersedes_review_request_id TEXT,
     superseded_by_review_request_id TEXT,

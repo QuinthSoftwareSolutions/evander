@@ -36,7 +36,7 @@ from evander.orchestration.effect_extensions import (
 )
 from evander.session_auth import session_mcp_auth_token
 from evander.workflow.contracts import FOR_EXECUTION_IDS_CONTEXT_KEY, NODE_OUTPUTS_CONTEXT_KEY
-from evander.workflow.migrations import (
+from evander.workflow.lifecycle_ports import (
     AGENT_PROMPT_COMPLETED_PORT,
     AGENT_PROMPT_ERROR_PORT,
     AGENT_PROMPT_STARTED_PORT,

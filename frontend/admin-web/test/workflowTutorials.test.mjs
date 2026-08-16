@@ -61,7 +61,7 @@ test("tutorial definition exposes a seed document and a completed reference docu
   ]);
   assert.equal(WORKFLOW_TUTORIAL_FIRST_STEPS_DOCUMENT.config.edges[0].source_port, "completed");
   assert.equal(
-    WORKFLOW_TUTORIAL_FIRST_STEPS_DOCUMENT.config.effects[0].prompt,
+    WORKFLOW_TUTORIAL_FIRST_STEPS_DOCUMENT.config.effects[0].config.prompt,
     "${{tutorial-trigger.completed}}",
   );
   assert.equal(WORKFLOW_TUTORIAL_FIRST_STEPS_DOCUMENT.output_schemas?.["tutorial-trigger"]?.completed?.type, "string");

@@ -229,7 +229,7 @@ checklist, and manual or prepared test target. Only a real eligible Admin user
 with scoped permission and privileged confirmation can decide it.
 
 **Host config**<br>
-The host-global bootstrap settings in `runtime/host-config.json`. It is composed with directory-scoped domains; legacy gateway YAML is import input, not the current baseline.
+The host-global bootstrap settings in `runtime/host-config.json`. It is composed with directory-scoped domains to form the runtime configuration.
 
 **HTTP target relay**<br>
 A session-scoped relay for explicit external HTTP targets. It forwards guest-managed headers/cookies subject to the grant but does not inject host secrets.

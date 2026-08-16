@@ -14,7 +14,6 @@ from evander.models import (
     DraftMessage,
     ToolName,
 )
-from evander.migrations import migrate_local_issues_to_unified_schema
 from evander.config import GatewayConfig, MailboxConfig
 from evander.directory_config import load_root_gateway_config
 from evander.repositories.cursors import EmailCursorRepository, JsonEmailCursorRepository
@@ -332,10 +331,9 @@ class RuntimeContext:
 
 
 def _build_runtime_context(config: GatewayConfig) -> RuntimeContext:
-    migrate_local_issues_to_unified_schema(config)
     directories = DirectoryStore(config.directories_store_path)
     directories.ensure_root()
-    host_config = HostConfig.from_legacy_gateway_config(config)
+    host_config = HostConfig.from_gateway_config(config)
     config = load_root_gateway_config(
         directories,
         runtime_dir=config.runtime_dir,

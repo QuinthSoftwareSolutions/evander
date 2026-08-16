@@ -67,13 +67,15 @@ test("switch route ports are derived from cases and default branches", () => {
     id: "gate-switch-1",
     display_name: "Route tickets",
     type: "gate:switch",
-    cases: [
-      { port: "ready", label: "Ready" },
-      { port: "blocked" },
-      { port: "ready", label: "Duplicate label" },
-      { port: "   ", label: "Ignored" },
-    ],
-    default_port: "default",
+    config: {
+      cases: [
+        { port: "ready", label: "Ready" },
+        { port: "blocked" },
+        { port: "ready", label: "Duplicate label" },
+        { port: "   ", label: "Ignored" },
+      ],
+      default_port: "default"
+    }
   };
 
   assert.deepEqual(workflowOutputPortsForNode(node, []), [

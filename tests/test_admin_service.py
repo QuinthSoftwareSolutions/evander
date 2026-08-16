@@ -24,7 +24,10 @@ import evander.admin.services.workflow_reports_service as workflow_reports_servi
 import pytest
 from evander.admin import operations_helpers, privileged_helper
 from evander.capacity_health import HealthState, TelemetryStatus
-from evander.admin.composition import AdminRuntimeComponents, build_admin_runtime
+from evander.admin.composition import (
+    AdminRuntimeComponents,
+    build_admin_runtime as _build_admin_runtime,
+)
 from evander.admin.services.vm_agent.common_models import AgentCreateOperation
 from evander.config import (
     DiscordIngestWorkerGlobalConfig,
@@ -90,6 +93,11 @@ from evander.worker.models import (
     WorkerSessionPrepareRequest,
     WorkerSessionRecord,
     WorkerTelemetryPayload,
+)
+from config_helpers import (
+    canonical_workflow_payload,
+    canonicalize_workflow_files,
+    write_runtime_config,
 )
 
 admin_service = SimpleNamespace(
@@ -168,24 +176,15 @@ def write_config(tmp_path: Path, *, enable_directory_scoped_config: bool = False
         ),
         encoding="utf-8",
     )
-    config_path = tmp_path / "gateway.yaml"
-    config_path.parent.mkdir(parents=True, exist_ok=True)
-    config_path.write_text(
-        "\n".join(
-            [
-                f'runtime_dir: "{runtime_dir}"',
-                f'audit_log_path: "{runtime_dir / "audit.jsonl"}"',
-                f'session_store_path: "{runtime_dir / "sessions.json"}"',
-                f'approval_store_path: "{runtime_dir / "approvals.json"}"',
-                f'draft_store_path: "{runtime_dir / "drafts.json"}"',
-                f'email_store_path: "{runtime_dir / "emails.json"}"',
-                f'discord_command_store_path: "{runtime_dir / "discord_commands.json"}"',
-                f"enable_directory_scoped_config: {str(enable_directory_scoped_config).lower()}",
-            ]
-        ),
-        encoding="utf-8",
+    return write_runtime_config(
+        tmp_path,
+        enable_directory_scoped_config=enable_directory_scoped_config,
     )
-    return config_path
+
+
+def build_admin_runtime(runtime_dir: Path) -> AdminRuntimeComponents:
+    canonicalize_workflow_files(runtime_dir.parent)
+    return _build_admin_runtime(runtime_dir)
 
 
 def wait_for_agent_create_operation(
@@ -395,7 +394,6 @@ def _create_issue_test_repo(path: Path, *, content: str) -> Path:
 
 def test_create_local_issue_persists_yaml_and_managed_repo_binding(tmp_path: Path) -> None:
     service = build_admin_runtime(write_config(tmp_path))
-    assert service.managed_git_admin._workflow_config_admin is service.workflow_config_admin
     repo = _create_issue_test_repo(tmp_path / "source-repo", content="source\n")
 
     issue = service.issue_git_admin.create_local_issue(
@@ -8668,24 +8666,32 @@ def test_worker_config_write_baselines_retyped_message_trigger(tmp_path: Path) -
     config = dict(
         service.workflow_config_admin.read_worker_global_config("trigger-orchestrator").config
     )
-    config["triggers"] = [
+    config["triggers"] = canonical_workflow_payload(
         {
-            "id": "retyped-trigger",
-            "display_name": "Scheduled before retyping",
-            "type": "trigger:cron",
-            "expression": "*/15 * * * *",
+            "triggers": [
+                {
+                    "id": "retyped-trigger",
+                    "display_name": "Scheduled before retyping",
+                    "type": "trigger:cron",
+                    "expression": "*/15 * * * *",
+                }
+            ]
         }
-    ]
+    )["triggers"]
     service.workflow_config_admin.write_worker_global_config("trigger-orchestrator", config)
     before_retype = datetime.now(UTC)
-    config["triggers"] = [
+    config["triggers"] = canonical_workflow_payload(
         {
-            "id": "retyped-trigger",
-            "display_name": "Email after retyping",
-            "type": "trigger:email:new-message",
-            "mailbox_ids": ["default"],
+            "triggers": [
+                {
+                    "id": "retyped-trigger",
+                    "display_name": "Email after retyping",
+                    "type": "trigger:email:new-message",
+                    "mailbox_ids": ["default"],
+                }
+            ]
         }
-    ]
+    )["triggers"]
     service.workflow_config_admin.write_worker_global_config("trigger-orchestrator", config)
     after_retype = datetime.now(UTC)
 
@@ -8711,42 +8717,46 @@ def test_admin_service_rejects_duplicate_trigger_ids_with_safe_error_message(
     ):
         service.workflow_config_admin.write_worker_global_config(
             "trigger-orchestrator",
-            {
-                "runtime_dir": str(tmp_path / "runtime"),
-                "triggers": [
-                    {
-                        "id": "dup",
-                        "display_name": "First",
-                        "type": "trigger:cron",
-                        "expression": "*/15 * * * *",
-                    },
-                    {
-                        "id": "dup",
-                        "display_name": "Second",
-                        "type": "trigger:cron",
-                        "expression": "*/30 * * * *",
-                    },
-                ],
-            },
+            canonical_workflow_payload(
+                {
+                    "runtime_dir": str(tmp_path / "runtime"),
+                    "triggers": [
+                        {
+                            "id": "dup",
+                            "display_name": "First",
+                            "type": "trigger:cron",
+                            "expression": "*/15 * * * *",
+                        },
+                        {
+                            "id": "dup",
+                            "display_name": "Second",
+                            "type": "trigger:cron",
+                            "expression": "*/30 * * * *",
+                        },
+                    ],
+                }
+            ),
         )
 
     with pytest.raises(ValueError) as excinfo:
         service.workflow_config_admin.write_worker_global_config(
             "trigger-orchestrator",
-            {
-                "runtime_dir": str(tmp_path / "runtime"),
-                "triggers": [
-                    {
-                        "id": "email-invalid",
-                        "display_name": "Bad email provider",
-                        "type": "trigger:email:new-message",
-                        "provider": "not-real",
-                        "account_identifier": "acct",
-                        "mailbox_ids": ["inbox"],
-                        "auth_secret_refs": {"token": "VERY_SECRET_TOKEN"},
-                    }
-                ],
-            },
+            canonical_workflow_payload(
+                {
+                    "runtime_dir": str(tmp_path / "runtime"),
+                    "triggers": [
+                        {
+                            "id": "email-invalid",
+                            "display_name": "Bad email provider",
+                            "type": "trigger:email:new-message",
+                            "provider": "not-real",
+                            "account_identifier": "acct",
+                            "mailbox_ids": ["inbox"],
+                            "auth_secret_refs": {"token": "VERY_SECRET_TOKEN"},
+                        }
+                    ],
+                }
+            ),
         )
     message = str(excinfo.value)
     assert "Unsupported email provider" in message
@@ -8865,47 +8875,49 @@ def test_workflow_editor_hides_and_does_not_save_system_managed_workflow_nodes(
     config_path.parent.mkdir(parents=True, exist_ok=True)
     config_path.write_text(
         json.dumps(
-            {
-                "runtime_dir": str(tmp_path / "runtime"),
-                "triggers": [
-                    {
-                        "id": "system.chat_assistant",
-                        "display_name": "System Chat Assistant",
-                        "type": "trigger:manual",
-                    },
-                    {
-                        "id": "cron-15m",
-                        "display_name": "Every 15 minutes",
-                        "type": "trigger:cron",
-                        "expression": "*/15 * * * *",
-                    },
-                ],
-                "effects": [
-                    {
-                        "id": "system.chat_assistant.ensure_session",
-                        "display_name": "Resolve chat assistant session",
-                        "type": "effect:chat-assistant:ensure-session",
-                        "user_id": "${{system.chat_assistant.user_id}}",
-                        "thread_id": "${{system.chat_assistant.thread_id}}",
-                        "user_message_id": "${{system.chat_assistant.user_message_id}}",
-                        "content": "${{system.chat_assistant.content}}",
-                    },
-                    {
-                        "id": "system.chat_assistant.enqueue_prompt",
-                        "display_name": "Enqueue chat assistant prompt",
-                        "type": "effect:agent:enqueue-prompt",
-                        "target": "${{system.chat_assistant.ensure_session.session_id}}",
-                        "prompt": "${{system.chat_assistant.ensure_session.prompt}}",
-                    },
-                    {
-                        "id": "prompt-agent",
-                        "display_name": "Prompt agent",
-                        "type": "effect:agent:prompt",
-                        "prompt": "Summarize",
-                    },
-                ],
-                "edges": [{"source_id": "system.chat_assistant", "target_id": "prompt-agent"}],
-            }
+            canonical_workflow_payload(
+                {
+                    "runtime_dir": str(tmp_path / "runtime"),
+                    "triggers": [
+                        {
+                            "id": "system.chat_assistant",
+                            "display_name": "System Chat Assistant",
+                            "type": "trigger:manual",
+                        },
+                        {
+                            "id": "cron-15m",
+                            "display_name": "Every 15 minutes",
+                            "type": "trigger:cron",
+                            "expression": "*/15 * * * *",
+                        },
+                    ],
+                    "effects": [
+                        {
+                            "id": "system.chat_assistant.ensure_session",
+                            "display_name": "Resolve chat assistant session",
+                            "type": "effect:chat-assistant:ensure-session",
+                            "user_id": "${{system.chat_assistant.user_id}}",
+                            "thread_id": "${{system.chat_assistant.thread_id}}",
+                            "user_message_id": "${{system.chat_assistant.user_message_id}}",
+                            "content": "${{system.chat_assistant.content}}",
+                        },
+                        {
+                            "id": "system.chat_assistant.enqueue_prompt",
+                            "display_name": "Enqueue chat assistant prompt",
+                            "type": "effect:agent:enqueue-prompt",
+                            "target": "${{system.chat_assistant.ensure_session.session_id}}",
+                            "prompt": "${{system.chat_assistant.ensure_session.prompt}}",
+                        },
+                        {
+                            "id": "prompt-agent",
+                            "display_name": "Prompt agent",
+                            "type": "effect:agent:prompt",
+                            "prompt": "Summarize",
+                        },
+                    ],
+                    "edges": [{"source_id": "system.chat_assistant", "target_id": "prompt-agent"}],
+                }
+            )
         ),
         encoding="utf-8",
     )
@@ -8916,7 +8928,7 @@ def test_workflow_editor_hides_and_does_not_save_system_managed_workflow_nodes(
     assert document.config["edges"] == []
 
     save_result = service.workflow_config_admin.save_workflow_editor_document(
-        config=document.config, layout={"nodes": {}}
+        config=canonical_workflow_payload(document.config), layout={"nodes": {}}
     )
     assert [trigger["id"] for trigger in save_result.config["triggers"]] == ["cron-15m"]
 
@@ -8933,26 +8945,28 @@ def test_workflow_editor_document_round_trips_config_and_separate_layout(tmp_pat
     service = build_admin_runtime(write_config(tmp_path))
 
     save_result = service.workflow_config_admin.save_workflow_editor_document(
-        config={
-            "runtime_dir": str(tmp_path / "runtime"),
-            "triggers": [
-                {
-                    "id": "cron-15m",
-                    "display_name": "Every 15 minutes",
-                    "type": "trigger:cron",
-                    "expression": "*/15 * * * *",
-                }
-            ],
-            "effects": [
-                {
-                    "id": "prompt-agent",
-                    "display_name": "Prompt agent",
-                    "type": "effect:agent:prompt",
-                    "prompt": "Summarize",
-                }
-            ],
-            "edges": [{"source_id": "cron-15m", "target_id": "prompt-agent"}],
-        },
+        config=canonical_workflow_payload(
+            {
+                "runtime_dir": str(tmp_path / "runtime"),
+                "triggers": [
+                    {
+                        "id": "cron-15m",
+                        "display_name": "Every 15 minutes",
+                        "type": "trigger:cron",
+                        "expression": "*/15 * * * *",
+                    }
+                ],
+                "effects": [
+                    {
+                        "id": "prompt-agent",
+                        "display_name": "Prompt agent",
+                        "type": "effect:agent:prompt",
+                        "prompt": "Summarize",
+                    }
+                ],
+                "edges": [{"source_id": "cron-15m", "target_id": "prompt-agent"}],
+            }
+        ),
         layout={
             "nodes": {
                 "cron-15m": {"x": 120, "y": 80},
@@ -9013,11 +9027,11 @@ def test_workflow_editor_revision_changes_for_layout_only_edit(tmp_path: Path) -
     }
 
     first = service.workflow_config_admin.save_workflow_editor_document(
-        config=config,
+        config=canonical_workflow_payload(config),
         layout={"nodes": {"cron-15m": {"x": 100, "y": 50}}},
     )
     second = service.workflow_config_admin.save_workflow_editor_document(
-        config=config,
+        config=canonical_workflow_payload(config),
         layout={"nodes": {"cron-15m": {"x": 200, "y": 50}}},
     )
 
@@ -9042,13 +9056,13 @@ def test_workflow_editor_revision_changes_for_graph_metadata_only_edit(
         "edges": [],
     }
     first = service.workflow_config_admin.save_workflow_editor_document(
-        config=config, layout={"nodes": {}}
+        config=canonical_workflow_payload(config), layout={"nodes": {}}
     )
     edited_graphs = [graph.model_dump(mode="json") for graph in first.graphs]
     edited_graphs[0]["name"] = "Renamed graph"
 
     second = service.workflow_config_admin.save_workflow_editor_document(
-        config=config,
+        config=canonical_workflow_payload(config),
         layout={"nodes": {}},
         graphs=edited_graphs,
     )
@@ -9063,14 +9077,16 @@ def test_workflow_editor_inline_save_refreshes_pack_list_revision_for_pack_creat
     document = service.workflow_config_admin.read_workflow_editor_document()
 
     save_result = service.workflow_config_admin.save_workflow_editor_document(
-        config={
-            "runtime_dir": str(tmp_path / "runtime-after-inline-save"),
-            "triggers": [],
-            "gates": [],
-            "effects": [],
-            "queries": [],
-            "edges": [],
-        },
+        config=canonical_workflow_payload(
+            {
+                "runtime_dir": str(tmp_path / "runtime-after-inline-save"),
+                "triggers": [],
+                "gates": [],
+                "effects": [],
+                "queries": [],
+                "edges": [],
+            }
+        ),
         layout={"nodes": {}},
         expected_revision=document.revision,
     )
@@ -9264,7 +9280,7 @@ def test_workflow_editor_save_updates_single_workflow_pack_without_flattening_wr
     edited_config["effects"] = effects
 
     save_result = service.workflow_config_admin.save_workflow_editor_document(
-        config=edited_config,
+        config=canonical_workflow_payload(edited_config),
         layout={"nodes": {"cron-15m": {"x": 100, "y": 50}, "prompt-agent": {"x": 300, "y": 50}}},
     )
 
@@ -9506,7 +9522,7 @@ def test_workflow_editor_save_updates_selected_pack_in_multi_pack_config(tmp_pat
     edited_graphs[0]["name"] = "Updated Graph B"
 
     save_result = service.workflow_config_admin.save_workflow_editor_document(
-        config=edited_config,
+        config=canonical_workflow_payload(edited_config),
         layout={"nodes": {"effect-b": {"x": 320, "y": 180}}},
         graphs=edited_graphs,
         workflow_pack="pack-b.v1",
@@ -9517,7 +9533,9 @@ def test_workflow_editor_save_updates_selected_pack_in_multi_pack_config(tmp_pat
     assert save_result.selected_workflow_pack is not None
     assert save_result.selected_workflow_pack.reference == "pack-b.v1.json"
     assert json.loads(config_path.read_text(encoding="utf-8")) == wrapper_payload
-    assert json.loads(pack_a_path.read_text(encoding="utf-8")) == pack_a_payload
+    assert json.loads(pack_a_path.read_text(encoding="utf-8")) == canonical_workflow_payload(
+        pack_a_payload
+    )
     pack_b_payload = json.loads(pack_b_path.read_text(encoding="utf-8"))
     assert pack_b_payload["description"] == "Second pack"
     assert pack_b_payload["graphs"][0]["name"] == "Updated Graph B"
@@ -9959,7 +9977,7 @@ def test_workflow_pack_history_records_pack_document_saves_and_skips_conflicts(
     ]
 
     save_result = service.save_workflow_editor_document(
-        config=next_config,
+        config=canonical_workflow_payload(next_config),
         layout={"nodes": {"effect-a": {"x": 120, "y": 80}}},
         graphs=[
             {
@@ -9988,99 +10006,13 @@ def test_workflow_pack_history_records_pack_document_saves_and_skips_conflicts(
 
     with pytest.raises(AdminRevisionConflict):
         service.save_workflow_editor_document(
-            config=next_config,
+            config=canonical_workflow_payload(next_config),
             layout={"nodes": {}},
             workflow_pack="demo.v1.json",
             expected_revision=document.revision,
             actor=actor,
         )
     assert len(service.list_workflow_pack_history(workflow_pack="demo.v1.json").entries) == 1
-
-
-def test_workflow_pack_migration_raw_cas_rejects_stale_write_and_restores_exact_bytes(
-    tmp_path: Path,
-) -> None:
-    packs_dir = tmp_path / "config" / "workflow-packs"
-    packs_dir.mkdir(parents=True, exist_ok=True)
-    pack_path = packs_dir / "legacy.v1.json"
-    before = (
-        b'{\n  "pack_id": "legacy", "pack_version": "v1",\n'
-        b'  "ir": {"version": "v1", "nodes": [{"id": "clone", '
-        b'"type": "effect:agent:clone-repo", "repo_source": "/tmp/source"}], '
-        b'"edges": []}\n}\n'
-    )
-    pack_path.write_bytes(before)
-    config_root = tmp_path / "config" / "trigger-orchestrator"
-    config_root.mkdir(parents=True, exist_ok=True)
-    (config_root / "config.json").write_text(
-        json.dumps(
-            {
-                "runtime_dir": str(tmp_path / "runtime"),
-                "workflow_packs": ["legacy.v1.json"],
-            }
-        ),
-        encoding="utf-8",
-    )
-    service = build_admin_runtime(write_config(tmp_path)).workflow_config_admin
-    document = service.read_workflow_pack_for_migration(workflow_pack="legacy.v1.json")
-    after = json.dumps(
-        {
-            "pack_id": "legacy",
-            "pack_version": "v1",
-            "ir": {
-                "version": "v1",
-                "nodes": [
-                    {
-                        "id": "clone",
-                        "type": "effect:agent:clone-repo",
-                        "managed_repo_id": "mr_0123456789abcdef0123",
-                    }
-                ],
-                "edges": [],
-            },
-        },
-        indent=2,
-        sort_keys=True,
-    ).encode("utf-8")
-    actor = WorkflowPackChangeActor(
-        login="system",
-        display_name="Managed Git migration",
-    )
-
-    applied = service.rewrite_workflow_pack_for_migration(
-        workflow_pack="legacy.v1.json",
-        content=after,
-        expected_revision=document.revision,
-        operation="managed_git_migration_apply",
-        actor=actor,
-    )
-    assert pack_path.read_bytes() == after
-
-    with pytest.raises(AdminRevisionConflict) as exc_info:
-        service.rewrite_workflow_pack_for_migration(
-            workflow_pack="legacy.v1.json",
-            content=b"{}",
-            expected_revision=document.revision,
-            operation="managed_git_migration_apply",
-            actor=actor,
-        )
-    assert exc_info.value.details["current_revision"] == applied.revision
-    assert pack_path.read_bytes() == after
-
-    rolled_back = service.rewrite_workflow_pack_for_migration(
-        workflow_pack="legacy.v1.json",
-        content=before,
-        expected_revision=applied.revision,
-        operation="managed_git_migration_rollback",
-        actor=actor,
-    )
-    assert rolled_back.revision == document.revision
-    assert pack_path.read_bytes() == before
-    history = service.list_workflow_pack_history(workflow_pack="legacy.v1.json")
-    assert [entry.operation for entry in history.entries] == [
-        "managed_git_migration_rollback",
-        "managed_git_migration_apply",
-    ]
 
 
 def test_workflow_editor_rejects_omitted_pack_save_in_multi_pack_config(
@@ -10128,7 +10060,7 @@ def test_workflow_editor_rejects_omitted_pack_save_in_multi_pack_config(
 
     with pytest.raises(ValueError, match="requires workflow_pack"):
         service.workflow_config_admin.save_workflow_editor_document(
-            config=document.config,
+            config=canonical_workflow_payload(document.config),
             layout=document.layout,
             graphs=[graph.model_dump(mode="json") for graph in document.graphs],
         )
@@ -10206,7 +10138,7 @@ def test_workflow_editor_validate_selected_pack_checks_sibling_pack_ids(
 
     with pytest.raises(ValueError, match="Node IDs must be globally unique"):
         service.workflow_config_admin.validate_workflow_editor_document(
-            config=edited_config,
+            config=canonical_workflow_payload(edited_config),
             layout=document.layout,
             graphs=edited_graphs,
             workflow_pack="pack-b.v1.json",
@@ -10308,7 +10240,7 @@ def test_workflow_editor_reads_and_saves_named_graphs_inside_single_pack(
     edited_graphs[0]["name"] = "Root ticket intake"
     edited_graphs[0]["description"] = "Visible root-directory graph edit."
     save_result = service.workflow_config_admin.save_workflow_editor_document(
-        config=document.config,
+        config=canonical_workflow_payload(document.config),
         layout=document.layout,
         graphs=edited_graphs,
     )
@@ -12400,25 +12332,27 @@ def test_workflow_editor_rejects_graph_metadata_that_crosses_connected_component
 
     with pytest.raises(ValueError, match="node_ids must match one connected graph"):
         service.workflow_config_admin.validate_workflow_editor_document(
-            config={
-                "runtime_dir": str(tmp_path / "runtime"),
-                "triggers": [
-                    {
-                        "id": "trigger-a",
-                        "display_name": "Trigger A",
-                        "type": "trigger:cron",
-                        "expression": "* * * * *",
-                    },
-                    {
-                        "id": "trigger-b",
-                        "display_name": "Trigger B",
-                        "type": "trigger:cron",
-                        "expression": "*/5 * * * *",
-                    },
-                ],
-                "effects": [],
-                "edges": [],
-            },
+            config=canonical_workflow_payload(
+                {
+                    "runtime_dir": str(tmp_path / "runtime"),
+                    "triggers": [
+                        {
+                            "id": "trigger-a",
+                            "display_name": "Trigger A",
+                            "type": "trigger:cron",
+                            "expression": "* * * * *",
+                        },
+                        {
+                            "id": "trigger-b",
+                            "display_name": "Trigger B",
+                            "type": "trigger:cron",
+                            "expression": "*/5 * * * *",
+                        },
+                    ],
+                    "effects": [],
+                    "edges": [],
+                }
+            ),
             layout={},
             graphs=[
                 {
@@ -12437,7 +12371,29 @@ def test_workflow_editor_validation_rejects_unknown_layout_nodes(tmp_path: Path)
         ValueError, match="Workflow layout references unknown node IDs: missing-node"
     ):
         service.workflow_config_admin.validate_workflow_editor_document(
-            config={
+            config=canonical_workflow_payload(
+                {
+                    "runtime_dir": str(tmp_path / "runtime"),
+                    "triggers": [
+                        {
+                            "id": "cron-15m",
+                            "display_name": "Every 15 minutes",
+                            "type": "trigger:cron",
+                            "expression": "*/15 * * * *",
+                        }
+                    ],
+                }
+            ),
+            layout={"nodes": {"missing-node": {"x": 1, "y": 2}}},
+        )
+
+
+def test_workflow_editor_validation_derives_filter_outputs_server_side(tmp_path: Path) -> None:
+    service = build_admin_runtime(write_config(tmp_path))
+
+    result = service.workflow_config_admin.validate_workflow_editor_document(
+        config=canonical_workflow_payload(
+            {
                 "runtime_dir": str(tmp_path / "runtime"),
                 "triggers": [
                     {
@@ -12447,52 +12403,34 @@ def test_workflow_editor_validation_rejects_unknown_layout_nodes(tmp_path: Path)
                         "expression": "*/15 * * * *",
                     }
                 ],
-            },
-            layout={"nodes": {"missing-node": {"x": 1, "y": 2}}},
-        )
-
-
-def test_workflow_editor_validation_derives_filter_outputs_server_side(tmp_path: Path) -> None:
-    service = build_admin_runtime(write_config(tmp_path))
-
-    result = service.workflow_config_admin.validate_workflow_editor_document(
-        config={
-            "runtime_dir": str(tmp_path / "runtime"),
-            "triggers": [
-                {
-                    "id": "cron-15m",
-                    "display_name": "Every 15 minutes",
-                    "type": "trigger:cron",
-                    "expression": "*/15 * * * *",
-                }
-            ],
-            "effects": [
-                {
-                    "id": "effect-vm-create-1",
-                    "display_name": "Create VM",
-                    "type": "effect:vm:create",
-                    "vm_name": "vm-1",
-                }
-            ],
-            "gates": [
-                {
-                    "id": "gate-filter-1",
-                    "display_name": "Check if successfully created",
-                    "type": "gate:filter",
-                    "outputs": {},
-                    "when": {
-                        "all": [
-                            {"left": "${{effect-vm-create-1.success}}", "equals": True},
-                            {"left": "${{effect-vm-create-1.session_id}}", "is_not_null": True},
-                        ]
-                    },
-                }
-            ],
-            "edges": [
-                {"source_id": "cron-15m", "target_id": "effect-vm-create-1"},
-                {"source_id": "effect-vm-create-1", "target_id": "gate-filter-1"},
-            ],
-        },
+                "effects": [
+                    {
+                        "id": "effect-vm-create-1",
+                        "display_name": "Create VM",
+                        "type": "effect:vm:create",
+                        "vm_name": "vm-1",
+                    }
+                ],
+                "gates": [
+                    {
+                        "id": "gate-filter-1",
+                        "display_name": "Check if successfully created",
+                        "type": "gate:filter",
+                        "outputs": {},
+                        "when": {
+                            "all": [
+                                {"left": "${{effect-vm-create-1.success}}", "equals": True},
+                                {"left": "${{effect-vm-create-1.session_id}}", "is_not_null": True},
+                            ]
+                        },
+                    }
+                ],
+                "edges": [
+                    {"source_id": "cron-15m", "target_id": "effect-vm-create-1"},
+                    {"source_id": "effect-vm-create-1", "target_id": "gate-filter-1"},
+                ],
+            }
+        ),
         layout={},
     )
 
@@ -12513,39 +12451,41 @@ def test_workflow_editor_validation_derives_deserialize_outputs_server_side(
     service = build_admin_runtime(write_config(tmp_path))
 
     result = service.workflow_config_admin.validate_workflow_editor_document(
-        config={
-            "runtime_dir": str(tmp_path / "runtime"),
-            "triggers": [
-                {
-                    "id": "cron-15m",
-                    "display_name": "Every 15 minutes",
-                    "type": "trigger:cron",
-                    "expression": "*/15 * * * *",
-                }
-            ],
-            "gates": [
-                {
-                    "id": "gate-deserialize-1",
-                    "display_name": "Deserialize",
-                    "type": "gate:deserialize",
-                    "content": '{"title":"Fix relay","metadata":{"priority":"P1"}}',
-                    "format": "json",
-                }
-            ],
-            "effects": [
-                {
-                    "id": "prompt-agent",
-                    "display_name": "Prompt agent",
-                    "type": "effect:agent:prompt",
-                    "session_id": "session-1",
-                    "prompt": "Review ${{gate-deserialize-1.metadata.priority}}",
-                }
-            ],
-            "edges": [
-                {"source_id": "cron-15m", "target_id": "gate-deserialize-1"},
-                {"source_id": "gate-deserialize-1", "target_id": "prompt-agent"},
-            ],
-        },
+        config=canonical_workflow_payload(
+            {
+                "runtime_dir": str(tmp_path / "runtime"),
+                "triggers": [
+                    {
+                        "id": "cron-15m",
+                        "display_name": "Every 15 minutes",
+                        "type": "trigger:cron",
+                        "expression": "*/15 * * * *",
+                    }
+                ],
+                "gates": [
+                    {
+                        "id": "gate-deserialize-1",
+                        "display_name": "Deserialize",
+                        "type": "gate:deserialize",
+                        "content": '{"title":"Fix relay","metadata":{"priority":"P1"}}',
+                        "format": "json",
+                    }
+                ],
+                "effects": [
+                    {
+                        "id": "prompt-agent",
+                        "display_name": "Prompt agent",
+                        "type": "effect:agent:prompt",
+                        "session_id": "session-1",
+                        "prompt": "Review ${{gate-deserialize-1.metadata.priority}}",
+                    }
+                ],
+                "edges": [
+                    {"source_id": "cron-15m", "target_id": "gate-deserialize-1"},
+                    {"source_id": "gate-deserialize-1", "target_id": "prompt-agent"},
+                ],
+            }
+        ),
         layout={},
     )
 
@@ -12563,46 +12503,48 @@ def test_workflow_editor_save_and_reload_preserve_deserialize_declared_outputs(
     service = build_admin_runtime(write_config(tmp_path))
 
     save_result = service.workflow_config_admin.save_workflow_editor_document(
-        config={
-            "runtime_dir": str(tmp_path / "runtime"),
-            "triggers": [
-                {
-                    "id": "trigger-event-main",
-                    "display_name": "Trigger event",
-                    "type": "trigger:event",
-                    "event_type": "workflow.payload-ready",
-                    "outputs": {
-                        "payload_text": {"type": "string"},
-                    },
-                }
-            ],
-            "gates": [
-                {
-                    "id": "gate-deserialize-1",
-                    "display_name": "Deserialize",
-                    "type": "gate:deserialize",
-                    "content": "${{trigger-event-main.payload_text}}",
-                    "format": "auto",
-                    "outputs": {
-                        "title": {"type": "string"},
-                        "metadata": {"type": "object"},
-                    },
-                }
-            ],
-            "effects": [
-                {
-                    "id": "prompt-agent",
-                    "display_name": "Prompt agent",
-                    "type": "effect:agent:prompt",
-                    "session_id": "session-1",
-                    "prompt": "Review ${{gate-deserialize-1.title}}",
-                }
-            ],
-            "edges": [
-                {"source_id": "trigger-event-main", "target_id": "gate-deserialize-1"},
-                {"source_id": "gate-deserialize-1", "target_id": "prompt-agent"},
-            ],
-        },
+        config=canonical_workflow_payload(
+            {
+                "runtime_dir": str(tmp_path / "runtime"),
+                "triggers": [
+                    {
+                        "id": "trigger-event-main",
+                        "display_name": "Trigger event",
+                        "type": "trigger:event",
+                        "event_type": "workflow.payload-ready",
+                        "outputs": {
+                            "payload_text": {"type": "string"},
+                        },
+                    }
+                ],
+                "gates": [
+                    {
+                        "id": "gate-deserialize-1",
+                        "display_name": "Deserialize",
+                        "type": "gate:deserialize",
+                        "content": "${{trigger-event-main.payload_text}}",
+                        "format": "auto",
+                        "outputs": {
+                            "title": {"type": "string"},
+                            "metadata": {"type": "object"},
+                        },
+                    }
+                ],
+                "effects": [
+                    {
+                        "id": "prompt-agent",
+                        "display_name": "Prompt agent",
+                        "type": "effect:agent:prompt",
+                        "session_id": "session-1",
+                        "prompt": "Review ${{gate-deserialize-1.title}}",
+                    }
+                ],
+                "edges": [
+                    {"source_id": "trigger-event-main", "target_id": "gate-deserialize-1"},
+                    {"source_id": "gate-deserialize-1", "target_id": "prompt-agent"},
+                ],
+            }
+        ),
         layout={},
     )
 
@@ -12630,40 +12572,42 @@ def test_workflow_editor_validation_derives_serialize_outputs_server_side(
     service = build_admin_runtime(write_config(tmp_path))
 
     result = service.workflow_config_admin.validate_workflow_editor_document(
-        config={
-            "runtime_dir": str(tmp_path / "runtime"),
-            "triggers": [
-                {
-                    "id": "cron-15m",
-                    "display_name": "Every 15 minutes",
-                    "type": "trigger:cron",
-                    "expression": "*/15 * * * *",
-                    "outputs": {"ticket": {"type": "object"}},
-                }
-            ],
-            "gates": [
-                {
-                    "id": "gate-serialize-1",
-                    "display_name": "Serialize",
-                    "type": "gate:serialize",
-                    "value": "${{cron-15m.ticket}}",
-                    "format": "json",
-                }
-            ],
-            "effects": [
-                {
-                    "id": "prompt-agent",
-                    "display_name": "Prompt agent",
-                    "type": "effect:agent:prompt",
-                    "session_id": "session-1",
-                    "prompt": "Serialized ${{gate-serialize-1.content}}",
-                }
-            ],
-            "edges": [
-                {"source_id": "cron-15m", "target_id": "gate-serialize-1"},
-                {"source_id": "gate-serialize-1", "target_id": "prompt-agent"},
-            ],
-        },
+        config=canonical_workflow_payload(
+            {
+                "runtime_dir": str(tmp_path / "runtime"),
+                "triggers": [
+                    {
+                        "id": "cron-15m",
+                        "display_name": "Every 15 minutes",
+                        "type": "trigger:cron",
+                        "expression": "*/15 * * * *",
+                        "outputs": {"ticket": {"type": "object"}},
+                    }
+                ],
+                "gates": [
+                    {
+                        "id": "gate-serialize-1",
+                        "display_name": "Serialize",
+                        "type": "gate:serialize",
+                        "value": "${{cron-15m.ticket}}",
+                        "format": "json",
+                    }
+                ],
+                "effects": [
+                    {
+                        "id": "prompt-agent",
+                        "display_name": "Prompt agent",
+                        "type": "effect:agent:prompt",
+                        "session_id": "session-1",
+                        "prompt": "Serialized ${{gate-serialize-1.content}}",
+                    }
+                ],
+                "edges": [
+                    {"source_id": "cron-15m", "target_id": "gate-serialize-1"},
+                    {"source_id": "gate-serialize-1", "target_id": "prompt-agent"},
+                ],
+            }
+        ),
         layout={},
     )
 
@@ -12679,26 +12623,28 @@ def test_workflow_editor_save_allows_disconnected_draft_nodes(tmp_path: Path) ->
     service = build_admin_runtime(write_config(tmp_path))
 
     result = service.workflow_config_admin.save_workflow_editor_document(
-        config={
-            "runtime_dir": str(tmp_path / "runtime"),
-            "triggers": [
-                {
-                    "id": "cron-15m",
-                    "display_name": "Every 15 minutes",
-                    "type": "trigger:cron",
-                    "expression": "*/15 * * * *",
-                }
-            ],
-            "effects": [
-                {
-                    "id": "prompt-agent",
-                    "display_name": "Prompt agent",
-                    "type": "effect:agent:prompt",
-                    "prompt": "Summarize",
-                }
-            ],
-            "edges": [],
-        },
+        config=canonical_workflow_payload(
+            {
+                "runtime_dir": str(tmp_path / "runtime"),
+                "triggers": [
+                    {
+                        "id": "cron-15m",
+                        "display_name": "Every 15 minutes",
+                        "type": "trigger:cron",
+                        "expression": "*/15 * * * *",
+                    }
+                ],
+                "effects": [
+                    {
+                        "id": "prompt-agent",
+                        "display_name": "Prompt agent",
+                        "type": "effect:agent:prompt",
+                        "prompt": "Summarize",
+                    }
+                ],
+                "edges": [],
+            }
+        ),
         layout={
             "nodes": {
                 "cron-15m": {"x": 100, "y": 50},
@@ -12726,26 +12672,28 @@ def test_workflow_editor_save_writes_via_atomic_replace(
     monkeypatch.setattr(admin_service.os, "replace", tracking_replace)
 
     service.workflow_config_admin.save_workflow_editor_document(
-        config={
-            "runtime_dir": str(tmp_path / "runtime"),
-            "triggers": [
-                {
-                    "id": "cron-15m",
-                    "display_name": "Every 15 minutes",
-                    "type": "trigger:cron",
-                    "expression": "*/15 * * * *",
-                }
-            ],
-            "effects": [
-                {
-                    "id": "prompt-agent",
-                    "display_name": "Prompt agent",
-                    "type": "effect:agent:prompt",
-                    "prompt": "Summarize",
-                }
-            ],
-            "edges": [{"source_id": "cron-15m", "target_id": "prompt-agent"}],
-        },
+        config=canonical_workflow_payload(
+            {
+                "runtime_dir": str(tmp_path / "runtime"),
+                "triggers": [
+                    {
+                        "id": "cron-15m",
+                        "display_name": "Every 15 minutes",
+                        "type": "trigger:cron",
+                        "expression": "*/15 * * * *",
+                    }
+                ],
+                "effects": [
+                    {
+                        "id": "prompt-agent",
+                        "display_name": "Prompt agent",
+                        "type": "effect:agent:prompt",
+                        "prompt": "Summarize",
+                    }
+                ],
+                "edges": [{"source_id": "cron-15m", "target_id": "prompt-agent"}],
+            }
+        ),
         layout={"nodes": {"cron-15m": {"x": 100, "y": 50}, "prompt-agent": {"x": 300, "y": 50}}},
     )
 
@@ -16213,6 +16161,69 @@ def test_clone_repo_into_vm_generated_script_allows_existing_checkout(
     assert 'remote set-url agent "${REMOTE_URL}"' in remote_script
     assert 'if [[ "${REPO_ALREADY_PREPARED}" == "0" ]]; then' in remote_script
     assert 'config evander.workBranch "${CURRENT_BRANCH}"' in remote_script
+
+
+def test_clone_repo_into_vm_generated_script_pins_detached_review_snapshot(
+    tmp_path: Path,
+    monkeypatch: Any,
+) -> None:
+    service = build_admin_runtime(write_config(tmp_path, enable_directory_scoped_config=True))
+    _stub_vm_managed_repository(service, monkeypatch)
+    captured_ssh_input: list[str] = []
+
+    monkeypatch.setattr(
+        "evander.admin.services.vm_helpers.dominfo_field", lambda vm_name, field_name: None
+    )
+    monkeypatch.setattr(
+        "evander.admin.services.vm_helpers.resolve_vm_ip", lambda vm_name: "192.168.250.10"
+    )
+    monkeypatch.setattr(
+        "evander.admin.services.vm_helpers.resolve_private_key_path",
+        lambda: Path("/tmp/test-key"),
+    )
+
+    def _fake_run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        if cmd[:5] == ["git", "-C", "/src/repo", "symbolic-ref", "--quiet"]:
+            return subprocess.CompletedProcess(
+                args=cmd, returncode=0, stdout="origin/main\n", stderr=""
+            )
+        if cmd[:4] == ["git", "-C", "/src/repo", "branch"]:
+            return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="main\n", stderr="")
+        if cmd[0] == "ssh":
+            captured_ssh_input.append(str(kwargs.get("input") or ""))
+        return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="ok", stderr="")
+
+    monkeypatch.setattr("evander.admin.services.process_helpers.subprocess.run", _fake_run)
+
+    commit_sha = "a" * 40
+    pinned_ref = "refs/evander/team-reviews/cmV2aWV3LXN1cGVyLWJvdW5k"
+    service.vm_agent_admin.create_vm(
+        vm_name="lab-vm",
+        session_id="review-session",
+    )
+    result = service.vm_agent_admin.clone_repo_into_vm(
+        vm_name="lab-vm",
+        session_id="review-session",
+        managed_repo_id=_MANAGED_REPO_ID,
+        git_access_mode="read-only",
+        pinned_ref=pinned_ref,
+        pinned_commit_sha=commit_sha,
+    )
+
+    assert result.success is True
+    remote_script = captured_ssh_input[-1]
+    assert f"PINNED_REF={pinned_ref}" in remote_script
+    assert f"PINNED_COMMIT_SHA={commit_sha}" in remote_script
+    assert 'git -C "${TARGET_DIR}" fetch --no-tags origin "${PINNED_REF}"' in remote_script
+    assert 'git -C "${TARGET_DIR}" checkout --detach FETCH_HEAD' in remote_script
+    assert (
+        'test "$(git -C "${TARGET_DIR}" rev-parse HEAD)" = "${PINNED_COMMIT_SHA}"' in remote_script
+    )
+    assert (
+        'if [[ -z "${PINNED_REF}" ]]; then\n    git -C "${TARGET_DIR}" config evander.workBranch'
+        in remote_script
+    )
+    assert 'elif [[ -z "${PINNED_REF}" ]]; then' in remote_script
 
 
 def test_clone_repo_into_vm_configures_separate_author_and_committer(

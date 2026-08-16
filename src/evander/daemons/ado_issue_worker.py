@@ -15,7 +15,7 @@ from typing import Any
 import httpx
 import yaml
 
-from evander.bootstrap import load_runtime_gateway_config, resolve_project_dir
+from evander.bootstrap import load_runtime_gateway_config
 from evander.audit import AuditEventType, AuditLogger
 from evander.azure_devops import resolve_azure_devops_organization_url
 from evander.config import GatewayConfig, TriggerOrchestratorWorkerGlobalConfig
@@ -213,26 +213,16 @@ class WorkerConfig:
     comment_text_max_chars: int
     directories: tuple[str, ...] = ()
     directory_path: str = "root"
-    gateway_config_path: Path | None = None
-    legacy_config_path: Path | None = None
 
     @classmethod
     def load_from_env(cls, *, require_runtime_secrets: bool = True) -> WorkerConfig:
-        legacy_config_env = os.environ.get(
-            "ADO_GATEWAY_CONFIG", os.environ.get("EVANDER_CONFIG", "")
-        ).strip()
-        legacy_config_path = Path(legacy_config_env).expanduser() if legacy_config_env else None
-        workspace_root = resolve_project_dir(legacy_config_path=legacy_config_path)
         runtime_dir_env = os.environ.get("ADO_RUNTIME_DIR", "").strip() or None
         worker_runtime_config = AdoWorkerRuntimeConfig.load(
-            workspace_root=workspace_root,
+            workspace_root=Path.cwd(),
             legacy_env_runtime_dir=runtime_dir_env,
         )
         runtime_dir = worker_runtime_config.runtime_dir
-        runtime_gateway_config = load_runtime_gateway_config(
-            runtime_dir=runtime_dir,
-            legacy_config_path=legacy_config_path,
-        )
+        runtime_gateway_config = load_runtime_gateway_config(runtime_dir=runtime_dir)
         initial_directory_path = (
             worker_runtime_config.directories[0] if worker_runtime_config.directories else "root"
         )
@@ -240,7 +230,6 @@ class WorkerConfig:
             worker_runtime_config=worker_runtime_config,
             runtime_gateway_config=runtime_gateway_config,
             directory_path=initial_directory_path,
-            legacy_config_path=legacy_config_path,
             require_runtime_secrets=require_runtime_secrets,
         )
 
@@ -250,7 +239,6 @@ def _resolve_worker_config_for_directory(
     worker_runtime_config: AdoWorkerRuntimeConfig,
     runtime_gateway_config: GatewayConfig,
     directory_path: str,
-    legacy_config_path: Path | None,
     require_runtime_secrets: bool = True,
 ) -> WorkerConfig:
     _ = require_runtime_secrets
@@ -322,8 +310,6 @@ def _resolve_worker_config_for_directory(
         comment_text_max_chars=worker_runtime_config.comment_text_max_chars,
         directories=worker_runtime_config.directories,
         directory_path=normalized_directory_path,
-        gateway_config_path=legacy_config_path,
-        legacy_config_path=legacy_config_path,
     )
 
 
@@ -1093,7 +1079,6 @@ def _resolve_directory_worker_config(
         worker_runtime_config=worker_runtime_config,
         runtime_gateway_config=runtime_gateway_config,
         directory_path=directory_path,
-        legacy_config_path=config.legacy_config_path or config.gateway_config_path,
     )
 
 
@@ -1457,10 +1442,7 @@ def _work_item_needs_ingest_or_refresh(
 
 
 def _worker_runtime_config(config: WorkerConfig) -> GatewayConfig:
-    legacy_config_path = config.legacy_config_path or config.gateway_config_path
-    return load_runtime_gateway_config(
-        runtime_dir=config.runtime_dir, legacy_config_path=legacy_config_path
-    )
+    return load_runtime_gateway_config(runtime_dir=config.runtime_dir)
 
 
 def _is_transient_fetch_error(exc: Exception) -> bool:
@@ -1549,25 +1531,18 @@ def _processed_store_for_config(config: WorkerConfig) -> ProcessedWorkItemStore:
 
 
 def _processed_store_for_runtime() -> ProcessedWorkItemStore:
-    legacy_config_env = os.environ.get(
-        "ADO_GATEWAY_CONFIG", os.environ.get("EVANDER_CONFIG", "")
-    ).strip()
-    legacy_config_path = Path(legacy_config_env).expanduser() if legacy_config_env else None
-    workspace_root = resolve_project_dir(legacy_config_path=legacy_config_path)
     runtime_dir_env = os.environ.get("ADO_RUNTIME_DIR", "").strip() or None
     worker_runtime_config = AdoWorkerRuntimeConfig.load(
-        workspace_root=workspace_root,
+        workspace_root=Path.cwd(),
         legacy_env_runtime_dir=runtime_dir_env,
     )
     return ProcessedWorkItemStore(worker_runtime_config.processed_store_path)
 
 
 def _trigger_orchestrator_config_path(config: WorkerConfig) -> Path:
-    legacy_config_path = config.legacy_config_path or config.gateway_config_path
-    if legacy_config_path is not None:
-        project_dir = resolve_project_dir(legacy_config_path=legacy_config_path)
-    else:
-        project_dir = config.runtime_dir.parent
+    project_dir = (
+        config.runtime_dir.parent if config.runtime_dir.name == "runtime" else config.runtime_dir
+    )
     return project_dir / "config" / "trigger-orchestrator" / "config.json"
 
 

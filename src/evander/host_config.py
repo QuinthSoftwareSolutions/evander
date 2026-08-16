@@ -6,7 +6,7 @@ from pathlib import Path
 from pydantic import BaseModel, Field, model_validator
 
 from evander.addons import AddonLoaderConfig
-from evander.config import GatewayConfig, load_config
+from evander.config import GatewayConfig
 
 DEFAULT_RUNTIME_DIR = Path("/var/lib/evander")
 HOST_CONFIG_FILENAME = "host-config.json"
@@ -68,7 +68,7 @@ class HostConfig(BaseModel):
         return self
 
     @classmethod
-    def from_legacy_gateway_config(cls, config: GatewayConfig) -> "HostConfig":
+    def from_gateway_config(cls, config: GatewayConfig) -> "HostConfig":
         return cls.model_validate(
             {
                 "runtime_dir": config.runtime_dir,
@@ -121,26 +121,14 @@ def load_host_config(runtime_dir: str | Path) -> HostConfig:
 
 def ensure_host_config(
     runtime_dir: str | Path,
-    *,
-    legacy_config_path: str | Path | None = None,
 ) -> HostConfig:
     runtime_root = Path(runtime_dir).expanduser().resolve()
     path = host_config_path(runtime_root)
     if path.exists():
         return load_host_config(runtime_root)
-    if legacy_config_path is not None:
-        legacy_path = Path(legacy_config_path)
-        if legacy_path.exists():
-            config = HostConfig.from_legacy_gateway_config(load_config(legacy_path))
-            save_host_config(config)
-            return config
     config = HostConfig(runtime_dir=runtime_root)
     save_host_config(config)
     return config
-
-
-def runtime_dir_from_legacy_config(path: str | Path) -> Path:
-    return load_config(path).runtime_dir
 
 
 def build_runtime_gateway_config(host_config: HostConfig) -> GatewayConfig:

@@ -9,15 +9,19 @@
         "id": "trigger-cron-synthetic",
         "display_name": "Synthetic tick",
         "type": "trigger:cron",
-        "expression": "* * * * *"
+        "config": {
+          "expression": "* * * * *"
+        }
       },
       {
         "id": "effect-emit-synthetic",
         "display_name": "Synthetic event",
         "type": "effect:event:emit",
-        "event_type": "synthetic.workflow.tick",
-        "payload": {
-          "source": "synthetic-trivial"
+        "config": {
+          "event_type": "synthetic.workflow.tick",
+          "payload": {
+            "source": "synthetic-trivial"
+          }
         }
       }
     ],

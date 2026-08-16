@@ -39,6 +39,7 @@ from evander.models import (
 )
 from evander.policy import mandatory_approval_required_for_tool
 from evander.addons import LoadedAddonCatalog, addon_mcp_tool_catalog_payloads
+from evander.provider_config import normalize_model_provider_mode_override
 
 
 _TOOL_DESCRIPTIONS: dict[ToolName, str] = {
@@ -528,6 +529,15 @@ def _model_option(model: str) -> dict[str, str]:
     return {"value": model, "label": model}
 
 
+def _model_provider_mode_options() -> list[dict[str, str]]:
+    return [
+        {"value": "openai_public", "label": "Public OpenAI"},
+        {"value": "local_openai", "label": "Local OpenAI"},
+        {"value": "azure_openai", "label": "Azure OpenAI"},
+        {"value": "anthropic", "label": "Anthropic"},
+    ]
+
+
 def _model_options_from_pricing_catalog(service: AdminRuntimeComponents) -> list[dict[str, str]]:
     status = service.model_usage_admin.read_model_pricing_catalog_status()
     if status.get("status") != "ok":
@@ -635,6 +645,16 @@ def _session_payload(
 ) -> dict[str, Any]:
     payload = summary.model_dump(mode="json")
     payload["allowed_tools"] = [tool_name_value(tool) for tool in summary.allowed_tools]
+    try:
+        payload["model_provider_mode"] = normalize_model_provider_mode_override(
+            (summary.metadata or {}).get("model_provider_mode")
+            if isinstance(summary.metadata, dict)
+            else None
+        )
+    except ValueError:
+        # Legacy or externally written metadata must not make the Admin Web
+        # session detail impossible to open and repair.
+        payload["model_provider_mode"] = None
     payload.update(_session_policy_summary_payload(service, summary, cache=policy_cache))
     payload["approval_notification_target_options"] = [
         option.model_dump(mode="json")
@@ -915,6 +935,7 @@ def session_approval_routes(
             {
                 "tool_options": merged_tool_options,
                 "model_options": _model_options_from_pricing_catalog(service),
+                "model_provider_modes": _model_provider_mode_options(),
                 "resume_mode_options": [
                     {"value": "same_context", "label": "same_context"},
                     {"value": "new_context", "label": "new_context"},

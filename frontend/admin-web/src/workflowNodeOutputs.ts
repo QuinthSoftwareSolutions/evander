@@ -74,7 +74,7 @@ function hasOutputSchemaEntries(schema: Record<string, unknown> | undefined): bo
 }
 
 function hasDynamicDeserializeContent(node: WorkflowNodeConfig): boolean {
-  const content = node.content;
+  const content = node.config.content;
   return typeof content !== "string" || content.trim() === "" || content.includes("${{");
 }
 
@@ -144,10 +144,10 @@ export function deriveWorkflowOutputSchemas(
       schema = mergeDeclaredOutputIntersection(
         directUpstreamNodeIds(config, node.id).map((upstreamNodeId) => resolve(upstreamNodeId)),
       );
-    } else if (node.type === "gate:map" && isRecord(node.template)) {
-      schema = mapTemplateOutputSchema(node.template);
-    } else if (node.type === "gate:aggregate" && isRecord(node.metrics)) {
-      schema = aggregateMetricOutputSchema(node.metrics);
+    } else if (node.type === "gate:map" && isRecord(node.config.template)) {
+      schema = mapTemplateOutputSchema(node.config.template);
+    } else if (node.type === "gate:aggregate" && isRecord(node.config.metrics)) {
+      schema = aggregateMetricOutputSchema(node.config.metrics);
     } else if (node.type === "gate:buffer") {
       schema = bufferOutputSchema();
     } else {
@@ -297,8 +297,8 @@ export function selectedNodeOutputContract(
     });
   }
 
-  if (node.type === "gate:map" && isRecord(node.template)) {
-    const templateOutputs = mapTemplateOutputSchema(node.template);
+  if (node.type === "gate:map" && isRecord(node.config.template)) {
+    const templateOutputs = mapTemplateOutputSchema(node.config.template);
     if (Object.keys(templateOutputs).length === 0) {
       return {
         nodeId: node.id,
@@ -317,8 +317,8 @@ export function selectedNodeOutputContract(
     });
   }
 
-  if (node.type === "gate:aggregate" && isRecord(node.metrics)) {
-    const aggregateOutputs = aggregateMetricOutputSchema(node.metrics);
+  if (node.type === "gate:aggregate" && isRecord(node.config.metrics)) {
+    const aggregateOutputs = aggregateMetricOutputSchema(node.config.metrics);
     return buildOutputContract(node, aggregateOutputs, {
       state: "derived",
       note: "Aggregate gate: outputs are count plus one output per configured metric.",

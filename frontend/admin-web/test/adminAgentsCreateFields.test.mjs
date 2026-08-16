@@ -164,6 +164,21 @@ test("shared worker auth is page-wide and agent usage shows its effective source
   assert.match(agentsPage, /Directory default/);
 });
 
+test("agent list supports searching common agent identifiers", () => {
+  assert.match(agentsPage, /const \[agentSearch, setAgentSearch\] = useState\(""\);/);
+  assert.match(agentsPage, /const normalizedSearch = agentSearch\.trim\(\)\.toLocaleLowerCase\(\);/);
+  assert.match(
+    agentsPage,
+    /item\.target_name,[\s\S]*item\.agent_id,[\s\S]*item\.session_id,[\s\S]*item\.directory_path,/,
+  );
+  assert.match(agentsPage, /<span>Search agents<\/span>/);
+  assert.match(agentsPage, /type="search"/);
+  assert.match(
+    agentsPage,
+    /if \(nextSelection\.agentId \|\| nextSelection\.sessionId\) \{[\s\S]*setAgentSearch\(""\);/,
+  );
+});
+
 test("create TTL duration accepts seconds through weeks and emits seconds", () => {
   const parser = parseDurationSecondsSource();
   assert.match(parser, /s: 1,/);

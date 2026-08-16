@@ -108,7 +108,7 @@ The security model is:
   - Host-global bootstrap config: `runtime/host-config.json`
   - Directory-scoped config root: `runtime/directory-config/root/...`
   - `root` is the immutable top-level directory and the live default baseline.
-  - Legacy gateway YAML is migration/import input only; it is not the current live baseline.
+  - Legacy gateway YAML is no longer accepted as bootstrap or migration input.
 
 - Guest cloud-init:
   - Template: `config/cloud-init-user-data.yaml`

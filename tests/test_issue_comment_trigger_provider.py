@@ -14,6 +14,7 @@ from evander.triggers.providers.base import TriggerRuntimeContext
 from evander.triggers.providers.issue_comment_created import (
     IssueCommentCreatedTriggerProvider,
 )
+from config_helpers import canonical_workflow_node
 
 
 def _runtime_context(runtime_dir: Path) -> TriggerRuntimeContext:
@@ -32,7 +33,7 @@ def _trigger(**config):
     }
     payload.update(config)
     adapter = TypeAdapter(TriggerDefinitionDiscriminated)
-    return materialize_node_definition(adapter.validate_python(payload))
+    return materialize_node_definition(adapter.validate_python(canonical_workflow_node(payload)))
 
 
 def _provider(runtime_dir: Path, **config) -> IssueCommentCreatedTriggerProvider:

@@ -1433,10 +1433,7 @@ function normalizeWorkflowEditorDocument<T extends WorkflowDocumentLike>(
   defaultDirectoryPath: string,
 ): T {
   const backendOutputSchemas = document.output_schemas ?? {};
-  const normalizedConfig = normalizeDerivedNodeFields(
-    normalizeWorkflowConfigShape(document.config),
-    backendOutputSchemas,
-  );
+  const normalizedConfig = normalizeDerivedNodeFields(cloneConfig(document.config), backendOutputSchemas);
   const outputSchemas = deriveWorkflowOutputSchemas(normalizedConfig, backendOutputSchemas);
   const normalizedGraphs = normalizeWorkflowGraphs(
     normalizedConfig,
@@ -1654,26 +1651,6 @@ function dirtyWorkflowNodeIds(
   return dirtyNodeIds;
 }
 
-function flattenWorkflowNodeConfig(node: WorkflowNodeConfig): WorkflowNodeConfig {
-  const clonedNode = cloneNodeConfig(node);
-  const nestedConfig = isRecord(clonedNode.config) ? clonedNode.config : undefined;
-  if (!nestedConfig) return clonedNode;
-  const { config: _config, ...rest } = clonedNode;
-  return {
-    ...nestedConfig,
-    ...rest,
-  };
-}
-
-function normalizeWorkflowConfigShape(config: WorkflowConfig): WorkflowConfig {
-  const nextConfig = cloneConfig(config);
-  nextConfig.triggers = (nextConfig.triggers ?? []).map(flattenWorkflowNodeConfig);
-  nextConfig.gates = (nextConfig.gates ?? []).map(flattenWorkflowNodeConfig);
-  nextConfig.effects = (nextConfig.effects ?? []).map(flattenWorkflowNodeConfig);
-  nextConfig.queries = (nextConfig.queries ?? []).map(flattenWorkflowNodeConfig);
-  return nextConfig;
-}
-
 function isEditableEventTarget(target: EventTarget | null): boolean {
   return (
     target instanceof HTMLInputElement ||
@@ -1683,164 +1660,154 @@ function isEditableEventTarget(target: EventTarget | null): boolean {
   );
 }
 
+function workflowNode(
+  id: string,
+  displayName: string,
+  type: string,
+  config: Record<string, unknown> = {},
+  outputs?: Record<string, unknown>,
+): WorkflowNodeConfig {
+  return {
+    id,
+    display_name: displayName,
+    type,
+    config,
+    ...(outputs === undefined ? {} : { outputs }),
+  };
+}
+
 function createDefaultNode(kind: WorkflowNodeKind, type: string, id: string): WorkflowNodeConfig {
   if (kind === "trigger" && type === "trigger:cron") {
-    return { id, display_name: "New trigger", type, expression: "*/15 * * * *" };
+    return workflowNode(id, "New trigger", type, {
+      expression: "*/15 * * * *",
+    });
   }
   if (kind === "trigger" && type === "trigger:event") {
-    return { id, display_name: "Internal event", type, event_type: "custom.operator_event" };
+    return workflowNode(id, "Internal event", type, {
+      event_type: "custom.operator_event",
+    });
   }
   if (kind === "trigger" && type === "trigger:http:webhook") {
-    return {
-      id,
-      display_name: "Webhook",
-      type,
+    return workflowNode(id, "Webhook", type, {
       slug: `webhook-${id}`,
       secret_env: "WEBHOOK_SECRET",
       event_type: `webhook.webhook-${id}`,
-    };
+    });
   }
   if (kind === "trigger" && type === "trigger:ticket:created") {
-    return { id, display_name: "Ticket created", type, directories: ["root"] };
+    return workflowNode(id, "Ticket created", type, {
+      directories: ["root"],
+    });
   }
   if (kind === "trigger" && type === "trigger:ticket:changed") {
-    return { id, display_name: "Ticket changed", type, directories: ["root"] };
+    return workflowNode(id, "Ticket changed", type, {
+      directories: ["root"],
+    });
   }
   if (kind === "trigger" && type === "trigger:issue:comment-created") {
-    return {
-      id,
-      display_name: "Issue comment",
-      type,
+    return workflowNode(id, "Issue comment", type, {
       provider: "ado",
       directories: ["root"],
-    };
+    });
   }
   if (kind === "trigger" && type === "trigger:discord:new-message") {
-    return {
-      id,
-      display_name: "Discord message",
-      type,
+    return workflowNode(id, "Discord message", type, {
       discord_bot_token_env: "DISCORD_BOT_TOKEN",
       channel_ids: [],
       user_ids: [],
-    };
+    });
   }
   if (kind === "trigger" && type === "trigger:teams:new-message") {
-    return {
-      id,
-      display_name: "Teams message",
-      type,
+    return workflowNode(id, "Teams message", type, {
       targets: [],
       user_ids: [],
-    };
+    });
   }
   if (kind === "trigger" && type === "trigger:communication:new-message") {
-    return {
-      id,
-      display_name: "Communication message",
-      type,
+    return workflowNode(id, "Communication message", type, {
       communication_target_ids: [],
       directory_path: "root",
       author_ids: [],
       case_sensitive: false,
-    };
+    });
   }
   if (kind === "trigger" && type === "trigger:approval:pending-created") {
-    return {
-      id,
-      display_name: "Pending approval",
-      type,
+    return workflowNode(id, "Pending approval", type, {
       directory_path: "root",
       action_types: [],
       tool_names: [],
-    };
+    });
   }
   if (kind === "trigger" && type === "trigger:teams:direct-message") {
-    return {
-      id,
-      display_name: "Teams direct message",
-      type,
+    return workflowNode(id, "Teams direct message", type, {
       sender_user_ids: [],
       message_filter: null,
-    };
+    });
   }
   if (kind === "trigger" && type === "trigger:email:new-message") {
-    return {
-      id,
-      display_name: "Email message",
-      type,
+    return workflowNode(id, "Email message", type, {
       provider: "json_store",
       account_identifier: "default",
       mailbox_ids: [],
-      auth_secret_refs: {},
-    };
+      auth_secret_refs: {}
+    });
   }
   if (kind === "trigger" && type === "trigger:pull-request:new-feedback") {
-    return { id, display_name: "PR feedback", type, provider: "local" };
+    return workflowNode(id, "PR feedback", type, {
+      provider: "local",
+    });
   }
   if (kind === "trigger" && type === "trigger:ci:run:completed") {
-    return {
-      id,
-      display_name: "CI run completed",
-      type,
+    return workflowNode(id, "CI run completed", type, {
       provider: "github_actions",
       repo: "owner/repo",
       branches: [],
       conclusions: [],
       top: 50,
       include_existing: false,
-    };
+    });
   }
   if (kind === "trigger" && type === "trigger:git:push") {
-    return { id, display_name: "Git push", type, managed_repo_id_glob: "mr_*" };
+    return workflowNode(id, "Git push", type, {
+      managed_repo_id_glob: "mr_*",
+    });
   }
   if (kind === "trigger" && type === "trigger:agent:run:completed") {
-    return { id, display_name: "Agent run completed", type, vm_user: "agent" };
+    return workflowNode(id, "Agent run completed", type, {
+      vm_user: "agent",
+    });
   }
   if (kind === "gate" && type === "gate:filter") {
-    return { id, display_name: "New filter", type, outputs: {} };
+    return workflowNode(id, "New filter", type, {}, {});
   }
   if (kind === "gate" && type === "gate:map") {
-    return { id, display_name: "New map", type, outputs: {}, template: {} };
+    return workflowNode(id, "New map", type, {
+      template: {}
+    }, {});
   }
   if (kind === "gate" && type === "gate:aggregate") {
-    return {
-      id,
-      display_name: "Aggregate",
-      type,
+    return workflowNode(id, "Aggregate", type, {
       items: [],
-      metrics: { total: { operation: "sum", path: "value" } },
-      outputs: { count: { type: "integer" }, total: { type: "number" } },
-    };
+      metrics: { total: { operation: "sum", path: "value" } }
+    }, { count: { type: "integer" }, total: { type: "number" } });
   }
   if (kind === "gate" && type === "gate:deserialize") {
-    return {
-      id,
-      display_name: "Deserialize",
-      type,
+    return workflowNode(id, "Deserialize", type, {
       content: "${{node.payload_text}}",
       format: "auto",
-      outputs: {},
-    };
+    }, {});
   }
   if (kind === "gate" && type === "gate:serialize") {
-    return {
-      id,
-      display_name: "Serialize",
-      type,
+    return workflowNode(id, "Serialize", type, {
       value: {},
       format: "json",
-      outputs: { content: { type: "string" }, format: { type: "string" } },
-    };
+    }, { content: { type: "string" }, format: { type: "string" } });
   }
   if (kind === "gate" && type === "gate:merge") {
-    return { id, display_name: "New merge", type, outputs: {} };
+    return workflowNode(id, "New merge", type, {}, {});
   }
   if (kind === "gate" && type === "gate:switch") {
-    return {
-      id,
-      display_name: "Switch",
-      type,
+    return workflowNode(id, "Switch", type, {
       cases: [
         {
           port: "matched",
@@ -1849,148 +1816,120 @@ function createDefaultNode(kind: WorkflowNodeKind, type: string, id: string): Wo
         },
       ],
       default_port: "default",
-      outputs: {},
-    };
+    }, {});
   }
   if (kind === "gate" && type === "gate:debounce") {
-    return {
-      id,
-      display_name: "Debounce",
-      type,
+    return workflowNode(id, "Debounce", type, {
       key: "debounce:${{system.execution.event_id}}",
       quiet_period: "PT2M",
       max_delay: "PT10M",
-      outputs: {},
-    };
+    }, {});
   }
   if (kind === "gate" && type === "gate:buffer") {
-    return {
-      id,
-      display_name: "Buffer",
-      type,
+    return workflowNode(id, "Buffer", type, {
       key: "buffer:${{system.execution.trace_id}}",
       count: 10,
       timeout: "PT10M",
-      outputs: {
-        items: { type: "array" },
-        count: { type: "integer" },
-        release_reason: { type: "string" },
-      },
-    };
+    }, {
+      items: { type: "array" },
+      count: { type: "integer" },
+      release_reason: { type: "string" },
+    });
   }
   if (kind === "gate" && type === "gate:dedupe") {
-    return {
-      id,
-      display_name: "Dedupe",
-      type,
+    return workflowNode(id, "Dedupe", type, {
       key: "dedupe:${{system.execution.event_id}}",
       ttl: "P7D",
-      outputs: {},
-    };
+    }, {});
   }
   if (kind === "gate" && type === "gate:await-agent") {
-    return { id, display_name: "Await agent", type, session_id: "session-id", outputs: {} };
+    return workflowNode(id, "Await agent", type, {
+      session_id: "session-id",
+    }, {});
   }
   if (kind === "gate" && type === "gate:for") {
-    return { id, display_name: "For each item", type, items: [] };
+    return workflowNode(id, "For each item", type, {
+      items: [],
+    });
   }
   if (kind === "gate" && type === "gate:while") {
-    return {
-      id,
-      display_name: "While",
-      type,
+    return workflowNode(id, "While", type, {
       when: { left: 0, greater_than: 0 },
       max_iterations: 3,
-    };
+    });
   }
   if (kind === "effect" && type === "effect:agent:prompt") {
-    return { id, display_name: "New prompt", type, prompt: "Describe the next action." };
+    return workflowNode(id, "New prompt", type, {
+      prompt: "Describe the next action.",
+    });
   }
   if (kind === "effect" && type === "effect:agent:exec") {
-    return { id, display_name: "Agent exec", type, command: "echo hello" };
+    return workflowNode(id, "Agent exec", type, {
+      command: "echo hello",
+    });
   }
   if (kind === "effect" && type === "effect:agent:destroy") {
-    return { id, display_name: "Agent destroy", type, session_id: "session-id" };
+    return workflowNode(id, "Agent destroy", type, {
+      session_id: "session-id",
+    });
   }
   if (kind === "effect" && type === "effect:agent:clone-repo") {
-    return {
-      id,
-      display_name: "Clone repo into agent",
-      type,
+    return workflowNode(id, "Clone repo into agent", type, {
       session_id: "session-id",
       managed_repo_id: "mr_00000000000000000000",
       clone_branch: "main",
-    };
+    });
   }
   if (kind === "effect" && type === "effect:agent:grant-repo-access") {
-    return {
-      id,
-      display_name: "Grant repo access",
-      type,
+    return workflowNode(id, "Grant repo access", type, {
       session_id: "session-id",
       managed_repo_id: "mr_00000000000000000000",
       git_access_mode: "read-only",
-    };
+    });
   }
   if (kind === "effect" && type === "effect:agent:revoke-repo-access") {
-    return {
-      id,
-      display_name: "Revoke repo access",
-      type,
+    return workflowNode(id, "Revoke repo access", type, {
       session_id: "session-id",
       managed_repo_id: "mr_00000000000000000000",
-    };
+    });
   }
   if (kind === "effect" && type === "effect:semantic:ensure-collection") {
-    return { id, display_name: "Ensure semantic collection", type, collection_name: "agent_memory" };
+    return workflowNode(id, "Ensure semantic collection", type, {
+      collection_name: "agent_memory",
+    });
   }
   if (kind === "effect" && type === "effect:semantic:upsert") {
-    return {
-      id,
-      display_name: "Semantic upsert",
-      type,
+    return workflowNode(id, "Semantic upsert", type, {
       collection_name: "agent_memory",
       point_id: SEMANTIC_SAMPLE_POINT_ID,
       text: "Important context to remember.",
-      payload: {},
-    };
+      payload: {}
+    });
   }
   if (kind === "effect" && type === "effect:semantic:delete") {
-    return {
-      id,
-      display_name: "Semantic delete",
-      type,
+    return workflowNode(id, "Semantic delete", type, {
       collection_name: "agent_memory",
       point_ids: [SEMANTIC_SAMPLE_POINT_ID],
-    };
+    });
   }
   if (kind === "effect" && type === "effect:state:update") {
-    return {
-      id,
-      display_name: "Update workflow state",
-      type,
+    return workflowNode(id, "Update workflow state", type, {
       namespace: "workflow",
       key: "cursor",
       operation: "set",
-      value: {},
-    };
+      value: {}
+    });
   }
   if (kind === "effect" && type === "effect:http:request") {
-    return {
-      id,
-      display_name: "HTTP request",
-      type,
+    return workflowNode(id, "HTTP request", type, {
       method: "GET",
       url: "https://api.example.test/items",
       allowed_url_patterns: ["*"],
       check: false,
-    };
+    });
   }
   if (kind === "effect" && type === "effect:runtime:diagnostics-snapshot") {
-    return {
-      id,
-      display_name: "Runtime diagnostics snapshot",
-      type,
+    return workflowNode(id, "Runtime diagnostics snapshot", type, {
       since: "24 hours ago",
       include_failed_units: true,
       include_journal: true,
@@ -1998,128 +1937,97 @@ function createDefaultNode(kind: WorkflowNodeKind, type: string, id: string): Wo
       max_journal_lines_per_unit: 200,
       max_runtime_file_bytes: 120000,
       command_timeout_seconds: 10,
-    };
+    });
   }
   if (kind === "effect" && type === "effect:vm:create") {
-    return { id, display_name: "New VM effect", type };
+    return workflowNode(id, "New VM effect", type, {});
   }
   if (kind === "effect" && type === "effect:vm:clone-repo") {
-    return {
-      id,
-      display_name: "Clone repo into VM",
-      type,
+    return workflowNode(id, "Clone repo into VM", type, {
       target: "session-id",
       managed_repo_id: "mr_00000000000000000000",
       clone_branch: "main",
-    };
+    });
   }
   if (kind === "effect" && type === "effect:vm:bootstrap-python") {
-    return {
-      id,
-      display_name: "Bootstrap Python in VM",
-      type,
+    return workflowNode(id, "Bootstrap Python in VM", type, {
       host_checkout: "/path/to/repo",
       target_dir: "/home/agent/repo",
-    };
+    });
   }
   if (kind === "effect" && type === "effect:vm:bootstrap-frontend") {
-    return {
-      id,
-      display_name: "Bootstrap frontend deps in VM",
-      type,
+    return workflowNode(id, "Bootstrap frontend deps in VM", type, {
       host_checkout: "/path/to/repo",
       install_roots: ["/path/to/repo/Src/Clients"],
-    };
+    });
   }
   if (kind === "effect" && type === "effect:vm:start") {
-    return { id, display_name: "VM start", type };
+    return workflowNode(id, "VM start", type, {});
   }
   if (kind === "effect" && type === "effect:vm:stop") {
-    return { id, display_name: "VM stop", type, timeout_seconds: 30 };
+    return workflowNode(id, "VM stop", type, {
+      timeout_seconds: 30,
+    });
   }
   if (kind === "effect" && type === "effect:vm:exec") {
-    return { id, display_name: "New exec effect", type, command: "echo hello" };
+    return workflowNode(id, "New exec effect", type, {
+      command: "echo hello",
+    });
   }
   if (kind === "effect" && type === "effect:vm:copy-files") {
-    return {
-      id,
-      display_name: "New copy effect",
-      type,
+    return workflowNode(id, "New copy effect", type, {
       files: [{ destination_path: "/tmp/example.txt", content: "example" }],
-    };
+    });
   }
   if (kind === "effect" && type === "effect:vm:delete-files") {
-    return {
-      id,
-      display_name: "Delete files",
-      type,
+    return workflowNode(id, "Delete files", type, {
       paths: ["/tmp/example.txt"],
       missing_ok: true,
-    };
+    });
   }
   if (kind === "effect" && type === "effect:event:emit") {
-    return {
-      id,
-      display_name: "Emit internal event",
-      type,
+    return workflowNode(id, "Emit internal event", type, {
       event_type: "custom.operator_event",
-      payload: {},
-    };
+      payload: {}
+    });
   }
   if (kind === "effect" && type === "effect:event:schedule") {
-    return {
-      id,
-      display_name: "Schedule internal event",
-      type,
+    return workflowNode(id, "Schedule internal event", type, {
       event_type: "custom.operator_event",
       payload: {},
       delay_seconds: 60,
-    };
+    });
   }
   if (kind === "effect" && type === "effect:issue:update-metadata") {
-    return {
-      id,
-      display_name: "Update issue metadata",
-      type,
+    return workflowNode(id, "Update issue metadata", type, {
       issue_id: "issue-1",
       patch: { "fields.workflow_status": "updated" },
       sync_proxy_cache: true,
-    };
+    });
   }
   if (kind === "effect" && type === "effect:ado:update-work-item") {
-    return {
-      id,
-      display_name: "ADO update work item",
-      type,
+    return workflowNode(id, "ADO update work item", type, {
       directory_path: "root",
       project: "Project name",
       work_item_id: "12345",
       state: "In Progress",
       expected_states: ["New", "To Do"],
       sync_proxy_cache: true,
-    };
+    });
   }
-  if (
-    kind === "effect" &&
-    (type === "effect:ado:add-work-item-tag" || type === "effect:ado:remove-work-item-tag")
-  ) {
+  if (kind === "effect" &&
+    (type === "effect:ado:add-work-item-tag" || type === "effect:ado:remove-work-item-tag")) {
     const isAdd = type === "effect:ado:add-work-item-tag";
-    return {
-      id,
-      display_name: isAdd ? "ADO add work item tag" : "ADO remove work item tag",
-      type,
+    return workflowNode(id, isAdd ? "ADO add work item tag" : "ADO remove work item tag", type, {
       directory_path: "root",
       project: "Project name",
       work_item_id: "12345",
       tag: "tag-name",
       sync_proxy_cache: true,
-    };
+    });
   }
   if (kind === "effect" && type === "effect:ado:pipeline-run") {
-    return {
-      id,
-      display_name: "ADO pipeline run",
-      type,
+    return workflowNode(id, "ADO pipeline run", type, {
       directory_path: "root",
       pipeline_id: 12345,
       variables: {},
@@ -2127,243 +2035,173 @@ function createDefaultNode(kind: WorkflowNodeKind, type: string, id: string): Wo
       timeout_seconds: 3600,
       poll_interval_seconds: 10,
       check: true,
-    };
+    });
   }
   if (kind === "effect" && type === "effect:session:update-metadata") {
-    return {
-      id,
-      display_name: "Update session metadata",
-      type,
-      metadata: {},
-    };
+    return workflowNode(id, "Update session metadata", type, {
+      metadata: {}
+    });
   }
   if (kind === "effect" && type === "effect:session:renew-if-expired") {
-    return {
-      id,
-      display_name: "Renew expired or soon-expiring session",
-      type,
+    return workflowNode(id, "Renew expired or soon-expiring session", type, {
       session_id: "session-id",
       extend_by: "1d",
       renew_if_expires_within: "2h",
-    };
+    });
   }
   if (kind === "effect" && type === "effect:session:revoke-mcp-tool-approval-lease") {
-    return {
-      id,
-      display_name: "Revoke MCP tool approval lease",
-      type,
+    return workflowNode(id, "Revoke MCP tool approval lease", type, {
       mcp_tool_approval_lease_id: "mcp-tool-approval-lease-id",
-    };
+    });
   }
   if (kind === "effect" && type === "effect:artifact:stage") {
-    return {
-      id,
-      display_name: "Stage artifact",
-      type,
+    return workflowNode(id, "Stage artifact", type, {
       session_id: "session-id",
       path: "repos/project/output/report.html",
       destination_path: "reports/report.html",
-    };
+    });
   }
   if (kind === "effect" && type === "effect:artifact:publish-artifacts") {
-    return {
-      id,
-      display_name: "Publish artifacts",
-      type,
+    return workflowNode(id, "Publish artifacts", type, {
       session_id: "session-id",
       key: "runs/artifact-key",
-    };
+    });
   }
   if (kind === "effect" && type === "effect:artifact:import-published") {
-    return {
-      id,
-      display_name: "Import published artifact",
-      type,
+    return workflowNode(id, "Import published artifact", type, {
       session_id: "session-id",
       key: "runs/artifact-key",
       destination_path: "input",
       overwrite: false,
-    };
+    });
   }
   if (kind === "effect" && type === "effect:git:ensure-managed-repo") {
-    return {
-      id,
-      display_name: "Ensure managed repository",
-      type,
+    return workflowNode(id, "Ensure managed repository", type, {
       directory_path: "root",
       repo_source: "/path/to/repository",
-    };
+    });
   }
   if (kind === "effect" && type === "effect:git:promote-agent-branch") {
-    return {
-      id,
-      display_name: "Promote agent branch",
-      type,
+    return workflowNode(id, "Promote agent branch", type, {
       managed_repo_id: "mr_00000000000000000000",
       agent_branch: "agents/session-1/topic",
       target_branch: "review/session-1/topic",
       expected_commit_sha: "0000000000000000000000000000000000000000",
-    };
+    });
   }
   if (kind === "effect" && type === "effect:git:push-branch") {
-    return {
-      id,
-      display_name: "Publish branch",
-      type,
+    return workflowNode(id, "Publish branch", type, {
       managed_repo_id: "mr_00000000000000000000",
       source_ref: "refs/heads/review/session-1/topic",
       expected_commit_sha: "0000000000000000000000000000000000000000",
       destination_branch: "feature/topic",
-    };
+    });
   }
   if (kind === "effect" && type === "effect:pr:create") {
-    return {
-      id,
-      display_name: "New PR effect",
-      type,
+    return workflowNode(id, "New PR effect", type, {
       managed_repo_id: "mr_00000000000000000000",
       source_ref: "refs/heads/review/session-1/topic",
       expected_commit_sha: "0000000000000000000000000000000000000000",
       destination_branch: "feature/topic",
       base_branch: "main",
-    };
+    });
   }
   if (kind === "effect" && type === "effect:pull-request:update") {
-    return {
-      id,
-      display_name: "Update pull request",
-      type,
+    return workflowNode(id, "Update pull request", type, {
       provider: "azure_devops",
       repo: "repo-name",
       pr_id: "123",
       expected_statuses: ["active"],
-    };
+    });
   }
-  if (
-    kind === "effect" &&
-    (type === "effect:pull-request:add-tag" || type === "effect:pull-request:remove-tag")
-  ) {
+  if (kind === "effect" &&
+    (type === "effect:pull-request:add-tag" || type === "effect:pull-request:remove-tag")) {
     const isAdd = type === "effect:pull-request:add-tag";
-    return {
-      id,
-      display_name: isAdd ? "Add pull request tag" : "Remove pull request tag",
-      type,
+    return workflowNode(id, isAdd ? "Add pull request tag" : "Remove pull request tag", type, {
       provider: "azure_devops",
       repo: "repo-name",
       pr_id: "123",
       tag: "tag-name",
-    };
+    });
   }
   if (kind === "query" && type === "query:vm:run-state") {
-    return { id, display_name: "VM run state", type };
+    return workflowNode(id, "VM run state", type, {});
   }
   if (kind === "query" && type === "query:git:pr-note") {
-    return {
-      id,
-      display_name: "Git PR note",
-      type,
+    return workflowNode(id, "Git PR note", type, {
       managed_repo_id: "mr_00000000000000000000",
       commit_sha: "0000000000000000000000000000000000000000",
       notes_ref: "refs/notes/agents/session-1/pr",
-    };
+    });
   }
   if (kind === "query" && type === "query:session-context") {
-    return {
-      id,
-      display_name: "Session context",
-      type,
-    };
+    return workflowNode(id, "Session context", type, {});
   }
   if (kind === "query" && type === "query:state:get") {
-    return {
-      id,
-      display_name: "Read workflow state",
-      type,
+    return workflowNode(id, "Read workflow state", type, {
       namespace: "workflow",
       key: "cursor",
-    };
+    });
   }
   if (kind === "query" && type === "query:agent:artifact-text") {
-    return {
-      id,
-      display_name: "Agent artifact text",
-      type,
+    return workflowNode(id, "Agent artifact text", type, {
       path: "report/summary.txt",
-    };
+    });
   }
   if (kind === "query" && type === "query:issue:get") {
-    return {
-      id,
-      display_name: "Issue get",
-      type,
+    return workflowNode(id, "Issue get", type, {
       issue_id: "issue-1",
-    };
+    });
   }
   if (kind === "query" && type === "query:ado:work-items") {
-    return {
-      id,
-      display_name: "ADO work items",
-      type,
+    return workflowNode(id, "ADO work items", type, {
       top: 50,
       skip: 0,
-    };
+    });
   }
   if (kind === "query" && type === "query:pull-request:list") {
-    return {
-      id,
-      display_name: "Pull request list",
-      type,
+    return workflowNode(id, "Pull request list", type, {
       provider: "azure_devops",
       repo: "repo-name",
       status: "active",
       top: 50,
       skip: 0,
-    };
+    });
   }
   if (kind === "query" && type === "query:communication:messages") {
-    return {
-      id,
-      display_name: "Communication messages",
-      type,
+    return workflowNode(id, "Communication messages", type, {
       communication_target_id: "communication-target-id",
       limit: 50,
-    };
+    });
   }
   if (kind === "query" && type === "query:pull-request:get") {
-    return {
-      id,
-      display_name: "Pull request get",
-      type,
+    return workflowNode(id, "Pull request get", type, {
       provider: "azure_devops",
       repo: "repo-name",
       pr_id: "123",
       include_reviewers: false,
       include_commits: false,
-    };
+    });
   }
   if (kind === "query" && type === "query:semantic:store-status") {
-    return { id, display_name: "Semantic store status", type, collection_name: "agent_memory" };
+    return workflowNode(id, "Semantic store status", type, {
+      collection_name: "agent_memory",
+    });
   }
   if (kind === "query" && type === "query:semantic:search") {
-    return {
-      id,
-      display_name: "Semantic search",
-      type,
+    return workflowNode(id, "Semantic search", type, {
       collection_name: "agent_memory",
       query_text: "What context is relevant?",
       limit: 10,
-    };
+    });
   }
   if (kind === "query" && type === "query:semantic:get") {
-    return {
-      id,
-      display_name: "Semantic get",
-      type,
+    return workflowNode(id, "Semantic get", type, {
       collection_name: "agent_memory",
       point_ids: [SEMANTIC_SAMPLE_POINT_ID],
-    };
+    });
   }
-  return { id, display_name: "New node", type };
+  return workflowNode(id, "New node", type, {});
 }
 
 function slugifyNodeType(type: string): string {
@@ -3391,8 +3229,8 @@ function normalizeDerivedNodeFields(
     } else if (gate.type === "gate:aggregate") {
       gate.outputs = declaredOutputsForNode(gate, outputSchemas);
     } else if (gate.type === "gate:buffer") {
-      if (typeof gate.timeout === "string" && gate.timeout.trim() === "") {
-        delete gate.timeout;
+      if (typeof gate.config.timeout === "string" && gate.config.timeout.trim() === "") {
+        delete gate.config.timeout;
       }
       gate.outputs = declaredOutputsForNode(gate, outputSchemas);
     } else if (gate.type === "gate:deserialize") {
@@ -3402,7 +3240,7 @@ function normalizeDerivedNodeFields(
     } else if (gate.type === "gate:dedupe") {
       gate.outputs = declaredOutputsForNode(gate, outputSchemas);
     } else if (gate.type === "gate:await-agent") {
-      delete gate.completion_trigger_id;
+      delete gate.config.completion_trigger_id;
       gate.outputs = declaredOutputsForNode(gate, outputSchemas);
     } else if (gate.type === "gate:for") {
       gate.outputs = declaredOutputsForNode(gate, outputSchemas);
@@ -3456,8 +3294,8 @@ function validateWorkflowAgentCreateDiagnostics(
   const diagnostics: WorkflowValidationDiagnostic[] = [];
   for (const effect of config.effects ?? []) {
     if (effect.type !== AGENT_CREATE_NODE_TYPE) continue;
-    const executionBackend = typeof effect.execution_backend === "string"
-      ? effect.execution_backend.trim()
+    const executionBackend = typeof effect.config.execution_backend === "string"
+      ? effect.config.execution_backend.trim()
       : "";
     if (executionBackend) continue;
     diagnostics.push({
@@ -3624,8 +3462,7 @@ function scheduleWorkflowValidation(callback: () => void): () => void {
 
 function walkEditableNodeConfigValues(node: WorkflowNodeConfig): Array<[string, unknown]> {
   const values: Array<[string, unknown]> = [];
-  for (const [key, value] of Object.entries(node)) {
-    if (key === "id" || key === "display_name" || key === "type") continue;
+  for (const [key, value] of Object.entries(node.config)) {
     walkConfigValue(value, key, values);
   }
   return values;
@@ -4802,10 +4639,7 @@ export default function App() {
     defaultDirectoryPath: string,
   ) {
     const backendOutputSchemas = payload.output_schemas ?? {};
-    const normalizedConfig = normalizeDerivedNodeFields(
-      normalizeWorkflowConfigShape(payload.config),
-      backendOutputSchemas,
-    );
+    const normalizedConfig = normalizeDerivedNodeFields(cloneConfig(payload.config), backendOutputSchemas);
     const outputSchemas = deriveWorkflowOutputSchemas(normalizedConfig, backendOutputSchemas);
     const normalizedGraphs = normalizeWorkflowGraphs(
       normalizedConfig,
@@ -6094,7 +5928,10 @@ export default function App() {
       return;
     }
 
-    const { id: _id, display_name: _displayName, type: _type, ...extras } = nextNode;
+    const extras: Record<string, unknown> = {
+      ...nextNode.config,
+      ...(nextNode.outputs === undefined ? {} : { outputs: nextNode.outputs }),
+    };
     const knownFieldKeys = new Set((nextCatalogEntry?.fields ?? []).map((field) => field.key));
     if (nextNode.type.startsWith("trigger:")) {
       knownFieldKeys.add("enabled");
@@ -7499,13 +7336,19 @@ export default function App() {
       nextKnownValues = pruneAdoQueryModeHiddenFieldValues(selectedNode.type, nextKnownValues);
     }
 
-    return removeUndefinedValues({
+    const values = removeUndefinedValues({
+      ...draft.unknownValues,
+      ...nextKnownValues,
+    });
+    const outputs = values.outputs;
+    delete values.outputs;
+    return {
       id: rawId,
       display_name: rawName,
       type: selectedNode.type,
-      ...draft.unknownValues,
-      ...nextKnownValues,
-    }) as WorkflowNodeConfig;
+      config: values,
+      ...(isRecord(outputs) ? { outputs } : {}),
+    };
   }
 
   function replaceSelectedNode(nextNode: WorkflowNodeConfig, originalNodeId: string) {

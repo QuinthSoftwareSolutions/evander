@@ -55,6 +55,7 @@ from .git_work_contexts import (
     GitCandidateCommitResolver,
     require_authoritative_git_review_retry_candidate,
 )
+from .review_repository_snapshots import deliverable_review_repository_snapshot
 from .manager_fallback import _manager_fallback_review_decision_guard_error
 from .outcome_catalog import snapshot_review_profile_outcomes
 from .review_handoff import queue_actionable_inbox_item
@@ -385,6 +386,11 @@ def _apply_review_request(
         ),
         instructions=instructions,
         reviewed_commit_sha=reviewed_commit_sha,
+        repository_snapshot=deliverable_review_repository_snapshot(
+            state,
+            deliverable=deliverable,
+            review_id=review_id,
+        ),
         review_cohort_id=requested_cohort_id,
         created_at=now,
     )
@@ -411,6 +417,8 @@ def _apply_review_request(
             if finding.state == "open"
         ],
     }
+    if review.repository_snapshot is not None:
+        payload["repository_snapshot"] = review.repository_snapshot.model_dump(mode="json")
     verification_payload = _deliverable_verification_payload(deliverable)
     if verification_payload is not None:
         payload["verification"] = verification_payload
@@ -659,12 +667,13 @@ def retry_blocked_review(
                 "submitted commit; record git_refs.commit_sha before retrying review"
             )
     now = utc_now()
+    retry_id = _generated_id(
+        prefix="review-retry",
+        labels=[current.id, reviewer.id],
+        existing_ids=state.review_requests,
+    )
     retry = ReviewRequest(
-        id=_generated_id(
-            prefix="review-retry",
-            labels=[current.id, reviewer.id],
-            existing_ids=state.review_requests,
-        ),
+        id=retry_id,
         deliverable_id=deliverable.id,
         reviewer_agent_id=reviewer.id,
         requested_by_agent_id=actor.id,
@@ -693,6 +702,11 @@ def retry_blocked_review(
         ),
         instructions=(f"Retry blocked review {current.id}. Reason: {normalized_reason}"),
         reviewed_commit_sha=retry_reviewed_commit_sha,
+        repository_snapshot=deliverable_review_repository_snapshot(
+            state,
+            deliverable=deliverable,
+            review_id=retry_id,
+        ),
         review_cohort_id=current.review_cohort_id,
         supersedes_review_request_id=current.id,
         retry_reason=normalized_reason,
@@ -736,6 +750,8 @@ def retry_blocked_review(
         "artifact_refs": list(deliverable.artifact_refs),
         "instructions": retry.instructions,
     }
+    if retry.repository_snapshot is not None:
+        payload["repository_snapshot"] = retry.repository_snapshot.model_dump(mode="json")
     verification_payload = _deliverable_verification_payload(deliverable)
     if verification_payload is not None:
         payload["verification"] = verification_payload

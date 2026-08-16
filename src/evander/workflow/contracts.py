@@ -5,7 +5,7 @@ import re
 from collections.abc import Mapping
 from typing import Any
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from evander.models import DirectoryPath
 
@@ -15,30 +15,13 @@ RESERVED_OUTPUT_NAMES = frozenset({NODE_OUTPUTS_CONTEXT_KEY})
 
 
 class WorkflowNodeEnvelope(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     id: str
     display_name: str
     type: str
     config: dict[str, Any] = Field(default_factory=dict)
     outputs: dict[str, dict[str, Any]] | None = None
-
-    @model_validator(mode="before")
-    @classmethod
-    def collect_legacy_top_level_config(cls, value: object) -> object:
-        if not isinstance(value, dict):
-            return value
-        payload = dict(value)
-        config = payload.get("config")
-        if config is None:
-            config = {}
-        if not isinstance(config, dict):
-            return value
-        model_fields = set(cls.model_fields)
-        for key in list(payload.keys()):
-            if key in model_fields:
-                continue
-            config[key] = payload.pop(key)
-        payload["config"] = config
-        return payload
 
     @field_validator("id", "display_name", mode="before")
     @classmethod
@@ -65,7 +48,13 @@ class WorkflowNodeEnvelope(BaseModel):
 
 
 class WorkflowNodeDefinition(WorkflowNodeEnvelope):
-    """Backward-compatible alias for historical node model naming."""
+    """Typed provider definition materialized from a persisted node envelope."""
+
+    # Provider schemas materialize the contents of ``config`` as typed fields.
+    # They may also expose extension-owned fields that are not part of the
+    # built-in schema, so strict persisted-envelope validation must not leak
+    # into this internal materialization model.
+    model_config = ConfigDict(extra="allow")
 
 
 class EdgeDefinition(BaseModel):

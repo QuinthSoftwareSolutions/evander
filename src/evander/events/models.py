@@ -483,16 +483,20 @@ def validate_provider_node_definition(node: WorkflowNodeEnvelope) -> WorkflowNod
 
 
 TriggerDefinitionDiscriminated = Annotated[
-    WorkflowNodeEnvelope, AfterValidator(validate_provider_node_definition)
+    WorkflowNodeEnvelope,
+    AfterValidator(validate_provider_node_definition),
 ]
 EffectDefinitionDiscriminated = Annotated[
-    WorkflowNodeEnvelope, AfterValidator(validate_provider_node_definition)
+    WorkflowNodeEnvelope,
+    AfterValidator(validate_provider_node_definition),
 ]
 QueryDefinitionDiscriminated = Annotated[
-    WorkflowNodeEnvelope, AfterValidator(validate_provider_node_definition)
+    WorkflowNodeEnvelope,
+    AfterValidator(validate_provider_node_definition),
 ]
 GateDefinitionDiscriminated = Annotated[
-    WorkflowNodeEnvelope, AfterValidator(validate_provider_node_definition)
+    WorkflowNodeEnvelope,
+    AfterValidator(validate_provider_node_definition),
 ]
 
 WorkflowNodeType = TriggerType | GateType | EffectType | QueryType

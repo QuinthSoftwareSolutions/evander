@@ -3112,56 +3112,6 @@ class IssueService:
             "github": github,
         }
 
-    def resolve_proxy_target(
-        self,
-        *,
-        issue_number: str,
-        issue_source: str,
-        metadata: dict[str, Any],
-    ) -> tuple[str, str] | None:
-        remote = metadata.get("remote") if isinstance(metadata.get("remote"), dict) else {}
-        provider = str(remote.get("provider") or "").strip()
-        remote_issue_id = str(remote.get("issue_id") or "").strip()
-
-        # Compatibility reader (one release window): older records stored these keys at
-        # metadata root instead of metadata.remote.
-        if not provider:
-            provider = str(metadata.get("provider") or "").strip()
-        if not remote_issue_id:
-            remote_issue_id = str(metadata.get("issue_id") or "").strip()
-        if not remote_issue_id:
-            for legacy_key in ("work_item_url", "url"):
-                legacy_value = str(metadata.get(legacy_key) or "").strip()
-                if not legacy_value:
-                    continue
-                parsed = _extract_ado_work_item_id(legacy_value)
-                if parsed:
-                    remote_issue_id = parsed
-                    provider = provider or "azure_devops"
-                    break
-
-        if not provider:
-            normalized_source = issue_source.strip().lower()
-            if normalized_source in {"proxy_azure_devops", "azure_devops", "ado_proxy"}:
-                provider = "azure_devops"
-
-        if not remote_issue_id and provider:
-            remote_issue_id = issue_number
-
-        if provider and remote_issue_id:
-            return provider, remote_issue_id
-        return None
-
-    def is_proxy_issue(
-        self, *, issue_number: str, issue_source: str, metadata: dict[str, Any]
-    ) -> bool:
-        return (
-            self.resolve_proxy_target(
-                issue_number=issue_number, issue_source=issue_source, metadata=metadata
-            )
-            is not None
-        )
-
     def read_remote_issue(
         self,
         *,
@@ -3629,14 +3579,3 @@ def _split_semicolon_tags(value: object) -> list[str]:
 
 def _match_text(value: object) -> str:
     return str(value or "").strip().casefold()
-
-
-def _extract_ado_work_item_id(value: str) -> str:
-    text = value.strip()
-    if not text:
-        return ""
-    for pattern in (r"/workItems/edit/([0-9]+)", r"\b([0-9]{2,})\b"):
-        match = re.search(pattern, text, flags=re.IGNORECASE)
-        if match:
-            return match.group(1)
-    return ""

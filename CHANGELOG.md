@@ -1,5 +1,55 @@
 # Changelog
 
+## 2026-08-16 - Retire Completed Runtime Compatibility Paths
+
+- Removed automatic local-issue schema migration and legacy proxy metadata inference now that both
+  deployments persist canonical `remote_reference` records and unified issue state.
+- Removed gateway YAML bootstrap/import support and the `migrate-global-config-to-root` command;
+  runtime processes now start only from `host-config.json` plus directory-scoped configuration.
+- Removed automatic workflow prompt-lifecycle migration and now reject legacy top-level provider
+  fields in workflow node envelopes at every boundary. Admin Web state and saves, generated
+  workflow drafts, typed in-process node construction, packs, and runtime configuration now all use
+  the same nested `config` payload; the former flat editor and programmatic adapters are removed.
+
+## 2026-08-15 - Immediate Team Wake After Terminal Blocker Resolution
+
+- Prompted Team's durable outbox publisher after Admin Web resolves a task-backed terminal
+  blocker that creates `task_ready` wake work, so the one-second debounced wake no longer waits
+  for the next 15-minute runtime tick. The committed Team outbox and periodic reconciliation
+  remain authoritative recovery paths if prompt publication fails.
+
+## 2026-08-15 - Immutable Team Review Repository Snapshots
+
+- Bound every newly created Git-backed Team review, including retries and release reviews, to its
+  exact deliverable, task-base, or release-candidate commit before a reviewer can be prompted.
+- Persisted the server-owned review snapshot and retained one managed-Git ref per review. Legacy
+  reviews remain readable but cannot be dispatched from a mutable checkout; create a retry or
+  replacement review to obtain current immutable provenance.
+- Made review preparation pin and verify detached reviewer checkouts, reject unavailable,
+  conflicting, or cross-review commit provenance, and include the exact ref, commit, and checkout
+  in reviewer context. Normal task checkout behavior is unchanged.
+
+## 2026-08-15 - First-Class Session Model Relay
+
+- Added a dedicated session-level model relay selector for public, local, Azure, Anthropic, or
+  directory-default routing without editing raw metadata JSON.
+- Rejected invalid relay modes written through nested session metadata while rendering legacy
+  invalid values as no override, keeping affected sessions visible and repairable in Admin Web.
+
+## 2026-08-15 - Searchable Agents Page
+
+- Added a search field to the Agents page for filtering agents by name, ID, session, or directory.
+- Cleared the search together with backend and status filters when an explicit agent hash deep-link
+  is applied, so an existing query cannot hide the requested agent.
+
+## 2026-08-15 - Retire Completed Managed-Git Migrator
+
+- Removed the legacy `git-repos migrate` CLI and Admin API, migration manifests, recovery and
+  rewrite implementation, workflow-pack migration hooks, and obsolete migration tests now that no
+  supported installation retains unmigrated path-based managed-Git repositories.
+- Removed active migration instructions and state from operator documentation while leaving current
+  managed repository registration, refresh, authorization, worktree, and integrity behavior intact.
+
 ## 2026-08-14 - Persistent Assistant Self-Refresh Recovery
 
 - Reconciled clean persistent-assistant reference checkouts after an agent-requested refresh by

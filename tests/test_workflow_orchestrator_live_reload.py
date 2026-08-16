@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from config_helpers import canonical_worker_config, canonical_workflow_payload
+
 import importlib
 import json
 import sys
@@ -85,7 +87,7 @@ def _reload_worker_config(
     queries: list[dict[str, object]] | None = None,
     edges: list[dict[str, object]] | None = None,
 ) -> TriggerOrchestratorWorkerGlobalConfig:
-    return TriggerOrchestratorWorkerGlobalConfig.model_validate(
+    return canonical_worker_config(
         {
             "runtime_dir": runtime_dir,
             "poll_interval_seconds": 1,
@@ -262,28 +264,30 @@ def _save_workflow(
     effect_id: str,
 ) -> None:
     service.workflow_config_admin.save_workflow_editor_document(
-        config={
-            "runtime_dir": str(runtime_dir),
-            "poll_interval_seconds": 1,
-            "jitter_seconds": 0,
-            "triggers": [
-                {
-                    "id": trigger_id,
-                    "display_name": f"Trigger {trigger_id}",
-                    "type": "trigger:cron",
-                    "expression": "* * * * *",
-                }
-            ],
-            "effects": [
-                {
-                    "id": effect_id,
-                    "display_name": f"Effect {effect_id}",
-                    "type": "effect:agent:prompt",
-                    "prompt": "run",
-                }
-            ],
-            "edges": [{"source_id": trigger_id, "target_id": effect_id}],
-        },
+        config=canonical_workflow_payload(
+            {
+                "runtime_dir": str(runtime_dir),
+                "poll_interval_seconds": 1,
+                "jitter_seconds": 0,
+                "triggers": [
+                    {
+                        "id": trigger_id,
+                        "display_name": f"Trigger {trigger_id}",
+                        "type": "trigger:cron",
+                        "expression": "* * * * *",
+                    }
+                ],
+                "effects": [
+                    {
+                        "id": effect_id,
+                        "display_name": f"Effect {effect_id}",
+                        "type": "effect:agent:prompt",
+                        "prompt": "run",
+                    }
+                ],
+                "edges": [{"source_id": trigger_id, "target_id": effect_id}],
+            }
+        ),
         layout={"nodes": {trigger_id: {"x": 0, "y": 0}, effect_id: {"x": 250, "y": 0}}},
     )
 
@@ -867,13 +871,13 @@ def test_workers_reload_when_referenced_workflow_pack_changes(tmp_path: Path) ->
                             "id": "trigger-pack-old",
                             "display_name": "Trigger old",
                             "type": "trigger:cron",
-                            "expression": "* * * * *",
+                            "config": {"expression": "* * * * *"},
                         },
                         {
                             "id": "effect-pack-old",
                             "display_name": "Effect old",
                             "type": "effect:agent:prompt",
-                            "prompt": "run",
+                            "config": {"prompt": "run"},
                         },
                     ],
                     "edges": [{"source_id": "trigger-pack-old", "target_id": "effect-pack-old"}],
@@ -934,13 +938,13 @@ def test_workers_reload_when_referenced_workflow_pack_changes(tmp_path: Path) ->
                             "id": "trigger-pack-new",
                             "display_name": "Trigger new",
                             "type": "trigger:cron",
-                            "expression": "*/5 * * * *",
+                            "config": {"expression": "*/5 * * * *"},
                         },
                         {
                             "id": "effect-pack-new",
                             "display_name": "Effect new",
                             "type": "effect:agent:prompt",
-                            "prompt": "run",
+                            "config": {"prompt": "run"},
                         },
                     ],
                     "edges": [{"source_id": "trigger-pack-new", "target_id": "effect-pack-new"}],

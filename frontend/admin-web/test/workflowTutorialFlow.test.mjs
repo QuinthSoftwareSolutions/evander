@@ -175,6 +175,7 @@ test("workflow editor tutorial chooser starts, skips, and exits tutorials", asyn
           id: "trigger-1",
           display_name: "Incoming command",
           type: "trigger:manual",
+          config: {}
         },
       ],
       gates: [],
@@ -183,7 +184,9 @@ test("workflow editor tutorial chooser starts, skips, and exits tutorials", asyn
           id: "effect-1",
           display_name: "Dispatch agent",
           type: "effect:agent",
-          prompt: "Handle ticket",
+          config: {
+            prompt: "Handle ticket"
+          }
         },
       ],
       queries: [],

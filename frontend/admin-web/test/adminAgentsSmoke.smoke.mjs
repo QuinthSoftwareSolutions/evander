@@ -392,6 +392,11 @@ test("admin shell agents page deep-links to a selected agent", async (t) => {
       return;
     }
 
+    if (pathname === "/api/admin/agents/create-operations") {
+      await route.fulfill(jsonResponse({ items: [] }));
+      return;
+    }
+
     if (pathname.startsWith("/api/admin/agents/")) {
       const agentId = pathname.split("/")[4];
       const agent = agentsResponse.items.find((item) => item.agent_id === agentId);
@@ -525,6 +530,22 @@ test("admin shell agents page deep-links to a selected agent", async (t) => {
   await idleVmItem.click();
   await assert.doesNotReject(() => page.getByRole("heading", { name: "Online idle VM" }).waitFor({ state: "visible" }));
   assert.match(await page.locator(".feature-toolbar-actions .status-pill").first().innerText(), /^idle$/i);
+
+  const agentSearch = page.getByRole("searchbox", { name: "Search agents" });
+  await agentSearch.fill("online idle");
+  await assert.doesNotReject(() => idleVmItem.waitFor({ state: "visible" }));
+  assert.equal(await page.locator(".agent-list-item").filter({ hasText: "Dispatch agent" }).count(), 0);
+  await agentSearch.fill("agent-1");
+  await assert.doesNotReject(() => page.locator(".agent-list-item").filter({ hasText: "Dispatch agent" }).waitFor({ state: "visible" }));
+  await page.evaluate(() => {
+    window.location.hash = "#agents?agent_id=agent-2&session_id=session-2";
+  });
+  await assert.doesNotReject(() => page.getByRole("heading", { name: "Container worker" }).waitFor({ state: "visible" }));
+  assert.equal(await agentSearch.inputValue(), "");
+  await page.evaluate(() => {
+    window.location.hash = "#agents?agent_id=agent-1&session_id=session-1";
+  });
+  await assert.doesNotReject(() => page.getByRole("heading", { name: "Dispatch agent" }).waitFor({ state: "visible" }));
 
   await page.locator(".agents-filter-grid label").filter({ hasText: "Status" }).locator("select").selectOption("active");
   await assert.doesNotReject(() => page.locator(".agent-list-item").filter({ hasText: "Dispatch agent" }).waitFor({ state: "visible" }));

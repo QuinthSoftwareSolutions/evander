@@ -166,13 +166,16 @@ const TUTORIAL_TRIGGER_NODE = {
   id: TUTORIAL_TRIGGER_NODE_ID,
   display_name: "Agent run completed",
   type: "trigger:agent:run:completed",
+  config: {},
 } satisfies WorkflowConfig["triggers"][number];
 
 const TUTORIAL_EFFECT_NODE = {
   id: TUTORIAL_EFFECT_NODE_ID,
   display_name: "Prompt agent",
   type: "effect:agent:prompt",
-  prompt: "${{tutorial-trigger.completed}}",
+  config: {
+    prompt: "${{tutorial-trigger.completed}}",
+  },
 } satisfies WorkflowConfig["effects"][number];
 
 const TUTORIAL_SEED_DOCUMENT: WorkflowEditorDocument = {

@@ -45,6 +45,7 @@ from evander.models import (
     ToolName,
 )
 from evander.runtime import build_runtime
+from config_helpers import write_runtime_config
 
 
 def _config(
@@ -120,25 +121,8 @@ def _service(
     )
 
 
-def _gateway_config_path(tmp_path: Path) -> Path:
-    runtime_dir = tmp_path / "runtime"
-    path = tmp_path / "gateway.yaml"
-    path.write_text(
-        "\n".join(
-            [
-                f'runtime_dir: "{runtime_dir}"',
-                f'audit_log_path: "{runtime_dir / "audit.jsonl"}"',
-                f'session_store_path: "{runtime_dir / "sessions.json"}"',
-                f'approval_store_path: "{runtime_dir / "approvals.json"}"',
-                f'draft_store_path: "{runtime_dir / "drafts.json"}"',
-                f'email_store_path: "{runtime_dir / "emails.json"}"',
-                f'discord_command_store_path: "{runtime_dir / "discord.json"}"',
-                "enable_directory_scoped_config: true",
-            ]
-        ),
-        encoding="utf-8",
-    )
-    return path
+def _runtime_dir(tmp_path: Path) -> Path:
+    return write_runtime_config(tmp_path, enable_directory_scoped_config=True)
 
 
 def test_connector_definition_rejects_reserved_headers_and_requires_explicit_approval() -> None:
@@ -1021,7 +1005,7 @@ def test_required_connector_approval_is_exact_and_single_use_despite_loose_tool_
 def test_admin_connector_api_is_revisioned_privileged_and_validates_before_write(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    service = build_admin_runtime(_gateway_config_path(tmp_path))
+    service = build_admin_runtime(_runtime_dir(tmp_path))
     configured = _config().model_dump(mode="json", exclude_none=True)
     write_result = service.operations_admin.write_directory_domain_config(
         "root", "connectors", configured
@@ -1106,7 +1090,7 @@ def test_admin_connector_api_authorizes_scoped_owner_at_requested_directory(
     monkeypatch.setenv("EVANDER_ADMIN_WEB_USERNAME", "admin")
     monkeypatch.setenv("EVANDER_ADMIN_WEB_PASSWORD", "admin-pass")
     monkeypatch.setenv("EVANDER_ADMIN_WEB_SESSION_SECRET", "test-secret")
-    service = build_admin_runtime(_gateway_config_path(tmp_path))
+    service = build_admin_runtime(_runtime_dir(tmp_path))
     created = service.directory_admin.create_child(parent="root", name="ops")
     assert created.ok
     config = _config()

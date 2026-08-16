@@ -36,6 +36,7 @@ from evander.triggers.providers.communication_new_message import (
 from evander.triggers.providers.teams_direct_message import TeamsDirectMessageTriggerProvider
 from evander.triggers.providers.teams_new_message import TeamsNewMessageTriggerProvider
 from evander.triggers.queue import TriggerEventQueue
+from config_helpers import canonical_workflow_payload
 
 
 def ensure_directory(worker, directory_path: str) -> None:
@@ -80,7 +81,10 @@ def write_trigger_config(
     payload = {"triggers": triggers}
     if extra:
         payload.update(extra)
-    trigger_config_path.write_text(json.dumps(payload), encoding="utf-8")
+    trigger_config_path.write_text(
+        json.dumps(canonical_workflow_payload(payload)),
+        encoding="utf-8",
+    )
 
 
 def write_teams_ingest_worker_config(

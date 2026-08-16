@@ -1135,6 +1135,9 @@ def _compact_project_repo(
             "base_branch",
             "branch_context_id",
             "agent_branch",
+            "commit_sha",
+            "pinned_ref",
+            "pinned_commit_sha",
         ),
     )
     git_contexts = [
@@ -1142,6 +1145,23 @@ def _compact_project_repo(
     ]
     if git_contexts:
         row["git_work_contexts"] = git_contexts
+    review_snapshots = [
+        _compact_fields(
+            snapshot,
+            (
+                "review_request_id",
+                "managed_repo_id",
+                "directory_path",
+                "commit_sha",
+                "pinned_ref",
+                "source_kind",
+                "source_ref",
+            ),
+        )
+        for snapshot in _mapping_rows(repo.get("review_repository_snapshots"))
+    ]
+    if review_snapshots:
+        row["review_repository_snapshots"] = review_snapshots
     if retained_delta and len(git_contexts) == 1 and git_contexts[0].get("state") == "active":
         active_context = git_contexts[0]
         for field_name in ("base_branch", "branch_context_id", "agent_branch"):
@@ -1164,12 +1184,26 @@ def _compact_review(review: Mapping[str, Any]) -> dict[str, Any]:
             "state",
             "review_profile_id",
             "candidate_commit_sha",
+            "reviewed_commit_sha",
             "created_at",
         ),
     )
     instructions = _optional_text(review.get("instructions"))
     if instructions is not None:
         row["instructions"] = _trim_text(instructions)
+    repository_snapshot = review.get("repository_snapshot")
+    if isinstance(repository_snapshot, Mapping):
+        row["repository_snapshot"] = _compact_fields(
+            repository_snapshot,
+            (
+                "managed_repo_id",
+                "directory_path",
+                "commit_sha",
+                "pinned_ref",
+                "source_kind",
+                "source_ref",
+            ),
+        )
     return row
 
 

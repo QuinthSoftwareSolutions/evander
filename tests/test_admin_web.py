@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from config_helpers import canonical_worker_config
+
 import asyncio
 import hashlib
 import hmac
@@ -42,7 +44,7 @@ from evander.admin.payloads import (
 )
 from evander.admin import release_metadata as release_metadata_module
 from evander.admin.web.cache import AdminWebJsonResponseCache
-from evander.admin.web.app import _workflow_run_events, create_app
+from evander.admin.web.app import _workflow_run_events, create_app as _create_app
 from evander.admin.web.shared import AdminWebConfig, request_has_privileged_operations
 from evander.admin.web.rbac import (
     ADMIN_OWNER_PERMISSION,
@@ -69,7 +71,7 @@ from evander.capacity_health import (
     TelemetryError,
     TelemetryStatus,
 )
-from evander.config import GatewayConfig, TriggerOrchestratorWorkerGlobalConfig
+from evander.config import GatewayConfig
 from evander.daemons.effect_orchestrator import (
     EffectExecutionRecord,
     GateExecutionRecord,
@@ -111,6 +113,7 @@ from evander.models import (
     ApprovalRequest,
     ApprovalStatus,
     LocalIssueRecord,
+    RemoteIssueReference,
     SessionManifest,
     SessionSummary,
     ToolName,
@@ -125,6 +128,11 @@ from evander.repositories.orchestration_db import connect_orchestration_db
 from evander.triggers.queue import SqliteTriggerEventQueue
 from evander.triggers.queue import TriggerEventQueue
 from evander.worker.models import WorkerSessionRecord
+from config_helpers import (
+    canonical_workflow_payload,
+    canonicalize_workflow_files,
+    write_runtime_config,
+)
 
 
 def write_config(
@@ -133,23 +141,16 @@ def write_config(
     enable_directory_scoped_config: bool = False,
     execution_backend: str = "libvirt_vm",
 ) -> Path:
-    runtime_dir = tmp_path / "runtime"
-    config_path = tmp_path / "gateway.yaml"
-    lines = [
-        f'runtime_dir: "{runtime_dir}"',
-        f'audit_log_path: "{runtime_dir / "audit.jsonl"}"',
-        f'session_store_path: "{runtime_dir / "sessions.json"}"',
-        f'approval_store_path: "{runtime_dir / "approvals.json"}"',
-        f'draft_store_path: "{runtime_dir / "drafts.json"}"',
-        f'email_store_path: "{runtime_dir / "emails.json"}"',
-        f'discord_command_store_path: "{runtime_dir / "discord_commands.json"}"',
-    ]
-    if enable_directory_scoped_config:
-        lines.append("enable_directory_scoped_config: true")
-    if execution_backend != "libvirt_vm":
-        lines.append(f'execution_backend: "{execution_backend}"')
-    config_path.write_text("\n".join(lines), encoding="utf-8")
-    return config_path
+    return write_runtime_config(
+        tmp_path,
+        enable_directory_scoped_config=enable_directory_scoped_config,
+        execution_backend=execution_backend,
+    )
+
+
+def create_app(service: AdminRuntimeComponents, *args, **kwargs):
+    canonicalize_workflow_files(service.project_dir)
+    return _create_app(service, *args, **kwargs)
 
 
 def wait_for_agent_create_operation_status(
@@ -498,12 +499,14 @@ def _write_workflow_webhook_config(
         )
     config_path.write_text(
         json.dumps(
-            {
-                "runtime_dir": str(tmp_path / "runtime"),
-                "poll_interval_seconds": 1,
-                "jitter_seconds": 0,
-                "triggers": triggers,
-            },
+            canonical_workflow_payload(
+                {
+                    "runtime_dir": str(tmp_path / "runtime"),
+                    "poll_interval_seconds": 1,
+                    "jitter_seconds": 0,
+                    "triggers": triggers,
+                }
+            ),
             indent=2,
         ),
         encoding="utf-8",
@@ -3067,27 +3070,29 @@ def test_admin_web_delete_skill_blocks_inline_workflow_references(
         == 201
     )
     payload = {
-        "config": {
-            "runtime_dir": str(tmp_path / "runtime"),
-            "effects": [
-                {
-                    "id": "create-agent",
-                    "display_name": "Create agent",
-                    "type": "effect:agent:create",
-                    "execution_backend": "container_worker_vm",
-                    "session_id": "agent-session",
-                    "codex_skills": ["demo.skill", "keep.skill"],
-                },
-                {
-                    "id": "create-vm",
-                    "display_name": "Create VM",
-                    "type": "effect:vm:create",
-                    "vm_name": "vm-skill-test",
-                    "codex_skills": ["demo.skill"],
-                },
-            ],
-            "edges": [],
-        },
+        "config": canonical_workflow_payload(
+            {
+                "runtime_dir": str(tmp_path / "runtime"),
+                "effects": [
+                    {
+                        "id": "create-agent",
+                        "display_name": "Create agent",
+                        "type": "effect:agent:create",
+                        "execution_backend": "container_worker_vm",
+                        "session_id": "agent-session",
+                        "codex_skills": ["demo.skill", "keep.skill"],
+                    },
+                    {
+                        "id": "create-vm",
+                        "display_name": "Create VM",
+                        "type": "effect:vm:create",
+                        "vm_name": "vm-skill-test",
+                        "codex_skills": ["demo.skill"],
+                    },
+                ],
+                "edges": [],
+            }
+        ),
         "layout": {"nodes": {}},
         "expected_revision": _workflow_expected_revision(client),
     }
@@ -3237,14 +3242,14 @@ def test_admin_web_delete_skill_blocks_workflow_pack_references(
         "node_id": "create-vm",
         "node_type": "effect:vm:create",
         "display_name": "Create VM",
-        "field_path": "codex_skills",
+        "field_path": "config.codex_skills",
         "reference_count": 1,
         "workflow_pack": "pack-a.v1.json",
     }
     pack_payload = json.loads(pack_path.read_text(encoding="utf-8"))
     nodes = pack_payload["ir"]["nodes"]
     assert nodes[0]["node"]["config"]["codex_skills"] == ["demo.skill", "keep.skill"]
-    assert nodes[1]["codex_skills"] == "demo.skill"
+    assert nodes[1]["config"]["codex_skills"] == "demo.skill"
 
 
 def test_admin_web_skills_api_rejects_json_errors(tmp_path: Path) -> None:
@@ -3651,26 +3656,28 @@ def test_admin_web_workflow_run_stream_includes_recent_node_activity_in_state_ke
 def test_admin_web_validates_and_saves_workflow_editor_document(tmp_path: Path) -> None:
     client = TestClient(create_app(build_admin_runtime(write_config(tmp_path))))
     payload = {
-        "config": {
-            "runtime_dir": str(tmp_path / "runtime"),
-            "triggers": [
-                {
-                    "id": "cron-15m",
-                    "display_name": "Every 15 minutes",
-                    "type": "trigger:cron",
-                    "expression": "*/15 * * * *",
-                }
-            ],
-            "effects": [
-                {
-                    "id": "prompt-agent",
-                    "display_name": "Prompt agent",
-                    "type": "effect:agent:prompt",
-                    "prompt": "Summarize",
-                }
-            ],
-            "edges": [{"source_id": "cron-15m", "target_id": "prompt-agent"}],
-        },
+        "config": canonical_workflow_payload(
+            {
+                "runtime_dir": str(tmp_path / "runtime"),
+                "triggers": [
+                    {
+                        "id": "cron-15m",
+                        "display_name": "Every 15 minutes",
+                        "type": "trigger:cron",
+                        "expression": "*/15 * * * *",
+                    }
+                ],
+                "effects": [
+                    {
+                        "id": "prompt-agent",
+                        "display_name": "Prompt agent",
+                        "type": "effect:agent:prompt",
+                        "prompt": "Summarize",
+                    }
+                ],
+                "edges": [{"source_id": "cron-15m", "target_id": "prompt-agent"}],
+            }
+        ),
         "layout": {
             "nodes": {
                 "cron-15m": {"x": 100, "y": 50},
@@ -3712,26 +3719,28 @@ def test_admin_web_workflow_editor_accepts_revision_returned_from_previous_save(
     service.directory_admin.create_child(parent="root", name="ops")
     client = TestClient(create_app(service))
     payload = {
-        "config": {
-            "runtime_dir": str(tmp_path / "runtime"),
-            "triggers": [
-                {
-                    "id": "cron-15m",
-                    "display_name": "Every 15 minutes",
-                    "type": "trigger:cron",
-                    "expression": "*/15 * * * *",
-                }
-            ],
-            "effects": [
-                {
-                    "id": "prompt-agent",
-                    "display_name": "Prompt agent",
-                    "type": "effect:agent:prompt",
-                    "prompt": "Summarize",
-                }
-            ],
-            "edges": [{"source_id": "cron-15m", "target_id": "prompt-agent"}],
-        },
+        "config": canonical_workflow_payload(
+            {
+                "runtime_dir": str(tmp_path / "runtime"),
+                "triggers": [
+                    {
+                        "id": "cron-15m",
+                        "display_name": "Every 15 minutes",
+                        "type": "trigger:cron",
+                        "expression": "*/15 * * * *",
+                    }
+                ],
+                "effects": [
+                    {
+                        "id": "prompt-agent",
+                        "display_name": "Prompt agent",
+                        "type": "effect:agent:prompt",
+                        "prompt": "Summarize",
+                    }
+                ],
+                "edges": [{"source_id": "cron-15m", "target_id": "prompt-agent"}],
+            }
+        ),
         "layout": {
             "nodes": {
                 "cron-15m": {"x": 100, "y": 50},
@@ -3769,26 +3778,28 @@ def test_admin_web_workflow_editor_accepts_revision_returned_from_previous_save(
 def test_admin_web_saves_disconnected_workflow_editor_document(tmp_path: Path) -> None:
     client = TestClient(create_app(build_admin_runtime(write_config(tmp_path))))
     payload = {
-        "config": {
-            "runtime_dir": str(tmp_path / "runtime"),
-            "triggers": [
-                {
-                    "id": "cron-15m",
-                    "display_name": "Every 15 minutes",
-                    "type": "trigger:cron",
-                    "expression": "*/15 * * * *",
-                }
-            ],
-            "effects": [
-                {
-                    "id": "prompt-agent",
-                    "display_name": "Prompt agent",
-                    "type": "effect:agent:prompt",
-                    "prompt": "Summarize",
-                }
-            ],
-            "edges": [],
-        },
+        "config": canonical_workflow_payload(
+            {
+                "runtime_dir": str(tmp_path / "runtime"),
+                "triggers": [
+                    {
+                        "id": "cron-15m",
+                        "display_name": "Every 15 minutes",
+                        "type": "trigger:cron",
+                        "expression": "*/15 * * * *",
+                    }
+                ],
+                "effects": [
+                    {
+                        "id": "prompt-agent",
+                        "display_name": "Prompt agent",
+                        "type": "effect:agent:prompt",
+                        "prompt": "Summarize",
+                    }
+                ],
+                "edges": [],
+            }
+        ),
         "layout": {
             "nodes": {
                 "cron-15m": {"x": 100, "y": 50},
@@ -3809,14 +3820,16 @@ def test_admin_web_workflow_editor_save_requires_matching_revision(tmp_path: Pat
     client = TestClient(create_app(build_admin_runtime(write_config(tmp_path))))
     _unlock_privileged_operations(client)
     payload = {
-        "config": {
-            "runtime_dir": str(tmp_path / "runtime"),
-            "triggers": [],
-            "gates": [],
-            "effects": [],
-            "queries": [],
-            "edges": [],
-        },
+        "config": canonical_workflow_payload(
+            {
+                "runtime_dir": str(tmp_path / "runtime"),
+                "triggers": [],
+                "gates": [],
+                "effects": [],
+                "queries": [],
+                "edges": [],
+            }
+        ),
         "layout": {"nodes": {}},
     }
 
@@ -3844,43 +3857,45 @@ def test_admin_web_workflow_editor_document_filters_unreadable_graphs(
     service = build_admin_runtime(write_config(tmp_path))
     service.directory_admin.create_child(parent="root", name="ops")
     service.workflow_config_admin.save_workflow_editor_document(
-        config={
-            "runtime_dir": str(tmp_path / "runtime"),
-            "triggers": [
-                {
-                    "id": "root-start",
-                    "display_name": "Root start",
-                    "type": "trigger:cron",
-                    "expression": "0 * * * *",
-                },
-                {
-                    "id": "ops-start",
-                    "display_name": "Ops start",
-                    "type": "trigger:cron",
-                    "expression": "15 * * * *",
-                },
-            ],
-            "gates": [
-                {
-                    "id": "root-filter",
-                    "display_name": "Root filter",
-                    "type": "gate:filter",
-                    "when": {"all": [{"left": "root", "equals": "root"}]},
-                },
-                {
-                    "id": "ops-filter",
-                    "display_name": "Ops filter",
-                    "type": "gate:filter",
-                    "when": {"all": [{"left": "ops", "equals": "ops"}]},
-                },
-            ],
-            "effects": [],
-            "queries": [],
-            "edges": [
-                {"source_id": "root-start", "target_id": "root-filter"},
-                {"source_id": "ops-start", "target_id": "ops-filter"},
-            ],
-        },
+        config=canonical_workflow_payload(
+            {
+                "runtime_dir": str(tmp_path / "runtime"),
+                "triggers": [
+                    {
+                        "id": "root-start",
+                        "display_name": "Root start",
+                        "type": "trigger:cron",
+                        "expression": "0 * * * *",
+                    },
+                    {
+                        "id": "ops-start",
+                        "display_name": "Ops start",
+                        "type": "trigger:cron",
+                        "expression": "15 * * * *",
+                    },
+                ],
+                "gates": [
+                    {
+                        "id": "root-filter",
+                        "display_name": "Root filter",
+                        "type": "gate:filter",
+                        "when": {"all": [{"left": "root", "equals": "root"}]},
+                    },
+                    {
+                        "id": "ops-filter",
+                        "display_name": "Ops filter",
+                        "type": "gate:filter",
+                        "when": {"all": [{"left": "ops", "equals": "ops"}]},
+                    },
+                ],
+                "effects": [],
+                "queries": [],
+                "edges": [
+                    {"source_id": "root-start", "target_id": "root-filter"},
+                    {"source_id": "ops-start", "target_id": "ops-filter"},
+                ],
+            }
+        ),
         layout={
             "nodes": {
                 "root-start": {"x": 100, "y": 50},
@@ -3981,43 +3996,45 @@ def test_admin_web_workflow_editor_routes_enforce_directory_permissions(
         },
     )
     service.workflow_config_admin.save_workflow_editor_document(
-        config={
-            "runtime_dir": str(tmp_path / "runtime"),
-            "triggers": [
-                {
-                    "id": "root-start",
-                    "display_name": "Root start",
-                    "type": "trigger:cron",
-                    "expression": "0 * * * *",
-                },
-                {
-                    "id": "ops-start",
-                    "display_name": "Ops start",
-                    "type": "trigger:cron",
-                    "expression": "15 * * * *",
-                },
-            ],
-            "gates": [
-                {
-                    "id": "root-filter",
-                    "display_name": "Root filter",
-                    "type": "gate:filter",
-                    "when": {"all": [{"left": "root", "equals": "root"}]},
-                },
-                {
-                    "id": "ops-filter",
-                    "display_name": "Ops filter",
-                    "type": "gate:filter",
-                    "when": {"all": [{"left": "ops", "equals": "ops"}]},
-                },
-            ],
-            "effects": [],
-            "queries": [],
-            "edges": [
-                {"source_id": "root-start", "target_id": "root-filter"},
-                {"source_id": "ops-start", "target_id": "ops-filter"},
-            ],
-        },
+        config=canonical_workflow_payload(
+            {
+                "runtime_dir": str(tmp_path / "runtime"),
+                "triggers": [
+                    {
+                        "id": "root-start",
+                        "display_name": "Root start",
+                        "type": "trigger:cron",
+                        "expression": "0 * * * *",
+                    },
+                    {
+                        "id": "ops-start",
+                        "display_name": "Ops start",
+                        "type": "trigger:cron",
+                        "expression": "15 * * * *",
+                    },
+                ],
+                "gates": [
+                    {
+                        "id": "root-filter",
+                        "display_name": "Root filter",
+                        "type": "gate:filter",
+                        "when": {"all": [{"left": "root", "equals": "root"}]},
+                    },
+                    {
+                        "id": "ops-filter",
+                        "display_name": "Ops filter",
+                        "type": "gate:filter",
+                        "when": {"all": [{"left": "ops", "equals": "ops"}]},
+                    },
+                ],
+                "effects": [],
+                "queries": [],
+                "edges": [
+                    {"source_id": "root-start", "target_id": "root-filter"},
+                    {"source_id": "ops-start", "target_id": "ops-filter"},
+                ],
+            }
+        ),
         layout={
             "nodes": {
                 "root-start": {"x": 100, "y": 50},
@@ -4061,26 +4078,28 @@ def test_admin_web_workflow_editor_routes_enforce_directory_permissions(
     validate_response = client.post(
         "/api/workflow-editor/validate",
         json={
-            "config": {
-                "runtime_dir": str(tmp_path / "runtime"),
-                "triggers": [
-                    {
-                        "id": "ops-start",
-                        "display_name": "Ops start",
-                        "type": "trigger:cron",
-                        "expression": "15 * * * *",
-                    }
-                ],
-                "gates": [
-                    {
-                        "id": "ops-filter",
-                        "display_name": "Ops filter",
-                        "type": "gate:filter",
-                        "when": {"all": [{"left": "ops", "equals": "ops"}]},
-                    }
-                ],
-                "edges": [{"source_id": "ops-start", "target_id": "ops-filter"}],
-            },
+            "config": canonical_workflow_payload(
+                {
+                    "runtime_dir": str(tmp_path / "runtime"),
+                    "triggers": [
+                        {
+                            "id": "ops-start",
+                            "display_name": "Ops start",
+                            "type": "trigger:cron",
+                            "expression": "15 * * * *",
+                        }
+                    ],
+                    "gates": [
+                        {
+                            "id": "ops-filter",
+                            "display_name": "Ops filter",
+                            "type": "gate:filter",
+                            "when": {"all": [{"left": "ops", "equals": "ops"}]},
+                        }
+                    ],
+                    "edges": [{"source_id": "ops-start", "target_id": "ops-filter"}],
+                }
+            ),
             "layout": {
                 "nodes": {
                     "ops-start": {"x": 100, "y": 250},
@@ -4107,26 +4126,28 @@ def test_admin_web_workflow_editor_routes_enforce_directory_permissions(
     save_denied = client.put(
         "/api/workflow-editor/document",
         json={
-            "config": {
-                "runtime_dir": str(tmp_path / "runtime"),
-                "triggers": [
-                    {
-                        "id": "ops-start",
-                        "display_name": "Ops start",
-                        "type": "trigger:cron",
-                        "expression": "15 * * * *",
-                    }
-                ],
-                "gates": [
-                    {
-                        "id": "ops-filter",
-                        "display_name": "Ops filter",
-                        "type": "gate:filter",
-                        "when": {"all": [{"left": "ops", "equals": "ops"}]},
-                    }
-                ],
-                "edges": [{"source_id": "ops-start", "target_id": "ops-filter"}],
-            },
+            "config": canonical_workflow_payload(
+                {
+                    "runtime_dir": str(tmp_path / "runtime"),
+                    "triggers": [
+                        {
+                            "id": "ops-start",
+                            "display_name": "Ops start",
+                            "type": "trigger:cron",
+                            "expression": "15 * * * *",
+                        }
+                    ],
+                    "gates": [
+                        {
+                            "id": "ops-filter",
+                            "display_name": "Ops filter",
+                            "type": "gate:filter",
+                            "when": {"all": [{"left": "ops", "equals": "ops"}]},
+                        }
+                    ],
+                    "edges": [{"source_id": "ops-start", "target_id": "ops-filter"}],
+                }
+            ),
             "layout": {
                 "nodes": {
                     "ops-start": {"x": 100, "y": 250},
@@ -4980,27 +5001,31 @@ def test_admin_web_workflow_run_controls_require_workflow_runs_control(
 
 def _workflow_binding_validation_payload(tmp_path: Path, prompt: str) -> dict[str, object]:
     return {
-        "config": {
-            "runtime_dir": str(tmp_path / "runtime"),
-            "triggers": [
-                {
-                    "id": "trigger-ticket-created-main",
-                    "display_name": "Ticket created",
-                    "type": "trigger:ticket:created",
-                    "directories": ["root"],
-                }
-            ],
-            "effects": [
-                {
-                    "id": "prompt-agent",
-                    "display_name": "Prompt agent",
-                    "type": "effect:agent:prompt",
-                    "session_id": "session-1",
-                    "prompt": prompt,
-                }
-            ],
-            "edges": [{"source_id": "trigger-ticket-created-main", "target_id": "prompt-agent"}],
-        },
+        "config": canonical_workflow_payload(
+            {
+                "runtime_dir": str(tmp_path / "runtime"),
+                "triggers": [
+                    {
+                        "id": "trigger-ticket-created-main",
+                        "display_name": "Ticket created",
+                        "type": "trigger:ticket:created",
+                        "directories": ["root"],
+                    }
+                ],
+                "effects": [
+                    {
+                        "id": "prompt-agent",
+                        "display_name": "Prompt agent",
+                        "type": "effect:agent:prompt",
+                        "session_id": "session-1",
+                        "prompt": prompt,
+                    }
+                ],
+                "edges": [
+                    {"source_id": "trigger-ticket-created-main", "target_id": "prompt-agent"}
+                ],
+            }
+        ),
         "layout": {
             "nodes": {
                 "trigger-ticket-created-main": {"x": 100, "y": 50},
@@ -5012,37 +5037,45 @@ def _workflow_binding_validation_payload(tmp_path: Path, prompt: str) -> dict[st
 
 def _agent_create_clone_validation_payload(tmp_path: Path) -> dict[str, object]:
     return {
-        "config": {
-            "runtime_dir": str(tmp_path / "runtime"),
-            "triggers": [
-                {
-                    "id": "trigger-ticket-created-main",
-                    "display_name": "Ticket created",
-                    "type": "trigger:ticket:created",
-                    "directories": ["root"],
-                }
-            ],
-            "effects": [
-                {
-                    "id": "effect-agent-create-1",
-                    "display_name": "Create agent",
-                    "type": "effect:agent:create",
-                    "execution_backend": "container_worker_vm",
-                    "session_id": "session-1",
-                },
-                {
-                    "id": "effect-agent-clone-repo-1",
-                    "display_name": "Clone repo",
-                    "type": "effect:agent:clone-repo",
-                    "target": "${{effect-agent-create-1.session_id}}",
-                    "managed_repo_id": "mr_0123456789abcdefabcd",
-                },
-            ],
-            "edges": [
-                {"source_id": "trigger-ticket-created-main", "target_id": "effect-agent-create-1"},
-                {"source_id": "effect-agent-create-1", "target_id": "effect-agent-clone-repo-1"},
-            ],
-        },
+        "config": canonical_workflow_payload(
+            {
+                "runtime_dir": str(tmp_path / "runtime"),
+                "triggers": [
+                    {
+                        "id": "trigger-ticket-created-main",
+                        "display_name": "Ticket created",
+                        "type": "trigger:ticket:created",
+                        "directories": ["root"],
+                    }
+                ],
+                "effects": [
+                    {
+                        "id": "effect-agent-create-1",
+                        "display_name": "Create agent",
+                        "type": "effect:agent:create",
+                        "execution_backend": "container_worker_vm",
+                        "session_id": "session-1",
+                    },
+                    {
+                        "id": "effect-agent-clone-repo-1",
+                        "display_name": "Clone repo",
+                        "type": "effect:agent:clone-repo",
+                        "target": "${{effect-agent-create-1.session_id}}",
+                        "managed_repo_id": "mr_0123456789abcdefabcd",
+                    },
+                ],
+                "edges": [
+                    {
+                        "source_id": "trigger-ticket-created-main",
+                        "target_id": "effect-agent-create-1",
+                    },
+                    {
+                        "source_id": "effect-agent-create-1",
+                        "target_id": "effect-agent-clone-repo-1",
+                    },
+                ],
+            }
+        ),
         "layout": {
             "nodes": {
                 "trigger-ticket-created-main": {"x": 100, "y": 50},
@@ -5142,6 +5175,7 @@ def test_admin_web_validate_selected_workflow_pack_checks_sibling_pack_ids(
         ),
         encoding="utf-8",
     )
+    canonicalize_workflow_files(tmp_path)
     document = service.workflow_config_admin.read_workflow_editor_document(
         workflow_pack="pack-b.v1.json"
     )
@@ -5473,14 +5507,16 @@ def test_admin_web_save_seeds_new_ticket_created_trigger_cursor(tmp_path: Path) 
     response = client.put(
         "/api/workflow-editor/document",
         json={
-            "config": {
-                "runtime_dir": str(runtime_dir),
-                "triggers": [existing_trigger, copied_trigger, email_trigger],
-                "gates": [],
-                "effects": [],
-                "queries": [],
-                "edges": [],
-            },
+            "config": canonical_workflow_payload(
+                {
+                    "runtime_dir": str(runtime_dir),
+                    "triggers": [existing_trigger, copied_trigger, email_trigger],
+                    "gates": [],
+                    "effects": [],
+                    "queries": [],
+                    "edges": [],
+                }
+            ),
             "layout": {"nodes": {}},
             "expected_revision": _workflow_expected_revision(client),
         },
@@ -5525,20 +5561,22 @@ def test_admin_web_validate_reports_agent_create_missing_execution_backend(
 ) -> None:
     client = TestClient(create_app(build_admin_runtime(write_config(tmp_path))))
     payload = {
-        "config": {
-            "runtime_dir": str(tmp_path / "runtime"),
-            "triggers": [],
-            "gates": [],
-            "effects": [
-                {
-                    "id": "agent-create",
-                    "display_name": "Create agent",
-                    "type": "effect:agent:create",
-                }
-            ],
-            "queries": [],
-            "edges": [],
-        },
+        "config": canonical_workflow_payload(
+            {
+                "runtime_dir": str(tmp_path / "runtime"),
+                "triggers": [],
+                "gates": [],
+                "effects": [
+                    {
+                        "id": "agent-create",
+                        "display_name": "Create agent",
+                        "type": "effect:agent:create",
+                    }
+                ],
+                "queries": [],
+                "edges": [],
+            }
+        ),
         "layout": {"nodes": {"agent-create": {"x": 100, "y": 50}}},
     }
 
@@ -5560,54 +5598,56 @@ def test_admin_web_validate_preserves_domain_diagnostics_for_for_gate(
 ) -> None:
     client = TestClient(create_app(build_admin_runtime(write_config(tmp_path))))
     payload = {
-        "config": {
-            "runtime_dir": str(tmp_path / "runtime"),
-            "triggers": [
-                {
-                    "id": "trigger-cron-1",
-                    "display_name": "Cron",
-                    "type": "trigger:cron",
-                    "expression": "* * * * *",
-                }
-            ],
-            "queries": [
-                {
-                    "id": "query-pull-request-list-1",
-                    "display_name": "Pull request list",
-                    "type": "query:pull-request:list",
-                    "provider": "azure_devops",
-                    "repo": "repo-name",
-                    "status": "active",
-                    "top": 50,
-                }
-            ],
-            "gates": [
-                {
-                    "id": "gate-for-1",
-                    "display_name": "For each item",
-                    "type": "gate:for",
-                    "items": "${{query-pull-request-list-1.pull_requests}}",
-                }
-            ],
-            "effects": [
-                {
-                    "id": "effect-invalid-1",
-                    "display_name": "Invalid edge target",
-                    "type": "effect:event:emit",
-                    "event_type": "for_gate_invalid_edge",
-                    "payload": {},
-                }
-            ],
-            "edges": [
-                {"source_id": "trigger-cron-1", "target_id": "query-pull-request-list-1"},
-                {"source_id": "query-pull-request-list-1", "target_id": "gate-for-1"},
-                {
-                    "source_id": "gate-for-1",
-                    "source_port": "other",
-                    "target_id": "effect-invalid-1",
-                },
-            ],
-        },
+        "config": canonical_workflow_payload(
+            {
+                "runtime_dir": str(tmp_path / "runtime"),
+                "triggers": [
+                    {
+                        "id": "trigger-cron-1",
+                        "display_name": "Cron",
+                        "type": "trigger:cron",
+                        "expression": "* * * * *",
+                    }
+                ],
+                "queries": [
+                    {
+                        "id": "query-pull-request-list-1",
+                        "display_name": "Pull request list",
+                        "type": "query:pull-request:list",
+                        "provider": "azure_devops",
+                        "repo": "repo-name",
+                        "status": "active",
+                        "top": 50,
+                    }
+                ],
+                "gates": [
+                    {
+                        "id": "gate-for-1",
+                        "display_name": "For each item",
+                        "type": "gate:for",
+                        "items": "${{query-pull-request-list-1.pull_requests}}",
+                    }
+                ],
+                "effects": [
+                    {
+                        "id": "effect-invalid-1",
+                        "display_name": "Invalid edge target",
+                        "type": "effect:event:emit",
+                        "event_type": "for_gate_invalid_edge",
+                        "payload": {},
+                    }
+                ],
+                "edges": [
+                    {"source_id": "trigger-cron-1", "target_id": "query-pull-request-list-1"},
+                    {"source_id": "query-pull-request-list-1", "target_id": "gate-for-1"},
+                    {
+                        "source_id": "gate-for-1",
+                        "source_port": "other",
+                        "target_id": "effect-invalid-1",
+                    },
+                ],
+            }
+        ),
         "layout": {"nodes": {}},
         "graphs": [],
     }
@@ -5628,43 +5668,45 @@ def test_admin_web_validate_requires_while_body_loopback(
 ) -> None:
     client = TestClient(create_app(build_admin_runtime(write_config(tmp_path))))
     payload = {
-        "config": {
-            "runtime_dir": str(tmp_path / "runtime"),
-            "triggers": [
-                {
-                    "id": "trigger-cron-1",
-                    "display_name": "Cron",
-                    "type": "trigger:cron",
-                    "expression": "* * * * *",
-                }
-            ],
-            "gates": [
-                {
-                    "id": "gate-while-1",
-                    "display_name": "Retry while failing",
-                    "type": "gate:while",
-                    "when": {"left": 1, "equals": 1},
-                    "max_iterations": 3,
-                }
-            ],
-            "effects": [
-                {
-                    "id": "effect-body-1",
-                    "display_name": "Body",
-                    "type": "effect:event:emit",
-                    "event_type": "while_body",
-                    "payload": {},
-                }
-            ],
-            "edges": [
-                {"source_id": "trigger-cron-1", "target_id": "gate-while-1"},
-                {
-                    "source_id": "gate-while-1",
-                    "source_port": "body",
-                    "target_id": "effect-body-1",
-                },
-            ],
-        },
+        "config": canonical_workflow_payload(
+            {
+                "runtime_dir": str(tmp_path / "runtime"),
+                "triggers": [
+                    {
+                        "id": "trigger-cron-1",
+                        "display_name": "Cron",
+                        "type": "trigger:cron",
+                        "expression": "* * * * *",
+                    }
+                ],
+                "gates": [
+                    {
+                        "id": "gate-while-1",
+                        "display_name": "Retry while failing",
+                        "type": "gate:while",
+                        "when": {"left": 1, "equals": 1},
+                        "max_iterations": 3,
+                    }
+                ],
+                "effects": [
+                    {
+                        "id": "effect-body-1",
+                        "display_name": "Body",
+                        "type": "effect:event:emit",
+                        "event_type": "while_body",
+                        "payload": {},
+                    }
+                ],
+                "edges": [
+                    {"source_id": "trigger-cron-1", "target_id": "gate-while-1"},
+                    {
+                        "source_id": "gate-while-1",
+                        "source_port": "body",
+                        "target_id": "effect-body-1",
+                    },
+                ],
+            }
+        ),
         "layout": {"nodes": {}},
         "graphs": [],
     }
@@ -5689,57 +5731,59 @@ def test_admin_web_validate_exposes_backend_output_schemas_for_switch_gate(
 ) -> None:
     client = TestClient(create_app(build_admin_runtime(write_config(tmp_path))))
     payload = {
-        "config": {
-            "runtime_dir": str(tmp_path / "runtime"),
-            "triggers": [
-                {
-                    "id": "trigger-ticket-created-main",
-                    "display_name": "Ticket created",
-                    "type": "trigger:ticket:created",
-                    "directories": ["root"],
-                }
-            ],
-            "gates": [
-                {
-                    "id": "gate-switch-1",
-                    "display_name": "Route ticket",
-                    "type": "gate:switch",
-                    "default_port": "fallback",
-                    "cases": [
-                        {
-                            "port": "ready",
-                            "label": "Ready route",
-                            "when": {
-                                "left": "${{trigger-ticket-created-main.ticket.state}}",
-                                "equals": "ready",
+        "config": canonical_workflow_payload(
+            {
+                "runtime_dir": str(tmp_path / "runtime"),
+                "triggers": [
+                    {
+                        "id": "trigger-ticket-created-main",
+                        "display_name": "Ticket created",
+                        "type": "trigger:ticket:created",
+                        "directories": ["root"],
+                    }
+                ],
+                "gates": [
+                    {
+                        "id": "gate-switch-1",
+                        "display_name": "Route ticket",
+                        "type": "gate:switch",
+                        "default_port": "fallback",
+                        "cases": [
+                            {
+                                "port": "ready",
+                                "label": "Ready route",
+                                "when": {
+                                    "left": "${{trigger-ticket-created-main.ticket.state}}",
+                                    "equals": "ready",
+                                },
                             },
-                        },
-                        {
-                            "port": "ready",
-                            "label": "Ready match",
-                            "match": {"ticket": {"state": "ready"}},
-                        },
-                    ],
-                }
-            ],
-            "effects": [
-                {
-                    "id": "prompt-agent",
-                    "display_name": "Prompt agent",
-                    "type": "effect:agent:prompt",
-                    "session_id": "session-1",
-                    "prompt": "Review ${{gate-switch-1.ticket.body}}",
-                }
-            ],
-            "edges": [
-                {"source_id": "trigger-ticket-created-main", "target_id": "gate-switch-1"},
-                {
-                    "source_id": "gate-switch-1",
-                    "source_port": "ready",
-                    "target_id": "prompt-agent",
-                },
-            ],
-        },
+                            {
+                                "port": "ready",
+                                "label": "Ready match",
+                                "match": {"ticket": {"state": "ready"}},
+                            },
+                        ],
+                    }
+                ],
+                "effects": [
+                    {
+                        "id": "prompt-agent",
+                        "display_name": "Prompt agent",
+                        "type": "effect:agent:prompt",
+                        "session_id": "session-1",
+                        "prompt": "Review ${{gate-switch-1.ticket.body}}",
+                    }
+                ],
+                "edges": [
+                    {"source_id": "trigger-ticket-created-main", "target_id": "gate-switch-1"},
+                    {
+                        "source_id": "gate-switch-1",
+                        "source_port": "ready",
+                        "target_id": "prompt-agent",
+                    },
+                ],
+            }
+        ),
         "layout": {"nodes": {}},
         "graphs": [],
     }
@@ -5774,41 +5818,43 @@ def test_admin_web_validate_exposes_backend_output_schemas_for_agent_prompt_effe
 ) -> None:
     client = TestClient(create_app(build_admin_runtime(write_config(tmp_path))))
     payload = {
-        "config": {
-            "runtime_dir": str(tmp_path / "runtime"),
-            "triggers": [
-                {
-                    "id": "trigger-cron-1",
-                    "display_name": "Tick",
-                    "type": "trigger:cron",
-                    "expression": "* * * * *",
-                }
-            ],
-            "effects": [
-                {
-                    "id": "effect-prompt-1",
-                    "display_name": "Prompt",
-                    "type": "effect:agent:prompt",
-                    "session_id": "session-1",
-                    "prompt": "Continue",
-                },
-                {
-                    "id": "effect-enqueue-1",
-                    "display_name": "Enqueue",
-                    "type": "effect:agent:enqueue-prompt",
-                    "session_id": "session-1",
-                    "prompt": "Continue",
-                },
-            ],
-            "edges": [
-                {"source_id": "trigger-cron-1", "target_id": "effect-prompt-1"},
-                {
-                    "source_id": "effect-prompt-1",
-                    "target_id": "effect-enqueue-1",
-                    "source_port": "started",
-                },
-            ],
-        }
+        "config": canonical_workflow_payload(
+            {
+                "runtime_dir": str(tmp_path / "runtime"),
+                "triggers": [
+                    {
+                        "id": "trigger-cron-1",
+                        "display_name": "Tick",
+                        "type": "trigger:cron",
+                        "expression": "* * * * *",
+                    }
+                ],
+                "effects": [
+                    {
+                        "id": "effect-prompt-1",
+                        "display_name": "Prompt",
+                        "type": "effect:agent:prompt",
+                        "session_id": "session-1",
+                        "prompt": "Continue",
+                    },
+                    {
+                        "id": "effect-enqueue-1",
+                        "display_name": "Enqueue",
+                        "type": "effect:agent:enqueue-prompt",
+                        "session_id": "session-1",
+                        "prompt": "Continue",
+                    },
+                ],
+                "edges": [
+                    {"source_id": "trigger-cron-1", "target_id": "effect-prompt-1"},
+                    {
+                        "source_id": "effect-prompt-1",
+                        "target_id": "effect-enqueue-1",
+                        "source_port": "started",
+                    },
+                ],
+            }
+        )
     }
 
     response = client.post("/api/workflow-editor/validate", json=payload)
@@ -5844,53 +5890,55 @@ def test_admin_web_validate_exposes_backend_output_schemas_for_state_nodes(
 ) -> None:
     client = TestClient(create_app(build_admin_runtime(write_config(tmp_path))))
     payload = {
-        "config": {
-            "runtime_dir": str(tmp_path / "runtime"),
-            "triggers": [
-                {
-                    "id": "trigger-state",
-                    "display_name": "State trigger",
-                    "type": "trigger:cron",
-                    "expression": "* * * * *",
-                }
-            ],
-            "effects": [
-                {
-                    "id": "effect-state-update-1",
-                    "display_name": "Update workflow state",
-                    "type": "effect:state:update",
-                    "namespace": "workflow",
-                    "key": "cursor",
-                    "operation": "set",
-                    "value": {"step": 1},
-                }
-            ],
-            "queries": [
-                {
-                    "id": "query-state-get-1",
-                    "display_name": "Read workflow state",
-                    "type": "query:state:get",
-                    "namespace": "workflow",
-                    "key": "cursor",
-                }
-            ],
-            "edges": [
-                {"source_id": "trigger-state", "target_id": "effect-state-update-1"},
-                {"source_id": "effect-state-update-1", "target_id": "query-state-get-1"},
-            ],
-            "workflow_graphs": [
-                {
-                    "id": "graph-state",
-                    "name": "State graph",
-                    "directory_paths": ["root"],
-                    "node_ids": [
-                        "trigger-state",
-                        "effect-state-update-1",
-                        "query-state-get-1",
-                    ],
-                }
-            ],
-        },
+        "config": canonical_workflow_payload(
+            {
+                "runtime_dir": str(tmp_path / "runtime"),
+                "triggers": [
+                    {
+                        "id": "trigger-state",
+                        "display_name": "State trigger",
+                        "type": "trigger:cron",
+                        "expression": "* * * * *",
+                    }
+                ],
+                "effects": [
+                    {
+                        "id": "effect-state-update-1",
+                        "display_name": "Update workflow state",
+                        "type": "effect:state:update",
+                        "namespace": "workflow",
+                        "key": "cursor",
+                        "operation": "set",
+                        "value": {"step": 1},
+                    }
+                ],
+                "queries": [
+                    {
+                        "id": "query-state-get-1",
+                        "display_name": "Read workflow state",
+                        "type": "query:state:get",
+                        "namespace": "workflow",
+                        "key": "cursor",
+                    }
+                ],
+                "edges": [
+                    {"source_id": "trigger-state", "target_id": "effect-state-update-1"},
+                    {"source_id": "effect-state-update-1", "target_id": "query-state-get-1"},
+                ],
+                "workflow_graphs": [
+                    {
+                        "id": "graph-state",
+                        "name": "State graph",
+                        "directory_paths": ["root"],
+                        "node_ids": [
+                            "trigger-state",
+                            "effect-state-update-1",
+                            "query-state-get-1",
+                        ],
+                    }
+                ],
+            }
+        ),
         "layout": {
             "nodes": {
                 "trigger-state": {"x": 100, "y": 50},
@@ -5967,6 +6015,7 @@ def test_admin_web_validate_scopes_binding_diagnostics_to_workflow_graphs(
             ],
         },
     ]
+    payload["config"] = canonical_workflow_payload(config)
 
     response = client.post("/api/workflow-editor/validate", json=payload)
 
@@ -7160,6 +7209,10 @@ def test_admin_web_uploads_single_file_as_published_artifact(tmp_path: Path) -> 
 
 
 def _write_json_payload(path: Path, payload: dict[str, object]) -> None:
+    if path.name == "config.json" and path.parent.name == "trigger-orchestrator":
+        payload = canonical_workflow_payload(payload)
+    elif path.parent.name == "workflow-packs" and path.suffix == ".json":
+        payload = canonical_workflow_payload(payload)
     path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
 
 
@@ -8158,23 +8211,51 @@ def test_admin_web_returns_400_for_invalid_workflow_editor_payload(tmp_path: Pat
     response = client.post(
         "/api/workflow-editor/validate",
         json={
-            "config": {
-                "runtime_dir": str(tmp_path / "runtime"),
-                "triggers": [
-                    {
-                        "id": "cron-15m",
-                        "display_name": "Every 15 minutes",
-                        "type": "trigger:cron",
-                        "expression": "*/15 * * * *",
-                    }
-                ],
-            },
+            "config": canonical_workflow_payload(
+                {
+                    "runtime_dir": str(tmp_path / "runtime"),
+                    "triggers": [
+                        {
+                            "id": "cron-15m",
+                            "display_name": "Every 15 minutes",
+                            "type": "trigger:cron",
+                            "expression": "*/15 * * * *",
+                        }
+                    ],
+                }
+            ),
             "layout": {"nodes": {"missing-node": {"x": 1, "y": 2}}},
         },
     )
 
     assert response.status_code == 400
     assert "unknown node IDs" in response.json()["error"]
+
+
+def test_admin_web_rejects_flat_workflow_node_provider_fields(tmp_path: Path) -> None:
+    client = TestClient(create_app(build_admin_runtime(write_config(tmp_path))))
+
+    response = client.post(
+        "/api/workflow-editor/validate",
+        json={
+            "config": {
+                "runtime_dir": str(tmp_path / "runtime"),
+                "triggers": [
+                    {
+                        "id": "cron-flat",
+                        "display_name": "Flat cron",
+                        "type": "trigger:cron",
+                        "expression": "*/15 * * * *",
+                    }
+                ],
+            },
+            "layout": {"nodes": {}},
+        },
+    )
+
+    assert response.status_code == 400
+    assert "triggers.0.expression" in response.json()["error"]
+    assert "Extra inputs are not permitted" in response.json()["error"]
 
 
 def test_admin_web_load_normalizes_stale_filter_outputs(tmp_path: Path) -> None:
@@ -9035,21 +9116,23 @@ def test_workflow_event_api_published_event_is_consumed_by_event_trigger(
         json={"event_type": "deploy_requested", "payload": {"target": "demo"}},
     )
 
-    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
-        {
-            "runtime_dir": runtime_dir,
-            "orchestration_store_backend": "sqlite",
-            "poll_interval_seconds": 1,
-            "jitter_seconds": 0,
-            "triggers": [
-                {
-                    "id": "external-deploy",
-                    "display_name": "External deploy",
-                    "type": "trigger:event",
-                    "event_type": "external.deploy_requested",
-                }
-            ],
-        }
+    worker_config = canonical_worker_config(
+        canonical_workflow_payload(
+            {
+                "runtime_dir": runtime_dir,
+                "orchestration_store_backend": "sqlite",
+                "poll_interval_seconds": 1,
+                "jitter_seconds": 0,
+                "triggers": [
+                    {
+                        "id": "external-deploy",
+                        "display_name": "External deploy",
+                        "type": "trigger:event",
+                        "event_type": "external.deploy_requested",
+                    }
+                ],
+            }
+        )
     )
     worker = TriggerOrchestratorWorker(
         config=GatewayConfig(runtime_dir=runtime_dir),
@@ -11402,14 +11485,18 @@ def test_admin_web_worker_config_save_requires_matching_revision(tmp_path: Path)
     detail = detail_response.json()
     config = dict(detail["config"]["config"])
     config["poll_interval_seconds"] = int(config.get("poll_interval_seconds") or 5) + 1
-    config["triggers"] = [
+    config["triggers"] = canonical_workflow_payload(
         {
-            "id": "worker-email",
-            "display_name": "Worker email",
-            "type": "trigger:email:new-message",
-            "mailbox_ids": ["default"],
+            "triggers": [
+                {
+                    "id": "worker-email",
+                    "display_name": "Worker email",
+                    "type": "trigger:email:new-message",
+                    "mailbox_ids": ["default"],
+                }
+            ]
         }
-    ]
+    )["triggers"]
 
     missing = client.put(f"/api/workers/{worker_id}/config", json={"config": config})
     stale = client.put(
@@ -12540,11 +12627,11 @@ def test_admin_web_people_communications_tab_saves_sqlite_communication_targets(
         "provider": "discord",
         "kind": "discord",
         "address": "123456789012345678",
-            "policy": {
-                "capabilities": ["write"],
-                "auth_profile_ref": None,
-                "sender_identity": "platform",
-            },
+        "policy": {
+            "capabilities": ["write"],
+            "auth_profile_ref": None,
+            "sender_identity": "platform",
+        },
     }
     assert communications["raw"]["config"]["targets"][1] == {
         "id": "teams-primary",
@@ -16068,6 +16155,10 @@ def test_admin_web_issue_detail_uses_cached_proxy_data_without_remote_credential
         directory_path="root",
         source_type="remote_proxy",
         source="azure_devops",
+        remote_reference=RemoteIssueReference(
+            provider="azure_devops",
+            work_item_id="14378",
+        ),
         metadata={
             "remote": {"provider": "azure_devops", "issue_id": "14378"},
             "proxy_cache": {
@@ -16354,7 +16445,9 @@ def test_admin_web_workflow_catalog_exposes_throttle_gate(tmp_path: Path) -> Non
     response = client.get("/api/workflow-editor/catalog")
 
     assert response.status_code == 200
-    throttle_gate = next(node for node in response.json()["nodes"] if node["type"] == "gate:throttle")
+    throttle_gate = next(
+        node for node in response.json()["nodes"] if node["type"] == "gate:throttle"
+    )
     throttle_fields = {field["key"]: field for field in throttle_gate["fields"]}
     assert throttle_gate["label"] == "Throttle"
     assert [field["key"] for field in throttle_gate["fields"]] == [

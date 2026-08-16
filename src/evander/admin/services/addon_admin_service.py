@@ -355,7 +355,7 @@ class AddonAdminService:
         path = host_config_path(self.config.runtime_dir)
         if path.exists():
             return load_host_config(self.config.runtime_dir)
-        return HostConfig.from_legacy_gateway_config(self.config)
+        return HostConfig.from_gateway_config(self.config)
 
     def _worker_addon_loader(self, worker_config: Mapping[str, object]) -> AddonLoaderConfig:
         return AddonLoaderConfig.model_validate(worker_config.get("addon_loader") or {})

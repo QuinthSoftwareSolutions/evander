@@ -22,7 +22,7 @@ from evander.workflow.catalog import (
     WorkflowEditorNodeCatalogEntry,
     WorkflowEditorNodePortDefinition,
 )
-from evander.workflow.migrations import (
+from evander.workflow.lifecycle_ports import (
     AGENT_PROMPT_COMPLETED_PORT,
     AGENT_PROMPT_ERROR_PORT,
     AGENT_PROMPT_STARTED_PORT,

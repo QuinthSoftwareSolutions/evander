@@ -94,11 +94,6 @@ class FakeManagedGitAdmin:
         self.calls.append(("maintenance", args, kwargs))
         return {"maintained": [self.repository["managed_repo_id"]]}
 
-    def migrate(self, *args: Any, **kwargs: Any) -> dict[str, Any]:
-        self.calls.append(("migrate", args, kwargs))
-        return {"stage": args[0], "migration_id": kwargs.get("migration_id")}
-
-
 def _route_client(
     managed_git: FakeManagedGitAdmin,
     *,
@@ -281,45 +276,22 @@ def test_managed_git_maintenance_cannot_expand_child_scope_to_all_repositories()
     assert auth.permission_paths == []
 
 
-def test_managed_git_migration_route_validates_stage_and_forwards_finalize_id() -> None:
+def test_managed_git_migration_cli_and_route_are_retired() -> None:
+    from evander.cli import app
+
     managed_git = FakeManagedGitAdmin()
     client, _ = _route_client(managed_git)
 
-    missing_id = client.post(
+    route_response = client.post(
         "/api/admin/git-repositories/migrate",
-        json={"stage": "finalize"},
+        json={"stage": "dry-run"},
     )
-    finalized = client.post(
-        "/api/admin/git-repositories/migrate",
-        json={"stage": "--FINALIZE", "migration_id": " migration-7 "},
-    )
+    cli_help = CliRunner().invoke(app, ["git-repos", "--help"])
 
-    assert missing_id.status_code == 400
-    assert "migration_id is required" in missing_id.json()["error"]
-    assert finalized.status_code == 200
-    assert finalized.json() == {"migration": {"stage": "finalize", "migration_id": "migration-7"}}
-    assert managed_git.calls == [("migrate", ("finalize",), {"migration_id": "migration-7"})]
-
-
-def test_managed_git_migration_dry_run_does_not_require_privilege_unlock() -> None:
-    managed_git = FakeManagedGitAdmin()
-    client, auth = _route_client(managed_git, privileged=False)
-
-    dry_run = client.post(
-        "/api/admin/git-repositories/migrate",
-        json={"stage": "dry_run"},
-    )
-    apply = client.post(
-        "/api/admin/git-repositories/migrate",
-        json={"stage": "apply"},
-    )
-
-    assert dry_run.status_code == 200
-    assert dry_run.json()["migration"]["stage"] == "dry-run"
-    assert apply.status_code == 403
-    assert apply.json() == {"error": "Privileged operations are locked."}
-    assert managed_git.calls == [("migrate", ("dry-run",), {"migration_id": None})]
-    assert auth.permission_paths == ["root", "root", "root"]
+    assert route_response.status_code == 405
+    assert cli_help.exit_code == 0
+    assert "migrate" not in cli_help.output
+    assert managed_git.calls == []
 
 
 def test_git_repos_cli_emits_json_and_forwards_registration(monkeypatch) -> None:
@@ -504,32 +476,3 @@ def test_git_repos_cli_exposes_agent_grant_revoke_and_clone_commands(monkeypatch
         ),
         ("revoke", ("session-1", repo_id), {}),
     ]
-
-
-def test_git_repos_cli_requires_exactly_one_migration_stage(monkeypatch) -> None:
-    from evander.cli import app
-
-    managed_git = FakeManagedGitAdmin()
-    monkeypatch.setattr(
-        "evander.cli.build_admin_runtime",
-        lambda _config: SimpleNamespace(managed_git_admin=managed_git),
-    )
-    runner = CliRunner()
-
-    missing = runner.invoke(app, ["git-repos", "migrate"])
-    conflicting = runner.invoke(app, ["git-repos", "migrate", "--dry-run", "--apply"])
-    finalized = runner.invoke(
-        app,
-        ["git-repos", "migrate", "--finalize", "migration-9"],
-    )
-
-    assert missing.exit_code == 2
-    assert "Provide exactly one migration stage" in missing.output
-    assert conflicting.exit_code == 2
-    assert "Provide exactly one migration stage" in conflicting.output
-    assert finalized.exit_code == 0, finalized.output
-    assert json.loads(finalized.output) == {
-        "migration_id": "migration-9",
-        "stage": "finalize",
-    }
-    assert managed_git.calls == [("migrate", ("finalize",), {"migration_id": "migration-9"})]

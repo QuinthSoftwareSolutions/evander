@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from config_helpers import canonical_worker_config
+
 import json
 import logging
 import sys
@@ -13,7 +15,6 @@ from types import SimpleNamespace
 import pytest
 import yaml
 
-from evander.admin.services.managed_git_service import ManagedGitAdminService
 from evander.config import GatewayConfig, TriggerOrchestratorWorkerGlobalConfig
 from evander.execution import ExecutionStatusKind
 from evander.effects.providers.agent_enqueue_prompt import AgentEnqueuePromptEffectProvider
@@ -464,7 +465,7 @@ def _future_wake_worker_config(
     edges = [_edge("trigger-1", first_node_id)]
     if include_downstream_effect:
         edges.append(_edge("effect-1", "effect-2"))
-    return TriggerOrchestratorWorkerGlobalConfig.model_validate(
+    return canonical_worker_config(
         {
             "runtime_dir": runtime_dir,
             "poll_interval_seconds": 1,
@@ -597,7 +598,7 @@ def test_matching_outbound_edges_honors_resume_target_node() -> None:
 
 
 def test_build_execution_graph_resolves_state_workflow_graph_metadata() -> None:
-    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+    worker_config = canonical_worker_config(
         {
             "runtime_dir": Path("runtime"),
             "triggers": [
@@ -659,7 +660,7 @@ def test_effect_orchestrator_executes_state_nodes_with_graph_isolation(
 ) -> None:
     runtime_dir = tmp_path / "runtime"
     config = GatewayConfig(runtime_dir=runtime_dir)
-    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+    worker_config = canonical_worker_config(
         {
             "runtime_dir": runtime_dir,
             "poll_interval_seconds": 1,
@@ -806,7 +807,7 @@ def test_effect_orchestrator_rejects_state_nodes_without_persisted_graph_metadat
     state_path.write_text('{"sentinel": true}', encoding="utf-8")
 
     config = GatewayConfig(runtime_dir=runtime_dir)
-    valid_worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+    valid_worker_config = canonical_worker_config(
         {
             "runtime_dir": runtime_dir,
             "poll_interval_seconds": 1,
@@ -880,7 +881,7 @@ def test_effect_orchestrator_threads_graph_metadata_into_provider_contexts(
 ) -> None:
     runtime_dir = tmp_path / "runtime"
     config = GatewayConfig(runtime_dir=runtime_dir)
-    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+    worker_config = canonical_worker_config(
         {
             "runtime_dir": runtime_dir,
             "poll_interval_seconds": 1,
@@ -992,27 +993,10 @@ def test_build_effect_orchestrator_worker_accepts_injected_services(tmp_path: Pa
     assert worker.runtime is not None
 
 
-def test_build_effect_orchestrator_worker_skips_managed_git_legacy_inventory(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    def _fail_inventory(_service: ManagedGitAdminService) -> None:
-        raise AssertionError("managed Git legacy inventory reached")
-
-    monkeypatch.setattr(ManagedGitAdminService, "_legacy_state_inventory", _fail_inventory)
-
-    worker = build_effect_orchestrator_worker(
-        GatewayConfig(runtime_dir=tmp_path / "runtime"),
-        project_dir=tmp_path,
-    )
-
-    assert worker.runtime is not None
-
-
 def test_effect_orchestrator_run_once_uses_reloaded_worker_config_for_sleep(tmp_path: Path) -> None:
     runtime_dir = tmp_path / "runtime"
     config = GatewayConfig(runtime_dir=runtime_dir)
-    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+    worker_config = canonical_worker_config(
         {
             "runtime_dir": runtime_dir,
             "poll_interval_seconds": 1,
@@ -1020,7 +1004,7 @@ def test_effect_orchestrator_run_once_uses_reloaded_worker_config_for_sleep(tmp_
             "triggers": [],
         }
     )
-    updated_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+    updated_config = canonical_worker_config(
         {
             "runtime_dir": runtime_dir,
             "poll_interval_seconds": 13,
@@ -1069,13 +1053,13 @@ def test_event_schedule_effect_uses_reloaded_scheduled_store_path(tmp_path: Path
         ],
         "edges": [_edge("trigger-1", "schedule-plan")],
     }
-    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+    worker_config = canonical_worker_config(
         {
             **base_worker_config,
             "scheduled_internal_event_store_path": old_store_path,
         }
     )
-    updated_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+    updated_config = canonical_worker_config(
         {
             **base_worker_config,
             "scheduled_internal_event_store_path": new_store_path,
@@ -1113,7 +1097,7 @@ def test_event_schedule_effect_uses_reloaded_scheduled_store_path(tmp_path: Path
 def test_effect_orchestrator_uses_shared_host_lock_manager(tmp_path: Path) -> None:
     runtime_dir = tmp_path / "runtime"
     config = GatewayConfig(runtime_dir=runtime_dir)
-    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+    worker_config = canonical_worker_config(
         {
             "runtime_dir": runtime_dir,
             "poll_interval_seconds": 1,
@@ -1364,7 +1348,7 @@ def test_effect_orchestrator_holds_delivery_for_gate_completion_pending(
 ) -> None:
     runtime_dir = tmp_path / "runtime"
     config = GatewayConfig(runtime_dir=runtime_dir)
-    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+    worker_config = canonical_worker_config(
         {
             "runtime_dir": runtime_dir,
             "poll_interval_seconds": 1,
@@ -1426,7 +1410,7 @@ def test_effect_orchestrator_holds_delivery_for_gate_completion_pending(
 def test_effect_orchestrator_logs_graph_revision_changes(tmp_path: Path, caplog) -> None:
     runtime_dir = tmp_path / "runtime"
     config = GatewayConfig(runtime_dir=runtime_dir)
-    first_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+    first_config = canonical_worker_config(
         {
             "runtime_dir": runtime_dir,
             "poll_interval_seconds": 1,
@@ -1450,7 +1434,7 @@ def test_effect_orchestrator_logs_graph_revision_changes(tmp_path: Path, caplog)
             "edges": [_edge("trigger-1", "effect-1")],
         }
     )
-    second_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+    second_config = canonical_worker_config(
         {
             "runtime_dir": runtime_dir,
             "poll_interval_seconds": 1,
@@ -1511,7 +1495,7 @@ def test_effect_orchestrator_logs_graph_revision_changes(tmp_path: Path, caplog)
 def test_effect_orchestrator_marks_removed_source_node_event_as_skipped(tmp_path: Path) -> None:
     runtime_dir = tmp_path / "runtime"
     config = GatewayConfig(runtime_dir=runtime_dir)
-    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+    worker_config = canonical_worker_config(
         {
             "runtime_dir": runtime_dir,
             "poll_interval_seconds": 1,
@@ -1548,7 +1532,7 @@ def test_effect_orchestrator_marks_removed_source_node_event_as_skipped(tmp_path
 def test_effect_orchestrator_executes_gate_and_effect_chain(tmp_path: Path) -> None:
     runtime_dir = tmp_path / "runtime"
     config = GatewayConfig(runtime_dir=runtime_dir)
-    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+    worker_config = canonical_worker_config(
         {
             "runtime_dir": runtime_dir,
             "poll_interval_seconds": 1,
@@ -1660,7 +1644,7 @@ def test_effect_orchestrator_executes_gate_and_effect_chain(tmp_path: Path) -> N
 def test_effect_orchestrator_hot_drains_fast_completion_chain(tmp_path: Path) -> None:
     runtime_dir = tmp_path / "runtime"
     config = GatewayConfig(runtime_dir=runtime_dir)
-    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+    worker_config = canonical_worker_config(
         {
             "runtime_dir": runtime_dir,
             "poll_interval_seconds": 1,
@@ -1740,7 +1724,7 @@ def test_effect_orchestrator_hot_drains_fast_completion_chain(tmp_path: Path) ->
 def test_effect_orchestrator_executes_query_nodes(tmp_path: Path) -> None:
     runtime_dir = tmp_path / "runtime"
     config = GatewayConfig(runtime_dir=runtime_dir)
-    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+    worker_config = canonical_worker_config(
         {
             "runtime_dir": runtime_dir,
             "poll_interval_seconds": 1,
@@ -1833,7 +1817,7 @@ def test_effect_orchestrator_session_list_query_applies_graph_directory_metadata
             metadata={"purpose": "spec"},
         ),
     }
-    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+    worker_config = canonical_worker_config(
         {
             "runtime_dir": runtime_dir,
             "poll_interval_seconds": 1,
@@ -1910,7 +1894,7 @@ def test_effect_orchestrator_session_list_query_applies_graph_directory_metadata
 def test_effect_orchestrator_executes_issue_get_query_nodes(tmp_path: Path) -> None:
     runtime_dir = tmp_path / "runtime"
     config = GatewayConfig(runtime_dir=runtime_dir)
-    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+    worker_config = canonical_worker_config(
         {
             "runtime_dir": runtime_dir,
             "poll_interval_seconds": 1,
@@ -1971,7 +1955,7 @@ def test_effect_orchestrator_persists_binding_error_on_failed_resolution(
 ) -> None:
     runtime_dir = tmp_path / "runtime"
     config = GatewayConfig(runtime_dir=runtime_dir)
-    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+    worker_config = canonical_worker_config(
         {
             "runtime_dir": runtime_dir,
             "poll_interval_seconds": 1,
@@ -2027,7 +2011,7 @@ def test_effect_orchestrator_persists_workflow_config_snapshot_in_sqlite_backend
 ) -> None:
     runtime_dir = tmp_path / "runtime"
     config = GatewayConfig(runtime_dir=runtime_dir)
-    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+    worker_config = canonical_worker_config(
         {
             "runtime_dir": runtime_dir,
             "orchestration_store_backend": "sqlite",
@@ -2080,7 +2064,7 @@ def test_effect_orchestrator_persists_workflow_config_snapshot_in_sqlite_backend
 def test_effect_orchestrator_persists_provider_reported_failure_message(tmp_path: Path) -> None:
     runtime_dir = tmp_path / "runtime"
     config = GatewayConfig(runtime_dir=runtime_dir)
-    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+    worker_config = canonical_worker_config(
         {
             "runtime_dir": runtime_dir,
             "poll_interval_seconds": 1,
@@ -2143,7 +2127,7 @@ def test_effect_orchestrator_persists_provider_reported_failure_message(tmp_path
 def test_effect_orchestrator_executes_issue_update_state_effect(tmp_path: Path) -> None:
     runtime_dir = tmp_path / "runtime"
     config = GatewayConfig(runtime_dir=runtime_dir)
-    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+    worker_config = canonical_worker_config(
         {
             "runtime_dir": runtime_dir,
             "poll_interval_seconds": 1,
@@ -2206,7 +2190,7 @@ def test_effect_orchestrator_executes_issue_update_state_effect(tmp_path: Path) 
 def test_for_gate_iterates_body_then_routes_to_done(tmp_path: Path) -> None:
     runtime_dir = tmp_path / "runtime"
     config = GatewayConfig(runtime_dir=runtime_dir)
-    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+    worker_config = canonical_worker_config(
         {
             "runtime_dir": runtime_dir,
             "poll_interval_seconds": 1,
@@ -2304,7 +2288,7 @@ def test_for_gate_iterates_body_then_routes_to_done(tmp_path: Path) -> None:
 def test_for_gate_resumes_legacy_trace_scoped_state_key(tmp_path: Path) -> None:
     runtime_dir = tmp_path / "runtime"
     config = GatewayConfig(runtime_dir=runtime_dir)
-    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+    worker_config = canonical_worker_config(
         {
             "runtime_dir": runtime_dir,
             "poll_interval_seconds": 1,
@@ -2404,7 +2388,7 @@ def test_for_gate_resumes_legacy_trace_scoped_state_key(tmp_path: Path) -> None:
 def test_for_gate_without_body_edge_routes_immediately_to_done(tmp_path: Path) -> None:
     runtime_dir = tmp_path / "runtime"
     config = GatewayConfig(runtime_dir=runtime_dir)
-    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+    worker_config = canonical_worker_config(
         {
             "runtime_dir": runtime_dir,
             "poll_interval_seconds": 1,
@@ -2483,7 +2467,7 @@ def test_for_gate_without_done_edge_terminates_after_body_iterations(
 ) -> None:
     runtime_dir = tmp_path / "runtime"
     config = GatewayConfig(runtime_dir=runtime_dir)
-    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+    worker_config = canonical_worker_config(
         {
             "runtime_dir": runtime_dir,
             "poll_interval_seconds": 1,
@@ -2565,7 +2549,7 @@ def test_for_gate_without_done_edge_terminates_after_body_iterations(
 def test_for_gate_without_outgoing_edges_terminates_immediately(tmp_path: Path) -> None:
     runtime_dir = tmp_path / "runtime"
     config = GatewayConfig(runtime_dir=runtime_dir)
-    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+    worker_config = canonical_worker_config(
         {
             "runtime_dir": runtime_dir,
             "poll_interval_seconds": 1,
@@ -2630,7 +2614,7 @@ def test_for_gate_without_outgoing_edges_terminates_immediately(tmp_path: Path) 
 def test_while_gate_false_condition_routes_to_done(tmp_path: Path) -> None:
     runtime_dir = tmp_path / "runtime"
     config = GatewayConfig(runtime_dir=runtime_dir)
-    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+    worker_config = canonical_worker_config(
         {
             "runtime_dir": runtime_dir,
             "poll_interval_seconds": 1,
@@ -2708,7 +2692,7 @@ def test_while_gate_false_condition_routes_to_done(tmp_path: Path) -> None:
 def test_while_gate_exhausts_after_max_iterations(tmp_path: Path) -> None:
     runtime_dir = tmp_path / "runtime"
     config = GatewayConfig(runtime_dir=runtime_dir)
-    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+    worker_config = canonical_worker_config(
         {
             "runtime_dir": runtime_dir,
             "poll_interval_seconds": 1,
@@ -2815,7 +2799,7 @@ def test_while_gate_exhausts_after_max_iterations(tmp_path: Path) -> None:
 def test_while_gate_resumes_legacy_trace_scoped_state_key(tmp_path: Path) -> None:
     runtime_dir = tmp_path / "runtime"
     config = GatewayConfig(runtime_dir=runtime_dir)
-    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+    worker_config = canonical_worker_config(
         {
             "runtime_dir": runtime_dir,
             "poll_interval_seconds": 1,
@@ -2923,7 +2907,7 @@ def test_for_gate_restarts_iteration_for_each_fresh_invocation_in_same_trace(
 ) -> None:
     runtime_dir = tmp_path / "runtime"
     config = GatewayConfig(runtime_dir=runtime_dir)
-    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+    worker_config = canonical_worker_config(
         {
             "runtime_dir": runtime_dir,
             "poll_interval_seconds": 1,
@@ -3046,7 +3030,7 @@ def test_for_gate_restarts_iteration_for_each_fresh_invocation_in_same_trace(
 def test_effect_orchestrator_rejects_reserved_runtime_output_name(tmp_path: Path) -> None:
     runtime_dir = tmp_path / "runtime"
     config = GatewayConfig(runtime_dir=runtime_dir)
-    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+    worker_config = canonical_worker_config(
         {
             "runtime_dir": runtime_dir,
             "poll_interval_seconds": 1,
@@ -3108,7 +3092,7 @@ def test_effect_orchestrator_preserves_upstream_payload_across_multi_hop_chain(
 ) -> None:
     runtime_dir = tmp_path / "runtime"
     config = GatewayConfig(runtime_dir=runtime_dir)
-    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+    worker_config = canonical_worker_config(
         {
             "runtime_dir": runtime_dir,
             "poll_interval_seconds": 1,
@@ -3187,7 +3171,7 @@ def test_effect_orchestrator_supports_disambiguated_references_for_same_key_name
 ) -> None:
     runtime_dir = tmp_path / "runtime"
     config = GatewayConfig(runtime_dir=runtime_dir)
-    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+    worker_config = canonical_worker_config(
         {
             "runtime_dir": runtime_dir,
             "poll_interval_seconds": 1,
@@ -3254,7 +3238,7 @@ def test_effect_orchestrator_supports_disambiguated_references_for_same_key_name
 def test_effect_orchestrator_depth_protection_skips_cyclic_graph(tmp_path: Path) -> None:
     runtime_dir = tmp_path / "runtime"
     with pytest.raises(ValueError, match="Non-cyclic edges cannot form a cycle"):
-        TriggerOrchestratorWorkerGlobalConfig.model_validate(
+        canonical_worker_config(
             {
                 "runtime_dir": runtime_dir,
                 "poll_interval_seconds": 1,
@@ -3284,7 +3268,7 @@ def test_effect_orchestrator_depth_protection_skips_cyclic_graph(tmp_path: Path)
 def test_effect_orchestrator_dispatches_without_waiting_for_long_effect(tmp_path: Path) -> None:
     runtime_dir = tmp_path / "runtime"
     config = GatewayConfig(runtime_dir=runtime_dir)
-    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+    worker_config = canonical_worker_config(
         {
             "runtime_dir": runtime_dir,
             "poll_interval_seconds": 1,
@@ -3363,7 +3347,7 @@ def test_effect_orchestrator_dispatches_without_waiting_for_long_effect(tmp_path
 def test_effect_orchestrator_retries_running_effect_after_restart(tmp_path: Path) -> None:
     runtime_dir = tmp_path / "runtime"
     config = GatewayConfig(runtime_dir=runtime_dir)
-    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+    worker_config = canonical_worker_config(
         {
             "runtime_dir": runtime_dir,
             "poll_interval_seconds": 1,
@@ -3437,7 +3421,7 @@ def test_effect_orchestrator_retries_running_effect_after_restart(tmp_path: Path
 def test_effect_orchestrator_marks_provider_failure_failed(tmp_path: Path) -> None:
     runtime_dir = tmp_path / "runtime"
     config = GatewayConfig(runtime_dir=runtime_dir)
-    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+    worker_config = canonical_worker_config(
         {
             "runtime_dir": runtime_dir,
             "poll_interval_seconds": 1,
@@ -3491,7 +3475,7 @@ def test_effect_orchestrator_marks_provider_failure_failed(tmp_path: Path) -> No
 def test_effect_orchestrator_records_provider_failure_outputs(tmp_path: Path) -> None:
     runtime_dir = tmp_path / "runtime"
     config = GatewayConfig(runtime_dir=runtime_dir)
-    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+    worker_config = canonical_worker_config(
         {
             "runtime_dir": runtime_dir,
             "poll_interval_seconds": 1,
@@ -3548,7 +3532,7 @@ def test_effect_orchestrator_routes_generic_provider_failure_to_error_branch(
 ) -> None:
     runtime_dir = tmp_path / "runtime"
     config = GatewayConfig(runtime_dir=runtime_dir)
-    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+    worker_config = canonical_worker_config(
         {
             "runtime_dir": runtime_dir,
             "poll_interval_seconds": 1,
@@ -3626,7 +3610,7 @@ def test_effect_orchestrator_marks_completion_publish_failure_pending(
 ) -> None:
     runtime_dir = tmp_path / "runtime"
     config = GatewayConfig(runtime_dir=runtime_dir)
-    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+    worker_config = canonical_worker_config(
         {
             "runtime_dir": runtime_dir,
             "poll_interval_seconds": 1,
@@ -3695,7 +3679,7 @@ def test_effect_orchestrator_retries_pending_completion_publish_after_restart(
 ) -> None:
     runtime_dir = tmp_path / "runtime"
     config = GatewayConfig(runtime_dir=runtime_dir)
-    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+    worker_config = canonical_worker_config(
         {
             "runtime_dir": runtime_dir,
             "poll_interval_seconds": 1,
@@ -3788,7 +3772,7 @@ def test_effect_orchestrator_retries_pending_started_branch_publish_after_restar
 ) -> None:
     runtime_dir = tmp_path / "runtime"
     config = GatewayConfig(runtime_dir=runtime_dir)
-    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+    worker_config = canonical_worker_config(
         {
             "runtime_dir": runtime_dir,
             "poll_interval_seconds": 1,
@@ -3898,7 +3882,7 @@ def test_effect_orchestrator_retries_partially_published_completion_publish_once
 ) -> None:
     runtime_dir = tmp_path / "runtime"
     config = GatewayConfig(runtime_dir=runtime_dir)
-    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+    worker_config = canonical_worker_config(
         {
             "runtime_dir": runtime_dir,
             "poll_interval_seconds": 1,
@@ -3984,7 +3968,7 @@ def test_effect_orchestrator_retries_partially_published_gate_completion_publish
 ) -> None:
     runtime_dir = tmp_path / "runtime"
     config = GatewayConfig(runtime_dir=runtime_dir)
-    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+    worker_config = canonical_worker_config(
         {
             "runtime_dir": runtime_dir,
             "poll_interval_seconds": 1,
@@ -4129,7 +4113,7 @@ def test_effect_orchestrator_records_binding_resolution_failure_and_advances_que
 ) -> None:
     runtime_dir = tmp_path / "runtime"
     config = GatewayConfig(runtime_dir=runtime_dir)
-    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+    worker_config = canonical_worker_config(
         {
             "runtime_dir": runtime_dir,
             "poll_interval_seconds": 1,
@@ -4191,7 +4175,7 @@ def test_effect_orchestrator_records_binding_resolution_failure_and_advances_que
 def test_filter_gate_forwards_matching_payload_with_recursive_subset_match(tmp_path: Path) -> None:
     runtime_dir = tmp_path / "runtime"
     config = GatewayConfig(runtime_dir=runtime_dir)
-    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+    worker_config = canonical_worker_config(
         {
             "runtime_dir": runtime_dir,
             "triggers": [
@@ -4264,7 +4248,7 @@ def test_filter_gate_forwards_matching_payload_with_recursive_subset_match(tmp_p
 def test_filter_gate_drops_non_matching_payload(tmp_path: Path) -> None:
     runtime_dir = tmp_path / "runtime"
     config = GatewayConfig(runtime_dir=runtime_dir)
-    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+    worker_config = canonical_worker_config(
         {
             "runtime_dir": runtime_dir,
             "triggers": [
@@ -4313,7 +4297,7 @@ def test_filter_gate_drops_non_matching_payload(tmp_path: Path) -> None:
 def test_filter_gate_when_supports_string_branch_operators(tmp_path: Path) -> None:
     runtime_dir = tmp_path / "runtime"
     config = GatewayConfig(runtime_dir=runtime_dir)
-    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+    worker_config = canonical_worker_config(
         {
             "runtime_dir": runtime_dir,
             "poll_interval_seconds": 1,
@@ -4407,7 +4391,7 @@ def test_filter_gate_when_supports_string_branch_operators(tmp_path: Path) -> No
 def test_filter_gate_when_can_match_ancestor_effect_outputs(tmp_path: Path) -> None:
     runtime_dir = tmp_path / "runtime"
     config = GatewayConfig(runtime_dir=runtime_dir)
-    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+    worker_config = canonical_worker_config(
         {
             "runtime_dir": runtime_dir,
             "poll_interval_seconds": 1,
@@ -4503,7 +4487,7 @@ def test_agent_prompt_on_completion_releases_downstream_effect_without_await_gat
 ) -> None:
     runtime_dir = tmp_path / "runtime"
     config = GatewayConfig(runtime_dir=runtime_dir)
-    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+    worker_config = canonical_worker_config(
         {
             "runtime_dir": runtime_dir,
             "poll_interval_seconds": 1,
@@ -4627,7 +4611,7 @@ def test_agent_enqueue_prompt_started_port_releases_downstream_after_dispatch(
 ) -> None:
     runtime_dir = tmp_path / "runtime"
     config = GatewayConfig(runtime_dir=runtime_dir)
-    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+    worker_config = canonical_worker_config(
         {
             "runtime_dir": runtime_dir,
             "poll_interval_seconds": 1,
@@ -4703,7 +4687,7 @@ def test_agent_enqueue_prompt_completed_port_waits_for_agent_completion(
 ) -> None:
     runtime_dir = tmp_path / "runtime"
     config = GatewayConfig(runtime_dir=runtime_dir)
-    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+    worker_config = canonical_worker_config(
         {
             "runtime_dir": runtime_dir,
             "poll_interval_seconds": 1,
@@ -4812,7 +4796,7 @@ def test_agent_enqueue_prompt_queues_when_target_agent_is_running(
 ) -> None:
     runtime_dir = tmp_path / "runtime"
     config = GatewayConfig(runtime_dir=runtime_dir)
-    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+    worker_config = canonical_worker_config(
         {
             "runtime_dir": runtime_dir,
             "poll_interval_seconds": 1,
@@ -4894,7 +4878,7 @@ def test_agent_enqueue_prompt_applies_local_capacity_after_model_resolution(
         local_openai_api_base_url="http://127.0.0.1:11435/v1",
         local_openai_max_concurrency=1,
     )
-    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+    worker_config = canonical_worker_config(
         {
             "runtime_dir": runtime_dir,
             "poll_interval_seconds": 1,
@@ -5034,7 +5018,7 @@ def test_local_capacity_reconciles_terminal_vm_lease_before_new_admission(
         local_openai_api_base_url="http://127.0.0.1:11435/v1",
         local_openai_max_concurrency=1,
     )
-    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+    worker_config = canonical_worker_config(
         {
             "runtime_dir": runtime_dir,
             "poll_interval_seconds": 1,
@@ -5138,7 +5122,7 @@ def test_queued_dispatch_uses_current_provider_mode_for_capacity_admission(
         local_openai_api_base_url="http://127.0.0.1:11435/v1",
         local_openai_max_concurrency=1,
     )
-    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+    worker_config = canonical_worker_config(
         {"runtime_dir": runtime_dir, "triggers": [], "effects": [], "edges": []}
     )
     worker = EffectOrchestratorWorker(config=config, worker_config=worker_config, runtime=None)  # type: ignore[arg-type]
@@ -5178,7 +5162,7 @@ def test_agent_enqueue_prompt_queues_racing_prompt_while_dispatch_is_inflight(
 ) -> None:
     runtime_dir = tmp_path / "runtime"
     config = GatewayConfig(runtime_dir=runtime_dir)
-    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+    worker_config = canonical_worker_config(
         {
             "runtime_dir": runtime_dir,
             "poll_interval_seconds": 1,
@@ -5569,7 +5553,7 @@ def test_agent_enqueue_prompt_queued_completion_preserves_upstream_workflow_cont
 ) -> None:
     runtime_dir = tmp_path / "runtime"
     config = GatewayConfig(runtime_dir=runtime_dir)
-    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+    worker_config = canonical_worker_config(
         {
             "runtime_dir": runtime_dir,
             "poll_interval_seconds": 1,
@@ -5738,7 +5722,7 @@ def test_agent_enqueue_prompt_queued_started_loopback_preserves_for_gate_state(
 ) -> None:
     runtime_dir = tmp_path / "runtime"
     config = GatewayConfig(runtime_dir=runtime_dir)
-    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+    worker_config = canonical_worker_config(
         {
             "runtime_dir": runtime_dir,
             "poll_interval_seconds": 1,
@@ -5884,7 +5868,7 @@ def test_agent_enqueue_prompt_dispatches_queued_prompt_when_target_agent_becomes
 ) -> None:
     runtime_dir = tmp_path / "runtime"
     config = GatewayConfig(runtime_dir=runtime_dir)
-    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+    worker_config = canonical_worker_config(
         {
             "runtime_dir": runtime_dir,
             "poll_interval_seconds": 1,
@@ -5980,7 +5964,7 @@ def test_agent_enqueue_prompt_dispatch_keeps_queued_prompt_when_lock_is_held(
 ) -> None:
     runtime_dir = tmp_path / "runtime"
     config = GatewayConfig(runtime_dir=runtime_dir)
-    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+    worker_config = canonical_worker_config(
         {
             "runtime_dir": runtime_dir,
             "poll_interval_seconds": 1,
@@ -6169,7 +6153,7 @@ def test_agent_enqueue_prompt_releases_lock_and_capacity_when_replay_cas_fails(
         local_openai_api_base_url="http://127.0.0.1:11435/v1",
         local_openai_max_concurrency=1,
     )
-    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+    worker_config = canonical_worker_config(
         {
             "runtime_dir": tmp_path,
             "poll_interval_seconds": 1,
@@ -7294,7 +7278,7 @@ def test_agent_enqueue_prompt_dispatch_preserves_mcp_lease_for_queued_libvirt_pr
         runtime_dir=runtime_dir,
         gateway_url="http://gateway.test/mcp",
     )
-    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+    worker_config = canonical_worker_config(
         {
             "runtime_dir": runtime_dir,
             "poll_interval_seconds": 1,
@@ -7560,7 +7544,7 @@ def test_session_renew_if_expired_runs_before_prompting(
     }
     if renew_if_expires_within is not None:
         renew_effect["renew_if_expires_within"] = renew_if_expires_within
-    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+    worker_config = canonical_worker_config(
         {
             "runtime_dir": runtime_dir,
             "poll_interval_seconds": 1,
@@ -7645,7 +7629,7 @@ def test_session_prompt_without_renewal_still_fails_for_expired_session(
             expires_at=datetime.now(timezone.utc) - timedelta(minutes=5),
         )
     )
-    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+    worker_config = canonical_worker_config(
         {
             "runtime_dir": runtime_dir,
             "poll_interval_seconds": 1,
@@ -7939,7 +7923,7 @@ def test_agent_enqueue_prompt_dispatch_does_not_publish_dispatch_id_as_thread_id
 ) -> None:
     runtime_dir = tmp_path / "runtime"
     config = GatewayConfig(runtime_dir=runtime_dir)
-    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+    worker_config = canonical_worker_config(
         {
             "runtime_dir": runtime_dir,
             "poll_interval_seconds": 1,
@@ -8678,9 +8662,7 @@ def test_agent_prompt_container_active_tool_watchdog_interrupts_only_stalled_too
         execution_id="agent-session-1-stalled-test",
     )
 
-    assert backend.interrupted == [
-        ("agent-session-1-stalled-test", 10.0, "active_tool_timeout")
-    ]
+    assert backend.interrupted == [("agent-session-1-stalled-test", 10.0, "active_tool_timeout")]
     assert backend.stopped == []
     assert backend.destroyed == []
 
@@ -8782,7 +8764,7 @@ def test_agent_enqueue_prompt_queues_and_fails_when_immediate_resume_fails(
 ) -> None:
     runtime_dir = tmp_path / "runtime"
     config = GatewayConfig(runtime_dir=runtime_dir)
-    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+    worker_config = canonical_worker_config(
         {
             "runtime_dir": runtime_dir,
             "poll_interval_seconds": 1,
@@ -8869,7 +8851,7 @@ def test_agent_enqueue_prompt_routes_retry_context_to_error_branch(
 ) -> None:
     runtime_dir = tmp_path / "runtime"
     config = GatewayConfig(runtime_dir=runtime_dir)
-    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+    worker_config = canonical_worker_config(
         {
             "runtime_dir": runtime_dir,
             "poll_interval_seconds": 1,
@@ -8976,7 +8958,7 @@ def test_agent_enqueue_prompt_queue_dispatch_hook_is_neutral_when_provider_absen
 ) -> None:
     runtime_dir = tmp_path / "runtime"
     config = GatewayConfig(runtime_dir=runtime_dir)
-    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+    worker_config = canonical_worker_config(
         {
             "runtime_dir": runtime_dir,
             "poll_interval_seconds": 1,
@@ -9040,7 +9022,7 @@ def test_agent_prompt_fails_when_resume_agent_reports_unsuccessful_result(
 ) -> None:
     runtime_dir = tmp_path / "runtime"
     config = GatewayConfig(runtime_dir=runtime_dir)
-    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+    worker_config = canonical_worker_config(
         {
             "runtime_dir": runtime_dir,
             "poll_interval_seconds": 1,
@@ -9112,7 +9094,7 @@ def test_agent_prompt_routes_failed_outputs_to_error_branch(
 ) -> None:
     runtime_dir = tmp_path / "runtime"
     config = GatewayConfig(runtime_dir=runtime_dir)
-    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+    worker_config = canonical_worker_config(
         {
             "runtime_dir": runtime_dir,
             "poll_interval_seconds": 1,
@@ -9204,7 +9186,7 @@ def test_agent_prompt_error_branch_publish_failure_fails_loudly(
 ) -> None:
     runtime_dir = tmp_path / "runtime"
     config = GatewayConfig(runtime_dir=runtime_dir)
-    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+    worker_config = canonical_worker_config(
         {
             "runtime_dir": runtime_dir,
             "poll_interval_seconds": 1,
@@ -9289,7 +9271,7 @@ def test_agent_prompt_error_branch_publish_failure_fails_loudly(
 def test_filter_gate_when_drops_payload_when_predicate_is_false(tmp_path: Path) -> None:
     runtime_dir = tmp_path / "runtime"
     config = GatewayConfig(runtime_dir=runtime_dir)
-    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+    worker_config = canonical_worker_config(
         {
             "runtime_dir": runtime_dir,
             "poll_interval_seconds": 1,
@@ -9381,7 +9363,7 @@ def test_vm_copy_files_template_source_renders_bindings_before_dispatch(tmp_path
         encoding="utf-8",
     )
     config = GatewayConfig(runtime_dir=runtime_dir)
-    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+    worker_config = canonical_worker_config(
         {
             "runtime_dir": runtime_dir,
             "poll_interval_seconds": 1,
@@ -9474,7 +9456,7 @@ def test_vm_copy_files_template_source_renders_bindings_before_dispatch(tmp_path
 def test_await_agent_gate_releases_follow_up_on_matching_completion(tmp_path: Path) -> None:
     runtime_dir = tmp_path / "runtime"
     config = GatewayConfig(runtime_dir=runtime_dir)
-    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+    worker_config = canonical_worker_config(
         {
             "runtime_dir": runtime_dir,
             "poll_interval_seconds": 1,
@@ -9607,7 +9589,7 @@ def test_await_agent_gate_releases_follow_up_from_in_process_vm_poll(
 ) -> None:
     runtime_dir = tmp_path / "runtime"
     config = GatewayConfig(runtime_dir=runtime_dir)
-    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+    worker_config = canonical_worker_config(
         {
             "runtime_dir": runtime_dir,
             "poll_interval_seconds": 1,
@@ -9731,7 +9713,7 @@ def test_await_agent_gate_releases_follow_up_from_in_process_vm_poll_for_same_di
 ) -> None:
     runtime_dir = tmp_path / "runtime"
     config = GatewayConfig(runtime_dir=runtime_dir)
-    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+    worker_config = canonical_worker_config(
         {
             "runtime_dir": runtime_dir,
             "poll_interval_seconds": 1,
@@ -9857,7 +9839,7 @@ def test_await_agent_gate_preserves_upstream_node_outputs_for_follow_up_bindings
 ) -> None:
     runtime_dir = tmp_path / "runtime"
     config = GatewayConfig(runtime_dir=runtime_dir)
-    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+    worker_config = canonical_worker_config(
         {
             "runtime_dir": runtime_dir,
             "poll_interval_seconds": 1,
@@ -9981,7 +9963,7 @@ def test_await_agent_gate_preserves_upstream_node_outputs_for_follow_up_bindings
 def test_force_complete_await_agent_releases_follow_up(tmp_path: Path, monkeypatch) -> None:
     runtime_dir = tmp_path / "runtime"
     config = GatewayConfig(runtime_dir=runtime_dir)
-    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+    worker_config = canonical_worker_config(
         {
             "runtime_dir": runtime_dir,
             "poll_interval_seconds": 1,
@@ -10178,7 +10160,7 @@ def test_waiting_agent_prompt_reconciliation_completes_from_idle_matching_dispat
 ) -> None:
     runtime_dir = tmp_path / "runtime"
     config = GatewayConfig(runtime_dir=runtime_dir)
-    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+    worker_config = canonical_worker_config(
         {
             "runtime_dir": runtime_dir,
             "poll_interval_seconds": 1,
@@ -10275,7 +10257,7 @@ def test_waiting_agent_prompt_reconciliation_completes_idle_summary_without_disp
 ) -> None:
     runtime_dir = tmp_path / "runtime"
     config = GatewayConfig(runtime_dir=runtime_dir)
-    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+    worker_config = canonical_worker_config(
         {
             "runtime_dir": runtime_dir,
             "poll_interval_seconds": 1,
@@ -10436,7 +10418,7 @@ def test_await_agent_gate_releases_when_settled_summary_lacks_dispatch_id(
 ) -> None:
     runtime_dir = tmp_path / "runtime"
     config = GatewayConfig(runtime_dir=runtime_dir)
-    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+    worker_config = canonical_worker_config(
         {
             "runtime_dir": runtime_dir,
             "poll_interval_seconds": 1,
@@ -10550,7 +10532,7 @@ def test_await_agent_reconciliation_completes_idle_pending_record_without_dispat
 ) -> None:
     runtime_dir = tmp_path / "runtime"
     config = GatewayConfig(runtime_dir=runtime_dir)
-    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+    worker_config = canonical_worker_config(
         {
             "runtime_dir": runtime_dir,
             "triggers": [
@@ -10627,7 +10609,7 @@ def test_await_agent_reconciliation_keeps_pending_record_without_matching_summar
 ) -> None:
     runtime_dir = tmp_path / "runtime"
     config = GatewayConfig(runtime_dir=runtime_dir)
-    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+    worker_config = canonical_worker_config(
         {
             "runtime_dir": runtime_dir,
             "triggers": [
@@ -10688,7 +10670,7 @@ def test_await_agent_reconciliation_deletes_pending_record_for_replaced_dispatch
 ) -> None:
     runtime_dir = tmp_path / "runtime"
     config = GatewayConfig(runtime_dir=runtime_dir)
-    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+    worker_config = canonical_worker_config(
         {
             "runtime_dir": runtime_dir,
             "triggers": [
@@ -10767,7 +10749,7 @@ def test_await_agent_reconciliation_keeps_pending_record_when_unavailable_vm_has
 ) -> None:
     runtime_dir = tmp_path / "runtime"
     config = GatewayConfig(runtime_dir=runtime_dir)
-    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+    worker_config = canonical_worker_config(
         {
             "runtime_dir": runtime_dir,
             "triggers": [
@@ -10846,7 +10828,7 @@ def test_await_agent_reconciliation_skips_and_retries_when_inventory_fails(
 ) -> None:
     runtime_dir = tmp_path / "runtime"
     config = GatewayConfig(runtime_dir=runtime_dir)
-    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+    worker_config = canonical_worker_config(
         {
             "runtime_dir": runtime_dir,
             "triggers": [
@@ -10938,7 +10920,7 @@ def test_await_agent_reconciliation_keeps_settled_current_dispatch_record(
 ) -> None:
     runtime_dir = tmp_path / "runtime"
     config = GatewayConfig(runtime_dir=runtime_dir)
-    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+    worker_config = canonical_worker_config(
         {
             "runtime_dir": runtime_dir,
             "triggers": [
@@ -11016,7 +10998,7 @@ def test_await_agent_reconciliation_completes_settled_current_dispatch_record_fo
 ) -> None:
     runtime_dir = tmp_path / "runtime"
     config = GatewayConfig(runtime_dir=runtime_dir)
-    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+    worker_config = canonical_worker_config(
         {
             "runtime_dir": runtime_dir,
             "triggers": [
@@ -11134,7 +11116,7 @@ def test_await_agent_pending_target_can_fill_missing_vm_name_from_session_summar
 def test_map_gate_records_failed_status_on_unresolved_reference(tmp_path: Path) -> None:
     runtime_dir = tmp_path / "runtime"
     config = GatewayConfig(runtime_dir=runtime_dir)
-    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+    worker_config = canonical_worker_config(
         {
             "runtime_dir": runtime_dir,
             "triggers": [
@@ -11199,7 +11181,7 @@ def test_map_gate_records_failed_status_on_unresolved_reference(tmp_path: Path) 
 def test_deserialize_gate_emits_parsed_object_outputs(tmp_path: Path) -> None:
     runtime_dir = tmp_path / "runtime"
     config = GatewayConfig(runtime_dir=runtime_dir)
-    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+    worker_config = canonical_worker_config(
         {
             "runtime_dir": runtime_dir,
             "triggers": [
@@ -11286,7 +11268,7 @@ def test_deserialize_gate_records_failed_status_when_content_is_not_object(
 ) -> None:
     runtime_dir = tmp_path / "runtime"
     config = GatewayConfig(runtime_dir=runtime_dir)
-    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+    worker_config = canonical_worker_config(
         {
             "runtime_dir": runtime_dir,
             "triggers": [
@@ -11348,7 +11330,7 @@ def test_deserialize_gate_records_failed_status_when_content_is_not_object(
 def test_serialize_gate_emits_json_content_for_downstream_bindings(tmp_path: Path) -> None:
     runtime_dir = tmp_path / "runtime"
     config = GatewayConfig(runtime_dir=runtime_dir)
-    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+    worker_config = canonical_worker_config(
         {
             "runtime_dir": runtime_dir,
             "triggers": [
@@ -11432,7 +11414,7 @@ def test_serialize_gate_emits_json_content_for_downstream_bindings(tmp_path: Pat
 def test_aggregate_gate_emits_totals_for_downstream_bindings(tmp_path: Path) -> None:
     runtime_dir = tmp_path / "runtime"
     config = GatewayConfig(runtime_dir=runtime_dir)
-    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+    worker_config = canonical_worker_config(
         {
             "runtime_dir": runtime_dir,
             "triggers": [
@@ -11527,7 +11509,7 @@ def test_aggregate_gate_emits_totals_for_downstream_bindings(tmp_path: Path) -> 
 def test_serialize_gate_emits_yaml_content(tmp_path: Path) -> None:
     runtime_dir = tmp_path / "runtime"
     config = GatewayConfig(runtime_dir=runtime_dir)
-    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+    worker_config = canonical_worker_config(
         {
             "runtime_dir": runtime_dir,
             "triggers": [
@@ -11583,7 +11565,7 @@ def test_serialize_gate_emits_yaml_content(tmp_path: Path) -> None:
 def test_merge_gate_re_emits_shared_payload_keys(tmp_path: Path) -> None:
     runtime_dir = tmp_path / "runtime"
     config = GatewayConfig(runtime_dir=runtime_dir)
-    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+    worker_config = canonical_worker_config(
         {
             "runtime_dir": runtime_dir,
             "triggers": [
@@ -11668,7 +11650,7 @@ def test_merge_gate_re_emits_shared_payload_keys(tmp_path: Path) -> None:
 def test_merge_gate_preserves_guaranteed_pre_branch_context(tmp_path: Path) -> None:
     runtime_dir = tmp_path / "runtime"
     config = GatewayConfig(runtime_dir=runtime_dir)
-    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+    worker_config = canonical_worker_config(
         {
             "runtime_dir": runtime_dir,
             "triggers": [
@@ -11765,7 +11747,7 @@ def test_merge_gate_preserves_guaranteed_pre_branch_context(tmp_path: Path) -> N
 def test_merge_gate_drops_branch_local_context(tmp_path: Path) -> None:
     runtime_dir = tmp_path / "runtime"
     config = GatewayConfig(runtime_dir=runtime_dir)
-    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+    worker_config = canonical_worker_config(
         {
             "runtime_dir": runtime_dir,
             "triggers": [
@@ -11853,7 +11835,7 @@ def test_merge_gate_drops_branch_local_context(tmp_path: Path) -> None:
 def test_debounce_gate_preserves_context_for_delayed_release(tmp_path: Path) -> None:
     runtime_dir = tmp_path / "runtime"
     config = GatewayConfig(runtime_dir=runtime_dir)
-    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+    worker_config = canonical_worker_config(
         {
             "runtime_dir": runtime_dir,
             "triggers": [
@@ -11935,7 +11917,7 @@ def test_debounce_gate_preserves_context_for_delayed_release(tmp_path: Path) -> 
 def test_event_emit_effect_evaluates_payload_and_writes_internal_event(tmp_path: Path) -> None:
     runtime_dir = tmp_path / "runtime"
     config = GatewayConfig(runtime_dir=runtime_dir)
-    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+    worker_config = canonical_worker_config(
         {
             "runtime_dir": runtime_dir,
             "poll_interval_seconds": 1,
@@ -11998,7 +11980,7 @@ def test_run_once_processes_unrelated_event_when_inventory_reconciliation_fails(
 ) -> None:
     runtime_dir = tmp_path / "runtime"
     config = GatewayConfig(runtime_dir=runtime_dir)
-    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+    worker_config = canonical_worker_config(
         {
             "runtime_dir": runtime_dir,
             "poll_interval_seconds": 1,
@@ -12083,7 +12065,7 @@ def test_event_emit_effect_can_start_event_trigger_workflow(tmp_path: Path) -> N
 
     runtime_dir = tmp_path / "runtime"
     config = GatewayConfig(runtime_dir=runtime_dir)
-    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+    worker_config = canonical_worker_config(
         {
             "runtime_dir": runtime_dir,
             "poll_interval_seconds": 1,
@@ -12148,7 +12130,7 @@ def test_event_emit_effect_can_start_event_trigger_workflow(tmp_path: Path) -> N
 def test_event_emit_effect_invalid_event_type_fails_clearly(tmp_path: Path) -> None:
     runtime_dir = tmp_path / "runtime"
     config = GatewayConfig(runtime_dir=runtime_dir)
-    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+    worker_config = canonical_worker_config(
         {
             "runtime_dir": runtime_dir,
             "poll_interval_seconds": 1,
@@ -12203,7 +12185,7 @@ def test_event_emit_effect_invalid_event_type_fails_clearly(tmp_path: Path) -> N
 def test_event_emit_effect_retry_uses_idempotency_key(tmp_path: Path) -> None:
     runtime_dir = tmp_path / "runtime"
     config = GatewayConfig(runtime_dir=runtime_dir)
-    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+    worker_config = canonical_worker_config(
         {
             "runtime_dir": runtime_dir,
             "poll_interval_seconds": 1,
@@ -12262,7 +12244,7 @@ def test_event_schedule_effect_resolves_bindings_and_writes_pending_record(
 ) -> None:
     runtime_dir = tmp_path / "runtime"
     config = GatewayConfig(runtime_dir=runtime_dir)
-    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+    worker_config = canonical_worker_config(
         {
             "runtime_dir": runtime_dir,
             "poll_interval_seconds": 1,
@@ -12353,7 +12335,7 @@ def test_event_schedule_effect_duplicate_idempotency_returns_original_record_wit
 ) -> None:
     runtime_dir = tmp_path / "runtime"
     config = GatewayConfig(runtime_dir=runtime_dir)
-    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+    worker_config = canonical_worker_config(
         {
             "runtime_dir": runtime_dir,
             "poll_interval_seconds": 1,

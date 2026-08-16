@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from config_helpers import canonical_worker_config
+
 import json
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
@@ -31,7 +33,7 @@ def _worker_config(
     if include_dropped_edge:
         edges.append(_edge("gate-dedupe", "effect-prompt", source_port="dropped"))
 
-    return TriggerOrchestratorWorkerGlobalConfig.model_validate(
+    return canonical_worker_config(
         {
             "runtime_dir": runtime_dir,
             "poll_interval_seconds": 1,

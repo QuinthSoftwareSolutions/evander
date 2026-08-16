@@ -36,12 +36,11 @@ can be served from `EVANDER_ADMIN_WEB_BRANDING_ASSET_DIR` through the proxied
 4. Configure `root` directory overlays directly with the admin UI or `evander-cli directories config-set`.
    Configure named agent integrations on the **Connectors** page or in the `connectors` directory
    domain; keep credential values in the gateway/Admin service environment.
-5. If you are importing an older install, run `evander-cli migrate-global-config-to-root --config /path/to/legacy-gateway.yaml` once to seed `host-config.json` plus `root` from the legacy YAML file.
-6. Create the libvirt network with `./scripts/create_libvirt_network.sh`.
-7. Apply guest forwarding policy with `./scripts/apply_firewall.sh`.
-8. Download the Ubuntu cloud image with `sudo ./scripts/create_base_vm.sh`.
-9. Create a session manifest with `evander-cli create-session`.
-10. Launch a VM with `sudo ./scripts/launch_agent_vm.sh`.
+5. Create the libvirt network with `./scripts/create_libvirt_network.sh`.
+6. Apply guest forwarding policy with `./scripts/apply_firewall.sh`.
+7. Download the Ubuntu cloud image with `sudo ./scripts/create_base_vm.sh`.
+8. Create a session manifest with `evander-cli create-session`.
+9. Launch a VM with `sudo ./scripts/launch_agent_vm.sh`.
 10. Optionally bootstrap a provider runtime in the guest (for example `./scripts/bootstrap_codex_vm.sh <vm-name>` or `./scripts/bootstrap_copilot_vm.sh <vm-name>`).
 11. Optionally bootstrap a Python repo into a guest-local virtualenv with `./scripts/bootstrap_python_vm.sh <vm-name> <host-checkout-root> <guest-repo-root>`.
 12. Optionally bootstrap generic guest Python packages into an offline tools virtualenv with `./scripts/bootstrap_python_packages_vm.sh <vm-name> <package-spec> [package-spec ...]`.
@@ -2482,6 +2481,26 @@ exhausted are retried once with deterministic reduced context by default.
 Use `agent_context_retry_enabled`, `agent_context_retry_max_attempts`, and
 `agent_context_retry_target_chars` to tune or disable that behavior.
 
+### Team review repository snapshots
+
+For a Team project configured with managed Git, every newly created review is
+bound to an immutable server-owned snapshot before its reviewer is prompted.
+The source is the deliverable candidate when available, the producing task's
+authoritative Git base for planning or artifact-only deliverables, or the
+release candidate for release reviews. The runtime retains a ref under
+`refs/evander/team-reviews/` and checks out the recorded commit detached; a
+review never falls back to the persistent reviewer checkout's `work` branch.
+
+If the snapshot is unavailable, points at a different managed repository, its
+retained ref conflicts, the commit cannot be materialized, or reviews sharing
+one repository name different commits, preparation blocks the affected review
+before prompt delivery. Inspect the Team review blocker and managed-Git record,
+then correct the upstream provenance and create a retry or replacement review.
+Existing review records from before this feature have no snapshot and are
+intentionally not reinterpreted; recover them by creating a new retry or
+replacement review after deployment. Retained Team review refs are not cleaned
+up automatically because Team data currently has no physical deletion lifecycle.
+
 ### Guest repo preparation
 
 After the VM is created and the repo is cloned, prepare the checkout explicitly instead of
@@ -2668,8 +2687,8 @@ curl -fsS -X POST http://127.0.0.1:11881/-/npm/v1/security/audits/quick \
   polled; a parent directory no longer implicitly observes sessions in its descendants.
 - `ADO_*` env vars continue to work as compatibility fallbacks for one release and log deprecation
   warnings.
-- Materialize `root/ado-worker.json` with `evander-cli migrate-ado-worker-env-to-root` or
-  `migrate-global-config-to-root` when you still use directory-scoped PR automation settings.
+- Materialize `root/ado-worker.json` with `evander-cli migrate-ado-worker-env-to-root` when you
+  still use directory-scoped PR automation settings.
 
 Foreground runbook:
 
@@ -3276,48 +3295,8 @@ them:
 evander-cli git-repos delete mr_0123456789abcdef0123
 ```
 
-Deletion fails when bindings, authorized sessions, active/recoverable worktrees, or unresolved
-migration state remain. There is no force-delete option.
-
-### Migrate a legacy installation
-
-This is a breaking contract. Stop trigger/effect workers and finish or stop all active Git/agent
-operations before starting:
-
-```bash
-sudo systemctl stop evander-trigger-orchestrator.service
-sudo systemctl stop evander-effect-orchestrator.service
-
-evander-cli git-repos migrate --dry-run
-```
-
-Dry-run inventories legacy bare repositories, cache mirrors/checkouts, Team projects, workflow
-packs, sessions, and authorized keys. Resolve every missing canonical identity and preserved-ref
-collision. Migration aborts a conflicting group rather than selecting one version of an agent,
-review, Team, note, or PR ref.
-
-Apply only after dry-run reports `can_apply: true`:
-
-```bash
-evander-cli git-repos migrate --apply
-```
-
-Apply creates managed repositories, refreshes canonical refs, imports preserved refs, and rewrites
-active Team/session/issue/key/workflow bindings under the workflow revision lock. It records
-verification hashes and marks stopped VM/container sessions for remote reconciliation. Old
-Evander-owned repositories and cache checkouts become read-only rollback artifacts; operator-owned
-source checkouts are never changed.
-
-Restart services and run one end-to-end VM and container-worker smoke path: clone by ID, restricted
-agent push, queued trigger, pinned promotion, exact note read, PR publication, and Team release
-consolidation. After operator acceptance, finalize separately:
-
-```bash
-evander-cli git-repos migrate --finalize <migration-id>
-```
-
-Finalize re-verifies managed refs and bindings, then deletes only rollback artifacts listed in that
-migration manifest. No rollback artifact is deleted automatically.
+Deletion fails when bindings, authorized sessions, or active/recoverable worktrees remain. There is
+no force-delete option.
 
 See [Managed Git Repositories](git-remotes.md) for the complete contract.
 

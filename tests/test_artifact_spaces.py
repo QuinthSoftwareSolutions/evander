@@ -19,6 +19,7 @@ from evander.events.provider_models import (
     ArtifactSpacePublishVersionEffectDefinition,
 )
 from evander.published_artifacts import PublishedArtifactStore
+from config_helpers import write_runtime_config
 from evander.queries.providers.artifact_space import (
     ArtifactSpaceLatestQueryProvider,
     ArtifactSpaceListQueryProvider,
@@ -189,19 +190,7 @@ def test_artifact_space_admin_api(tmp_path: Path) -> None:
     from evander.admin.composition import build_admin_runtime
     from evander.admin.web.app import create_app
 
-    config_path = tmp_path / "gateway.yaml"
-    runtime_dir = tmp_path / "runtime"
-    config_path.write_text(
-        "\n".join(
-            [
-                f'runtime_dir: "{runtime_dir}"',
-                f'audit_log_path: "{runtime_dir / "audit.jsonl"}"',
-                f'session_store_path: "{runtime_dir / "sessions.json"}"',
-                f'approval_store_path: "{runtime_dir / "approvals.json"}"',
-            ]
-        ),
-        encoding="utf-8",
-    )
+    config_path = write_runtime_config(tmp_path)
     client = TestClient(create_app(build_admin_runtime(config_path)))
     upload = client.post(
         "/api/admin/artifacts/uploads",
@@ -267,19 +256,8 @@ def test_artifact_space_admin_api_uses_session_subject_for_grants(tmp_path: Path
     from evander.admin.composition import build_admin_runtime
     from evander.admin.web.app import create_app
 
-    config_path = tmp_path / "gateway.yaml"
     runtime_dir = tmp_path / "runtime"
-    config_path.write_text(
-        "\n".join(
-            [
-                f'runtime_dir: "{runtime_dir}"',
-                f'audit_log_path: "{runtime_dir / "audit.jsonl"}"',
-                f'session_store_path: "{runtime_dir / "sessions.json"}"',
-                f'approval_store_path: "{runtime_dir / "approvals.json"}"',
-            ]
-        ),
-        encoding="utf-8",
-    )
+    config_path = write_runtime_config(tmp_path)
     PublishedArtifactStore(runtime_dir).publish_single_file(
         key="uploads/secret",
         session_id="session-1",
@@ -364,19 +342,8 @@ def test_artifact_space_admin_api_rejects_subject_spoofing_for_authenticated_use
     monkeypatch.setenv("EVANDER_ADMIN_WEB_PASSWORD", "secret")
     monkeypatch.setenv("EVANDER_ADMIN_WEB_SESSION_SECRET", "test-secret")
 
-    config_path = tmp_path / "gateway.yaml"
     runtime_dir = tmp_path / "runtime"
-    config_path.write_text(
-        "\n".join(
-            [
-                f'runtime_dir: "{runtime_dir}"',
-                f'audit_log_path: "{runtime_dir / "audit.jsonl"}"',
-                f'session_store_path: "{runtime_dir / "sessions.json"}"',
-                f'approval_store_path: "{runtime_dir / "approvals.json"}"',
-            ]
-        ),
-        encoding="utf-8",
-    )
+    config_path = write_runtime_config(tmp_path)
     PublishedArtifactStore(runtime_dir).publish_single_file(
         key="uploads/alice-secret",
         session_id="session-1",

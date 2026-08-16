@@ -17,6 +17,7 @@ function createWorkflowConfig() {
         id: "trigger-1",
         display_name: "Incoming ticket",
         type: "trigger:manual",
+        config: {},
         outputs: {
           ticket: {
             type: "object",
@@ -34,15 +35,16 @@ function createWorkflowConfig() {
             },
           },
           status: { type: "string", enum: ["open", "closed"] },
-        },
+        }
       },
       {
         id: "trigger-2",
         display_name: "Secondary stream",
         type: "trigger:manual",
+        config: {},
         outputs: {
           status: { type: "string" },
-        },
+        }
       },
     ],
     gates: [
@@ -50,42 +52,50 @@ function createWorkflowConfig() {
         id: "gate-filter-1",
         display_name: "Filter tickets",
         type: "gate:filter",
+        config: {}
       },
       {
         id: "gate-debounce-1",
         display_name: "Debounce tickets",
         type: "gate:debounce",
+        config: {}
       },
       {
         id: "gate-throttle-1",
         display_name: "Throttle tickets",
         type: "gate:throttle",
+        config: {}
       },
       {
         id: "gate-counter-1",
         display_name: "Count tickets",
         type: "gate:counter",
+        config: {}
       },
       {
         id: "gate-switch-1",
         display_name: "Switch tickets",
         type: "gate:switch",
+        config: {}
       },
       {
         id: "gate-merge-1",
         display_name: "Merge streams",
         type: "gate:merge",
+        config: {}
       },
       {
         id: "gate-map-1",
         display_name: "Map payload",
         type: "gate:map",
-        template: {
-          summary: "Ticket ready",
-          attempts: 2,
-          enabled: true,
-          payload: ["first", "second"],
-        },
+        config: {
+          template: {
+            summary: "Ticket ready",
+            attempts: 2,
+            enabled: true,
+            payload: ["first", "second"],
+          }
+        }
       },
     ],
     effects: [
@@ -93,6 +103,7 @@ function createWorkflowConfig() {
         id: "effect-1",
         display_name: "Dispatch agent",
         type: "effect:agent:create",
+        config: {}
       },
     ],
     queries: [],
@@ -225,13 +236,15 @@ test("aggregate gate derives flat metric output schemas", () => {
     id: "gate-aggregate-1",
     display_name: "Aggregate usage",
     type: "gate:aggregate",
-    items: "${{trigger-1.items}}",
-    metrics: {
-      total_tokens: { operation: "sum", path: "total_tokens" },
-      average_tokens: { operation: "avg", path: "total_tokens" },
-      minimum_tokens: { operation: "min", path: "total_tokens" },
-      maximum_tokens: { operation: "max", path: "total_tokens" },
-    },
+    config: {
+      items: "${{trigger-1.items}}",
+      metrics: {
+        total_tokens: { operation: "sum", path: "total_tokens" },
+        average_tokens: { operation: "avg", path: "total_tokens" },
+        minimum_tokens: { operation: "min", path: "total_tokens" },
+        maximum_tokens: { operation: "max", path: "total_tokens" },
+      }
+    }
   });
 
   const outputSchemas = deriveWorkflowOutputSchemas(config);
@@ -257,14 +270,17 @@ test("buffer gate exposes fixed batch output schema for bindings", () => {
     id: "gate-buffer-1",
     display_name: "Buffer tickets",
     type: "gate:buffer",
-    key: "buffer:${{system.execution.trace_id}}",
-    count: 10,
-    timeout: "PT10M",
+    config: {
+      key: "buffer:${{system.execution.trace_id}}",
+      count: 10,
+      timeout: "PT10M"
+    }
   });
   config.effects.push({
     id: "effect-after-buffer",
     display_name: "After buffer",
     type: "effect:agent:prompt",
+    config: {}
   });
   config.edges.push(
     { source_id: "trigger-1", target_id: "gate-buffer-1" },
@@ -299,6 +315,7 @@ test("returns empty contract states for missing or undeclared outputs", () => {
         id: "trigger-1",
         display_name: "Incoming ticket",
         type: "trigger:manual",
+        config: {}
       },
     ],
     gates: [],
@@ -337,7 +354,8 @@ test("suggests only guaranteed upstream bindings after branch merge", () => {
         id: "trigger-1",
         display_name: "Trigger",
         type: "trigger:manual",
-        outputs: { ticket: { type: "object" } },
+        config: {},
+        outputs: { ticket: { type: "object" } }
       },
     ],
     gates: [
@@ -345,7 +363,8 @@ test("suggests only guaranteed upstream bindings after branch merge", () => {
         id: "gate-merge",
         display_name: "Merge",
         type: "gate:merge",
-        outputs: { shared: { type: "string" } },
+        config: {},
+        outputs: { shared: { type: "string" } }
       },
     ],
     effects: [
@@ -353,24 +372,28 @@ test("suggests only guaranteed upstream bindings after branch merge", () => {
         id: "effect-pre",
         display_name: "Pre",
         type: "effect:agent:prompt",
-        outputs: { session_id: { type: "string" } },
+        config: {},
+        outputs: { session_id: { type: "string" } }
       },
       {
         id: "effect-a",
         display_name: "A",
         type: "effect:agent:prompt",
-        outputs: { branch_value: { type: "string" }, shared: { type: "string" } },
+        config: {},
+        outputs: { branch_value: { type: "string" }, shared: { type: "string" } }
       },
       {
         id: "effect-b",
         display_name: "B",
         type: "effect:agent:prompt",
-        outputs: { branch_value: { type: "string" }, shared: { type: "string" } },
+        config: {},
+        outputs: { branch_value: { type: "string" }, shared: { type: "string" } }
       },
       {
         id: "effect-after",
         display_name: "After",
         type: "effect:agent:prompt",
+        config: {}
       },
     ],
     queries: [],
@@ -402,9 +425,10 @@ test("declared outputs fall back to node outputs when no derived schema exists",
     id: "trigger-1",
     display_name: "Incoming ticket",
     type: "trigger:manual",
+    config: {},
     outputs: {
       ticket: { type: "object" },
-    },
+    }
   };
 
   assert.deepEqual(declaredOutputsForNode(node, {}), {
@@ -419,9 +443,10 @@ test("deserialize outputs override stale empty backend schemas for downstream bi
         id: "trigger-event-main",
         display_name: "Incoming event",
         type: "trigger:manual",
+        config: {},
         outputs: {
           payload_text: { type: "string" },
-        },
+        }
       },
     ],
     gates: [
@@ -429,8 +454,10 @@ test("deserialize outputs override stale empty backend schemas for downstream bi
         id: "gate-deserialize-1",
         display_name: "Deserialize payload",
         type: "gate:deserialize",
-        content: "${{trigger-event-main.payload_text}}",
-        format: "auto",
+        config: {
+          content: "${{trigger-event-main.payload_text}}",
+          format: "auto"
+        },
         outputs: {
           title: { type: "string" },
           metadata: {
@@ -439,7 +466,7 @@ test("deserialize outputs override stale empty backend schemas for downstream bi
               source: { type: "string" },
             },
           },
-        },
+        }
       },
     ],
     effects: [
@@ -447,7 +474,9 @@ test("deserialize outputs override stale empty backend schemas for downstream bi
         id: "prompt-agent",
         display_name: "Prompt agent",
         type: "effect:agent:prompt",
-        prompt: "Use the deserialized payload title.",
+        config: {
+          prompt: "Use the deserialized payload title."
+        }
       },
     ],
     queries: [],
@@ -483,9 +512,10 @@ test("deserialize literal content keeps backend-inferred schemas over stale decl
         id: "trigger-event-main",
         display_name: "Incoming event",
         type: "trigger:manual",
+        config: {},
         outputs: {
           payload_text: { type: "string" },
-        },
+        }
       },
     ],
     gates: [
@@ -493,8 +523,10 @@ test("deserialize literal content keeps backend-inferred schemas over stale decl
         id: "gate-deserialize-1",
         display_name: "Deserialize payload",
         type: "gate:deserialize",
-        content: "{\"title\":\"Ready\",\"metadata\":{\"priority\":3}}",
-        format: "json",
+        config: {
+          content: "{\"title\":\"Ready\",\"metadata\":{\"priority\":3}}",
+          format: "json"
+        },
         outputs: {
           stale_title: { type: "string" },
           stale_metadata: {
@@ -503,7 +535,7 @@ test("deserialize literal content keeps backend-inferred schemas over stale decl
               source: { type: "string" },
             },
           },
-        },
+        }
       },
     ],
     effects: [
@@ -511,7 +543,9 @@ test("deserialize literal content keeps backend-inferred schemas over stale decl
         id: "prompt-agent",
         display_name: "Prompt agent",
         type: "effect:agent:prompt",
-        prompt: "Use the literal payload fields.",
+        config: {
+          prompt: "Use the literal payload fields."
+        }
       },
     ],
     queries: [],
@@ -548,6 +582,7 @@ test("state node output schemas expose graph-local bindings", () => {
         id: "trigger-1",
         display_name: "State trigger",
         type: "trigger:manual",
+        config: {}
       },
     ],
     gates: [],
@@ -556,10 +591,12 @@ test("state node output schemas expose graph-local bindings", () => {
         id: "effect-state-update",
         display_name: "Update workflow state",
         type: "effect:state:update",
-        namespace: "workflow",
-        key: "cursor",
-        operation: "set",
-        value: { cursor: "abc-123" },
+        config: {
+          namespace: "workflow",
+          key: "cursor",
+          operation: "set",
+          value: { cursor: "abc-123" }
+        }
       },
     ],
     queries: [
@@ -567,8 +604,10 @@ test("state node output schemas expose graph-local bindings", () => {
         id: "query-state-get",
         display_name: "Read workflow state",
         type: "query:state:get",
-        namespace: "workflow",
-        key: "cursor",
+        config: {
+          namespace: "workflow",
+          key: "cursor"
+        }
       },
     ],
     edges: [
@@ -637,6 +676,7 @@ test("prompt effects expose backend error outputs for binding", () => {
         id: "trigger-1",
         display_name: "Prompt trigger",
         type: "trigger:manual",
+        config: {}
       },
     ],
     gates: [],
@@ -645,24 +685,30 @@ test("prompt effects expose backend error outputs for binding", () => {
         id: "effect-prompt",
         display_name: "Prompt agent",
         type: "effect:agent:prompt",
-        prompt: "Describe the next action.",
+        config: {
+          prompt: "Describe the next action."
+        }
       },
       {
         id: "effect-prompt-next",
         display_name: "After prompt",
         type: "effect:agent:create",
+        config: {}
       },
       {
         id: "effect-enqueue",
         display_name: "Queue prompt",
         type: "effect:agent:enqueue-prompt",
-        prompt: "Describe the next action.",
-        queue_key: "ticket:${{trigger-1.status}}",
+        config: {
+          prompt: "Describe the next action.",
+          queue_key: "ticket:${{trigger-1.status}}"
+        }
       },
       {
         id: "effect-enqueue-next",
         display_name: "After queue",
         type: "effect:agent:create",
+        config: {}
       },
     ],
     queries: [],

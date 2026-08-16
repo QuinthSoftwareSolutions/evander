@@ -1,0 +1,4 @@
+AGENT_PROMPT_COMPLETED_PORT = "completed"
+AGENT_ENQUEUE_PROMPT_EFFECT_TYPE = "effect:agent:enqueue-prompt"
+AGENT_PROMPT_ERROR_PORT = "error"
+AGENT_PROMPT_STARTED_PORT = "started"

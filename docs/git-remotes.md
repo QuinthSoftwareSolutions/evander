@@ -129,7 +129,6 @@ The equivalent privileged Admin API is:
 - `PUT /api/admin/git-repositories/{managed_repo_id}/host-commit-identity`
 - `DELETE /api/admin/git-repositories/{managed_repo_id}`
 - `POST /api/admin/git-repositories/maintenance`
-- `POST /api/admin/git-repositories/migrate`
 - `GET /api/admin/sessions/{session_id}/git-grants`
 - `PUT /api/admin/sessions/{session_id}/git-grants/{managed_repo_id}`
 - `POST /api/admin/sessions/{session_id}/git-grants/{managed_repo_id}/clone`
@@ -138,9 +137,7 @@ The equivalent privileged Admin API is:
 Mutations require directory-scoped `admin.owner` permission and unlocked privileged operations.
 Registration JSON contains `directory_path`, `repo_source`, optional `default_branch`, and optional
 `refresh`. Host-identity JSON contains required `name` and `email`. Maintenance accepts optional
-`managed_repo_id`. Migration accepts
-`{"stage":"dry-run"}`, `{"stage":"apply"}`, or
-`{"stage":"finalize","migration_id":"<id>"}`; stages cannot be combined.
+`managed_repo_id`.
 
 ## Clone and guest push flow
 
@@ -355,52 +352,5 @@ Delete only after confirming the repository is no longer needed:
 evander-cli git-repos delete mr_0123456789abcdef0123
 ```
 
-Deletion refuses a repository with active issue/project/session bindings, authorized sessions,
-active or unreconciled worktrees, or unresolved migration state. There is no force-delete path.
-
-## Breaking migration from legacy mirrors
-
-The managed registry schema marker is required. A runtime with legacy path-based managed-Git state
-fails preflight and directs the operator to the explicit migration. The new runtime does not
-dual-read old checkout or bare-repository path fields.
-
-Stop the trigger and effect workers before migration and ensure no Git operation or agent session is
-active. Then inventory without writing:
-
-```bash
-evander-cli git-repos migrate --dry-run
-```
-
-The report groups legacy repositories by normalized directory/upstream identity and inventories
-old bare repositories, cache mirrors and checkouts, Team projects, workflow packs, sessions, and
-authorized-key bindings. Missing canonical metadata and preserved-ref collisions block apply. A
-collision in agent, review, Team, note, or PR refs aborts that repository group; migration never
-chooses a winner.
-
-After resolving every blocker, apply explicitly:
-
-```bash
-evander-cli git-repos migrate --apply
-```
-
-Apply creates the registry and managed bare repositories, refreshes canonical refs, imports
-preserved refs, and rewrites Team/session/issue/key/workflow bindings to managed IDs. Workflow pack
-updates use the revision/lock service and abort on a concurrent edit. Stopped VM and container
-sessions are marked for Git-remote reconciliation before their next wake. Legacy singular session
-Git authorization metadata is rewritten into repository-keyed, session-persistent grants.
-
-Apply writes a manifest containing old/new mappings and verification hashes. Evander-owned old
-repositories and cache checkouts leave active routing but remain read-only rollback artifacts.
-User-owned source checkouts are never changed or deleted.
-
-After services have restarted, smoke-test both a VM and container-worker path: managed clone,
-restricted agent push, queued trigger, pinned promotion, exact note read, PR publication, and Team
-release consolidation. Finalization is a separate operator decision:
-
-```bash
-evander-cli git-repos migrate --finalize <migration-id>
-```
-
-Finalize re-verifies registry records, refs, bindings, active keys, and the absence of legacy
-configuration. It deletes only Evander-owned rollback artifacts named in that manifest. It never
-uses a retention timer or deletes a user checkout.
+Deletion refuses a repository with active issue/project/session bindings, authorized sessions, or
+active or unreconciled worktrees. There is no force-delete path.

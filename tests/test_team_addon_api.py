@@ -57,6 +57,8 @@ from evander_team_addon.models import (
     EphemeralAssignment,
     EphemeralAssignmentState,
     GitPromotionRecord,
+    GitWorkContext,
+    GitWorkContextState,
     HumanReviewAssignment,
     HumanReviewFinding,
     HumanReviewRequest,
@@ -107,6 +109,7 @@ from evander_team_addon.services.admin_service import TeamAdminService
 from evander_team_addon.services.chat_service import TeamChatService
 from evander_team_addon.services.commands import TeamTaskUpdateCommandService
 from evander_team_addon.services.runtime_service import TeamRuntimeService
+from config_helpers import write_runtime_config
 
 
 def _team_admin_service(repo: TeamStateRepository) -> TeamAdminService:
@@ -494,28 +497,11 @@ def _write_config(
         ),
         encoding="utf-8",
     )
-    config_path = tmp_path / "gateway.yaml"
-    lines = [
-        f'runtime_dir: "{runtime_dir}"',
-        f'audit_log_path: "{runtime_dir / "audit.jsonl"}"',
-        f'session_store_path: "{runtime_dir / "sessions.json"}"',
-        f'approval_store_path: "{runtime_dir / "approvals.json"}"',
-        f'draft_store_path: "{runtime_dir / "drafts.json"}"',
-        f'email_store_path: "{runtime_dir / "emails.json"}"',
-        f'discord_command_store_path: "{runtime_dir / "discord_commands.json"}"',
-    ]
-    if enable_directory_scoped_config:
-        lines.append("enable_directory_scoped_config: true")
-    if enable_team_addon:
-        lines.extend(
-            [
-                "addon_loader:",
-                "  modules:",
-                '    - "evander_team_addon"',
-            ]
-        )
-    config_path.write_text("\n".join(lines), encoding="utf-8")
-    return config_path
+    return write_runtime_config(
+        tmp_path,
+        enable_directory_scoped_config=enable_directory_scoped_config,
+        addon_loader={"modules": ["evander_team_addon"]} if enable_team_addon else {},
+    )
 
 
 def _client(
@@ -2500,17 +2486,27 @@ def test_successor_api_requires_resolved_human_case_and_authorized_corrections(
     ]
 
 
-def test_operator_api_resolves_terminal_blocker_with_audit_identity(tmp_path: Path) -> None:
+def test_operator_api_resolves_non_task_terminal_blocker_without_publication_wake(
+    tmp_path: Path,
+) -> None:
     repo = _seed_runtime_operations_state(tmp_path / "runtime")
 
     def _route_to_operator(state):
-        blocker = next(iter(state.blockers.values()))
-        blocker.route = TeamBlockerRoute.OPERATOR
-        blocker.terminal_reference_ids = ["escalation-api-test"]
+        state.blockers["explicit-operator-blocker"] = TeamBlocker(
+            id="explicit-operator-blocker",
+            team_id="team",
+            project_id="project",
+            source_kind=TeamBlockerSourceKind.EXPLICIT,
+            source_id="external-dependency",
+            owner_agent_id="lead",
+            route=TeamBlockerRoute.OPERATOR,
+            summary="Operator must confirm the external dependency is available.",
+            terminal_reference_ids=["escalation-api-test"],
+        )
         return state
 
     state = repo.update(_route_to_operator)
-    blocker = next(iter(state.blockers.values()))
+    blocker = state.blockers["explicit-operator-blocker"]
     client = _client(tmp_path)
 
     response = client.post(
@@ -2523,6 +2519,8 @@ def test_operator_api_resolves_terminal_blocker_with_audit_identity(tmp_path: Pa
     )
 
     assert response.status_code == 200
+    assert "outbox_publication_wake" not in response.json()
+    assert InternalEventBus(internal_event_store_path(tmp_path / "runtime")).list_events() == []
     reread = repo.read()
     assert reread.blockers[blocker.id].state == TeamBlockerState.RESOLVED
     resolution_event = next(
@@ -2533,6 +2531,138 @@ def test_operator_api_resolves_terminal_blocker_with_audit_identity(tmp_path: Pa
     assert resolution_event.actor_agent_id is None
     assert resolution_event.metadata["operator_actor_id"].startswith("operator:")
     assert resolution_event.reference_ids == ["incident-api-123"]
+
+
+def test_operator_api_resolving_task_blocker_prompts_outbox_publication(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    repo = _seed_runtime_operations_state(runtime_dir)
+    notified_lock_paths: list[Path] = []
+    monkeypatch.setattr(
+        team_addon_api,
+        "notify_wake_socket_for_lock",
+        lambda lock_path: notified_lock_paths.append(Path(lock_path)) or True,
+    )
+
+    def _route_task_blocker_to_operator(state):
+        blocker = next(
+            blocker
+            for blocker in state.blockers.values()
+            if blocker.source_kind == TeamBlockerSourceKind.TASK
+            and blocker.source_id == "blocked-task"
+        )
+        blocker.route = TeamBlockerRoute.OPERATOR
+        return state
+
+    state = repo.update(_route_task_blocker_to_operator)
+    blocker_id = next(
+        blocker.id
+        for blocker in state.blockers.values()
+        if blocker.source_kind == TeamBlockerSourceKind.TASK and blocker.source_id == "blocked-task"
+    )
+    client = _client(tmp_path)
+
+    response = client.post(
+        f"/api/addons/team-addon/blockers/{blocker_id}/resolve",
+        json={
+            "note": "The dependency is available again.",
+            "expected_revision": state.revision,
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    publication_wake = payload["outbox_publication_wake"]
+    assert publication_wake["wake_notified"] is True
+    published = InternalEventBus(internal_event_store_path(runtime_dir)).list_events()
+    assert len(published) == 1
+    assert published[0].event_type == TEAM_OUTBOX_PUBLISH_REQUESTED_EVENT_TYPE
+    assert published[0].correlation_key == (
+        f"terminal-blocker-resolution:{blocker_id}:{payload['revision']}"
+    )
+    assert publication_wake["event_ids"] == [published[0].event_id]
+    assert notified_lock_paths == [runtime_dir / "trigger-orchestrator.lock"]
+
+    reread = repo.read()
+    assert reread.blockers[blocker_id].state == TeamBlockerState.RESOLVED
+    assert reread.tasks["blocked-task"].state == TeamTaskState.IN_PROGRESS
+    task_ready_wakes = [
+        record
+        for record in repo.list_outbox_records(intent_type="team.agent.wake_requested")
+        if record.payload["payload"].get("agent_id") == "backend"
+        and record.payload["payload"].get("reason") == "task_ready"
+    ]
+    assert len(task_ready_wakes) == 1
+    [wake_outbox] = task_ready_wakes
+    assert wake_outbox.status == TeamOutboxStatus.PENDING
+    assert wake_outbox.payload["payload"]["agent_id"] == "backend"
+    assert wake_outbox.payload["payload"]["reason"] == "task_ready"
+    assert wake_outbox.payload["delay_seconds"] == 1
+
+
+def test_operator_api_blocker_publication_failure_keeps_task_wake_pending(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    repo = _seed_runtime_operations_state(runtime_dir)
+
+    def _route_task_blocker_to_operator(state):
+        blocker = next(
+            blocker
+            for blocker in state.blockers.values()
+            if blocker.source_kind == TeamBlockerSourceKind.TASK
+            and blocker.source_id == "blocked-task"
+        )
+        blocker.route = TeamBlockerRoute.OPERATOR
+        return state
+
+    state = repo.update(_route_task_blocker_to_operator)
+    blocker_id = next(
+        blocker.id
+        for blocker in state.blockers.values()
+        if blocker.source_kind == TeamBlockerSourceKind.TASK and blocker.source_id == "blocked-task"
+    )
+
+    def _raise_publication_error(*_args, **_kwargs):
+        raise RuntimeError("trigger workflow configuration is unavailable")
+
+    monkeypatch.setattr(
+        team_addon_api,
+        "load_trigger_orchestrator_worker_global_config",
+        _raise_publication_error,
+    )
+    client = _client(tmp_path)
+
+    response = client.post(
+        f"/api/addons/team-addon/blockers/{blocker_id}/resolve",
+        json={
+            "note": "The dependency is available again.",
+            "expected_revision": state.revision,
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["outbox_publication_wake"] == {
+        "event_ids": [],
+        "wake_notified": False,
+        "error": "trigger workflow configuration is unavailable",
+    }
+    assert InternalEventBus(internal_event_store_path(runtime_dir)).list_events() == []
+    reread = repo.read()
+    assert reread.blockers[blocker_id].state == TeamBlockerState.RESOLVED
+    assert reread.tasks["blocked-task"].state == TeamTaskState.IN_PROGRESS
+    task_ready_wakes = [
+        record
+        for record in repo.list_outbox_records(intent_type="team.agent.wake_requested")
+        if record.payload["payload"].get("agent_id") == "backend"
+        and record.payload["payload"].get("reason") == "task_ready"
+    ]
+    assert len(task_ready_wakes) == 1
+    [wake_outbox] = task_ready_wakes
+    assert wake_outbox.status == TeamOutboxStatus.PENDING
 
 
 def _seed_long_chat_history(
@@ -8071,6 +8201,22 @@ def test_team_addon_admin_api_review_decision_and_release_flow(tmp_path: Path) -
             "expected_revision": 4,
         },
     )
+
+    repo = TeamStateRepository(tmp_path / "runtime")
+
+    def _attach_task_base(current):
+        current.git_work_contexts["task-base"] = GitWorkContext(
+            id="task-base",
+            agent_id="backend",
+            task_id="task",
+            agent_branch="agents/session-backend/task",
+            base_branch="main",
+            base_commit="b" * 40,
+            state=GitWorkContextState.ACTIVE,
+        )
+        return current
+
+    repo.update(_attach_task_base)
     client.post(
         "/api/addons/team-addon/deliverables",
         json={
@@ -8079,7 +8225,7 @@ def test_team_addon_admin_api_review_decision_and_release_flow(tmp_path: Path) -
             "producer_agent_id": "backend",
             "summary": "Backend task is ready.",
             "artifact_refs": ["artifacts/backend.tar.gz"],
-            "expected_revision": 5,
+            "expected_revision": 6,
         },
     )
     client.post(
@@ -8088,13 +8234,13 @@ def test_team_addon_admin_api_review_decision_and_release_flow(tmp_path: Path) -
             "id": "review",
             "deliverable_id": "deliverable",
             "reviewer_agent_id": "lead",
-            "expected_revision": 6,
+            "expected_revision": 7,
         },
     )
 
     response = client.post(
         "/api/addons/team-addon/review-requests/review/decision",
-        json={"state": "accepted", "findings": ["looks good"], "expected_revision": 7},
+        json={"state": "accepted", "findings": ["looks good"], "expected_revision": 8},
     )
     assert response.status_code == 200, response.text
     state = response.json()
@@ -8103,8 +8249,6 @@ def test_team_addon_admin_api_review_decision_and_release_flow(tmp_path: Path) -
     assert state["review_requests"]["review"]["decision_at"] is not None
     assert state["deliverables"]["deliverable"]["state"] == "accepted"
     assert state["tasks"]["task"]["state"] == "finished"
-
-    repo = TeamStateRepository(tmp_path / "runtime")
 
     def _attach_feature_branch(current):
         deliverable = current.deliverables["deliverable"]
@@ -8132,7 +8276,7 @@ def test_team_addon_admin_api_review_decision_and_release_flow(tmp_path: Path) -
             "project_id": "project",
             "deliverable_ids": ["deliverable"],
             "summary": "Publish the reviewed backend delivery.",
-            "expected_revision": 9,
+            "expected_revision": 10,
         },
     )
     assert response.status_code == 201

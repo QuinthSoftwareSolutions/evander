@@ -13,6 +13,7 @@ from evander.daemons.proxy_issue_sync import (
     upsert_ado_proxy_issue_from_remote_payload,
 )
 from evander.events.models import TriggerDefinitionDiscriminated, materialize_node_definition
+from config_helpers import canonical_workflow_node
 from evander.models import LocalIssueRecord, RemoteIssueReference
 from evander.storage import JsonStore
 from evander.triggers.providers.base import TriggerRuntimeContext
@@ -476,7 +477,9 @@ def _ticket_changed_provider(runtime_dir: Path) -> TicketChangedTriggerProvider:
         "directories": ["root/team"],
     }
     adapter = TypeAdapter(TriggerDefinitionDiscriminated)
-    trigger = materialize_node_definition(adapter.validate_python(payload))
+    trigger = materialize_node_definition(
+        adapter.validate_python(canonical_workflow_node(payload))
+    )
     provider = TicketChangedTriggerProvider()
     provider.initialize(
         trigger,

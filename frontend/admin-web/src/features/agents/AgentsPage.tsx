@@ -885,6 +885,7 @@ export function AgentsPage() {
   const [items, setItems] = useState<AgentRecord[]>([]);
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
   const [hashSelection, setHashSelection] = useState<AgentHashSelection>(() => agentSelectionFromHash());
+  const [agentSearch, setAgentSearch] = useState("");
   const [backendFilter, setBackendFilter] = useState<BackendFilter>("all");
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
   const [selectedAgentDetail, setSelectedAgentDetail] = useState<AgentRecord | null>(null);
@@ -944,6 +945,7 @@ export function AgentsPage() {
       setHashSelection(nextSelection);
       if (nextSelection.agentId || nextSelection.sessionId) {
         setSelectedKey(null);
+        setAgentSearch("");
         setBackendFilter("all");
         setStatusFilter("all");
       }
@@ -1006,7 +1008,17 @@ export function AgentsPage() {
   }, []);
 
   const filteredItems = useMemo(() => {
+    const normalizedSearch = agentSearch.trim().toLocaleLowerCase();
     return [...items]
+      .filter((item) => {
+        if (!normalizedSearch) return true;
+        return [
+          item.target_name,
+          item.agent_id,
+          item.session_id,
+          item.directory_path,
+        ].some((value) => value?.toLocaleLowerCase().includes(normalizedSearch));
+      })
       .filter((item) => backendFilter === "all" || item.backend === backendFilter)
       .filter((item) => {
         if (statusFilter === "all") return true;
@@ -1021,7 +1033,7 @@ export function AgentsPage() {
           sensitivity: "base",
         });
       });
-  }, [backendFilter, items, statusFilter]);
+  }, [agentSearch, backendFilter, items, statusFilter]);
 
   const groupedItems = useMemo(() => {
     return {
@@ -2066,6 +2078,15 @@ export function AgentsPage() {
           <div className="callout warning-callout">Unlock privileged operations to create, edit, stop, destroy, or resume targets.</div>
         ) : null}
         <div className="config-field-grid agents-filter-grid">
+          <label className="field-stack">
+            <span>Search agents</span>
+            <input
+              type="search"
+              value={agentSearch}
+              placeholder="Name, ID, session, or directory"
+              onChange={(event) => setAgentSearch(event.target.value)}
+            />
+          </label>
           <label className="field-stack">
             <span>Backend</span>
             <select value={backendFilter} onChange={(event) => setBackendFilter(event.target.value as BackendFilter)}>

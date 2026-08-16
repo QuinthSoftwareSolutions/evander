@@ -311,11 +311,7 @@ class IssueGitAdminSupport:
         remote = issue.remote_reference
         if remote is not None and remote.provider and remote.work_item_id:
             return remote.provider, remote.work_item_id
-        return self.issue_service.resolve_proxy_target(
-            issue_number=issue.issue_number,
-            issue_source=issue.source,
-            metadata=issue.metadata,
-        )
+        return None
 
     def refresh_proxy_cache_from_remote(
         self,

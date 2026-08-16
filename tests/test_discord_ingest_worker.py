@@ -14,6 +14,7 @@ from evander.messaging.targets import (
 )
 from evander.messaging.discord_ingest import build_discord_ingest_worker
 from evander.models import SessionManifest, ToolName
+from config_helpers import canonical_workflow_payload
 
 
 def ensure_directory(worker, directory_path: str) -> None:
@@ -39,7 +40,10 @@ def write_root_communication_targets(worker, targets: list[dict[str, object]]) -
 def write_trigger_config(project_dir: Path, triggers: list[dict[str, object]]) -> None:
     trigger_config_path = project_dir / "config" / "trigger-orchestrator" / "config.json"
     trigger_config_path.parent.mkdir(parents=True, exist_ok=True)
-    trigger_config_path.write_text(json.dumps({"triggers": triggers}), encoding="utf-8")
+    trigger_config_path.write_text(
+        json.dumps(canonical_workflow_payload({"triggers": triggers})),
+        encoding="utf-8",
+    )
 
 
 def test_build_discord_ingest_worker_uses_worker_config_and_normalizes_directories(

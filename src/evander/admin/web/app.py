@@ -695,7 +695,7 @@ def main() -> None:
         "--runtime-dir",
         "--config",
         default=str(Path(__file__).resolve().parents[4] / "runtime"),
-        help="Runtime directory root. A legacy gateway YAML path is accepted for bootstrap compatibility.",
+        help="Runtime directory root.",
     )
     parser.add_argument(
         "--host", default="127.0.0.1", help="Bind host for the local admin web app."

@@ -33,6 +33,10 @@ from evander.models import (
     tool_name_value,
 )
 from evander.policy_config import EffectivePolicyConfig
+from evander.provider_config import (
+    MODEL_PROVIDER_MODE_METADATA_KEY,
+    normalize_model_provider_mode_override,
+)
 from evander.runtime import RuntimeContext
 from evander.services import (
     normalize_teams_chat_or_target_refs,
@@ -614,6 +618,7 @@ def session_policy_update_from_payload(
         "teams_chat_allowlist",
         "teams_user_allowlist",
         "http_targets",
+        "model_provider_mode",
         "metadata",
         *SESSION_BOOL_POLICY_FIELDS,
         *COMMUNICATION_FILE_SESSION_POLICY_FIELDS,
@@ -736,6 +741,14 @@ def session_policy_update_from_payload(
         if not isinstance(metadata, Mapping):
             raise ValueError("metadata must be a JSON object")
         normalized_metadata = dict(metadata)
+        if MODEL_PROVIDER_MODE_METADATA_KEY in normalized_metadata:
+            model_provider_mode = normalize_model_provider_mode_override(
+                normalized_metadata.get(MODEL_PROVIDER_MODE_METADATA_KEY)
+            )
+            if model_provider_mode is None:
+                normalized_metadata.pop(MODEL_PROVIDER_MODE_METADATA_KEY, None)
+            else:
+                normalized_metadata[MODEL_PROVIDER_MODE_METADATA_KEY] = model_provider_mode
         if "http_targets" in normalized_metadata:
             normalized_metadata["http_targets"] = normalize_http_targets_metadata(
                 normalized_metadata["http_targets"]
@@ -747,6 +760,17 @@ def session_policy_update_from_payload(
     if "http_targets" in payload:
         metadata = dict(update.get("metadata", session.metadata))
         metadata["http_targets"] = normalize_http_targets_metadata(payload.get("http_targets"))
+        update["metadata"] = metadata
+
+    if "model_provider_mode" in payload:
+        model_provider_mode = normalize_model_provider_mode_override(
+            payload.get("model_provider_mode")
+        )
+        metadata = dict(update.get("metadata", session.metadata))
+        if model_provider_mode is None:
+            metadata.pop(MODEL_PROVIDER_MODE_METADATA_KEY, None)
+        else:
+            metadata[MODEL_PROVIDER_MODE_METADATA_KEY] = model_provider_mode
         update["metadata"] = metadata
 
     return update

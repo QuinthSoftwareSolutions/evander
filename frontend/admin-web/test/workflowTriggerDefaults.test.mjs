@@ -32,15 +32,15 @@ test("adds the approval and communication trigger descriptions and default node 
   );
   assert.match(
     app,
-    /if \(kind === "trigger" && type === "trigger:communication:new-message"\) \{\n\s+return \{\n\s+id,\n\s+display_name: "Communication message",\n\s+type,\n\s+communication_target_ids: \[],\n\s+directory_path: "root",\n\s+author_ids: \[],\n\s+case_sensitive: false,\n\s+\};\n\s+\}/,
+    /if \(kind === "trigger" && type === "trigger:communication:new-message"\) \{\n\s+return workflowNode\(id, "Communication message", type, \{\n\s+communication_target_ids: \[],\n\s+directory_path: "root",\n\s+author_ids: \[],\n\s+case_sensitive: false,\n\s+\}\);\n\s+\}/,
   );
   assert.match(
     app,
-    /if \(kind === "trigger" && type === "trigger:approval:pending-created"\) \{\n\s+return \{\n\s+id,\n\s+display_name: "Pending approval",\n\s+type,\n\s+directory_path: "root",\n\s+action_types: \[],\n\s+tool_names: \[],\n\s+\};\n\s+\}/,
+    /if \(kind === "trigger" && type === "trigger:approval:pending-created"\) \{\n\s+return workflowNode\(id, "Pending approval", type, \{\n\s+directory_path: "root",\n\s+action_types: \[],\n\s+tool_names: \[],\n\s+\}\);\n\s+\}/,
   );
   assert.match(
     app,
-    /if \(kind === "effect" && type === "effect:session:renew-if-expired"\) \{\n\s+return \{\n\s+id,\n\s+display_name: "Renew expired or soon-expiring session",\n\s+type,\n\s+session_id: "session-id",\n\s+extend_by: "1d",\n\s+renew_if_expires_within: "2h",\n\s+\};\n\s+\}/,
+    /if \(kind === "effect" && type === "effect:session:renew-if-expired"\) \{\n\s+return workflowNode\(id, "Renew expired or soon-expiring session", type, \{\n\s+session_id: "session-id",\n\s+extend_by: "1d",\n\s+renew_if_expires_within: "2h",\n\s+\}\);\n\s+\}/,
   );
 });
 

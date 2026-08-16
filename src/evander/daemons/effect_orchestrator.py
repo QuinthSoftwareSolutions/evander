@@ -86,7 +86,7 @@ from evander.workflow.graph_metadata import (
     ResolvedWorkflowGraphMetadata,
     resolve_workflow_graph_metadata,
 )
-from evander.workflow.migrations import AGENT_PROMPT_ERROR_PORT
+from evander.workflow.lifecycle_ports import AGENT_PROMPT_ERROR_PORT
 from evander.orchestration.agent_prompt_activity import AgentPromptActivityRuntime
 from evander.workflow.engine.node_executors import (
     NodeExecutorRegistry,

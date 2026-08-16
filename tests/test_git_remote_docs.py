@@ -12,9 +12,8 @@ def test_managed_git_repository_docs_and_credential_script_are_present() -> None
     for document in (readme, ops, git_docs):
         assert "managed_repo_id" in document
         assert "git-repos register" in document
-    assert "git-repos migrate --dry-run" in readme
-    assert "git-repos migrate --apply" in git_docs
-    assert "git-repos migrate --finalize" in git_docs
+    for document in (readme, ops, git_docs):
+        assert "git-repos migrate" not in document
     assert "post-receive" in git_docs
     assert "configured PAT" in git_docs
     assert "refs/heads/agents/" in git_docs

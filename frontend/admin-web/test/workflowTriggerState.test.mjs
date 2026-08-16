@@ -12,18 +12,21 @@ test("workflowTriggerEnabled defaults triggers to enabled", () => {
       id: "trigger-1",
       display_name: "Trigger",
       type: "trigger:cron",
+      config: {}
     }),
     true,
   );
 });
 
-test("workflowTriggerEnabled honors top-level and nested disabled flags", () => {
+test("workflowTriggerEnabled honors canonical nested disabled flags", () => {
   assert.equal(
     workflowTriggerEnabled({
       id: "trigger-1",
       display_name: "Trigger",
       type: "trigger:cron",
-      enabled: false,
+      config: {
+        enabled: false
+      }
     }),
     false,
   );

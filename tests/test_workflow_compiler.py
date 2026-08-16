@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+from config_helpers import canonical_worker_config
+
 from pathlib import Path
 
-from evander.config import TriggerOrchestratorWorkerGlobalConfig
 from evander.workflow.compiler import (
     collect_domain_validation_diagnostics,
     compile_trigger_orchestrator_config,
@@ -15,7 +16,7 @@ def test_compile_trigger_orchestrator_config_can_apply_await_agent_completion_tr
     tmp_path: Path,
 ) -> None:
     runtime_dir = tmp_path / "runtime"
-    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+    worker_config = canonical_worker_config(
         {
             "runtime_dir": runtime_dir,
             "triggers": [
@@ -69,7 +70,7 @@ def test_compile_trigger_orchestrator_config_is_valid_without_domain_transforms(
     tmp_path: Path,
 ) -> None:
     runtime_dir = tmp_path / "runtime"
-    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+    worker_config = canonical_worker_config(
         {
             "runtime_dir": runtime_dir,
             "triggers": [],
@@ -105,7 +106,7 @@ def test_compile_trigger_orchestrator_config_is_valid_without_domain_transforms(
 
 def test_compile_reports_unported_agent_prompt_outbound_edges(tmp_path: Path) -> None:
     runtime_dir = tmp_path / "runtime"
-    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+    worker_config = canonical_worker_config(
         {
             "runtime_dir": runtime_dir,
             "triggers": [
@@ -153,7 +154,7 @@ def test_compile_reports_unported_agent_enqueue_prompt_outbound_edges(
     tmp_path: Path,
 ) -> None:
     runtime_dir = tmp_path / "runtime"
-    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+    worker_config = canonical_worker_config(
         {
             "runtime_dir": runtime_dir,
             "triggers": [
@@ -199,7 +200,7 @@ def test_compile_reports_unported_agent_enqueue_prompt_outbound_edges(
 
 def test_compile_accepts_agent_prompt_error_source_port(tmp_path: Path) -> None:
     runtime_dir = tmp_path / "runtime"
-    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+    worker_config = canonical_worker_config(
         {
             "runtime_dir": runtime_dir,
             "triggers": [
@@ -240,7 +241,7 @@ def test_compile_accepts_agent_prompt_error_source_port(tmp_path: Path) -> None:
 
 def test_compile_accepts_agent_enqueue_prompt_error_source_port(tmp_path: Path) -> None:
     runtime_dir = tmp_path / "runtime"
-    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+    worker_config = canonical_worker_config(
         {
             "runtime_dir": runtime_dir,
             "triggers": [
@@ -283,7 +284,7 @@ def test_compile_trigger_orchestrator_config_with_diagnostics_reports_await_agen
     tmp_path: Path,
 ) -> None:
     runtime_dir = tmp_path / "runtime"
-    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+    worker_config = canonical_worker_config(
         {
             "runtime_dir": runtime_dir,
             "triggers": [
@@ -328,7 +329,7 @@ def test_collect_domain_validation_diagnostics_reports_invalid_for_gate_port(
     tmp_path: Path,
 ) -> None:
     runtime_dir = tmp_path / "runtime"
-    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+    worker_config = canonical_worker_config(
         {
             "runtime_dir": runtime_dir,
             "triggers": [
@@ -368,7 +369,7 @@ def test_collect_domain_validation_diagnostics_reports_body_for_gate_without_loo
     tmp_path: Path,
 ) -> None:
     runtime_dir = tmp_path / "runtime"
-    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+    worker_config = canonical_worker_config(
         {
             "runtime_dir": runtime_dir,
             "triggers": [
@@ -412,7 +413,7 @@ def test_collect_domain_validation_diagnostics_reports_switch_port_issues(
     tmp_path: Path,
 ) -> None:
     runtime_dir = tmp_path / "runtime"
-    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+    worker_config = canonical_worker_config(
         {
             "runtime_dir": runtime_dir,
             "triggers": [
@@ -498,7 +499,7 @@ def test_collect_domain_validation_diagnostics_reports_switch_bad_inbound_count(
     tmp_path: Path,
 ) -> None:
     runtime_dir = tmp_path / "runtime"
-    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+    worker_config = canonical_worker_config(
         {
             "runtime_dir": runtime_dir,
             "triggers": [
@@ -546,7 +547,7 @@ def test_collect_domain_validation_diagnostics_allows_body_for_gate_with_loopbac
     tmp_path: Path,
 ) -> None:
     runtime_dir = tmp_path / "runtime"
-    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+    worker_config = canonical_worker_config(
         {
             "runtime_dir": runtime_dir,
             "triggers": [

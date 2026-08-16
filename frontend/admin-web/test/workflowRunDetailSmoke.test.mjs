@@ -56,11 +56,13 @@ test("workflow editor inspects a stored workflow run detail", async (t) => {
         id: "trigger-1",
         display_name: "Incoming command",
         type: "trigger:manual",
+        config: {}
       },
       {
         id: "trigger-2",
         display_name: "Unrelated command",
         type: "trigger:manual",
+        config: {}
       },
     ],
     gates: [],
@@ -69,21 +71,25 @@ test("workflow editor inspects a stored workflow run detail", async (t) => {
         id: "agent-1",
         display_name: "Dispatch agent",
         type: "effect:agent",
+        config: {}
       },
       {
         id: "notify-1",
         display_name: "Notify operator",
         type: "effect:notify",
+        config: {}
       },
       {
         id: "legacy-gap-1",
         display_name: "Legacy audit gap",
         type: "effect:notify",
+        config: {}
       },
       {
         id: "unrelated-1",
         display_name: "Unrelated effect",
         type: "effect:notify",
+        config: {}
       },
     ],
     queries: [],

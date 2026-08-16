@@ -4,6 +4,8 @@ import json
 from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
 
+from config_helpers import canonical_workflow_payload
+
 from evander.models import LocalIssueRecord
 from evander.storage import JsonStore
 from evander.triggers.providers._local_tickets import (
@@ -200,38 +202,42 @@ def test_seed_new_ticket_created_trigger_cursors_preserves_existing_entries(
 
     seed_new_ticket_created_trigger_cursors(
         runtime_dir=runtime_dir,
-        previous_config={
-            "triggers": [
-                {
-                    "id": "ticket-existing",
-                    "display_name": "Existing",
-                    "type": "trigger:ticket:created",
-                    "directories": ["root/team-a"],
-                }
-            ]
-        },
-        next_config={
-            "triggers": [
-                {
-                    "id": "ticket-existing",
-                    "display_name": "Existing",
-                    "type": "trigger:ticket:created",
-                    "directories": ["root/team-a"],
-                },
-                {
-                    "id": "ticket-copy",
-                    "display_name": "Copied",
-                    "type": "trigger:ticket:created",
-                    "directories": ["root/example-industry/app"],
-                },
-                {
-                    "id": "ticket-copy-2",
-                    "display_name": "Copied 2",
-                    "type": "trigger:ticket:created",
-                    "directories": ["root/example-industry/app"],
-                },
-            ]
-        },
+        previous_config=canonical_workflow_payload(
+            {
+                "triggers": [
+                    {
+                        "id": "ticket-existing",
+                        "display_name": "Existing",
+                        "type": "trigger:ticket:created",
+                        "directories": ["root/team-a"],
+                    }
+                ]
+            }
+        ),
+        next_config=canonical_workflow_payload(
+            {
+                "triggers": [
+                    {
+                        "id": "ticket-existing",
+                        "display_name": "Existing",
+                        "type": "trigger:ticket:created",
+                        "directories": ["root/team-a"],
+                    },
+                    {
+                        "id": "ticket-copy",
+                        "display_name": "Copied",
+                        "type": "trigger:ticket:created",
+                        "directories": ["root/example-industry/app"],
+                    },
+                    {
+                        "id": "ticket-copy-2",
+                        "display_name": "Copied 2",
+                        "type": "trigger:ticket:created",
+                        "directories": ["root/example-industry/app"],
+                    },
+                ]
+            }
+        ),
     )
 
     payload = json.loads(cursor_path.read_text(encoding="utf-8"))
