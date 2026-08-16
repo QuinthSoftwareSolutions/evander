@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from config_helpers import canonical_worker_config
+
 import json
 import os
 from datetime import datetime, timezone
@@ -17,8 +19,13 @@ from evander.effects.registry import EffectProviderFactory, EffectProviderRegist
 from evander.events.models import EffectDefinitionDiscriminated, TriggerEvent
 from evander.provider_config import ProviderConfigResolver
 from evander.triggers.queue import TriggerEventQueue
+from config_helpers import canonical_workflow_node, canonical_workflow_payload
 
 REPORT_ENV_VAR = "EVANDER_EFFECT_CONFORMANCE_REPORT"
+
+
+def _worker_config(payload: dict[str, object]) -> TriggerOrchestratorWorkerGlobalConfig:
+    return canonical_worker_config(canonical_workflow_payload(payload))
 
 
 @pytest.fixture(scope="module")
@@ -44,8 +51,16 @@ def _record_result(
     )
 
 
-def _effect_adapter() -> TypeAdapter[EffectDefinitionDiscriminated]:
-    return TypeAdapter(EffectDefinitionDiscriminated)
+class _CanonicalEffectAdapter:
+    def __init__(self) -> None:
+        self._adapter = TypeAdapter(EffectDefinitionDiscriminated)
+
+    def validate_python(self, payload: dict[str, object]) -> object:
+        return self._adapter.validate_python(canonical_workflow_node(payload))
+
+
+def _effect_adapter() -> _CanonicalEffectAdapter:
+    return _CanonicalEffectAdapter()
 
 
 class _OutputProvider:
@@ -504,7 +519,7 @@ def test_effect_binding_resolution_and_chained_output_propagation(
 ) -> None:
     runtime_dir = tmp_path / "runtime"
     config = GatewayConfig(runtime_dir=runtime_dir)
-    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+    worker_config = _worker_config(
         {
             "runtime_dir": runtime_dir,
             "poll_interval_seconds": 1,
@@ -600,7 +615,7 @@ def test_effect_queue_and_execution_idempotency(
     assert first.event_id == second.event_id
 
     config = GatewayConfig(runtime_dir=runtime_dir)
-    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+    worker_config = _worker_config(
         {
             "runtime_dir": runtime_dir,
             "poll_interval_seconds": 1,
@@ -655,7 +670,7 @@ def test_effect_regression_missing_upstream_output_reference_records_failed_exec
     runtime_dir = tmp_path / "runtime"
     worker = EffectOrchestratorWorker(
         config=GatewayConfig(runtime_dir=runtime_dir),
-        worker_config=TriggerOrchestratorWorkerGlobalConfig.model_validate(
+        worker_config=_worker_config(
             {
                 "runtime_dir": runtime_dir,
                 "poll_interval_seconds": 1,
@@ -718,7 +733,7 @@ def test_effect_regression_provider_execution_failure_records_failed_status(
     runtime_dir = tmp_path / "runtime"
     worker = EffectOrchestratorWorker(
         config=GatewayConfig(runtime_dir=runtime_dir),
-        worker_config=TriggerOrchestratorWorkerGlobalConfig.model_validate(
+        worker_config=_worker_config(
             {
                 "runtime_dir": runtime_dir,
                 "poll_interval_seconds": 1,
@@ -781,7 +796,7 @@ def test_effect_regression_cycle_detection_skips_execution(
 ) -> None:
     runtime_dir = tmp_path / "runtime"
     with pytest.raises(ValueError, match="Non-cyclic edges cannot form a cycle"):
-        TriggerOrchestratorWorkerGlobalConfig.model_validate(
+        _worker_config(
             {
                 "runtime_dir": runtime_dir,
                 "poll_interval_seconds": 1,

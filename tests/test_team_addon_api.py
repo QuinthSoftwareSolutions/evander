@@ -57,6 +57,8 @@ from evander_team_addon.models import (
     EphemeralAssignment,
     EphemeralAssignmentState,
     GitPromotionRecord,
+    GitWorkContext,
+    GitWorkContextState,
     HumanReviewAssignment,
     HumanReviewFinding,
     HumanReviewRequest,
@@ -107,6 +109,7 @@ from evander_team_addon.services.admin_service import TeamAdminService
 from evander_team_addon.services.chat_service import TeamChatService
 from evander_team_addon.services.commands import TeamTaskUpdateCommandService
 from evander_team_addon.services.runtime_service import TeamRuntimeService
+from config_helpers import write_runtime_config
 
 
 def _team_admin_service(repo: TeamStateRepository) -> TeamAdminService:
@@ -494,28 +497,11 @@ def _write_config(
         ),
         encoding="utf-8",
     )
-    config_path = tmp_path / "gateway.yaml"
-    lines = [
-        f'runtime_dir: "{runtime_dir}"',
-        f'audit_log_path: "{runtime_dir / "audit.jsonl"}"',
-        f'session_store_path: "{runtime_dir / "sessions.json"}"',
-        f'approval_store_path: "{runtime_dir / "approvals.json"}"',
-        f'draft_store_path: "{runtime_dir / "drafts.json"}"',
-        f'email_store_path: "{runtime_dir / "emails.json"}"',
-        f'discord_command_store_path: "{runtime_dir / "discord_commands.json"}"',
-    ]
-    if enable_directory_scoped_config:
-        lines.append("enable_directory_scoped_config: true")
-    if enable_team_addon:
-        lines.extend(
-            [
-                "addon_loader:",
-                "  modules:",
-                '    - "evander_team_addon"',
-            ]
-        )
-    config_path.write_text("\n".join(lines), encoding="utf-8")
-    return config_path
+    return write_runtime_config(
+        tmp_path,
+        enable_directory_scoped_config=enable_directory_scoped_config,
+        addon_loader={"modules": ["evander_team_addon"]} if enable_team_addon else {},
+    )
 
 
 def _client(
@@ -2574,8 +2560,7 @@ def test_operator_api_resolving_task_blocker_prompts_outbox_publication(
     blocker_id = next(
         blocker.id
         for blocker in state.blockers.values()
-        if blocker.source_kind == TeamBlockerSourceKind.TASK
-        and blocker.source_id == "blocked-task"
+        if blocker.source_kind == TeamBlockerSourceKind.TASK and blocker.source_id == "blocked-task"
     )
     client = _client(tmp_path)
 
@@ -2638,8 +2623,7 @@ def test_operator_api_blocker_publication_failure_keeps_task_wake_pending(
     blocker_id = next(
         blocker.id
         for blocker in state.blockers.values()
-        if blocker.source_kind == TeamBlockerSourceKind.TASK
-        and blocker.source_id == "blocked-task"
+        if blocker.source_kind == TeamBlockerSourceKind.TASK and blocker.source_id == "blocked-task"
     )
 
     def _raise_publication_error(*_args, **_kwargs):
@@ -2679,6 +2663,7 @@ def test_operator_api_blocker_publication_failure_keeps_task_wake_pending(
     assert len(task_ready_wakes) == 1
     [wake_outbox] = task_ready_wakes
     assert wake_outbox.status == TeamOutboxStatus.PENDING
+
 
 def _seed_long_chat_history(
     runtime_dir: Path,
@@ -8216,6 +8201,22 @@ def test_team_addon_admin_api_review_decision_and_release_flow(tmp_path: Path) -
             "expected_revision": 4,
         },
     )
+
+    repo = TeamStateRepository(tmp_path / "runtime")
+
+    def _attach_task_base(current):
+        current.git_work_contexts["task-base"] = GitWorkContext(
+            id="task-base",
+            agent_id="backend",
+            task_id="task",
+            agent_branch="agents/session-backend/task",
+            base_branch="main",
+            base_commit="b" * 40,
+            state=GitWorkContextState.ACTIVE,
+        )
+        return current
+
+    repo.update(_attach_task_base)
     client.post(
         "/api/addons/team-addon/deliverables",
         json={
@@ -8224,7 +8225,7 @@ def test_team_addon_admin_api_review_decision_and_release_flow(tmp_path: Path) -
             "producer_agent_id": "backend",
             "summary": "Backend task is ready.",
             "artifact_refs": ["artifacts/backend.tar.gz"],
-            "expected_revision": 5,
+            "expected_revision": 6,
         },
     )
     client.post(
@@ -8233,13 +8234,13 @@ def test_team_addon_admin_api_review_decision_and_release_flow(tmp_path: Path) -
             "id": "review",
             "deliverable_id": "deliverable",
             "reviewer_agent_id": "lead",
-            "expected_revision": 6,
+            "expected_revision": 7,
         },
     )
 
     response = client.post(
         "/api/addons/team-addon/review-requests/review/decision",
-        json={"state": "accepted", "findings": ["looks good"], "expected_revision": 7},
+        json={"state": "accepted", "findings": ["looks good"], "expected_revision": 8},
     )
     assert response.status_code == 200, response.text
     state = response.json()
@@ -8248,8 +8249,6 @@ def test_team_addon_admin_api_review_decision_and_release_flow(tmp_path: Path) -
     assert state["review_requests"]["review"]["decision_at"] is not None
     assert state["deliverables"]["deliverable"]["state"] == "accepted"
     assert state["tasks"]["task"]["state"] == "finished"
-
-    repo = TeamStateRepository(tmp_path / "runtime")
 
     def _attach_feature_branch(current):
         deliverable = current.deliverables["deliverable"]
@@ -8277,7 +8276,7 @@ def test_team_addon_admin_api_review_decision_and_release_flow(tmp_path: Path) -
             "project_id": "project",
             "deliverable_ids": ["deliverable"],
             "summary": "Publish the reviewed backend delivery.",
-            "expected_revision": 9,
+            "expected_revision": 10,
         },
     )
     assert response.status_code == 201

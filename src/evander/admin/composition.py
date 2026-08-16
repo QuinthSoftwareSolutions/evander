@@ -86,8 +86,6 @@ from evander.admin.services.vm_agent.common_models import (
 from evander.bootstrap import (
     load_host_bootstrap_config,
     load_runtime_gateway_config,
-    resolve_project_dir,
-    resolve_runtime_dir,
 )
 from evander.communication_artifacts import CommunicationArtifactStore
 from evander.connectors.service import ConnectorService, connector_registry_from_catalog
@@ -208,7 +206,6 @@ class AdminRuntimePrivilegedHelperFactoryPort:
 @dataclass(slots=True)
 class AdminRuntimeComponents:
     runtime_dir: Path
-    legacy_config_path: Path | None
     project_dir: Path
     config: Any
     runtime: RuntimeContext
@@ -326,10 +323,7 @@ class _AdminRuntimeHost:
 def _resolve_project_dir_for_admin_runtime(
     *,
     runtime_dir: Path,
-    legacy_config_path: Path | None,
 ) -> Path:
-    if legacy_config_path is not None:
-        return resolve_project_dir(legacy_config_path=legacy_config_path)
     runtime_root = runtime_dir.expanduser()
     if not runtime_root.is_absolute():
         repo_relative_runtime = project_helpers.module_project_root() / runtime_root
@@ -347,16 +341,12 @@ def _resolve_project_dir_for_admin_runtime(
 def build_admin_runtime(
     runtime_dir: str | Path = DEFAULT_RUNTIME_DIR,
     *,
-    legacy_config_path: str | Path | None = None,
-    config_path: str | Path | None = None,
     workflow_generation_transport: httpx.AsyncBaseTransport | None = None,
 ) -> AdminRuntimeComponents:
     host = _AdminRuntimeHost(workflow_generation_transport=workflow_generation_transport)
     components = _build_admin_runtime_components(
         host,
         runtime_dir=runtime_dir,
-        legacy_config_path=legacy_config_path,
-        config_path=config_path,
     )
     host.components = components
     return components
@@ -365,36 +355,17 @@ def build_admin_runtime(
 def _build_admin_runtime_components(
     host: _AdminRuntimeHost,
     runtime_dir: str | Path = DEFAULT_RUNTIME_DIR,
-    *,
-    legacy_config_path: str | Path | None = None,
-    config_path: str | Path | None = None,
 ) -> AdminRuntimeComponents:
-    candidate_runtime = Path(runtime_dir)
-    explicit_legacy = (
-        Path(legacy_config_path or config_path) if (legacy_config_path or config_path) else None
-    )
-    if explicit_legacy is None and candidate_runtime.suffix.casefold() in {".yaml", ".yml"}:
-        explicit_legacy = candidate_runtime
-        candidate_runtime = resolve_runtime_dir(legacy_config_path=explicit_legacy)
-    runtime_dir_path = candidate_runtime
-    project_dir = _resolve_project_dir_for_admin_runtime(
-        runtime_dir=runtime_dir_path,
-        legacy_config_path=explicit_legacy,
-    )
-    bootstrap_config = load_host_bootstrap_config(
-        runtime_dir=runtime_dir_path,
-        legacy_config_path=explicit_legacy,
-    )
+    runtime_dir_path = Path(runtime_dir)
+    project_dir = _resolve_project_dir_for_admin_runtime(runtime_dir=runtime_dir_path)
+    bootstrap_config = load_host_bootstrap_config(runtime_dir=runtime_dir_path)
     directory_store = DirectoryStore(bootstrap_config.directories_store_path)
     directory_store.ensure_root()
     directory_config_store = DirectoryConfigStore(
         directory_store, runtime_dir=bootstrap_config.runtime_dir
     )
     directory_config_store.ensure_root()
-    config = load_runtime_gateway_config(
-        runtime_dir=bootstrap_config.runtime_dir,
-        legacy_config_path=explicit_legacy,
-    )
+    config = load_runtime_gateway_config(runtime_dir=bootstrap_config.runtime_dir)
     runtime = build_runtime(config)
     try:
         addon_catalog = load_addons(config.addon_loader, base_dir=project_dir)
@@ -783,7 +754,6 @@ def _build_admin_runtime_components(
 
     return AdminRuntimeComponents(
         runtime_dir=runtime_dir_path,
-        legacy_config_path=explicit_legacy,
         project_dir=project_dir,
         config=config,
         runtime=runtime,

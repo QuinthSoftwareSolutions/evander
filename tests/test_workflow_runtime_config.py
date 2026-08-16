@@ -12,9 +12,30 @@ from evander.messaging.targets import (
     communication_targets_db_path,
 )
 from evander.workflow.runtime_config import (
-    TriggerOrchestratorWorkerGlobalConfigReloader,
-    load_trigger_orchestrator_worker_global_config,
+    TriggerOrchestratorWorkerGlobalConfigReloader as _ConfigReloader,
+    load_trigger_orchestrator_worker_global_config as _load_worker_config,
 )
+from config_helpers import canonicalize_workflow_files
+
+
+def load_trigger_orchestrator_worker_global_config(project_dir: Path, **kwargs):
+    canonicalize_workflow_files(project_dir)
+    return _load_worker_config(project_dir, **kwargs)
+
+
+class TriggerOrchestratorWorkerGlobalConfigReloader:
+    def __init__(self, project_dir: Path, *args, **kwargs) -> None:
+        self._project_dir = project_dir
+        canonicalize_workflow_files(project_dir)
+        self._delegate = _ConfigReloader(project_dir=project_dir, *args, **kwargs)
+
+    def get_latest(self):
+        canonicalize_workflow_files(self._project_dir)
+        return self._delegate.get_latest()
+
+    def reload_now(self):
+        canonicalize_workflow_files(self._project_dir)
+        return self._delegate.reload_now()
 
 
 def _config_path(project_dir: Path) -> Path:
@@ -125,6 +146,32 @@ def test_loaded_worker_config_defaults_to_sqlite_orchestration_store(tmp_path: P
     assert config.orchestration_store_backend == "sqlite"
     assert config.orchestration_store_path == runtime_dir / "orchestration.db"
     assert "orchestration_store_backend" in config.model_fields_set
+
+
+def test_persisted_worker_config_rejects_top_level_provider_fields(tmp_path: Path) -> None:
+    path = _config_path(tmp_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(
+            {
+                "triggers": [
+                    {
+                        "id": "legacy-flat-node",
+                        "display_name": "Legacy flat node",
+                        "type": "trigger:scheduled",
+                        "schedule": "0 * * * *",
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(
+        ValueError,
+        match=r"triggers\[0\] must place provider fields under config: schedule",
+    ):
+        _load_worker_config(tmp_path)
 
 
 def test_reload_uses_last_known_good_config_when_new_payload_is_invalid(

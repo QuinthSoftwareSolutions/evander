@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from config_helpers import canonical_worker_config
+
 import json
 import logging
 import os
@@ -41,9 +43,14 @@ from evander.triggers.providers.teams_new_message import TeamsNewMessageTriggerP
 from evander.triggers.providers.ticket_changed import TicketChangedTriggerProvider
 from evander.triggers.providers.ticket_created import TicketCreatedTriggerProvider
 from evander.triggers.queue import TriggerEventQueue
+from config_helpers import canonical_workflow_node, canonical_workflow_payload
 
 
 REPORT_ENV_VAR = "EVANDER_TRIGGER_CONFORMANCE_REPORT"
+
+
+def _worker_config(payload: dict[str, object]) -> TriggerOrchestratorWorkerGlobalConfig:
+    return canonical_worker_config(canonical_workflow_payload(payload))
 
 
 @pytest.fixture(scope="module")
@@ -86,7 +93,10 @@ class _MaterializingTriggerAdapter:
         self._adapter = TypeAdapter(TriggerDefinitionDiscriminated)
 
     def validate_python(self, payload: object) -> object:
-        return materialize_node_definition(self._adapter.validate_python(payload))
+        assert isinstance(payload, dict)
+        return materialize_node_definition(
+            self._adapter.validate_python(canonical_workflow_node(payload))
+        )
 
 
 def _trigger_adapter() -> _MaterializingTriggerAdapter:
@@ -509,7 +519,7 @@ def test_conformance_schema_rejects_duplicate_trigger_ids(report_collector: dict
         ValueError,
         match="Node IDs must be globally unique across triggers, gates, effects, and queries",
     ):
-        TriggerOrchestratorWorkerGlobalConfig.model_validate(
+        _worker_config(
             {
                 "runtime_dir": "runtime",
                 "triggers": [
@@ -2203,7 +2213,7 @@ def test_conformance_orchestrator_integration_locking_jitter_and_idempotency(
 ) -> None:
     runtime_dir = tmp_path / "runtime"
     config = GatewayConfig(runtime_dir=runtime_dir)
-    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+    worker_config = _worker_config(
         {
             "runtime_dir": runtime_dir,
             "poll_interval_seconds": 2,

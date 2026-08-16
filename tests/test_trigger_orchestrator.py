@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from config_helpers import canonical_worker_config
+
 import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -154,7 +156,7 @@ def test_build_trigger_orchestrator_worker_uses_sqlite_default_from_loader(
 def test_trigger_orchestrator_run_once_publishes_and_updates_cursor(tmp_path: Path) -> None:
     runtime_dir = tmp_path / "runtime"
     config = GatewayConfig(runtime_dir=runtime_dir)
-    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+    worker_config = canonical_worker_config(
         {
             "runtime_dir": runtime_dir,
             "poll_interval_seconds": 1,
@@ -203,7 +205,7 @@ def test_trigger_orchestrator_run_once_publishes_and_updates_cursor(tmp_path: Pa
 def test_trigger_orchestrator_skips_disabled_triggers(tmp_path: Path) -> None:
     runtime_dir = tmp_path / "runtime"
     config = GatewayConfig(runtime_dir=runtime_dir)
-    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+    worker_config = canonical_worker_config(
         {
             "runtime_dir": runtime_dir,
             "poll_interval_seconds": 1,
@@ -251,7 +253,7 @@ def test_trigger_orchestrator_passes_graph_directory_to_trigger_provider(
 ) -> None:
     runtime_dir = tmp_path / "runtime"
     config = GatewayConfig(runtime_dir=runtime_dir)
-    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+    worker_config = canonical_worker_config(
         {
             "runtime_dir": runtime_dir,
             "poll_interval_seconds": 1,
@@ -288,7 +290,7 @@ def test_trigger_orchestrator_prefers_trigger_directory_over_graph_directory(
 ) -> None:
     runtime_dir = tmp_path / "runtime"
     config = GatewayConfig(runtime_dir=runtime_dir)
-    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+    worker_config = canonical_worker_config(
         {
             "runtime_dir": runtime_dir,
             "poll_interval_seconds": 1,
@@ -326,7 +328,7 @@ def test_trigger_orchestrator_keeps_graphless_trigger_directory_unset(
 ) -> None:
     runtime_dir = tmp_path / "runtime"
     config = GatewayConfig(runtime_dir=runtime_dir)
-    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+    worker_config = canonical_worker_config(
         {
             "runtime_dir": runtime_dir,
             "poll_interval_seconds": 1,
@@ -356,7 +358,7 @@ def test_trigger_orchestrator_does_not_wake_effect_worker_for_duplicate_event(
 ) -> None:
     runtime_dir = tmp_path / "runtime"
     config = GatewayConfig(runtime_dir=runtime_dir)
-    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+    worker_config = canonical_worker_config(
         {
             "runtime_dir": runtime_dir,
             "poll_interval_seconds": 1,
@@ -398,7 +400,7 @@ def test_trigger_orchestrator_acknowledges_provider_after_queue_publish(
 ) -> None:
     runtime_dir = tmp_path / "runtime"
     config = GatewayConfig(runtime_dir=runtime_dir)
-    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+    worker_config = canonical_worker_config(
         {
             "runtime_dir": runtime_dir,
             "poll_interval_seconds": 1,
@@ -434,7 +436,7 @@ def test_trigger_orchestrator_does_not_checkpoint_when_publish_fails(
 ) -> None:
     runtime_dir = tmp_path / "runtime"
     config = GatewayConfig(runtime_dir=runtime_dir)
-    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+    worker_config = canonical_worker_config(
         {
             "runtime_dir": runtime_dir,
             "poll_interval_seconds": 1,
@@ -506,7 +508,7 @@ def test_trigger_orchestrator_retries_same_timestamp_teams_event_after_publish_f
         )
     )
 
-    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+    worker_config = canonical_worker_config(
         {
             "runtime_dir": runtime_dir,
             "poll_interval_seconds": 1,
@@ -555,7 +557,7 @@ def test_trigger_orchestrator_publish_failure_with_real_provider_keeps_cursor_un
 ) -> None:
     runtime_dir = tmp_path / "runtime"
     config = GatewayConfig(runtime_dir=runtime_dir)
-    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+    worker_config = canonical_worker_config(
         {
             "runtime_dir": runtime_dir,
             "poll_interval_seconds": 1,
@@ -631,7 +633,7 @@ def test_trigger_orchestrator_publishes_multiple_events_from_one_provider_poll(
 ) -> None:
     runtime_dir = tmp_path / "runtime"
     config = GatewayConfig(runtime_dir=runtime_dir)
-    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+    worker_config = canonical_worker_config(
         {
             "runtime_dir": runtime_dir,
             "poll_interval_seconds": 1,
@@ -724,7 +726,7 @@ def test_trigger_orchestrator_main_once_uses_single_cycle(
 def test_trigger_orchestrator_uses_shared_host_lock_manager(tmp_path: Path) -> None:
     runtime_dir = tmp_path / "runtime"
     config = GatewayConfig(runtime_dir=runtime_dir)
-    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+    worker_config = canonical_worker_config(
         {
             "runtime_dir": runtime_dir,
             "poll_interval_seconds": 1,
@@ -757,7 +759,7 @@ def test_trigger_orchestrator_uses_shared_host_lock_manager(tmp_path: Path) -> N
 def test_trigger_orchestrator_rejects_reserved_runtime_output_name(tmp_path: Path) -> None:
     runtime_dir = tmp_path / "runtime"
     config = GatewayConfig(runtime_dir=runtime_dir)
-    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+    worker_config = canonical_worker_config(
         {
             "runtime_dir": runtime_dir,
             "poll_interval_seconds": 1,
@@ -794,7 +796,7 @@ def test_trigger_orchestrator_rejects_reserved_runtime_output_name(tmp_path: Pat
 def test_trigger_orchestrator_runs_only_explicitly_configured_triggers(tmp_path: Path) -> None:
     runtime_dir = tmp_path / "runtime"
     config = GatewayConfig(runtime_dir=runtime_dir)
-    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+    worker_config = canonical_worker_config(
         {
             "runtime_dir": runtime_dir,
             "poll_interval_seconds": 1,
@@ -845,7 +847,7 @@ def test_trigger_orchestrator_runs_only_explicitly_configured_triggers(tmp_path:
 def test_trigger_orchestrator_does_not_poll_system_triggers(tmp_path: Path) -> None:
     runtime_dir = tmp_path / "runtime"
     config = GatewayConfig(runtime_dir=runtime_dir)
-    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+    worker_config = canonical_worker_config(
         {
             "runtime_dir": runtime_dir,
             "poll_interval_seconds": 1,
@@ -885,7 +887,7 @@ def test_trigger_orchestrator_does_not_poll_system_triggers(tmp_path: Path) -> N
 def test_trigger_orchestrator_run_once_uses_reloaded_worker_config(tmp_path: Path) -> None:
     runtime_dir = tmp_path / "runtime"
     config = GatewayConfig(runtime_dir=runtime_dir)
-    initial_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+    initial_config = canonical_worker_config(
         {
             "runtime_dir": runtime_dir,
             "poll_interval_seconds": 1,
@@ -893,7 +895,7 @@ def test_trigger_orchestrator_run_once_uses_reloaded_worker_config(tmp_path: Pat
             "triggers": [],
         }
     )
-    updated_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+    updated_config = canonical_worker_config(
         {
             "runtime_dir": runtime_dir,
             "poll_interval_seconds": 1,
@@ -926,7 +928,7 @@ def test_trigger_orchestrator_reloads_provider_factory_after_provider_loader_cha
 ) -> None:
     runtime_dir = tmp_path / "runtime"
     config = GatewayConfig(runtime_dir=runtime_dir)
-    initial_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+    initial_config = canonical_worker_config(
         {
             "runtime_dir": runtime_dir,
             "poll_interval_seconds": 1,
@@ -934,7 +936,7 @@ def test_trigger_orchestrator_reloads_provider_factory_after_provider_loader_cha
             "triggers": [],
         }
     )
-    updated_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+    updated_config = canonical_worker_config(
         {
             "runtime_dir": runtime_dir,
             "poll_interval_seconds": 1,
@@ -1032,7 +1034,7 @@ def test_due_scheduled_internal_event_publishes_before_event_trigger_poll(
 ) -> None:
     runtime_dir = tmp_path / "runtime"
     config = GatewayConfig(runtime_dir=runtime_dir)
-    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+    worker_config = canonical_worker_config(
         {
             "runtime_dir": runtime_dir,
             "poll_interval_seconds": 1,
@@ -1110,7 +1112,7 @@ def test_events_scheduled_during_trigger_poll_are_delivered_same_cycle_without_e
 ) -> None:
     runtime_dir = tmp_path / "runtime"
     config = GatewayConfig(runtime_dir=runtime_dir)
-    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+    worker_config = canonical_worker_config(
         {
             "runtime_dir": runtime_dir,
             "poll_interval_seconds": 5,
@@ -1201,7 +1203,7 @@ def test_future_scheduled_internal_event_stays_pending_until_due(
 ) -> None:
     runtime_dir = tmp_path / "runtime"
     config = GatewayConfig(runtime_dir=runtime_dir)
-    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+    worker_config = canonical_worker_config(
         {
             "runtime_dir": runtime_dir,
             "poll_interval_seconds": 1,
@@ -1274,7 +1276,7 @@ def test_due_scheduled_internal_event_is_published_once_across_cycles(
 ) -> None:
     runtime_dir = tmp_path / "runtime"
     config = GatewayConfig(runtime_dir=runtime_dir)
-    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+    worker_config = canonical_worker_config(
         {
             "runtime_dir": runtime_dir,
             "poll_interval_seconds": 1,
@@ -1327,7 +1329,7 @@ def test_trigger_orchestrator_direct_worker_does_not_reload_from_cwd(
 ) -> None:
     runtime_dir = tmp_path / "runtime"
     config = GatewayConfig(runtime_dir=runtime_dir)
-    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+    worker_config = canonical_worker_config(
         {
             "runtime_dir": runtime_dir,
             "poll_interval_seconds": 1,
@@ -1367,7 +1369,7 @@ def test_trigger_orchestrator_direct_worker_does_not_reload_from_cwd(
 def test_trigger_orchestrator_poll_interval_change_applies_next_cycle(tmp_path: Path) -> None:
     runtime_dir = tmp_path / "runtime"
     config = GatewayConfig(runtime_dir=runtime_dir)
-    initial_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+    initial_config = canonical_worker_config(
         {
             "runtime_dir": runtime_dir,
             "poll_interval_seconds": 1.0,
@@ -1375,7 +1377,7 @@ def test_trigger_orchestrator_poll_interval_change_applies_next_cycle(tmp_path: 
             "triggers": [],
         }
     )
-    updated_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+    updated_config = canonical_worker_config(
         {
             "runtime_dir": runtime_dir,
             "poll_interval_seconds": 7.0,
@@ -1402,7 +1404,7 @@ def test_trigger_orchestrator_logs_revision_and_tolerates_trigger_set_changes(
 ) -> None:
     runtime_dir = tmp_path / "runtime"
     config = GatewayConfig(runtime_dir=runtime_dir)
-    initial_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+    initial_config = canonical_worker_config(
         {
             "runtime_dir": runtime_dir,
             "poll_interval_seconds": 1.0,
@@ -1417,7 +1419,7 @@ def test_trigger_orchestrator_logs_revision_and_tolerates_trigger_set_changes(
             ],
         }
     )
-    updated_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+    updated_config = canonical_worker_config(
         {
             "runtime_dir": runtime_dir,
             "poll_interval_seconds": 1.0,
@@ -1457,7 +1459,7 @@ def test_event_trigger_matches_internal_event_and_preserves_payload(tmp_path: Pa
 
     runtime_dir = tmp_path / "runtime"
     config = GatewayConfig(runtime_dir=runtime_dir)
-    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+    worker_config = canonical_worker_config(
         {
             "runtime_dir": runtime_dir,
             "poll_interval_seconds": 1,
@@ -1501,7 +1503,7 @@ def test_event_trigger_ignores_non_matching_type_and_correlation_key(tmp_path: P
 
     runtime_dir = tmp_path / "runtime"
     config = GatewayConfig(runtime_dir=runtime_dir)
-    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+    worker_config = canonical_worker_config(
         {
             "runtime_dir": runtime_dir,
             "poll_interval_seconds": 1,
@@ -1541,7 +1543,7 @@ def test_multiple_event_triggers_can_listen_to_same_internal_event(tmp_path: Pat
 
     runtime_dir = tmp_path / "runtime"
     config = GatewayConfig(runtime_dir=runtime_dir)
-    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+    worker_config = canonical_worker_config(
         {
             "runtime_dir": runtime_dir,
             "poll_interval_seconds": 1,
@@ -1793,7 +1795,7 @@ def test_trigger_orchestrator_publishes_webhook_events_and_keeps_cursor_state(
         created_at=datetime(2026, 4, 3, 12, 0, tzinfo=UTC),
     )
     config = GatewayConfig(runtime_dir=runtime_dir)
-    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+    worker_config = canonical_worker_config(
         {
             "runtime_dir": runtime_dir,
             "poll_interval_seconds": 1,

@@ -3,10 +3,9 @@ from __future__ import annotations
 import json
 import logging
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Any
 
-from evander.config import GatewayConfig, load_config
+from evander.config import GatewayConfig
 from evander.directory_config import (
     DIRECTORY_CONFIG_DOMAIN_FIELDS,
     DirectoryConfigResolver,
@@ -65,10 +64,6 @@ class WorkerDirectoryContextResolver:
             base_gateway_config=config,
             config_store=self.config_store,
         )
-
-    @classmethod
-    def from_config_path(cls, path: str | Path) -> "WorkerDirectoryContextResolver":
-        return cls(load_config(path))
 
     def resolve_for_session(
         self, session_id: str | None, *, fallback_directory_path: str | None = None, source: str

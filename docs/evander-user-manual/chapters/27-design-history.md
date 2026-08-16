@@ -235,7 +235,6 @@ If an operator encounters one of these names, the safest first step is to record
 
 | Surface | Current status | New work should use |
 |---|---|---|
-| Legacy gateway YAML | import/migration input only | `runtime/host-config.json` plus directory config |
 | Older guest session/config paths | read/repair fallback in selected bootstrap paths | `/etc/evander/session.env`, `/home/agent/.agent/config.env`, and current `/home/agent/.evander` run-state paths |
 | `runtime/pr-map.json` | live compatibility store for session-bound and legacy PR streams; repository-scoped streams can bypass it | explicit PR workflow streams and managed repository identity |
 | JSON wake/inbox/worker/Team stores | one-time import where the owning repository supports it | the current SQLite store |

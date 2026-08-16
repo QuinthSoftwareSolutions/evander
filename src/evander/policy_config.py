@@ -2,14 +2,13 @@ from __future__ import annotations
 
 import logging
 from datetime import UTC, datetime
-from pathlib import Path
 
 from pydantic import BaseModel, Field, field_validator
 
 from evander.approval_notification_targets import (
     normalize_approval_notification_target_ids,
 )
-from evander.config import GatewayConfig, load_config
+from evander.config import GatewayConfig
 from evander.directory_config import (
     DirectoryConfigResolver,
     DirectoryConfigStore,
@@ -175,10 +174,6 @@ class PolicyConfigResolver:
             base_gateway_config=config,
             config_store=self.config_store,
         )
-
-    @classmethod
-    def from_config_path(cls, path: str | Path) -> "PolicyConfigResolver":
-        return cls(load_config(path))
 
     def resolve_for_directory(self, directory_path: str | None) -> EffectivePolicyConfig:
         normalized_path = self.directory_scope_resolver.resolve_directory_path(directory_path)

@@ -36,12 +36,11 @@ can be served from `EVANDER_ADMIN_WEB_BRANDING_ASSET_DIR` through the proxied
 4. Configure `root` directory overlays directly with the admin UI or `evander-cli directories config-set`.
    Configure named agent integrations on the **Connectors** page or in the `connectors` directory
    domain; keep credential values in the gateway/Admin service environment.
-5. If you are importing an older install, run `evander-cli migrate-global-config-to-root --config /path/to/legacy-gateway.yaml` once to seed `host-config.json` plus `root` from the legacy YAML file.
-6. Create the libvirt network with `./scripts/create_libvirt_network.sh`.
-7. Apply guest forwarding policy with `./scripts/apply_firewall.sh`.
-8. Download the Ubuntu cloud image with `sudo ./scripts/create_base_vm.sh`.
-9. Create a session manifest with `evander-cli create-session`.
-10. Launch a VM with `sudo ./scripts/launch_agent_vm.sh`.
+5. Create the libvirt network with `./scripts/create_libvirt_network.sh`.
+6. Apply guest forwarding policy with `./scripts/apply_firewall.sh`.
+7. Download the Ubuntu cloud image with `sudo ./scripts/create_base_vm.sh`.
+8. Create a session manifest with `evander-cli create-session`.
+9. Launch a VM with `sudo ./scripts/launch_agent_vm.sh`.
 10. Optionally bootstrap a provider runtime in the guest (for example `./scripts/bootstrap_codex_vm.sh <vm-name>` or `./scripts/bootstrap_copilot_vm.sh <vm-name>`).
 11. Optionally bootstrap a Python repo into a guest-local virtualenv with `./scripts/bootstrap_python_vm.sh <vm-name> <host-checkout-root> <guest-repo-root>`.
 12. Optionally bootstrap generic guest Python packages into an offline tools virtualenv with `./scripts/bootstrap_python_packages_vm.sh <vm-name> <package-spec> [package-spec ...]`.
@@ -2688,8 +2687,8 @@ curl -fsS -X POST http://127.0.0.1:11881/-/npm/v1/security/audits/quick \
   polled; a parent directory no longer implicitly observes sessions in its descendants.
 - `ADO_*` env vars continue to work as compatibility fallbacks for one release and log deprecation
   warnings.
-- Materialize `root/ado-worker.json` with `evander-cli migrate-ado-worker-env-to-root` or
-  `migrate-global-config-to-root` when you still use directory-scoped PR automation settings.
+- Materialize `root/ado-worker.json` with `evander-cli migrate-ado-worker-env-to-root` when you
+  still use directory-scoped PR automation settings.
 
 Foreground runbook:
 

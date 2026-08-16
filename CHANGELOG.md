@@ -1,5 +1,16 @@
 # Changelog
 
+## 2026-08-16 - Retire Completed Runtime Compatibility Paths
+
+- Removed automatic local-issue schema migration and legacy proxy metadata inference now that both
+  deployments persist canonical `remote_reference` records and unified issue state.
+- Removed gateway YAML bootstrap/import support and the `migrate-global-config-to-root` command;
+  runtime processes now start only from `host-config.json` plus directory-scoped configuration.
+- Removed automatic workflow prompt-lifecycle migration and now reject legacy top-level provider
+  fields in workflow node envelopes at every boundary. Admin Web state and saves, generated
+  workflow drafts, typed in-process node construction, packs, and runtime configuration now all use
+  the same nested `config` payload; the former flat editor and programmatic adapters are removed.
+
 ## 2026-08-15 - Immediate Team Wake After Terminal Blocker Resolution
 
 - Prompted Team's durable outbox publisher after Admin Web resolves a task-backed terminal

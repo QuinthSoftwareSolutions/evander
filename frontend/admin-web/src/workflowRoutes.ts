@@ -45,7 +45,7 @@ export function workflowOutputPortsForNode(
   const outputPorts: WorkflowEditorNodePortDefinition[] = [];
   const seenPorts = new Set<string>();
 
-  for (const switchCase of Array.isArray(node.cases) ? node.cases : []) {
+  for (const switchCase of Array.isArray(node.config.cases) ? node.config.cases : []) {
     if (!isRecord(switchCase)) continue;
     const portKey = readWorkflowPortKey(switchCase.port);
     if (!portKey || seenPorts.has(portKey)) continue;
@@ -57,7 +57,7 @@ export function workflowOutputPortsForNode(
     });
   }
 
-  const defaultPort = readWorkflowPortKey(node.default_port);
+  const defaultPort = readWorkflowPortKey(node.config.default_port);
   if (defaultPort && !seenPorts.has(defaultPort)) {
     seenPorts.add(defaultPort);
     outputPorts.push({

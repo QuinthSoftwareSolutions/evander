@@ -10,27 +10,11 @@ from evander.admin.web.app import create_app
 from evander.directories import DirectoryService
 from evander.host_directories.paths import host_directory_revision
 from evander.models import SessionManifest, ToolName
+from config_helpers import write_runtime_config
 
 
-def _gateway_config_path(tmp_path: Path) -> Path:
-    runtime_dir = tmp_path / "runtime"
-    path = tmp_path / "gateway.yaml"
-    path.write_text(
-        "\n".join(
-            [
-                f'runtime_dir: "{runtime_dir}"',
-                f'audit_log_path: "{runtime_dir / "audit.jsonl"}"',
-                f'session_store_path: "{runtime_dir / "sessions.json"}"',
-                f'approval_store_path: "{runtime_dir / "approvals.json"}"',
-                f'draft_store_path: "{runtime_dir / "drafts.json"}"',
-                f'email_store_path: "{runtime_dir / "emails.json"}"',
-                f'discord_command_store_path: "{runtime_dir / "discord.json"}"',
-                "enable_directory_scoped_config: true",
-            ]
-        ),
-        encoding="utf-8",
-    )
-    return path
+def _runtime_dir(tmp_path: Path) -> Path:
+    return write_runtime_config(tmp_path, enable_directory_scoped_config=True)
 
 
 def _definition(root: Path) -> dict[str, object]:
@@ -52,7 +36,7 @@ def test_host_directory_admin_api_is_structured_revisioned_and_health_checked(
 ) -> None:
     host_root = tmp_path / "shared-inbox"
     host_root.mkdir()
-    service = build_admin_runtime(_gateway_config_path(tmp_path))
+    service = build_admin_runtime(_runtime_dir(tmp_path))
     client = TestClient(create_app(service))
 
     initial = client.get("/api/admin/host-directories?directory_path=root")
@@ -124,7 +108,7 @@ def test_host_directory_admin_quarantine_restore_and_purge(
 ) -> None:
     host_root = tmp_path / "shared-inbox"
     host_root.mkdir()
-    service = build_admin_runtime(_gateway_config_path(tmp_path))
+    service = build_admin_runtime(_runtime_dir(tmp_path))
     assert service.operations_admin.write_directory_domain_config(
         "root",
         "host_directories",
@@ -193,7 +177,7 @@ def test_host_directory_admin_save_preserves_recoverability_until_quarantine_is_
     replacement_root = tmp_path / "replacement-inbox"
     host_root.mkdir()
     replacement_root.mkdir()
-    service = build_admin_runtime(_gateway_config_path(tmp_path))
+    service = build_admin_runtime(_runtime_dir(tmp_path))
     assert service.operations_admin.write_directory_domain_config(
         "root",
         "host_directories",

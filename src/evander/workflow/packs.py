@@ -8,7 +8,6 @@ from pydantic import BaseModel, Field, computed_field, field_validator, model_va
 
 from evander.models import DirectoryPath
 from evander.events.models import EdgeDefinition, WorkflowNodeEnvelope
-from evander.workflow.migrations import migrate_agent_prompt_lifecycle_ports
 
 SYSTEM_WORKFLOW_PACK_REFERENCE = "system.v1.json"
 BUILTIN_HIDDEN_WORKFLOW_PACKS: tuple[str, ...] = (SYSTEM_WORKFLOW_PACK_REFERENCE,)
@@ -167,8 +166,6 @@ def load_workflow_pack(project_dir: Path, pack_reference: str) -> WorkflowPack:
     payload = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(payload, dict):
         raise ValueError(f"workflow pack file {path} must contain a JSON object")
-    payload = migrate_agent_prompt_lifecycle_ports(payload)
-
     ir_payload = payload.get("ir")
     if isinstance(ir_payload, dict):
         nodes_payload = ir_payload.get("nodes")
@@ -215,7 +212,7 @@ def compose_workflow_ir(
     _validate_global_workflow_pack_ids(loaded_packs)
 
     if inline_ir:
-        inline_payload = migrate_agent_prompt_lifecycle_ports(dict(inline_ir))
+        inline_payload = dict(inline_ir)
         inline_nodes = inline_payload.get("nodes")
         if isinstance(inline_nodes, list):
             normalized_inline_nodes: list[dict[str, Any]] = []

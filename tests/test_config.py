@@ -1,3 +1,5 @@
+from config_helpers import canonical_worker_config
+
 import pytest
 
 from evander.config import (
@@ -7,7 +9,6 @@ from evander.config import (
     GatewayConfig,
     ScheduledWakeWorkerGlobalConfig,
     TeamsIngestWorkerGlobalConfig,
-    TriggerOrchestratorWorkerGlobalConfig,
 )
 from evander.container_worker_images import (
     normalize_container_worker_images,
@@ -28,6 +29,11 @@ from evander.effects.providers.agent_session import (
     container_worker_guest_npm_registry_url,
     container_worker_guest_pypi_index_url,
 )
+from config_helpers import canonical_workflow_payload
+
+
+def _validate_trigger_config(payload):
+    return canonical_worker_config(canonical_workflow_payload(payload))
 
 
 def test_folder_allowlist_defaults_populate_only_when_mapping_is_empty() -> None:
@@ -822,7 +828,7 @@ def test_anthropic_provider_config_rejects_empty_required_fields(
         GatewayConfig.model_validate(payload)
 
 
-def test_legacy_gateway_config_import_preserves_npm_audit_facade_bind_settings() -> None:
+def test_gateway_config_conversion_preserves_npm_audit_facade_bind_settings() -> None:
     config = GatewayConfig.model_validate(
         {
             "runtime_dir": "/tmp/evander-runtime",
@@ -831,7 +837,7 @@ def test_legacy_gateway_config_import_preserves_npm_audit_facade_bind_settings()
         }
     )
 
-    host_config = HostConfig.from_legacy_gateway_config(config)
+    host_config = HostConfig.from_gateway_config(config)
 
     assert host_config.npm_audit_facade_host == "127.0.0.1"
     assert host_config.npm_audit_facade_port == 18181
@@ -1133,9 +1139,7 @@ def test_teams_backend_accepts_delegated_graph_api_when_identity_is_bound() -> N
 
 
 def test_trigger_orchestrator_worker_global_config_defaults_follow_runtime_dir() -> None:
-    config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
-        {"runtime_dir": "/tmp/evander-runtime"}
-    )
+    config = _validate_trigger_config({"runtime_dir": "/tmp/evander-runtime"})
     assert str(config.lock_path) == "/tmp/evander-runtime/trigger-orchestrator.lock"
     assert (
         str(config.event_queue_store_path)
@@ -1181,7 +1185,7 @@ def test_trigger_orchestrator_worker_global_config_defaults_follow_runtime_dir()
 
 
 def test_trigger_orchestrator_filter_gate_accepts_when_predicates() -> None:
-    config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+    config = _validate_trigger_config(
         {
             "runtime_dir": "/tmp/evander-runtime",
             "triggers": [
@@ -1237,7 +1241,7 @@ def test_trigger_orchestrator_filter_gate_accepts_when_predicates() -> None:
 
 def test_trigger_orchestrator_filter_gate_rejects_match_and_when_together() -> None:
     with pytest.raises(ValueError, match="mutually exclusive"):
-        TriggerOrchestratorWorkerGlobalConfig.model_validate(
+        _validate_trigger_config(
             {
                 "runtime_dir": "/tmp/evander-runtime",
                 "triggers": [
@@ -1265,7 +1269,7 @@ def test_trigger_orchestrator_filter_gate_rejects_match_and_when_together() -> N
 
 
 def test_trigger_orchestrator_filter_gate_accepts_string_operators() -> None:
-    config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+    config = _validate_trigger_config(
         {
             "runtime_dir": "/tmp/evander-runtime",
             "triggers": [
@@ -1328,7 +1332,7 @@ def test_trigger_orchestrator_filter_gate_accepts_string_operators() -> None:
 
 
 def test_trigger_orchestrator_switch_gate_accepts_cases_and_duplicate_ports() -> None:
-    config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+    config = _validate_trigger_config(
         {
             "runtime_dir": "/tmp/evander-runtime",
             "gates": [
@@ -1533,11 +1537,11 @@ def test_trigger_orchestrator_switch_gate_rejects_invalid_cases(
     payload: dict[str, object], message: str
 ) -> None:
     with pytest.raises(ValueError, match=message):
-        TriggerOrchestratorWorkerGlobalConfig.model_validate(payload)
+        _validate_trigger_config(payload)
 
 
 def test_trigger_orchestrator_await_agent_gate_accepts_completion_trigger_reference() -> None:
-    config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+    config = _validate_trigger_config(
         {
             "runtime_dir": "/tmp/evander-runtime",
             "triggers": [
@@ -1585,7 +1589,7 @@ def test_trigger_orchestrator_await_agent_gate_accepts_completion_trigger_refere
 def test_trigger_orchestrator_await_agent_gate_accepts_linear_flow_without_completion_trigger() -> (
     None
 ):
-    config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+    config = _validate_trigger_config(
         {
             "runtime_dir": "/tmp/evander-runtime",
             "triggers": [
@@ -1625,7 +1629,7 @@ def test_trigger_orchestrator_await_agent_gate_accepts_linear_flow_without_compl
 
 
 def test_personal_assistant_workflow_accepts_batched_reference_repository_preparation() -> None:
-    config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+    config = _validate_trigger_config(
         {
             "runtime_dir": "/tmp/evander-runtime",
             "triggers": [
@@ -1679,7 +1683,7 @@ def test_personal_assistant_workflow_accepts_batched_reference_repository_prepar
 
 
 def test_trigger_orchestrator_for_gate_accepts_body_done_ports_and_cycle_return() -> None:
-    config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+    config = _validate_trigger_config(
         {
             "runtime_dir": "/tmp/evander-runtime",
             "triggers": [
@@ -1728,7 +1732,7 @@ def test_trigger_orchestrator_for_gate_accepts_body_done_ports_and_cycle_return(
 
 
 def test_trigger_orchestrator_for_gate_allows_missing_done_edge_in_core_validation() -> None:
-    config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+    config = _validate_trigger_config(
         {
             "runtime_dir": "/tmp/evander-runtime",
             "triggers": [
@@ -1769,7 +1773,7 @@ def test_trigger_orchestrator_for_gate_allows_missing_done_edge_in_core_validati
 def test_trigger_orchestrator_while_gate_accepts_body_done_exhausted_ports_and_cycle_return() -> (
     None
 ):
-    config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+    config = _validate_trigger_config(
         {
             "runtime_dir": "/tmp/evander-runtime",
             "triggers": [
@@ -1835,7 +1839,7 @@ def test_trigger_orchestrator_while_gate_rejects_invalid_literal_max_iterations(
     max_iterations,
 ) -> None:
     with pytest.raises(ValueError, match="gate:while max_iterations must be a positive integer"):
-        TriggerOrchestratorWorkerGlobalConfig.model_validate(
+        _validate_trigger_config(
             {
                 "runtime_dir": "/tmp/evander-runtime",
                 "gates": [
@@ -1852,7 +1856,7 @@ def test_trigger_orchestrator_while_gate_rejects_invalid_literal_max_iterations(
 
 
 def test_trigger_orchestrator_allows_orphaned_draft_subgraphs() -> None:
-    config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+    config = _validate_trigger_config(
         {
             "runtime_dir": "/tmp/evander-runtime",
             "triggers": [
@@ -1888,7 +1892,7 @@ def test_trigger_orchestrator_allows_orphaned_draft_subgraphs() -> None:
 
 
 def test_trigger_orchestrator_worker_global_config_accepts_discriminated_triggers() -> None:
-    config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+    config = _validate_trigger_config(
         {
             "triggers": [
                 {
@@ -1905,7 +1909,7 @@ def test_trigger_orchestrator_worker_global_config_accepts_discriminated_trigger
 
 
 def test_trigger_orchestrator_worker_global_config_accepts_effects() -> None:
-    config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+    config = _validate_trigger_config(
         {
             "triggers": [
                 {
@@ -1931,7 +1935,7 @@ def test_trigger_orchestrator_worker_global_config_accepts_effects() -> None:
 
 
 def test_trigger_orchestrator_worker_global_config_accepts_queries() -> None:
-    config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+    config = _validate_trigger_config(
         {
             "triggers": [
                 {
@@ -1960,7 +1964,7 @@ def test_trigger_orchestrator_worker_global_config_accepts_queries() -> None:
 def test_trigger_orchestrator_worker_global_config_accepts_multiple_effect_edges_from_one_source() -> (
     None
 ):
-    config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+    config = _validate_trigger_config(
         {
             "triggers": [
                 {
@@ -2003,7 +2007,7 @@ def test_trigger_orchestrator_worker_global_config_rejects_duplicate_ids_across_
         ValueError,
         match="Node IDs must be globally unique across triggers, gates, effects, and queries: node-1",
     ):
-        TriggerOrchestratorWorkerGlobalConfig.model_validate(
+        _validate_trigger_config(
             {
                 "triggers": [
                     {
@@ -2037,7 +2041,7 @@ def test_trigger_orchestrator_worker_global_config_rejects_duplicate_trigger_ids
         ValueError,
         match="Node IDs must be globally unique across triggers, gates, effects, and queries: cron-15m",
     ):
-        TriggerOrchestratorWorkerGlobalConfig.model_validate(
+        _validate_trigger_config(
             {
                 "triggers": [
                     {
@@ -2062,7 +2066,7 @@ def test_trigger_orchestrator_worker_global_config_rejects_duplicate_webhook_slu
         ValueError,
         match="Webhook trigger slugs must be globally unique across active config: build-notify",
     ):
-        TriggerOrchestratorWorkerGlobalConfig.model_validate(
+        _validate_trigger_config(
             {
                 "triggers": [
                     {
@@ -2089,7 +2093,7 @@ def test_trigger_orchestrator_worker_global_config_rejects_duplicate_effect_ids(
         ValueError,
         match="Node IDs must be globally unique across triggers, gates, effects, and queries: effect-dup",
     ):
-        TriggerOrchestratorWorkerGlobalConfig.model_validate(
+        _validate_trigger_config(
             {
                 "triggers": [
                     {
@@ -2166,7 +2170,7 @@ def test_trigger_orchestrator_worker_global_config_validates_state_node_schemas(
     message: str,
 ) -> None:
     with pytest.raises(ValueError, match=message):
-        TriggerOrchestratorWorkerGlobalConfig.model_validate(
+        _validate_trigger_config(
             {
                 "triggers": [
                     {
@@ -2201,14 +2205,14 @@ def test_trigger_orchestrator_worker_global_config_validates_state_node_schemas(
 def test_trigger_orchestrator_worker_global_config_defaults_provider_profile_to_agent_default() -> (
     None
 ):
-    config = TriggerOrchestratorWorkerGlobalConfig.model_validate({})
+    config = _validate_trigger_config({})
 
     assert config.provider_profile == "profiles/agent-default"
     assert config.provider_include_builtin is True
 
 
 def test_trigger_orchestrator_worker_global_config_supports_core_minimal_profile() -> None:
-    config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+    config = _validate_trigger_config(
         {"provider_loader": {"provider_profile": "profiles/core-minimal"}}
     )
 
@@ -2218,16 +2222,14 @@ def test_trigger_orchestrator_worker_global_config_supports_core_minimal_profile
 
 def test_trigger_orchestrator_worker_global_config_rejects_unknown_provider_profile() -> None:
     with pytest.raises(ValueError, match="Unknown provider loader profile"):
-        TriggerOrchestratorWorkerGlobalConfig.model_validate(
-            {"provider_loader": {"provider_profile": "profiles/unknown"}}
-        )
+        _validate_trigger_config({"provider_loader": {"provider_profile": "profiles/unknown"}})
 
 
 def test_trigger_orchestrator_worker_global_config_rejects_unknown_effect_edge_source() -> None:
     with pytest.raises(
         ValueError, match="Edge endpoints must reference existing node IDs: missing-id"
     ):
-        TriggerOrchestratorWorkerGlobalConfig.model_validate(
+        _validate_trigger_config(
             {
                 "triggers": [
                     {

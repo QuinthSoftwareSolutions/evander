@@ -8,28 +8,16 @@ from evander.messaging.targets import (
     SqliteCommunicationTargetsRepository,
     communication_targets_db_path,
 )
+from config_helpers import write_runtime_config
 
 
-def _write_gateway_config(tmp_path: Path, *, addon_module: str | None = None) -> Path:
-    runtime_dir = tmp_path / "runtime"
-    config_path = tmp_path / "gateway.yaml"
-    lines = [
-        f'runtime_dir: "{runtime_dir}"',
-        f'audit_log_path: "{runtime_dir / "audit.jsonl"}"',
-        f'session_store_path: "{runtime_dir / "sessions.json"}"',
-        f'approval_store_path: "{runtime_dir / "approvals.json"}"',
-    ]
-    if addon_module:
-        lines.extend(
-            [
-                "addon_loader:",
-                "  modules:",
-                f'    - "{addon_module}"',
-                "  enabled_entry_points: false",
-            ]
-        )
-    config_path.write_text("\n".join(lines), encoding="utf-8")
-    return config_path
+def _prepare_runtime_config(tmp_path: Path, *, addon_module: str | None = None) -> Path:
+    if addon_module is None:
+        return write_runtime_config(tmp_path)
+    return write_runtime_config(
+        tmp_path,
+        addon_loader={"modules": [addon_module], "enabled_entry_points": False},
+    )
 
 
 def _write_trigger_config(tmp_path: Path, *, enable_team_addon: bool) -> None:
@@ -81,7 +69,7 @@ def _write_invalid_trigger_config_with_team_addon(tmp_path: Path) -> None:
 
 def _catalog_payload(tmp_path: Path, *, enable_team_addon: bool) -> dict[str, object]:
     _write_trigger_config(tmp_path, enable_team_addon=enable_team_addon)
-    runtime = build_admin_runtime(_write_gateway_config(tmp_path))
+    runtime = build_admin_runtime(_prepare_runtime_config(tmp_path))
     return runtime.workflow_config_admin.read_workflow_editor_catalog(
         directory_path="root"
     ).model_dump(mode="json")
@@ -209,7 +197,7 @@ def test_workflow_editor_catalog_enriches_team_bridge_target_options(
     tmp_path: Path,
 ) -> None:
     _write_trigger_config(tmp_path, enable_team_addon=True)
-    runtime = build_admin_runtime(_write_gateway_config(tmp_path))
+    runtime = build_admin_runtime(_prepare_runtime_config(tmp_path))
     SqliteCommunicationTargetsRepository(
         communication_targets_db_path(runtime.config.runtime_dir)
     ).write_overlay(
@@ -271,7 +259,7 @@ def test_workflow_editor_catalog_uses_loader_settings_when_workflow_config_is_in
     tmp_path: Path,
 ) -> None:
     _write_invalid_trigger_config_with_team_addon(tmp_path)
-    runtime = build_admin_runtime(_write_gateway_config(tmp_path))
+    runtime = build_admin_runtime(_prepare_runtime_config(tmp_path))
 
     catalog_payload = runtime.workflow_config_admin.read_workflow_editor_catalog(
         directory_path="root"
@@ -284,7 +272,7 @@ def test_workflow_editor_catalog_uses_loader_settings_when_workflow_config_is_in
 def test_workflow_editor_tool_selectors_include_enabled_addon_tools(tmp_path: Path) -> None:
     _write_trigger_config(tmp_path, enable_team_addon=False)
     runtime = build_admin_runtime(
-        _write_gateway_config(tmp_path, addon_module="evander_bokio_addon")
+        _prepare_runtime_config(tmp_path, addon_module="evander_bokio_addon")
     )
 
     payload = runtime.workflow_config_admin.read_workflow_editor_catalog(

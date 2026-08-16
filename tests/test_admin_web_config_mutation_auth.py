@@ -8,27 +8,11 @@ from starlette.testclient import TestClient
 from evander.admin.composition import AdminRuntimeComponents, build_admin_runtime
 from evander.admin.web.app import create_app
 from evander.models import WorkerActionResult, WorkerSummary
+from config_helpers import write_runtime_config
 
 
 def _write_config(tmp_path: Path) -> Path:
-    runtime_dir = tmp_path / "runtime"
-    config_path = tmp_path / "gateway.yaml"
-    config_path.write_text(
-        "\n".join(
-            [
-                f'runtime_dir: "{runtime_dir}"',
-                f'audit_log_path: "{runtime_dir / "audit.jsonl"}"',
-                f'session_store_path: "{runtime_dir / "sessions.json"}"',
-                f'approval_store_path: "{runtime_dir / "approvals.json"}"',
-                f'draft_store_path: "{runtime_dir / "drafts.json"}"',
-                f'email_store_path: "{runtime_dir / "emails.json"}"',
-                f'discord_command_store_path: "{runtime_dir / "discord_commands.json"}"',
-                "enable_directory_scoped_config: true",
-            ]
-        ),
-        encoding="utf-8",
-    )
-    return config_path
+    return write_runtime_config(tmp_path, enable_directory_scoped_config=True)
 
 
 def _stub_worker_listing(service: AdminRuntimeComponents, monkeypatch) -> None:

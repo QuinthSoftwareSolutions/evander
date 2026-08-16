@@ -1093,9 +1093,8 @@ default runtime is `/var/lib/evander`; commands and repository services commonly
 explicitly. Relative runtime paths are resolved, and default store paths follow the selected
 runtime root.
 
-Legacy gateway YAML is accepted as explicit migration or bootstrap input. It is not the current
-live baseline. Once host and root directory configuration exist, diagnose those current surfaces
-rather than repeatedly editing an old YAML file.
+Startup reads only the host bootstrap and root directory configuration. Diagnose those canonical
+surfaces directly; gateway YAML is no longer accepted as bootstrap or migration input.
 
 At startup, `load_runtime_gateway_config` combines the host bootstrap with root directory domains
 into a validated `GatewayConfig`. Broader assembly then adds the repositories and services that a
@@ -1108,7 +1107,7 @@ function) is the supported assembly surface for the
 CLI, gateway integrations, Admin Web, workflow providers, and add-ons that need administration
 services. It:
 
-1. resolves an explicit legacy path only when supplied or when the input is clearly YAML;
+1. resolves the runtime directory;
 2. loads or creates host bootstrap configuration;
 3. opens the directory store and ensures `root` exists;
 4. opens the directory-config store and ensures root domains exist;
@@ -8413,7 +8412,6 @@ If an operator encounters one of these names, the safest first step is to record
 
 | Surface | Current status | New work should use |
 |---|---|---|
-| Legacy gateway YAML | import/migration input only | `runtime/host-config.json` plus directory config |
 | Older guest session/config paths | read/repair fallback in selected bootstrap paths | `/etc/evander/session.env`, `/home/agent/.agent/config.env`, and current `/home/agent/.evander` run-state paths |
 | `runtime/pr-map.json` | live compatibility store for session-bound and legacy PR streams; repository-scoped streams can bypass it | explicit PR workflow streams and managed repository identity |
 | JSON wake/inbox/worker/Team stores | one-time import where the owning repository supports it | the current SQLite store |
@@ -9221,7 +9219,7 @@ checklist, and manual or prepared test target. Only a real eligible Admin user
 with scoped permission and privileged confirmation can decide it.
 
 **Host config**<br>
-The host-global bootstrap settings in `runtime/host-config.json`. It is composed with directory-scoped domains; legacy gateway YAML is import input, not the current baseline.
+The host-global bootstrap settings in `runtime/host-config.json`. It is composed with directory-scoped domains to form the runtime configuration.
 
 **HTTP target relay**<br>
 A session-scoped relay for explicit external HTTP targets. It forwards guest-managed headers/cookies subject to the grant but does not inject host secrets.

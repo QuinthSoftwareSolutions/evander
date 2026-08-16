@@ -44,7 +44,11 @@ def augment_await_agent_completion(
     required_completion_ids: set[str] = set()
     changed = False
     for gate in await_gate_payloads:
-        configured_id = gate.get("completion_trigger_id")
+        gate_config = gate.get("config")
+        if not isinstance(gate_config, dict):
+            gate_config = {}
+            gate["config"] = gate_config
+        configured_id = gate_config.get("completion_trigger_id")
         completion_id = (
             configured_id
             if isinstance(configured_id, str) and configured_id.strip()
@@ -52,7 +56,7 @@ def augment_await_agent_completion(
         )
         required_completion_ids.add(completion_id)
         if configured_id != completion_id:
-            gate["completion_trigger_id"] = completion_id
+            gate_config["completion_trigger_id"] = completion_id
             changed = True
 
     for completion_id in sorted(required_completion_ids):
@@ -63,7 +67,7 @@ def augment_await_agent_completion(
                     "id": completion_id,
                     "display_name": "Await agent completion",
                     "type": "trigger:agent:run:completed",
-                    "vm_user": "agent",
+                    "config": {"vm_user": "agent"},
                 }
             )
             changed = True

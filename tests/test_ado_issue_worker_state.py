@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from config_helpers import canonical_worker_config
+
 import json
 import logging
 from datetime import UTC, datetime, timedelta
@@ -37,25 +39,17 @@ from evander.pr_feedback import FeedbackEnvelope
 from evander.services import PrFeedbackService
 from evander.storage import JsonStore
 from evander.triggers.queue import TriggerEventQueue
+from config_helpers import canonical_workflow_payload, write_runtime_config
+
+
+def _canonicalize_workflow_pack(path: Path) -> None:
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    path.write_text(json.dumps(canonical_workflow_payload(payload)), encoding="utf-8")
 
 
 @pytest.fixture
 def worker_config(tmp_path: Path) -> WorkerConfig:
-    gateway_config_path = tmp_path / "gateway.yaml"
-    gateway_config_path.write_text(
-        json.dumps(
-            {
-                "runtime_dir": str(tmp_path),
-                "session_store_path": str(tmp_path / "sessions.json"),
-                "approval_store_path": str(tmp_path / "approvals.json"),
-                "draft_store_path": str(tmp_path / "drafts.json"),
-                "email_store_path": str(tmp_path / "emails.json"),
-                "discord_command_store_path": str(tmp_path / "discord_commands.json"),
-                "audit_log_path": str(tmp_path / "audit.jsonl"),
-            }
-        ),
-        encoding="utf-8",
-    )
+    write_runtime_config(tmp_path, runtime_dir=tmp_path)
     return WorkerConfig(
         organization_url="https://dev.azure.com/example",
         project="example",
@@ -72,7 +66,6 @@ def worker_config(tmp_path: Path) -> WorkerConfig:
         include_comments=True,
         comments_max_count=20,
         comment_text_max_chars=4000,
-        gateway_config_path=gateway_config_path,
     )
 
 
@@ -340,18 +333,13 @@ def test_worker_config_load_from_env_reads_ado_worker_global_config(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    gateway_config_path = tmp_path / "gateway.yaml"
-    gateway_config_path.write_text(
-        yaml.safe_dump(
-            {
-                "runtime_dir": str(tmp_path / "runtime"),
-                "azure_devops_organization_url": "https://dev.azure.com/example",
-                "azure_devops_project": "example",
-                "azure_devops_pat_env": "AZURE_DEVOPS_PAT",
-            },
-            sort_keys=False,
-        ),
-        encoding="utf-8",
+    write_runtime_config(
+        tmp_path,
+        runtime_dir=tmp_path / "runtime-custom",
+        azure_devops_organization_url="https://dev.azure.com/example",
+        azure_devops_project="example",
+        azure_devops_pat_env="AZURE_DEVOPS_PAT",
+        ado_repo_source="/tmp/repo",
     )
     worker_config_path = tmp_path / "config" / "ado-worker" / "config.json"
     worker_config_path.parent.mkdir(parents=True, exist_ok=True)
@@ -373,7 +361,7 @@ def test_worker_config_load_from_env_reads_ado_worker_global_config(
         ),
         encoding="utf-8",
     )
-    monkeypatch.setenv("ADO_GATEWAY_CONFIG", str(gateway_config_path))
+    monkeypatch.chdir(tmp_path)
 
     config = WorkerConfig.load_from_env()
 
@@ -394,17 +382,10 @@ def test_worker_config_load_from_env_idles_without_configured_directories(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    gateway_config_path = tmp_path / "gateway.yaml"
-    gateway_config_path.write_text(
-        yaml.safe_dump(
-            {
-                "runtime_dir": str(tmp_path / "runtime"),
-                "azure_devops_organization_url": "https://dev.azure.com/example",
-                "azure_devops_project": "example",
-            },
-            sort_keys=False,
-        ),
-        encoding="utf-8",
+    write_runtime_config(
+        tmp_path,
+        azure_devops_organization_url="https://dev.azure.com/example",
+        azure_devops_project="example",
     )
     worker_config_path = tmp_path / "config" / "ado-worker" / "config.json"
     worker_config_path.parent.mkdir(parents=True, exist_ok=True)
@@ -418,7 +399,7 @@ def test_worker_config_load_from_env_idles_without_configured_directories(
         ),
         encoding="utf-8",
     )
-    monkeypatch.setenv("ADO_GATEWAY_CONFIG", str(gateway_config_path))
+    monkeypatch.chdir(tmp_path)
     monkeypatch.delenv("ADO_PROJECT_OR_SOLUTION", raising=False)
     monkeypatch.delenv("ADO_WORK_ITEMS_AZURE_DEVOPS_PAT", raising=False)
 
@@ -508,18 +489,13 @@ def test_worker_config_load_from_env_ignores_legacy_bootstrap_fields(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    gateway_config_path = tmp_path / "gateway.yaml"
-    gateway_config_path.write_text(
-        yaml.safe_dump(
-            {
-                "runtime_dir": str(tmp_path),
-                "azure_devops_organization_url": "https://dev.azure.com/example",
-                "azure_devops_project": "example",
-                "azure_devops_pat_env": "AZURE_DEVOPS_PAT",
-            },
-            sort_keys=False,
-        ),
-        encoding="utf-8",
+    write_runtime_config(
+        tmp_path,
+        runtime_dir=tmp_path,
+        azure_devops_organization_url="https://dev.azure.com/example",
+        azure_devops_project="example",
+        azure_devops_pat_env="AZURE_DEVOPS_PAT",
+        ado_repo_source="/tmp/repo",
     )
     directory_root = tmp_path / "directory-config" / "root"
     directory_root.mkdir(parents=True, exist_ok=True)
@@ -534,7 +510,13 @@ def test_worker_config_load_from_env_ignores_legacy_bootstrap_fields(
         ),
         encoding="utf-8",
     )
-    monkeypatch.setenv("ADO_GATEWAY_CONFIG", str(gateway_config_path))
+    worker_config_dir = tmp_path / "config" / "ado-worker"
+    worker_config_dir.mkdir(parents=True, exist_ok=True)
+    (worker_config_dir / "config.json").write_text(
+        json.dumps({"runtime_dir": str(tmp_path)}),
+        encoding="utf-8",
+    )
+    monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("TEAM_MSSQL_PASSWORD", "TopSecret!")
 
     config = WorkerConfig.load_from_env()
@@ -547,27 +529,26 @@ def test_worker_config_load_from_env_uses_dedicated_worker_pat_env_setting(
     tmp_path: Path,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    gateway_config_path = tmp_path / "gateway.yaml"
-    gateway_config_path.write_text(
-        yaml.safe_dump(
-            {
-                "runtime_dir": str(tmp_path),
-                "azure_devops_organization_url": "https://dev.azure.com/example-org",
-                "azure_devops_project": "example-project",
-                "azure_devops_pat_env": "ADO_DIRECTORY_PAT",
-                "ado_area_filters": ["Root\\Area"],
-            },
-            sort_keys=False,
-        ),
-        encoding="utf-8",
+    write_runtime_config(
+        tmp_path,
+        runtime_dir=tmp_path,
+        azure_devops_organization_url="https://dev.azure.com/example-org",
+        azure_devops_project="example-project",
+        azure_devops_pat_env="ADO_DIRECTORY_PAT",
+        ado_area_filters=["Root\\Area"],
     )
     worker_config_dir = tmp_path / "config" / "ado-worker"
     worker_config_dir.mkdir(parents=True, exist_ok=True)
     (worker_config_dir / "config.json").write_text(
-        json.dumps({"ado_work_items_azure_devops_pat_env": "JSON_WORK_ITEM_PAT"}),
+        json.dumps(
+            {
+                "runtime_dir": str(tmp_path),
+                "ado_work_items_azure_devops_pat_env": "JSON_WORK_ITEM_PAT",
+            }
+        ),
         encoding="utf-8",
     )
-    monkeypatch.setenv("ADO_GATEWAY_CONFIG", str(gateway_config_path))
+    monkeypatch.chdir(tmp_path)
 
     with caplog.at_level("WARNING"):
         config = WorkerConfig.load_from_env()
@@ -583,18 +564,12 @@ def test_worker_config_load_from_env_resolves_first_configured_directory(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    gateway_config_path = tmp_path / "gateway.yaml"
-    gateway_config_path.write_text(
-        yaml.safe_dump(
-            {
-                "runtime_dir": str(tmp_path),
-                "azure_devops_organization_url": "https://dev.azure.com/example-org",
-                "azure_devops_project": "example-project",
-                "azure_devops_pat_env": "ADO_DIRECTORY_PAT",
-            },
-            sort_keys=False,
-        ),
-        encoding="utf-8",
+    write_runtime_config(
+        tmp_path,
+        runtime_dir=tmp_path,
+        azure_devops_organization_url="https://dev.azure.com/example-org",
+        azure_devops_project="example-project",
+        azure_devops_pat_env="ADO_DIRECTORY_PAT",
     )
     directories_path = tmp_path / "directories.json"
     directories_path.write_text(
@@ -605,7 +580,11 @@ def test_worker_config_load_from_env_resolves_first_configured_directory(
                     "name": "root",
                     "parent_id": None,
                     "created_at": "2026-03-28T00:00:00Z",
-                    "metadata": {},
+                    "metadata": {
+                        "directory_config": {
+                            "domains": ["providers", "ado_worker"],
+                        }
+                    },
                 },
                 "example": {
                     "id": "example",
@@ -652,10 +631,15 @@ def test_worker_config_load_from_env_resolves_first_configured_directory(
     worker_config_dir = tmp_path / "config" / "ado-worker"
     worker_config_dir.mkdir(parents=True, exist_ok=True)
     (worker_config_dir / "config.json").write_text(
-        json.dumps({"directories": ["root/example-industry/app"]}),
+        json.dumps(
+            {
+                "runtime_dir": str(tmp_path),
+                "directories": ["root/example-industry/app"],
+            }
+        ),
         encoding="utf-8",
     )
-    monkeypatch.setenv("ADO_GATEWAY_CONFIG", str(gateway_config_path))
+    monkeypatch.chdir(tmp_path)
 
     config = WorkerConfig.load_from_env()
 
@@ -668,20 +652,15 @@ def test_worker_config_load_from_env_prefers_worker_json_config(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    gateway_config_path = tmp_path / "gateway.yaml"
-    gateway_config_path.write_text(
-        yaml.safe_dump(
-            {
-                "runtime_dir": str(tmp_path),
-                "azure_devops_organization_url": "https://dev.azure.com/example-org",
-                "azure_devops_project": "example-project",
-                "azure_devops_pat_env": "ADO_DIRECTORY_PAT",
-            },
-            sort_keys=False,
-        ),
-        encoding="utf-8",
+    runtime_dir = tmp_path / "json-runtime"
+    write_runtime_config(
+        tmp_path,
+        runtime_dir=runtime_dir,
+        azure_devops_organization_url="https://dev.azure.com/example-org",
+        azure_devops_project="example-project",
+        azure_devops_pat_env="ADO_DIRECTORY_PAT",
     )
-    directories_path = tmp_path / "directories.json"
+    directories_path = runtime_dir / "directories.json"
     directories_path.write_text(
         json.dumps(
             {
@@ -723,7 +702,7 @@ def test_worker_config_load_from_env_prefers_worker_json_config(
         ),
         encoding="utf-8",
     )
-    monkeypatch.setenv("ADO_GATEWAY_CONFIG", str(gateway_config_path))
+    monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("ADO_POLL_INTERVAL_SECONDS", "10")
     monkeypatch.setenv("ADO_RUNTIME_DIR", "env-runtime")
     monkeypatch.setenv("ADO_YAML_OUTPUT_DIR", "env-runtime/yaml")
@@ -754,20 +733,14 @@ def test_worker_config_load_from_env_warns_on_deprecated_env_override(
     tmp_path: Path,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    gateway_config_path = tmp_path / "gateway.yaml"
-    gateway_config_path.write_text(
-        yaml.safe_dump(
-            {
-                "runtime_dir": str(tmp_path),
-                "azure_devops_organization_url": "https://dev.azure.com/example-org",
-                "azure_devops_project": "example-project",
-                "azure_devops_pat_env": "ADO_DIRECTORY_PAT",
-            },
-            sort_keys=False,
-        ),
-        encoding="utf-8",
+    write_runtime_config(
+        tmp_path,
+        runtime_dir=tmp_path,
+        azure_devops_organization_url="https://dev.azure.com/example-org",
+        azure_devops_project="example-project",
+        azure_devops_pat_env="ADO_DIRECTORY_PAT",
     )
-    monkeypatch.setenv("ADO_GATEWAY_CONFIG", str(gateway_config_path))
+    monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("ADO_REPO_PATH", "/tmp/from-env-repo")
 
     with caplog.at_level("WARNING"):
@@ -781,18 +754,12 @@ def test_run_worker_command_forget_does_not_require_mssql_secret(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    gateway_config_path = tmp_path / "gateway.yaml"
-    gateway_config_path.write_text(
-        yaml.safe_dump(
-            {
-                "runtime_dir": str(tmp_path),
-                "azure_devops_organization_url": "https://dev.azure.com/example-org",
-                "azure_devops_project": "example-project",
-                "azure_devops_pat_env": "ADO_DIRECTORY_PAT",
-            },
-            sort_keys=False,
-        ),
-        encoding="utf-8",
+    write_runtime_config(
+        tmp_path,
+        runtime_dir=tmp_path,
+        azure_devops_organization_url="https://dev.azure.com/example-org",
+        azure_devops_project="example-project",
+        azure_devops_pat_env="ADO_DIRECTORY_PAT",
     )
     directory_root = tmp_path / "directory-config" / "root"
     directory_root.mkdir(parents=True, exist_ok=True)
@@ -825,7 +792,7 @@ def test_run_worker_command_forget_does_not_require_mssql_secret(
         json.dumps({"processed_store_path": str(processed_store_path)}),
         encoding="utf-8",
     )
-    monkeypatch.setenv("ADO_GATEWAY_CONFIG", str(gateway_config_path))
+    monkeypatch.chdir(tmp_path)
     run_worker_command(log_level="INFO", forget=14382)
 
     payload = json.loads(processed_store_path.read_text(encoding="utf-8"))
@@ -836,18 +803,12 @@ def test_run_worker_command_forget_does_not_require_root_ado_worker_payload(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    gateway_config_path = tmp_path / "gateway.yaml"
-    gateway_config_path.write_text(
-        yaml.safe_dump(
-            {
-                "runtime_dir": str(tmp_path),
-                "azure_devops_organization_url": "https://dev.azure.com/example-org",
-                "azure_devops_project": "example-project",
-                "azure_devops_pat_env": "ADO_DIRECTORY_PAT",
-            },
-            sort_keys=False,
-        ),
-        encoding="utf-8",
+    write_runtime_config(
+        tmp_path,
+        runtime_dir=tmp_path,
+        azure_devops_organization_url="https://dev.azure.com/example-org",
+        azure_devops_project="example-project",
+        azure_devops_pat_env="ADO_DIRECTORY_PAT",
     )
     directory_root = tmp_path / "directory-config" / "root"
     directory_root.mkdir(parents=True, exist_ok=True)
@@ -885,7 +846,7 @@ def test_run_worker_command_forget_does_not_require_root_ado_worker_payload(
         json.dumps({"processed_store_path": str(processed_store_path)}),
         encoding="utf-8",
     )
-    monkeypatch.setenv("ADO_GATEWAY_CONFIG", str(gateway_config_path))
+    monkeypatch.chdir(tmp_path)
 
     run_worker_command(log_level="INFO", forget=14382)
 
@@ -3152,21 +3113,23 @@ def test_publish_directory_pr_feedback_events_uses_configured_trigger_queue_path
     from evander.daemons import ado_issue_worker as ado_worker
 
     queue_path = worker_config.runtime_dir / "custom-trigger-events.json"
-    trigger_worker_config = ado_worker.TriggerOrchestratorWorkerGlobalConfig.model_validate(
-        {
-            "runtime_dir": str(worker_config.runtime_dir),
-            "event_queue_store_path": str(queue_path),
-            "triggers": [
-                {
-                    "id": "trigger-pr-feedback",
-                    "display_name": "PR feedback",
-                    "type": "trigger:pull-request:new-feedback",
-                    "provider": "ado",
-                    "organization_url": "https://dev.azure.com/example-org",
-                    "project": "Example Project",
-                }
-            ],
-        }
+    trigger_worker_config = canonical_worker_config(
+        canonical_workflow_payload(
+            {
+                "runtime_dir": str(worker_config.runtime_dir),
+                "event_queue_store_path": str(queue_path),
+                "triggers": [
+                    {
+                        "id": "trigger-pr-feedback",
+                        "display_name": "PR feedback",
+                        "type": "trigger:pull-request:new-feedback",
+                        "provider": "ado",
+                        "organization_url": "https://dev.azure.com/example-org",
+                        "project": "Example Project",
+                    }
+                ],
+            }
+        )
     )
     (worker_config.runtime_dir / "sessions.json").write_text(
         json.dumps(
@@ -3254,7 +3217,7 @@ def test_publish_directory_pr_feedback_events_uses_configured_trigger_queue_path
 def test_load_ado_pr_feedback_triggers_resolves_workflow_packs(worker_config: WorkerConfig) -> None:
     from evander.daemons import ado_issue_worker as ado_worker
 
-    project_dir = worker_config.gateway_config_path.parent
+    project_dir = worker_config.runtime_dir
     (project_dir / "config" / "trigger-orchestrator").mkdir(parents=True)
     (project_dir / "config" / "workflow-packs").mkdir(parents=True)
     (project_dir / "config" / "trigger-orchestrator" / "config.json").write_text(
@@ -3298,6 +3261,9 @@ def test_load_ado_pr_feedback_triggers_resolves_workflow_packs(worker_config: Wo
         ),
         encoding="utf-8",
     )
+    _canonicalize_workflow_pack(
+        project_dir / "config" / "workflow-packs" / "pr-feedback-only.v1.json"
+    )
 
     triggers = ado_worker._load_ado_pr_feedback_triggers(worker_config)
 
@@ -3310,7 +3276,7 @@ def test_load_ado_pr_completed_triggers_resolves_workflow_packs(
 ) -> None:
     from evander.daemons import ado_issue_worker as ado_worker
 
-    project_dir = worker_config.gateway_config_path.parent
+    project_dir = worker_config.runtime_dir
     (project_dir / "config" / "trigger-orchestrator").mkdir(parents=True)
     (project_dir / "config" / "workflow-packs").mkdir(parents=True)
     (project_dir / "config" / "trigger-orchestrator" / "config.json").write_text(
@@ -3353,6 +3319,9 @@ def test_load_ado_pr_completed_triggers_resolves_workflow_packs(
             }
         ),
         encoding="utf-8",
+    )
+    _canonicalize_workflow_pack(
+        project_dir / "config" / "workflow-packs" / "pr-completed-only.v1.json"
     )
 
     triggers = ado_worker._load_ado_pr_completed_triggers(worker_config)

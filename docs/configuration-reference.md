@@ -6,7 +6,7 @@ Scope included:
 
 - Host bootstrap configuration in `runtime/host-config.json`.
 - Environment-variable based configuration (`config/*.env.example`, plus generated guest env files).
-- Legacy gateway YAML import keys (from a legacy YAML file), used only to seed `root` during migration.
+- The composed runtime configuration assembled from host bootstrap and directory domains.
 - Cloud-init template placeholders used by VM launch/bootstrap.
 
 ## 1) Service environment files (`config/*.env.example`)
@@ -1517,28 +1517,30 @@ Key bootstrap fields include:
 - `addon_loader`
 - `enable_directory_scoped_config`
 
-## 3) Legacy gateway import keys
+## 3) Composed runtime keys
 
-These keys are defined in `src/evander/config.py` (`GatewayConfig` + `MailboxConfig`) and were historically loaded by `load_config()`.
-In the root-only model, this file is an import source for seeding `runtime/directory-config/root/...` and is not the live runtime baseline.
+These keys are defined in `src/evander/config.py` (`GatewayConfig` + `MailboxConfig`).
+`GatewayConfig` is the validated in-process view assembled from `runtime/host-config.json`,
+directory config domains, and service-local worker configuration; it is not a separate persisted
+configuration file.
 
 ### Core server/runtime keys
 
 | Key | Found in | Consumed by |
 |---|---|---|
-| `host`, `port` | legacy gateway YAML | `src/evander/gateway/cli.py` server bind settings. |
-| `log_level` | legacy gateway YAML | `src/evander/gateway/cli.py` logging setup for gateway process. |
-| `runtime_dir` | legacy gateway YAML | `src/evander/runtime.py` store locations. |
-| `audit_log_path` | legacy gateway YAML | `src/evander/runtime.py` audit logger destination. |
-| `session_store_path`, `approval_store_path`, `draft_store_path`, `email_store_path`, `email_cursor_store_path`, `discord_command_store_path` | legacy gateway YAML | `src/evander/runtime.py` persistent JSON stores. |
-| `discord_webhook_store_path` | host config or legacy gateway YAML | Host-only, mode-`0600` Discord channel-webhook credentials used for resolved sender identities. Defaults to `runtime/discord-webhooks.json`; tokens are never returned by Admin APIs. |
-| `directories_store_path` | legacy gateway YAML | `src/evander/runtime.py`, `src/evander/directories.py`, directory admin/config services. |
-| `addon_loader` | host config, legacy gateway YAML, and trigger-orchestrator config | Optional add-on module, package-directory, and entry-point loading for Admin Web routes/navigation and workflow-provider contributions. Scanned package add-ons are disabled until listed in `enabled_addon_ids`. |
-| `enable_directory_scoped_config` | legacy gateway YAML | `src/evander/admin/directory.py`, Admin Web directory edit surfaces, `src/evander/daemons/ado_issue_worker.py`, and `src/evander/daemons/pr_feedback_worker.py` (transition flag for directory edit surfaces and worker shadow resolution). |
-| `approval_ttl_seconds` | legacy gateway YAML | `src/evander/policy.py` approval expiry computation. |
-| `default_session_ttl_seconds` | legacy gateway YAML | `src/evander/cli.py` session creation defaults. |
-| `bind_network_cidr` | legacy gateway YAML | `src/evander/config.py` validation/normalization (policy-bound network constraints). |
-| `gateway_url` | legacy gateway YAML | `src/evander/cli.py` health checks / external endpoint references. |
+| `host`, `port` | composed runtime config | `src/evander/gateway/cli.py` server bind settings. |
+| `log_level` | composed runtime config | `src/evander/gateway/cli.py` logging setup for gateway process. |
+| `runtime_dir` | composed runtime config | `src/evander/runtime.py` store locations. |
+| `audit_log_path` | composed runtime config | `src/evander/runtime.py` audit logger destination. |
+| `session_store_path`, `approval_store_path`, `draft_store_path`, `email_store_path`, `email_cursor_store_path`, `discord_command_store_path` | composed runtime config | `src/evander/runtime.py` persistent JSON stores. |
+| `discord_webhook_store_path` | host bootstrap config | Host-only, mode-`0600` Discord channel-webhook credentials used for resolved sender identities. Defaults to `runtime/discord-webhooks.json`; tokens are never returned by Admin APIs. |
+| `directories_store_path` | composed runtime config | `src/evander/runtime.py`, `src/evander/directories.py`, directory admin/config services. |
+| `addon_loader` | host bootstrap and trigger-orchestrator config | Optional add-on module, package-directory, and entry-point loading for Admin Web routes/navigation and workflow-provider contributions. Scanned package add-ons are disabled until listed in `enabled_addon_ids`. |
+| `enable_directory_scoped_config` | composed runtime config | `src/evander/admin/directory.py`, Admin Web directory edit surfaces, `src/evander/daemons/ado_issue_worker.py`, and `src/evander/daemons/pr_feedback_worker.py` (transition flag for directory edit surfaces and worker shadow resolution). |
+| `approval_ttl_seconds` | composed runtime config | `src/evander/policy.py` approval expiry computation. |
+| `default_session_ttl_seconds` | composed runtime config | `src/evander/cli.py` session creation defaults. |
+| `bind_network_cidr` | composed runtime config | `src/evander/config.py` validation/normalization (policy-bound network constraints). |
+| `gateway_url` | composed runtime config | `src/evander/cli.py` health checks / external endpoint references. |
 | `execution_backend`, `container_worker_base_url`, `container_worker_token_env`, `container_worker_default_image`, `container_worker_images`, `container_worker_codex_auth_mode`, `container_worker_active_tool_timeout_seconds`, `container_worker_job_timeout_seconds`, `container_worker_request_timeout_seconds`, `container_worker_workspace_persistence`, `container_worker_git_allowed_from` | root or directory `providers.json` | `src/evander/execution/container_worker_backend.py` and portable `effect:agent:*` container worker routing. `container_worker_default_image` is the fallback image; `container_worker_images` maps approved aliases to exact image refs such as the separate Codex and Claude runner images. `container_worker_codex_auth_mode` defaults to `metered_api` and is inherited only by Codex sessions. `container_worker_active_tool_timeout_seconds` defaults to 300 and lets the reconciler safely interrupt only a recognized stalled test or build process group while retaining the agent container; the 1800-second `container_worker_job_timeout_seconds` remains the whole-job fallback. `chatgpt_subscription` selects the worker-owned account only for public OpenAI container Codex turns; local and Azure routes use their configured private/API-key path without clearing the stored selection. A public subscription turn fails closed when the account is unavailable. A session override applies on its next turn without replacing the session. `container_worker_git_allowed_from` optionally overrides the `authorized_keys from=` restriction for session-scoped container Git write keys; when unset Evander derives it from `container_worker_base_url`. |
 | `agent_consultation_profiles`, `agent_consultation_default_profile`, `agent_consultation_max_wait_seconds`, `agent_consultation_retention_days`, `agent_consultation_token_secret_env` | root or directory `providers.json` | Request-scoped `consult_codebase` workers. Each named profile requires `model`, is restricted to `container_worker_vm`, and may set `agent_provider`, `model_provider_mode`, `container_image`, `timeout_seconds`, and `max_concurrency`. The gateway pins a managed-Git commit, persists the request, and returns after the bounded wait; the hidden system workflow creates and cleans up the worker. The token field names a host env var and defaults to `AGENT_PROMPT_TOKEN_SECRET`; it never contains the secret itself. |
 | `container_worker_guest_openai_base_url`, `container_worker_guest_anthropic_base_url`, `container_worker_guest_gateway_url`, `container_worker_guest_http_target_relay_base_url`, `container_worker_guest_nuget_relay_base_url`, `container_worker_guest_pypi_index_url`, `container_worker_guest_npm_registry_url` | root `providers.json` | Container session bootstrap files under `/home/agent` for Codex/Claude model relays, MCP gateway, HTTP target relay, NuGet restore traffic, and Nexus-backed PyPI/npm restores. |
@@ -1548,7 +1550,7 @@ In the root-only model, this file is an import source for seeding `runtime/direc
 | `communication_artifact_public_base_url`, `communication_artifact_link_secret_env`, `communication_artifact_link_ttl_seconds` | root or directory `providers.json` | Signed public links for staged communication artifacts. `teams_post_file` uses them when a non-image Teams file has no SharePoint/OneDrive `contentUrl`. Discord persona avatars are stored directly on Discord webhooks and do not use these settings. The secret env var must be loaded by both gateway and Admin Web; artifact link TTL is also capped by staged artifact expiry. |
 | `phone_call_backend`, `retell_api_base_url`, `retell_api_key_env`, `retell_from_number`, `retell_default_agent_id`, `retell_request_timeout_seconds`, `openai_realtime_model`, `openai_realtime_api_key_env`, `openai_realtime_api_base_url`, `voice_media_controller_url`, `voice_media_controller_token_env`, `voice_media_controller_request_timeout_seconds`, `didww_sip_bridge_url`, `didww_sip_bridge_token_env`, `didww_from_number`, `inbound_phone_routes` | root or directory `providers.json` | `src/evander/retell_phone.py`, `src/evander/voice_sessions.py`, and `src/evander/gateway/server.py` for host-side phone calls. |
 | `contacts`, `user_contact_links` | root or directory `contacts.json` | `src/evander/directory_config.py`, `src/evander/retell_phone.py`, `src/evander/voice_sessions.py`, and the admin Users API for directory-scoped contacts and user attachments. |
-| `redacted_keys` | legacy gateway YAML (optional) | `src/evander/gateway/server.py` request/response redaction in logs. |
+| `redacted_keys` | root policy config | `src/evander/gateway/server.py` request/response redaction in logs. |
 
 The worker ChatGPT account is not directory-scoped. Admin Web account status, device-login
 start/status/cancellation, and logout require both an unlocked privileged-operations session and
@@ -1559,18 +1561,18 @@ directory's provider configuration.
 
 | Key | Found in | Consumed by |
 |---|---|---|
-| `openai_relay_host`, `openai_relay_port` | legacy gateway YAML | `src/evander/relays/openai.py` listener bind. |
-| `openai_api_base_url` | legacy gateway YAML | `src/evander/relays/openai.py` upstream URL base. |
-| `openai_api_key_env` | legacy gateway YAML | `src/evander/relays/openai.py` env-var name lookup for API key. |
-| `openai_relay_timeout_seconds` | legacy gateway YAML | `src/evander/relays/openai.py` upstream request timeout. |
-| `local_openai_api_base_url` | legacy gateway YAML or directory provider config | `src/evander/relays/openai.py` OpenAI-compatible local upstream URL used in `local_openai` mode. Defaults to `http://127.0.0.1:11434/v1`; effective `local_openai` config is rejected when that URL targets the relay listener, such as the default `0.0.0.0:11434` relay bind. |
-| `local_openai_api_key` | legacy gateway YAML or directory provider config | `src/evander/relays/openai.py` placeholder bearer token sent to the local OpenAI-compatible upstream in `local_openai` mode. Defaults to `ollama`. |
-| `local_openai_provider_name` | legacy gateway YAML or directory provider config | `src/evander/relays/openai.py` provider name stored in model-usage rows for local OpenAI-compatible traffic. Defaults to `local_openai`. |
-| `local_openai_max_concurrency` | root provider config or legacy gateway YAML | Host-global local-inference admission limit. Admission occurs only after session metadata and prompt effects have resolved the final model and provider mode. The durable prompt queue preserves FIFO order; Team dispatch leases begin only after an admitted prompt is delivered. Omit for unlimited concurrency. |
-| `anthropic_api_base_url` | legacy gateway YAML or directory provider config | `src/evander/relays/openai.py` Anthropic upstream URL base. |
-| `anthropic_api_key_env` | legacy gateway YAML or directory provider config | `src/evander/relays/openai.py` env-var name lookup for Anthropic API key. |
-| `anthropic_api_version` | legacy gateway YAML or directory provider config | `src/evander/relays/openai.py` default `anthropic-version` header. |
-| `anthropic_relay_timeout_seconds` | legacy gateway YAML or directory provider config | `src/evander/relays/openai.py` upstream Anthropic request timeout. |
+| `openai_relay_host`, `openai_relay_port` | composed runtime config | `src/evander/relays/openai.py` listener bind. |
+| `openai_api_base_url` | composed runtime config | `src/evander/relays/openai.py` upstream URL base. |
+| `openai_api_key_env` | composed runtime config | `src/evander/relays/openai.py` env-var name lookup for API key. |
+| `openai_relay_timeout_seconds` | composed runtime config | `src/evander/relays/openai.py` upstream request timeout. |
+| `local_openai_api_base_url` | root or directory `providers.json` | `src/evander/relays/openai.py` OpenAI-compatible local upstream URL used in `local_openai` mode. Defaults to `http://127.0.0.1:11434/v1`; effective `local_openai` config is rejected when that URL targets the relay listener, such as the default `0.0.0.0:11434` relay bind. |
+| `local_openai_api_key` | root or directory `providers.json` | `src/evander/relays/openai.py` placeholder bearer token sent to the local OpenAI-compatible upstream in `local_openai` mode. Defaults to `ollama`. |
+| `local_openai_provider_name` | root or directory `providers.json` | `src/evander/relays/openai.py` provider name stored in model-usage rows for local OpenAI-compatible traffic. Defaults to `local_openai`. |
+| `local_openai_max_concurrency` | root provider config | Host-global local-inference admission limit. Admission occurs only after session metadata and prompt effects have resolved the final model and provider mode. The durable prompt queue preserves FIFO order; Team dispatch leases begin only after an admitted prompt is delivered. Omit for unlimited concurrency. |
+| `anthropic_api_base_url` | root or directory `providers.json` | `src/evander/relays/openai.py` Anthropic upstream URL base. |
+| `anthropic_api_key_env` | root or directory `providers.json` | `src/evander/relays/openai.py` env-var name lookup for Anthropic API key. |
+| `anthropic_api_version` | root or directory `providers.json` | `src/evander/relays/openai.py` default `anthropic-version` header. |
+| `anthropic_relay_timeout_seconds` | root or directory `providers.json` | `src/evander/relays/openai.py` upstream Anthropic request timeout. |
 
 Session metadata key `model_provider_mode` overrides the effective directory
 provider mode for that session while still inheriting the directory's endpoint
@@ -1737,62 +1739,62 @@ aliases for the same provisioned environment.
 
 | Key | Found in | Consumed by |
 |---|---|---|
-| `nuget_relay_host`, `nuget_relay_port` | legacy gateway YAML | `src/evander/relays/nuget.py` listener bind. |
-| `nuget_public_feed_base_url` | legacy gateway YAML | `src/evander/relays/nuget.py` public feed proxy target. |
-| `nuget_azure_feed_base_url` | legacy gateway YAML | `src/evander/relays/nuget.py` Azure feed proxy target. |
-| `nuget_azure_pat_env` | legacy gateway YAML | `src/evander/relays/nuget.py` env-var name lookup for Azure Artifacts PAT. |
-| `nuget_relay_timeout_seconds` | legacy gateway YAML | `src/evander/relays/nuget.py` upstream timeout. |
+| `nuget_relay_host`, `nuget_relay_port` | composed runtime config | `src/evander/relays/nuget.py` listener bind. |
+| `nuget_public_feed_base_url` | composed runtime config | `src/evander/relays/nuget.py` public feed proxy target. |
+| `nuget_azure_feed_base_url` | composed runtime config | `src/evander/relays/nuget.py` Azure feed proxy target. |
+| `nuget_azure_pat_env` | composed runtime config | `src/evander/relays/nuget.py` env-var name lookup for Azure Artifacts PAT. |
+| `nuget_relay_timeout_seconds` | composed runtime config | `src/evander/relays/nuget.py` upstream timeout. |
 
 ### Discord keys
 
 | Key | Found in | Consumed by |
 |---|---|---|
-| `discord_backend` | legacy gateway YAML | `src/evander/runtime.py` adapter selection (`stub`/`bot_api`). |
-| `discord_bot_token_env` | legacy gateway YAML | `src/evander/runtime.py` token env lookup. |
-| `discord_webhook_store_path` | host config or legacy gateway YAML | Host-only credential store for generic and channel-plus-avatar Discord webhooks used by communication targets whose `policy.sender_identity` is `resolved`. |
-| `discord_api_base_url` | legacy gateway YAML | `src/evander/runtime.py` bot API client base URL. |
-| `discord_poll_limit` | legacy gateway YAML | `src/evander/runtime.py` polling window size. |
-| `discord_timeout_seconds` | legacy gateway YAML | `src/evander/runtime.py` HTTP timeout. |
-| `discord_retry_count` | legacy gateway YAML | `src/evander/runtime.py` retry behavior. |
-| `discord_retry_base_backoff_seconds` | legacy gateway YAML | `src/evander/runtime.py` retry backoff floor. |
-| `discord_retry_max_backoff_seconds` | legacy gateway YAML | `src/evander/runtime.py` retry backoff ceiling. |
+| `discord_backend` | composed runtime config | `src/evander/runtime.py` adapter selection (`stub`/`bot_api`). |
+| `discord_bot_token_env` | composed runtime config | `src/evander/runtime.py` token env lookup. |
+| `discord_webhook_store_path` | host bootstrap config | Host-only credential store for generic and channel-plus-avatar Discord webhooks used by communication targets whose `policy.sender_identity` is `resolved`. |
+| `discord_api_base_url` | composed runtime config | `src/evander/runtime.py` bot API client base URL. |
+| `discord_poll_limit` | composed runtime config | `src/evander/runtime.py` polling window size. |
+| `discord_timeout_seconds` | composed runtime config | `src/evander/runtime.py` HTTP timeout. |
+| `discord_retry_count` | composed runtime config | `src/evander/runtime.py` retry behavior. |
+| `discord_retry_base_backoff_seconds` | composed runtime config | `src/evander/runtime.py` retry backoff floor. |
+| `discord_retry_max_backoff_seconds` | composed runtime config | `src/evander/runtime.py` retry backoff ceiling. |
 | `discord_persona_webhook_cache_limit` | root or directory `providers.json` | Maximum cached persona-avatar webhooks per Discord channel. Defaults to `10`, is capped at `10`, and removes least-recently-used entries after provisioning. |
-| `discord_read_reaction_emoji` | legacy gateway YAML | Legacy adapter config retained for compatibility. The gateway no longer applies unread-message read reactions automatically; use `add_message_reaction` explicitly. |
-| `discord_operator_user_allowlist` | legacy gateway YAML | `src/evander/runtime.py` and `src/evander/policy.py` authorization checks. |
-| `discord_operator_channel_allowlist` | legacy gateway YAML | `src/evander/runtime.py` channel filter for operator events. |
-| `discord_poll_operator_dms` | legacy gateway YAML | `src/evander/runtime.py` DM polling toggle. |
+| `discord_read_reaction_emoji` | composed runtime config | Legacy adapter config retained for compatibility. The gateway no longer applies unread-message read reactions automatically; use `add_message_reaction` explicitly. |
+| `discord_operator_user_allowlist` | composed runtime config | `src/evander/runtime.py` and `src/evander/policy.py` authorization checks. |
+| `discord_operator_channel_allowlist` | composed runtime config | `src/evander/runtime.py` channel filter for operator events. |
+| `discord_poll_operator_dms` | composed runtime config | `src/evander/runtime.py` DM polling toggle. |
 
 ### Email keys
 
 | Key | Found in | Consumed by |
 |---|---|---|
-| `email_mailboxes[]` | legacy gateway YAML | `src/evander/runtime.py` mailbox provider adapter construction. |
-| `email_mailboxes[].mailbox_id` | legacy gateway YAML | `src/evander/runtime.py`, `src/evander/policy.py`, validation in `src/evander/config.py`. |
-| `email_mailboxes[].provider` | legacy gateway YAML | `src/evander/runtime.py` provider type dispatch (`json_store`/`gmail`/`graph`). |
-| `email_mailboxes[].account_identifier` (`account`/`address` aliases) | legacy gateway YAML | `src/evander/email/gmail_provider.py`, `src/evander/email/graph_provider.py`. |
-| `email_mailboxes[].auth_secret_refs` (`auth_env_var_names` alias) | legacy gateway YAML | Host env-var references used by provider token resolution. Gmail supports `access_token`. Graph supports either compatibility `access_token` or automatic client credentials through `tenant_id`, `client_id`, and `client_secret`. |
-| `email_mailboxes[].folder_mapping` | legacy gateway YAML | Gmail/Graph provider folder mapping. |
-| `email_mailboxes[].folder_allowlist_defaults` | legacy gateway YAML | Defaulting logic in `src/evander/config.py`. |
-| `email_mailbox_allowlist` | legacy gateway YAML | `src/evander/cli.py` session manifest policy surface. |
-| `email_folder_allowlist_by_mailbox` | legacy gateway YAML | `src/evander/cli.py` / `src/evander/policy.py`. |
-| `email_draft_recipient_allowlist` | legacy gateway YAML | `src/evander/policy.py` recipient checks. |
-| `email_draft_domain_allowlist` | legacy gateway YAML | `src/evander/policy.py` domain checks. |
-| `email_send_enabled` | legacy gateway YAML | `src/evander/cli.py`, `src/evander/gateway/server.py`, `src/evander/policy.py`. |
-| `email_provider_timeout_seconds` | legacy gateway YAML | `src/evander/runtime.py` email + PR provider HTTP client timeouts. |
+| `email_mailboxes[]` | composed runtime config | `src/evander/runtime.py` mailbox provider adapter construction. |
+| `email_mailboxes[].mailbox_id` | composed runtime config | `src/evander/runtime.py`, `src/evander/policy.py`, validation in `src/evander/config.py`. |
+| `email_mailboxes[].provider` | composed runtime config | `src/evander/runtime.py` provider type dispatch (`json_store`/`gmail`/`graph`). |
+| `email_mailboxes[].account_identifier` (`account`/`address` aliases) | composed runtime config | `src/evander/email/gmail_provider.py`, `src/evander/email/graph_provider.py`. |
+| `email_mailboxes[].auth_secret_refs` (`auth_env_var_names` alias) | composed runtime config | Host env-var references used by provider token resolution. Gmail supports `access_token`. Graph supports either compatibility `access_token` or automatic client credentials through `tenant_id`, `client_id`, and `client_secret`. |
+| `email_mailboxes[].folder_mapping` | composed runtime config | Gmail/Graph provider folder mapping. |
+| `email_mailboxes[].folder_allowlist_defaults` | composed runtime config | Defaulting logic in `src/evander/config.py`. |
+| `email_mailbox_allowlist` | composed runtime config | `src/evander/cli.py` session manifest policy surface. |
+| `email_folder_allowlist_by_mailbox` | composed runtime config | `src/evander/cli.py` / `src/evander/policy.py`. |
+| `email_draft_recipient_allowlist` | composed runtime config | `src/evander/policy.py` recipient checks. |
+| `email_draft_domain_allowlist` | composed runtime config | `src/evander/policy.py` domain checks. |
+| `email_send_enabled` | composed runtime config | `src/evander/cli.py`, `src/evander/gateway/server.py`, `src/evander/policy.py`. |
+| `email_provider_timeout_seconds` | composed runtime config | `src/evander/runtime.py` email + PR provider HTTP client timeouts. |
 
 ### PR/feedback keys
 
 | Key | Found in | Consumed by |
 |---|---|---|
-| `pr_reply_require_approval` | legacy gateway YAML | `src/evander/gateway/server.py` PR-reply approval gate. |
-| `github_token_env` | legacy gateway YAML | `src/evander/runtime.py`, `src/evander/reviews/request_service.py`, PR feedback trigger providers, and GitHub PR get query providers. |
-| `azure_devops_pr_pat_env` | legacy gateway YAML | `src/evander/runtime.py`, `src/evander/daemons/ado_issue_worker.py`, `src/evander/reviews/request_service.py`, and PR feedback/completion trigger providers. |
+| `pr_reply_require_approval` | composed runtime config | `src/evander/gateway/server.py` PR-reply approval gate. |
+| `github_token_env` | composed runtime config | `src/evander/runtime.py`, `src/evander/reviews/request_service.py`, PR feedback trigger providers, and GitHub PR get query providers. |
+| `azure_devops_pr_pat_env` | composed runtime config | `src/evander/runtime.py`, `src/evander/daemons/ado_issue_worker.py`, `src/evander/reviews/request_service.py`, and PR feedback/completion trigger providers. |
 | `ado_organization` | directory provider config | Azure DevOps organization identifier used to construct the trusted `https://dev.azure.com/<org>` origin for credentialed provider clients. |
-| `azure_devops_organization_url` | legacy gateway YAML / directory provider config | Legacy input migrated only from `https://dev.azure.com/<org>` or `https://<org>.visualstudio.com`; arbitrary origins are rejected. |
-| `azure_devops_project` | legacy gateway YAML | `src/evander/runtime.py`, `src/evander/daemons/ado_issue_worker.py`, `src/evander/issues/service.py`, and PR feedback trigger providers. |
-| `pr_feedback_resume_prompt` | legacy gateway YAML / directory wake config | Prompt used when resuming for unread PR feedback. |
-| `discord_resume_prompt` | legacy gateway YAML | `src/evander/messaging/discord_wake.py`. |
-| `pr_map_path` | legacy gateway YAML | `src/evander/daemons/ado_issue_worker.py`, PR feedback/completion trigger providers, PR status tracking, ownership cleanup, and admin/session pruning. |
+| `azure_devops_organization_url` | root or directory `providers.json` | Legacy input migrated only from `https://dev.azure.com/<org>` or `https://<org>.visualstudio.com`; arbitrary origins are rejected. |
+| `azure_devops_project` | composed runtime config | `src/evander/runtime.py`, `src/evander/daemons/ado_issue_worker.py`, `src/evander/issues/service.py`, and PR feedback trigger providers. |
+| `pr_feedback_resume_prompt` | root or directory `wake.json` | Prompt used when resuming for unread PR feedback. |
+| `discord_resume_prompt` | composed runtime config | `src/evander/messaging/discord_wake.py`. |
+| `pr_map_path` | composed runtime config | `src/evander/daemons/ado_issue_worker.py`, PR feedback/completion trigger providers, PR status tracking, ownership cleanup, and admin/session pruning. |
 
 ## 4) Cloud-init template placeholders (`config/cloud-init-user-data.yaml`)
 
@@ -1815,8 +1817,7 @@ These placeholders are substituted by `scripts/launch_agent_vm.sh` before VM boo
 ## Directory Config Domains And Storage
 
 Directory-scoped config is additive and host-side. `root` is the live top-level baseline.
-Legacy gateway YAML is only an import source for existing installs; it is not the live
-runtime baseline.
+Runtime startup composes it with `runtime/host-config.json`.
 
 Storage paths:
 

@@ -36,30 +36,17 @@ from evander.models import (
     WakeDispatchRecord,
     WakeResumePromptPayload,
 )
+from config_helpers import write_runtime_config
 
 
 ROOT = Path(__file__).resolve().parents[1]
 
 
 def write_config(tmp_path: Path, *, enable_directory_scoped_config: bool = False) -> Path:
-    runtime_dir = tmp_path / "runtime"
-    config_path = tmp_path / "gateway.yaml"
-    config_path.write_text(
-        "\n".join(
-            [
-                f'runtime_dir: "{runtime_dir}"',
-                f'audit_log_path: "{runtime_dir / "audit.jsonl"}"',
-                f'session_store_path: "{runtime_dir / "sessions.json"}"',
-                f'approval_store_path: "{runtime_dir / "approvals.json"}"',
-                f'draft_store_path: "{runtime_dir / "drafts.json"}"',
-                f'email_store_path: "{runtime_dir / "emails.json"}"',
-                f'discord_command_store_path: "{runtime_dir / "discord_commands.json"}"',
-                f"enable_directory_scoped_config: {str(enable_directory_scoped_config).lower()}",
-            ]
-        ),
-        encoding="utf-8",
+    return write_runtime_config(
+        tmp_path,
+        enable_directory_scoped_config=enable_directory_scoped_config,
     )
-    return config_path
 
 
 def _admin_json_request(
@@ -515,7 +502,7 @@ def test_admin_web_mcp_policy_mutation_requires_owner_unlock(
     def stored_mcp_tool_policies() -> dict[str, object]:
         result = service.operations_admin.read_directory_domain_config("root", "policy")
         assert result.data is not None
-        return dict(result.data.config.get("mcp_tool_policies") or {})
+        return dict((result.data.config or {}).get("mcp_tool_policies") or {})
 
     locked_owner = owner_client.put("/api/admin/mcp-tools?directory_path=root", json=payload)
     assert locked_owner.status_code == 403
@@ -1559,9 +1546,7 @@ def test_admin_web_exposes_runtime_image_payloads_for_session_list_and_detail(
 
 
 def test_admin_web_exposes_mcp_tools_directory_policy_api(tmp_path: Path) -> None:
-    config_path = write_config(tmp_path)
-    with config_path.open("a", encoding="utf-8") as handle:
-        handle.write("\nenable_directory_scoped_config: true\n")
+    config_path = write_config(tmp_path, enable_directory_scoped_config=True)
     service = build_admin_runtime(config_path)
     auth = AdminWebAuth(AdminWebConfig.from_env())
     routes = session_approval_routes(service, auth)

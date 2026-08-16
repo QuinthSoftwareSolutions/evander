@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from config_helpers import canonical_worker_config
+
 import json
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
@@ -30,7 +32,7 @@ def _worker_config(
     ]
     if include_dropped_edge:
         edges.append(_edge("gate-throttle", "effect-prompt", source_port="dropped"))
-    return TriggerOrchestratorWorkerGlobalConfig.model_validate(
+    return canonical_worker_config(
         {
             "runtime_dir": runtime_dir,
             "poll_interval_seconds": 1,
@@ -141,7 +143,9 @@ def test_throttle_routes_overflow_to_the_dropped_port_when_wired(tmp_path: Path)
     assert [record["status"] for record in records] == ["succeeded", "dropped"]
     assert records[1]["outputs"] == {"group": "a", "quota": 1, "body": "overflow"}
     dropped_event = next(
-        event for event in _completion_events(worker) if event["payload"].get("__branch_port") == "dropped"
+        event
+        for event in _completion_events(worker)
+        if event["payload"].get("__branch_port") == "dropped"
     )
     assert dropped_event["payload"]["body"] == "overflow"
 

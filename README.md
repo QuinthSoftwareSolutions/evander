@@ -51,7 +51,7 @@ package, Git, and HTTP relays.
 - Child directories inherit configuration from `root -> ... -> selected`.
 - `root` itself is the live top-level baseline and the top of the directory-scoped inheritance chain.
 - Directory config uses per-domain overlays, with deep-merge for maps, replace semantics for lists, and last-write-wins for scalars.
-- Legacy gateway YAML is only a migration/import source for existing installs; it is not the live runtime baseline.
+- Runtime startup reads only the canonical host bootstrap and directory-scoped configuration.
 
 Live config is now split into:
 
@@ -61,7 +61,6 @@ Live config is now split into:
 Directory-scoped config is rooted at `root`:
 
 - configure `root` directly for top-level defaults and overlays
-- use `migrate-global-config-to-root` only to import legacy gateway YAML content into `root`
 - leave `enable_directory_scoped_config` as documented in the configuration reference when editing surfaces are available in your build
 
 ## Quick Start

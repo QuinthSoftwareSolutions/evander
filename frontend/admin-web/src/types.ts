@@ -4,7 +4,8 @@ export type WorkflowNodeConfig = {
   id: string;
   display_name: string;
   type: string;
-  [key: string]: unknown;
+  config: Record<string, unknown>;
+  outputs?: Record<string, unknown> | null;
 };
 
 export type WorkflowEdge = {

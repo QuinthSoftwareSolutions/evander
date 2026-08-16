@@ -1,12 +1,15 @@
 from datetime import datetime, timezone
 
 import pytest
-from pydantic import TypeAdapter
+from pydantic import TypeAdapter, ValidationError
+
+from config_helpers import canonical_workflow_node
 
 from evander.events.models import (
     ConfigValue,
     EffectDefinitionDiscriminated,
     GateDefinitionDiscriminated,
+    QueryDefinitionDiscriminated,
     TriggerDefinitionDiscriminated,
     TriggerEvent,
     materialize_node_definition,
@@ -47,17 +50,74 @@ from evander.events.provider_models import (
 from evander.workflow.contracts import effective_node_output_schema
 
 
+def _validate_node(adapter: TypeAdapter, payload: dict[str, object]) -> object:
+    return adapter.validate_python(canonical_workflow_node(payload))
+
+
+@pytest.mark.parametrize(
+    ("definition_alias", "payload"),
+    [
+        (
+            TriggerDefinitionDiscriminated,
+            {
+                "id": "trigger-flat",
+                "display_name": "Flat trigger",
+                "type": "trigger:cron",
+                "expression": "* * * * *",
+            },
+        ),
+        (
+            GateDefinitionDiscriminated,
+            {
+                "id": "gate-flat",
+                "display_name": "Flat gate",
+                "type": "gate:filter",
+                "when": {"field": "status", "operator": "eq", "value": "ready"},
+            },
+        ),
+        (
+            EffectDefinitionDiscriminated,
+            {
+                "id": "effect-flat",
+                "display_name": "Flat effect",
+                "type": "effect:agent:prompt",
+                "prompt": "continue",
+            },
+        ),
+        (
+            QueryDefinitionDiscriminated,
+            {
+                "id": "query-flat",
+                "display_name": "Flat query",
+                "type": "query:state:get",
+                "namespace": "workflow",
+                "key": "status",
+            },
+        ),
+    ],
+)
+def test_programmatic_node_aliases_reject_flat_provider_fields(
+    definition_alias: object,
+    payload: dict[str, object],
+) -> None:
+    with pytest.raises(ValidationError) as exc_info:
+        TypeAdapter(definition_alias).validate_python(payload)
+
+    assert "extra_forbidden" in {error["type"] for error in exc_info.value.errors()}
+
+
 def test_ticket_created_trigger_normalizes_directories() -> None:
     adapter = TypeAdapter(TriggerDefinitionDiscriminated)
 
     trigger = materialize_node_definition(
-        adapter.validate_python(
+        _validate_node(
+            adapter,
             {
                 "id": "t-1",
                 "display_name": "Ticket created",
                 "type": "trigger:ticket:created",
                 "directories": [" root/team-a ", "", "root/team-a/subdir"],
-            }
+            },
         )
     )
 
@@ -68,7 +128,8 @@ def test_issue_comment_trigger_normalizes_ado_config() -> None:
     adapter = TypeAdapter(TriggerDefinitionDiscriminated)
 
     trigger = materialize_node_definition(
-        adapter.validate_python(
+        _validate_node(
+            adapter,
             {
                 "id": "t-comment",
                 "display_name": "Issue comment",
@@ -79,7 +140,7 @@ def test_issue_comment_trigger_normalizes_ado_config() -> None:
                     "project": " APP ",
                     "directories": [" root/team-a "],
                 },
-            }
+            },
         )
     )
 
@@ -93,7 +154,8 @@ def test_ado_work_item_comment_trigger_normalizes_config() -> None:
     adapter = TypeAdapter(TriggerDefinitionDiscriminated)
 
     trigger = materialize_node_definition(
-        adapter.validate_python(
+        _validate_node(
+            adapter,
             {
                 "id": "t-ado-comment",
                 "display_name": "ADO work item comment",
@@ -107,7 +169,7 @@ def test_ado_work_item_comment_trigger_normalizes_config() -> None:
                     "comment_contains_any": [" @SpecAssistant ", ""],
                     "comment_author_exclude_names": [" SpecAssistant "],
                 },
-            }
+            },
         )
     )
 
@@ -124,7 +186,8 @@ def test_remote_issue_matching_trigger_normalizes_github_config() -> None:
     adapter = TypeAdapter(TriggerDefinitionDiscriminated)
 
     trigger = materialize_node_definition(
-        adapter.validate_python(
+        _validate_node(
+            adapter,
             {
                 "id": "t-remote-issue",
                 "display_name": "Remote issue",
@@ -138,7 +201,7 @@ def test_remote_issue_matching_trigger_normalizes_github_config() -> None:
                     "labels_all": [" triage "],
                     "assignee": " octocat ",
                 },
-            }
+            },
         )
     )
 
@@ -157,7 +220,8 @@ def test_remote_issue_comment_trigger_rejects_github_wiql() -> None:
 
     with pytest.raises(ValueError, match="wiql is only valid for Azure DevOps"):
         materialize_node_definition(
-            adapter.validate_python(
+            _validate_node(
+                adapter,
                 {
                     "id": "t-remote-comment",
                     "display_name": "Remote issue comment",
@@ -167,7 +231,7 @@ def test_remote_issue_comment_trigger_rejects_github_wiql() -> None:
                         "repo": "owner/repo",
                         "wiql": "SELECT [System.Id] FROM WorkItems",
                     },
-                }
+                },
             )
         )
 
@@ -176,7 +240,8 @@ def test_ado_work_item_trigger_infers_manual_wiql_mode() -> None:
     adapter = TypeAdapter(TriggerDefinitionDiscriminated)
 
     trigger = materialize_node_definition(
-        adapter.validate_python(
+        _validate_node(
+            adapter,
             {
                 "id": "t-ado",
                 "display_name": "ADO match",
@@ -184,7 +249,7 @@ def test_ado_work_item_trigger_infers_manual_wiql_mode() -> None:
                 "config": {
                     "wiql": "SELECT [System.Id] FROM WorkItems",
                 },
-            }
+            },
         )
     )
 
@@ -197,7 +262,8 @@ def test_ado_work_item_trigger_rejects_structured_mode_wiql() -> None:
 
     with pytest.raises(ValueError, match="structured_filters cannot use wiql"):
         materialize_node_definition(
-            adapter.validate_python(
+            _validate_node(
+                adapter,
                 {
                     "id": "t-ado",
                     "display_name": "ADO match",
@@ -206,7 +272,7 @@ def test_ado_work_item_trigger_rejects_structured_mode_wiql() -> None:
                         "query_mode": "structured_filters",
                         "wiql": "SELECT [System.Id] FROM WorkItems",
                     },
-                }
+                },
             )
         )
 
@@ -216,7 +282,8 @@ def test_remote_issue_trigger_rejects_github_query_mode() -> None:
 
     with pytest.raises(ValueError, match="query_mode is only valid for Azure DevOps"):
         materialize_node_definition(
-            adapter.validate_python(
+            _validate_node(
+                adapter,
                 {
                     "id": "t-remote",
                     "display_name": "Remote issue match",
@@ -226,7 +293,7 @@ def test_remote_issue_trigger_rejects_github_query_mode() -> None:
                         "repo": "owner/repo",
                         "query_mode": "structured_filters",
                     },
-                }
+                },
             )
         )
 
@@ -235,7 +302,8 @@ def test_remote_issue_comment_trigger_normalizes_comment_filters() -> None:
     adapter = TypeAdapter(TriggerDefinitionDiscriminated)
 
     trigger = materialize_node_definition(
-        adapter.validate_python(
+        _validate_node(
+            adapter,
             {
                 "id": "t-remote-comment",
                 "display_name": "Remote issue comment",
@@ -247,7 +315,7 @@ def test_remote_issue_comment_trigger_normalizes_comment_filters() -> None:
                     "comment_contains_any": [" fix ", ""],
                     "comment_author_exclude_ids": [" bot-id "],
                 },
-            }
+            },
         )
     )
 
@@ -263,14 +331,15 @@ def test_webhook_trigger_defaults_event_type_from_slug() -> None:
     adapter = TypeAdapter(TriggerDefinitionDiscriminated)
 
     trigger = materialize_node_definition(
-        adapter.validate_python(
+        _validate_node(
+            adapter,
             {
                 "id": "webhook-1",
                 "display_name": "Webhook",
                 "type": "trigger:http:webhook",
                 "slug": "build-notify",
                 "secret_env": "WEBHOOK_SECRET",
-            }
+            },
         )
     )
 
@@ -334,7 +403,8 @@ def test_email_trigger_validates_provider_enum() -> None:
     adapter = TypeAdapter(TriggerDefinitionDiscriminated)
 
     with pytest.raises(ValueError, match="Unsupported email provider"):
-        adapter.validate_python(
+        _validate_node(
+            adapter,
             {
                 "id": "t-2",
                 "display_name": "Email",
@@ -343,7 +413,7 @@ def test_email_trigger_validates_provider_enum() -> None:
                 "account_identifier": "ops@example.com",
                 "mailbox_ids": ["primary"],
                 "auth_secret_refs": {"access_token": "EMAIL_ACCESS_TOKEN"},
-            }
+            },
         )
 
 
@@ -351,14 +421,15 @@ def test_teams_trigger_normalizes_filters() -> None:
     adapter = TypeAdapter(TriggerDefinitionDiscriminated)
 
     trigger = materialize_node_definition(
-        adapter.validate_python(
+        _validate_node(
+            adapter,
             {
                 "id": "t-teams",
                 "display_name": "Teams",
                 "type": "trigger:teams:new-message",
                 "targets": [{"target": " team-a/channel-1 "}, {"target": "team-b/channel-9/"}],
                 "user_ids": " user-a ",
-            }
+            },
         )
     )
 
@@ -370,7 +441,8 @@ def test_teams_trigger_accepts_per_target_message_filter() -> None:
     adapter = TypeAdapter(TriggerDefinitionDiscriminated)
 
     trigger = materialize_node_definition(
-        adapter.validate_python(
+        _validate_node(
+            adapter,
             {
                 "id": "t-teams",
                 "display_name": "Teams",
@@ -383,7 +455,7 @@ def test_teams_trigger_accepts_per_target_message_filter() -> None:
                         },
                     }
                 ],
-            }
+            },
         )
     )
 
@@ -441,7 +513,8 @@ def test_teams_direct_message_trigger_requires_sender_user_ids() -> None:
     adapter = TypeAdapter(TriggerDefinitionDiscriminated)
 
     trigger = materialize_node_definition(
-        adapter.validate_python(
+        _validate_node(
+            adapter,
             {
                 "id": "t-teams-dm",
                 "display_name": "Teams direct message",
@@ -449,7 +522,7 @@ def test_teams_direct_message_trigger_requires_sender_user_ids() -> None:
                 "targets": [{"target": "chat:dm-chat"}],
                 "sender_user_ids": [" 143e5b02-868f-4f0c-a262-cf509b6c09e5 "],
                 "message_filter": {"content": {"contains": "hello"}},
-            }
+            },
         )
     )
 
@@ -460,22 +533,24 @@ def test_teams_direct_message_trigger_requires_sender_user_ids() -> None:
     assert trigger.message_filter.content.contains == "hello"
 
     with pytest.raises(ValueError, match="sender_user_ids"):
-        adapter.validate_python(
+        _validate_node(
+            adapter,
             {
                 "id": "t-teams-dm-missing",
                 "display_name": "Teams direct message",
                 "type": "trigger:teams:direct-message",
-            }
+            },
         )
 
     with pytest.raises(ValueError, match="targets"):
-        adapter.validate_python(
+        _validate_node(
+            adapter,
             {
                 "id": "t-teams-dm-targets-missing",
                 "display_name": "Teams direct message",
                 "type": "trigger:teams:direct-message",
                 "sender_user_ids": ["user-a"],
-            }
+            },
         )
 
 
@@ -483,7 +558,8 @@ def test_teams_trigger_message_filter_requires_content_or_mentions() -> None:
     adapter = TypeAdapter(TriggerDefinitionDiscriminated)
 
     with pytest.raises(ValueError, match="content or mentions"):
-        adapter.validate_python(
+        _validate_node(
+            adapter,
             {
                 "id": "t-teams",
                 "display_name": "Teams",
@@ -494,7 +570,7 @@ def test_teams_trigger_message_filter_requires_content_or_mentions() -> None:
                         "message_filter": {},
                     }
                 ],
-            }
+            },
         )
 
 
@@ -502,12 +578,13 @@ def test_teams_trigger_requires_targets() -> None:
     adapter = TypeAdapter(TriggerDefinitionDiscriminated)
 
     with pytest.raises(ValueError, match="targets"):
-        adapter.validate_python(
+        _validate_node(
+            adapter,
             {
                 "id": "t-teams-missing",
                 "display_name": "Teams",
                 "type": "trigger:teams:new-message",
-            }
+            },
         )
 
 
@@ -530,7 +607,8 @@ def test_pr_triggers_accept_full_criteria_and_preserve_materialized_fields(
     trigger_type: str,
 ) -> None:
     trigger = materialize_node_definition(
-        TypeAdapter(TriggerDefinitionDiscriminated).validate_python(
+        _validate_node(
+            TypeAdapter(TriggerDefinitionDiscriminated),
             {
                 "id": "t-pr",
                 "display_name": "PR",
@@ -556,7 +634,7 @@ def test_pr_triggers_accept_full_criteria_and_preserve_materialized_fields(
                 "top": 25,
                 "skip": 5,
                 "cursor": "cursor-1",
-            }
+            },
         )
     )
 
@@ -603,13 +681,14 @@ def test_pr_triggers_accept_ado_without_repo(
     trigger_type: str,
 ) -> None:
     trigger = materialize_node_definition(
-        TypeAdapter(TriggerDefinitionDiscriminated).validate_python(
+        _validate_node(
+            TypeAdapter(TriggerDefinitionDiscriminated),
             {
                 "id": "t-pr-legacy",
                 "display_name": "PR legacy",
                 "type": trigger_type,
                 "provider": "ado",
-            }
+            },
         )
     )
 
@@ -676,7 +755,8 @@ def test_ci_run_completed_trigger_normalizes_aliases_and_defaults() -> None:
     adapter = TypeAdapter(TriggerDefinitionDiscriminated)
 
     trigger = materialize_node_definition(
-        adapter.validate_python(
+        _validate_node(
+            adapter,
             {
                 "id": "t-ci",
                 "display_name": "CI run completed",
@@ -686,7 +766,7 @@ def test_ci_run_completed_trigger_normalizes_aliases_and_defaults() -> None:
                 "workflow": " build.yml ",
                 "branches": [" main ", "", "release/v1"],
                 "conclusions": [" succeeded ", "partiallySucceeded", "canceled", "timedOut"],
-            }
+            },
         )
     )
 
@@ -841,12 +921,13 @@ def test_email_trigger_requires_mailboxes_only() -> None:
     assert trigger.folder == "inbox"
 
     with pytest.raises(ValueError, match="mailbox_ids"):
-        adapter.validate_python(
+        _validate_node(
+            adapter,
             {
                 "id": "t-2c",
                 "display_name": "Email",
                 "type": "trigger:email:new-message",
-            }
+            },
         )
 
 
@@ -879,12 +960,13 @@ def test_approval_pending_created_trigger_defaults_and_normalizes_filters() -> N
     adapter = TypeAdapter(TriggerDefinitionDiscriminated)
 
     default_trigger = materialize_node_definition(
-        adapter.validate_python(
+        _validate_node(
+            adapter,
             {
                 "id": "approval-1",
                 "display_name": "Pending approval",
                 "type": "trigger:approval:pending-created",
-            }
+            },
         )
     )
     assert isinstance(default_trigger, ApprovalPendingCreatedTriggerDefinition)
@@ -893,7 +975,8 @@ def test_approval_pending_created_trigger_defaults_and_normalizes_filters() -> N
     assert default_trigger.tool_names == []
 
     normalized_trigger = materialize_node_definition(
-        adapter.validate_python(
+        _validate_node(
+            adapter,
             {
                 "id": "approval-2",
                 "display_name": "Pending approval",
@@ -901,7 +984,7 @@ def test_approval_pending_created_trigger_defaults_and_normalizes_filters() -> N
                 "directory_path": " root/team-a ",
                 "action_types": [" grant ", "", "approve"],
                 "tool_names": " approval_submit ",
-            }
+            },
         )
     )
 
@@ -979,13 +1062,14 @@ def test_await_agent_gate_requires_session_id_or_vm_name() -> None:
     adapter = TypeAdapter(GateDefinitionDiscriminated)
 
     with pytest.raises(ValueError, match="gate:await-agent requires session_id or vm_name"):
-        adapter.validate_python(
+        _validate_node(
+            adapter,
             {
                 "id": "g-1",
                 "display_name": "Await agent",
                 "type": "gate:await-agent",
                 "outputs": {},
-            }
+            },
         )
 
 
@@ -993,14 +1077,15 @@ def test_await_agent_gate_accepts_single_selector() -> None:
     adapter = TypeAdapter(GateDefinitionDiscriminated)
 
     gate = materialize_node_definition(
-        adapter.validate_python(
+        _validate_node(
+            adapter,
             {
                 "id": "g-2",
                 "display_name": "Await agent",
                 "type": "gate:await-agent",
                 "session_id": "${{effect-1.session_id}}",
                 "outputs": {},
-            }
+            },
         )
     )
 
@@ -1012,7 +1097,8 @@ def test_aggregate_gate_derives_metric_outputs() -> None:
     adapter = TypeAdapter(GateDefinitionDiscriminated)
 
     gate = materialize_node_definition(
-        adapter.validate_python(
+        _validate_node(
+            adapter,
             {
                 "id": "g-aggregate",
                 "display_name": "Aggregate usage",
@@ -1022,7 +1108,7 @@ def test_aggregate_gate_derives_metric_outputs() -> None:
                     "total_tokens": {"operation": "sum", "path": "total_tokens"},
                     "average_tokens": {"operation": "avg", "path": "total_tokens"},
                 },
-            }
+            },
         )
     )
 
@@ -1037,7 +1123,8 @@ def test_buffer_gate_defaults_fixed_outputs_and_validates_required_fields() -> N
     adapter = TypeAdapter(GateDefinitionDiscriminated)
 
     gate = materialize_node_definition(
-        adapter.validate_python(
+        _validate_node(
+            adapter,
             {
                 "id": "g-buffer",
                 "display_name": "Buffer",
@@ -1045,7 +1132,7 @@ def test_buffer_gate_defaults_fixed_outputs_and_validates_required_fields() -> N
                 "key": "buffer:${{system.execution.trace_id}}",
                 "count": 10,
                 "timeout": "PT10M",
-            }
+            },
         )
     )
 
@@ -1055,7 +1142,8 @@ def test_buffer_gate_defaults_fixed_outputs_and_validates_required_fields() -> N
         "release_reason": {"type": "string"},
     }
     empty_timeout_gate = materialize_node_definition(
-        adapter.validate_python(
+        _validate_node(
+            adapter,
             {
                 "id": "g-buffer-count-only",
                 "display_name": "Buffer count only",
@@ -1063,27 +1151,29 @@ def test_buffer_gate_defaults_fixed_outputs_and_validates_required_fields() -> N
                 "key": "buffer:${{system.execution.trace_id}}",
                 "count": 10,
                 "timeout": "",
-            }
+            },
         )
     )
     assert empty_timeout_gate.timeout is None
 
     with pytest.raises(ValueError, match="gate:buffer count must be a positive integer"):
         materialize_node_definition(
-            adapter.validate_python(
+            _validate_node(
+                adapter,
                 {
                     "id": "g-buffer-bad-count",
                     "display_name": "Buffer",
                     "type": "gate:buffer",
                     "key": "buffer:1",
                     "count": 0,
-                }
+                },
             )
         )
 
     with pytest.raises(ValueError, match="gate:buffer timeout must be an ISO-8601 duration"):
         materialize_node_definition(
-            adapter.validate_python(
+            _validate_node(
+                adapter,
                 {
                     "id": "g-buffer-bad-timeout",
                     "display_name": "Buffer",
@@ -1091,7 +1181,7 @@ def test_buffer_gate_defaults_fixed_outputs_and_validates_required_fields() -> N
                     "key": "buffer:1",
                     "count": 2,
                     "timeout": "later",
-                }
+                },
             )
         )
 
@@ -1114,27 +1204,29 @@ def test_declared_outputs_reject_reserved_output_name() -> None:
     adapter = TypeAdapter(TriggerDefinitionDiscriminated)
 
     with pytest.raises(ValueError, match="reserved output name"):
-        adapter.validate_python(
+        _validate_node(
+            adapter,
             {
                 "id": "t-reserved",
                 "display_name": "Reserved output",
                 "type": "trigger:cron",
                 "expression": "* * * * *",
                 "outputs": {"__node_outputs": {"type": "object"}},
-            }
+            },
         )
 
 
 def test_effect_discriminated_union_accepts_output_reference_interpolation() -> None:
     adapter = TypeAdapter(EffectDefinitionDiscriminated)
-    effect = adapter.validate_python(
+    effect = _validate_node(
+        adapter,
         {
             "id": "effect-2",
             "display_name": "Prompt agent",
             "type": "effect:agent:prompt",
             "prompt": "Build summary for ${{trigger.ticket_id}}",
             "model": "${{trigger.model}}",
-        }
+        },
     )
 
     assert effect.type == "effect:agent:prompt"
@@ -1143,7 +1235,8 @@ def test_effect_discriminated_union_accepts_output_reference_interpolation() -> 
 
 def test_http_request_effect_accepts_bindings_and_static_headers() -> None:
     adapter = TypeAdapter(EffectDefinitionDiscriminated)
-    effect = adapter.validate_python(
+    effect = _validate_node(
+        adapter,
         {
             "id": "effect-http",
             "display_name": "HTTP request",
@@ -1154,7 +1247,7 @@ def test_http_request_effect_accepts_bindings_and_static_headers() -> None:
             "headers": {"Accept": "application/json"},
             "payload": {"ticket_id": "${{trigger.ticket_id}}"},
             "check": "${{trigger.check}}",
-        }
+        },
     )
 
     assert effect.type == "effect:http:request"
@@ -1184,14 +1277,15 @@ def test_http_request_effect_rejects_invalid_static_method() -> None:
     adapter = TypeAdapter(EffectDefinitionDiscriminated)
 
     with pytest.raises(ValueError, match="effect:http:request method must be GET, POST, or PUT"):
-        adapter.validate_python(
+        _validate_node(
+            adapter,
             {
                 "id": "effect-http",
                 "display_name": "HTTP request",
                 "type": "effect:http:request",
                 "method": "delete",
                 "url": "https://example.test/api",
-            }
+            },
         )
 
 
@@ -1201,13 +1295,14 @@ def test_http_request_effect_rejects_invalid_static_url() -> None:
     with pytest.raises(
         ValueError, match="effect:http:request url must be a non-empty http or https URL"
     ):
-        adapter.validate_python(
+        _validate_node(
+            adapter,
             {
                 "id": "effect-http",
                 "display_name": "HTTP request",
                 "type": "effect:http:request",
                 "url": "ftp://example.test/api",
-            }
+            },
         )
 
 
@@ -1218,14 +1313,15 @@ def test_http_request_effect_rejects_invalid_allowed_url_patterns() -> None:
         ValueError,
         match="effect:http:request allowed_url_patterns must be a string, string list, or binding",
     ):
-        adapter.validate_python(
+        _validate_node(
+            adapter,
             {
                 "id": "effect-http",
                 "display_name": "HTTP request",
                 "type": "effect:http:request",
                 "url": "https://example.test/api",
                 "allowed_url_patterns": [42],
-            }
+            },
         )
 
 
@@ -1243,14 +1339,15 @@ def test_agent_run_completed_trigger_accepts_default_vm_user() -> None:
 
 def test_vm_exec_effect_accepts_command_list() -> None:
     adapter = TypeAdapter(EffectDefinitionDiscriminated)
-    effect = adapter.validate_python(
+    effect = _validate_node(
+        adapter,
         {
             "id": "effect-exec",
             "display_name": "Exec",
             "type": "effect:vm:exec",
             "vm_name": "vm-1",
             "command": ["python3", "--version"],
-        }
+        },
     )
 
     assert effect.type == "effect:vm:exec"
@@ -1258,7 +1355,8 @@ def test_vm_exec_effect_accepts_command_list() -> None:
 
 def test_vm_create_effect_accepts_labels_mapping() -> None:
     adapter = TypeAdapter(EffectDefinitionDiscriminated)
-    effect = adapter.validate_python(
+    effect = _validate_node(
+        adapter,
         {
             "id": "effect-vm",
             "display_name": "Create VM",
@@ -1268,7 +1366,7 @@ def test_vm_create_effect_accepts_labels_mapping() -> None:
                 "workflow": "issue-worker",
                 "ticket_id": "${{trigger.ticket_id}}",
             },
-        }
+        },
     )
 
     assert effect.type == "effect:vm:create"
@@ -1277,14 +1375,15 @@ def test_vm_create_effect_accepts_labels_mapping() -> None:
 
 def test_vm_create_effect_accepts_allowed_tools_list() -> None:
     adapter = TypeAdapter(EffectDefinitionDiscriminated)
-    effect = adapter.validate_python(
+    effect = _validate_node(
+        adapter,
         {
             "id": "effect-vm-tools",
             "display_name": "Create VM",
             "type": "effect:vm:create",
             "vm_name": "vm-1",
             "allowed_tools": ["list_unread_feedback", "post_pr_feedback_reply"],
-        }
+        },
     )
 
     assert effect.type == "effect:vm:create"
@@ -1293,14 +1392,15 @@ def test_vm_create_effect_accepts_allowed_tools_list() -> None:
 
 def test_vm_create_effect_accepts_allowed_script_names_list() -> None:
     adapter = TypeAdapter(EffectDefinitionDiscriminated)
-    effect = adapter.validate_python(
+    effect = _validate_node(
+        adapter,
         {
             "id": "effect-vm-tools",
             "display_name": "Create VM",
             "type": "effect:vm:create",
             "vm_name": "vm-1",
             "allowed_script_names": ["deploy-review", "collect-logs"],
-        }
+        },
     )
 
     assert effect.type == "effect:vm:create"
@@ -1309,14 +1409,15 @@ def test_vm_create_effect_accepts_allowed_script_names_list() -> None:
 
 def test_vm_create_effect_accepts_allowed_contact_ids_list() -> None:
     adapter = TypeAdapter(EffectDefinitionDiscriminated)
-    effect = adapter.validate_python(
+    effect = _validate_node(
+        adapter,
         {
             "id": "effect-vm-contacts",
             "display_name": "Create VM",
             "type": "effect:vm:create",
             "vm_name": "vm-1",
             "allowed_contact_ids": ["ops", "support"],
-        }
+        },
     )
 
     assert effect.type == "effect:vm:create"
@@ -1325,14 +1426,15 @@ def test_vm_create_effect_accepts_allowed_contact_ids_list() -> None:
 
 def test_vm_create_effect_accepts_codex_skills_list() -> None:
     adapter = TypeAdapter(EffectDefinitionDiscriminated)
-    effect = adapter.validate_python(
+    effect = _validate_node(
+        adapter,
         {
             "id": "effect-vm-skills",
             "display_name": "Create VM",
             "type": "effect:vm:create",
             "vm_name": "vm-1",
             "codex_skills": ["playwright", "playwright-interactive"],
-        }
+        },
     )
 
     assert effect.type == "effect:vm:create"
@@ -1341,14 +1443,15 @@ def test_vm_create_effect_accepts_codex_skills_list() -> None:
 
 def test_agent_create_effect_accepts_allowed_contact_ids_list() -> None:
     adapter = TypeAdapter(EffectDefinitionDiscriminated)
-    effect = adapter.validate_python(
+    effect = _validate_node(
+        adapter,
         {
             "id": "effect-agent-contacts",
             "display_name": "Create agent",
             "type": "effect:agent:create",
             "vm_name": "vm-1",
             "allowed_contact_ids": ["ops", "support"],
-        }
+        },
     )
 
     assert effect.type == "effect:agent:create"
@@ -1357,13 +1460,14 @@ def test_agent_create_effect_accepts_allowed_contact_ids_list() -> None:
 
 def test_vm_start_effect_accepts_session_target() -> None:
     adapter = TypeAdapter(EffectDefinitionDiscriminated)
-    effect = adapter.validate_python(
+    effect = _validate_node(
+        adapter,
         {
             "id": "effect-start",
             "display_name": "Start VM",
             "type": "effect:vm:start",
             "session_id": "session-1",
-        }
+        },
     )
 
     assert effect.type == "effect:vm:start"
@@ -1371,14 +1475,15 @@ def test_vm_start_effect_accepts_session_target() -> None:
 
 def test_vm_stop_effect_accepts_timeout_override() -> None:
     adapter = TypeAdapter(EffectDefinitionDiscriminated)
-    effect = adapter.validate_python(
+    effect = _validate_node(
+        adapter,
         {
             "id": "effect-stop",
             "display_name": "Stop VM",
             "type": "effect:vm:stop",
             "vm_name": "vm-1",
             "timeout_seconds": 120,
-        }
+        },
     )
 
     assert effect.type == "effect:vm:stop"
@@ -1387,14 +1492,15 @@ def test_vm_stop_effect_accepts_timeout_override() -> None:
 def test_vm_copy_files_effect_requires_exactly_one_source_kind() -> None:
     adapter = TypeAdapter(EffectDefinitionDiscriminated)
     with pytest.raises(ValueError, match="either source_path or content is required"):
-        adapter.validate_python(
+        _validate_node(
+            adapter,
             {
                 "id": "effect-copy",
                 "display_name": "Copy",
                 "type": "effect:vm:copy-files",
                 "vm_name": "vm-1",
                 "files": [{"destination_path": "/tmp/example.txt"}],
-            }
+            },
         )
 
 
@@ -1827,7 +1933,8 @@ def test_agent_enqueue_prompt_accepts_resume_thread_metadata_key() -> None:
 def test_vm_copy_files_effect_rejects_mixed_source_kinds() -> None:
     adapter = TypeAdapter(EffectDefinitionDiscriminated)
     with pytest.raises(ValueError, match="mutually exclusive"):
-        adapter.validate_python(
+        _validate_node(
+            adapter,
             {
                 "id": "effect-copy",
                 "display_name": "Copy",
@@ -1840,7 +1947,7 @@ def test_vm_copy_files_effect_rejects_mixed_source_kinds() -> None:
                         "content": "hello",
                     }
                 ],
-            }
+            },
         )
 
 

@@ -110,7 +110,6 @@ from evander.workflow.events import (
     WorkflowEventJournal,
     workflow_event_journal_path,
 )
-from evander.workflow.migrations import migrate_agent_prompt_lifecycle_ports
 from evander.workflow.packs import WorkflowPack, compose_workflow_ir, load_workflow_pack
 from evander.workflow.runtime_config import (
     _append_builtin_hidden_workflows,
@@ -3141,8 +3140,6 @@ class WorkflowConfigAdminService:
         candidate = json.loads(json.dumps(payload))
         if not isinstance(candidate, dict):
             return payload
-        candidate = migrate_agent_prompt_lifecycle_ports(candidate)
-
         triggers = candidate.get("triggers")
         gates = candidate.get("gates")
         effects = candidate.get("effects")
@@ -3183,6 +3180,9 @@ class WorkflowConfigAdminService:
             gate_id = str(gate.get("id") or "").strip()
             if gate_type == "gate:await-agent":
                 gate.pop("completion_trigger_id", None)
+                gate_config = gate.get("config")
+                if isinstance(gate_config, dict):
+                    gate_config.pop("completion_trigger_id", None)
             if gate_type in {
                 "gate:filter",
                 "gate:debounce",

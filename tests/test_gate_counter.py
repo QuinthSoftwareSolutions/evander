@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from config_helpers import canonical_worker_config
+
 import json
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
@@ -15,7 +17,7 @@ from evander.triggers.queue import TriggerQueueRecord
 
 
 def _worker_config(runtime_dir: Path) -> TriggerOrchestratorWorkerGlobalConfig:
-    return TriggerOrchestratorWorkerGlobalConfig.model_validate(
+    return canonical_worker_config(
         {
             "runtime_dir": runtime_dir,
             "poll_interval_seconds": 1,

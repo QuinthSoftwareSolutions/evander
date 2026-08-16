@@ -58,6 +58,7 @@ from evander.worker.models import (
     WorkerMssqlDatabaseRecord,
     WorkerMssqlDatabaseState,
 )
+from config_helpers import canonical_workflow_payload, canonicalize_workflow_files
 
 
 def _call_tool(server, name: str, arguments: dict[str, object]):
@@ -242,28 +243,30 @@ def _build_runtime_with_workflow_config(
     config_dir.mkdir(parents=True, exist_ok=True)
     (config_dir / "config.json").write_text(
         json.dumps(
-            {
-                "runtime_dir": str(runtime_dir),
-                "triggers": [
-                    {
-                        "id": "cron-15m",
-                        "display_name": "Every 15 minutes",
-                        "type": "trigger:cron",
-                        "expression": "*/15 * * * *",
-                    }
-                ],
-                "gates": [],
-                "effects": [
-                    {
-                        "id": "prompt-agent",
-                        "display_name": "Prompt agent",
-                        "type": "effect:agent:prompt",
-                        "prompt": "Summarize the latest workflow state.",
-                    }
-                ],
-                "queries": [],
-                "edges": [{"source_id": "cron-15m", "target_id": "prompt-agent"}],
-            }
+            canonical_workflow_payload(
+                {
+                    "runtime_dir": str(runtime_dir),
+                    "triggers": [
+                        {
+                            "id": "cron-15m",
+                            "display_name": "Every 15 minutes",
+                            "type": "trigger:cron",
+                            "expression": "*/15 * * * *",
+                        }
+                    ],
+                    "gates": [],
+                    "effects": [
+                        {
+                            "id": "prompt-agent",
+                            "display_name": "Prompt agent",
+                            "type": "effect:agent:prompt",
+                            "prompt": "Summarize the latest workflow state.",
+                        }
+                    ],
+                    "queries": [],
+                    "edges": [{"source_id": "cron-15m", "target_id": "prompt-agent"}],
+                }
+            )
         ),
         encoding="utf-8",
     )
@@ -1672,6 +1675,7 @@ def test_assistant_create_workflow_saves_selected_pack_in_multi_pack_config(
     }
     config_path = tmp_path / "config" / "trigger-orchestrator" / "config.json"
     config_path.write_text(json.dumps(wrapper_payload), encoding="utf-8")
+    canonicalize_workflow_files(tmp_path)
     document = build_admin_runtime(
         context.config.runtime_dir
     ).workflow_config_admin.read_workflow_editor_document(workflow_pack="pack-b.v1.json")
@@ -1700,7 +1704,9 @@ def test_assistant_create_workflow_saves_selected_pack_in_multi_pack_config(
     assert "workflow_pack" in create_workflow_tool.parameters["properties"]
     assert result["status"] == "success"
     assert json.loads(config_path.read_text(encoding="utf-8")) == wrapper_payload
-    assert json.loads(pack_a_path.read_text(encoding="utf-8")) == pack_a_payload
+    assert json.loads(pack_a_path.read_text(encoding="utf-8")) == canonical_workflow_payload(
+        pack_a_payload
+    )
     pack_b_payload = json.loads(pack_b_path.read_text(encoding="utf-8"))
     assert pack_b_payload["ir"]["nodes"][0]["display_name"] == "Emit updated event"
     audit_events = [

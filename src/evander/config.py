@@ -8,7 +8,6 @@ from typing import Any, Literal
 from urllib.parse import urlsplit
 import unicodedata
 
-import yaml
 from pydantic import (
     AliasChoices,
     AnyHttpUrl,
@@ -1542,9 +1541,3 @@ class TriggerOrchestratorWorkerGlobalConfig(OrchestrationCoreConfig):
     @property
     def provider_entry_points_enabled(self) -> bool:
         return self.provider_loader.provider_entry_points_enabled
-
-
-def load_config(path: str | Path) -> GatewayConfig:
-    config_path = Path(path)
-    data = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
-    return GatewayConfig.model_validate(data)

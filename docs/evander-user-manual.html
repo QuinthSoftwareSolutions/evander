@@ -3852,10 +3852,9 @@ default runtime is <code>/var/lib/evander</code>; commands and
 repository services commonly pass <code>runtime</code> explicitly.
 Relative runtime paths are resolved, and default store paths follow the
 selected runtime root.</p>
-<p>Legacy gateway YAML is accepted as explicit migration or bootstrap
-input. It is not the current live baseline. Once host and root directory
-configuration exist, diagnose those current surfaces rather than
-repeatedly editing an old YAML file.</p>
+<p>Startup reads only the host bootstrap and root directory
+configuration. Diagnose those canonical surfaces directly; gateway YAML
+is no longer accepted as bootstrap or migration input.</p>
 <p>At startup, <code>load_runtime_gateway_config</code> combines the
 host bootstrap with root directory domains into a validated
 <code>GatewayConfig</code>. Broader assembly then adds the repositories
@@ -3868,8 +3867,7 @@ supported assembly surface for the CLI, gateway integrations, Admin Web,
 workflow providers, and add-ons that need administration services.
 It:</p>
 <ol type="1">
-<li>resolves an explicit legacy path only when supplied or when the
-input is clearly YAML;</li>
+<li>resolves the runtime directory;</li>
 <li>loads or creates host bootstrap configuration;</li>
 <li>opens the directory store and ensures <code>root</code> exists;</li>
 <li>opens the directory-config store and ensures root domains
@@ -16234,57 +16232,52 @@ authority.</p>
 </thead>
 <tbody>
 <tr class="odd">
-<td>Legacy gateway YAML</td>
-<td>import/migration input only</td>
-<td><code>runtime/host-config.json</code> plus directory config</td>
-</tr>
-<tr class="even">
 <td>Older guest session/config paths</td>
 <td>read/repair fallback in selected bootstrap paths</td>
 <td><code>/etc/evander/session.env</code>,
 <code>/home/agent/.agent/config.env</code>, and current
 <code>/home/agent/.evander</code> run-state paths</td>
 </tr>
-<tr class="odd">
+<tr class="even">
 <td><code>runtime/pr-map.json</code></td>
 <td>live compatibility store for session-bound and legacy PR streams;
 repository-scoped streams can bypass it</td>
 <td>explicit PR workflow streams and managed repository identity</td>
 </tr>
-<tr class="even">
+<tr class="odd">
 <td>JSON wake/inbox/worker/Team stores</td>
 <td>one-time import where the owning repository supports it</td>
 <td>the current SQLite store</td>
 </tr>
-<tr class="odd">
+<tr class="even">
 <td>ADO-specific workflow node types</td>
 <td>supported compatibility surfaces, and still appropriate for ADO-only
 semantics</td>
 <td>provider-neutral remote issue/PR nodes where semantics match</td>
 </tr>
-<tr class="even">
+<tr class="odd">
 <td>Historical Team action artifacts and unpinned terminal releases</td>
 <td>retained evidence; incomplete unpinned releases do not satisfy
 current gates</td>
 <td>Team MCP commands and exact pinned release evidence</td>
 </tr>
-<tr class="odd">
+<tr class="even">
 <td><code>AdminService</code> references</td>
 <td>historical design or short-lived compatibility guidance</td>
 <td>focused services assembled by <code>build_admin_runtime</code></td>
 </tr>
-<tr class="even">
+<tr class="odd">
 <td>Legacy managed-Git path fields</td>
 <td>unsupported historical residue, not live routing authority</td>
 <td><code>managed_repo_id</code>, owned ref, and exact SHA</td>
 </tr>
-<tr class="odd">
+<tr class="even">
 <td>Old service/firewall/network names</td>
 <td>installer/setup cleanup only</td>
 <td><code>evander-*</code> services and current network/config
 names</td>
 </tr>
-<tr class="even">
+<tr class="odd">
 <td>Checked-in workflow pack examples</td>
 <td>examples or built-ins, not assumed live authority</td>
 <td>revision-checked live packs through Admin Web/API</td>
@@ -18431,8 +18424,7 @@ manual or prepared test target. Only a real eligible Admin user with
 scoped permission and privileged confirmation can decide it.</p>
 <p><strong>Host config</strong><br> The host-global bootstrap settings
 in <code>runtime/host-config.json</code>. It is composed with
-directory-scoped domains; legacy gateway YAML is import input, not the
-current baseline.</p>
+directory-scoped domains to form the runtime configuration.</p>
 <p><strong>HTTP target relay</strong><br> A session-scoped relay for
 explicit external HTTP targets. It forwards guest-managed
 headers/cookies subject to the grant but does not inject host

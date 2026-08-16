@@ -11,9 +11,18 @@ from pathlib import Path
 
 from evander.git_pr_notes import agent_pr_notes_ref_for_session
 from evander.triggers.queue import SqliteTriggerEventQueue
+from config_helpers import canonical_workflow_payload
 
 
 _MANAGED_REPO_ID = "mr_0123456789abcdefabcd"
+
+
+def _canonical_config_path(path: Path) -> str:
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    normalized = canonical_workflow_payload(payload)
+    if normalized != payload:
+        path.write_text(json.dumps(normalized), encoding="utf-8")
+    return str(path)
 
 
 def _configure_managed_repo(
@@ -86,7 +95,7 @@ def test_handle_git_push_trigger_enqueues_matching_branch_updates(tmp_path: Path
             capture_output=True,
             env={
                 **os.environ,
-                "EVANDER_TRIGGER_ORCHESTRATOR_CONFIG": str(config_path),
+                "EVANDER_TRIGGER_ORCHESTRATOR_CONFIG": _canonical_config_path(config_path),
             },
             cwd=root,
             check=False,
@@ -108,6 +117,43 @@ def test_handle_git_push_trigger_enqueues_matching_branch_updates(tmp_path: Path
     assert record["payload"]["managed_repo_id"] == _MANAGED_REPO_ID
     assert record["payload"]["default_branch"] == "main"
     assert not any("path" in key for key in record["payload"])
+
+
+def test_handle_git_push_trigger_rejects_flat_persisted_node_config(tmp_path: Path) -> None:
+    root = Path(__file__).resolve().parents[1]
+    script = root / "scripts" / "handle_git_push_trigger.sh"
+    repo_path = (tmp_path / "runtime" / "managed-git" / _MANAGED_REPO_ID).with_suffix(".git")
+    _configure_managed_repo(repo_path)
+    config_path = tmp_path / "trigger-config.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "runtime_dir": str(tmp_path / "runtime"),
+                "triggers": [
+                    {
+                        "id": "git-main",
+                        "display_name": "Git main",
+                        "type": "trigger:git:push",
+                        "managed_repo_id": _MANAGED_REPO_ID,
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = subprocess.run(
+        [str(script), str(repo_path)],
+        input=f"{'0' * 40} {'1' * 40} refs/heads/main\n",
+        text=True,
+        capture_output=True,
+        env={**os.environ, "EVANDER_TRIGGER_ORCHESTRATOR_CONFIG": str(config_path)},
+        cwd=root,
+        check=False,
+    )
+
+    assert result.returncode != 0
+    assert "must place provider fields under config: managed_repo_id" in result.stderr
 
 
 def test_handle_git_push_trigger_enqueues_to_sqlite_backend(tmp_path: Path) -> None:
@@ -146,7 +192,7 @@ def test_handle_git_push_trigger_enqueues_to_sqlite_backend(tmp_path: Path) -> N
         capture_output=True,
         env={
             **os.environ,
-            "EVANDER_TRIGGER_ORCHESTRATOR_CONFIG": str(config_path),
+            "EVANDER_TRIGGER_ORCHESTRATOR_CONFIG": _canonical_config_path(config_path),
         },
         cwd=root,
         check=False,
@@ -205,7 +251,7 @@ def test_handle_git_push_trigger_ignores_non_matching_repo(tmp_path: Path) -> No
         capture_output=True,
         env={
             **os.environ,
-            "EVANDER_TRIGGER_ORCHESTRATOR_CONFIG": str(config_path),
+            "EVANDER_TRIGGER_ORCHESTRATOR_CONFIG": _canonical_config_path(config_path),
         },
         cwd=root,
         check=False,
@@ -258,7 +304,7 @@ def test_handle_git_push_trigger_enforces_explicit_directory_trust_scope(
         capture_output=True,
         env={
             **os.environ,
-            "EVANDER_TRIGGER_ORCHESTRATOR_CONFIG": str(config_path),
+            "EVANDER_TRIGGER_ORCHESTRATOR_CONFIG": _canonical_config_path(config_path),
         },
         cwd=root,
         check=False,
@@ -327,7 +373,7 @@ def test_handle_git_push_trigger_enforces_effective_graph_directory_trust_scope(
         capture_output=True,
         env={
             **os.environ,
-            "EVANDER_TRIGGER_ORCHESTRATOR_CONFIG": str(config_path),
+            "EVANDER_TRIGGER_ORCHESTRATOR_CONFIG": _canonical_config_path(config_path),
         },
         cwd=root,
         check=False,
@@ -374,7 +420,7 @@ def test_handle_git_push_trigger_emits_repo_metadata_and_session_id(tmp_path: Pa
         capture_output=True,
         env={
             **os.environ,
-            "EVANDER_TRIGGER_ORCHESTRATOR_CONFIG": str(config_path),
+            "EVANDER_TRIGGER_ORCHESTRATOR_CONFIG": _canonical_config_path(config_path),
         },
         cwd=root,
         check=False,
@@ -477,7 +523,7 @@ def test_handle_git_push_trigger_enqueues_notes_only_update_for_matching_agent_b
         capture_output=True,
         env={
             **os.environ,
-            "EVANDER_TRIGGER_ORCHESTRATOR_CONFIG": str(config_path),
+            "EVANDER_TRIGGER_ORCHESTRATOR_CONFIG": _canonical_config_path(config_path),
         },
         cwd=root,
         check=False,
@@ -576,7 +622,7 @@ def test_handle_git_push_trigger_enqueues_per_session_notes_only_update(
         capture_output=True,
         env={
             **os.environ,
-            "EVANDER_TRIGGER_ORCHESTRATOR_CONFIG": str(config_path),
+            "EVANDER_TRIGGER_ORCHESTRATOR_CONFIG": _canonical_config_path(config_path),
         },
         cwd=root,
         check=False,
@@ -623,7 +669,7 @@ def test_handle_git_push_trigger_is_idempotent_for_repeated_updates(tmp_path: Pa
         capture_output=True,
         env={
             **os.environ,
-            "EVANDER_TRIGGER_ORCHESTRATOR_CONFIG": str(config_path),
+            "EVANDER_TRIGGER_ORCHESTRATOR_CONFIG": _canonical_config_path(config_path),
         },
         cwd=root,
         check=False,
@@ -635,7 +681,7 @@ def test_handle_git_push_trigger_is_idempotent_for_repeated_updates(tmp_path: Pa
         capture_output=True,
         env={
             **os.environ,
-            "EVANDER_TRIGGER_ORCHESTRATOR_CONFIG": str(config_path),
+            "EVANDER_TRIGGER_ORCHESTRATOR_CONFIG": _canonical_config_path(config_path),
         },
         cwd=root,
         check=False,
@@ -686,7 +732,7 @@ def test_handle_git_push_trigger_resolves_relative_queue_paths_from_config_dir(
         capture_output=True,
         env={
             **os.environ,
-            "EVANDER_TRIGGER_ORCHESTRATOR_CONFIG": str(config_path),
+            "EVANDER_TRIGGER_ORCHESTRATOR_CONFIG": _canonical_config_path(config_path),
         },
         cwd=bare_repo_cwd,
         check=False,
@@ -743,7 +789,7 @@ def test_handle_git_push_trigger_resolves_relative_queue_paths_from_project_root
             capture_output=True,
             env={
                 **os.environ,
-                "EVANDER_TRIGGER_ORCHESTRATOR_CONFIG": str(config_path),
+                "EVANDER_TRIGGER_ORCHESTRATOR_CONFIG": _canonical_config_path(config_path),
             },
             cwd=root,
             check=False,
@@ -798,8 +844,8 @@ def test_handle_git_push_trigger_resolves_git_push_triggers_from_workflow_packs(
                             "id": "git-pack-trigger-disabled",
                             "display_name": "Disabled Git push",
                             "type": "trigger:git:push",
-                            "enabled": False,
                             "config": {
+                                "enabled": False,
                                 "managed_repo_id": _MANAGED_REPO_ID,
                             },
                         },
@@ -838,7 +884,7 @@ def test_handle_git_push_trigger_resolves_git_push_triggers_from_workflow_packs(
             capture_output=True,
             env={
                 **os.environ,
-                "EVANDER_TRIGGER_ORCHESTRATOR_CONFIG": str(config_path),
+                "EVANDER_TRIGGER_ORCHESTRATOR_CONFIG": _canonical_config_path(config_path),
             },
             cwd=root,
             check=False,
@@ -896,7 +942,7 @@ def test_handle_git_push_trigger_serializes_concurrent_queue_updates(tmp_path: P
         text=True,
         env={
             **os.environ,
-            "EVANDER_TRIGGER_ORCHESTRATOR_CONFIG": str(config_path),
+            "EVANDER_TRIGGER_ORCHESTRATOR_CONFIG": _canonical_config_path(config_path),
             "EVANDER_TRIGGER_QUEUE_LOCK_HOLD_SECONDS": "0.2",
         },
         cwd=root,
@@ -914,7 +960,7 @@ def test_handle_git_push_trigger_serializes_concurrent_queue_updates(tmp_path: P
         capture_output=True,
         env={
             **os.environ,
-            "EVANDER_TRIGGER_ORCHESTRATOR_CONFIG": str(config_path),
+            "EVANDER_TRIGGER_ORCHESTRATOR_CONFIG": _canonical_config_path(config_path),
         },
         cwd=root,
         check=False,

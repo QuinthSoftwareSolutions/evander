@@ -6,7 +6,7 @@ from typing import Literal
 
 from pydantic import AliasChoices, BaseModel, Field
 
-from evander.config import GatewayConfig, load_config
+from evander.config import GatewayConfig
 from evander.contact_allowlists import resolve_effective_contact_directory
 from evander.connectors.models import ConnectorDirectoryConfig
 from evander.directory_config import (
@@ -186,10 +186,6 @@ class ProviderConfigResolver:
             base_gateway_config=config,
             config_store=self.config_store,
         )
-
-    @classmethod
-    def from_config_path(cls, path: str | Path) -> "ProviderConfigResolver":
-        return cls(load_config(path))
 
     def resolve_for_directory(self, directory_path: str | None) -> GatewayConfig:
         normalized_path = self.directory_scope_resolver.resolve_directory_path(directory_path)

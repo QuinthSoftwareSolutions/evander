@@ -15,26 +15,11 @@ from evander.admin.web.app import create_app
 from evander.audit import AuditLogger
 from evander.models import AuditEvent
 from evander.repositories.audit_index import ToolCallAuditIndex, audit_index_path_for_log_path
+from config_helpers import write_runtime_config
 
 
 def write_config(tmp_path: Path) -> Path:
-    runtime_dir = tmp_path / "runtime"
-    config_path = tmp_path / "gateway.yaml"
-    config_path.write_text(
-        "\n".join(
-            [
-                f'runtime_dir: "{runtime_dir}"',
-                f'audit_log_path: "{runtime_dir / "audit.jsonl"}"',
-                f'session_store_path: "{runtime_dir / "sessions.json"}"',
-                f'approval_store_path: "{runtime_dir / "approvals.json"}"',
-                f'draft_store_path: "{runtime_dir / "drafts.json"}"',
-                f'email_store_path: "{runtime_dir / "emails.json"}"',
-                f'discord_command_store_path: "{runtime_dir / "discord_commands.json"}"',
-            ]
-        ),
-        encoding="utf-8",
-    )
-    return config_path
+    return write_runtime_config(tmp_path)
 
 
 def _write_audit_log(path: Path) -> None:

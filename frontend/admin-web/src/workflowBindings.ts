@@ -1,4 +1,4 @@
-import type { WorkflowConfig } from "./types";
+import type { WorkflowConfig, WorkflowNodeConfig } from "./types";
 
 const BINDING_REFERENCE_RE = /^[A-Za-z0-9][A-Za-z0-9_-]*\.[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*$/;
 
@@ -45,16 +45,14 @@ export function isParsedBindingExpression(value: unknown): value is ParsedBindin
   return isRecord(value) && isParsedBindingReference(value.primary) && typeof value.hasFallback === "boolean";
 }
 
-export function rewriteWorkflowNodeConfigBindings<T extends Record<string, unknown>>(
-  node: T,
+export function rewriteWorkflowNodeConfigBindings(
+  node: WorkflowNodeConfig,
   nodeIdMap: ReadonlyMap<string, string>,
-): T {
-  const rewritten: Record<string, unknown> = { ...node };
-  for (const key of Object.keys(rewritten)) {
-    if (key === "id" || key === "display_name" || key === "type") continue;
-    rewritten[key] = rewriteWorkflowBindingReferences(rewritten[key], nodeIdMap);
-  }
-  return rewritten as T;
+): WorkflowNodeConfig {
+  return {
+    ...node,
+    config: rewriteWorkflowBindingReferences(node.config, nodeIdMap) as Record<string, unknown>,
+  };
 }
 
 export function rewriteWorkflowConfigBindingReferences(

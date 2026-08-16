@@ -1,15 +1,15 @@
 {
   "edition": "1.0",
-  "generated_at": "2026-08-15T05:55:54.018599+00:00",
+  "generated_at": "2026-08-16T10:28:03.335396+00:00",
   "outputs": {
-    "docs/evander-user-manual.docx": "09bbdbfb6bd4211656f61d064b93477134bb81ce98e6d926aed30f70c2cb0e69",
-    "docs/evander-user-manual.html": "8bafc5322cb49dfa45af1f7b0d749dc34a4f3d4ed31fa749359343ed8b50751d",
-    "docs/evander-user-manual.md": "984569569e584bd4ba508d939536da41edf4072f83ef644b285627cc5a209bba",
-    "docs/evander-user-manual.pdf": "0d6522e2e221557deef93462d75c8ee824f8265de21394a216b31800c6d7e229"
+    "docs/evander-user-manual.docx": "26790eb0fcbd1934351207aec3619993db30010b66513907e72de65501cf5f76",
+    "docs/evander-user-manual.html": "fc7c3d752912b10d266b63b96398fb28eb6249cb4a786842203d404e1cebc283",
+    "docs/evander-user-manual.md": "729840334db8c6c3e807800f3167ef0cc01faf0d77cc7de3d85342cad42bfc28",
+    "docs/evander-user-manual.pdf": "f1baaeb5faf3002d43d406e54e41b3e3e21924a388bcfaf32de62a0ed7663659"
   },
   "project_version": "0.3.1",
   "schema_version": 1,
-  "source_fingerprint": "a87e2cb36a1d5d91445bcfa05841d226cf67048d590cd8ad5d93ca08ff503e87",
+  "source_fingerprint": "10fafd0abedc99a0c6d9037963d5d0ca11a057fe53bf4768876ffff2e6123228",
   "sources": {
     "docs/assets/evander-user-manual/diagrams/01-system-context.png": "88b5f56516d2fb85a84d3489717a4d48e14aa4192a1b5e51af64e4abb4a75ed9",
     "docs/assets/evander-user-manual/diagrams/01-system-context.svg": "18d491c26e0ce3a23714ed59cbbd78c14a912c2c209dfd906eebcece38c470de",
@@ -64,7 +64,7 @@
     "docs/evander-user-manual/chapters/02-end-to-end-story.md": "0c7c3a0f67b635ec54a9860248fd3ed5d56ce2b5b1daa54d907439169c842f00",
     "docs/evander-user-manual/chapters/03-trust-model.md": "3b333483b82b3ef955a38d27d9dab15ed24ecf187d630a2d6b5aaf5d2adc113c",
     "docs/evander-user-manual/chapters/04-system-topology.md": "8f0454d968ba08a516b29e564209db93a0503c8aeeb12b777045f43abaa46c3e",
-    "docs/evander-user-manual/chapters/05-runtime-configuration.md": "564e02fef3995021937c7f5da5ce1c45fe1adb6623b9711991bc138bc4902a77",
+    "docs/evander-user-manual/chapters/05-runtime-configuration.md": "dab729cfd09d50c9b309dbc963b8c34a7d5b6d541a7f4c0719d6fa2972dc7c7c",
     "docs/evander-user-manual/chapters/06-identity-sessions-policy.md": "cdf683c7cfadd854855a64c4fef2958b159536b754aeacac61d61e9efa6b3319",
     "docs/evander-user-manual/chapters/07-mcp-approvals-audit.md": "60e04615aba47bd3c4daaae749246ac7c7d728c2f04421b5b888a2e7d8ae0767",
     "docs/evander-user-manual/chapters/08-workflow-runtime.md": "a0af7c54a6cb7a4553e6ae5fc709ed4d5499b476ffdd3d7bacb7b25900756e99",
@@ -86,10 +86,10 @@
     "docs/evander-user-manual/chapters/24-team-git-releases.md": "9128da41e119243d6fdd9e9f5de822d4a8d6b9c9a4df4fbe74305fe3372eb88a",
     "docs/evander-user-manual/chapters/25-team-governance-memory-cost-internals.md": "b0d38d525c436728cb0a224926706e3ef589bd54e4c3428d50d681c9c4c8381f",
     "docs/evander-user-manual/chapters/26-engineering-extension.md": "c39a9d57c8e7bd7ecbf8d2c560fa036c0c0f7fc4e6bb0f32f71a9b5906f1b653",
-    "docs/evander-user-manual/chapters/27-design-history.md": "9c876d1aa00b4f7972316367d310b3d2f008b4cbbf9b21c070ef4480295da1c3",
+    "docs/evander-user-manual/chapters/27-design-history.md": "e5e7c283a4d39bdd9fa99727797c24f236b1fbc02106caacaeed536a026f157c",
     "docs/evander-user-manual/chapters/28-system-reference.md": "98949dde60c7110a7abd5599e490528ed3f2532018dba312b77f3de697063424",
     "docs/evander-user-manual/chapters/29-troubleshooting-decision-tables.md": "0218446b9f5b69c8557b0907037845f59240dbfb3fb7367af118b185580af958",
-    "docs/evander-user-manual/chapters/30-glossary.md": "1ccd57e475bd4fce42dd0c07911416a2cdd41c73b033dc04773106bddd6d3649",
+    "docs/evander-user-manual/chapters/30-glossary.md": "3f6e020c1cf6927b8979d4314c43dda2170037c9f9d16667c0c86f0e73d72b4c",
     "docs/evander-user-manual/diagrams/01-system-context.mmd": "3ce362341cd03218f3b1c24279c93639defcfe622ed6bb8dc736db460939b649",
     "docs/evander-user-manual/diagrams/02-trust-zones.mmd": "0b2a054d83e6833d0249c206f1db6cde4ec3d1a46a4d78ddcc4927af161d22ce",
     "docs/evander-user-manual/diagrams/03-runtime-composition.mmd": "06852daaf3699edfe1fc139b7bfb813645bf042366e89f2b7a1f9ade3502d4da",

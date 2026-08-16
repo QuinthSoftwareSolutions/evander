@@ -5,21 +5,61 @@ import tomllib
 from pathlib import Path
 
 import pytest
+from pydantic import ValidationError
 
 from evander.config import OrchestrationCoreConfig
+from evander.workflow.contracts import WorkflowNodeEnvelope
 from evander.workflow import packs as workflow_packs
 from evander.workflow.packs import (
     BUILTIN_HIDDEN_WORKFLOW_PACKS,
     WorkflowPack,
-    compose_workflow_ir,
+    compose_workflow_ir as _compose_workflow_ir,
     load_workflow_pack,
 )
+from config_helpers import canonical_workflow_payload
+
+
+def test_workflow_node_envelope_rejects_top_level_config_fields() -> None:
+    with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
+        WorkflowNodeEnvelope.model_validate(
+            {
+                "id": "trigger-flat",
+                "display_name": "Flat trigger",
+                "type": "trigger:cron",
+                "expression": "* * * * *",
+            }
+        )
+
+    node = WorkflowNodeEnvelope.model_validate(
+        {
+            "id": "trigger-nested",
+            "display_name": "Nested trigger",
+            "type": "trigger:cron",
+            "config": {"expression": "* * * * *"},
+        }
+    )
+    assert node.config == {"expression": "* * * * *"}
+
+
+def compose_workflow_ir(**kwargs):
+    inline_ir = kwargs.get("inline_ir")
+    if isinstance(inline_ir, dict):
+        kwargs["inline_ir"] = canonical_workflow_payload(inline_ir)
+    return _compose_workflow_ir(**kwargs)
 
 
 def _write_workflow_pack(tmp_path: Path, name: str, payload: dict) -> None:
     packs_dir = tmp_path / "config" / "workflow-packs"
     packs_dir.mkdir(parents=True, exist_ok=True)
-    (packs_dir / name).write_text(json.dumps(payload), encoding="utf-8")
+    (packs_dir / name).write_text(
+        json.dumps(canonical_workflow_payload(payload)),
+        encoding="utf-8",
+    )
+
+
+def _canonicalize_pack_file(path: Path) -> None:
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    path.write_text(json.dumps(canonical_workflow_payload(payload)), encoding="utf-8")
 
 
 def test_compose_workflow_ir_merges_selected_packs(tmp_path: Path) -> None:
@@ -87,6 +127,8 @@ def test_compose_workflow_ir_merges_selected_packs(tmp_path: Path) -> None:
         ),
         encoding="utf-8",
     )
+    _canonicalize_pack_file(packs_dir / "pack-a.v1.json")
+    _canonicalize_pack_file(packs_dir / "pack-b.v1.json")
 
     composed = compose_workflow_ir(project_dir=tmp_path, workflow_packs=["pack-a.v1", "pack-b.v1"])
 
@@ -587,6 +629,7 @@ def test_workflow_pack_can_store_multiple_named_graphs(tmp_path: Path) -> None:
         ),
         encoding="utf-8",
     )
+    _canonicalize_pack_file(packs_dir / "multi.v1.json")
 
     pack = load_workflow_pack(tmp_path, "multi.v1")
 

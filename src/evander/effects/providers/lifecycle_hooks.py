@@ -65,7 +65,7 @@ from evander.workflow.contracts import (
     FOR_EXECUTION_IDS_CONTEXT_KEY,
     NODE_OUTPUTS_CONTEXT_KEY,
 )
-from evander.workflow.migrations import AGENT_PROMPT_STARTED_PORT
+from evander.workflow.lifecycle_ports import AGENT_PROMPT_STARTED_PORT
 
 logger = logging.getLogger(__name__)
 

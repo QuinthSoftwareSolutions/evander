@@ -547,7 +547,7 @@ class WorkflowGenerationAdminService:
                 "id": node_id,
                 "display_name": display_name,
                 "type": node_type,
-                **node_config,
+                "config": node_config,
             }
             collection = {
                 "trigger": "triggers",

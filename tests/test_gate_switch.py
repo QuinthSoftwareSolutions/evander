@@ -1,12 +1,14 @@
 from __future__ import annotations
 
+from config_helpers import canonical_worker_config
+
 import json
 from concurrent.futures import Future
 from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
-from evander.config import GatewayConfig, TriggerOrchestratorWorkerGlobalConfig
+from evander.config import GatewayConfig
 from evander.daemons.effect_orchestrator import EffectOrchestratorWorker
 from evander.effects.providers.base import EffectProviderBase
 from evander.events.models import TriggerEvent
@@ -55,7 +57,7 @@ def _worker(
 ) -> tuple[EffectOrchestratorWorker, list[str]]:
     runtime_dir = tmp_path / "runtime"
     config = GatewayConfig(runtime_dir=runtime_dir)
-    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+    worker_config = canonical_worker_config(
         {
             "runtime_dir": runtime_dir,
             "poll_interval_seconds": 1,

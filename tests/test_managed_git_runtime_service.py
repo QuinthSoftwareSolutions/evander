@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from config_helpers import canonical_worker_config
+
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -9,7 +11,7 @@ from evander.admin.services.managed_git_runtime_service import (
     ManagedGitRefreshAuthorizationService,
     ManagedGitRepositoryRefreshService,
 )
-from evander.config import GatewayConfig, TriggerOrchestratorWorkerGlobalConfig
+from evander.config import GatewayConfig
 from evander.orchestration.managed_git_lifecycle import ManagedGitWorkerLifecycle
 from evander.orchestration.wiring import build_effect_worker_wiring
 
@@ -107,7 +109,7 @@ def test_worker_lifecycle_owns_reconciliation_and_cleanup() -> None:
 def test_effect_wiring_shares_one_composed_admin_runtime(tmp_path: Path) -> None:
     runtime_dir = tmp_path / "runtime"
     config = GatewayConfig(runtime_dir=runtime_dir)
-    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+    worker_config = canonical_worker_config(
         {
             "runtime_dir": runtime_dir,
             "poll_interval_seconds": 1,

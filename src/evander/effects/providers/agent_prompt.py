@@ -47,7 +47,7 @@ from evander.orchestration.effect_extensions import list_vm_summaries_for_agent_
 from evander.session_auth import session_mcp_auth_token
 from evander.triggers.queue import TriggerQueueRecord
 from evander.worker.security import sanitize_text
-from evander.workflow.migrations import (
+from evander.workflow.lifecycle_ports import (
     AGENT_ENQUEUE_PROMPT_EFFECT_TYPE,
     AGENT_PROMPT_COMPLETED_PORT,
     AGENT_PROMPT_ERROR_PORT,

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from config_helpers import canonical_worker_config
+
 import json
 from datetime import datetime, timezone
 from pathlib import Path
@@ -11,7 +13,7 @@ from evander.orchestration.wiring import build_effect_worker_wiring
 
 
 def _worker_config(runtime_dir: Path) -> TriggerOrchestratorWorkerGlobalConfig:
-    return TriggerOrchestratorWorkerGlobalConfig.model_validate(
+    return canonical_worker_config(
         {
             "runtime_dir": runtime_dir,
             "poll_interval_seconds": 1,

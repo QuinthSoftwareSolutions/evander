@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+from config_helpers import canonical_worker_config
+
 import json
 from datetime import datetime, timezone
 from pathlib import Path
 
-from evander.config import GatewayConfig, TriggerOrchestratorWorkerGlobalConfig
+from evander.config import GatewayConfig
 from evander.daemons.effect_orchestrator import EffectOrchestratorWorker
 from evander.events.models import TriggerEvent
 from evander.orchestration import wal_maintenance
@@ -42,7 +44,7 @@ def test_workers_delegate_run_once_to_shared_orchestration_loop(
 
     runtime_dir = tmp_path / "runtime"
     config = GatewayConfig(runtime_dir=runtime_dir)
-    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+    worker_config = canonical_worker_config(
         {
             "runtime_dir": runtime_dir,
             "poll_interval_seconds": 1,
@@ -75,7 +77,7 @@ def test_workers_delegate_run_once_to_shared_orchestration_loop(
 def test_effect_queue_delivery_semantics_are_preserved(tmp_path: Path) -> None:
     runtime_dir = tmp_path / "runtime"
     config = GatewayConfig(runtime_dir=runtime_dir)
-    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+    worker_config = canonical_worker_config(
         {
             "runtime_dir": runtime_dir,
             "poll_interval_seconds": 1,
@@ -117,7 +119,7 @@ def test_effect_worker_wiring_uses_effect_cursor_path_for_processed_checkpoint(
     gate_cursor_path = runtime_dir / "custom-gate-cursors.json"
     effect_cursor_path = runtime_dir / "custom-effect-cursors.json"
     config = GatewayConfig(runtime_dir=runtime_dir)
-    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+    worker_config = canonical_worker_config(
         {
             "runtime_dir": runtime_dir,
             "poll_interval_seconds": 1,
@@ -159,7 +161,7 @@ def test_effect_worker_runs_wal_checkpoint_maintenance_from_worker_cycle(
 ) -> None:
     runtime_dir = tmp_path / "runtime"
     config = GatewayConfig(runtime_dir=runtime_dir)
-    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+    worker_config = canonical_worker_config(
         {
             "runtime_dir": runtime_dir,
             "poll_interval_seconds": 1,
@@ -227,7 +229,7 @@ def test_core_minimal_profile_smoke_builds_trigger_and_effect_workers_without_bu
 ) -> None:
     runtime_dir = tmp_path / "runtime"
     config = GatewayConfig(runtime_dir=runtime_dir)
-    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+    worker_config = canonical_worker_config(
         {
             "runtime_dir": runtime_dir,
             "provider_loader": {

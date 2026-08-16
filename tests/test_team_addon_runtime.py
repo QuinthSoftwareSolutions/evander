@@ -401,24 +401,6 @@ def _flatten_workflow_config_for_editor(
     return flattened
 
 
-def _legacy_outputs_config(config: dict[str, object]) -> dict[str, object]:
-    legacy = json.loads(json.dumps(config))
-    effects = legacy.get("effects")
-    if not isinstance(effects, list):
-        return legacy
-    for effect in effects:
-        if not isinstance(effect, dict):
-            continue
-        if effect.get("type") not in {
-            "effect:team:record-git-promotion",
-            "effect:team:mark-release-published",
-        }:
-            continue
-        if "result_outputs" in effect and "outputs" not in effect:
-            effect["outputs"] = effect.pop("result_outputs")
-    return legacy
-
-
 def test_team_runtime_pack_loads_as_current_workflow_pack(tmp_path: Path) -> None:
     packs_dir = tmp_path / "config" / "workflow-packs"
     packs_dir.mkdir(parents=True)
@@ -553,20 +535,14 @@ def test_team_runtime_pack_loads_as_current_workflow_pack(tmp_path: Path) -> Non
         "message": "${{team-git-promote-review-branch.message ?? null}}",
     }
     validation = service.workflow_config_admin.validate_workflow_editor_document(
-        config=flattened_config,
+        config=document.config,
         layout=document.layout,
         graphs=graphs,
     )
     assert validation.validation_diagnostics == []
-    legacy_validation = service.workflow_config_admin.validate_workflow_editor_document(
-        config=_legacy_outputs_config(flattened_config),
-        layout=document.layout,
-        graphs=graphs,
-    )
-    assert legacy_validation.validation_diagnostics == []
     current_document = service.workflow_config_admin.read_workflow_editor_document()
     save = service.workflow_config_admin.save_workflow_editor_document(
-        config=flattened_config,
+        config=document.config,
         layout=document.layout,
         graphs=graphs,
         expected_revision=current_document.revision,

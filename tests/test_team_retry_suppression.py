@@ -637,6 +637,7 @@ def test_review_artifact_preparation_blocks_before_inference_and_requires_retry(
         },
     )
     assert submission["success"] is True
+
     _state, requested = _team_agent_action_service(repo).apply_agent_action(
         action={
             "agent_id": "lead",
@@ -749,6 +750,15 @@ def test_review_repository_preparation_failure_blocks_exact_review_attempt(
         },
     )
     assert submission["success"] is True
+
+    def _pin_deliverable_candidate(state):
+        state.deliverables["deliverable-1"].git_refs = DeliverableGitRefs(
+            commit_sha="a" * 40,
+            submitted_commit_sha="a" * 40,
+        )
+        return state
+
+    repo.update(_pin_deliverable_candidate)
     _state, requested = _team_agent_action_service(repo).apply_agent_action(
         action={
             "agent_id": "lead",
