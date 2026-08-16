@@ -2224,58 +2224,6 @@ def git_repos_clone_into_agent(
     _echo_managed_git_json(result)
 
 
-@git_repos_app.command("migrate", short_help="Migrate legacy managed Git state explicitly.")
-def git_repos_migrate(
-    config: ConfigOption = CLI_DEFAULT_RUNTIME_DIR,
-    dry_run: Annotated[
-        bool,
-        typer.Option(
-            "--dry-run",
-            help="Inventory legacy Git state and report blockers without writing.",
-        ),
-    ] = False,
-    apply_stage: Annotated[
-        bool,
-        typer.Option(
-            "--apply",
-            help="Create managed repositories and rewrite active bindings.",
-        ),
-    ] = False,
-    finalize: Annotated[
-        str | None,
-        typer.Option(
-            "--finalize",
-            metavar="MIGRATION_ID",
-            help="Verify and delete manifest-owned rollback artifacts.",
-        ),
-    ] = None,
-) -> None:
-    selected_stage_count = int(dry_run) + int(apply_stage) + int(finalize is not None)
-    if selected_stage_count != 1:
-        raise typer.BadParameter(
-            "Provide exactly one migration stage: --dry-run, --apply, or --finalize MIGRATION_ID."
-        )
-
-    migration_id: str | None = None
-    if dry_run:
-        stage = "dry-run"
-    elif apply_stage:
-        stage = "apply"
-    else:
-        migration_id = str(finalize or "").strip()
-        if not migration_id:
-            raise typer.BadParameter("--finalize requires a non-empty migration id.")
-        stage = "finalize"
-
-    managed_git = build_admin_runtime(config).managed_git_admin
-    result = _managed_git_call(
-        managed_git.migrate,
-        stage,
-        migration_id=migration_id,
-    )
-    _echo_managed_git_json(result)
-
-
 @app.command(
     "migrate-directory-ownership",
     rich_help_panel="Health and State",

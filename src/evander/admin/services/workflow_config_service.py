@@ -157,14 +157,6 @@ class WorkflowSkillReferenceSearchResult:
     references: list[dict[str, object]]
 
 
-@dataclass(frozen=True, slots=True)
-class WorkflowPackMigrationDocument:
-    reference: str
-    path: Path
-    revision: str
-    content: bytes
-
-
 class WorkflowConfigAdminService:
     """Workflow configuration, editor, and runtime-store admin operations."""
 
@@ -276,34 +268,6 @@ class WorkflowConfigAdminService:
             workflow_pack=workflow_pack,
             actor=actor,
         )
-
-    def read_workflow_pack_for_migration(
-        self,
-        *,
-        workflow_pack: str,
-    ) -> WorkflowPackMigrationDocument:
-        """Read one configured pack without normalizing legacy workflow nodes."""
-        with self.admin_config_mutation_lock():
-            return self._read_workflow_pack_for_migration_unlocked(workflow_pack)
-
-    def rewrite_workflow_pack_for_migration(
-        self,
-        *,
-        workflow_pack: str,
-        content: bytes,
-        expected_revision: str,
-        operation: str,
-        actor: WorkflowPackChangeActor | None = None,
-    ) -> WorkflowPackMigrationDocument:
-        """CAS-rewrite one configured pack for the privileged migration path."""
-        with self.admin_config_mutation_lock():
-            return self._rewrite_workflow_pack_for_migration_unlocked(
-                workflow_pack=workflow_pack,
-                content=content,
-                expected_revision=expected_revision,
-                operation=operation,
-                actor=actor,
-            )
 
     def find_managed_codex_skill_references(
         self, skill_name: str
@@ -939,106 +903,6 @@ class WorkflowConfigAdminService:
             after_files=after_files,
             before_revision=self._workflow_pack_revision_from_history_files(before_files),
             after_revision=self._workflow_pack_revision_from_history_files(after_files),
-        )
-
-    def _read_workflow_pack_for_migration_unlocked(
-        self,
-        workflow_pack: str,
-    ) -> WorkflowPackMigrationDocument:
-        _config_path, _config_exists, raw_config = self._workflow_editor_read_raw_worker_config()
-        selected_reference = self._workflow_editor_selected_pack_reference(
-            raw_config,
-            workflow_pack,
-        )
-        if selected_reference is None:
-            raise ValueError("Workflow pack is required for managed Git migration")
-        pack_path = self._workflow_editor_pack_path(selected_reference)
-        if not pack_path.is_file():
-            raise ValueError(f"workflow pack {selected_reference!r} does not exist at {pack_path}")
-        content = pack_path.read_bytes()
-        try:
-            payload = json.loads(content.decode("utf-8"))
-        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-            raise ValueError(
-                f"workflow pack file {pack_path} must contain a UTF-8 JSON object"
-            ) from exc
-        if not isinstance(payload, dict):
-            raise ValueError(f"workflow pack file {pack_path} must contain a JSON object")
-        return WorkflowPackMigrationDocument(
-            reference=selected_reference,
-            path=pack_path.resolve(strict=False),
-            revision=hashlib.sha256(content).hexdigest(),
-            content=content,
-        )
-
-    def _rewrite_workflow_pack_for_migration_unlocked(
-        self,
-        *,
-        workflow_pack: str,
-        content: bytes,
-        expected_revision: str,
-        operation: str,
-        actor: WorkflowPackChangeActor | None,
-    ) -> WorkflowPackMigrationDocument:
-        allowed_operations = {
-            "managed_git_migration_apply",
-            "managed_git_migration_rollback",
-        }
-        if operation not in allowed_operations:
-            raise ValueError("Unsupported workflow pack migration operation")
-        try:
-            payload = json.loads(content.decode("utf-8"))
-        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-            raise ValueError("Workflow pack migration content must be UTF-8 JSON") from exc
-        if not isinstance(payload, dict):
-            raise ValueError("Workflow pack migration content must be a JSON object")
-
-        current = self._read_workflow_pack_for_migration_unlocked(workflow_pack)
-        normalized_expected = str(expected_revision or "").strip().lower()
-        if current.revision != normalized_expected:
-            raise AdminRevisionConflict(
-                "Workflow pack changed before managed Git migration. Run the dry-run again.",
-                details={
-                    "workflow_pack": current.reference,
-                    "current_revision": current.revision,
-                },
-            )
-        config_path, _config_exists, _raw_config = self._workflow_editor_read_raw_worker_config()
-        layout_path = self._workflow_editor_pack_layout_path(current.reference)
-        before_files = self._workflow_pack_history_files(
-            config_path=config_path,
-            pack_path=current.path,
-            layout_path=layout_path,
-            tolerate_invalid=True,
-        )
-        try:
-            self._write_file_bytes_atomic(current.path, content)
-            after_files = self._workflow_pack_history_files(
-                config_path=config_path,
-                pack_path=current.path,
-                layout_path=layout_path,
-                tolerate_invalid=True,
-            )
-            self._record_workflow_pack_history(
-                operation=operation,
-                workflow_pack=current.reference,
-                actor=actor,
-                before_files=before_files,
-                after_files=after_files,
-            )
-        except BaseException:
-            if (
-                current.path.is_file()
-                and hashlib.sha256(current.path.read_bytes()).hexdigest()
-                == hashlib.sha256(content).hexdigest()
-            ):
-                self._write_file_bytes_atomic(current.path, current.content)
-            raise
-        return WorkflowPackMigrationDocument(
-            reference=current.reference,
-            path=current.path,
-            revision=hashlib.sha256(content).hexdigest(),
-            content=content,
         )
 
     @staticmethod

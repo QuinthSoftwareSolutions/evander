@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 from datetime import UTC, datetime, timedelta
 import json
 import os
@@ -63,35 +64,6 @@ def _service(tmp_path: Path) -> ManagedGitAdminService:
     )
 
 
-def _isolated_service(tmp_path: Path) -> ManagedGitAdminService:
-    return ManagedGitAdminService(
-        SimpleNamespace(runtime_dir=tmp_path / "runtime"),
-        SimpleNamespace(),
-        tmp_path,
-    )
-
-
-def _legacy_bare(
-    tmp_path: Path,
-    *,
-    name: str,
-    source: Path,
-    canonical_source: Path,
-) -> Path:
-    legacy = tmp_path / "git-remotes" / f"{name}.git"
-    legacy.parent.mkdir(parents=True, exist_ok=True)
-    _run("git", "clone", "--bare", str(source), str(legacy))
-    _run(
-        "git",
-        f"--git-dir={legacy}",
-        "config",
-        "evander.canonicalOriginUrl",
-        str(canonical_source),
-    )
-    _run("git", f"--git-dir={legacy}", "config", "evander.directoryPath", "root")
-    return legacy
-
-
 def _internal_record(service: ManagedGitAdminService, repo_id: str) -> dict[str, object]:
     registry = json.loads(
         (service.runtime_dir / "managed-git-repositories.json").read_text(encoding="utf-8")
@@ -118,28 +90,6 @@ def test_registration_deduplicates_ancestor_and_isolates_siblings(tmp_path: Path
     assert service.get_repository(owner["managed_repo_id"], "root/team-a/child")
     with pytest.raises(LookupError):
         service.get_repository(owner["managed_repo_id"], "root/team-b")
-
-
-def test_normal_operations_do_not_run_legacy_migration_inventory(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    source, _, _ = _source_repository(tmp_path)
-    service = _service(tmp_path)
-
-    def fail_inventory() -> dict[str, object]:
-        raise AssertionError("legacy migration inventory reached")
-
-    monkeypatch.setattr(service, "_legacy_state_inventory", fail_inventory)
-
-    registered = service.register_repository("root", str(source))
-    repo_id = str(registered["managed_repo_id"])
-    service.list_repositories("root")
-    service.resolve_branch_commit(repo_id, directory_path="root", branch="main")
-    service.clone_info(repo_id, directory_path="root", session_id="session-1")
-    service.bind(repo_id, "sessions", "session-1")
-    service.unbind(repo_id, "sessions", "session-1")
-    service.reconcile_stale_worktrees(repo_id)
 
 
 def test_refresh_coalesces_waiters_that_started_before_completed_refresh(
@@ -3238,116 +3188,24 @@ def test_delete_requires_bindings_to_be_removed(tmp_path: Path) -> None:
     assert service.list_repositories() == []
 
 
-def test_migration_dry_run_from_empty_runtime_does_not_create_managed_state(
-    tmp_path: Path,
-) -> None:
-    runtime_dir = tmp_path / "runtime"
-    assert not runtime_dir.exists()
-    service = _service(tmp_path)
-
-    result = service.migrate("--dry-run")
-
-    assert result["stage"] == "dry-run"
-    assert isinstance(result["can_apply"], bool)
-    assert not (runtime_dir / "managed-git-repositories.json").exists()
-    assert not (runtime_dir / "managed-git").exists()
-    assert not (runtime_dir / "git-worktrees").exists()
-    assert not (runtime_dir / "managed-git-locks").exists()
-    assert not (runtime_dir / "managed-git-migrations").exists()
-
-
-def test_migration_apply_imports_preserved_refs_and_finalize_deletes_only_rollback_artifact(
-    tmp_path: Path,
-) -> None:
-    source, upstream, _ = _source_repository(tmp_path)
-    legacy = _legacy_bare(
+def test_delete_refuses_repository_with_orphaned_authorized_key(tmp_path: Path) -> None:
+    source, _, _ = _source_repository(tmp_path)
+    authorized_keys_path = tmp_path / "authorized_keys"
+    service = ManagedGitAdminService(
+        SimpleNamespace(
+            runtime_dir=tmp_path / "runtime",
+            git_authorized_keys_path=authorized_keys_path,
+        ),
+        SimpleNamespace(),
         tmp_path,
-        name="legacy",
-        source=source,
-        canonical_source=upstream,
     )
-    _run("git", "checkout", "-b", "agents/session-1/topic", cwd=source)
-    agent_commit = _commit(source, "agent.txt", "agent\n", "agent result")
-    _run(
-        "git",
-        "push",
-        str(legacy),
-        "agents/session-1/topic:refs/heads/agents/session-1/topic",
-        cwd=source,
+    record = service.register_repository("root", str(source))
+    repo_id = str(record["managed_repo_id"])
+    encoded_repo_path = base64.b64encode(str(_bare_path(service, repo_id)).encode()).decode()
+    authorized_keys_path.write_text(
+        f'command="EVANDER_GIT_AUTH_REPO_B64={encoded_repo_path}" ssh-ed25519 test\n',
+        encoding="utf-8",
     )
-    service = _isolated_service(tmp_path)
 
-    dry_run = service.migrate("dry-run")
-    applied = service.migrate("apply")
-    repeated = service.migrate("apply")
-
-    assert dry_run["can_apply"] is True
-    assert applied["managed_repo_ids"]
-    assert applied["migration_id"] == f"mgm_{applied['verification_hash'][:20]}"
-    assert repeated["migration_id"] == applied["migration_id"]
-    assert repeated["restartable"] is True
-    repo_id = applied["managed_repo_ids"][0]
-    managed_bare = _bare_path(service, repo_id)
-    assert (
-        _run(
-            "git",
-            f"--git-dir={managed_bare}",
-            "rev-parse",
-            "refs/heads/agents/session-1/topic",
-        )
-        == agent_commit
-    )
-    assert legacy.exists()
-
-    finalized = service.migrate("finalize", migration_id=applied["migration_id"])
-
-    assert finalized["status"] == "finalized"
-    assert not legacy.exists()
-    assert managed_bare.exists()
-
-
-def test_migration_dry_run_detects_preserved_ref_collisions(tmp_path: Path) -> None:
-    source, upstream, _ = _source_repository(tmp_path)
-    first_legacy = _legacy_bare(
-        tmp_path,
-        name="legacy-one",
-        source=source,
-        canonical_source=upstream,
-    )
-    second_legacy = _legacy_bare(
-        tmp_path,
-        name="legacy-two",
-        source=source,
-        canonical_source=upstream,
-    )
-    _run("git", "checkout", "-b", "agents/session-1/topic", cwd=source)
-    first = _commit(source, "agent.txt", "first\n", "first agent result")
-    _run(
-        "git",
-        "push",
-        str(first_legacy),
-        "agents/session-1/topic:refs/heads/agents/session-1/topic",
-        cwd=source,
-    )
-    second = _commit(source, "agent.txt", "second\n", "second agent result")
-    _run(
-        "git",
-        "push",
-        str(second_legacy),
-        "agents/session-1/topic:refs/heads/agents/session-1/topic",
-        cwd=source,
-    )
-    service = _isolated_service(tmp_path)
-
-    result = service.migrate("dry-run")
-
-    assert result["can_apply"] is False
-    assert "preserved refs collide" in " ".join(result["blockers"])
-    assert result["inventory"]["preserved_ref_collisions"] == [
-        {
-            "directory_path": "root",
-            "canonical_repository_identity": f"local:{upstream}",
-            "ref_name": "refs/heads/agents/session-1/topic",
-            "object_ids": sorted([first, second]),
-        }
-    ]
+    with pytest.raises(ManagedGitConflictError, match="authorized SSH keys"):
+        service.delete_repository(repo_id)

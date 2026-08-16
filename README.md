@@ -687,23 +687,10 @@ evander-cli git-repos maintenance --managed-repo-id mr_0123456789abcdef0123
 
 Issue/session deletion removes bindings and SSH authorization but retains the shared repository and
 unpublished refs. `git-repos delete` refuses active bindings, authorized sessions, worktrees, and
-unresolved migration state; there is no force or automatic time-based deletion.
+there is no force or automatic time-based deletion.
 
-Existing path-based mirror installations require an explicit stopped-service migration:
-
-```bash
-evander-cli git-repos migrate --dry-run
-evander-cli git-repos migrate --apply
-# After operator acceptance and end-to-end VM/container smoke tests:
-evander-cli git-repos migrate --finalize <migration-id>
-```
-
-Apply preserves old Evander-owned repositories/cache checkouts as read-only rollback artifacts and
-never changes a user checkout. Finalize deletes only verified artifacts named in the migration
-manifest.
-
-See [git-remotes.md](docs/git-remotes.md) for the complete security, workflow, maintenance, and
-migration contract. See [live-smoke-tests.md](docs/live-smoke-tests.md) for live provider checks.
+See [git-remotes.md](docs/git-remotes.md) for the complete security, workflow, and maintenance
+contract. See [live-smoke-tests.md](docs/live-smoke-tests.md) for live provider checks.
 
 ## Discord Adapter Configuration
 

@@ -22,10 +22,22 @@
 
 - Added a dedicated session-level model relay selector for public, local, Azure, Anthropic, or
   directory-default routing without editing raw metadata JSON.
+- Rejected invalid relay modes written through nested session metadata while rendering legacy
+  invalid values as no override, keeping affected sessions visible and repairable in Admin Web.
 
 ## 2026-08-15 - Searchable Agents Page
 
 - Added a search field to the Agents page for filtering agents by name, ID, session, or directory.
+- Cleared the search together with backend and status filters when an explicit agent hash deep-link
+  is applied, so an existing query cannot hide the requested agent.
+
+## 2026-08-15 - Retire Completed Managed-Git Migrator
+
+- Removed the legacy `git-repos migrate` CLI and Admin API, migration manifests, recovery and
+  rewrite implementation, workflow-pack migration hooks, and obsolete migration tests now that no
+  supported installation retains unmigrated path-based managed-Git repositories.
+- Removed active migration instructions and state from operator documentation while leaving current
+  managed repository registration, refresh, authorization, worktree, and integrity behavior intact.
 
 ## 2026-08-14 - Persistent Assistant Self-Refresh Recovery
 

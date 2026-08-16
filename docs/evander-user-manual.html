@@ -7581,8 +7581,8 @@ path:</p>
 <div class="sourceCode" id="cb48"><pre class="sourceCode bash"><code class="sourceCode bash"><span id="cb48-1"><a href="#cb48-1" aria-hidden="true" tabindex="-1"></a><span class="ex">evander-cli</span> git-repos maintenance</span>
 <span id="cb48-2"><a href="#cb48-2" aria-hidden="true" tabindex="-1"></a><span class="ex">evander-cli</span> git-repos maintenance <span class="at">--managed-repo-id</span> <span class="op">&lt;</span>managed-repo-id<span class="op">&gt;</span></span></code></pre></div>
 <p>Delete only after <code>git-repos show</code> confirms there are no
-issue, project, session, SSH, worktree, or migration bindings. There is
-no force-delete path.</p>
+issue, project, session, SSH, or worktree bindings. There is no
+force-delete path.</p>
 <p>For a consultation, verify that the gateway, trigger orchestrator,
 effect orchestrator, model relay, and container worker are healthy;
 confirm the caller has <code>consult_codebase</code> and
@@ -7597,20 +7597,13 @@ poll by consultation ID. If it stalls, inspect in this order:</p>
 <li>cleanup status and error before attempting to release or delete
 anything manually.</li>
 </ol>
-<p>For a legacy mirror deployment, do not improvise a partial
-conversion. Stop trigger/effect workers, run
-<code>evander-cli git-repos migrate --dry-run</code>, resolve every
-blocker, use <code>--apply</code>, execute the documented VM and
-container smoke path, and only then run
-<code>--finalize &lt;migration-id&gt;</code>. Apply and finalize are
-intentionally separate decisions.</p>
 <h2 id="source-trail-10">Source trail</h2>
 <ul>
 <li><code>src/evander/admin/services/managed_git_service.py</code>,
 <code>managed_git_runtime_service.py</code>, and
 <code>managed_git_worktree_service.py</code> — registry identity, ref
 transactions, restricted SSH integration, runtime grants, worktrees,
-publication, maintenance, and migration.</li>
+publication, and maintenance.</li>
 <li><code>scripts/git_ssh_command_wrapper.sh</code>,
 <code>scripts/guest/push_agent.sh</code>, and
 <code>scripts/guest/sync_base.sh</code> — guest capability and helper
@@ -16282,7 +16275,7 @@ current gates</td>
 </tr>
 <tr class="even">
 <td>Legacy managed-Git path fields</td>
-<td>migration or audit-only residue, not live routing authority</td>
+<td>unsupported historical residue, not live routing authority</td>
 <td><code>managed_repo_id</code>, owned ref, and exact SHA</td>
 </tr>
 <tr class="odd">
@@ -16466,10 +16459,9 @@ script, <code>build_admin_runtime</code>, provider/add-on catalogs, and
 the owning repository constructor.</li>
 <li><strong>Find migration markers and both candidate stores.</strong>
 Determine which one current code opens before editing either.</li>
-<li><strong>Run the supported preflight or dry-run.</strong> For managed
-Git, use the <code>git-repos migrate</code> flow; for add-ons, use
-discovery and enablement diagnostics; for a service rename, use
-installer preflight.</li>
+<li><strong>Run the supported preflight or diagnostic.</strong> For
+add-ons, use discovery and enablement diagnostics; for a service rename,
+use installer preflight.</li>
 <li><strong>Quiesce the writers named by the migrator.</strong> Preserve
 backups and active lease or operation evidence.</li>
 <li><strong>Apply once and verify through the current API.</strong>
@@ -16505,7 +16497,6 @@ command.</li>
 <li><code>tests/test_workflow_plugins.py</code></li>
 <li><code>tests/test_container_worker_execution_backend.py</code></li>
 <li><code>tests/test_addons.py</code></li>
-<li><code>tests/test_managed_git_migration_rewrite.py</code></li>
 <li><code>tests/test_team_addon_repository.py</code></li>
 </ul>
 <div class="page-break"></div>

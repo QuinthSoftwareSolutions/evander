@@ -1827,7 +1827,6 @@ Storage paths:
 | `runtime/assistant-settings.json` | Admin assistant and workflow generation settings | Admin Web Chat and Workflow generator |
 | `runtime/communication-targets.db` | SQLite-backed communication target overlays keyed by directory and target ID | `src/evander/messaging/targets.py`, Admin Web Configuration -> People & Communications, workflow notification/message effects |
 | `runtime/managed-git-repositories.json` | Managed repository schema marker, directory/upstream identities, internal bare paths, timestamps, commit identity, and active bindings | Managed Git service, CLI/Admin API, VM/container clone, workflows, Team runtime |
-| `runtime/managed-git-migrations/<migration-id>.json` | Secret-free migration mapping, rollback-artifact allowlist, ref verification data, and hashes | Explicit managed Git apply/finalize stages |
 | `runtime/git-worktrees/<managed_repo_id>/<operation-id>/` | Secret-free manifest, operation lock, and detached temporary checkout | Managed Git merge/PR preparation and stale-process reconciliation; never a workflow output |
 
 Supported directory config domains:

@@ -741,6 +741,14 @@ def session_policy_update_from_payload(
         if not isinstance(metadata, Mapping):
             raise ValueError("metadata must be a JSON object")
         normalized_metadata = dict(metadata)
+        if MODEL_PROVIDER_MODE_METADATA_KEY in normalized_metadata:
+            model_provider_mode = normalize_model_provider_mode_override(
+                normalized_metadata.get(MODEL_PROVIDER_MODE_METADATA_KEY)
+            )
+            if model_provider_mode is None:
+                normalized_metadata.pop(MODEL_PROVIDER_MODE_METADATA_KEY, None)
+            else:
+                normalized_metadata[MODEL_PROVIDER_MODE_METADATA_KEY] = model_provider_mode
         if "http_targets" in normalized_metadata:
             normalized_metadata["http_targets"] = normalize_http_targets_metadata(
                 normalized_metadata["http_targets"]

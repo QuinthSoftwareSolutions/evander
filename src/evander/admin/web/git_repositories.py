@@ -3,9 +3,9 @@ from __future__ import annotations
 import json
 from datetime import date, datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 from starlette.concurrency import run_in_threadpool
 from starlette.requests import Request
 from starlette.responses import JSONResponse
@@ -72,32 +72,6 @@ class ManagedGitMaintenanceRequest(BaseModel):
     @classmethod
     def _normalize_directory_path(cls, value: object) -> str:
         return str(value or "root").strip() or "root"
-
-
-class ManagedGitMigrationRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    stage: Literal["dry-run", "apply", "finalize"]
-    migration_id: str | None = None
-
-    @field_validator("stage", mode="before")
-    @classmethod
-    def _normalize_stage(cls, value: object) -> str:
-        return str(value or "").strip().casefold().removeprefix("--").replace("_", "-")
-
-    @field_validator("migration_id", mode="before")
-    @classmethod
-    def _normalize_migration_id(cls, value: object) -> str | None:
-        normalized = str(value or "").strip()
-        return normalized or None
-
-    @model_validator(mode="after")
-    def _validate_stage_arguments(self) -> ManagedGitMigrationRequest:
-        if self.stage == "finalize" and self.migration_id is None:
-            raise ValueError("migration_id is required for the finalize stage")
-        if self.stage != "finalize" and self.migration_id is not None:
-            raise ValueError("migration_id is only valid for the finalize stage")
-        return self
 
 
 def _jsonable(value: Any) -> Any:
@@ -390,40 +364,12 @@ def git_repository_routes(
             return _service_error_response(exc)
         return JSONResponse({"maintenance": _jsonable(result)})
 
-    async def migrate_repositories(request: Request) -> JSONResponse:
-        try:
-            payload = ManagedGitMigrationRequest.model_validate(await _json_body(request))
-        except ValueError as exc:
-            message = _validation_error_text(exc) if isinstance(exc, ValidationError) else str(exc)
-            return json_error(message, status_code=400)
-        access_error = (
-            _owner_error(request, directory_path="root")
-            if payload.stage == "dry-run"
-            else _mutation_access_error(request, directory_path="root")
-        )
-        if access_error is not None:
-            return access_error
-        try:
-            result = await run_in_threadpool(
-                managed_git.migrate,
-                payload.stage,
-                migration_id=payload.migration_id,
-            )
-        except Exception as exc:
-            return _service_error_response(exc)
-        return JSONResponse({"migration": _jsonable(result)})
-
     return [
         Route("/api/admin/git-repositories", list_repositories, methods=["GET"]),
         Route("/api/admin/git-repositories", register_repository, methods=["POST"]),
         Route(
             "/api/admin/git-repositories/maintenance",
             run_maintenance,
-            methods=["POST"],
-        ),
-        Route(
-            "/api/admin/git-repositories/migrate",
-            migrate_repositories,
             methods=["POST"],
         ),
         Route(
@@ -452,7 +398,6 @@ def git_repository_routes(
 __all__ = [
     "ManagedGitHostCommitIdentityRequest",
     "ManagedGitMaintenanceRequest",
-    "ManagedGitMigrationRequest",
     "ManagedGitRepositoryRegistrationRequest",
     "git_repository_routes",
 ]

@@ -2018,6 +2018,50 @@ def test_admin_web_updates_and_clears_session_model_provider_mode(tmp_path: Path
     assert default_response.json()["session"]["metadata"] == {"keep": "value"}
 
 
+def test_admin_web_tolerates_and_can_repair_invalid_session_model_provider_mode(
+    tmp_path: Path,
+) -> None:
+    service = build_admin_runtime(write_config(tmp_path))
+    service.runtime.session_repository.upsert_session(
+        SessionManifest(
+            session_id="invalid-model-provider-session",
+            allowed_tools=[ToolName.APPROVAL_CHECK],
+            expires_at=datetime.now(UTC) + timedelta(hours=2),
+            metadata={"model_provider_mode": "unsupported", "keep": "value"},
+        ),
+    )
+    client = TestClient(create_app(service))
+    _unlock_privileged_operations(client)
+
+    detail_response = client.get(
+        "/api/admin/sessions/invalid-model-provider-session",
+    )
+
+    assert detail_response.status_code == 200
+    assert detail_response.json()["session"]["model_provider_mode"] is None
+    assert detail_response.json()["session"]["metadata"] == {
+        "model_provider_mode": "unsupported",
+        "keep": "value",
+    }
+
+    invalid_response = client.patch(
+        "/api/admin/sessions/invalid-model-provider-session",
+        json={"metadata": {"model_provider_mode": "still-unsupported", "keep": "value"}},
+    )
+
+    assert invalid_response.status_code == 400
+    assert "model_provider_mode must be one of" in invalid_response.json()["error"]
+
+    repaired_response = client.patch(
+        "/api/admin/sessions/invalid-model-provider-session",
+        json={"metadata": {"keep": "value"}},
+    )
+
+    assert repaired_response.status_code == 200
+    assert repaired_response.json()["session"]["model_provider_mode"] is None
+    assert repaired_response.json()["session"]["metadata"] == {"keep": "value"}
+
+
 def test_admin_web_rejects_direct_delete_for_agent_session(tmp_path: Path) -> None:
     service = build_admin_runtime(write_config(tmp_path))
     service.runtime.session_repository.upsert_session(

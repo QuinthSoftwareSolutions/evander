@@ -13,7 +13,6 @@ from types import SimpleNamespace
 import pytest
 import yaml
 
-from evander.admin.services.managed_git_service import ManagedGitAdminService
 from evander.config import GatewayConfig, TriggerOrchestratorWorkerGlobalConfig
 from evander.execution import ExecutionStatusKind
 from evander.effects.providers.agent_enqueue_prompt import AgentEnqueuePromptEffectProvider
@@ -989,23 +988,6 @@ def test_build_effect_orchestrator_worker_accepts_injected_services(tmp_path: Pa
 
     assert services.called_with is not None
     assert services.called_with.runtime_dir == runtime_dir
-    assert worker.runtime is not None
-
-
-def test_build_effect_orchestrator_worker_skips_managed_git_legacy_inventory(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    def _fail_inventory(_service: ManagedGitAdminService) -> None:
-        raise AssertionError("managed Git legacy inventory reached")
-
-    monkeypatch.setattr(ManagedGitAdminService, "_legacy_state_inventory", _fail_inventory)
-
-    worker = build_effect_orchestrator_worker(
-        GatewayConfig(runtime_dir=tmp_path / "runtime"),
-        project_dir=tmp_path,
-    )
-
     assert worker.runtime is not None
 
 

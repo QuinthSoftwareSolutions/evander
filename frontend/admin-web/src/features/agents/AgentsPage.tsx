@@ -945,6 +945,7 @@ export function AgentsPage() {
       setHashSelection(nextSelection);
       if (nextSelection.agentId || nextSelection.sessionId) {
         setSelectedKey(null);
+        setAgentSearch("");
         setBackendFilter("all");
         setStatusFilter("all");
       }

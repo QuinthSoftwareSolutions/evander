@@ -392,6 +392,11 @@ test("admin shell agents page deep-links to a selected agent", async (t) => {
       return;
     }
 
+    if (pathname === "/api/admin/agents/create-operations") {
+      await route.fulfill(jsonResponse({ items: [] }));
+      return;
+    }
+
     if (pathname.startsWith("/api/admin/agents/")) {
       const agentId = pathname.split("/")[4];
       const agent = agentsResponse.items.find((item) => item.agent_id === agentId);
@@ -532,7 +537,15 @@ test("admin shell agents page deep-links to a selected agent", async (t) => {
   assert.equal(await page.locator(".agent-list-item").filter({ hasText: "Dispatch agent" }).count(), 0);
   await agentSearch.fill("agent-1");
   await assert.doesNotReject(() => page.locator(".agent-list-item").filter({ hasText: "Dispatch agent" }).waitFor({ state: "visible" }));
-  await agentSearch.fill("");
+  await page.evaluate(() => {
+    window.location.hash = "#agents?agent_id=agent-2&session_id=session-2";
+  });
+  await assert.doesNotReject(() => page.getByRole("heading", { name: "Container worker" }).waitFor({ state: "visible" }));
+  assert.equal(await agentSearch.inputValue(), "");
+  await page.evaluate(() => {
+    window.location.hash = "#agents?agent_id=agent-1&session_id=session-1";
+  });
+  await assert.doesNotReject(() => page.getByRole("heading", { name: "Dispatch agent" }).waitFor({ state: "visible" }));
 
   await page.locator(".agents-filter-grid label").filter({ hasText: "Status" }).locator("select").selectOption("active");
   await assert.doesNotReject(() => page.locator(".agent-list-item").filter({ hasText: "Dispatch agent" }).waitFor({ state: "visible" }));

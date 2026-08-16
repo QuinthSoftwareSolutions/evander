@@ -645,11 +645,16 @@ def _session_payload(
 ) -> dict[str, Any]:
     payload = summary.model_dump(mode="json")
     payload["allowed_tools"] = [tool_name_value(tool) for tool in summary.allowed_tools]
-    payload["model_provider_mode"] = normalize_model_provider_mode_override(
-        (summary.metadata or {}).get("model_provider_mode")
-        if isinstance(summary.metadata, dict)
-        else None
-    )
+    try:
+        payload["model_provider_mode"] = normalize_model_provider_mode_override(
+            (summary.metadata or {}).get("model_provider_mode")
+            if isinstance(summary.metadata, dict)
+            else None
+        )
+    except ValueError:
+        # Legacy or externally written metadata must not make the Admin Web
+        # session detail impossible to open and repair.
+        payload["model_provider_mode"] = None
     payload.update(_session_policy_summary_payload(service, summary, cache=policy_cache))
     payload["approval_notification_target_options"] = [
         option.model_dump(mode="json")

@@ -8,7 +8,6 @@ from types import SimpleNamespace
 import pytest
 
 from evander.config import GatewayConfig, TriggerOrchestratorWorkerGlobalConfig
-from evander.admin.services.managed_git_service import ManagedGitAdminService
 from evander.events.internal import InternalEventBus
 from evander.events.scheduled import ScheduledInternalEventStore
 from evander.orchestration.host_polling import HostFileLockManager
@@ -129,46 +128,6 @@ def test_build_trigger_orchestrator_worker_accepts_injected_services(tmp_path: P
     assert services.called_with is not None
     assert services.called_with.runtime_dir == runtime_dir
     assert worker.runtime is not None
-
-
-def test_build_trigger_orchestrator_worker_skips_managed_git_legacy_inventory(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    def _fail_inventory(_service: ManagedGitAdminService) -> None:
-        raise AssertionError("managed Git legacy inventory reached")
-
-    monkeypatch.setattr(ManagedGitAdminService, "_legacy_state_inventory", _fail_inventory)
-
-    worker = build_trigger_orchestrator_worker(
-        GatewayConfig(runtime_dir=tmp_path / "runtime"),
-        project_dir=tmp_path,
-    )
-
-    assert worker.runtime is not None
-
-
-def test_trigger_orchestrator_provider_reload_skips_managed_git_legacy_inventory(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    worker = build_trigger_orchestrator_worker(
-        GatewayConfig(runtime_dir=tmp_path / "runtime"),
-        project_dir=tmp_path,
-    )
-    updated_payload = worker.worker_config.model_dump(mode="python")
-    updated_payload["provider_loader"]["provider_profile"] = "profiles/core-minimal"
-    updated_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(updated_payload)
-    worker._config_reloader = _StaticReloader(updated_config, changed=True)
-
-    def _fail_inventory(_service: ManagedGitAdminService) -> None:
-        raise AssertionError("managed Git legacy inventory reached")
-
-    monkeypatch.setattr(ManagedGitAdminService, "_legacy_state_inventory", _fail_inventory)
-
-    worker.run_once()
-
-    assert worker.worker_config == updated_config
 
 
 def test_build_trigger_orchestrator_worker_uses_sqlite_default_from_loader(

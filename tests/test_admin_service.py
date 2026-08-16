@@ -395,7 +395,6 @@ def _create_issue_test_repo(path: Path, *, content: str) -> Path:
 
 def test_create_local_issue_persists_yaml_and_managed_repo_binding(tmp_path: Path) -> None:
     service = build_admin_runtime(write_config(tmp_path))
-    assert service.managed_git_admin._workflow_config_admin is service.workflow_config_admin
     repo = _create_issue_test_repo(tmp_path / "source-repo", content="source\n")
 
     issue = service.issue_git_admin.create_local_issue(
@@ -9995,92 +9994,6 @@ def test_workflow_pack_history_records_pack_document_saves_and_skips_conflicts(
             actor=actor,
         )
     assert len(service.list_workflow_pack_history(workflow_pack="demo.v1.json").entries) == 1
-
-
-def test_workflow_pack_migration_raw_cas_rejects_stale_write_and_restores_exact_bytes(
-    tmp_path: Path,
-) -> None:
-    packs_dir = tmp_path / "config" / "workflow-packs"
-    packs_dir.mkdir(parents=True, exist_ok=True)
-    pack_path = packs_dir / "legacy.v1.json"
-    before = (
-        b'{\n  "pack_id": "legacy", "pack_version": "v1",\n'
-        b'  "ir": {"version": "v1", "nodes": [{"id": "clone", '
-        b'"type": "effect:agent:clone-repo", "repo_source": "/tmp/source"}], '
-        b'"edges": []}\n}\n'
-    )
-    pack_path.write_bytes(before)
-    config_root = tmp_path / "config" / "trigger-orchestrator"
-    config_root.mkdir(parents=True, exist_ok=True)
-    (config_root / "config.json").write_text(
-        json.dumps(
-            {
-                "runtime_dir": str(tmp_path / "runtime"),
-                "workflow_packs": ["legacy.v1.json"],
-            }
-        ),
-        encoding="utf-8",
-    )
-    service = build_admin_runtime(write_config(tmp_path)).workflow_config_admin
-    document = service.read_workflow_pack_for_migration(workflow_pack="legacy.v1.json")
-    after = json.dumps(
-        {
-            "pack_id": "legacy",
-            "pack_version": "v1",
-            "ir": {
-                "version": "v1",
-                "nodes": [
-                    {
-                        "id": "clone",
-                        "type": "effect:agent:clone-repo",
-                        "managed_repo_id": "mr_0123456789abcdef0123",
-                    }
-                ],
-                "edges": [],
-            },
-        },
-        indent=2,
-        sort_keys=True,
-    ).encode("utf-8")
-    actor = WorkflowPackChangeActor(
-        login="system",
-        display_name="Managed Git migration",
-    )
-
-    applied = service.rewrite_workflow_pack_for_migration(
-        workflow_pack="legacy.v1.json",
-        content=after,
-        expected_revision=document.revision,
-        operation="managed_git_migration_apply",
-        actor=actor,
-    )
-    assert pack_path.read_bytes() == after
-
-    with pytest.raises(AdminRevisionConflict) as exc_info:
-        service.rewrite_workflow_pack_for_migration(
-            workflow_pack="legacy.v1.json",
-            content=b"{}",
-            expected_revision=document.revision,
-            operation="managed_git_migration_apply",
-            actor=actor,
-        )
-    assert exc_info.value.details["current_revision"] == applied.revision
-    assert pack_path.read_bytes() == after
-
-    rolled_back = service.rewrite_workflow_pack_for_migration(
-        workflow_pack="legacy.v1.json",
-        content=before,
-        expected_revision=applied.revision,
-        operation="managed_git_migration_rollback",
-        actor=actor,
-    )
-    assert rolled_back.revision == document.revision
-    assert pack_path.read_bytes() == before
-    history = service.list_workflow_pack_history(workflow_pack="legacy.v1.json")
-    assert [entry.operation for entry in history.entries] == [
-        "managed_git_migration_rollback",
-        "managed_git_migration_apply",
-    ]
 
 
 def test_workflow_editor_rejects_omitted_pack_save_in_multi_pack_config(

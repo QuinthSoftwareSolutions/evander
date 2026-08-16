@@ -242,7 +242,7 @@ If an operator encounters one of these names, the safest first step is to record
 | ADO-specific workflow node types | supported compatibility surfaces, and still appropriate for ADO-only semantics | provider-neutral remote issue/PR nodes where semantics match |
 | Historical Team action artifacts and unpinned terminal releases | retained evidence; incomplete unpinned releases do not satisfy current gates | Team MCP commands and exact pinned release evidence |
 | `AdminService` references | historical design or short-lived compatibility guidance | focused services assembled by `build_admin_runtime` |
-| Legacy managed-Git path fields | migration or audit-only residue, not live routing authority | `managed_repo_id`, owned ref, and exact SHA |
+| Legacy managed-Git path fields | unsupported historical residue, not live routing authority | `managed_repo_id`, owned ref, and exact SHA |
 | Old service/firewall/network names | installer/setup cleanup only | `evander-*` services and current network/config names |
 | Checked-in workflow pack examples | examples or built-ins, not assumed live authority | revision-checked live packs through Admin Web/API |
 
@@ -313,7 +313,7 @@ When a deployment behaves as if an older design is still active:
 2. **Read the relevant changelog window.** Find both the introduction and later retirement. A June compatibility note may have been superseded days later.
 3. **Inspect current assembly.** Check `pyproject.toml` entry points, systemd templates and install script, `build_admin_runtime`, provider/add-on catalogs, and the owning repository constructor.
 4. **Find migration markers and both candidate stores.** Determine which one current code opens before editing either.
-5. **Run the supported preflight or dry-run.** For managed Git, use the `git-repos migrate` flow; for add-ons, use discovery and enablement diagnostics; for a service rename, use installer preflight.
+5. **Run the supported preflight or diagnostic.** For add-ons, use discovery and enablement diagnostics; for a service rename, use installer preflight.
 6. **Quiesce the writers named by the migrator.** Preserve backups and active lease or operation evidence.
 7. **Apply once and verify through the current API.** Check IDs, counts, SHAs, revisions, and provider state—not merely that the new file exists.
 8. **Finalize only when rollback artifacts are no longer needed.** Do not leave two writable authorities.
@@ -343,5 +343,4 @@ When a deployment behaves as if an older design is still active:
 - `tests/test_workflow_plugins.py`
 - `tests/test_container_worker_execution_backend.py`
 - `tests/test_addons.py`
-- `tests/test_managed_git_migration_rewrite.py`
 - `tests/test_team_addon_repository.py`

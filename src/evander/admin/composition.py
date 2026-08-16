@@ -536,7 +536,6 @@ def _build_admin_runtime_components(
             addon_catalog=addon_catalog,
         )
     )
-    managed_git_admin.set_workflow_config_admin(workflow_config_admin)
     addon_admin = AddonAdminService(
         AddonAdminDependencies(
             config=config,
@@ -635,7 +634,6 @@ def _build_admin_runtime_components(
             managed_git_admin=managed_git_admin,
         )
     )
-    managed_git_admin.set_agent_inventory_admin(vm_agent_admin)
     pr_integration_preflight_admin = PrIntegrationPreflightAdminService(
         PrIntegrationPreflightAdminDependencies(
             runtime=runtime,

@@ -3296,48 +3296,8 @@ them:
 evander-cli git-repos delete mr_0123456789abcdef0123
 ```
 
-Deletion fails when bindings, authorized sessions, active/recoverable worktrees, or unresolved
-migration state remain. There is no force-delete option.
-
-### Migrate a legacy installation
-
-This is a breaking contract. Stop trigger/effect workers and finish or stop all active Git/agent
-operations before starting:
-
-```bash
-sudo systemctl stop evander-trigger-orchestrator.service
-sudo systemctl stop evander-effect-orchestrator.service
-
-evander-cli git-repos migrate --dry-run
-```
-
-Dry-run inventories legacy bare repositories, cache mirrors/checkouts, Team projects, workflow
-packs, sessions, and authorized keys. Resolve every missing canonical identity and preserved-ref
-collision. Migration aborts a conflicting group rather than selecting one version of an agent,
-review, Team, note, or PR ref.
-
-Apply only after dry-run reports `can_apply: true`:
-
-```bash
-evander-cli git-repos migrate --apply
-```
-
-Apply creates managed repositories, refreshes canonical refs, imports preserved refs, and rewrites
-active Team/session/issue/key/workflow bindings under the workflow revision lock. It records
-verification hashes and marks stopped VM/container sessions for remote reconciliation. Old
-Evander-owned repositories and cache checkouts become read-only rollback artifacts; operator-owned
-source checkouts are never changed.
-
-Restart services and run one end-to-end VM and container-worker smoke path: clone by ID, restricted
-agent push, queued trigger, pinned promotion, exact note read, PR publication, and Team release
-consolidation. After operator acceptance, finalize separately:
-
-```bash
-evander-cli git-repos migrate --finalize <migration-id>
-```
-
-Finalize re-verifies managed refs and bindings, then deletes only rollback artifacts listed in that
-migration manifest. No rollback artifact is deleted automatically.
+Deletion fails when bindings, authorized sessions, or active/recoverable worktrees remain. There is
+no force-delete option.
 
 See [Managed Git Repositories](git-remotes.md) for the complete contract.
 

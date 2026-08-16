@@ -173,6 +173,10 @@ test("agent list supports searching common agent identifiers", () => {
   );
   assert.match(agentsPage, /<span>Search agents<\/span>/);
   assert.match(agentsPage, /type="search"/);
+  assert.match(
+    agentsPage,
+    /if \(nextSelection\.agentId \|\| nextSelection\.sessionId\) \{[\s\S]*setAgentSearch\(""\);/,
+  );
 });
 
 test("create TTL duration accepts seconds through weeks and emits seconds", () => {

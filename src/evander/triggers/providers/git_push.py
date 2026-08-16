@@ -382,8 +382,8 @@ def publish_git_push_event(
     managed_repo_id = _load_managed_repo_metadata(normalized_repo).get("managed_repo_id")
     if managed_repo_id is None:
         raise RuntimeError(
-            "Git push source is not a registered managed repository; run "
-            "`evander-cli git-repos migrate --dry-run` before restarting workers"
+            "Git push source is not a registered managed repository; register it with "
+            "`evander-cli git-repos register` before restarting workers"
         )
     event_payload = {
         "managed_repo_id": managed_repo_id,
