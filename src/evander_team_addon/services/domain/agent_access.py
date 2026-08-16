@@ -13,6 +13,7 @@ from ...models import (
     ReviewProfile,
     RolePermission,
     TeamBlockerState,
+    TeamCaseStatus,
     TeamInboxItemState,
     TeamRecordState,
     TeamRole,
@@ -98,6 +99,9 @@ def _agent_team_removal_blockers(state: TeamState, agent: PersistentAgent) -> li
     for other in state.agents.values():
         if other.reports_to_agent_id == agent.id:
             blockers.append(f"superior of agent {other.id}")
+    for case in state.cases.values():
+        if case.owner_agent_id == agent.id and case.status != TeamCaseStatus.CLOSED:
+            blockers.append(f"owns non-closed case {case.id}")
     terminal_task_states = {
         TeamTaskState.FINISHED,
         TeamTaskState.ACCEPTED,

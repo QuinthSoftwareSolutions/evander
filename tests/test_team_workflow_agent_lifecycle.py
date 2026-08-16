@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import timedelta
 from pathlib import Path
+from types import SimpleNamespace
 
 from config_helpers import canonical_worker_config
 from evander.config import GatewayConfig
@@ -11,7 +12,13 @@ from evander.effects.providers.agent_destroy import AgentDestroyEffectProvider
 from evander.effects.providers.base import EffectRuntimeContext
 from evander.effects.providers.schemas import AgentDestroyEffectDefinition
 from evander.models import utc_now
-from evander_team_addon.models import AgentStatus, TeamCaseStatus
+from evander.provider_runtime.adapters import AdminRuntimeProviderAdapter
+from evander_team_addon.models import (
+    AgentStatus,
+    EphemeralAssignment,
+    EphemeralAssignmentState,
+    TeamCaseStatus,
+)
 from evander_team_addon.provider_schemas import (
     TeamPublishOutboxEventsEffectDefinition,
     TeamRegisterAgentEffectDefinition,
@@ -41,6 +48,14 @@ class _Sessions:
 
     def get_session(self, session_id: str) -> _Session | None:
         return self.sessions.get(session_id)
+
+
+class _ListSessionsOnly:
+    def __init__(self, *sessions: _Session) -> None:
+        self._sessions = list(sessions)
+
+    def list_sessions(self) -> list[_Session]:
+        return list(self._sessions)
 
 
 class _DestroyingAdminService:
@@ -81,7 +96,7 @@ def _seed_team(runtime_dir: Path) -> TeamStateRepository:
 
 def _register(
     runtime_dir: Path,
-    sessions: _Sessions,
+    sessions: object,
     *,
     session_id: str,
     agent_id: str | None = None,
@@ -113,7 +128,7 @@ def _register(
 
 def _retire(
     runtime_dir: Path,
-    sessions: _Sessions,
+    sessions: object,
     *,
     agent_id: str,
     session_id: str,
@@ -202,6 +217,146 @@ def test_register_agent_effect_is_idempotent_and_enforces_session_scope(tmp_path
     assert missing["success"] is False and "does not exist" in str(missing["error"])
 
 
+def test_lifecycle_effects_use_the_production_session_lookup_contract(tmp_path: Path) -> None:
+    repo = _seed_team(tmp_path)
+    adapter = AdminRuntimeProviderAdapter(
+        SimpleNamespace(
+            runtime=SimpleNamespace(
+                session_repository=_ListSessionsOnly(
+                    _Session(
+                        "production-session",
+                        directory_path="root/workflow",
+                        expires_at=utc_now() + timedelta(hours=1),
+                    )
+                )
+            )
+        )
+    )
+
+    registered = _register(
+        tmp_path,
+        adapter,
+        session_id="production-session",
+        agent_id="production-agent",
+    )
+    assert registered["success"] is True, registered
+    assert repo.read().agents["production-agent"].session_id == "production-session"
+
+    retired = _retire(
+        tmp_path,
+        adapter,
+        agent_id="production-agent",
+        session_id="production-session",
+    )
+    assert retired["success"] is True
+    assert repo.read().agents["production-agent"].status == AgentStatus.ARCHIVED
+
+
+def test_register_agent_rejects_non_cleaned_ephemeral_session_binding(tmp_path: Path) -> None:
+    repo = _seed_team(tmp_path)
+    admin = TeamAdminService(repo)
+    admin.create_project(
+        project_id="project",
+        team_id="team",
+        name="Lifecycle Project",
+        lead_agent_id="manager",
+        lead_session_id=None,
+        expected_revision=repo.read().revision,
+    )
+    admin.create_or_reprioritize_task(
+        task_id="ephemeral-task",
+        owner_agent_id="manager",
+        project_id="project",
+        priority=1,
+        title="Ephemeral work",
+        description="Work already bound to the ephemeral session.",
+        created_by_agent_id="manager",
+        expected_revision=repo.read().revision,
+    )
+
+    def _add_assignment(state):
+        state.ephemeral_assignments["ephemeral-assignment"] = EphemeralAssignment(
+            id="ephemeral-assignment",
+            parent_agent_id="manager",
+            project_id="project",
+            task_id="ephemeral-task",
+            session_id="shared-session",
+            title="Ephemeral worker",
+            prompt="Complete the ephemeral work.",
+            state=EphemeralAssignmentState.REQUESTED,
+        )
+        return state
+
+    repo.update(_add_assignment)
+    sessions = _Sessions(
+        _Session("shared-session", expires_at=utc_now() + timedelta(hours=1))
+    )
+    for assignment_state in (
+        EphemeralAssignmentState.REQUESTED,
+        EphemeralAssignmentState.RUNNING,
+        EphemeralAssignmentState.CLEANUP_PENDING,
+    ):
+        def _set_assignment_state(state):
+            state.ephemeral_assignments["ephemeral-assignment"].state = assignment_state
+            return state
+
+        repo.update(_set_assignment_state)
+        revision_before_rejection = repo.read().revision
+        rejected = _register(
+            tmp_path,
+            sessions,
+            session_id="shared-session",
+            agent_id="persistent-agent",
+        )
+        assert rejected["success"] is False
+        assert "non-cleaned ephemeral assignment ephemeral-assignment" in str(
+            rejected["error"]
+        )
+        assert repo.read().revision == revision_before_rejection
+        assert "persistent-agent" not in repo.read().agents
+
+    def _mark_cleaned_up(state):
+        state.ephemeral_assignments["ephemeral-assignment"].state = (
+            EphemeralAssignmentState.CLEANED_UP
+        )
+        return state
+
+    repo.update(_mark_cleaned_up)
+    registered = _register(
+        tmp_path,
+        sessions,
+        session_id="shared-session",
+        agent_id="persistent-agent",
+    )
+    assert registered["success"] is True
+
+
+def test_register_agent_rejects_archived_role_before_mutation(tmp_path: Path) -> None:
+    repo = _seed_team(tmp_path)
+    admin = TeamAdminService(repo)
+    admin.update_role(
+        role_id="support",
+        archived=True,
+        expected_revision=repo.read().revision,
+    )
+    sessions = _Sessions(
+        _Session("archived-role-session", expires_at=utc_now() + timedelta(hours=1))
+    )
+    revision_before_rejection = repo.read().revision
+
+    rejected = _register(
+        tmp_path,
+        sessions,
+        session_id="archived-role-session",
+        agent_id="archived-role-agent",
+    )
+
+    assert rejected["success"] is False
+    assert rejected["error"] == "role support is archived"
+    assert repo.read().revision == revision_before_rejection
+    assert "archived-role-agent" not in repo.read().agents
+
+
 def test_retire_agent_effect_requires_child_first_cleanup_and_preserves_retry_history(
     tmp_path: Path,
 ) -> None:
@@ -278,6 +433,71 @@ def test_retire_agent_effect_requires_child_first_cleanup_and_preserves_retry_hi
         session_id="support-session",
     )
     assert retired_parent["success"] is True
+
+
+def test_retirement_preserves_closed_case_and_memory_history(tmp_path: Path) -> None:
+    repo = _seed_team(tmp_path)
+    sessions = _Sessions(
+        _Session("support-session", expires_at=utc_now() + timedelta(hours=1))
+    )
+    assert _register(
+        tmp_path,
+        sessions,
+        session_id="support-session",
+        agent_id="support-agent",
+    )["success"]
+    admin = TeamAdminService(repo)
+    admin.create_case(
+        case_id="support-case",
+        team_id="team",
+        title="Customer issue",
+        owner_agent_id="support-agent",
+        expected_revision=repo.read().revision,
+    )
+
+    blocked = _retire(
+        tmp_path,
+        sessions,
+        agent_id="support-agent",
+        session_id="support-session",
+    )
+    assert blocked["success"] is False
+    assert blocked["blockers"] == ["owns non-closed case support-case"]
+
+    admin.update_case(
+        case_id="support-case",
+        status=TeamCaseStatus.CLOSED,
+        expected_revision=repo.read().revision,
+    )
+    admin.create_or_update_memory(
+        memory_id="support-memory",
+        team_id="team",
+        agent_id="support-agent",
+        scope="agent_private",
+        kind="other",
+        title="Support history",
+        summary="Historical context retained after retirement.",
+        expected_revision=repo.read().revision,
+    )
+
+    def _record_memory_creator(state):
+        state.memories["support-memory"].created_by_agent_id = "support-agent"
+        return state
+
+    repo.update(_record_memory_creator)
+    retired = _retire(
+        tmp_path,
+        sessions,
+        agent_id="support-agent",
+        session_id="support-session",
+    )
+
+    assert retired["success"] is True
+    state = repo.read()
+    assert state.agents["support-agent"].retired_team_id == "team"
+    assert state.cases["support-case"].owner_agent_id == "support-agent"
+    assert state.memories["support-memory"].agent_id == "support-agent"
+    assert state.memories["support-memory"].created_by_agent_id == "support-agent"
 
 
 def test_case_close_event_is_outboxed_once_and_not_for_initial_or_resolved_cases(

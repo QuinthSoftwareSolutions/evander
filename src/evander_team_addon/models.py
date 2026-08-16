@@ -4740,7 +4740,11 @@ class TeamState(TeamModel):
                 owner = self.agents.get(case.owner_agent_id)
                 if owner is None:
                     errors.append(f"case {case.id} references missing owner {case.owner_agent_id}")
-                elif owner.team_id != case.team_id:
+                elif owner.team_id != case.team_id and not (
+                    case.status == TeamCaseStatus.CLOSED
+                    and owner.team_id is None
+                    and owner.retired_team_id == case.team_id
+                ):
                     errors.append(
                         f"case {case.id} owner {owner.id} belongs to team {owner.team_id}"
                     )
@@ -5514,7 +5518,7 @@ class TeamState(TeamModel):
                 agent = self.agents.get(memory.agent_id)
                 if agent is None:
                     errors.append(f"memory {memory.id} references missing agent {memory.agent_id}")
-                elif agent.team_id != memory.team_id:
+                elif (agent.team_id or agent.retired_team_id) != memory.team_id:
                     errors.append(
                         f"memory {memory.id} agent {agent.id} belongs to team {agent.team_id}"
                     )
@@ -5525,7 +5529,7 @@ class TeamState(TeamModel):
                         f"memory {memory.id} references missing creator "
                         f"{memory.created_by_agent_id}"
                     )
-                elif creator.team_id != memory.team_id:
+                elif (creator.team_id or creator.retired_team_id) != memory.team_id:
                     errors.append(
                         f"memory {memory.id} creator {creator.id} belongs to team {creator.team_id}"
                     )

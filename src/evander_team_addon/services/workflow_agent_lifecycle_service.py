@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
@@ -11,6 +12,7 @@ from ..models import (
     AgentProjectAssignment,
     AgentProjectAssignmentKind,
     AgentStatus,
+    EphemeralAssignmentState,
     PersistentAgent,
     TeamState,
     TeamRole,
@@ -303,6 +305,22 @@ class TeamWorkflowAgentLifecycleService:
     ) -> None:
         _require_present(state.teams, request.team_id, "team")
         role = _require_present(state.roles, request.role_id, "role")
+        if role.archived:
+            raise ValueError(f"role {role.id} is archived")
+        conflicting_assignment = next(
+            (
+                assignment
+                for assignment in state.ephemeral_assignments.values()
+                if assignment.session_id == request.session_id
+                and assignment.state != EphemeralAssignmentState.CLEANED_UP
+            ),
+            None,
+        )
+        if conflicting_assignment is not None:
+            raise ValueError(
+                f"session {request.session_id} is already bound to non-cleaned ephemeral "
+                f"assignment {conflicting_assignment.id}"
+            )
         if request.project_id is not None:
             project = _require_present(state.projects, request.project_id, "project")
             if project.team_id != request.team_id:
@@ -342,16 +360,10 @@ class TeamWorkflowAgentLifecycleService:
             raise ValueError(f"agent {agent.id} team does not match expected_team_id")
 
     def _require_workflow_session(self, session_id: str, *, require_unexpired: bool) -> Any:
-        repository = self._session_lookup
-        getter = getattr(repository, "get_session", None)
-        if not callable(getter):
-            getter = getattr(repository, "get", None)
-        if not callable(getter):
-            raise RuntimeError("Team workflow lifecycle requires a core session lookup")
-        session = getter(session_id)
+        session = _lookup_session(self._session_lookup, session_id)
         if session is None:
             raise ValueError(f"core session {session_id} does not exist")
-        directory_path = str(getattr(session, "directory_path", "root") or "root")
+        directory_path = str(_session_field(session, "directory_path", "root") or "root")
         if not directory_is_within_scope(directory_path, self._workflow_directory_path):
             raise ValueError(
                 f"core session {session_id} is outside workflow directory scope "
@@ -420,12 +432,32 @@ def _require_revision(state: TeamState, expected_revision: int | None) -> None:
 
 
 def _session_is_expired(session: Any) -> bool:
-    expires_at = getattr(session, "expires_at", None)
+    expires_at = _session_field(session, "expires_at")
     if not isinstance(expires_at, datetime):
         return True
     if expires_at.tzinfo is None:
         expires_at = expires_at.replace(tzinfo=UTC)
     return expires_at <= utc_now()
+
+
+def _lookup_session(session_lookup: Any, session_id: str) -> Any | None:
+    reader = getattr(session_lookup, "read_all_sessions", None)
+    if callable(reader):
+        sessions = reader()
+        if not isinstance(sessions, Mapping):
+            raise RuntimeError("core session lookup returned a non-mapping session collection")
+        return sessions.get(session_id)
+    for method_name in ("get_session", "get"):
+        getter = getattr(session_lookup, method_name, None)
+        if callable(getter):
+            return getter(session_id)
+    raise RuntimeError("Team workflow lifecycle requires a core session lookup")
+
+
+def _session_field(session: Any, field_name: str, default: Any = None) -> Any:
+    if isinstance(session, Mapping):
+        return session.get(field_name, default)
+    return getattr(session, field_name, default)
 
 
 __all__ = [

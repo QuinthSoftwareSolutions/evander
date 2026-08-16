@@ -13,6 +13,10 @@
   post-release closure paths. The event is correlated by Case and has a stable
   Case/closure-time idempotency key; initial closed records, resolved records,
   and closed no-op updates do not publish cleanup work.
+- Fixed lifecycle effects to use the production session-lookup contract,
+  preserve closed-Case and Team-memory references to retired agents, block
+  retirement while an owned Case is still open, and reject archived roles or
+  sessions still bound to non-cleaned ephemeral assignments.
 
 ## 2026-08-16 - Retire Completed Runtime Compatibility Paths
 
