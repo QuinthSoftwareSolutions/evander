@@ -13,6 +13,7 @@ from ...models import (
     ReviewProfile,
     RolePermission,
     TeamBlockerState,
+    TeamCaseStatus,
     TeamInboxItemState,
     TeamRecordState,
     TeamRole,
@@ -87,6 +88,16 @@ def _agent_team_removal_blockers(state: TeamState, agent: PersistentAgent) -> li
     for team in state.teams.values():
         if team.manager_agent_id == agent.id:
             blockers.append(f"manager of team {team.id}")
+    for group in state.governance_groups.values():
+        if group.manager_agent_id != agent.id:
+            continue
+        if not group.archived:
+            blockers.append(f"manager of governance group {group.id}")
+        runtime = state.governance_runtimes.get(group.id)
+        if runtime is not None and runtime.active_dispatch_id is not None:
+            blockers.append(
+                f"active governance dispatch {runtime.active_dispatch_id} for group {group.id}"
+            )
     for assignment in state.project_assignments.values():
         if (
             assignment.agent_id == agent.id
@@ -98,6 +109,9 @@ def _agent_team_removal_blockers(state: TeamState, agent: PersistentAgent) -> li
     for other in state.agents.values():
         if other.reports_to_agent_id == agent.id:
             blockers.append(f"superior of agent {other.id}")
+    for case in state.cases.values():
+        if case.owner_agent_id == agent.id and case.status != TeamCaseStatus.CLOSED:
+            blockers.append(f"owns non-closed case {case.id}")
     terminal_task_states = {
         TeamTaskState.FINISHED,
         TeamTaskState.ACCEPTED,
@@ -112,6 +126,12 @@ def _agent_team_removal_blockers(state: TeamState, agent: PersistentAgent) -> li
         if task.created_by_agent_id == agent.id:
             blockers.append(f"created task {task.id}")
     terminal_record_states = {TeamRecordState.ACCEPTED, TeamRecordState.REJECTED}
+    for release in state.release_packages.values():
+        if (
+            release.owner_agent_id == agent.id
+            and release.state not in terminal_record_states
+        ):
+            blockers.append(f"owns non-terminal release package {release.id}")
     for deliverable in state.deliverables.values():
         if deliverable.state in terminal_record_states:
             continue

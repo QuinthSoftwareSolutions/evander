@@ -990,6 +990,7 @@ class PersistentAgent(TeamModel):
     role_id: str | None = None
     session_id: str
     reports_to_agent_id: str | None = None
+    retired_team_id: str | None = None
     subordinate_agent_ids: list[str] = Field(default_factory=list)
     ephemeral_policy: EphemeralAgentPolicy = Field(default_factory=EphemeralAgentPolicy)
     status: AgentStatus = AgentStatus.ACTIVE
@@ -1004,6 +1005,7 @@ class PersistentAgent(TeamModel):
         "display_name",
         "role_id",
         "reports_to_agent_id",
+        "retired_team_id",
         mode="before",
     )
     @classmethod
@@ -1030,6 +1032,8 @@ class PersistentAgent(TeamModel):
                 raise ValueError("teamless agent cannot have subordinate agents")
         elif self.role_id is None:
             raise ValueError("team-bound agent must have a role")
+        if self.team_id is not None and self.retired_team_id is not None:
+            raise ValueError("active team agent cannot retain a retired team id")
         return self
 
 
@@ -4736,7 +4740,11 @@ class TeamState(TeamModel):
                 owner = self.agents.get(case.owner_agent_id)
                 if owner is None:
                     errors.append(f"case {case.id} references missing owner {case.owner_agent_id}")
-                elif owner.team_id != case.team_id:
+                elif owner.team_id != case.team_id and not (
+                    case.status == TeamCaseStatus.CLOSED
+                    and owner.team_id is None
+                    and owner.retired_team_id == case.team_id
+                ):
                     errors.append(
                         f"case {case.id} owner {owner.id} belongs to team {owner.team_id}"
                     )
@@ -4761,6 +4769,7 @@ class TeamState(TeamModel):
         terminal_task_states = {
             TeamTaskState.FINISHED,
             TeamTaskState.ACCEPTED,
+            TeamTaskState.REJECTED,
             TeamTaskState.CANCELLED,
         }
         for task in self.tasks.values():
@@ -5510,7 +5519,7 @@ class TeamState(TeamModel):
                 agent = self.agents.get(memory.agent_id)
                 if agent is None:
                     errors.append(f"memory {memory.id} references missing agent {memory.agent_id}")
-                elif agent.team_id != memory.team_id:
+                elif (agent.team_id or agent.retired_team_id) != memory.team_id:
                     errors.append(
                         f"memory {memory.id} agent {agent.id} belongs to team {agent.team_id}"
                     )
@@ -5521,7 +5530,7 @@ class TeamState(TeamModel):
                         f"memory {memory.id} references missing creator "
                         f"{memory.created_by_agent_id}"
                     )
-                elif creator.team_id != memory.team_id:
+                elif (creator.team_id or creator.retired_team_id) != memory.team_id:
                     errors.append(
                         f"memory {memory.id} creator {creator.id} belongs to team {creator.team_id}"
                     )
@@ -5687,7 +5696,15 @@ class TeamState(TeamModel):
                 continue
             if release.owner_agent_id is not None:
                 owner = self.agents.get(release.owner_agent_id)
-                if owner is None or owner.team_id != project.team_id:
+                terminal_historical_owner = (
+                    release.state in {TeamRecordState.ACCEPTED, TeamRecordState.REJECTED}
+                    and owner is not None
+                    and owner.team_id is None
+                    and owner.retired_team_id == project.team_id
+                )
+                if owner is None or (
+                    owner.team_id != project.team_id and not terminal_historical_owner
+                ):
                     errors.append(
                         f"release {release.id} references invalid owner {release.owner_agent_id}"
                     )

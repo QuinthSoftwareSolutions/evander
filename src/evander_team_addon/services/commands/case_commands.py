@@ -39,6 +39,7 @@ from ..domain.case_task import (
     _restore_case_task_state,
     _snapshot_case_task_state,
 )
+from ..domain.case_events import append_case_closed_event
 from ..domain.common import (
     _UNSET,
     _optional_text,
@@ -258,6 +259,7 @@ class TeamCaseCommandService(TeamCommandExecutor):
                     correction_context={"case_id": normalized_case_id},
                 )
             before = _case_command_fingerprint(state, normalized_case_id)
+            previous_status = state.cases[normalized_case_id].status
             snapshot = _snapshot_case_task_state(state)
             try:
                 updated_case_id, created = _apply_case_update(
@@ -283,13 +285,21 @@ class TeamCaseCommandService(TeamCommandExecutor):
                     correction_context={"case_id": normalized_case_id},
                 )
             changed = before != _case_command_fingerprint(state, updated_case_id)
+            events: list[dict[str, Any]] = []
+            event = append_case_closed_event(
+                events,
+                state.cases[updated_case_id],
+                previous_status=previous_status,
+            )
             return TeamCommandApplyResult(
                 response_payload={
                     "case_id": updated_case_id,
                     "updated_case_ids": [updated_case_id] if changed else [],
                     "progress_made": changed,
+                    "events": events,
                 },
                 created_domain_ids=[updated_case_id] if changed else [],
+                created_event_ids=[str(event["id"])] if event is not None else [],
             )
 
         return self._execute_team_command(

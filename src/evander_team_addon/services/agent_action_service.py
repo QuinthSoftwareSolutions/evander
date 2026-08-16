@@ -56,6 +56,7 @@ from .domain.case_task import (
     _task_owner_reassignment_error,
     _upward_recipient_error,
 )
+from .commands.outbox import _team_event_outbox_records
 from .domain.chat import (
     _append_pending_chat_message_queued_event_for_agent,
     _apply_chat_reply,
@@ -196,6 +197,7 @@ class TeamAgentActionService:
             "created_ephemeral_assignment_ids": [],
             "ephemeral_events": [],
             "events": [],
+            "case_closed_events": [],
             "accepted_ephemeral_assignment_ids": [],
             "rejected_ephemeral_assignment_ids": [],
             "created_stand_down_ids": [],
@@ -326,11 +328,13 @@ class TeamAgentActionService:
                 _list_of_mappings(normalized_action.get("case_updates"), "case_updates")
             ):
                 case_task_state = _snapshot_case_task_state(state_model)
+                case_event_count = len(result["case_closed_events"])
                 try:
                     case_id, created = _apply_case_update(
                         state_model,
                         actor=agent,
                         update=case_update,
+                        case_closed_events=result["case_closed_events"],
                     )
                 except ValueError as exc:
                     _restore_case_task_state(state_model, case_task_state)
@@ -340,6 +344,7 @@ class TeamAgentActionService:
                     result["created_case_ids"].append(case_id)
                 else:
                     result["updated_case_ids"].append(case_id)
+                result["events"].extend(result["case_closed_events"][case_event_count:])
                 _mark_progress()
 
             for index, update in enumerate(
@@ -1247,8 +1252,13 @@ class TeamAgentActionService:
             result["applied"] = progress
             return state_model
 
-        state = self._repository.update(_mutate, expected_revision=expected_revision)
+        state = self._repository.update_with_outbox(
+            _mutate,
+            outbox_records=lambda: _team_event_outbox_records(result["case_closed_events"]),
+            expected_revision=expected_revision,
+        )
         result.pop(HUMAN_REVIEW_ELIGIBILITY_RESOLVER_RESULT_KEY, None)
+        result.pop("case_closed_events", None)
         result["revision"] = state.revision
         result["ephemeral_events"] = [
             _ephemeral_assignment_event_payload(state, assignment_id)

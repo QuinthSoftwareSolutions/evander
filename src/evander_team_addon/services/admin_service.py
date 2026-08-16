@@ -107,6 +107,7 @@ from .domain.case_task import (
     _validate_case_scope,
     _validate_case_status_transition,
 )
+from .domain.case_events import append_case_closed_event
 from .domain.outcome_catalog import (
     active_outcome_kind_references,
     snapshot_deliverable_outcomes,
@@ -2773,8 +2774,11 @@ class TeamAdminService:
         normalized_metadata = None if metadata is None else _mapping(metadata, "metadata")
         normalized_task_ids = None if task_ids is None else _unique_text_list(task_ids, "task_ids")
 
+        events: list[dict[str, Any]] = []
+
         def _mutate(state: TeamState) -> TeamState:
             case = _require_present(state.cases, normalized_case_id, "case")
+            previous_status = case.status
             next_project_id = case.project_id
             next_owner_agent_id = case.owner_agent_id
             next_source = case.source
@@ -2853,9 +2857,14 @@ class TeamAdminService:
                     if task is not None and not _case_can_link_task(state, case=case, task=task):
                         _unlink_task_from_case(state, task_id=task_id, case_id=case.id, now=now)
             case.updated_at = now
+            append_case_closed_event(events, case, previous_status=previous_status)
             return state
 
-        return self._repository.update(_mutate, expected_revision=expected_revision)
+        return self._repository.update_with_outbox(
+            _mutate,
+            outbox_records=lambda: _team_event_outbox_records(events),
+            expected_revision=expected_revision,
+        )
 
     def create_or_reprioritize_task(
         self,
