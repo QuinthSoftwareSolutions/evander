@@ -17,6 +17,10 @@
   preserve closed-Case and Team-memory references to retired agents, block
   retirement while an owned Case is still open, and reject archived roles or
   sessions still bound to non-cleaned ephemeral assignments.
+- Made revision-guarded registration and retirement retries recognize an exact
+  completed replay, blocked retirement for governance management or dispatches
+  and non-terminal release ownership, preserved rejected-task and terminal
+  release history, and ignored retired agents during persistent session routing.
 
 ## 2026-08-16 - Retire Completed Runtime Compatibility Paths
 

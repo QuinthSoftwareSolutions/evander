@@ -4769,6 +4769,7 @@ class TeamState(TeamModel):
         terminal_task_states = {
             TeamTaskState.FINISHED,
             TeamTaskState.ACCEPTED,
+            TeamTaskState.REJECTED,
             TeamTaskState.CANCELLED,
         }
         for task in self.tasks.values():
@@ -5695,7 +5696,15 @@ class TeamState(TeamModel):
                 continue
             if release.owner_agent_id is not None:
                 owner = self.agents.get(release.owner_agent_id)
-                if owner is None or owner.team_id != project.team_id:
+                terminal_historical_owner = (
+                    release.state in {TeamRecordState.ACCEPTED, TeamRecordState.REJECTED}
+                    and owner is not None
+                    and owner.team_id is None
+                    and owner.retired_team_id == project.team_id
+                )
+                if owner is None or (
+                    owner.team_id != project.team_id and not terminal_historical_owner
+                ):
                     errors.append(
                         f"release {release.id} references invalid owner {release.owner_agent_id}"
                     )

@@ -94,14 +94,15 @@ class TeamWorkflowAgentLifecycleService:
         )
         self._require_workflow_session(normalized.session_id, require_unexpired=True)
         before = self._repository.read()
-        _require_revision(before, expected_revision)
-        existing = self._existing_registration(before, normalized)
+        existing = self._exact_registration(before, normalized)
         if existing is not None:
             return TeamWorkflowAgentRegistrationResult(
                 state=before,
                 agent=existing,
                 created=False,
             )
+        _require_revision(before, expected_revision)
+        self._existing_registration(before, normalized)
 
         created_agent_id: str | None = None
 
@@ -148,11 +149,21 @@ class TeamWorkflowAgentLifecycleService:
 
         try:
             state = self._repository.update(_mutate, expected_revision=expected_revision)
+        except TeamStateConflictError:
+            state = self._repository.read()
+            existing = self._exact_registration(state, normalized)
+            if existing is None:
+                raise
+            return TeamWorkflowAgentRegistrationResult(
+                state=state,
+                agent=existing,
+                created=False,
+            )
         except _RegistrationAlreadyExists:
             state = self._repository.read()
-            _require_revision(state, expected_revision)
-            existing = self._existing_registration(state, normalized)
+            existing = self._exact_registration(state, normalized)
             if existing is None:  # pragma: no cover - defensive concurrent replacement guard
+                _require_revision(state, expected_revision)
                 raise
             return TeamWorkflowAgentRegistrationResult(
                 state=state,
@@ -179,7 +190,6 @@ class TeamWorkflowAgentLifecycleService:
         normalized_session_id = _required_text(expected_session_id, "expected_session_id")
         normalized_team_id = _required_text(expected_team_id, "expected_team_id")
         before = self._repository.read()
-        _require_revision(before, expected_revision)
         agent = _require_present(before.agents, normalized_agent_id, "agent")
         self._validate_retirement_identity(
             agent,
@@ -193,6 +203,7 @@ class TeamWorkflowAgentLifecycleService:
                 retired=True,
                 already_retired=True,
             )
+        _require_revision(before, expected_revision)
         self._require_workflow_session(normalized_session_id, require_unexpired=False)
         blockers = _agent_team_removal_blockers(before, agent)
         if blockers:
@@ -230,9 +241,24 @@ class TeamWorkflowAgentLifecycleService:
 
         try:
             state = self._repository.update(_mutate, expected_revision=expected_revision)
+        except TeamStateConflictError:
+            state = self._repository.read()
+            current = _require_present(state.agents, normalized_agent_id, "agent")
+            self._validate_retirement_identity(
+                current,
+                expected_session_id=normalized_session_id,
+                expected_team_id=normalized_team_id,
+            )
+            if not _is_fully_retired(current):
+                raise
+            return TeamWorkflowAgentRetirementResult(
+                state=state,
+                agent=current,
+                retired=True,
+                already_retired=True,
+            )
         except _RetirementAlreadyCompleted:
             state = self._repository.read()
-            _require_revision(state, expected_revision)
             current = _require_present(state.agents, normalized_agent_id, "agent")
             self._validate_retirement_identity(
                 current,
@@ -240,6 +266,7 @@ class TeamWorkflowAgentLifecycleService:
                 expected_team_id=normalized_team_id,
             )
             if not _is_fully_retired(current):  # pragma: no cover - defensive guard
+                _require_revision(state, expected_revision)
                 raise
             return TeamWorkflowAgentRetirementResult(
                 state=state,
@@ -253,6 +280,31 @@ class TeamWorkflowAgentLifecycleService:
             retired=True,
             already_retired=False,
         )
+
+    def _exact_registration(
+        self,
+        state: TeamState,
+        request: "_RegistrationRequest",
+    ) -> PersistentAgent | None:
+        session_agent = next(
+            (agent for agent in state.agents.values() if agent.session_id == request.session_id),
+            None,
+        )
+        if session_agent is not None and _registration_matches(
+            session_agent,
+            state=state,
+            request=request,
+        ):
+            return session_agent
+        if request.agent_id is not None:
+            agent = state.agents.get(request.agent_id)
+            if agent is not None and _registration_matches(
+                agent,
+                state=state,
+                request=request,
+            ):
+                return agent
+        return None
 
     def _existing_registration(
         self,

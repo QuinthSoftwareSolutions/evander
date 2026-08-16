@@ -13,21 +13,29 @@ from evander.effects.providers.base import EffectRuntimeContext
 from evander.effects.providers.schemas import AgentDestroyEffectDefinition
 from evander.models import utc_now
 from evander.provider_runtime.adapters import AdminRuntimeProviderAdapter
+from evander.queries.providers.base import QueryRuntimeContext
 from evander_team_addon.models import (
     AgentStatus,
     EphemeralAssignment,
     EphemeralAssignmentState,
+    GovernanceRuntime,
+    ReleasePackage,
+    RolePermission,
     TeamCaseStatus,
+    TeamRecordState,
+    TeamTaskState,
 )
 from evander_team_addon.provider_schemas import (
     TeamPublishOutboxEventsEffectDefinition,
     TeamRegisterAgentEffectDefinition,
     TeamRetireAgentEffectDefinition,
+    TeamSessionRoutingQueryDefinition,
 )
 from evander_team_addon.providers import (
     TeamPublishOutboxEventsEffectProvider,
     TeamRegisterAgentEffectProvider,
     TeamRetireAgentEffectProvider,
+    TeamSessionRoutingQueryProvider,
     register_providers,
 )
 from evander_team_addon.repository import TeamStateRepository
@@ -133,6 +141,7 @@ def _retire(
     agent_id: str,
     session_id: str,
     expected_team_id: str = "team",
+    expected_revision: int | None = None,
 ) -> dict[str, object]:
     provider = TeamRetireAgentEffectProvider()
     provider.initialize(
@@ -143,6 +152,7 @@ def _retire(
             agent_id=agent_id,
             expected_session_id=session_id,
             expected_team_id=expected_team_id,
+            expected_revision=expected_revision,
         ),
         EffectRuntimeContext(
             resolved_config={"runtime_dir": str(runtime_dir)},
@@ -215,6 +225,60 @@ def test_register_agent_effect_is_idempotent_and_enforces_session_scope(tmp_path
     assert expired["success"] is False and "expired" in str(expired["error"])
     assert outside["success"] is False and "outside workflow directory" in str(outside["error"])
     assert missing["success"] is False and "does not exist" in str(missing["error"])
+
+
+def test_lifecycle_effects_accept_completed_replays_with_original_revision(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_team(tmp_path)
+    sessions = _Sessions(
+        _Session("support-session", expires_at=utc_now() + timedelta(hours=1))
+    )
+    registration_revision = repo.read().revision
+
+    created = _register(
+        tmp_path,
+        sessions,
+        session_id="support-session",
+        agent_id="support-agent",
+        expected_revision=registration_revision,
+    )
+    assert created["success"] is True
+    assert created["created"] is True
+
+    registration_retry = _register(
+        tmp_path,
+        sessions,
+        session_id="support-session",
+        agent_id="support-agent",
+        expected_revision=registration_revision,
+    )
+    assert registration_retry["success"] is True
+    assert registration_retry["created"] is False
+    assert registration_retry["revision"] == repo.read().revision
+
+    retirement_revision = repo.read().revision
+    retired = _retire(
+        tmp_path,
+        sessions,
+        agent_id="support-agent",
+        session_id="support-session",
+        expected_revision=retirement_revision,
+    )
+    assert retired["success"] is True
+    assert retired["already_retired"] is False
+
+    sessions.sessions.pop("support-session")
+    retirement_retry = _retire(
+        tmp_path,
+        sessions,
+        agent_id="support-agent",
+        session_id="support-session",
+        expected_revision=retirement_revision,
+    )
+    assert retirement_retry["success"] is True
+    assert retirement_retry["already_retired"] is True
+    assert retirement_retry["revision"] == repo.read().revision
 
 
 def test_lifecycle_effects_use_the_production_session_lookup_contract(tmp_path: Path) -> None:
@@ -498,6 +562,227 @@ def test_retirement_preserves_closed_case_and_memory_history(tmp_path: Path) -> 
     assert state.cases["support-case"].owner_agent_id == "support-agent"
     assert state.memories["support-memory"].agent_id == "support-agent"
     assert state.memories["support-memory"].created_by_agent_id == "support-agent"
+
+
+def test_retirement_blocks_governance_management_and_active_dispatches(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_team(tmp_path)
+    sessions = _Sessions(
+        _Session("support-session", expires_at=utc_now() + timedelta(hours=1))
+    )
+    assert _register(
+        tmp_path,
+        sessions,
+        session_id="support-session",
+        agent_id="support-agent",
+    )["success"]
+    admin = TeamAdminService(repo)
+    admin.create_governance_group(
+        governance_group_id="portfolio",
+        name="Portfolio",
+        manager_agent_id="support-agent",
+        member_team_ids=["team"],
+        expected_revision=repo.read().revision,
+    )
+
+    managed_group = _retire(
+        tmp_path,
+        sessions,
+        agent_id="support-agent",
+        session_id="support-session",
+    )
+    assert managed_group["success"] is False
+    assert managed_group["blockers"] == ["manager of governance group portfolio"]
+
+    admin.update_governance_group(
+        governance_group_id="portfolio",
+        archived=True,
+        expected_revision=repo.read().revision,
+    )
+
+    def _start_governance_dispatch(state):
+        state.governance_runtimes["portfolio"] = GovernanceRuntime(
+            governance_group_id="portfolio",
+            active_dispatch_id="dispatch-governance",
+        )
+        return state
+
+    repo.update(_start_governance_dispatch)
+    active_dispatch = _retire(
+        tmp_path,
+        sessions,
+        agent_id="support-agent",
+        session_id="support-session",
+    )
+    assert active_dispatch["success"] is False
+    assert active_dispatch["blockers"] == [
+        "active governance dispatch dispatch-governance for group portfolio"
+    ]
+
+    def _finish_governance_dispatch(state):
+        state.governance_runtimes["portfolio"].active_dispatch_id = None
+        return state
+
+    repo.update(_finish_governance_dispatch)
+    retired = _retire(
+        tmp_path,
+        sessions,
+        agent_id="support-agent",
+        session_id="support-session",
+    )
+    assert retired["success"] is True
+
+
+def test_retirement_preserves_rejected_task_ownership(tmp_path: Path) -> None:
+    repo = _seed_team(tmp_path)
+    sessions = _Sessions(
+        _Session("support-session", expires_at=utc_now() + timedelta(hours=1))
+    )
+    assert _register(
+        tmp_path,
+        sessions,
+        session_id="support-session",
+        agent_id="support-agent",
+    )["success"]
+    admin = TeamAdminService(repo)
+    admin.create_project(
+        project_id="project",
+        team_id="team",
+        name="Lifecycle Project",
+        lead_agent_id="manager",
+        lead_session_id=None,
+        expected_revision=repo.read().revision,
+    )
+    admin.create_or_reprioritize_task(
+        task_id="rejected-task",
+        owner_agent_id="support-agent",
+        project_id="project",
+        priority=1,
+        title="Rejected work",
+        description="Retain the historical owner after rejection.",
+        created_by_agent_id="manager",
+        expected_revision=repo.read().revision,
+    )
+
+    def _reject_task(state):
+        state.tasks["rejected-task"].state = TeamTaskState.REJECTED
+        return state
+
+    repo.update(_reject_task)
+    retired = _retire(
+        tmp_path,
+        sessions,
+        agent_id="support-agent",
+        session_id="support-session",
+    )
+
+    assert retired["success"] is True
+    state = repo.read()
+    assert state.tasks["rejected-task"].owner_agent_id == "support-agent"
+    assert state.agents["support-agent"].retired_team_id == "team"
+
+
+def test_retirement_blocks_active_release_and_preserves_terminal_release_owner(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_team(tmp_path)
+    sessions = _Sessions(
+        _Session("support-session", expires_at=utc_now() + timedelta(hours=1))
+    )
+    admin = TeamAdminService(repo)
+    admin.update_role(
+        role_id="support",
+        permissions=[RolePermission.REQUEST_RELEASE],
+        expected_revision=repo.read().revision,
+    )
+    assert _register(
+        tmp_path,
+        sessions,
+        session_id="support-session",
+        agent_id="support-agent",
+    )["success"]
+    admin.create_project(
+        project_id="project",
+        team_id="team",
+        name="Lifecycle Project",
+        lead_agent_id="manager",
+        lead_session_id=None,
+        expected_revision=repo.read().revision,
+    )
+
+    def _add_release(state):
+        state.release_packages["release"] = ReleasePackage(
+            id="release",
+            project_id="project",
+            owner_agent_id="support-agent",
+            policy_version=2,
+        )
+        return state
+
+    repo.update(_add_release)
+    active_release = _retire(
+        tmp_path,
+        sessions,
+        agent_id="support-agent",
+        session_id="support-session",
+    )
+    assert active_release["success"] is False
+    assert active_release["blockers"] == ["owns non-terminal release package release"]
+
+    def _accept_release(state):
+        state.release_packages["release"].state = TeamRecordState.ACCEPTED
+        return state
+
+    repo.update(_accept_release)
+    retired = _retire(
+        tmp_path,
+        sessions,
+        agent_id="support-agent",
+        session_id="support-session",
+    )
+
+    assert retired["success"] is True
+    state = repo.read()
+    assert state.release_packages["release"].owner_agent_id == "support-agent"
+    assert state.agents["support-agent"].retired_team_id == "team"
+
+
+def test_session_routing_ignores_retired_persistent_agent(tmp_path: Path) -> None:
+    _seed_team(tmp_path)
+    sessions = _Sessions(
+        _Session("support-session", expires_at=utc_now() + timedelta(hours=1))
+    )
+    assert _register(
+        tmp_path,
+        sessions,
+        session_id="support-session",
+        agent_id="support-agent",
+    )["success"]
+    assert _retire(
+        tmp_path,
+        sessions,
+        agent_id="support-agent",
+        session_id="support-session",
+    )["success"]
+
+    routing = TeamSessionRoutingQueryProvider()
+    routing.initialize(
+        TeamSessionRoutingQueryDefinition(
+            id="route-retired",
+            display_name="Route retired session",
+            type="query:team:session-routing",
+            session_id="support-session",
+        ),
+        QueryRuntimeContext(resolved_config={"runtime_dir": str(tmp_path)}),
+    )
+    result = routing.execute()
+
+    assert result["success"] is True
+    assert result["kind"] == "ignored"
+    assert result["persistent"] is False
+    assert result["ignored"] is True
+    assert result["reason"] == "agent is archived or retired from its team"
 
 
 def test_case_close_event_is_outboxed_once_and_not_for_initial_or_resolved_cases(

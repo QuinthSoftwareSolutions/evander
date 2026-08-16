@@ -5969,6 +5969,20 @@ class TeamSessionRoutingQueryProvider(QueryProviderBase):
                 expected_dispatch_id = (
                     _optional_text(runtime.active_dispatch_id) if runtime is not None else None
                 )
+                if agent.status == AgentStatus.ARCHIVED or agent.team_id is None:
+                    return {
+                        "success": True,
+                        "session_id": session_id,
+                        "dispatch_id": dispatch_id,
+                        "kind": "ignored",
+                        "agent_id": agent.id,
+                        "assignment_id": None,
+                        "persistent": False,
+                        "ephemeral": False,
+                        "ignored": True,
+                        "reason": "agent is archived or retired from its team",
+                        "expected_dispatch_id": expected_dispatch_id,
+                    }
                 dispatch_mismatch = (
                     expected_dispatch_id is not None and dispatch_id != expected_dispatch_id
                 ) or (expected_dispatch_id is None and dispatch_id is not None)
