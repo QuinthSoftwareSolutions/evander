@@ -28,7 +28,7 @@ from .models import (
 ADDON_ID = "team-addon"
 STATE_DB_FILE = "state.db"
 LEGACY_STATE_FILE = "state.json"
-SQLITE_SCHEMA_VERSION = 57
+SQLITE_SCHEMA_VERSION = 58
 _SQLITE_WAL_ENABLE_TIMEOUT_SECONDS = 5.0
 
 T = TypeVar("T")
@@ -1244,6 +1244,12 @@ class TeamStateSqliteStore:
                     definition="TEXT",
                 )
                 _ensure_team_agents_nullable_membership(connection)
+                _ensure_column(
+                    connection,
+                    table_name="team_agents",
+                    column_name="retired_team_id",
+                    definition="TEXT",
+                )
                 _ensure_project_assignments_from_legacy(connection)
                 _ensure_team_conversations_operator_scope(connection)
                 _ensure_column(
@@ -2448,6 +2454,7 @@ class TeamStateSqliteStore:
                 "role_id": row["role_id"],
                 "session_id": row["session_id"],
                 "reports_to_agent_id": row["reports_to_agent_id"],
+                "retired_team_id": row["retired_team_id"],
                 "subordinate_agent_ids": subordinates.get(row["id"], []),
                 "ephemeral_policy": {"max_concurrent": row["max_ephemeral_concurrent"]},
                 "status": row["status"],
@@ -2460,9 +2467,10 @@ class TeamStateSqliteStore:
                 """
                 INSERT INTO team_agents(
                     id, team_id, display_name, avatar_json, voice_profile_json,
-                    role_id, session_id, reports_to_agent_id, max_ephemeral_concurrent, status
+                    role_id, session_id, reports_to_agent_id, retired_team_id,
+                    max_ephemeral_concurrent, status
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     agent["id"],
@@ -2477,6 +2485,7 @@ class TeamStateSqliteStore:
                     agent["role_id"],
                     agent["session_id"],
                     agent.get("reports_to_agent_id"),
+                    agent.get("retired_team_id"),
                     int(agent.get("ephemeral_policy", {}).get("max_concurrent", 0)),
                     agent.get("status", "active"),
                 ),
@@ -5103,6 +5112,7 @@ def _ensure_team_agents_nullable_membership(connection: sqlite3.Connection) -> N
             role_id TEXT,
             session_id TEXT NOT NULL,
             reports_to_agent_id TEXT,
+            retired_team_id TEXT,
             max_ephemeral_concurrent INTEGER NOT NULL,
             status TEXT NOT NULL
         )
@@ -5112,11 +5122,12 @@ def _ensure_team_agents_nullable_membership(connection: sqlite3.Connection) -> N
         """
         INSERT INTO team_agents(
             id, team_id, project_id, display_name, avatar_json, voice_profile_json,
-            role_id, session_id, reports_to_agent_id, max_ephemeral_concurrent, status
+            role_id, session_id, reports_to_agent_id, retired_team_id,
+            max_ephemeral_concurrent, status
         )
         SELECT
             id, team_id, project_id, display_name, avatar_json, voice_profile_json,
-            role_id, session_id, reports_to_agent_id, max_ephemeral_concurrent, status
+            role_id, session_id, reports_to_agent_id, NULL, max_ephemeral_concurrent, status
         FROM team_agents_notnull_legacy
         """
     )
@@ -7833,6 +7844,7 @@ CREATE TABLE IF NOT EXISTS team_agents (
     role_id TEXT,
     session_id TEXT NOT NULL,
     reports_to_agent_id TEXT,
+    retired_team_id TEXT,
     max_ephemeral_concurrent INTEGER NOT NULL,
     status TEXT NOT NULL
 );

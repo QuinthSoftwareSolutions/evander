@@ -764,6 +764,34 @@ the same repository validation as the Admin API, may link existing `task_ids`,
 and are intended for ticket/accounting intake bridges that should create or
 refresh Team cases before waking persistent Team agents.
 
+Workflows can attach an already-created core session through
+`effect:team:register-agent`. The session must be unexpired and inside the
+workflow directory scope (or a descendant); the effect validates the Team,
+role, optional project membership, reporting edge, and unique session binding
+before changing Team state. An exact retry is a successful no-op. The existing
+Admin registration route remains available for its broader operator workflow.
+
+Use `effect:team:retire-agent` after a workflow has retired children before
+parents and cleared the agent's Team work. It checks the expected Team and
+session identities, returns all ordinary Team removal blockers, removes project
+and reporting memberships, and archives the persistent Team record without
+destroying its core session. The workflow should invoke `effect:agent:destroy`
+only after retirement succeeds. Retrying an already-detached archived agent is
+safe even after its core session has been destroyed.
+
+When a Case genuinely moves from a non-closed status to `closed`, Team stores a
+transactional `team.case.closed` outbox event for generic `trigger:event`
+workflows. The event is correlated by `case_id` and includes the Team, project,
+owner, prior status, source provenance, and `closed_at`. Creating an initially
+closed Case, resolving a Case, and no-op updates of an already closed Case do
+not emit it.
+
+The generic workflow composition is: create the core session, register its
+Team agent, assign or wake work, close the Case, retire children before parents,
+then destroy the core sessions. Thread correlation, Case creation, prompt
+content, waiting behavior, and session-destruction timing remain workflow
+owned.
+
 Workflow automation can also create concrete execution work with
 `effect:team:create-task`. The node is operator-authored, requires `team_id`,
 `project_id`, `owner_agent_id`, `priority`, `title`, and `description`, and uses

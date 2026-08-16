@@ -46,6 +46,7 @@ from .common import (
 )
 from .work_due import _mark_agent_work_due
 from .task_assessment import assess_task
+from .case_events import append_case_closed_event
 
 
 _POST_RELEASE_FEEDBACK_SOURCE = "post_release_feedback"
@@ -531,11 +532,13 @@ def _apply_case_update(
     *,
     actor: PersistentAgent,
     update: Mapping[str, Any],
+    case_closed_events: list[Mapping[str, Any] | dict[str, Any]] | None = None,
 ) -> tuple[str, bool]:
     raw_case_id = _optional_text(update.get("case_id")) or _optional_text(update.get("id"))
     now = utc_now()
     if raw_case_id is not None and raw_case_id in state.cases:
         case = state.cases[raw_case_id]
+        previous_status = case.status
         error = _case_edit_error(state, actor=actor, case=case)
         if error is not None:
             raise ValueError(error)
@@ -621,8 +624,14 @@ def _apply_case_update(
             for task_id in list(case.task_ids):
                 task = state.tasks.get(task_id)
                 if task is not None and not _case_can_link_task(state, case=case, task=task):
-                    _unlink_task_from_case(state, task_id=task_id, case_id=case.id, now=now)
+                        _unlink_task_from_case(state, task_id=task_id, case_id=case.id, now=now)
         case.updated_at = now
+        if case_closed_events is not None:
+            append_case_closed_event(
+                case_closed_events,
+                case,
+                previous_status=previous_status,
+            )
         return case.id, False
 
     team_id = _optional_text(update.get("team_id")) or actor.team_id

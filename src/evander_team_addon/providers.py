@@ -195,10 +195,12 @@ from .provider_schemas import (
     TeamRecordExternalChatDeliveryEffectDefinition,
     TeamRecordOperatorEscalationDeliveryEffectDefinition,
     TeamRecordHumanReviewPreparationResultEffectDefinition,
+    TeamRegisterAgentEffectDefinition,
     TeamReindexMemoryEffectDefinition,
     TeamRequestEphemeralAgentsEffectDefinition,
     TeamStateQueryDefinition,
     TeamSessionRoutingQueryDefinition,
+    TeamRetireAgentEffectDefinition,
     TeamUpdateCaseEffectDefinition,
     TeamVerifyReleaseCandidateEffectDefinition,
     TeamWakeDueAgentsEffectDefinition,
@@ -208,6 +210,10 @@ from .repository import TeamStateConflictError, TeamStateRepository
 from .sqlite_store import ADDON_ID, STATE_DB_FILE, TeamIdempotencyConflictError
 from .services.agent_action_service import TeamAgentActionService
 from .services.admin_service import TeamAdminService
+from .services.workflow_agent_lifecycle_service import (
+    TeamAgentRetirementBlockedError,
+    TeamWorkflowAgentLifecycleService,
+)
 from .services.chat_service import (
     TeamChatService,
     project_scoped_team_chat_authorization,
@@ -226,6 +232,7 @@ from .services.domain.chat import (
     EXTERNAL_CHAT_REPLY_REQUESTED_EVENT_TYPE,
     _operator_chat_participant_payloads,
 )
+from .services.domain.case_events import TEAM_CASE_CLOSED_EVENT_TYPE
 from .services.domain.common import _slug_id_part
 from .services.domain.ephemeral import (
     EPHEMERAL_COMPLETED_EVENT_TYPE,
@@ -1453,6 +1460,90 @@ _TEAM_WORKFLOW_EDITOR_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
         ],
     ),
     _catalog_entry(
+        "effect",
+        "effect:team:register-agent",
+        "Register Team agent",
+        "Attach an existing in-scope core session as a durable ordinary Team agent.",
+        [
+            _catalog_field(
+                "session_id",
+                "Session ID",
+                "string",
+                required=True,
+                description="Existing unexpired core session to attach to Team state.",
+            ),
+            _catalog_field(
+                "team_id",
+                "Team ID",
+                "string",
+                required=True,
+                description="Team that will own the persistent agent.",
+            ),
+            _catalog_field(
+                "role_id",
+                "Role ID",
+                "string",
+                required=True,
+                description="Active Team role compatible with the selected Team and project.",
+            ),
+            _catalog_field(
+                "agent_id",
+                "Agent ID",
+                "string",
+                description="Optional deterministic Team agent id. Leave blank to generate one.",
+            ),
+            _catalog_field(
+                "project_id",
+                "Project ID",
+                "string",
+                description="Optional Team project membership for the new agent.",
+            ),
+            _catalog_field(
+                "reports_to_agent_id",
+                "Reports to agent ID",
+                "string",
+                description="Optional active same-Team manager for the reporting edge.",
+            ),
+            _catalog_field(
+                "display_name",
+                "Display name",
+                "string",
+                description="Optional durable display name for Team roster and audit history.",
+            ),
+            _revision_field(),
+        ],
+    ),
+    _catalog_entry(
+        "effect",
+        "effect:team:retire-agent",
+        "Retire Team agent",
+        "Detach and archive a Team agent after its children and active work are retired.",
+        [
+            _catalog_field(
+                "agent_id",
+                "Agent ID",
+                "string",
+                required=True,
+                description="Persistent Team agent to detach and archive.",
+            ),
+            _catalog_field(
+                "expected_session_id",
+                "Expected session ID",
+                "string",
+                required=True,
+                description="Backing core session identity guard for safe retirement.",
+            ),
+            _catalog_field(
+                "expected_team_id",
+                "Expected Team ID",
+                "string",
+                required=True,
+                description="Current or retained Team identity guard for safe retirement retries.",
+            ),
+            _revision_field(),
+        ],
+    ),
+    _catalog_entry(
         "query",
         "query:team:session-routing",
         "Route Team session completion",
@@ -2106,6 +2197,11 @@ _TEAM_INTERNAL_EVENT_CATALOG: tuple[WorkflowInternalEventCatalogEntry, ...] = (
         TEAM_OUTBOX_PUBLISH_REQUESTED_EVENT_TYPE,
         "Team outbox publication requested",
         "Published after Team work is committed to the outbox so delivery can begin immediately.",
+    ),
+    _team_internal_event(
+        TEAM_CASE_CLOSED_EVENT_TYPE,
+        "Team case closed",
+        "Published exactly once when a non-closed Team case transitions to closed.",
     ),
     _team_internal_event(
         GIT_PROMOTION_EVENT_TYPE,
@@ -4524,6 +4620,144 @@ class TeamUpdateCaseEffectProvider(EffectProviderBase):
         return _case_effect_success_result(state, case_id=required_case_id)
 
 
+class TeamRegisterAgentEffectProvider(EffectProviderBase):
+    @classmethod
+    def validate_definition(cls, effect_definition):
+        if isinstance(effect_definition, WorkflowNodeEnvelope):
+            return _materialize(TeamRegisterAgentEffectDefinition, effect_definition)
+        return effect_definition
+
+    def execute(self, *, resolved_config: Mapping[str, Any] | None = None) -> dict[str, Any]:
+        payload = _definition_payload(
+            self.effect_definition,
+            "session_id",
+            "team_id",
+            "role_id",
+            "agent_id",
+            "project_id",
+            "reports_to_agent_id",
+            "display_name",
+            "expected_revision",
+        )
+        if resolved_config:
+            payload.update(dict(resolved_config))
+        repo = TeamStateRepository(_runtime_dir(self.runtime_context))
+        session_id = _optional_text(payload.get("session_id"))
+        team_id = _optional_text(payload.get("team_id"))
+        project_id = _optional_text(payload.get("project_id"))
+        try:
+            result = TeamWorkflowAgentLifecycleService(
+                repo,
+                session_lookup=_session_repository_from_context(self.runtime_context),
+                workflow_directory_path=scoped_effect_directory_path(self.runtime_context),
+            ).register_agent(
+                session_id=_required_text(payload.get("session_id"), "session_id"),
+                team_id=_required_text(payload.get("team_id"), "team_id"),
+                role_id=_required_text(payload.get("role_id"), "role_id"),
+                agent_id=_optional_text(payload.get("agent_id")),
+                project_id=project_id,
+                reports_to_agent_id=_optional_text(payload.get("reports_to_agent_id")),
+                display_name=_optional_text(payload.get("display_name")),
+                expected_revision=_optional_int(payload.get("expected_revision"), default=None),
+            )
+        except TeamStateConflictError as exc:
+            return _register_agent_effect_error_result(
+                revision=exc.current_revision,
+                agent_id=_optional_text(payload.get("agent_id")),
+                session_id=session_id,
+                team_id=team_id,
+                project_id=project_id,
+                error=str(exc),
+                expected_revision=exc.expected_revision,
+                current_revision=exc.current_revision,
+            )
+        except (RuntimeError, TypeError, ValueError) as exc:
+            return _register_agent_effect_error_result(
+                revision=repo.read().revision,
+                agent_id=_optional_text(payload.get("agent_id")),
+                session_id=session_id,
+                team_id=team_id,
+                project_id=project_id,
+                error=str(exc),
+            )
+        return _register_agent_effect_success_result(
+            state=result.state,
+            agent=result.agent,
+            created=result.created,
+        )
+
+
+class TeamRetireAgentEffectProvider(EffectProviderBase):
+    @classmethod
+    def validate_definition(cls, effect_definition):
+        if isinstance(effect_definition, WorkflowNodeEnvelope):
+            return _materialize(TeamRetireAgentEffectDefinition, effect_definition)
+        return effect_definition
+
+    def execute(self, *, resolved_config: Mapping[str, Any] | None = None) -> dict[str, Any]:
+        payload = _definition_payload(
+            self.effect_definition,
+            "agent_id",
+            "expected_session_id",
+            "expected_team_id",
+            "expected_revision",
+        )
+        if resolved_config:
+            payload.update(dict(resolved_config))
+        repo = TeamStateRepository(_runtime_dir(self.runtime_context))
+        agent_id = _optional_text(payload.get("agent_id"))
+        session_id = _optional_text(payload.get("expected_session_id"))
+        try:
+            result = TeamWorkflowAgentLifecycleService(
+                repo,
+                session_lookup=_session_repository_from_context(self.runtime_context),
+                workflow_directory_path=scoped_effect_directory_path(self.runtime_context),
+            ).retire_agent(
+                agent_id=_required_text(payload.get("agent_id"), "agent_id"),
+                expected_session_id=_required_text(
+                    payload.get("expected_session_id"),
+                    "expected_session_id",
+                ),
+                expected_team_id=_required_text(
+                    payload.get("expected_team_id"),
+                    "expected_team_id",
+                ),
+                expected_revision=_optional_int(payload.get("expected_revision"), default=None),
+            )
+        except TeamStateConflictError as exc:
+            return _retire_agent_effect_error_result(
+                revision=exc.current_revision,
+                agent_id=agent_id,
+                session_id=session_id,
+                blockers=[],
+                error=str(exc),
+                expected_revision=exc.expected_revision,
+                current_revision=exc.current_revision,
+            )
+        except TeamAgentRetirementBlockedError as exc:
+            return _retire_agent_effect_error_result(
+                revision=repo.read().revision,
+                agent_id=agent_id,
+                session_id=session_id,
+                blockers=exc.blockers,
+                error=str(exc),
+            )
+        except (RuntimeError, TypeError, ValueError) as exc:
+            return _retire_agent_effect_error_result(
+                revision=repo.read().revision,
+                agent_id=agent_id,
+                session_id=session_id,
+                blockers=[],
+                error=str(exc),
+            )
+        return _retire_agent_effect_success_result(
+            state=result.state,
+            agent=result.agent,
+            retired=result.retired,
+            already_retired=result.already_retired,
+        )
+
+
 class TeamRequestEphemeralAgentsEffectProvider(EffectProviderBase):
     @classmethod
     def validate_definition(cls, effect_definition):
@@ -6596,6 +6830,8 @@ def register_providers() -> ProviderPluginRegistration:
             "effect:team:create-task": TeamCreateTaskEffectProvider,
             "effect:team:create-case": TeamCreateCaseEffectProvider,
             "effect:team:update-case": TeamUpdateCaseEffectProvider,
+            "effect:team:register-agent": TeamRegisterAgentEffectProvider,
+            "effect:team:retire-agent": TeamRetireAgentEffectProvider,
             "effect:team:request-ephemeral-agents": TeamRequestEphemeralAgentsEffectProvider,
             "effect:team:mark-ephemeral-spawned": TeamMarkEphemeralSpawnedEffectProvider,
             "effect:team:accept-ephemeral-deliverable": (
@@ -6678,6 +6914,12 @@ def register_providers() -> ProviderPluginRegistration:
             ),
             "effect:team:update-case": (
                 lambda node: _materialize(TeamUpdateCaseEffectDefinition, node)
+            ),
+            "effect:team:register-agent": (
+                lambda node: _materialize(TeamRegisterAgentEffectDefinition, node)
+            ),
+            "effect:team:retire-agent": (
+                lambda node: _materialize(TeamRetireAgentEffectDefinition, node)
             ),
             "effect:team:request-ephemeral-agents": (
                 lambda node: _materialize(TeamRequestEphemeralAgentsEffectDefinition, node)
@@ -11467,6 +11709,102 @@ def _review_cohort_effect_error_result(
         "published_event_ids": [],
         "events": [],
         "review_requests": [],
+        "error": error,
+    }
+    if expected_revision is not None:
+        result["expected_revision"] = expected_revision
+    if current_revision is not None:
+        result["current_revision"] = current_revision
+    return result
+
+
+def _register_agent_effect_success_result(
+    *,
+    state: TeamState,
+    agent: Any,
+    created: bool,
+) -> dict[str, Any]:
+    return {
+        "success": True,
+        "revision": state.revision,
+        "created": created,
+        "agent_id": agent.id,
+        "session_id": agent.session_id,
+        "team_id": agent.team_id,
+        "project_id": next(iter(agent_project_ids(state, agent.id)), None),
+        "agent": agent.model_dump(mode="json"),
+        "error": None,
+    }
+
+
+def _register_agent_effect_error_result(
+    *,
+    revision: int,
+    agent_id: str | None,
+    session_id: str | None,
+    team_id: str | None,
+    project_id: str | None,
+    error: str,
+    expected_revision: int | None = None,
+    current_revision: int | None = None,
+) -> dict[str, Any]:
+    result: dict[str, Any] = {
+        "success": False,
+        "revision": revision,
+        "created": False,
+        "agent_id": agent_id,
+        "session_id": session_id,
+        "team_id": team_id,
+        "project_id": project_id,
+        "agent": None,
+        "error": error,
+    }
+    if expected_revision is not None:
+        result["expected_revision"] = expected_revision
+    if current_revision is not None:
+        result["current_revision"] = current_revision
+    return result
+
+
+def _retire_agent_effect_success_result(
+    *,
+    state: TeamState,
+    agent: Any,
+    retired: bool,
+    already_retired: bool,
+) -> dict[str, Any]:
+    return {
+        "success": True,
+        "revision": state.revision,
+        "retired": retired,
+        "already_retired": already_retired,
+        "agent_id": agent.id,
+        "session_id": agent.session_id,
+        "blockers": [],
+        "agent": agent.model_dump(mode="json"),
+        "error": None,
+    }
+
+
+def _retire_agent_effect_error_result(
+    *,
+    revision: int,
+    agent_id: str | None,
+    session_id: str | None,
+    blockers: Sequence[str],
+    error: str,
+    expected_revision: int | None = None,
+    current_revision: int | None = None,
+) -> dict[str, Any]:
+    result: dict[str, Any] = {
+        "success": False,
+        "revision": revision,
+        "retired": False,
+        "already_retired": False,
+        "agent_id": agent_id,
+        "session_id": session_id,
+        "blockers": list(blockers),
+        "agent": None,
         "error": error,
     }
     if expected_revision is not None:

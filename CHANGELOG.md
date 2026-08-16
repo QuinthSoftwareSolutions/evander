@@ -1,5 +1,19 @@
 # Changelog
 
+## 2026-08-16 - Workflow-Controlled Team Agent Lifecycle
+
+- Added workflow-only `effect:team:register-agent` and
+  `effect:team:retire-agent` primitives for attaching an in-scope core session
+  as an ordinary persistent Team agent, then safely detaching and archiving it.
+  Registration is idempotent for an exact binding; retirement enforces existing
+  Team work and hierarchy blockers, preserves the agent/session audit record,
+  and permits a safe retry after the separately owned core-session destruction.
+- Added transactional `team.case.closed` outbox events for real Case transitions
+  to `closed`, across Admin, workflow, ordinary Team-agent, and protected
+  post-release closure paths. The event is correlated by Case and has a stable
+  Case/closure-time idempotency key; initial closed records, resolved records,
+  and closed no-op updates do not publish cleanup work.
+
 ## 2026-08-16 - Retire Completed Runtime Compatibility Paths
 
 - Removed automatic local-issue schema migration and legacy proxy metadata inference now that both

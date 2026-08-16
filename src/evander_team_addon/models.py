@@ -990,6 +990,7 @@ class PersistentAgent(TeamModel):
     role_id: str | None = None
     session_id: str
     reports_to_agent_id: str | None = None
+    retired_team_id: str | None = None
     subordinate_agent_ids: list[str] = Field(default_factory=list)
     ephemeral_policy: EphemeralAgentPolicy = Field(default_factory=EphemeralAgentPolicy)
     status: AgentStatus = AgentStatus.ACTIVE
@@ -1004,6 +1005,7 @@ class PersistentAgent(TeamModel):
         "display_name",
         "role_id",
         "reports_to_agent_id",
+        "retired_team_id",
         mode="before",
     )
     @classmethod
@@ -1030,6 +1032,8 @@ class PersistentAgent(TeamModel):
                 raise ValueError("teamless agent cannot have subordinate agents")
         elif self.role_id is None:
             raise ValueError("team-bound agent must have a role")
+        if self.team_id is not None and self.retired_team_id is not None:
+            raise ValueError("active team agent cannot retain a retired team id")
         return self
 
 

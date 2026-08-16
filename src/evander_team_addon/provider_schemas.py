@@ -244,6 +244,26 @@ class TeamUpdateCaseEffectDefinition(EffectDefinition):
         raise ValueError("effect:team:update-case metadata must be a JSON object")
 
 
+class TeamRegisterAgentEffectDefinition(EffectDefinition):
+    type: Literal["effect:team:register-agent"]
+    session_id: ConfigValue
+    team_id: ConfigValue
+    role_id: ConfigValue
+    agent_id: ConfigValue | None = None
+    project_id: ConfigValue | None = None
+    reports_to_agent_id: ConfigValue | None = None
+    display_name: ConfigValue | None = None
+    expected_revision: ConfigValue | None = None
+
+
+class TeamRetireAgentEffectDefinition(EffectDefinition):
+    type: Literal["effect:team:retire-agent"]
+    agent_id: ConfigValue
+    expected_session_id: ConfigValue
+    expected_team_id: ConfigValue
+    expected_revision: ConfigValue | None = None
+
+
 class TeamRequestEphemeralAgentsEffectDefinition(EffectDefinition):
     type: Literal["effect:team:request-ephemeral-agents"]
     parent_agent_id: ConfigValue
@@ -653,6 +673,32 @@ TEAM_OUTPUT_SCHEMAS: dict[str, dict[str, dict[str, Any]]] = {
         "task_ids": {"type": "array"},
         "case": {"type": ["object", "null"]},
         "error": {"type": ["string", "null"]},
+    },
+    "effect:team:register-agent": {
+        "success": {"type": "boolean"},
+        "revision": {"type": "integer"},
+        "created": {"type": "boolean"},
+        "agent_id": {"type": ["string", "null"]},
+        "session_id": {"type": ["string", "null"]},
+        "team_id": {"type": ["string", "null"]},
+        "project_id": {"type": ["string", "null"]},
+        "agent": {"type": ["object", "null"]},
+        "error": {"type": ["string", "null"]},
+        "expected_revision": {"type": ["integer", "null"]},
+        "current_revision": {"type": ["integer", "null"]},
+    },
+    "effect:team:retire-agent": {
+        "success": {"type": "boolean"},
+        "revision": {"type": "integer"},
+        "retired": {"type": "boolean"},
+        "already_retired": {"type": "boolean"},
+        "agent_id": {"type": ["string", "null"]},
+        "session_id": {"type": ["string", "null"]},
+        "blockers": {"type": "array"},
+        "agent": {"type": ["object", "null"]},
+        "error": {"type": ["string", "null"]},
+        "expected_revision": {"type": ["integer", "null"]},
+        "current_revision": {"type": ["integer", "null"]},
     },
     "effect:team:request-ephemeral-agents": {
         "success": {"type": "boolean"},

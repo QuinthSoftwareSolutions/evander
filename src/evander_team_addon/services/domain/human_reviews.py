@@ -46,6 +46,7 @@ from .common import _release_candidate_branch
 from .task_assessment import require_task_resolved
 from .wake import _append_agent_wake_requested_event
 from .work_due import _mark_agent_work_due
+from .case_events import append_case_closed_event
 
 
 HUMAN_REVIEW_REQUESTED_EVENT_TYPE = "team.release.human_review_requested"
@@ -878,6 +879,7 @@ def close_post_release_feedback_case(
         )
 
     effective_now = now or utc_now()
+    previous_status = case.status
     case.metadata = {
         **case.metadata,
         "post_release_feedback_resolution": {
@@ -894,6 +896,7 @@ def close_post_release_feedback_case(
     result["case_id"] = case.id
     result["closed_case_ids"] = [case.id]
     result["resolution_evidence_refs"] = normalized_evidence_refs
+    append_case_closed_event(result.setdefault("events", []), case, previous_status=previous_status)
     if case.project_id is not None:
         _recalculate_project_status(state, case.project_id)
     return case
