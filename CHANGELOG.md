@@ -29,6 +29,9 @@
 - Made cached workflow journals honor the completed one-way marker dynamically, so a service that
   was already running during finalization switches to SQLite instead of recreating
   `workflow-events.jsonl` on its next notification.
+- Serialized workflow-event appends with the JSON finalizer, made incomplete or invalid markers
+  fail closed, translated live-reader cursors across the JSON-to-SQLite cutover, and recorded the
+  actual configured journal, marker, and database paths in an adjacent durable tombstone.
 
 ## 2026-08-17 - Discord Forum And Public Thread Communication
 
