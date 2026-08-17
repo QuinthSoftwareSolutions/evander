@@ -183,6 +183,7 @@ let costState = emptyCostState();
 let runtimeFilter = null;
 let runtimeFilterTouched = false;
 let templates = [];
+let communicationTargets = [];
 let timelineState = emptyTimelineState();
 let chatState = emptyChatState();
 let chatRequestId = 0;
@@ -3950,6 +3951,7 @@ async function loadBootstrap() {
   const payload = await response.json();
   bootstrapLoaded = true;
   state = normalizeState({ ...state, revision: payload.revision ?? state.revision });
+  communicationTargets = normalizeCommunicationTargetOptions(payload.communication_targets);
   selectedChatOperatorUserId = text(payload.selected_operator?.user_id) || selectedChatOperatorUserId;
   chatState = normalizeChat({ ...chatState, ...chatScopeFields(payload), revision: payload.revision ?? chatState.revision });
   renderShell();
@@ -20215,6 +20217,7 @@ function buildSelectOptionSets() {
       ["manual", "Manual reset"],
       ["monthly_utc", "Monthly (UTC)"],
     ],
+    "communication-targets": communicationTargets,
     "realtime-voices": realtimeVoiceOptions,
     "project-statuses": projectStatuses.map((item) => [item, item]),
     "decision-states": decisionStates.map((item) => [item, item]),
@@ -20233,6 +20236,14 @@ function buildSelectOptionSets() {
 }
 
 function optionsForSelect(select, optionSets) {
+  if (select.dataset.options === "communication-targets") {
+    const options = optionSets[select.dataset.options] || [];
+    const currentValue = text(select.dataset.currentValue ?? select.value);
+    if (currentValue && !options.some(([value]) => value === currentValue)) {
+      return [[currentValue, `${currentValue} (no longer registered)`], ...options];
+    }
+    return options;
+  }
   if (select.dataset.options === "review-profile-edit-outcome-kinds") {
     return reviewProfileEditOutcomeOptions(select);
   }
@@ -20249,6 +20260,23 @@ function optionsForSelect(select, optionSets) {
     return agentEditSuperiorOptions(select);
   }
   return optionSets[select.dataset.options] || [];
+}
+
+function normalizeCommunicationTargetOptions(value) {
+  const optionsByValue = new Map();
+  (Array.isArray(value) ? value : []).forEach((option) => {
+    if (!option || typeof option !== "object") {
+      return;
+    }
+    const targetId = text(option.value);
+    if (!targetId || optionsByValue.has(targetId)) {
+      return;
+    }
+    optionsByValue.set(targetId, [targetId, text(option.label) || targetId]);
+  });
+  return Array.from(optionsByValue.values()).sort(
+    (left, right) => text(left[1]).localeCompare(text(right[1])) || text(left[0]).localeCompare(text(right[0])),
+  );
 }
 
 function reviewProfileEditOutcomeOptions(select) {
@@ -23307,7 +23335,7 @@ function renderEditFields(type, record) {
       ${readonlyField("Team ID", record.id)}
       ${textField("Name", "name", record.name, { required: true })}
       ${selectField("Manager", "manager_agent_id", "agents", record.manager_agent_id || "", { required: true })}
-      ${textField("Operator communication target id", "operator_communication_target_id", record.operator_communication_target_id || "")}
+      ${selectField("Operator communication target", "operator_communication_target_id", "communication-targets", record.operator_communication_target_id || "", { placeholder: "No operator target" })}
       ${checkboxField("Escalate manager escalations to governance", "escalate_to_governance", Boolean(record.escalate_to_governance))}
       ${numberField("Estimated max cost USD", "max_cost_usd", record.max_cost_usd ?? "", { min: 0, step: "0.01" })}
       ${numberField("Governance cost warning threshold", "cost_warning_ratio", record.cost_warning_ratio ?? 0.8, { min: 0.01, max: 1, step: "0.01" })}

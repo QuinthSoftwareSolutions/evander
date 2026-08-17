@@ -57,6 +57,7 @@ from evander.execution.container_worker_client import (
 from evander.email.http_utils import ProviderRequestError
 from evander.models import utc_now
 from evander.model_usage.runtime import MODEL_USAGE_STORE_FILENAME, model_usage_store
+from evander.messaging.targets import load_communication_targets_config
 from evander.voice_sessions import (
     OpenAIRealtimeClientSecretService,
     VoiceQueryDelegator,
@@ -535,7 +536,14 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
 
     async def get_bootstrap(request: Request) -> JSONResponse:
         state = repository.read()
-        return JSONResponse(_bootstrap_payload_for_request(context.auth, request, state))
+        return JSONResponse(
+            _bootstrap_payload_for_request(
+                context.auth,
+                request,
+                state,
+                communication_targets=_registered_communication_target_options(context),
+            )
+        )
 
     async def get_inbox_history(request: Request) -> JSONResponse:
         return JSONResponse(_inbox_history_payload_for_request(request, repository.read()))
@@ -4612,6 +4620,8 @@ def _bootstrap_payload_for_request(
     auth: Any | None,
     request: Request,
     state: TeamState,
+    *,
+    communication_targets: Sequence[Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
     identity = _operator_identity_from_request(auth, request)
     scope = _chat_scope_for_operator(auth, request, state, identity["user_id"], identity=identity)
@@ -4625,6 +4635,7 @@ def _bootstrap_payload_for_request(
         "selected_operator": scope["selected_operator"],
         "can_view_all_operators": bool(scope.get("can_view_all_operators")),
         "operator_options": _operator_options(state, scope=scope),
+        "communication_targets": list(communication_targets or ()),
         "counts": {
             "teams": len(state.teams),
             "governance_groups": len(state.governance_groups),
@@ -4641,6 +4652,37 @@ def _bootstrap_payload_for_request(
             ),
         },
     }
+
+
+def _registered_communication_target_options(
+    context: AddonContext,
+) -> list[dict[str, Any]]:
+    """Return every root-directory communication target for Team configuration."""
+
+    service = context.service
+    runtime = getattr(service, "runtime", service)
+    directory_store = getattr(runtime, "directories", None)
+    if directory_store is None:
+        return []
+    try:
+        targets = load_communication_targets_config(
+            runtime_dir=context.runtime_dir,
+            directory_store=directory_store,
+            directory_path="root",
+        ).targets
+    except (OSError, ValueError):
+        return []
+    options: list[dict[str, Any]] = []
+    for target in targets:
+        capabilities = sorted(target.policy.capabilities)
+        capability_suffix = f", {', '.join(capabilities)}" if capabilities else ""
+        options.append(
+            {
+                "value": target.id,
+                "label": f"{target.id} ({target.provider}/{target.kind}{capability_suffix})",
+            }
+        )
+    return options
 
 
 def _view_payload_for_request(

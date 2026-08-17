@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-08-17 - Team Operator Communication Target Selection
+
+- Changed the Team editor's operator communication target field into a dropdown populated with
+  every communication target registered for the root directory, while retaining an unavailable
+  existing selection so operators can repair or clear it safely.
+
 ## 2026-08-17 - Support Workflow Closure Safety
 
 - Added a closed-Case snapshot to the durable `team.case.closed` event so a
