@@ -720,6 +720,16 @@ _TEAM_WORKFLOW_EDITOR_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
                 json_value_type="array",
             ),
             _catalog_field(
+                "outbox_record_ids",
+                "Outbox record IDs",
+                "json",
+                description=(
+                    "Optional exact Team outbox record IDs to publish. Leave blank to claim "
+                    "the globally oldest pending records."
+                ),
+                json_value_type="array",
+            ),
+            _catalog_field(
                 "claim_ttl_seconds",
                 "Claim TTL seconds",
                 "number",
@@ -5101,6 +5111,7 @@ class TeamPublishOutboxEventsEffectProvider(EffectProviderBase):
             self.effect_definition,
             "limit",
             "intent_types",
+            "outbox_record_ids",
             "claim_ttl_seconds",
             "retry_after_seconds",
             "worker_id",
@@ -5115,6 +5126,12 @@ class TeamPublishOutboxEventsEffectProvider(EffectProviderBase):
         retry_after_seconds = 60 if retry_after_seconds is None else max(0, retry_after_seconds)
         worker_id = _optional_text(payload.get("worker_id")) or "team-outbox-publisher"
         intent_types = _string_list(payload.get("intent_types"), "intent_types")
+        raw_outbox_record_ids = payload.get("outbox_record_ids")
+        outbox_record_ids = (
+            None
+            if raw_outbox_record_ids is None
+            else _string_list(raw_outbox_record_ids, "outbox_record_ids")
+        )
 
         return _publish_team_outbox_events(
             context=self.runtime_context,
@@ -5122,6 +5139,7 @@ class TeamPublishOutboxEventsEffectProvider(EffectProviderBase):
             worker_id=worker_id,
             limit=limit,
             intent_types=intent_types or None,
+            outbox_record_ids=outbox_record_ids,
             claim_ttl_seconds=claim_ttl_seconds,
             retry_after_seconds=retry_after_seconds,
         )
@@ -5136,11 +5154,13 @@ def _publish_team_outbox_events(
     claim_ttl_seconds: int,
     retry_after_seconds: int,
     intent_types: list[str] | None = None,
+    outbox_record_ids: list[str] | None = None,
 ) -> dict[str, Any]:
     claimed = repo.claim_outbox_records(
         worker_id=worker_id,
         limit=limit,
         intent_types=intent_types,
+        record_ids=outbox_record_ids,
         claim_ttl_seconds=claim_ttl_seconds,
     )
     published_event_ids: list[str] = []

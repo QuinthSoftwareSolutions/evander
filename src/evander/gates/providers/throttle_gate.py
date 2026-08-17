@@ -23,7 +23,9 @@ class ThrottleGateProvider(GateProviderBase):
     capability = NodeCapability(
         min_inbound=1,
         max_inbound=1,
-        allowed_source_ports=frozenset({_DEFAULT_BRANCH_PORT, _DROPPED_BRANCH_PORT}),
+        allowed_source_ports=frozenset(
+            {None, _DEFAULT_BRANCH_PORT, _DROPPED_BRANCH_PORT}
+        ),
     )
 
     def execute(self, **kwargs: Any) -> bool:
@@ -98,6 +100,15 @@ class ThrottleGateProvider(GateProviderBase):
         }
         binding_trace = binding_trace_to_payload(resolved.trace)
         if allowed:
+            completion_branch_port = (
+                _DEFAULT_BRANCH_PORT
+                if _has_outbound_source_port(
+                    graph=kwargs.get("graph"),
+                    gate_id=gate.id,
+                    source_port=_DEFAULT_BRANCH_PORT,
+                )
+                else None
+            )
             logger.info(
                 "gate:throttle allowed activation gate_id=%s key=%s event_id=%s "
                 "accepted_count=%s limit=%s window_expires_at=%s",
@@ -121,7 +132,7 @@ class ThrottleGateProvider(GateProviderBase):
                 config_revision=config_revision,
                 binding_trace=binding_trace,
                 publish_completion_event=True,
-                branch_port=_DEFAULT_BRANCH_PORT,
+                branch_port=completion_branch_port,
             )
             return True
 

@@ -17,6 +17,7 @@ def request_team_outbox_publication(
     context: Any,
     *,
     correlation_key: str,
+    payload: Mapping[str, Any] | None = None,
 ) -> dict[str, object]:
     """Persist and signal a prompt outbox-publisher workflow wake.
 
@@ -49,7 +50,7 @@ def request_team_outbox_publication(
         )
         event = bus.publish(
             event_type=TEAM_OUTBOX_PUBLISH_REQUESTED_EVENT_TYPE,
-            payload={},
+            payload=dict(payload or {}),
             correlation_key=correlation_key,
             idempotency_key=(f"{TEAM_OUTBOX_PUBLISH_REQUESTED_EVENT_TYPE}:{correlation_key}"),
             source=InternalEventSource(
@@ -101,6 +102,7 @@ def request_team_outbox_publication_for_records(
     result = request_team_outbox_publication(
         context,
         correlation_key=f"outbox-records:{digest}",
+        payload={"outbox_record_ids": normalized_ids},
     )
     return {
         "outbox_record_ids": normalized_ids,

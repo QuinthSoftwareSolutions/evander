@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  normalizeWorkflowEdgeSourcePort,
   normalizeWorkflowSourcePort,
   workflowConnectionRouteOptions,
   workflowEdgeRouteLabel,
@@ -139,6 +140,9 @@ test("error route options render with the error route class", () => {
 });
 
 test("route classes group known route semantics", () => {
+  assert.equal(normalizeWorkflowEdgeSourcePort("gate:throttle", "default"), "default");
+  assert.equal(normalizeWorkflowEdgeSourcePort("gate:throttle", null), "default");
+  assert.equal(normalizeWorkflowEdgeSourcePort("gate:filter", null), null);
   assert.equal(normalizeWorkflowSourcePort(" completed "), "completed");
   assert.equal(workflowRouteClass(null), "default");
   assert.equal(workflowRouteClass("started"), "started");

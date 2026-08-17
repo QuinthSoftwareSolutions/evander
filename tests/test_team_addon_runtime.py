@@ -93,6 +93,7 @@ from evander_team_addon.models import (
     TeamInboxItemType,
     TeamInboxPriority,
     TeamOutboxRecord,
+    TeamOutboxStatus,
     TeamRecordState,
     TeamRole,
     TeamState,
@@ -108,6 +109,7 @@ from evander_team_addon.provider_schemas import (
     TeamFinalizeAgentDispatchEffectDefinition,
     TeamMarkEphemeralCleanedUpEffectDefinition,
     TeamMarkEphemeralSpawnedEffectDefinition,
+    TeamPublishOutboxEventsEffectDefinition,
     TeamSessionRoutingQueryDefinition,
     TeamStateQueryDefinition,
     TeamUpdateCaseEffectDefinition,
@@ -130,6 +132,7 @@ from evander_team_addon.providers import (
     TeamAgentPromptCompletionFinalizeHook,
     TeamMarkEphemeralCleanedUpEffectProvider,
     TeamMarkEphemeralSpawnedEffectProvider,
+    TeamPublishOutboxEventsEffectProvider,
     TeamSessionRoutingQueryProvider,
     TeamStateQueryProvider,
     TeamUpdateCaseEffectProvider,
@@ -152,13 +155,14 @@ from evander_team_addon.providers import (
     _validate_review_repository_dispatch_compatibility,
 )
 from evander_team_addon.repository import TeamStateConflictError, TeamStateRepository
-from evander_team_addon.services.domain.chat import (
-    CHAT_MESSAGE_QUEUED_EVENT_TYPE,
-    _publish_admin_chat_notification,
-)
 from evander_team_addon.services.domain.agent_access import (
     _agent_payload,
     agent_role_description_fingerprint,
+)
+from evander_team_addon.services.domain.case_events import TEAM_CASE_CLOSED_EVENT_TYPE
+from evander_team_addon.services.domain.chat import (
+    CHAT_MESSAGE_QUEUED_EVENT_TYPE,
+    _publish_admin_chat_notification,
 )
 from evander_team_addon.services.domain.wake import (
     AGENT_WAKE_REQUESTED_EVENT_TYPE,
@@ -10835,8 +10839,71 @@ def test_update_case_effect_prompts_case_closure_outbox_publication(
     events = InternalEventBus(internal_event_store_path(runtime_dir)).list_events()
     assert len(events) == 1
     assert events[0].event_type == TEAM_OUTBOX_PUBLISH_REQUESTED_EVENT_TYPE
+    assert events[0].payload == {"outbox_record_ids": [closure_records[0].id]}
     assert result["outbox_publication_wake"]["event_ids"] == [events[0].event_id]
     assert notified_lock_paths == [runtime_dir / "trigger-orchestrator.lock"]
+
+
+def test_publish_outbox_effect_targets_requested_record_before_older_backlog(
+    tmp_path: Path,
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    repo = TeamStateRepository(runtime_dir)
+    available_at = datetime(2026, 1, 1, tzinfo=UTC)
+    for index in range(25):
+        repo.enqueue_outbox_record(
+            TeamOutboxRecord(
+                id=f"outbox-old-{index:02d}",
+                intent_type="team.test.old",
+                payload={
+                    "event_type": "team.test.old",
+                    "payload": {"index": index},
+                },
+                available_at=available_at,
+                created_at=available_at,
+                updated_at=available_at,
+            )
+        )
+    target = repo.enqueue_outbox_record(
+        TeamOutboxRecord(
+            id="outbox-case-closed",
+            intent_type=TEAM_CASE_CLOSED_EVENT_TYPE,
+            payload={
+                "event_type": TEAM_CASE_CLOSED_EVENT_TYPE,
+                "payload": {"case_id": "case"},
+            },
+            available_at=available_at,
+            created_at=available_at + timedelta(seconds=1),
+            updated_at=available_at + timedelta(seconds=1),
+        )
+    )
+    provider = TeamPublishOutboxEventsEffectProvider()
+    provider.initialize(
+        TeamPublishOutboxEventsEffectDefinition(
+            id="publish-requested",
+            display_name="Publish requested",
+            type="effect:team:publish-outbox-events",
+            limit=25,
+            outbox_record_ids=[target.id],
+        ),
+        EffectRuntimeContext(resolved_config={"runtime_dir": str(runtime_dir)}),
+    )
+
+    result = provider.execute()
+
+    assert result["success"] is True
+    assert result["completed_outbox_record_ids"] == [target.id]
+    records = {record.id: record for record in repo.list_outbox_records()}
+    assert records[target.id].status == TeamOutboxStatus.COMPLETED
+    assert all(
+        record.status == TeamOutboxStatus.PENDING
+        for record_id, record in records.items()
+        if record_id != target.id
+    )
+    published = InternalEventBus(internal_event_store_path(runtime_dir)).list_events()
+    assert [(event.event_type, event.payload) for event in published] == [
+        (TEAM_CASE_CLOSED_EVENT_TYPE, {"case_id": "case"})
+    ]
 
 
 def test_session_routing_ignores_non_team_dispatch_for_persistent_agent(
@@ -11415,6 +11482,7 @@ def test_team_runtime_pack_wires_ephemeral_event_flow() -> None:
 def test_team_runtime_pack_flushes_outbox_after_persistent_dispatch() -> None:
     pack = _team_runtime_sections()
     triggers = {node["id"]: node for node in pack["triggers"]}
+    effects = {node["id"]: node for node in pack["effects"]}
     edges = {(edge["source_id"], edge["target_id"]) for edge in pack["edges"]}
 
     assert ("team-cron", "team-publish-outbox-events") in edges
@@ -11426,6 +11494,9 @@ def test_team_runtime_pack_flushes_outbox_after_persistent_dispatch() -> None:
         "team-outbox-publish-requested",
         "team-publish-outbox-on-request",
     ) in edges
+    assert effects["team-publish-outbox-on-request"]["outbox_record_ids"] == (
+        "${{team-outbox-publish-requested.payload.outbox_record_ids ?? null}}"
+    )
     assert (
         "team-finalize-persistent-dispatch",
         "team-publish-outbox-after-dispatch",

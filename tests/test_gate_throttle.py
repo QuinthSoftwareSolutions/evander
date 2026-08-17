@@ -279,14 +279,26 @@ def test_throttle_definition_rejects_invalid_configuration(
         )
 
 
-@pytest.mark.parametrize("source_port", [None, "other"])
-def test_throttle_rejects_unported_and_unknown_outbound_edges(
-    tmp_path: Path,
-    source_port: str | None,
-) -> None:
+def test_throttle_accepts_legacy_unported_default_edge(tmp_path: Path) -> None:
+    runtime_dir = tmp_path / "runtime"
+    worker = EffectOrchestratorWorker(
+        config=GatewayConfig(runtime_dir=runtime_dir),
+        worker_config=_worker_config(runtime_dir, default_source_port=None),
+        runtime=None,  # type: ignore[arg-type]
+    )
+
+    assert collect_domain_validation_diagnostics(worker.worker_config) == []
+
+    _execute(worker, event_id="legacy-default")
+
+    completion_event = _completion_events(worker)[0]
+    assert "__branch_port" not in completion_event["payload"]
+
+
+def test_throttle_rejects_unknown_outbound_edges(tmp_path: Path) -> None:
     worker_config = _worker_config(
         tmp_path / "runtime",
-        default_source_port=source_port,
+        default_source_port="other",
     )
 
     diagnostics = collect_domain_validation_diagnostics(worker_config)

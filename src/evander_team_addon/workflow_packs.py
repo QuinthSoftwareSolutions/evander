@@ -451,6 +451,10 @@ TEAM_RUNTIME_V1: dict[str, Any] = {
                     "type": "effect:team:publish-outbox-events",
                     "config": {
                         "limit": 25,
+                        "outbox_record_ids": (
+                            "${{team-outbox-publish-requested.payload."
+                            "outbox_record_ids ?? null}}"
+                        ),
                         "claim_ttl_seconds": 300,
                         "retry_after_seconds": 60,
                         "worker_id": "team-outbox-immediate-publisher",
