@@ -25,6 +25,10 @@ from evander.repositories.orchestration_db import (
 from evander.storage import JsonStore
 
 T = TypeVar("T", bound=BaseModel)
+_ORCHESTRATION_JSON_FINALIZATION_VERSION = 1
+_ORCHESTRATION_JSON_FINALIZATION_MARKER = (
+    "orchestration-json-store-finalized-v1.json"
+)
 
 
 class WorkflowChangeEvent(BaseModel):
@@ -39,8 +43,17 @@ class WorkflowChangeEvent(BaseModel):
 class WorkflowEventJournal:
     def __init__(self, path: Path | str) -> None:
         self.path = Path(path)
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.path.touch(exist_ok=True)
+        self._sqlite_delegate: SqliteWorkflowEventJournal | None = (
+            _completed_finalization_sqlite_journal(self.path)
+        )
+        if self._sqlite_delegate is None:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            self.path.touch(exist_ok=True)
+
+    def _active_journal(self) -> SqliteWorkflowEventJournal | None:
+        if self._sqlite_delegate is None:
+            self._sqlite_delegate = _completed_finalization_sqlite_journal(self.path)
+        return self._sqlite_delegate
 
     def append(
         self,
@@ -50,6 +63,13 @@ class WorkflowEventJournal:
         subject_id: str | None = None,
         payload: dict[str, Any] | None = None,
     ) -> WorkflowChangeEvent:
+        if journal := self._active_journal():
+            return journal.append(
+                event_type,
+                source=source,
+                subject_id=subject_id,
+                payload=payload,
+            )
         event = WorkflowChangeEvent(
             event_type=event_type,
             source=source,
@@ -61,6 +81,8 @@ class WorkflowEventJournal:
         return event
 
     def cursor(self) -> int:
+        if journal := self._active_journal():
+            return journal.cursor()
         try:
             return self.path.stat().st_size
         except FileNotFoundError:
@@ -69,6 +91,8 @@ class WorkflowEventJournal:
             return 0
 
     def read_after(self, cursor: int) -> tuple[list[WorkflowChangeEvent], int]:
+        if journal := self._active_journal():
+            return journal.read_after(cursor)
         self.path.touch(exist_ok=True)
         with self.path.open("r", encoding="utf-8") as handle:
             handle.seek(max(0, cursor))
@@ -83,6 +107,8 @@ class WorkflowEventJournal:
     async def wait_after(
         self, cursor: int, *, timeout_seconds: float
     ) -> tuple[list[WorkflowChangeEvent], int]:
+        if journal := self._active_journal():
+            return await journal.wait_after(cursor, timeout_seconds=timeout_seconds)
         events, next_cursor = self.read_after(cursor)
         if events:
             return events, next_cursor
@@ -250,3 +276,39 @@ class SqliteWorkflowEventJournal:
             if events:
                 return events, next_cursor
         return self.read_after(cursor)
+
+
+def _completed_finalization_sqlite_journal(
+    journal_path: Path,
+) -> SqliteWorkflowEventJournal | None:
+    if journal_path.name != "workflow-events.jsonl":
+        return None
+    marker_path = (
+        journal_path.parent
+        / "migrations"
+        / _ORCHESTRATION_JSON_FINALIZATION_MARKER
+    )
+    try:
+        marker = json.loads(marker_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if (
+        not isinstance(marker, dict)
+        or marker.get("version") != _ORCHESTRATION_JSON_FINALIZATION_VERSION
+        or marker.get("state") != "complete"
+    ):
+        return None
+    database_value = marker.get("database_path")
+    if not isinstance(database_value, str) or not database_value.strip():
+        return None
+    database_path = Path(database_value).expanduser()
+    if not database_path.is_absolute():
+        return None
+    if not database_path.is_file():
+        raise RuntimeError(
+            "completed orchestration JSON finalization marker references a missing "
+            f"database: {database_path}"
+        )
+    retention_value = marker.get("retention_days")
+    retention_days = int(retention_value) if retention_value is not None else None
+    return SqliteWorkflowEventJournal(database_path, retention_days=retention_days)

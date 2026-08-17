@@ -111,6 +111,69 @@ def test_reading_internal_events_does_not_recreate_legacy_workflow_journal(
     assert not (tmp_path / "workflow-events.jsonl").exists()
 
 
+def test_cached_json_journal_switches_to_sqlite_after_finalization(
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "orchestration.db"
+    journal_path = tmp_path / "workflow-events.jsonl"
+    marker_path = tmp_path / "migrations" / "orchestration-json-store-finalized-v1.json"
+    bus = InternalEventBus(tmp_path / "internal-events.json")
+    bus.publish(event_type="test.before-finalization")
+    assert journal_path.exists()
+
+    ensure_orchestration_schema(database_path)
+    marker_path.parent.mkdir(parents=True)
+    marker_path.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "state": "complete",
+                "database_path": str(database_path.resolve()),
+                "retention_days": 30,
+            }
+        ),
+        encoding="utf-8",
+    )
+    journal_path.unlink()
+
+    published = bus.publish(event_type="test.after-finalization")
+
+    assert not journal_path.exists()
+    events, _cursor = SqliteWorkflowEventJournal(database_path).read_after(0)
+    assert [(event.event_type, event.subject_id) for event in events] == [
+        ("workflow.internal_event.published", published.event_id)
+    ]
+
+
+def test_completed_marker_with_missing_database_does_not_recreate_json_journal(
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "missing-orchestration.db"
+    journal_path = tmp_path / "workflow-events.jsonl"
+    marker_path = tmp_path / "migrations" / "orchestration-json-store-finalized-v1.json"
+    bus = InternalEventBus(tmp_path / "internal-events.json")
+    bus.publish(event_type="test.before-finalization")
+    marker_path.parent.mkdir(parents=True)
+    marker_path.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "state": "complete",
+                "database_path": str(database_path.resolve()),
+                "retention_days": 30,
+            }
+        ),
+        encoding="utf-8",
+    )
+    journal_path.unlink()
+
+    with pytest.raises(RuntimeError, match="marker references a missing database"):
+        bus.publish(event_type="test.after-finalization")
+
+    assert not journal_path.exists()
+    assert not database_path.exists()
+
+
 def test_internal_event_bus_preserves_explicit_json_rollback_journal(
     tmp_path: Path,
 ) -> None:

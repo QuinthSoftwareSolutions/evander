@@ -26,6 +26,9 @@
 - Fixed the finalizer to bind completed markers to the exact SQLite database, load persisted
   maintenance settings without initializing runtime state, and document the runtime-directory CLI
   argument correctly.
+- Made cached workflow journals honor the completed one-way marker dynamically, so a service that
+  was already running during finalization switches to SQLite instead of recreating
+  `workflow-events.jsonl` on its next notification.
 
 ## 2026-08-17 - Discord Forum And Public Thread Communication
 
