@@ -1,10 +1,25 @@
 # Changelog
 
+## 2026-08-17 - Support Workflow Closure Safety
+
+- Added a closed-Case snapshot to the durable `team.case.closed` event so a
+  workflow can send a deterministic, source-thread-specific outcome message
+  without racing later Case edits.
+
 ## 2026-08-17 - JSON Store Migration Retirement
 
 - Retired completed first-use JSON-to-SQLite imports for Admin Web users, Team state, Teams and
   Discord inboxes, Teams messages, scheduled wakes, container-worker executions, and worker jobs.
 - Updated runtime defaults and production callers to use their canonical `.db` stores directly.
+- Routed internal-event workflow notifications through `orchestration.db` whenever the SQLite
+  orchestration backend is active, removing the last live `workflow-events.jsonl` writer on that
+  backend while preserving the explicit JSON rollback path.
+- Added a fail-closed orchestration JSON finalizer with read-only `--check` and lock-protected
+  `--apply` modes. It blocks malformed or missing nonterminal state, imports only retained terminal
+  history, archives expired history with hashes, and writes a recoverable one-way marker.
+- Fixed the finalizer to bind completed markers to the exact SQLite database, load persisted
+  maintenance settings without initializing runtime state, and document the runtime-directory CLI
+  argument correctly.
 
 ## 2026-08-17 - Discord Forum And Public Thread Communication
 

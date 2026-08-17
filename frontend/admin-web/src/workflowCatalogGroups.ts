@@ -13,6 +13,7 @@ type WorkflowNodeCatalogSubgroupDefinition = {
   description: string;
   types?: readonly string[];
   prefixes?: readonly string[];
+  excludedTypes?: readonly string[];
 };
 
 const NODE_SUBGROUPS: Record<WorkflowNodeKind, readonly WorkflowNodeCatalogSubgroupDefinition[]> = {
@@ -102,6 +103,23 @@ const NODE_SUBGROUPS: Record<WorkflowNodeKind, readonly WorkflowNodeCatalogSubgr
       label: "Agents",
       description: "Create, manage, prompt, or execute work inside agent sessions.",
       prefixes: ["effect:agent:", "effect:chat-assistant:"],
+      excludedTypes: [
+        "effect:agent:clone-repo",
+        "effect:agent:prepare-reference-repositories",
+        "effect:agent:grant-repo-access",
+        "effect:agent:revoke-repo-access",
+      ],
+    },
+    {
+      key: "agent-repositories",
+      label: "Agent repositories",
+      description: "Clone repositories or manage agent-scoped Git grants and read-only references.",
+      types: [
+        "effect:agent:clone-repo",
+        "effect:agent:prepare-reference-repositories",
+        "effect:agent:grant-repo-access",
+        "effect:agent:revoke-repo-access",
+      ],
     },
     {
       key: "vms",
@@ -159,10 +177,16 @@ const NODE_SUBGROUPS: Record<WorkflowNodeKind, readonly WorkflowNodeCatalogSubgr
       prefixes: ["effect:session:"],
     },
     {
-      key: "git-pr",
-      label: "Git & PRs",
-      description: "Promote branches, create pull requests, or manage pull request tags.",
-      prefixes: ["effect:git:", "effect:pr:", "effect:pull-request:"],
+      key: "managed-git",
+      label: "Managed Git",
+      description: "Promote branches and manage repository state.",
+      prefixes: ["effect:git:"],
+    },
+    {
+      key: "pull-requests",
+      label: "Pull requests",
+      description: "Create, update, or tag pull requests.",
+      prefixes: ["effect:pr:", "effect:pull-request:"],
     },
     {
       key: "communications",
@@ -216,10 +240,16 @@ const NODE_SUBGROUPS: Record<WorkflowNodeKind, readonly WorkflowNodeCatalogSubgr
       prefixes: ["query:communication:"],
     },
     {
-      key: "git-pr",
-      label: "Git & PRs",
-      description: "Read Git or pull request metadata.",
-      prefixes: ["query:git:", "query:pull-request:"],
+      key: "git",
+      label: "Git",
+      description: "Read Git repository and branch metadata.",
+      prefixes: ["query:git:"],
+    },
+    {
+      key: "pull-requests",
+      label: "Pull requests",
+      description: "Read pull request metadata.",
+      prefixes: ["query:pull-request:"],
     },
     {
       key: "semantic",
@@ -321,7 +351,10 @@ export function groupWorkflowNodeCatalogEntries(
 function subgroupMatches(definition: WorkflowNodeCatalogSubgroupDefinition, type: string): boolean {
   return Boolean(
     definition.types?.includes(type) ||
-    definition.prefixes?.some((prefix) => type.startsWith(prefix)),
+    (
+      definition.prefixes?.some((prefix) => type.startsWith(prefix)) &&
+      !definition.excludedTypes?.includes(type)
+    ),
   );
 }
 

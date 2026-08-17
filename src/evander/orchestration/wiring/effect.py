@@ -17,6 +17,7 @@ from evander.provider_profiles import (
 )
 from evander.repositories.orchestration_db import maybe_checkpoint_orchestration_wal
 from evander.orchestration.wal_maintenance import sqlite_orchestration_store_enabled
+from evander.orchestration.internal_events import internal_event_bus_metadata
 from evander.gates.registry import GateProviderFactory
 from evander.queries.registry import QueryProviderFactory
 from evander.runtime import RuntimeContext
@@ -113,14 +114,9 @@ def build_effect_provider_runtime_wiring(
         env=os.environ,
         admin_runtime=admin_runtime,
     )
-    provider_factory.metadata.update(
-        {
-            "internal_event_store_path": str(worker_config.internal_event_store_path),
-            "scheduled_internal_event_store_path": str(
-                worker_config.scheduled_internal_event_store_path
-            ),
-            "workflow_event_journal_path": str(worker_config.workflow_event_journal_path),
-        }
+    provider_factory.metadata.update(internal_event_bus_metadata(worker_config))
+    provider_factory.metadata["scheduled_internal_event_store_path"] = str(
+        worker_config.scheduled_internal_event_store_path
     )
     agent_run_status_port = None
     agent_prompt_dispatch_port = None

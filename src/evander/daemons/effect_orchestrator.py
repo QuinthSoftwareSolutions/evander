@@ -96,6 +96,7 @@ from evander.workflow.engine.node_executors import (
 from evander.workflow.engine import OrchestrationLoop
 from evander.orchestration.kernels import PollingKernelConfig, PollingOrchestratorKernel
 from evander.orchestration.wal_maintenance import OrchestrationWalCheckpointMaintenance
+from evander.orchestration.internal_events import build_internal_event_bus
 from evander.orchestration.managed_git_lifecycle import ManagedGitWorkerLifecycle
 from evander.orchestration.wiring import (
     EffectWorkerStoreWiring,
@@ -1077,10 +1078,7 @@ class EffectOrchestratorWorker:
         self.effect_executor_registry.register(
             "effect:event:emit",
             EventEmitEffectExecutor(
-                internal_event_bus=InternalEventBus(
-                    self.worker_config.internal_event_store_path,
-                    journal_path=self.worker_config.workflow_event_journal_path,
-                )
+                internal_event_bus=build_internal_event_bus(self.worker_config)
             ),
         )
         self.effect_executor_registry.register(

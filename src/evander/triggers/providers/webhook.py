@@ -1,9 +1,8 @@
 from __future__ import annotations
 
 from datetime import UTC
-from pathlib import Path
-
-from evander.events.internal import InternalEvent, InternalEventBus, internal_event_store_path
+from evander.events.internal import InternalEvent, InternalEventBus
+from evander.orchestration.internal_events import build_internal_event_bus_from_metadata
 from evander.events.models import (
     TriggerDefinitionDiscriminated,
     TriggerEvent,
@@ -81,14 +80,10 @@ class WebhookTriggerProvider(TriggerProviderBase):
     def _event_bus(self) -> InternalEventBus:
         if self.runtime_context is None:
             raise RuntimeError("WebhookTriggerProvider has no runtime context")
-        metadata_path = self.runtime_context.metadata.get("internal_event_store_path")
-        path = (
-            Path(metadata_path)
-            if metadata_path
-            else internal_event_store_path(self.runtime_context.resolved_config.runtime_dir)
+        return build_internal_event_bus_from_metadata(
+            self.runtime_context.metadata,
+            runtime_dir=self.runtime_context.resolved_config.runtime_dir,
         )
-        journal_path = self.runtime_context.metadata.get("workflow_event_journal_path")
-        return InternalEventBus(path, journal_path=Path(journal_path) if journal_path else None)
 
     def _cursor_store(self) -> TriggerCursorStore:
         if self.runtime_context is None:

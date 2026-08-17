@@ -175,8 +175,16 @@ def utc_now() -> datetime:
 
 
 class TeamRuntimeService:
-    def __init__(self, repository: TeamStateRepository) -> None:
+    def __init__(
+        self,
+        repository: TeamStateRepository,
+        *,
+        event_bus: InternalEventBus | None = None,
+        event_bus_factory: Callable[[], InternalEventBus] | None = None,
+    ) -> None:
         self._repository = repository
+        self._event_bus = event_bus
+        self._event_bus_factory = event_bus_factory
 
     @property
     def repository(self) -> TeamStateRepository:
@@ -359,7 +367,11 @@ class TeamRuntimeService:
             )
             if record.idempotency_key is not None
         }
-        bus = InternalEventBus(internal_event_store_path(self._repository.runtime_dir))
+        bus = self._event_bus
+        if bus is None and self._event_bus_factory is not None:
+            bus = self._event_bus_factory()
+        if bus is None:
+            bus = InternalEventBus(internal_event_store_path(self._repository.runtime_dir))
         for event in events:
             if not isinstance(event, Mapping):
                 continue

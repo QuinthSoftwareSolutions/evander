@@ -6,8 +6,9 @@ from pathlib import Path
 from typing import Any
 
 from evander.config import GatewayConfig
-from evander.events.internal import InternalEventBus, InternalEventSource
+from evander.events.internal import InternalEventSource
 from evander.orchestration.host_polling import notify_wake_socket_for_lock
+from evander.orchestration.internal_events import build_internal_event_bus
 from evander.workflow.runtime_config import load_trigger_orchestrator_worker_global_config
 
 from .services.commands.outbox import TEAM_OUTBOX_PUBLISH_REQUESTED_EVENT_TYPE
@@ -44,10 +45,7 @@ def request_team_outbox_publication(
             project_dir,
             base_config=base_config,
         )
-        bus = InternalEventBus(
-            worker_config.internal_event_store_path,
-            journal_path=worker_config.workflow_event_journal_path,
-        )
+        bus = build_internal_event_bus(worker_config)
         event = bus.publish(
             event_type=TEAM_OUTBOX_PUBLISH_REQUESTED_EVENT_TYPE,
             payload=dict(payload or {}),

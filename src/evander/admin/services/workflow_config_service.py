@@ -72,7 +72,6 @@ from evander.admin.workflow_catalog import (
 from evander.config import TriggerOrchestratorWorkerGlobalConfig
 from evander.events.internal import (
     EXTERNAL_WORKFLOW_EVENT_PREFIX,
-    InternalEventBus,
     InternalEventSource,
     validate_internal_event_type,
 )
@@ -80,6 +79,7 @@ from evander.events.models import TriggerEvent
 from evander.host_directories.models import HostDirectoryDirectoryConfig
 from evander.messaging.targets import COMMUNICATION_TARGETS_DOMAIN
 from evander.orchestration.host_polling import notify_wake_socket_for_lock
+from evander.orchestration.internal_events import build_internal_event_bus
 from evander.repositories.orchestration import (
     JsonWorkflowConfigSnapshotRepository,
     SqliteWorkflowConfigSnapshotRepository,
@@ -546,10 +546,7 @@ class WorkflowConfigAdminService:
         worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
             worker_config_payload.config
         )
-        bus = InternalEventBus(
-            worker_config.internal_event_store_path,
-            journal_path=worker_config.workflow_event_journal_path,
-        )
+        bus = build_internal_event_bus(worker_config)
         event = bus.publish(
             event_type=f"{EXTERNAL_WORKFLOW_EVENT_PREFIX}{event_name}",
             payload=payload,

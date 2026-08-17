@@ -41,6 +41,11 @@ def case_closed_event(
             "source": case.source,
             "source_ref": case.source_ref,
             "closed_at": closed_at,
+            # Preserve the closed Case as it stood at the transition.  Downstream
+            # workflows often need a customer-facing outcome and the original
+            # source-thread routing metadata; re-reading mutable Team state after
+            # publication could instead observe a later operator edit.
+            "case": case.model_dump(mode="json"),
         },
     }
 

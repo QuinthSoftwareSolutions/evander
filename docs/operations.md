@@ -132,12 +132,15 @@ boundary, and recovery procedure.
 The workflow orchestrators share runtime state under `runtime/` (or your configured
 `runtime_dir`):
 
-- `trigger-orchestrator-events.json`: durable queue of trigger and completion events.
+- `orchestration.db`: authoritative trigger queue, workflow-event journal, gate/effect execution
+  history, and workflow configuration snapshots when `orchestration_store_backend` is `sqlite`.
+- `trigger-orchestrator-events.json`, `gate-orchestrator-executions.json`,
+  `effect-orchestrator-executions.json`, and `workflow-events.jsonl`: rollback-backend files and
+  legacy migration sources. SQLite deployments do not write workflow notifications to the JSONL
+  journal.
 - `trigger-orchestrator-cursors.json`: trigger-worker cursors/checkpoints.
 - `trigger-cursors-host-directories.json`: per-trigger Host Directory baseline, settle candidate,
   pending-event, and acknowledgement state.
-- `gate-orchestrator-executions.json`: gate execution log with idempotency key, gate type, state,
-  resolved config, outputs, and merge errors.
 - `gate-orchestrator-cursors.json`: gate-worker cursor/checkpoint data.
 - `effect-orchestrator-cursors.json`: effect-worker cursor/checkpoint data.
 - `model-usage.db`: durable provider-neutral model usage store queried by
@@ -156,6 +159,37 @@ The workflow orchestrators share runtime state under `runtime/` (or your configu
 - `trigger-orchestrator.lock` / `gate-orchestrator.lock`: single-instance lock files.
 - `trigger-conformance-report.json` and `effect-conformance-report.json`: conformance snapshots
   written by the trigger and effect suites under the configured `runtime_dir`.
+
+### Finalize legacy orchestration JSON
+
+After a deployment has run on an explicitly configured SQLite backend and all processes have been
+restarted onto a build that journals internal-event notifications to SQLite, run the read-only
+preflight:
+
+```bash
+evander-cli finalize-orchestration-json-store --runtime-dir runtime --check
+```
+
+The check strictly parses every legacy source and validates the SQLite database without modifying
+either. A malformed record or a record that is missing from SQLite and still `pending`, `inflight`,
+`running`, `waiting`, `completion_pending`, or an undismissed `failed` execution is a blocker.
+Terminal history inside `orchestration_retention_days` is marked for import; older terminal history
+is marked archive-only.
+
+Stop both orchestration workers and apply only a clean report:
+
+```bash
+sudo systemctl stop evander-trigger-orchestrator.service evander-effect-orchestrator.service
+evander-cli finalize-orchestration-json-store --runtime-dir runtime --apply
+sudo systemctl start evander-effect-orchestrator.service evander-trigger-orchestrator.service
+```
+
+`--apply` independently repeats the check, acquires both worker locks, copies each source into a
+hash-manifested directory under `runtime/archives/`, imports only retained terminal history, then
+removes the legacy sources and writes
+`runtime/migrations/orchestration-json-store-finalized-v1.json`. It fails closed if a source changes
+or reappears. If the marker is left in `archived` state by an interrupted run, inspect the recorded
+`archive_path` before recovery; the command will not continue automatically.
 
 Gate execution state is useful when debugging workflow gates:
 

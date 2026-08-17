@@ -21,7 +21,8 @@ from evander.consultations import (
     consultation_snapshot_ref,
     issue_consultation_token,
 )
-from evander.events.internal import InternalEventBus, InternalEventSource, internal_event_store_path
+from evander.events.internal import InternalEventSource
+from evander.orchestration.internal_events import build_internal_event_bus_from_metadata
 from evander.events.provider_models import (
     AgentCloneRepoEffectDefinition,
     AgentCreateEffectDefinition,
@@ -285,11 +286,9 @@ class CodeConsultationEffectProvider(EffectProviderBase):
             factory = self._service_factory or self._context().code_consultation_service_factory
             if factory is None:
                 raise RuntimeError("code consultation application service is unavailable")
-            configured_path = self._context().metadata.get("internal_event_store_path")
-            event_bus = InternalEventBus(
-                Path(configured_path)
-                if configured_path
-                else internal_event_store_path(self._runtime_dir())
+            event_bus = build_internal_event_bus_from_metadata(
+                self._context().metadata,
+                runtime_dir=self._runtime_dir(),
             )
             self._consultation_service_instance = factory.create(
                 event_bus=event_bus,

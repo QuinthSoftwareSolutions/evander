@@ -13,14 +13,13 @@ from mcp.server.fastmcp.exceptions import ToolError
 
 from evander.addons import AddonContext, AddonMcpTool
 from evander.events.internal import (
-    InternalEventBus,
     InternalEventSource,
-    internal_event_store_path,
 )
 from evander.events.scheduled import (
     ScheduledInternalEventStore,
     scheduled_internal_event_store_path,
 )
+from evander.orchestration.internal_events import build_internal_event_bus_for_runtime
 from evander.effects.providers.base import EffectRuntimeContext
 from evander.effects.providers.agent_exec import AgentExecEffectProvider
 from evander.events.provider_models import AgentExecEffectDefinition
@@ -4014,7 +4013,11 @@ def _complete_published_wake_outbox_records(
 def _publish_team_events(context: AddonContext, events: object) -> list[str]:
     if not isinstance(events, list):
         return []
-    bus = InternalEventBus(internal_event_store_path(context.runtime_dir))
+    bus = build_internal_event_bus_for_runtime(
+        context.runtime_dir,
+        project_dir=context.project_dir,
+        base_config=context.config,
+    )
     scheduled_store = ScheduledInternalEventStore(
         scheduled_internal_event_store_path(context.runtime_dir)
     )

@@ -43,7 +43,6 @@ from evander.admin.web.rbac import scope_matches
 from evander.events.internal import (
     InternalEventBus,
     InternalEventSource,
-    internal_event_store_path,
 )
 from evander.events.scheduled import (
     ScheduledInternalEventStore,
@@ -8251,7 +8250,7 @@ def _prepare_project_repo(
             context,
             project_id=project_id,
             snapshots=review_snapshots,
-        )
+    )
     checkout_cache_key = (
         (managed_repo_id, pinned_commit_sha)
         if pinned_commit_sha is not None
@@ -11207,16 +11206,13 @@ def _team_event_run_at(value: object) -> datetime | None:
 
 
 def _internal_event_bus(context: Any) -> InternalEventBus:
+    from evander.orchestration.internal_events import build_internal_event_bus_from_metadata
+
     runtime_dir = _runtime_dir(context)
     metadata = getattr(context, "metadata", {})
-    event_path = None
-    journal_path = None
-    if isinstance(metadata, Mapping):
-        event_path = metadata.get("internal_event_store_path")
-        journal_path = metadata.get("workflow_event_journal_path")
-    return InternalEventBus(
-        Path(event_path) if event_path else internal_event_store_path(runtime_dir),
-        journal_path=Path(journal_path) if journal_path else None,
+    return build_internal_event_bus_from_metadata(
+        metadata if isinstance(metadata, Mapping) else None,
+        runtime_dir=runtime_dir,
     )
 
 
