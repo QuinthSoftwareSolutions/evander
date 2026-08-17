@@ -6,6 +6,11 @@ export type ConfigurationDraftFieldState = {
 
 export type CommunicationTargetSenderIdentity = "platform" | "resolved";
 
+export type DiscordConversationScope =
+  | "channel"
+  | "public_threads"
+  | "channel_and_public_threads";
+
 export function communicationTargetSenderIdentityFromValue(
   value: unknown,
 ): CommunicationTargetSenderIdentity {
@@ -24,4 +29,31 @@ export function communicationTargetSenderIdentityFromValue(
       : undefined
   );
   return persistedSenderIdentity === "resolved" ? "resolved" : "platform";
+}
+
+export function communicationTargetDiscordConversationScopeFromValue(
+  value: unknown,
+): DiscordConversationScope {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return "channel";
+  }
+  const target = value as Record<string, unknown>;
+  const draftScope = target.discordConversationScope;
+  if (
+    draftScope === "channel"
+    || draftScope === "public_threads"
+    || draftScope === "channel_and_public_threads"
+  ) {
+    return draftScope;
+  }
+  const policy = target.policy;
+  const persistedScope = (
+    policy && typeof policy === "object" && !Array.isArray(policy)
+      ? (policy as Record<string, unknown>).discord_conversation_scope
+      : undefined
+  );
+  return persistedScope === "public_threads"
+    || persistedScope === "channel_and_public_threads"
+      ? persistedScope
+      : "channel";
 }

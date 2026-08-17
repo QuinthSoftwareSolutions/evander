@@ -261,6 +261,7 @@ class PolicyConfigResolver:
         session: SessionManifest,
         *,
         capability: CommunicationTargetCapability,
+        include_archived_threads: bool = True,
     ) -> list[str]:
         directory_path = self.directory_scope_resolver.resolve_session_directory_path(
             context="communication target",
@@ -284,6 +285,7 @@ class PolicyConfigResolver:
             refs,
             channel_ids=channel_ids,
             capability=capability,
+            include_archived_threads=include_archived_threads,
         )
 
     def resolved_discord_webhook_channel_ids_for_session(
@@ -369,7 +371,11 @@ class PolicyConfigResolver:
             allow_unresolved_raw_reference=session.communication_target_ids is None,
         )
 
-    def allowed_discord_channel_ids_for_active_sessions(self) -> list[str]:
+    def allowed_discord_channel_ids_for_active_sessions(
+        self,
+        *,
+        include_archived_threads: bool = True,
+    ) -> list[str]:
         resolved_sessions = self._active_sessions_with_resolved_directory_paths()
         directories = {"root"}
         for _, directory_path in resolved_sessions:
@@ -390,7 +396,11 @@ class PolicyConfigResolver:
             if ToolName.DISCORD_GET_COMMANDS not in session.allowed_tools:
                 continue
             channel_ids.update(
-                self.resolved_discord_channel_ids_for_session(session, capability="read")
+                self.resolved_discord_channel_ids_for_session(
+                    session,
+                    capability="read",
+                    include_archived_threads=include_archived_threads,
+                )
             )
         return sorted(channel_id.strip() for channel_id in channel_ids if channel_id.strip())
 
@@ -399,6 +409,7 @@ class PolicyConfigResolver:
         session_id: str,
         *,
         capability: CommunicationTargetCapability = "read",
+        include_archived_threads: bool = True,
     ) -> list[str]:
         session = self.session_store.get_session(session_id)
         if session is None:
@@ -419,7 +430,11 @@ class PolicyConfigResolver:
         )
         if capability != "read" or ToolName.DISCORD_GET_COMMANDS in session.allowed_tools:
             channel_ids.update(
-                self.resolved_discord_channel_ids_for_session(session, capability=capability)
+                self.resolved_discord_channel_ids_for_session(
+                    session,
+                    capability=capability,
+                    include_archived_threads=include_archived_threads,
+                )
             )
         return sorted(channel_id.strip() for channel_id in channel_ids if channel_id.strip())
 
@@ -562,6 +577,7 @@ class PolicyConfigResolver:
         *,
         channel_ids: list[str],
         capability: CommunicationTargetCapability,
+        include_archived_threads: bool,
     ) -> list[str]:
         expanded = set(channel_ids)
         store: DiscordInboxStore | None = None
@@ -583,7 +599,7 @@ class PolicyConfigResolver:
                 expanded.discard(parent_channel_id)
             if store is None:
                 store = DiscordInboxStore(self.config.runtime_dir / "discord-inbox-store.json")
-            include_archived = capability == "read"
+            include_archived = capability == "read" and include_archived_threads
             expanded.update(
                 binding.thread_id
                 for binding in store.list_thread_bindings(

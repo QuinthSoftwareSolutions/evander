@@ -172,6 +172,7 @@ class DiscordIngestWorker:
             for channel_id in self.runtime.policy_config.resolved_discord_channel_ids_for_session(
                 session,
                 capability="read",
+                include_archived_threads=False,
             )
         }
         try:

@@ -556,6 +556,7 @@ def _build_discord_service(
     session_id: str | None = None,
     capability: CommunicationTargetCapability = "read",
     allowed_channel_ids_provider: Callable[[], list[str]] | None = None,
+    poll_channel_ids_provider: Callable[[], list[str]] | None = None,
     allowed_webhook_channel_ids_provider: Callable[[], list[str]] | None = None,
 ) -> DiscordService:
     if config.discord_backend == "stub":
@@ -593,6 +594,20 @@ def _build_discord_service(
                         policy_config=policy_config,
                         session_id=session_id,
                         capability=capability,
+                    )
+                )
+            ),
+            poll_channel_ids_provider=(
+                poll_channel_ids_provider
+                or allowed_channel_ids_provider
+                or (
+                    lambda: _resolve_allowed_discord_channel_ids(
+                        sessions,
+                        config,
+                        policy_config=policy_config,
+                        session_id=session_id,
+                        capability=capability,
+                        include_archived_threads=False,
                     )
                 )
             ),
@@ -811,6 +826,7 @@ def _resolve_allowed_discord_channel_ids(
     policy_config: PolicyConfigResolver | None = None,
     session_id: str | None = None,
     capability: CommunicationTargetCapability = "read",
+    include_archived_threads: bool = True,
 ) -> list[str]:
     session_store = as_session_manifest_repository(session_store)
     if session_id is not None:
@@ -818,6 +834,7 @@ def _resolve_allowed_discord_channel_ids(
             return policy_config.allowed_discord_channel_ids_for_session_id(
                 session_id,
                 capability=capability,
+                include_archived_threads=include_archived_threads,
             )
         session = session_store.get_session(session_id)
         if session is None:
@@ -837,7 +854,9 @@ def _resolve_allowed_discord_channel_ids(
             channel_ids.update(session.discord_channel_allowlist)
         return sorted({channel_id.strip() for channel_id in channel_ids if channel_id.strip()})
 
-    return policy_config.allowed_discord_channel_ids_for_active_sessions()
+    return policy_config.allowed_discord_channel_ids_for_active_sessions(
+        include_archived_threads=include_archived_threads
+    )
 
 
 def _resolve_allowed_discord_webhook_channel_ids(

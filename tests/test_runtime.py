@@ -357,6 +357,7 @@ def test_runtime_discord_service_authorizes_thread_parent_only_for_webhooks(
     config = make_config(tmp_path, discord_backend="bot_api")
     parent_channel_id = "234567890123456789"
     thread_id = "345678901234567890"
+    archived_thread_id = "345678901234567891"
     write_communication_targets(
         config,
         "root",
@@ -383,6 +384,15 @@ def test_runtime_discord_service_authorizes_thread_parent_only_for_webhooks(
         locked=False,
         observed_at=datetime(2026, 8, 17, tzinfo=UTC),
     )
+    DiscordInboxStore(config.runtime_dir / "discord-inbox-store.json").upsert_thread_binding(
+        thread_id=archived_thread_id,
+        parent_channel_id=parent_channel_id,
+        guild_id="123456789012345678",
+        thread_type=11,
+        archived=True,
+        locked=False,
+        observed_at=datetime(2026, 8, 17, tzinfo=UTC),
+    )
     runtime = build_runtime(config)
     runtime.session_repository.upsert_session(
         SessionManifest(
@@ -396,7 +406,8 @@ def test_runtime_discord_service_authorizes_thread_parent_only_for_webhooks(
     service = runtime.discord_service_for_session("session-thread")
 
     assert isinstance(service, DiscordBotApiService)
-    assert service._allowed_channel_ids() == [thread_id]
+    assert service._allowed_channel_ids() == [thread_id, archived_thread_id]
+    assert service._poll_channel_ids() == [thread_id]
     assert service._allowed_webhook_channel_ids() == [parent_channel_id]
 
 

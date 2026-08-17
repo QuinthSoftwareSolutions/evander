@@ -960,6 +960,7 @@ class DiscordBotApiService:
         retry_base_backoff_seconds: float = 0.5,
         retry_max_backoff_seconds: float = 5.0,
         allowed_channel_ids_provider: Callable[[], list[str]] = lambda: [],
+        poll_channel_ids_provider: Callable[[], list[str]] | None = None,
         allowed_webhook_channel_ids_provider: Callable[[], list[str]] = lambda: [],
         operator_user_ids_provider: Callable[[], list[str]] | None = None,
         include_operator_dms_provider: Callable[[], bool] | None = None,
@@ -982,6 +983,7 @@ class DiscordBotApiService:
             for attempt in range(self.retry_count)
         )
         self.allowed_channel_ids_provider = allowed_channel_ids_provider
+        self.poll_channel_ids_provider = poll_channel_ids_provider or allowed_channel_ids_provider
         self.allowed_webhook_channel_ids_provider = allowed_webhook_channel_ids_provider
         self.operator_user_ids_provider = operator_user_ids_provider or (lambda: [])
         self.include_operator_dms_provider = include_operator_dms_provider or (
@@ -1033,6 +1035,15 @@ class DiscordBotApiService:
             {
                 channel_id.strip()
                 for channel_id in self.allowed_channel_ids_provider()
+                if channel_id.strip()
+            }
+        )
+
+    def _poll_channel_ids(self) -> list[str]:
+        return sorted(
+            {
+                channel_id.strip()
+                for channel_id in self.poll_channel_ids_provider()
                 if channel_id.strip()
             }
         )
@@ -1139,7 +1150,7 @@ class DiscordBotApiService:
         fetched_commands: dict[str, DiscordCommandEnvelope] = {}
         with httpx.Client(timeout=self.timeout_seconds) as client:
             channel_ids = sorted(
-                set(self._allowed_channel_ids()) | set(self._operator_dm_channel_ids(client))
+                set(self._poll_channel_ids()) | set(self._operator_dm_channel_ids(client))
             )
             for channel_id in channel_ids:
                 response = self._request_with_retries(
@@ -1710,8 +1721,13 @@ class DiscordBotApiService:
         identity: OutboundIdentity | None = None,
         use_resolved_identity: bool = False,
         identity_status: str = "not_requested",
+        webhook_channel_id: str | None = None,
+        thread_id: str | None = None,
     ) -> dict[str, Any]:
         self._require_allowed_channel_id(channel_id)
+        resolved_webhook_channel_id = webhook_channel_id or channel_id
+        if resolved_webhook_channel_id != channel_id:
+            self._require_allowed_webhook_channel_id(resolved_webhook_channel_id)
         files: list[tuple[str, tuple[str, bytes, str]]] = []
         for index, artifact in enumerate(artifacts):
             filename = _artifact_filename(artifact, index=index)
@@ -1731,10 +1747,11 @@ class DiscordBotApiService:
             )
             try:
                 response_payload = self._execute_identity_webhook(
-                    channel_id=channel_id,
+                    channel_id=resolved_webhook_channel_id,
                     payload=payload,
                     avatar=webhook_avatar,
                     files=files,
+                    thread_id=thread_id,
                 )
                 result = self._persist_posted_message(
                     response_payload,
@@ -1801,6 +1818,8 @@ class DiscordBotApiService:
         *,
         identity: OutboundIdentity | None,
         identity_status: str,
+        webhook_channel_id: str | None = None,
+        thread_id: str | None = None,
     ) -> dict[str, Any]:
         return self._post_file(
             message,
@@ -1810,6 +1829,8 @@ class DiscordBotApiService:
             identity=identity,
             use_resolved_identity=True,
             identity_status=identity_status,
+            webhook_channel_id=webhook_channel_id,
+            thread_id=thread_id,
         )
 
     def _post_status(

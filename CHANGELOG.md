@@ -13,6 +13,9 @@
 - Added Admin Web configuration and workflow-editor guidance for Discord thread-aware targets.
 - Fixed thread ingest provenance, order-independent conversation-scope merging, parent webhook
   authorization for resolved identities, and read access to archived or locked public threads.
+- Fixed Admin Web conversation-scope draft round-tripping, excluded archived public threads from
+  live Discord API polling while retaining local history and attachment access, and routed
+  resolved-identity file replies through the parent channel webhook.
 
 ## 2026-08-17 - Prompt Case Closure Publication And Explicit Throttle Routes
 
