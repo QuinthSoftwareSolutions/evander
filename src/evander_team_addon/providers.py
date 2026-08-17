@@ -207,6 +207,7 @@ from .provider_schemas import (
     TeamWakeGovernanceManagersEffectDefinition,
 )
 from .repository import TeamStateConflictError, TeamStateRepository
+from .outbox_publication import request_team_outbox_publication_for_records
 from .sqlite_store import ADDON_ID, STATE_DB_FILE, TeamIdempotencyConflictError
 from .services.agent_action_service import TeamAgentActionService
 from .services.admin_service import TeamAdminService
@@ -4617,7 +4618,22 @@ class TeamUpdateCaseEffectProvider(EffectProviderBase):
                 project_id=_optional_text(payload.get("project_id")),
                 error=str(exc),
             )
-        return _case_effect_success_result(state, case_id=required_case_id)
+        result = _case_effect_success_result(state, case_id=required_case_id)
+        closure_outbox_ids = [
+            record.id
+            for record in repo.list_outbox_records(
+                status="pending",
+                intent_type=TEAM_CASE_CLOSED_EVENT_TYPE,
+                aggregate_id=required_case_id,
+            )
+        ]
+        publication_wake = request_team_outbox_publication_for_records(
+            self.runtime_context,
+            outbox_record_ids=closure_outbox_ids,
+        )
+        if publication_wake is not None:
+            result["outbox_publication_wake"] = publication_wake
+        return result
 
 
 class TeamRegisterAgentEffectProvider(EffectProviderBase):

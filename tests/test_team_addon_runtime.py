@@ -30,6 +30,7 @@ from evander.published_artifacts import PublishedArtifactStore
 from evander.queries.providers.base import QueryRuntimeContext
 from evander.workflow.packs import WorkflowPack
 from evander.workflow.runtime_config import load_trigger_orchestrator_worker_global_config
+import evander_team_addon.outbox_publication as team_outbox_publication
 from evander_team_addon.chat_attachments import TeamChatAttachmentStorage
 from evander_team_addon.mcp import (
     GOVERNANCE_TEAM_MCP_TOOL_NAMES,
@@ -166,6 +167,9 @@ from evander_team_addon.services.domain.wake import (
 )
 from evander_team_addon.services.agent_action_service import TeamAgentActionService
 from evander_team_addon.services.admin_service import TeamAdminService
+from evander_team_addon.services.commands.outbox import (
+    TEAM_OUTBOX_PUBLISH_REQUESTED_EVENT_TYPE,
+)
 from evander_team_addon.services.chat_service import (
     TeamChatService,
     project_scoped_team_chat_authorization,
@@ -10784,6 +10788,55 @@ def test_update_case_effect_clears_optional_fields_and_task_links(
     assert case.metadata == {}
     assert case.task_ids == []
     assert reread.tasks["task"].case_id is None
+
+
+def test_update_case_effect_prompts_case_closure_outbox_publication(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    repo = _seed_team(runtime_dir)
+    _team_admin_service(repo).create_case(
+        case_id="case",
+        team_id="team",
+        project_id="project",
+        title="Customer ticket",
+        status="in_progress",
+        expected_revision=repo.read().revision,
+    )
+    notified_lock_paths: list[Path] = []
+    monkeypatch.setattr(
+        team_outbox_publication,
+        "notify_wake_socket_for_lock",
+        lambda lock_path: notified_lock_paths.append(Path(lock_path)) or True,
+    )
+    provider = TeamUpdateCaseEffectProvider()
+    provider.initialize(
+        TeamUpdateCaseEffectDefinition(
+            id="close-case",
+            display_name="Close case",
+            type="effect:team:update-case",
+            case_id="case",
+            status="closed",
+            expected_revision=repo.read().revision,
+        ),
+        EffectRuntimeContext(resolved_config={"runtime_dir": str(runtime_dir)}),
+    )
+
+    result = provider.execute()
+
+    assert result["success"] is True
+    assert result["case"]["status"] == "closed"
+    assert result["outbox_publication_wake"]["wake_notified"] is True
+    closure_records = repo.list_outbox_records(intent_type="team.case.closed")
+    assert len(closure_records) == 1
+    assert closure_records[0].status.value == "pending"
+    assert result["outbox_publication_wake"]["outbox_record_ids"] == [closure_records[0].id]
+    events = InternalEventBus(internal_event_store_path(runtime_dir)).list_events()
+    assert len(events) == 1
+    assert events[0].event_type == TEAM_OUTBOX_PUBLISH_REQUESTED_EVENT_TYPE
+    assert result["outbox_publication_wake"]["event_ids"] == [events[0].event_id]
+    assert notified_lock_paths == [runtime_dir / "trigger-orchestrator.lock"]
 
 
 def test_session_routing_ignores_non_team_dispatch_for_persistent_agent(

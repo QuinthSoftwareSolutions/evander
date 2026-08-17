@@ -597,11 +597,12 @@ cleaned up opportunistically during later dedupe checks.
 
 `gate:throttle` applies a fixed-window quota to each resolved `key`. The first host-received
 activation opens the ISO-8601 `window`; up to the positive-integer `limit` is forwarded unchanged
-through the default path. The resolved limit and window remain frozen until that window expires,
-even when `limit` is bound from later inbound events. Overflow is recorded as dropped and is
-forwarded unchanged only when an edge uses `source_port: "dropped"`. A following activation at or
-after expiry opens a fresh window. Window claims are persisted under a file lock so concurrent
-effect workers cannot exceed the configured limit.
+through an edge using `source_port: "default"`. The resolved limit and window remain frozen until
+that window expires, even when `limit` is bound from later inbound events. Overflow is recorded as
+dropped and is forwarded unchanged only when an edge uses `source_port: "dropped"`. Unported and
+unknown outbound edges are rejected during workflow validation. A following activation at or after
+expiry opens a fresh window. Window claims are persisted under a file lock so concurrent effect
+workers cannot exceed the configured limit.
 
 `gate:counter` applies a fixed window to each resolved `key` and forwards every activation. The
 first host-received activation opens the ISO-8601 `window`; each forwarded payload preserves the

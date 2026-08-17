@@ -305,7 +305,8 @@ Execution model:
 7. `gate:dedupe` nodes atomically forward the first activation for a resolved key inside its TTL
    window and drop duplicate activations until the key expires.
 8. `gate:throttle` nodes atomically pass a configured number of activations per resolved key in a
-   fixed window; overflow activations are dropped or sent through their `dropped` port.
+   fixed window through their `default` port; overflow activations are dropped or sent through
+   their `dropped` port. Throttle outbound edges always declare one of those ports explicitly.
 9. `gate:counter` nodes atomically count each activation for a resolved key in a fixed window and
    forward the original payload with its current `count`.
 10. `gate:switch` nodes evaluate ordered cases, forward the first matching branch through the case

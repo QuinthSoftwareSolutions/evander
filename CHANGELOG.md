@@ -1,5 +1,14 @@
 # Changelog
 
+## 2026-08-17 - Prompt Case Closure Publication And Explicit Throttle Routes
+
+- Prompted the durable Team outbox publisher after a Case closure is committed through Admin API,
+  Team MCP, or a workflow effect, keyed by the exact pending outbox records. Publication failures
+  remain non-fatal because the committed outbox and periodic Team runtime tick retain recovery.
+- Standardized `gate:throttle` on explicit `default` and `dropped` outbound ports, emitted the
+  selected port at runtime, and rejected unported or unknown throttle edges during workflow
+  validation.
+
 ## 2026-08-16 - Workflow-Controlled Team Agent Lifecycle
 
 - Added workflow-only `effect:team:register-agent` and
