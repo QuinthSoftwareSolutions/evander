@@ -9,10 +9,7 @@ from evander.admin.web.user_store import AdminWebUserStore
 
 def _admin_web_user_store(tmp_path: Path) -> AdminWebUserStore:
     runtime_dir = tmp_path / "runtime"
-    return AdminWebUserStore(
-        runtime_dir / "admin-web.db",
-        legacy_json_path=runtime_dir / "admin-web-users.json",
-    )
+    return AdminWebUserStore(runtime_dir / "admin-web.db")
 
 
 def test_admin_web_user_store_initializes_sqlite_schema(tmp_path: Path) -> None:
@@ -64,7 +61,7 @@ def test_admin_web_user_store_mutations_use_sqlite(tmp_path: Path) -> None:
     assert stored_logins == ["operator@example.com"]
 
 
-def test_admin_web_user_store_imports_legacy_json_when_sqlite_empty(tmp_path: Path) -> None:
+def test_admin_web_user_store_ignores_retired_json_input(tmp_path: Path) -> None:
     runtime_dir = tmp_path / "runtime"
     runtime_dir.mkdir()
     (runtime_dir / "admin-web-users.json").write_text(
@@ -84,13 +81,10 @@ def test_admin_web_user_store_imports_legacy_json_when_sqlite_empty(tmp_path: Pa
     )
     store = _admin_web_user_store(tmp_path)
 
-    users = store.list_users()
-
-    assert [user.login for user in users] == ["operator@example.com"]
-    assert users[0].display_name == "Operator"
+    assert store.list_users() == []
 
 
-def test_admin_web_user_store_does_not_import_legacy_json_when_sqlite_has_users(
+def test_admin_web_user_store_uses_sqlite_when_retired_json_input_exists(
     tmp_path: Path,
 ) -> None:
     runtime_dir = tmp_path / "runtime"

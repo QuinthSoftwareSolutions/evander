@@ -196,6 +196,55 @@ def test_get_commands_polls_only_allowlisted_channels_and_filters_since_cursor(
     assert all(request.url.params.get("limit") == "25" for request in requests)
 
 
+def test_get_commands_uses_live_poll_subset_while_archived_channels_remain_authorized(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    command_store = JsonStore(tmp_path / "discord.json", DiscordCommandEnvelope)
+    command_store.put(
+        "100",
+        DiscordCommandEnvelope(
+            command_id="100",
+            author_id="user-a",
+            channel_id="thread-archived",
+            content="archived evidence",
+            metadata={
+                "source": "discord_bot_api",
+                "channel_id": "thread-archived",
+                "author_id": "user-a",
+                "attachments": [{"id": "att-1", "filename": "evidence.txt"}],
+            },
+        ),
+    )
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        assert request.url.path.endswith("/channels/thread-active/messages")
+        return httpx.Response(200, json=[], request=request)
+
+    patch_httpx_client(monkeypatch, httpx.MockTransport(handler))
+    service = DiscordBotApiService(
+        command_store,
+        token="test-token",
+        api_base_url="https://discord.test/api/v10",
+        poll_limit=25,
+        timeout_seconds=5.0,
+        retry_count=0,
+        allowed_channel_ids_provider=lambda: ["thread-active", "thread-archived"],
+        poll_channel_ids_provider=lambda: ["thread-active"],
+    )
+
+    service.get_commands()
+
+    assert [request.url.path for request in requests] == [
+        "/api/v10/channels/thread-active/messages"
+    ]
+    assert service.list_attachments("100", channel_id="thread-archived") == [
+        {"id": "att-1", "filename": "evidence.txt"}
+    ]
+
+
 def test_get_commands_batches_store_writes_after_successful_poll(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1335,6 +1384,74 @@ def test_discord_resolved_identity_routes_parent_webhook_to_child_thread(
             webhook_channel_id="parent-b",
             thread_id="thread-a",
         )
+
+
+def test_discord_resolved_identity_file_routes_parent_webhook_to_child_thread(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    requests: list[httpx.Request] = []
+    artifact_path = tmp_path / "evidence.txt"
+    artifact_path.write_text("evidence", encoding="utf-8")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if request.url.path.endswith("/channels/parent-a/webhooks"):
+            return httpx.Response(
+                200,
+                json={"id": "webhook-1", "token": "webhook-token"},
+                request=request,
+            )
+        if request.url.path.endswith("/webhooks/webhook-1/webhook-token"):
+            assert request.headers["content-type"].startswith("multipart/form-data")
+            body = request.read()
+            assert b'filename="evidence.txt"' in body
+            assert b"evidence" in body
+            return httpx.Response(
+                200,
+                json={"id": "message-1", "content": "reply", "author": {"id": "webhook-1"}},
+                request=request,
+            )
+        raise AssertionError(str(request.url))
+
+    patch_httpx_client(monkeypatch, httpx.MockTransport(handler))
+    service = DiscordBotApiService(
+        JsonStore(tmp_path / "discord.json", DiscordCommandEnvelope),
+        token="test-token",
+        api_base_url="https://discord.test/api/v10",
+        poll_limit=25,
+        timeout_seconds=5.0,
+        retry_count=0,
+        allowed_channel_ids_provider=lambda: ["thread-a"],
+        allowed_webhook_channel_ids_provider=lambda: ["parent-a"],
+        bot_token_env="DISCORD_BOT_TOKEN",
+        webhook_store_path=tmp_path / "discord-webhooks.json",
+    )
+
+    result = service.post_file_with_identity(
+        "reply",
+        "thread-a",
+        "session-1",
+        [
+            {
+                "path": str(artifact_path),
+                "filename": "evidence.txt",
+                "mime_type": "text/plain",
+            }
+        ],
+        identity=OutboundIdentity(display_name="Support", source="test"),
+        identity_status="resolved",
+        webhook_channel_id="parent-a",
+        thread_id="thread-a",
+    )
+
+    webhook_request = next(
+        request for request in requests if "/webhooks/webhook-1/webhook-token" in request.url.path
+    )
+    assert webhook_request.url.params["thread_id"] == "thread-a"
+    assert result["channel_id"] == "thread-a"
+    assert result["transport"] == "webhook"
+    assert result["artifact_count"] == 1
 
 
 def test_discord_in_flight_send_does_not_restore_admin_recreated_webhook(

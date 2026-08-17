@@ -20,7 +20,6 @@ from .persistence import (
     TeamOutboxRepository,
 )
 from .sqlite_store import (
-    LEGACY_STATE_FILE,
     STATE_DB_FILE,
     TeamStateSqliteCommandTransaction,
     TeamStateSqliteStore,
@@ -316,7 +315,6 @@ class TeamStateRepository:
 
 __all__ = [
     "ADDON_ID",
-    "LEGACY_STATE_FILE",
     "STATE_DB_FILE",
     "STATE_FILE",
     "TeamStateConflictError",

@@ -377,9 +377,8 @@ In `local_password` mode, `EVANDER_ADMIN_WEB_USERNAME` and
 `EVANDER_ADMIN_WEB_PASSWORD` seed the first local owner and remain a break-glass credential;
 additional users get per-user password hashes through Users & Groups. In `azure_sso` mode, the env
 allowed-user list is only read when the SQLite user table is empty, and imported users receive the
-seeded Owner group. A legacy `runtime/admin-web-users.json` file is imported once when the SQLite
-table is empty; legacy `admin` and `regular` roles are preserved for compatibility and mapped to
-Owner and Operator group assignments. Removing a user from the store invalidates their existing
+seeded Owner group. Retired `runtime/admin-web-users.json` files are not read. Removing a user
+from the store invalidates their existing
 local admin session on the next authenticated request unless they are the configured break-glass
 local user.
 
@@ -844,7 +843,6 @@ contract. See [live-smoke-tests.md](docs/live-smoke-tests.md) for live provider 
   - `GET /chats/{chat-id}/messages` for group chats
   - `GET /me/chats` plus `GET /chats/{chat-id}/messages` for allowlisted direct-message triggers
   It stores both top-level messages and any expanded replies in `runtime/teams_messages.db`.
-  Existing `runtime/teams_messages.json` stores are imported on first use.
 - `teams_get_messages` requires `channel_target` plus optional `since_cursor`, `before_cursor`,
   and `limit` arguments. Cursors can be full returned cursor values or bare message ids, which the
   gateway scopes to the required target. Cursorless reads are bounded recent reads for that target:

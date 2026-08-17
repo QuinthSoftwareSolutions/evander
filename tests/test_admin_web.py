@@ -381,10 +381,7 @@ def _set_azure_sso_env(
 
 def _admin_web_user_store(tmp_path: Path) -> AdminWebUserStore:
     runtime_dir = tmp_path / "runtime"
-    return AdminWebUserStore(
-        runtime_dir / "admin-web.db",
-        legacy_json_path=runtime_dir / "admin-web-users.json",
-    )
+    return AdminWebUserStore(runtime_dir / "admin-web.db")
 
 
 def _complete_azure_login(

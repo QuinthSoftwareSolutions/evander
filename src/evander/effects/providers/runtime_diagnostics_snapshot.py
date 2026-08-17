@@ -301,16 +301,10 @@ class RuntimeDiagnosticsSnapshotEffectProvider(EffectProviderBase):
     def _worker_job_failures_section(cls, *, runtime_dir: Path, errors: list[str]) -> list[str]:
         lines = ["## Recent worker job failures"]
         db_path = runtime_dir / "worker-jobs.db"
-        legacy_json_path = runtime_dir / "worker-jobs.json"
         lines.append("")
         lines.append(f"### {db_path}")
         if not db_path.exists():
-            if legacy_json_path.exists():
-                lines.append(
-                    f"missing active SQLite store; legacy JSON present at {legacy_json_path}"
-                )
-            else:
-                lines.append("missing")
+            lines.append("missing")
             lines.append("")
             return lines
 

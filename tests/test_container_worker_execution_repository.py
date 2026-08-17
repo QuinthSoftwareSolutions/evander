@@ -15,7 +15,7 @@ from evander.execution.container_worker_repository import (
 
 
 def _repo(tmp_path: Path) -> ContainerWorkerExecutionRepository:
-    return ContainerWorkerExecutionRepository(tmp_path / "container-worker-executions.json")
+    return ContainerWorkerExecutionRepository(tmp_path / "container-worker-executions.db")
 
 
 def _record(
@@ -160,7 +160,7 @@ def test_repository_session_summaries_and_cursor_page_are_bounded(tmp_path: Path
     assert [record.execution_id for record in second_page] == ["exec-a-1"]
 
 
-def test_repository_json_constructor_uses_sibling_db_and_imports_legacy_json_once(
+def test_repository_ignores_retired_json_input(
     tmp_path: Path,
 ) -> None:
     legacy_json_path = tmp_path / "runtime" / "container-worker-executions.json"
@@ -186,17 +186,11 @@ def test_repository_json_constructor_uses_sibling_db_and_imports_legacy_json_onc
         }
     }
     legacy_json_path.write_text(json.dumps(legacy_payload), encoding="utf-8")
-    original_text = legacy_json_path.read_text(encoding="utf-8")
+    repo = ContainerWorkerExecutionRepository(
+        tmp_path / "runtime" / "container-worker-executions.db"
+    )
 
-    repo = ContainerWorkerExecutionRepository(legacy_json_path)
-
-    assert repo.path == legacy_json_path.with_name("container-worker-executions.db")
-    assert repo.legacy_json_path == legacy_json_path
-
-    imported = repo.read_all()
-    assert list(imported) == ["exec-1"]
-    assert imported["exec-1"].worker_job_id == "worker-1"
-    assert legacy_json_path.read_text(encoding="utf-8") == original_text
+    assert repo.read_all() == {}
 
     with sqlite3.connect(repo.path) as connection:
         table_names = {
@@ -216,30 +210,6 @@ def test_repository_json_constructor_uses_sibling_db_and_imports_legacy_json_onc
         "idx_container_worker_executions_target_name",
         "idx_container_worker_executions_directory_created",
     }.issubset(index_names)
-
-    legacy_payload["exec-2"] = {
-        "execution_id": "exec-2",
-        "session_id": "session-2",
-        "worker_job_id": "worker-2",
-        "worker_url": "http://worker.test",
-        "target_name": "target-2",
-        "created_at": "2026-05-24T12:05:00Z",
-        "updated_at": "2026-05-24T12:05:00Z",
-        "started_at": None,
-        "finished_at": None,
-        "last_status": "running",
-        "cleanup_status": "unknown",
-        "cleanup_attempted_at": None,
-        "cleanup_completed_at": None,
-        "cleanup_error": None,
-        "directory_path": "root/other",
-        "metadata": {"purpose": "should-not-import"},
-    }
-    legacy_json_path.write_text(json.dumps(legacy_payload), encoding="utf-8")
-
-    second_repo = ContainerWorkerExecutionRepository(legacy_json_path)
-    assert list(second_repo.read_all()) == ["exec-1"]
-
 
 def test_repository_resolve_and_targeted_listings_are_ordered(tmp_path: Path) -> None:
     repo = _repo(tmp_path)

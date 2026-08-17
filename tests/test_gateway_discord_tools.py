@@ -1027,6 +1027,129 @@ def test_discord_post_status_uses_resolved_identity_for_opted_in_target(
     assert fake_discord.post_calls == []
 
 
+def test_discord_post_file_routes_thread_through_parent_identity_webhook(
+    tmp_path: Path,
+) -> None:
+    context = make_context(tmp_path)
+    parent_channel_id = "234567890123456789"
+    thread_id = "345678901234567890"
+    write_root_communication_targets(
+        context,
+        [
+            {
+                "id": "discord-support",
+                "provider": "discord",
+                "kind": "discord",
+                "address": f"123456789012345678/{parent_channel_id}",
+                "policy": {
+                    "capabilities": ["reply"],
+                    "sender_identity": "resolved",
+                    "discord_conversation_scope": "public_threads",
+                },
+            }
+        ],
+    )
+    DiscordInboxStore(context.config.runtime_dir / "discord-inbox-store.json").upsert_thread_binding(
+        thread_id=thread_id,
+        parent_channel_id=parent_channel_id,
+        guild_id="123456789012345678",
+        thread_type=11,
+        archived=False,
+        locked=False,
+        observed_at=datetime(2026, 8, 17, tzinfo=UTC),
+    )
+    context.session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-1",
+            allowed_tools=[ToolName.DISCORD_POST_FILE],
+            communication_target_ids=["discord-support"],
+            communication_file_send_enabled=True,
+            communication_file_max_bytes=100,
+            communication_file_allowed_extensions=[".txt"],
+            communication_file_allowed_mime_types=["text/plain"],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        ),
+    )
+    artifact = CommunicationArtifactStore(context.config.runtime_dir).stage(
+        provider="workspace",
+        session_id="session-1",
+        content=b"evidence",
+        original_filename="evidence.txt",
+        mime_type="text/plain",
+    )
+
+    class IdentityFileDiscordService:
+        def __init__(self) -> None:
+            self.calls: list[dict[str, object]] = []
+
+        def post_file(
+            self,
+            message: str,
+            channel_id: str,
+            session_id: str,
+            artifacts: list[dict[str, object]],
+        ) -> dict[str, object]:
+            raise AssertionError("resolved identity file post should use the webhook path")
+
+        def post_file_with_identity(
+            self,
+            message: str,
+            channel_id: str,
+            session_id: str,
+            artifacts: list[dict[str, object]],
+            *,
+            identity: OutboundIdentity | None,
+            identity_status: str,
+            webhook_channel_id: str | None = None,
+            thread_id: str | None = None,
+        ) -> dict[str, object]:
+            self.calls.append(
+                {
+                    "message": message,
+                    "channel_id": channel_id,
+                    "session_id": session_id,
+                    "artifacts": artifacts,
+                    "identity": identity,
+                    "identity_status": identity_status,
+                    "webhook_channel_id": webhook_channel_id,
+                    "thread_id": thread_id,
+                }
+            )
+            return {
+                "status": "posted",
+                "message_id": "discord-file-1",
+                "channel_id": channel_id,
+                "session_id": session_id,
+            }
+
+    context.register_outbound_identity_resolver(
+        "test",
+        lambda **_: OutboundIdentity(display_name="Support Agent", source="test"),
+    )
+    fake_discord = IdentityFileDiscordService()
+    set_discord_service(context, fake_discord)
+
+    result = call_tool(
+        create_server(context),
+        "discord_post_file",
+        {
+            "session_id": "session-1",
+            "channel_id": thread_id,
+            "message": "Evidence attached",
+            "artifact_ids": [artifact.artifact_id],
+        },
+    )
+
+    assert result["status"] == "posted"
+    assert len(fake_discord.calls) == 1
+    call = fake_discord.calls[0]
+    assert call["channel_id"] == thread_id
+    assert call["webhook_channel_id"] == parent_channel_id
+    assert call["thread_id"] == thread_id
+    assert call["identity_status"] == "resolved"
+    assert isinstance(call["identity"], OutboundIdentity)
+
+
 def test_create_local_issue_requires_tool_permission(tmp_path: Path) -> None:
     context = make_context(tmp_path)
     context.session_repository.upsert_session(

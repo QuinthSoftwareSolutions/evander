@@ -157,7 +157,7 @@ Teams and Discord inboxes, scheduled wakes, worker jobs, and orchestration adopt
 >
 > A small operator-owned document with one writer remains a good candidate for atomic, locked JSON. A queue in which several workers claim rows, renew leases, retry, page results, and preserve history needs transactions and indexes, so SQLite is a better fit. An append-only security record benefits from JSONL's simple canonical sequence, even when SQLite makes searching it faster.
 >
-> The wake and worker migrations illustrate the usual pattern: initialize SQLite, import legacy JSON while the database is empty, and thereafter treat the populated database as live authority. Some repositories, including Team, also record explicit migration metadata. The source file remains untouched as rollback evidence, and the repository API can remain stable while its persistence semantics change. Editing the source JSON afterward does not edit live state.
+> The wake and worker migrations used a temporary one-way JSON import while SQLite became the live authority. After the supported deployments were verified, those import paths were removed and the JSON sources were archived. The repository APIs remained stable while their persistence semantics changed.
 
 This was never a blanket “JSON is obsolete” migration. The owner repository and concurrency contract determine the format.
 
@@ -255,7 +255,7 @@ If an operator encounters one of these names, the safest first step is to record
 >
 > A bridge may read an old record long enough to import or repair it. It should not leave both ends accepting ordinary writes indefinitely. Two writable representations invite dual authority: each can be internally valid while disagreeing about the real state.
 
-Once a SQLite repository has imported legacy JSON and made the database live authority, editing the legacy file should not change live state. Keep it only as documented rollback evidence until finalization says it may be archived.
+Once a SQLite repository is live authority, editing a retired JSON file must not change live state. Archive it with a manifest after finalization; do not leave an executable import path as rollback machinery.
 
 ## Retired designs: do not revive them
 

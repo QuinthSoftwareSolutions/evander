@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import { test } from "node:test";
 
 import {
+  communicationTargetDiscordConversationScopeFromValue,
   communicationTargetSenderIdentityFromValue,
 } from "../src/features/configuration/configurationDraftState.ts";
 
@@ -80,6 +81,28 @@ test("Discord resolved sender identity survives draft rerenders", () => {
       policy: { sender_identity: "resolved" },
     }),
     "platform",
+  );
+});
+
+test("Discord conversation scope survives persisted config and draft rerenders", () => {
+  assert.equal(
+    communicationTargetDiscordConversationScopeFromValue({
+      policy: { discord_conversation_scope: "public_threads" },
+    }),
+    "public_threads",
+  );
+  assert.equal(
+    communicationTargetDiscordConversationScopeFromValue({
+      discordConversationScope: "channel_and_public_threads",
+    }),
+    "channel_and_public_threads",
+  );
+  assert.equal(
+    communicationTargetDiscordConversationScopeFromValue({
+      discordConversationScope: "channel",
+      policy: { discord_conversation_scope: "public_threads" },
+    }),
+    "channel",
   );
 });
 

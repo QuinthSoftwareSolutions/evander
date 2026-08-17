@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-08-17 - JSON Store Migration Retirement
+
+- Retired completed first-use JSON-to-SQLite imports for Admin Web users, Team state, Teams and
+  Discord inboxes, Teams messages, scheduled wakes, container-worker executions, and worker jobs.
+- Updated runtime defaults and production callers to use their canonical `.db` stores directly.
+
 ## 2026-08-17 - Discord Forum And Public Thread Communication
 
 - Added explicit Discord communication-target conversation scopes for flat channels, public child
@@ -13,6 +19,9 @@
 - Added Admin Web configuration and workflow-editor guidance for Discord thread-aware targets.
 - Fixed thread ingest provenance, order-independent conversation-scope merging, parent webhook
   authorization for resolved identities, and read access to archived or locked public threads.
+- Fixed Admin Web conversation-scope draft round-tripping, excluded archived public threads from
+  live Discord API polling while retaining local history and attachment access, and routed
+  resolved-identity file replies through the parent channel webhook.
 
 ## 2026-08-17 - Prompt Case Closure Publication And Explicit Throttle Routes
 

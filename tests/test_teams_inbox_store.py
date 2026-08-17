@@ -5,8 +5,6 @@ from datetime import datetime, timezone
 from multiprocessing import get_context
 from pathlib import Path
 
-import pytest
-
 from evander.messaging.teams_inbox_store import TeamsInboxMessage, TeamsInboxStore
 
 
@@ -230,7 +228,7 @@ def test_teams_inbox_store_preserves_concurrent_independent_updates(tmp_path: Pa
     }
 
 
-def test_teams_inbox_store_imports_legacy_json_when_sqlite_store_is_empty(
+def test_teams_inbox_store_ignores_retired_json_input(
     tmp_path: Path,
 ) -> None:
     path = tmp_path / "runtime" / "teams-inbox-store.json"
@@ -258,16 +256,5 @@ def test_teams_inbox_store_imports_legacy_json_when_sqlite_store_is_empty(
 
     store = TeamsInboxStore(path)
 
-    assert store.get_cursor("team-a/channel-1") == "team-a/channel-1/msg-1"
-    assert [message.cursor for message in store.list_all_messages()] == ["team-a/channel-1/msg-1"]
-
-
-def test_teams_inbox_store_raises_on_invalid_legacy_json(
-    tmp_path: Path,
-) -> None:
-    path = tmp_path / "runtime" / "teams-inbox-store.json"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text("{not json", encoding="utf-8")
-
-    with pytest.raises(json.JSONDecodeError):
-        TeamsInboxStore(path)
+    assert store.get_cursor("team-a/channel-1") is None
+    assert store.list_all_messages() == []

@@ -183,7 +183,7 @@ class NotificationSender:
                 "discord_thread_not_authorized: the selected target does not allow public threads"
             )
         binding = DiscordInboxStore(
-            self.runtime.config.runtime_dir / "discord-inbox-store.json"
+            self.runtime.config.runtime_dir / "discord-inbox-store.db"
         ).get_thread_binding(thread_id)
         if binding is None or binding.parent_channel_id != parent_channel_id:
             raise ValueError(

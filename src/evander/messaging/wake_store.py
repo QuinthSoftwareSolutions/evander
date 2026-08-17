@@ -133,15 +133,10 @@ class WakeRequestRepository(Protocol):
 class WakeRequestStore:
     """SQLite-backed store for scheduled wake requests and wake dispatch history."""
 
-    def __init__(self, path: Path, *, legacy_json_path: Path | None = None) -> None:
-        original_path = Path(path)
-        self.path = wake_store_db_path(original_path)
-        if legacy_json_path is None and self.path != original_path:
-            legacy_json_path = original_path
-        self.legacy_json_path = legacy_json_path
+    def __init__(self, path: Path) -> None:
+        self.path = wake_store_db_path(Path(path))
         self._lock = RLock()
         self.ensure_schema()
-        self._import_legacy_json_if_empty()
 
     def upsert_request(self, request: WakeScheduledRequest) -> None:
         validated = self._normalize_cancelled_request(WakeScheduledRequest.model_validate(request))
@@ -1051,111 +1046,6 @@ class WakeRequestStore:
                     raise
                 time.sleep(0.05)
 
-    def _import_legacy_json_if_empty(self) -> None:
-        legacy_json_path = self.legacy_json_path
-        if (
-            legacy_json_path is None
-            or legacy_json_path == self.path
-            or legacy_json_path.suffix.lower() in _SQLITE_WAKE_SUFFIXES
-            or not legacy_json_path.exists()
-        ):
-            return
-        with self._lock, self._connect() as connection:
-            connection.execute("BEGIN IMMEDIATE")
-            row = connection.execute(
-                """
-                SELECT
-                    (SELECT COUNT(*) FROM wake_requests) AS request_count,
-                    (SELECT COUNT(*) FROM wake_dispatches) AS dispatch_count,
-                    (SELECT COUNT(*) FROM wake_messages) AS message_count
-                """
-            ).fetchone()
-            if row is not None and (
-                int(row["request_count"] or 0) > 0
-                or int(row["dispatch_count"] or 0) > 0
-                or int(row["message_count"] or 0) > 0
-            ):
-                return
-
-            payload = self._read_legacy_payload(legacy_json_path)
-            raw_requests = payload.get("requests", {})
-            if not isinstance(raw_requests, dict):
-                raise ValueError("Wake JSON store requests must be an object")
-            for raw_value in raw_requests.values():
-                request = WakeScheduledRequest.model_validate(raw_value)
-                connection.execute(
-                    """
-                    INSERT INTO wake_requests(
-                        request_id,
-                        session_id,
-                        enabled,
-                        created_at,
-                        updated_at,
-                        last_dispatched_at,
-                        next_run_at,
-                        schedule_resume_at,
-                        schedule_cron,
-                        source,
-                        resume_mode,
-                        payload_json
-                    )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    self._request_row(request),
-                )
-
-            raw_dispatches = payload.get("dispatches", {})
-            if not isinstance(raw_dispatches, dict):
-                raise ValueError("Wake JSON store dispatches must be an object")
-            for raw_value in raw_dispatches.values():
-                dispatch = WakeDispatchRecord.model_validate(raw_value)
-                connection.execute(
-                    """
-                    INSERT INTO wake_dispatches(
-                        dispatch_id,
-                        request_id,
-                        session_id,
-                        status,
-                        dispatched_at,
-                        source,
-                        payload_json
-                    )
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    self._dispatch_row(dispatch),
-                )
-
-            raw_messages = payload.get("messages", {})
-            if not isinstance(raw_messages, dict):
-                raise ValueError("Wake JSON store messages must be an object")
-            for raw_value in raw_messages.values():
-                message = WakeMessageEnvelope.model_validate(raw_value)
-                connection.execute(
-                    """
-                    INSERT INTO wake_messages(
-                        message_id,
-                        request_id,
-                        dispatch_id,
-                        session_id,
-                        status,
-                        created_at,
-                        payload_json
-                    )
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    self._message_row(message),
-                )
-
-    @staticmethod
-    def _read_legacy_payload(path: Path) -> dict[str, Any]:
-        text = path.read_text(encoding="utf-8")
-        if not text.strip():
-            return {"requests": {}, "dispatches": {}, "messages": {}}
-        raw = json.loads(text)
-        if not isinstance(raw, dict):
-            raise ValueError(f"Wake JSON store at {path} must contain an object")
-        return raw
-
     def _compact(self, connection: sqlite3.Connection) -> None:
         cutoff = self._datetime_to_storage(datetime.now(UTC) - _WAKE_RETENTION)
         connection.execute(
@@ -1182,32 +1072,12 @@ class WakeRequestStore:
         )
 
     @staticmethod
-    def _validate_request(raw_value: object) -> WakeScheduledRequest | None:
-        if not isinstance(raw_value, dict):
-            return None
-        return WakeRequestStore._normalize_cancelled_request(
-            WakeScheduledRequest.model_validate(raw_value)
-        )
-
-    @staticmethod
     def _normalize_cancelled_request(request: WakeScheduledRequest) -> WakeScheduledRequest:
         if request.status != "cancelled":
             return request
         if request.enabled is False and request.next_run_at is None:
             return request
         return request.model_copy(update={"enabled": False, "next_run_at": None}, deep=True)
-
-    @staticmethod
-    def _validate_dispatch(raw_value: object) -> WakeDispatchRecord | None:
-        if not isinstance(raw_value, dict):
-            return None
-        return WakeDispatchRecord.model_validate(raw_value)
-
-    @staticmethod
-    def _validate_message(raw_value: object) -> WakeMessageEnvelope | None:
-        if not isinstance(raw_value, dict):
-            return None
-        return WakeMessageEnvelope.model_validate(raw_value)
 
     @staticmethod
     def _request_exists(connection: sqlite3.Connection, request_id: str) -> bool:

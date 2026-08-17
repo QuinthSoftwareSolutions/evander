@@ -11,29 +11,10 @@ from evander.models import DiscordCommandEnvelope, EmailMessage, TeamsMessageEnv
 from evander.storage import JsonStore
 
 SQLITE_BUSY_TIMEOUT_MS = 30_000
-_SQLITE_TEAMS_STORE_SUFFIXES = {".db", ".sqlite", ".sqlite3"}
-
-
-def teams_records_db_path(path: Path) -> Path:
-    if path.suffix.lower() in _SQLITE_TEAMS_STORE_SUFFIXES:
-        return path
-    return path.with_suffix(".db")
 
 
 def _json_dumps(payload: Any) -> str:
     return json.dumps(payload, sort_keys=True, separators=(",", ":"))
-
-
-def _read_legacy_teams_json(path: Path) -> dict[str, TeamsMessageEnvelope]:
-    if not path.exists():
-        return {}
-    text = path.read_text(encoding="utf-8")
-    if not text.strip():
-        return {}
-    raw = json.loads(text)
-    if not isinstance(raw, dict):
-        raise ValueError(f"Teams JSON store at {path} must contain an object at the top level")
-    return {key: TeamsMessageEnvelope.model_validate(value) for key, value in raw.items()}
 
 
 class EmailRecordsRepository(Protocol):
@@ -143,12 +124,10 @@ class JsonTeamsRecordsRepository:
 
 
 class SqliteTeamsRecordsRepository:
-    def __init__(self, path: Path, *, legacy_json_path: Path | None = None) -> None:
+    def __init__(self, path: Path) -> None:
         self.path = path
-        self.legacy_json_path = legacy_json_path
         self._lock = RLock()
         self.ensure_schema()
-        self._import_legacy_json_if_empty()
 
     @property
     def model(self) -> type[TeamsMessageEnvelope]:
@@ -219,28 +198,6 @@ class SqliteTeamsRecordsRepository:
             str(row["cursor"]): TeamsMessageEnvelope.model_validate_json(row["payload_json"])
             for row in rows
         }
-
-    def _import_legacy_json_if_empty(self) -> None:
-        legacy_json_path = self.legacy_json_path
-        if (
-            legacy_json_path is None
-            or legacy_json_path.suffix.lower() in _SQLITE_TEAMS_STORE_SUFFIXES
-        ):
-            return
-        with self._lock:
-            with self._connect() as connection:
-                row = connection.execute(
-                    "SELECT COUNT(*) AS record_count FROM teams_message_records"
-                ).fetchone()
-                if row is not None and int(row["record_count"]) > 0:
-                    return
-                records = _read_legacy_teams_json(legacy_json_path)
-                if not records:
-                    return
-                rows = [
-                    self._row_for_record(cursor, envelope) for cursor, envelope in records.items()
-                ]
-                self._put_rows(connection, rows)
 
     def _connect(self) -> sqlite3.Connection:
         self.path.parent.mkdir(parents=True, exist_ok=True)

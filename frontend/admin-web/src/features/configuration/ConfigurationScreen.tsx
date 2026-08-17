@@ -46,9 +46,11 @@ import {
 } from "./EmailMailboxConfiguration";
 import { ConfigurationNavigator } from "./ConfigurationNavigator";
 import {
+  communicationTargetDiscordConversationScopeFromValue,
   communicationTargetSenderIdentityFromValue,
   type CommunicationTargetSenderIdentity,
   type ConfigurationDraftFieldState,
+  type DiscordConversationScope,
 } from "./configurationDraftState";
 import {
   configurationDestinationsForTab,
@@ -209,7 +211,7 @@ type CommunicationTargetDraftEntry = {
   capabilities: string[];
   authProfileRef: string;
   senderIdentity: CommunicationTargetSenderIdentity;
-  discordConversationScope: "channel" | "public_threads" | "channel_and_public_threads";
+  discordConversationScope: DiscordConversationScope;
 };
 
 type CommunicationTargetDraftParseResult = {
@@ -519,11 +521,7 @@ function communicationTargetEntriesFromConfig(value: unknown): CommunicationTarg
       capabilities: draftCapabilities.length ? draftCapabilities : policyCapabilities,
       authProfileRef: String(target.authProfileRef ?? policy.auth_profile_ref ?? ""),
       senderIdentity: communicationTargetSenderIdentityFromValue(target),
-      discordConversationScope:
-        policy.discord_conversation_scope === "public_threads"
-        || policy.discord_conversation_scope === "channel_and_public_threads"
-          ? policy.discord_conversation_scope
-          : "channel",
+      discordConversationScope: communicationTargetDiscordConversationScopeFromValue(target),
     };
   });
 }
@@ -606,7 +604,7 @@ function communicationTargetDraftEntriesToConfig(entries: CommunicationTargetDra
       capabilities: string[];
       auth_profile_ref?: string;
       sender_identity?: CommunicationTargetSenderIdentity;
-      discord_conversation_scope?: "channel" | "public_threads" | "channel_and_public_threads";
+      discord_conversation_scope?: DiscordConversationScope;
     } = { capabilities };
     const authProfileRef = entry.authProfileRef.trim();
     if (provider === "email" && authProfileRef) {

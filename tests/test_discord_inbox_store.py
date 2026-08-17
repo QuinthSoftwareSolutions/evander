@@ -76,7 +76,6 @@ def test_discord_message_envelope_preserves_raw_metadata() -> None:
 @pytest.mark.parametrize(
     ("input_path", "expected_path"),
     [
-        ("runtime/discord-inbox-store.json", "runtime/discord-inbox-store.db"),
         ("runtime/discord-inbox-store.db", "runtime/discord-inbox-store.db"),
         ("runtime/discord-inbox-store.sqlite", "runtime/discord-inbox-store.sqlite"),
         (
@@ -92,15 +91,12 @@ def test_discord_inbox_db_path(tmp_path: Path, input_path: str, expected_path: s
 
 
 def test_discord_inbox_store_uses_sqlite_db_path(tmp_path: Path) -> None:
-    path = tmp_path / "runtime" / "discord-inbox-store.json"
+    path = tmp_path / "runtime" / "discord-inbox-store.db"
 
     store = DiscordInboxStore(path)
 
-    assert store.original_path == path
-    assert store.path == tmp_path / "runtime" / "discord-inbox-store.db"
-    assert store.legacy_json_path == path
+    assert store.path == path
     assert store.path.exists()
-    assert not path.exists()
 
 
 def test_discord_inbox_store_dedupes_messages(tmp_path: Path) -> None:
@@ -375,20 +371,7 @@ def test_discord_inbox_store_preserves_concurrent_independent_updates(
     assert set(payload["messages"]) == {"msg-a", "msg-b"}
 
 
-@pytest.mark.parametrize("payload_text", ["", "{not json"])
-def test_discord_inbox_store_raises_on_invalid_legacy_json(
-    tmp_path: Path,
-    payload_text: str,
-) -> None:
-    path = tmp_path / "runtime" / "discord-inbox-store.json"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(payload_text, encoding="utf-8")
-
-    with pytest.raises(json.JSONDecodeError):
-        DiscordInboxStore(path)
-
-
-def test_discord_inbox_store_imports_legacy_json_when_sqlite_store_is_empty(
+def test_discord_inbox_store_ignores_retired_json_input(
     tmp_path: Path,
 ) -> None:
     path = tmp_path / "runtime" / "discord-inbox-store.json"
@@ -420,27 +403,10 @@ def test_discord_inbox_store_imports_legacy_json_when_sqlite_store_is_empty(
 
     store = DiscordInboxStore(path)
 
-    assert path.exists()
     assert store.path.exists()
-    assert store.get_cursor("chan-1") == cursor
-    assert [
-        message.message_id for message in store.list_all_messages(channel_ids=["chan-1"]).messages
-    ] == ["msg-1"]
-    assert store.get_session_cursor("session-1", "chan-1") == cursor
-    assert store.read_raw() == {
-        "cursors": {"chan-1": cursor},
-        "messages": {
-            "msg-1": _message(
-                "msg-1",
-                created_at=created_at,
-            ).model_dump(mode="json")
-        },
-        "session_reads": {
-            "session-1": {
-                "chan-1": cursor,
-            }
-        },
-    }
+    assert store.get_cursor("chan-1") is None
+    assert store.list_all_messages(channel_ids=["chan-1"]).messages == []
+    assert store.get_session_cursor("session-1", "chan-1") is None
 
 
 def test_discord_inbox_store_persists_public_thread_bindings(tmp_path: Path) -> None:

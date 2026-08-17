@@ -269,7 +269,7 @@ class WorkerDaemon:
     ) -> None:
         self.runtime_dir = runtime_dir
         self.worker_root = worker_root
-        self.store = WorkerJobStore(runtime_dir / "worker-jobs.json")
+        self.store = WorkerJobStore(runtime_dir / "worker-jobs.db")
         self.allowed_git_source_prefixes = tuple(
             prefix.strip() for prefix in (allowed_git_source_prefixes or ()) if str(prefix).strip()
         )

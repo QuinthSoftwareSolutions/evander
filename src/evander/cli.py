@@ -425,7 +425,7 @@ def _build_execution_backend_from_option(config: Path):
 
 def _container_worker_repository(config: GatewayConfig) -> ContainerWorkerExecutionRepository:
     return ContainerWorkerExecutionRepository(
-        config.runtime_dir / "container-worker-executions.json"
+        config.runtime_dir / "container-worker-executions.db"
     )
 
 

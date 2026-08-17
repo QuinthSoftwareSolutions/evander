@@ -257,7 +257,7 @@ class CommunicationNewMessageTriggerProvider(TriggerProviderBase):
         if not self._teams_targets_by_address:
             return []
 
-        inbox_store = JsonTeamsInboxCursorRepository(self._runtime_dir() / "teams-inbox-store.json")
+        inbox_store = JsonTeamsInboxCursorRepository(self._runtime_dir() / "teams-inbox-store.db")
         raw_messages = inbox_store.list_all_messages(
             channel_targets=list(self._teams_targets_by_address),
             created_at_from=cursor,
@@ -411,7 +411,7 @@ class CommunicationNewMessageTriggerProvider(TriggerProviderBase):
         if not self._discord_targets_by_channel_id:
             return []
 
-        inbox_store = DiscordInboxStore(self._runtime_dir() / "discord-inbox-store.json")
+        inbox_store = DiscordInboxStore(self._runtime_dir() / "discord-inbox-store.db")
         parent_channel_ids = list(self._discord_targets_by_channel_id)
         readable_channel_ids: set[str] = set()
         for parent_channel_id, target_ids in self._discord_targets_by_channel_id.items():

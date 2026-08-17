@@ -16,7 +16,6 @@ from evander.messaging.discord_inbox_store import DiscordInboxStore
 from evander.models import SessionManifest, ToolName
 from evander.repositories.records import (
     SqliteTeamsRecordsRepository,
-    teams_records_db_path,
 )
 from evander.runtime import _resolve_allowed_discord_channel_ids, build_runtime
 from evander.services import (
@@ -85,7 +84,7 @@ def test_build_runtime_initializes_sqlite_teams_message_store(tmp_path: Path) ->
     runtime = build_runtime(config)
 
     assert isinstance(runtime.teams_messages, SqliteTeamsRecordsRepository)
-    assert runtime.teams_messages.path == teams_records_db_path(config.teams_message_store_path)
+    assert runtime.teams_messages.path == config.teams_message_store_path
     assert runtime.teams_messages.path.exists()
 
 
@@ -219,7 +218,7 @@ def test_build_runtime_initializes_discord_inbox_service(tmp_path: Path) -> None
     runtime = build_runtime(make_config(tmp_path))
 
     assert isinstance(runtime.discord_inbox_service, DiscordInboxService)
-    assert runtime.discord_inbox_service.store_path == tmp_path / "discord-inbox-store.json"
+    assert runtime.discord_inbox_service.store_path == tmp_path / "discord-inbox-store.db"
     assert runtime.discord_inbox_service.store.path == tmp_path / "discord-inbox-store.db"
     assert runtime.discord_inbox_service.store.path.exists()
 
@@ -357,6 +356,7 @@ def test_runtime_discord_service_authorizes_thread_parent_only_for_webhooks(
     config = make_config(tmp_path, discord_backend="bot_api")
     parent_channel_id = "234567890123456789"
     thread_id = "345678901234567890"
+    archived_thread_id = "345678901234567891"
     write_communication_targets(
         config,
         "root",
@@ -383,6 +383,15 @@ def test_runtime_discord_service_authorizes_thread_parent_only_for_webhooks(
         locked=False,
         observed_at=datetime(2026, 8, 17, tzinfo=UTC),
     )
+    DiscordInboxStore(config.runtime_dir / "discord-inbox-store.json").upsert_thread_binding(
+        thread_id=archived_thread_id,
+        parent_channel_id=parent_channel_id,
+        guild_id="123456789012345678",
+        thread_type=11,
+        archived=True,
+        locked=False,
+        observed_at=datetime(2026, 8, 17, tzinfo=UTC),
+    )
     runtime = build_runtime(config)
     runtime.session_repository.upsert_session(
         SessionManifest(
@@ -396,7 +405,8 @@ def test_runtime_discord_service_authorizes_thread_parent_only_for_webhooks(
     service = runtime.discord_service_for_session("session-thread")
 
     assert isinstance(service, DiscordBotApiService)
-    assert service._allowed_channel_ids() == [thread_id]
+    assert service._allowed_channel_ids() == [thread_id, archived_thread_id]
+    assert service._poll_channel_ids() == [thread_id]
     assert service._allowed_webhook_channel_ids() == [parent_channel_id]
 
 

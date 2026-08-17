@@ -51,7 +51,7 @@ Some convenient views are copies or summaries. They can be refreshed or rebuilt;
 >
 > <code>runtime/addons/team-addon/state.db</code>
 >
-> It contains the validated Team domain plus command-support tables for dispatch activity, idempotency, and the durable outbox. The store uses foreign-key enforcement, a busy timeout, write-ahead logging, and serialized write transactions. On the first database initialization only, an old <code>state.json</code> may be imported. That JSON file is migration input, not a live fallback.
+> It contains the validated Team domain plus command-support tables for dispatch activity, idempotency, and the durable outbox. The store uses foreign-key enforcement, a busy timeout, write-ahead logging, and serialized write transactions. A new database initializes an empty Team state; retired <code>state.json</code> files are not read.
 
 The following useful projections are deliberately non-canonical:
 

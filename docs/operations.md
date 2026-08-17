@@ -611,10 +611,8 @@ Admin Web users are stored in `runtime/admin-web.db`, keyed by normalized login/
 `local_password` mode, the configured username/password seeds the first local owner when the user
 table is empty, and Users & Groups can set or reset per-user local passwords. In `azure_sso` mode,
 `EVANDER_ADMIN_WEB_AZURE_ALLOWED_USERS` seeds initial users with the Owner group when the
-SQLite user table is empty. A legacy `runtime/admin-web-users.json` file is imported once when the
-SQLite table is empty; legacy `admin` and `regular` roles are retained for compatibility and mapped
-to Owner and Operator group assignments. After that first bootstrap, the SQLite runtime store is the source of
-truth. Users with `groups.manage` can create and edit reusable permission groups; users with
+SQLite user table is empty. The SQLite runtime store is the source of truth. Users with
+`groups.manage` can create and edit reusable permission groups; users with
 `users.manage` can create users and edit their directory-scoped group assignments and direct
 workflow read/write grants from the Admin Web Users & Groups tab. Directory scopes inherit downward,
 direct workflow write grants imply read, and privileged unlock remains a separate guard for

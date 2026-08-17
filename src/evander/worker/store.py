@@ -25,27 +25,11 @@ def _worker_jobs_db_path(path: Path) -> Path:
     return path.with_suffix(".db")
 
 
-def _read_legacy_worker_jobs_json(path: Path) -> dict[str, WorkerJobRecord]:
-    if not path.exists():
-        return {}
-    text = path.read_text(encoding="utf-8")
-    if not text.strip():
-        return {}
-    raw = json.loads(text)
-    if not isinstance(raw, dict):
-        raise ValueError(f"Worker job JSON store at {path} must contain an object at the top level")
-    return {key: WorkerJobRecord.model_validate(value) for key, value in raw.items()}
-
-
 class WorkerJobStore:
     def __init__(self, path: Path) -> None:
         self._lock = RLock()
-        self._legacy_json_path = (
-            path if path.suffix.lower() not in _SQLITE_WORKER_JOB_SUFFIXES else None
-        )
         self.path = _worker_jobs_db_path(path)
         self.ensure_schema()
-        self._import_legacy_json_if_empty()
 
     def _connect(self) -> sqlite3.Connection:
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -225,42 +209,3 @@ class WorkerJobStore:
             with self._connect() as connection:
                 rows = connection.execute(query, params).fetchall()
         return [WorkerJobRecord.model_validate_json(row["payload_json"]) for row in rows]
-
-    def _import_legacy_json_if_empty(self) -> None:
-        legacy_json_path = self._legacy_json_path
-        if legacy_json_path is None:
-            return
-        with self._lock:
-            with self._connect() as connection:
-                row = connection.execute(
-                    "SELECT COUNT(*) AS record_count FROM worker_jobs"
-                ).fetchone()
-                if row is not None and int(row["record_count"]) > 0:
-                    return
-                records = _read_legacy_worker_jobs_json(legacy_json_path)
-                if not records:
-                    return
-                connection.executemany(
-                    """
-                    INSERT INTO worker_jobs(
-                        job_id,
-                        session_id,
-                        container_name,
-                        status,
-                        cleanup_status,
-                        started_at,
-                        finished_at,
-                        payload_json
-                    )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                    ON CONFLICT(job_id) DO UPDATE SET
-                        session_id = excluded.session_id,
-                        container_name = excluded.container_name,
-                        status = excluded.status,
-                        cleanup_status = excluded.cleanup_status,
-                        started_at = excluded.started_at,
-                        finished_at = excluded.finished_at,
-                        payload_json = excluded.payload_json
-                    """,
-                    (self._record_row(record) for record in records.values()),
-                )
