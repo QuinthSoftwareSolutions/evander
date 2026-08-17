@@ -960,6 +960,7 @@ class DiscordBotApiService:
         retry_base_backoff_seconds: float = 0.5,
         retry_max_backoff_seconds: float = 5.0,
         allowed_channel_ids_provider: Callable[[], list[str]] = lambda: [],
+        allowed_webhook_channel_ids_provider: Callable[[], list[str]] = lambda: [],
         operator_user_ids_provider: Callable[[], list[str]] | None = None,
         include_operator_dms_provider: Callable[[], bool] | None = None,
         include_operator_dms: bool = False,
@@ -981,6 +982,7 @@ class DiscordBotApiService:
             for attempt in range(self.retry_count)
         )
         self.allowed_channel_ids_provider = allowed_channel_ids_provider
+        self.allowed_webhook_channel_ids_provider = allowed_webhook_channel_ids_provider
         self.operator_user_ids_provider = operator_user_ids_provider or (lambda: [])
         self.include_operator_dms_provider = include_operator_dms_provider or (
             lambda: include_operator_dms
@@ -1031,6 +1033,15 @@ class DiscordBotApiService:
             {
                 channel_id.strip()
                 for channel_id in self.allowed_channel_ids_provider()
+                if channel_id.strip()
+            }
+        )
+
+    def _allowed_webhook_channel_ids(self) -> list[str]:
+        return sorted(
+            {
+                channel_id.strip()
+                for channel_id in self.allowed_webhook_channel_ids_provider()
                 if channel_id.strip()
             }
         )
@@ -1199,6 +1210,11 @@ class DiscordBotApiService:
         allowed = set(self._allowed_channel_ids())
         if allowed and channel_id not in allowed:
             raise ValueError(f"Discord channel is not allowlisted: {channel_id}")
+
+    def _require_allowed_webhook_channel_id(self, channel_id: str) -> None:
+        allowed = set(self._allowed_channel_ids()) | set(self._allowed_webhook_channel_ids())
+        if allowed and channel_id not in allowed:
+            raise ValueError(f"Discord webhook channel is not allowlisted: {channel_id}")
 
     def _find_message_attachment(
         self,
@@ -1377,7 +1393,7 @@ class DiscordBotApiService:
     ) -> dict[str, Any]:
         if self.webhook_store is None:
             raise RuntimeError("Discord webhook credential storage is not configured")
-        self._require_allowed_channel_id(channel_id)
+        self._require_allowed_webhook_channel_id(channel_id)
         avatar_sha256 = avatar.sha256 if avatar is not None else None
         with self.webhook_store.provision_lock():
             existing = self.webhook_store.get(
@@ -1811,7 +1827,7 @@ class DiscordBotApiService:
         self._require_allowed_channel_id(channel_id)
         resolved_webhook_channel_id = webhook_channel_id or channel_id
         if resolved_webhook_channel_id != channel_id:
-            self._require_allowed_channel_id(resolved_webhook_channel_id)
+            self._require_allowed_webhook_channel_id(resolved_webhook_channel_id)
         if use_resolved_identity and identity is not None:
             (
                 webhook_payload,

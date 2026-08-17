@@ -286,6 +286,40 @@ class PolicyConfigResolver:
             capability=capability,
         )
 
+    def resolved_discord_webhook_channel_ids_for_session(
+        self,
+        session: SessionManifest,
+    ) -> list[str]:
+        directory_path = self.directory_scope_resolver.resolve_session_directory_path(
+            context="communication target",
+            session_id=session.session_id,
+            directory_path=session.directory_path,
+        )
+        refs = (
+            session.communication_target_ids
+            if session.communication_target_ids is not None
+            else session.discord_channel_allowlist
+        )
+        parent_channel_ids: set[str] = set()
+        for reference in refs:
+            normalized = str(reference or "").strip()
+            if not normalized:
+                continue
+            try:
+                target = self._target_for_ref(directory_path, normalized, provider="discord")
+            except ValueError:
+                continue
+            if (
+                target is None
+                or target.policy.sender_identity != "resolved"
+                or "reply" not in set(target.policy.capabilities)
+                or target.policy.discord_conversation_scope
+                not in {"public_threads", "channel_and_public_threads"}
+            ):
+                continue
+            parent_channel_ids.add(_discord_channel_id_from_address(target.address))
+        return sorted(parent_channel_ids)
+
     def resolved_teams_channel_targets_for_session(
         self,
         session: SessionManifest,

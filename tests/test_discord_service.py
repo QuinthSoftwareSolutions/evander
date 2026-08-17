@@ -1301,7 +1301,8 @@ def test_discord_resolved_identity_routes_parent_webhook_to_child_thread(
         poll_limit=25,
         timeout_seconds=5.0,
         retry_count=0,
-        allowed_channel_ids_provider=lambda: ["parent-a", "thread-a"],
+        allowed_channel_ids_provider=lambda: ["thread-a"],
+        allowed_webhook_channel_ids_provider=lambda: ["parent-a"],
         bot_token_env="DISCORD_BOT_TOKEN",
         webhook_store_path=tmp_path / "discord-webhooks.json",
     )
@@ -1322,6 +1323,18 @@ def test_discord_resolved_identity_routes_parent_webhook_to_child_thread(
     assert webhook_request.url.params["wait"] == "true"
     assert webhook_request.url.params["thread_id"] == "thread-a"
     assert result["channel_id"] == "thread-a"
+    with pytest.raises(ValueError, match="Discord channel is not allowlisted"):
+        service.post_status("not allowed", "parent-a", "session-1")
+    with pytest.raises(ValueError, match="Discord webhook channel is not allowlisted"):
+        service.post_status_with_identity(
+            "wrong parent",
+            "thread-a",
+            "session-1",
+            identity=OutboundIdentity(display_name="Support", source="test"),
+            identity_status="resolved",
+            webhook_channel_id="parent-b",
+            thread_id="thread-a",
+        )
 
 
 def test_discord_in_flight_send_does_not_restore_admin_recreated_webhook(

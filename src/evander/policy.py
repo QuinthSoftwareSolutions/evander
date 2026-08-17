@@ -1178,7 +1178,9 @@ class PolicyEngine:
             capability=capability,
         )
         binding = self._discord_thread_binding(requested_channel_id)
-        effective_capability = "reply" if binding is not None and capability == "write" else capability
+        effective_capability = (
+            "reply" if binding is not None and capability == "write" else capability
+        )
         allowed_channel_ids = set(
             self.policy_config.resolved_discord_channel_ids_for_session(
                 session,
@@ -1189,11 +1191,15 @@ class PolicyEngine:
             raise PolicyError(
                 f"Discord channel is not allowlisted for session {session.session_id}"
             )
-        if binding is not None:
+        if binding is not None and capability in {"write", "reply"}:
             if binding.archived:
-                raise PolicyError("discord_thread_archived: archived Discord threads are not reopened")
+                raise PolicyError(
+                    "discord_thread_archived: archived Discord threads are not reopened"
+                )
             if binding.locked:
-                raise PolicyError("discord_thread_locked: locked Discord threads cannot receive replies")
+                raise PolicyError(
+                    "discord_thread_locked: locked Discord threads cannot receive replies"
+                )
         return requested_channel_id
 
     def discord_sender_identity_mode(

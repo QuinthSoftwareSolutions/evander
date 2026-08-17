@@ -320,15 +320,18 @@ class DiscordIngestWorker:
             parent_channels_to_poll = {
                 channel_id
                 for channel_id in channel_ids
+                if self.runtime.discord_inbox_service.store.get_thread_binding(channel_id) is None
                 if channel_scope_by_parent.get(channel_id, "channel")
                 in {"channel", "channel_and_public_threads"}
             }
             for channel_id in sorted(parent_channels_to_poll):
                 self._poll_channel(client, adapter=adapter, channel_id=channel_id)
             for parent_channel_id, thread_ids in sorted(thread_ids_by_parent.items()):
-                parent_was_initialized = self.runtime.discord_inbox_service.store.register_thread_parent(
-                    parent_channel_id,
-                    observed_at=datetime.now(UTC),
+                parent_was_initialized = (
+                    self.runtime.discord_inbox_service.store.register_thread_parent(
+                        parent_channel_id,
+                        observed_at=datetime.now(UTC),
+                    )
                 )
                 for thread_id in thread_ids:
                     if parent_was_initialized:
@@ -375,13 +378,8 @@ class DiscordIngestWorker:
             current = scopes.get(parent_channel_id)
             if current is None:
                 scopes[parent_channel_id] = scope
-            elif scope == "channel_and_public_threads" or {
-                current,
-                scope,
-            } == {"channel", "public_threads"}:
+            elif current != scope:
                 scopes[parent_channel_id] = "channel_and_public_threads"
-            elif current == "channel" or scope != "channel":
-                scopes[parent_channel_id] = scope
         return scopes
 
     def _discover_public_threads(
@@ -468,8 +466,7 @@ class DiscordIngestWorker:
                 observed_at=observed_at,
             )
         return {
-            parent_id: sorted(thread_ids)
-            for parent_id, thread_ids in thread_ids_by_parent.items()
+            parent_id: sorted(thread_ids) for parent_id, thread_ids in thread_ids_by_parent.items()
         }
 
     def _poll_channel(

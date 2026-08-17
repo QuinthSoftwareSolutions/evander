@@ -12,6 +12,7 @@ from evander.messaging.targets import (
     SqliteCommunicationTargetsRepository,
     communication_targets_db_path,
 )
+from evander.messaging.discord_inbox_store import DiscordInboxStore
 from evander.models import SessionManifest, ToolName
 from evander.repositories.records import (
     SqliteTeamsRecordsRepository,
@@ -346,6 +347,57 @@ def test_runtime_discord_service_for_session_uses_session_scoped_policy_inputs(
     assert team_service._operator_user_ids() == ["team-user"]
     assert root_service.include_operator_dms_provider() is False
     assert team_service.include_operator_dms_provider() is True
+
+
+def test_runtime_discord_service_authorizes_thread_parent_only_for_webhooks(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
+    config = make_config(tmp_path, discord_backend="bot_api")
+    parent_channel_id = "234567890123456789"
+    thread_id = "345678901234567890"
+    write_communication_targets(
+        config,
+        "root",
+        [
+            {
+                "id": "discord-forum",
+                "provider": "discord",
+                "kind": "discord",
+                "address": f"123456789012345678/{parent_channel_id}",
+                "policy": {
+                    "capabilities": ["read", "reply"],
+                    "sender_identity": "resolved",
+                    "discord_conversation_scope": "public_threads",
+                },
+            }
+        ],
+    )
+    DiscordInboxStore(config.runtime_dir / "discord-inbox-store.json").upsert_thread_binding(
+        thread_id=thread_id,
+        parent_channel_id=parent_channel_id,
+        guild_id="123456789012345678",
+        thread_type=11,
+        archived=False,
+        locked=False,
+        observed_at=datetime(2026, 8, 17, tzinfo=UTC),
+    )
+    runtime = build_runtime(config)
+    runtime.session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-thread",
+            allowed_tools=[ToolName.DISCORD_GET_COMMANDS, ToolName.DISCORD_POST_STATUS],
+            communication_target_ids=["discord-forum"],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        ),
+    )
+
+    service = runtime.discord_service_for_session("session-thread")
+
+    assert isinstance(service, DiscordBotApiService)
+    assert service._allowed_channel_ids() == [thread_id]
+    assert service._allowed_webhook_channel_ids() == [parent_channel_id]
 
 
 def test_runtime_email_service_for_session_uses_directory_provider_override(

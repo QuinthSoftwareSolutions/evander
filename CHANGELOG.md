@@ -11,6 +11,8 @@
   parent-owned resolved-identity webhooks, structured archived/locked/unauthorized failures, and
   no automatic unarchive or private-thread access.
 - Added Admin Web configuration and workflow-editor guidance for Discord thread-aware targets.
+- Fixed thread ingest provenance, order-independent conversation-scope merging, parent webhook
+  authorization for resolved identities, and read access to archived or locked public threads.
 
 ## 2026-08-17 - Prompt Case Closure Publication And Explicit Throttle Routes
 
