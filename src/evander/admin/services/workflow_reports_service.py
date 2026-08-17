@@ -1409,7 +1409,7 @@ class WorkflowReportsAdminService:
                     graph_id=graph_id,
                     name=graph.name,
                     description=graph.description,
-                    directory_paths=graph.directory_paths,
+                    directory_path=graph.directory_path,
                     user_ids=graph.user_ids,
                     node_ids=graph.node_ids,
                     node_count=len(graph.node_ids),

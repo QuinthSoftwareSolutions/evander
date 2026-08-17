@@ -33,6 +33,18 @@ class DiscordInboxListResult:
     next_cursor: str | None
 
 
+@dataclass(frozen=True)
+class DiscordThreadBinding:
+    thread_id: str
+    parent_channel_id: str
+    guild_id: str
+    thread_type: int
+    archived: bool
+    locked: bool
+    discovered_at: datetime
+    updated_at: datetime
+
+
 class DiscordInboxStore:
     """SQLite-backed store for Discord messages, provider cursors, and session reads."""
 
@@ -109,6 +121,149 @@ class DiscordInboxStore:
 
     def add_message_if_new(self, envelope: DiscordMessageEnvelope) -> bool:
         return self.add_messages_if_new([envelope]) > 0
+
+    def register_thread_parent(self, parent_channel_id: str, *, observed_at: datetime) -> bool:
+        normalized_parent = str(parent_channel_id or "").strip()
+        if not normalized_parent:
+            raise ValueError("parent_channel_id is required")
+        timestamp = self._datetime_to_storage(observed_at)
+        with self._lock, self._connect() as connection:
+            existing = connection.execute(
+                "SELECT 1 FROM discord_thread_parents WHERE parent_channel_id = ?",
+                (normalized_parent,),
+            ).fetchone()
+            connection.execute(
+                """
+                INSERT INTO discord_thread_parents(parent_channel_id, initialized_at, updated_at)
+                VALUES (?, ?, ?)
+                ON CONFLICT(parent_channel_id) DO UPDATE SET updated_at = excluded.updated_at
+                """,
+                (normalized_parent, timestamp, timestamp),
+            )
+        return existing is None
+
+    def upsert_thread_binding(
+        self,
+        *,
+        thread_id: str,
+        parent_channel_id: str,
+        guild_id: str,
+        thread_type: int,
+        archived: bool,
+        locked: bool,
+        observed_at: datetime,
+    ) -> bool:
+        normalized_thread = str(thread_id or "").strip()
+        normalized_parent = str(parent_channel_id or "").strip()
+        normalized_guild = str(guild_id or "").strip()
+        if not normalized_thread or not normalized_parent or not normalized_guild:
+            raise ValueError("thread_id, parent_channel_id, and guild_id are required")
+        timestamp = self._datetime_to_storage(observed_at)
+        with self._lock, self._connect() as connection:
+            existing = connection.execute(
+                "SELECT 1 FROM discord_thread_bindings WHERE thread_id = ?",
+                (normalized_thread,),
+            ).fetchone()
+            connection.execute(
+                """
+                INSERT INTO discord_thread_bindings(
+                    thread_id, parent_channel_id, guild_id, thread_type,
+                    archived, locked, discovered_at, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(thread_id) DO UPDATE SET
+                    parent_channel_id = excluded.parent_channel_id,
+                    guild_id = excluded.guild_id,
+                    thread_type = excluded.thread_type,
+                    archived = excluded.archived,
+                    locked = excluded.locked,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    normalized_thread,
+                    normalized_parent,
+                    normalized_guild,
+                    int(thread_type),
+                    int(bool(archived)),
+                    int(bool(locked)),
+                    timestamp,
+                    timestamp,
+                ),
+            )
+        return existing is None
+
+    def get_thread_binding(self, thread_id: str) -> DiscordThreadBinding | None:
+        normalized_thread = str(thread_id or "").strip()
+        if not normalized_thread:
+            return None
+        with self._lock, self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT thread_id, parent_channel_id, guild_id, thread_type,
+                       archived, locked, discovered_at, updated_at
+                FROM discord_thread_bindings
+                WHERE thread_id = ?
+                """,
+                (normalized_thread,),
+            ).fetchone()
+        return self._thread_binding_from_row(row) if row is not None else None
+
+    def list_thread_bindings(
+        self,
+        *,
+        parent_channel_ids: Sequence[str],
+        include_archived: bool = True,
+    ) -> list[DiscordThreadBinding]:
+        normalized_parents = sorted(
+            {str(value or "").strip() for value in parent_channel_ids if str(value or "").strip()}
+        )
+        if not normalized_parents:
+            return []
+        placeholders = ", ".join("?" for _ in normalized_parents)
+        archived_clause = "" if include_archived else " AND archived = 0"
+        with self._lock, self._connect() as connection:
+            rows = connection.execute(
+                f"""
+                SELECT thread_id, parent_channel_id, guild_id, thread_type,
+                       archived, locked, discovered_at, updated_at
+                FROM discord_thread_bindings
+                WHERE parent_channel_id IN ({placeholders}){archived_clause}
+                ORDER BY parent_channel_id, thread_id
+                """,
+                normalized_parents,
+            ).fetchall()
+        return [self._thread_binding_from_row(row) for row in rows]
+
+    def mark_missing_parent_threads_archived(
+        self,
+        *,
+        parent_channel_id: str,
+        active_thread_ids: Sequence[str],
+        observed_at: datetime,
+    ) -> None:
+        normalized_parent = str(parent_channel_id or "").strip()
+        active_ids = {str(value or "").strip() for value in active_thread_ids if str(value or "").strip()}
+        timestamp = self._datetime_to_storage(observed_at)
+        with self._lock, self._connect() as connection:
+            if active_ids:
+                placeholders = ", ".join("?" for _ in active_ids)
+                connection.execute(
+                    f"""
+                    UPDATE discord_thread_bindings
+                    SET archived = 1, updated_at = ?
+                    WHERE parent_channel_id = ? AND thread_id NOT IN ({placeholders})
+                    """,
+                    (timestamp, normalized_parent, *sorted(active_ids)),
+                )
+            else:
+                connection.execute(
+                    """
+                    UPDATE discord_thread_bindings
+                    SET archived = 1, updated_at = ?
+                    WHERE parent_channel_id = ?
+                    """,
+                    (timestamp, normalized_parent),
+                )
 
     def get_session_cursor(self, session_id: str, channel_id: str) -> str | None:
         with self._lock, self._connect() as connection:
@@ -340,6 +495,23 @@ class DiscordInboxStore:
                 );
                 CREATE INDEX IF NOT EXISTS idx_discord_inbox_session_reads_session_channel
                     ON discord_inbox_session_reads(session_id, channel_id);
+                CREATE TABLE IF NOT EXISTS discord_thread_parents (
+                    parent_channel_id TEXT PRIMARY KEY,
+                    initialized_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS discord_thread_bindings (
+                    thread_id TEXT PRIMARY KEY,
+                    parent_channel_id TEXT NOT NULL,
+                    guild_id TEXT NOT NULL,
+                    thread_type INTEGER NOT NULL,
+                    archived INTEGER NOT NULL DEFAULT 0,
+                    locked INTEGER NOT NULL DEFAULT 0,
+                    discovered_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_discord_thread_bindings_parent
+                    ON discord_thread_bindings(parent_channel_id, archived, thread_id);
                 """
             )
 
@@ -645,6 +817,19 @@ class DiscordInboxStore:
             DiscordInboxStore._datetime_to_storage(message.created_at),
             message.in_reply_to,
             _json_dumps(message.model_dump(mode="json")),
+        )
+
+    @staticmethod
+    def _thread_binding_from_row(row: sqlite3.Row) -> DiscordThreadBinding:
+        return DiscordThreadBinding(
+            thread_id=str(row["thread_id"]),
+            parent_channel_id=str(row["parent_channel_id"]),
+            guild_id=str(row["guild_id"]),
+            thread_type=int(row["thread_type"]),
+            archived=bool(row["archived"]),
+            locked=bool(row["locked"]),
+            discovered_at=DiscordInboxStore._parse_dt(row["discovered_at"]),
+            updated_at=DiscordInboxStore._parse_dt(row["updated_at"]),
         )
 
     @staticmethod

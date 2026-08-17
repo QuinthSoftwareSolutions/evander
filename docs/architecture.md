@@ -377,8 +377,7 @@ orchestrator’s durable execution stores.
 Each pack can also carry optional `graphs` metadata. A graph entry names one connected node set
 inside the pack (`id`, `name`, `description`, `directory_path`, `user_ids`, `node_ids`) so the
 editor can select, filter, and label that workflow without treating the whole pack as one graph.
-Legacy one-item `directory_paths` values normalize to `directory_path` for compatibility, but
-multi-directory graph ownership is unsupported. `user_ids` identify associated users for ownership
+Multi-directory graph ownership is unsupported. `user_ids` identify associated users for ownership
 and audit reporting; Admin Web group assignments and direct workflow grants control graph
 visibility.
 
@@ -447,6 +446,13 @@ short-lived read-only query path.
   - Acceptance is `(session channel allowlist) OR (global operator user allowlist)`.
   - Post destinations remain session-channel-allowlist only.
   - There is no implicit "poll everywhere" or unrestricted history-derived source expansion.
+  - A Discord communication target may explicitly opt into public child threads. The inbox SQLite
+    store then records each child thread's guild, configured parent, type, and archived/locked
+    state before messages become visible. Trigger, session, attachment, and outbound policy all
+    resolve child authority through that durable binding; a caller-supplied thread ID is never an
+    independent grant.
+  - Forum posts and public/announcement threads are supported. Private threads and automatic
+    unarchive/moderation are outside the boundary.
 - Failure/audit model for Discord commands:
   - Policy failures are logged as denied `tool_call` audit events in `audit_log_path`.
   - `discord_get_commands` audits each denied envelope and records aggregate `denied_count`.

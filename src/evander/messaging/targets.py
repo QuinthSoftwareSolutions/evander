@@ -25,6 +25,7 @@ CommunicationTargetProvider = Literal[
 ]
 CommunicationTargetKind = Literal["teams", "discord", "email", "pull-request", "ticket"]
 CommunicationTargetCapability = Literal["read", "write", "reply", "notify", "comment"]
+DiscordConversationScope = Literal["channel", "public_threads", "channel_and_public_threads"]
 
 _ALLOWED_PROVIDER_KINDS: dict[CommunicationTargetProvider, frozenset[CommunicationTargetKind]] = {
     "teams": frozenset({"teams"}),
@@ -50,6 +51,7 @@ class CommunicationTargetPolicy(BaseModel):
     capabilities: list[CommunicationTargetCapability] = Field(default_factory=list)
     auth_profile_ref: str | None = None
     sender_identity: Literal["platform", "resolved"] = "platform"
+    discord_conversation_scope: DiscordConversationScope = "channel"
 
     @field_validator("auth_profile_ref", mode="before")
     @classmethod
@@ -126,6 +128,13 @@ class CommunicationTargetDefinition(BaseModel):
         elif self.provider == "email":
             if not _EMAIL_PATTERN.fullmatch(self.address):
                 raise ValueError("email address must be a valid mailbox address")
+        if (
+            self.provider != "discord"
+            and self.policy.discord_conversation_scope != "channel"
+        ):
+            raise ValueError(
+                "policy.discord_conversation_scope is only supported for Discord targets"
+            )
         return self
 
 

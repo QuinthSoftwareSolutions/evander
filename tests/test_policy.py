@@ -19,6 +19,7 @@ from evander.messaging.targets import (
     SqliteCommunicationTargetsRepository,
     communication_targets_db_path,
 )
+from evander.messaging.discord_inbox_store import DiscordInboxStore
 from evander.models import (
     ApprovalGrantSettings,
     ApprovalNotificationStatus,
@@ -2376,6 +2377,57 @@ def test_require_discord_channel_enforces_target_capability(tmp_path: Path) -> N
         engine.require_discord_channel(session, "123456789012345678", capability="write")
 
 
+@pytest.mark.parametrize(
+    ("archived", "locked"),
+    [
+        (True, False),
+        (False, True),
+    ],
+)
+def test_require_discord_channel_allows_reading_but_rejects_replying_to_closed_threads(
+    tmp_path: Path,
+    archived: bool,
+    locked: bool,
+) -> None:
+    engine = make_engine(tmp_path)
+    parent_channel_id = "234567890123456789"
+    thread_id = "345678901234567890"
+    write_root_communication_targets(
+        engine.config,
+        [
+            {
+                "id": "discord-forum",
+                "provider": "discord",
+                "kind": "discord",
+                "address": f"123456789012345678/{parent_channel_id}",
+                "policy": {
+                    "capabilities": ["read", "reply"],
+                    "discord_conversation_scope": "public_threads",
+                },
+            }
+        ],
+    )
+    DiscordInboxStore(tmp_path / "discord-inbox-store.json").upsert_thread_binding(
+        thread_id=thread_id,
+        parent_channel_id=parent_channel_id,
+        guild_id="123456789012345678",
+        thread_type=11,
+        archived=archived,
+        locked=locked,
+        observed_at=datetime(2026, 8, 17, tzinfo=UTC),
+    )
+    session = SessionManifest(
+        session_id="s1",
+        allowed_tools=[ToolName.DISCORD_GET_COMMANDS],
+        communication_target_ids=["discord-forum"],
+        expires_at=datetime.now(UTC) + timedelta(hours=1),
+    )
+
+    assert engine.require_discord_channel(session, thread_id, capability="read") == thread_id
+    with pytest.raises(PolicyError):
+        engine.require_discord_channel(session, thread_id, capability="reply")
+
+
 def test_require_discord_command_source_rejects_unrestricted_polling_target(tmp_path: Path) -> None:
     engine = make_engine(tmp_path)
     session = SessionManifest(
@@ -2492,9 +2544,7 @@ def test_discord_session_write_allowlist_does_not_require_inbox_tool(tmp_path: P
         "session-outbound",
         capability="write",
     ) == ["234567890123456789"]
-    assert engine.policy_config.allowed_discord_channel_ids_for_session_id(
-        "session-outbound"
-    ) == []
+    assert engine.policy_config.allowed_discord_channel_ids_for_session_id("session-outbound") == []
 
 
 def test_canonical_session_target_ids_do_not_fall_back_to_raw_destinations(

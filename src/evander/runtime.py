@@ -556,6 +556,7 @@ def _build_discord_service(
     session_id: str | None = None,
     capability: CommunicationTargetCapability = "read",
     allowed_channel_ids_provider: Callable[[], list[str]] | None = None,
+    allowed_webhook_channel_ids_provider: Callable[[], list[str]] | None = None,
 ) -> DiscordService:
     if config.discord_backend == "stub":
         return StubDiscordService(
@@ -592,6 +593,16 @@ def _build_discord_service(
                         policy_config=policy_config,
                         session_id=session_id,
                         capability=capability,
+                    )
+                )
+            ),
+            allowed_webhook_channel_ids_provider=(
+                allowed_webhook_channel_ids_provider
+                or (
+                    lambda: _resolve_allowed_discord_webhook_channel_ids(
+                        sessions,
+                        policy_config=policy_config,
+                        session_id=session_id,
                     )
                 )
             ),
@@ -827,6 +838,20 @@ def _resolve_allowed_discord_channel_ids(
         return sorted({channel_id.strip() for channel_id in channel_ids if channel_id.strip()})
 
     return policy_config.allowed_discord_channel_ids_for_active_sessions()
+
+
+def _resolve_allowed_discord_webhook_channel_ids(
+    session_store: SessionManifestRepository,
+    *,
+    policy_config: PolicyConfigResolver,
+    session_id: str | None,
+) -> list[str]:
+    if session_id is None:
+        return []
+    session = as_session_manifest_repository(session_store).get_session(session_id)
+    if session is None:
+        raise ValueError(f"unknown session: {session_id}")
+    return policy_config.resolved_discord_webhook_channel_ids_for_session(session)
 
 
 def _resolve_allowed_teams_channel_targets(

@@ -33,14 +33,14 @@ test("run inspect uses matched graph metadata when it is available", () => {
       {
         id: "graph-1",
         name: "Run graph",
-        directory_paths: ["root"],
+        directory_path: "root",
         user_ids: [],
         node_ids: ["trigger-1", "agent-1", "notify-1"],
       },
       {
         id: "graph-2",
         name: "Other graph",
-        directory_paths: ["root"],
+        directory_path: "root",
         user_ids: [],
         node_ids: ["trigger-2", "unrelated-1"],
       },

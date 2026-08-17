@@ -509,6 +509,87 @@ def test_communication_trigger_provider_rejects_teams_user_targets(
         provider.initialize(_trigger_definition(target_ids=["teams-user"]), context)
 
 
+def test_communication_trigger_maps_public_discord_child_to_parent_target(
+    tmp_path: Path,
+) -> None:
+    context = _runtime_context(tmp_path)
+    runtime_dir = context.resolved_config.runtime_dir
+    repository = SqliteCommunicationTargetsRepository(communication_targets_db_path(runtime_dir))
+    repository.write_overlay(
+        "root",
+        {
+            "targets": [
+                {
+                    "id": "discord-forum",
+                    "provider": "discord",
+                    "kind": "discord",
+                    "address": "123456789012345678/234567890123456789",
+                    "policy": {
+                        "capabilities": ["read", "reply"],
+                        "discord_conversation_scope": "public_threads",
+                    },
+                }
+            ]
+        },
+    )
+    store = DiscordInboxStore(runtime_dir / "discord-inbox-store.json")
+    created_at = datetime(2026, 8, 17, 9, 0, tzinfo=UTC)
+    store.upsert_thread_binding(
+        thread_id="345678901234567890",
+        parent_channel_id="234567890123456789",
+        guild_id="123456789012345678",
+        thread_type=11,
+        archived=False,
+        locked=False,
+        observed_at=created_at,
+    )
+    store.add_message_if_new(
+        DiscordMessageEnvelope(
+            message_id="456789012345678901",
+            channel_id="345678901234567890",
+            parent_channel_id="234567890123456789",
+            thread_id="345678901234567890",
+            in_reply_to="starter-message-id",
+            author_id="worker-1",
+            author_name="Worker One",
+            content="The line is blocked",
+            created_at=created_at,
+            raw={
+                "source": "discord_bot_api",
+                "channel_id": "345678901234567890",
+                "parent_channel_id": "234567890123456789",
+                "thread_id": "345678901234567890",
+                "message_reference_id": "starter-message-id",
+            },
+        )
+    )
+    store.add_message_if_new(
+        DiscordMessageEnvelope(
+            message_id="456789012345678902",
+            channel_id="345678901234567890",
+            parent_channel_id="234567890123456789",
+            thread_id="345678901234567890",
+            author_id="bot-1",
+            author_name="Support Agent",
+            content="I am looking into it.",
+            created_at=created_at,
+            raw={"source": "discord_webhook_status"},
+        )
+    )
+
+    provider = CommunicationNewMessageTriggerProvider()
+    provider.initialize(_trigger_definition(target_ids=["discord-forum"]), context)
+
+    events = provider.poll()
+
+    assert len(events) == 1
+    assert events[0].payload["communication_target_id"] == "discord-forum"
+    assert events[0].payload["thread_id"] == "345678901234567890"
+    assert events[0].payload["message"]["metadata"]["message_reference_id"] == (
+        "starter-message-id"
+    )
+
+
 def test_communication_trigger_applies_author_and_content_filters_case_insensitively_and_case_sensitively(
     tmp_path: Path,
 ) -> None:

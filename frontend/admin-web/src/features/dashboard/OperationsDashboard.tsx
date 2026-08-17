@@ -241,7 +241,7 @@ type WorkflowGraphActivityGraph = {
   graph_id: string;
   name: string;
   description: string | null;
-  directory_paths: string[];
+  directory_path: string;
   user_ids: string[];
   node_ids: string[];
   node_count: number;

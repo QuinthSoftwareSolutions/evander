@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, computed_field, field_validator, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from evander.capacity_health import (
     DiskUsageTelemetry,
@@ -58,49 +58,14 @@ class WorkflowEditorGraphMetadata(BaseModel):
 
     @model_validator(mode="before")
     @classmethod
-    def _normalize_legacy_directory_paths(cls, value: object) -> object:
+    def _reject_legacy_directory_paths(cls, value: object) -> object:
         if not isinstance(value, dict):
             return value
-        payload = dict(value)
-        if "directory_path" in payload:
-            payload.pop("directory_paths", None)
-            return payload
-
-        legacy_directory_paths = payload.pop("directory_paths", None)
-        if legacy_directory_paths is None:
-            payload["directory_path"] = "root"
-            return payload
-
-        if isinstance(legacy_directory_paths, str):
-            raw_directory_paths = [legacy_directory_paths]
-        elif isinstance(legacy_directory_paths, list):
-            raw_directory_paths = legacy_directory_paths
-        else:
-            raw_directory_paths = [legacy_directory_paths]
-
-        normalized_directory_paths: list[str] = []
-        seen_directory_paths: set[str] = set()
-        for raw_directory_path in raw_directory_paths:
-            directory_path = str(raw_directory_path or "").strip()
-            if not directory_path:
-                continue
-            try:
-                normalized_directory_path = DirectoryPath(segments=directory_path).as_posix()
-            except ValueError as exc:
-                raise ValueError(
-                    f"Workflow graph has invalid directory path: {directory_path}"
-                ) from exc
-            if normalized_directory_path in seen_directory_paths:
-                continue
-            seen_directory_paths.add(normalized_directory_path)
-            normalized_directory_paths.append(normalized_directory_path)
-
-        if len(normalized_directory_paths) > 1:
-            raise ValueError("Workflow graph directory_paths must contain at most one directory.")
-        payload["directory_path"] = (
-            normalized_directory_paths[0] if normalized_directory_paths else "root"
-        )
-        return payload
+        if "directory_paths" in value:
+            raise ValueError(
+                "Workflow graph directory_paths is no longer supported; use directory_path."
+            )
+        return value
 
     @field_validator("user_ids", "node_ids", mode="before")
     @classmethod
@@ -121,12 +86,6 @@ class WorkflowEditorGraphMetadata(BaseModel):
             raise ValueError(
                 f"Workflow graph has invalid directory path: {directory_path}"
             ) from exc
-
-    @computed_field(return_type=list[str])
-    @property
-    def directory_paths(self) -> list[str]:
-        return [self.directory_path]
-
 
 class WorkflowEditorWorkflowPackDescriptor(BaseModel):
     reference: str
@@ -694,7 +653,7 @@ class WorkflowGraphActivityGraphPayload(BaseModel):
     graph_id: str
     name: str
     description: str | None = None
-    directory_paths: list[str] = Field(default_factory=list)
+    directory_path: str = "root"
     user_ids: list[str] = Field(default_factory=list)
     node_ids: list[str] = Field(default_factory=list)
     node_count: int = 0

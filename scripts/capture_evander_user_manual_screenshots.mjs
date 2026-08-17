@@ -433,7 +433,7 @@ const WORKFLOW_DOCUMENT = {
       id: "graph-northstar-mission-control",
       name: "Mission Control delivery",
       description: "Turns approved telemetry work into an isolated, reviewed agent run.",
-      directory_paths: [DIRECTORY],
+      directory_path: DIRECTORY,
       user_ids: [],
       node_ids: [
         "trigger-ticket-created",
@@ -504,7 +504,7 @@ const GRAPH_ACTIVITY = {
       graph_id: "graph-northstar-mission-control",
       name: "Mission Control delivery",
       description: "Northstar telemetry work delivery and review.",
-      directory_paths: [DIRECTORY],
+      directory_path: DIRECTORY,
       user_ids: [],
       node_ids: WORKFLOW_DOCUMENT.graphs[0].node_ids,
       node_count: 6,

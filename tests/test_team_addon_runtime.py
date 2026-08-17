@@ -26,6 +26,7 @@ from evander.messaging.targets import (
     SqliteCommunicationTargetsRepository,
     communication_targets_db_path,
 )
+from evander.messaging.discord_inbox_store import DiscordInboxStore
 from evander.published_artifacts import PublishedArtifactStore
 from evander.queries.providers.base import QueryRuntimeContext
 from evander.workflow.packs import WorkflowPack
@@ -10284,6 +10285,16 @@ def test_enqueue_operator_chat_message_effect_validates_target_and_authorization
                     "policy": {"capabilities": ["read"]},
                 },
                 {
+                    "id": "threaded-discord",
+                    "provider": "discord",
+                    "kind": "discord",
+                    "address": "123456789012345680",
+                    "policy": {
+                        "capabilities": ["read", "reply"],
+                        "discord_conversation_scope": "public_threads",
+                    },
+                },
+                {
                     "id": "teams-without-reply",
                     "provider": "teams",
                     "kind": "teams",
@@ -10337,6 +10348,43 @@ def test_enqueue_operator_chat_message_effect_validates_target_and_authorization
     assert published[0].event_type == CHAT_MESSAGE_QUEUED_EVENT_TYPE
     assert published[0].payload["message_id"] == result["message_id"]
     assert published[0].payload["dispatch_id"] == result["dispatch_id"]
+
+    DiscordInboxStore(tmp_path / "discord-inbox-store.json").upsert_thread_binding(
+        thread_id="123456789012345681",
+        parent_channel_id="123456789012345680",
+        guild_id="123456789012345682",
+        thread_type=11,
+        archived=False,
+        locked=False,
+        observed_at=datetime(2026, 8, 17, tzinfo=UTC),
+    )
+    threaded = TeamEnqueueOperatorChatMessageEffectProvider()
+    threaded.initialize(
+        definition.model_copy(
+            update={
+                "id": "threaded-discord-chat",
+                "communication_target_id": "threaded-discord",
+                "source_message_id": "discord-thread-message-1",
+                "source_thread_id": "123456789012345681",
+            }
+        ),
+        EffectRuntimeContext(
+            resolved_config={"runtime_dir": str(tmp_path)},
+            metadata={"directory_path": "root", "directory_store": directory_store},
+            session_lookup=SimpleNamespace(
+                read_all_sessions=lambda: {
+                    "session-backend": SimpleNamespace(directory_path="root")
+                }
+            ),
+        ),
+    )
+    threaded_result = threaded.execute()
+    threaded_message = TeamStateRepository(tmp_path).read().conversation_messages[
+        threaded_result["message_id"]
+    ]
+    assert threaded_message.metadata["external_origin"]["source_thread_id"] == (
+        "123456789012345681"
+    )
 
     denied = TeamEnqueueOperatorChatMessageEffectProvider()
     denied.initialize(

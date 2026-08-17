@@ -412,14 +412,37 @@ class CommunicationNewMessageTriggerProvider(TriggerProviderBase):
             return []
 
         inbox_store = DiscordInboxStore(self._runtime_dir() / "discord-inbox-store.json")
+        parent_channel_ids = list(self._discord_targets_by_channel_id)
+        readable_channel_ids: set[str] = set()
+        for parent_channel_id, target_ids in self._discord_targets_by_channel_id.items():
+            if any(
+                (self._targets_by_id or {})[target_id].policy.discord_conversation_scope
+                in {"channel", "channel_and_public_threads"}
+                for target_id in target_ids
+                if target_id in (self._targets_by_id or {})
+            ):
+                readable_channel_ids.add(parent_channel_id)
+        readable_channel_ids.update(
+            binding.thread_id
+            for binding in inbox_store.list_thread_bindings(
+                parent_channel_ids=parent_channel_ids,
+                include_archived=True,
+            )
+        )
         raw_messages = inbox_store.list_all_messages(
-            channel_ids=list(self._discord_targets_by_channel_id),
+            channel_ids=sorted(readable_channel_ids),
         ).messages
         candidates: list[_PendingCommunicationEvent] = []
 
         for message in raw_messages:
+            if str(message.raw.get("source") or "").strip() in {
+                "discord_bot_api_status",
+                "discord_webhook_status",
+            }:
+                continue
             channel_id = message.channel_id.strip()
-            target_ids = self._discord_targets_by_channel_id.get(channel_id, [])
+            parent_channel_id = (message.parent_channel_id or channel_id).strip()
+            target_ids = self._discord_targets_by_channel_id.get(parent_channel_id, [])
             if not target_ids:
                 continue
             if not _message_matches_filters(
@@ -432,6 +455,16 @@ class CommunicationNewMessageTriggerProvider(TriggerProviderBase):
             occurred_at = message.created_at.astimezone(UTC)
             for target_id in target_ids:
                 target = self._targets_by_id.get(target_id) if self._targets_by_id else None
+                if target is None:
+                    continue
+                scope = target.policy.discord_conversation_scope
+                if message.thread_id is not None and scope not in {
+                    "public_threads",
+                    "channel_and_public_threads",
+                }:
+                    continue
+                if message.thread_id is None and scope == "public_threads":
+                    continue
                 target_address = target.address if target is not None else channel_id
                 cursor_key = _cursor_key("discord", target_id, message.message_id)
                 if _message_is_behind_cursor(
@@ -450,7 +483,7 @@ class CommunicationNewMessageTriggerProvider(TriggerProviderBase):
                             provider="discord",
                             communication_target_id=target_id,
                             message_id=message.message_id,
-                            thread_id=message.in_reply_to,
+                            thread_id=message.thread_id,
                             content=message.content,
                             author_id=message.author_id,
                             author_name=message.author_name,

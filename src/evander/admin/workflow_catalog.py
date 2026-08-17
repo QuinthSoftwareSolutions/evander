@@ -217,6 +217,18 @@ def _communication_target_option_metadata(
         "target_shape": target_shape,
         "policy_capabilities": capabilities,
     }
+    discord_scope = "channel"
+    if provider == "discord":
+        policy = target.get("policy")
+        if isinstance(policy, dict):
+            discord_scope = str(
+                policy.get("discord_conversation_scope") or "channel"
+            ).strip()
+        metadata["discord_conversation_scope"] = discord_scope
+    discord_threads_supported = (
+        provider == "discord"
+        and discord_scope in {"public_threads", "channel_and_public_threads"}
+    )
     if provider == "teams":
         parsed_target = parse_teams_target(address)
         metadata["teams_target_kind"] = parsed_target.kind
@@ -227,11 +239,15 @@ def _communication_target_option_metadata(
         metadata["required_capabilities"] = ["read", "write or reply"]
         metadata["thread_id"] = {
             "top_level": {
-                "supported": "write" in capabilities,
+                "supported": "write" in capabilities
+                and not (provider == "discord" and discord_scope == "public_threads"),
                 "requires_capability": "write",
             },
             "reply": {
-                "supported": provider in {"teams", "email"} and "reply" in capabilities,
+                "supported": (
+                    provider in {"teams", "email"} or discord_threads_supported
+                )
+                and "reply" in capabilities,
                 "requires_capability": "reply",
             },
         }
@@ -242,19 +258,25 @@ def _communication_target_option_metadata(
     elif purpose == "send-message":
         metadata["thread_id"] = {
             "top_level": {
-                "supported": "write" in capabilities,
+                "supported": "write" in capabilities
+                and not (provider == "discord" and discord_scope == "public_threads"),
                 "requires_capability": "write",
             },
             "reply": {
-                "supported": provider == "teams"
-                and target_shape == "teams_channel"
+                "supported": (
+                    (provider == "teams" and target_shape == "teams_channel")
+                    or discord_threads_supported
+                )
                 and "reply" in capabilities,
                 "requires_capability": "reply",
-                "supported_target_shapes": ["teams_channel"],
+                "supported_target_shapes": [
+                    "teams_channel",
+                    *(["discord_channel"] if discord_threads_supported else []),
+                ],
                 "unsupported_target_shapes": [
                     "teams_chat",
                     "teams_user",
-                    "discord_channel",
+                    *([] if discord_threads_supported else ["discord_channel"]),
                     "email_recipient",
                 ],
             },
@@ -262,16 +284,23 @@ def _communication_target_option_metadata(
     elif purpose == "notification":
         metadata["thread_id"] = {
             "top_level": {
-                "supported": "notify" in capabilities,
+                "supported": "notify" in capabilities
+                and not (provider == "discord" and discord_scope == "public_threads"),
                 "requires_capability": "notify",
             },
             "reply_hint": {
-                "supported": provider == "teams" and target_shape == "teams_channel",
-                "supported_target_shapes": ["teams_channel"],
+                "supported": (
+                    provider == "teams" and target_shape == "teams_channel"
+                )
+                or discord_threads_supported,
+                "supported_target_shapes": [
+                    "teams_channel",
+                    *(["discord_channel"] if discord_threads_supported else []),
+                ],
                 "unsupported_target_shapes": [
                     "teams_chat",
                     "teams_user",
-                    "discord_channel",
+                    *([] if discord_threads_supported else ["discord_channel"]),
                     "email_recipient",
                 ],
             },

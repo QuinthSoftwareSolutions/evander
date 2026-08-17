@@ -637,7 +637,7 @@ def test_build_execution_graph_resolves_state_workflow_graph_metadata() -> None:
                 {
                     "id": "graph-state",
                     "name": "State graph",
-                    "directory_paths": ["root/team-a"],
+                    "directory_path": "root/team-a",
                     "node_ids": [
                         "trigger-state",
                         "effect-state-update",
@@ -725,7 +725,7 @@ def test_effect_orchestrator_executes_state_nodes_with_graph_isolation(
                 {
                     "id": "graph-alpha",
                     "name": "Alpha graph",
-                    "directory_paths": ["root"],
+                    "directory_path": "root",
                     "node_ids": [
                         "trigger-alpha",
                         "effect-alpha-state",
@@ -735,7 +735,7 @@ def test_effect_orchestrator_executes_state_nodes_with_graph_isolation(
                 {
                     "id": "graph-beta",
                     "name": "Beta graph",
-                    "directory_paths": ["root"],
+                    "directory_path": "root",
                     "node_ids": [
                         "trigger-beta",
                         "effect-beta-state",
@@ -848,7 +848,7 @@ def test_effect_orchestrator_rejects_state_nodes_without_persisted_graph_metadat
                 {
                     "id": "graph-state",
                     "name": "State graph",
-                    "directory_paths": ["root"],
+                    "directory_path": "root",
                     "node_ids": [
                         "trigger-state",
                         "effect-state-update",
@@ -918,7 +918,7 @@ def test_effect_orchestrator_threads_graph_metadata_into_provider_contexts(
                 {
                     "id": "graph-1",
                     "name": "Graph 1",
-                    "directory_paths": ["root/team-a"],
+                    "directory_path": "root/team-a",
                     "node_ids": ["trigger-1", "effect-1", "query-1"],
                 }
             ],
@@ -1849,7 +1849,7 @@ def test_effect_orchestrator_session_list_query_applies_graph_directory_metadata
                 {
                     "id": "graph-1",
                     "name": "Graph 1",
-                    "directory_paths": ["root/team-a"],
+                    "directory_path": "root/team-a",
                     "node_ids": ["trigger-1", "query-sessions"],
                 }
             ],

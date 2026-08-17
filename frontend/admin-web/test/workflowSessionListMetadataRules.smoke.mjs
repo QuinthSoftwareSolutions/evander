@@ -93,7 +93,7 @@ function createWorkflowDocument() {
         id: "graph-1",
         name: "Session list rules",
         description: null,
-        directory_paths: ["root"],
+        directory_path: "root",
         user_ids: [],
         node_ids: ["query-1"],
       },

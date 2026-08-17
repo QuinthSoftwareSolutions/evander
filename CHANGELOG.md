@@ -1,7 +1,25 @@
 # Changelog
 
+## 2026-08-17 - Discord Forum And Public Thread Communication
+
+- Added explicit Discord communication-target conversation scopes for flat channels, public child
+  threads, or both, preserving flat-channel behavior for existing targets.
+- Added durable public-thread discovery and parent bindings to Discord ingest, with child-aware
+  communication triggers, message queries, attachment authorization, direct session policy, and
+  Team Chat source provenance.
+- Added validated Discord thread replies for workflow messages and notifications, including
+  parent-owned resolved-identity webhooks, structured archived/locked/unauthorized failures, and
+  no automatic unarchive or private-thread access.
+- Added Admin Web configuration and workflow-editor guidance for Discord thread-aware targets.
+- Fixed thread ingest provenance, order-independent conversation-scope merging, parent webhook
+  authorization for resolved identities, and read access to archived or locked public threads.
+
 ## 2026-08-17 - Prompt Case Closure Publication And Explicit Throttle Routes
 
+- Removed the completed heartbeat-directory migration command and its legacy `heartbeat.json`
+  conversion code after the remaining Truman directory configuration was migrated to `wake.json`.
+- Retired the workflow-graph `directory_paths` compatibility field after normalizing live packs;
+  graph configuration, generated drafts, activity reports, and Admin Web now use `directory_path`.
 - Prompted the durable Team outbox publisher after a Case closure is committed through Admin API,
   Team MCP, or a workflow effect, carrying the exact pending outbox record IDs into a targeted
   immediate claim so older backlog cannot displace the closure record. Publication failures remain

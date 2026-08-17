@@ -452,9 +452,8 @@ Legacy relay delivery is intentionally best-effort and non-interrupting:
 - A pack can contain multiple connected graphs. Optional `graphs` entries name those connected
   node sets with `id`, `name`, `description`, canonical `directory_path`, `user_ids`, and
   `node_ids`; the runtime still executes from the IR, while the editor uses this metadata for
-  directory-scoped graph selection and labels. A legacy one-item `directory_paths` list is accepted
-  and emitted as compatibility metadata, but multi-directory graph ownership is rejected. `user_ids`
-  are owner/audit metadata only; workflow graph visibility is controlled by Admin Web group
+  directory-scoped graph selection and labels. Multi-directory graph ownership is rejected.
+  `user_ids` are owner/audit metadata only; workflow graph visibility is controlled by Admin Web group
   assignments and direct workflow grants. Saving from a filtered view keeps unchanged graph
   metadata entries intact, so graphs outside the selected directory are not rewritten by the
   presentation filter.
@@ -1641,6 +1640,18 @@ Audit/result behavior:
   entries, plus enabled `trigger:communication:new-message` nodes that name read-capable Discord
   communication targets. It writes normalized messages into the Discord inbox store used by
   unread-message tools and communication triggers.
+- For Discord forum posts or public text-channel threads, configure the parent communication
+  target with `policy.discord_conversation_scope`:
+  - `channel` keeps the existing flat-channel behavior and is the default.
+  - `public_threads` ingests only public/announcement child threads.
+  - `channel_and_public_threads` ingests both the parent channel and its public children.
+  The bot needs `View Channel`, `Read Message History`, and `Send Messages in Threads`. Thread
+  discovery is REST-polled and persisted in the Discord inbox SQLite store. The first scan
+  baselines already-active threads; newly discovered threads include their starter message.
+- Outbound `thread_id` values are accepted only when the stored public-thread binding points back
+  to the selected parent target. Archived or locked threads fail with a stable error; Evander does
+  not request moderation permission or automatically reopen them. Resolved agent identities reuse
+  a webhook owned by the parent channel and route its execution into the child thread.
 - Seed a dedicated test/control channel and get an initial cursor with:
 
   ```bash

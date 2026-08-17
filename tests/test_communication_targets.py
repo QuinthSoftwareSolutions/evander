@@ -91,6 +91,48 @@ def test_communication_targets_apply_provider_address_validation() -> None:
         )
 
 
+def test_discord_conversation_scope_is_explicit_and_provider_scoped() -> None:
+    config = CommunicationTargetsConfig.model_validate(
+        {
+            "targets": [
+                {
+                    "id": "discord-forum",
+                    "provider": "discord",
+                    "kind": "discord",
+                    "address": "123456789012345678/234567890123456789",
+                    "policy": {
+                        "capabilities": ["read", "reply"],
+                        "discord_conversation_scope": "public_threads",
+                    },
+                },
+                {
+                    "id": "discord-flat",
+                    "provider": "discord",
+                    "kind": "discord",
+                    "address": "345678901234567890",
+                },
+            ]
+        }
+    )
+
+    assert config.targets[0].policy.discord_conversation_scope == "public_threads"
+    assert config.targets[1].policy.discord_conversation_scope == "channel"
+
+    with pytest.raises(ValueError, match="only supported for Discord"):
+        CommunicationTargetsConfig.model_validate(
+            {
+                "targets": [
+                    {
+                        "id": "teams-invalid",
+                        "provider": "teams",
+                        "kind": "teams",
+                        "address": "team/channel",
+                        "policy": {"discord_conversation_scope": "public_threads"},
+                    }
+                ]
+            }
+        )
+
 def test_approval_notification_target_resolution_requires_notify_capability(
     tmp_path: Path,
 ) -> None:

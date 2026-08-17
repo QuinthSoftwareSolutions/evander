@@ -67,6 +67,7 @@ from evander.git_identity import (
 from evander.models import tool_name_value
 from evander.model_usage.runtime import register_model_usage_correlation_context
 from evander.messaging.targets import load_communication_targets_config
+from evander.messaging.discord_inbox_store import DiscordInboxStore
 from evander.repositories.mcp_transport_bindings import JsonMcpTransportBindingRepository
 from evander.orchestration.effect_extensions import (
     list_vm_summaries_for_agent_reconciliation,
@@ -3735,10 +3736,24 @@ class TeamEnqueueOperatorChatMessageEffectProvider(EffectProviderBase):
         if "read" not in set(target.policy.capabilities):
             raise ValueError(f"communication target {target.id!r} does not allow read capability")
         source_thread_id = _optional_text(payload.get("source_thread_id"))
-        if provider == "discord":
+        if provider == "teams" and parse_teams_target(target.address).kind != "channel":
             source_thread_id = None
-        elif provider == "teams" and parse_teams_target(target.address).kind != "channel":
-            source_thread_id = None
+        if provider == "discord" and source_thread_id is not None:
+            if target.policy.discord_conversation_scope not in {
+                "public_threads",
+                "channel_and_public_threads",
+            }:
+                raise ValueError(
+                    f"communication target {target.id!r} does not allow Discord public threads"
+                )
+            binding = DiscordInboxStore(
+                _runtime_dir(context) / "discord-inbox-store.json"
+            ).get_thread_binding(source_thread_id)
+            parent_channel_id = str(target.address).strip().split("/")[-1]
+            if binding is None or binding.parent_channel_id != parent_channel_id:
+                raise ValueError(
+                    "Discord source_thread_id is not registered under the selected communication target"
+                )
         outbound_capability = "reply" if source_thread_id is not None else "write"
         if outbound_capability not in set(target.policy.capabilities):
             raise ValueError(

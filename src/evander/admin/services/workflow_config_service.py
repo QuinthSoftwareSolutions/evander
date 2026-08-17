@@ -1594,35 +1594,9 @@ class WorkflowConfigAdminService:
     def _workflow_editor_graph_payloads_to_persist(
         self,
         *,
-        raw_graphs: list[dict[str, object]],
         normalized_graphs: list[WorkflowEditorGraphMetadata],
     ) -> list[dict[str, object]]:
-        raw_graphs_by_id: dict[str, dict[str, object]] = {}
-        normalized_raw_graphs_by_id: dict[str, dict[str, object]] = {}
-        for raw_graph in raw_graphs:
-            graph_id = str(raw_graph.get("id") or "").strip()
-            if not graph_id or graph_id in raw_graphs_by_id:
-                continue
-            raw_graphs_by_id[graph_id] = raw_graph
-            normalized_raw_graph = self._coerce_workflow_editor_graphs(
-                [raw_graph],
-                strict=False,
-            )
-            if normalized_raw_graph:
-                normalized_raw_graphs_by_id[graph_id] = normalized_raw_graph[0].model_dump(
-                    mode="json"
-                )
-
-        graph_payloads: list[dict[str, object]] = []
-        for graph in normalized_graphs:
-            graph_payload = graph.model_dump(mode="json")
-            raw_graph = raw_graphs_by_id.get(graph.id)
-            normalized_raw_graph = normalized_raw_graphs_by_id.get(graph.id)
-            if raw_graph is not None and graph_payload == normalized_raw_graph:
-                graph_payloads.append(json.loads(json.dumps(raw_graph)))
-            else:
-                graph_payloads.append(graph_payload)
-        return graph_payloads
+        return [graph.model_dump(mode="json") for graph in normalized_graphs]
 
     def _compose_workflow_editor_config(self, payload: dict[str, object]) -> dict[str, object]:
         candidate = json.loads(json.dumps(payload))
@@ -2433,7 +2407,6 @@ class WorkflowConfigAdminService:
         graphs_to_persist = validation.graphs if graphs is not None or stored_graphs else None
         graph_payloads_to_persist = (
             self._workflow_editor_graph_payloads_to_persist(
-                raw_graphs=stored_graphs,
                 normalized_graphs=graphs_to_persist,
             )
             if graphs_to_persist is not None

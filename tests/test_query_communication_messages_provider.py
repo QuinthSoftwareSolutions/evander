@@ -502,7 +502,9 @@ def test_query_communication_messages_discord_cursor_preserves_equal_timestamp_m
     assert [message["message_id"] for message in before_second["messages"]] == ["msg-1"]
 
 
-def test_query_communication_messages_rejects_discord_thread_id(tmp_path: Path) -> None:
+def test_query_communication_messages_rejects_unauthorized_discord_thread_id(
+    tmp_path: Path,
+) -> None:
     runtime = _runtime(tmp_path)
     _write_targets(
         tmp_path,
@@ -517,12 +519,68 @@ def test_query_communication_messages_rejects_discord_thread_id(tmp_path: Path) 
         ],
     )
 
-    with pytest.raises(ValueError, match="does not support thread_id for Discord"):
+    with pytest.raises(ValueError, match="not authorized"):
         _query(
             runtime=runtime,
             communication_target_id="discord-ops",
             thread_id="thread-1",
         )
+
+
+def test_query_communication_messages_reads_registered_public_discord_thread(
+    tmp_path: Path,
+) -> None:
+    runtime = _runtime(tmp_path)
+    _write_targets(
+        tmp_path,
+        [
+            {
+                "id": "discord-forum",
+                "provider": "discord",
+                "kind": "discord",
+                "address": "123456789012345678/234567890123456789",
+                "policy": {
+                    "capabilities": ["read"],
+                    "discord_conversation_scope": "public_threads",
+                },
+            }
+        ],
+    )
+    store = DiscordInboxStore(tmp_path / "runtime" / "discord-inbox-store.json")
+    created_at = datetime(2026, 8, 17, 9, 0, tzinfo=UTC)
+    store.upsert_thread_binding(
+        thread_id="345678901234567890",
+        parent_channel_id="234567890123456789",
+        guild_id="123456789012345678",
+        thread_type=11,
+        archived=False,
+        locked=False,
+        observed_at=created_at,
+    )
+    store.add_message_if_new(
+        DiscordMessageEnvelope(
+            message_id="456789012345678901",
+            channel_id="345678901234567890",
+            parent_channel_id="234567890123456789",
+            thread_id="345678901234567890",
+            in_reply_to="starter",
+            author_id="worker-1",
+            author_name="Worker One",
+            content="blocked",
+            created_at=created_at,
+            raw={"source": "discord_bot_api"},
+        )
+    )
+
+    result = _query(
+        runtime=runtime,
+        communication_target_id="discord-forum",
+        thread_id="345678901234567890",
+    )
+
+    assert result["count"] == 1
+    assert result["messages"][0]["thread_id"] == "345678901234567890"
+    assert result["messages"][0]["in_reply_to"] == "starter"
 
 
 def test_query_communication_messages_reads_email_target(tmp_path: Path) -> None:

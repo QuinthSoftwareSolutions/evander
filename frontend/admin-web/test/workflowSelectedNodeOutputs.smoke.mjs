@@ -202,7 +202,7 @@ test("workflow editor shows selected-node output contracts and copies binding ex
         id: "graph-1",
         name: "Selected node outputs smoke",
         description: null,
-        directory_paths: ["root"],
+        directory_path: "root",
         user_ids: [],
         node_ids: ["trigger-1", "gate-filter-1", "effect-1"],
       },

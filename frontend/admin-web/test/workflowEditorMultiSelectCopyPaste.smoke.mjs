@@ -212,7 +212,7 @@ test("workflow editor modifier-click multi-selects nodes and copy/paste preserve
         id: "graph-1",
         name: "Selection smoke",
         description: null,
-        directory_paths: ["root"],
+        directory_path: "root",
         user_ids: [],
         node_ids: ["trigger-1", "effect-1"],
       },

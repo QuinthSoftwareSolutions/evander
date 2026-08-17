@@ -2190,7 +2190,7 @@ def test_trigger_orchestrator_worker_global_config_validates_state_node_schemas(
                     {
                         "id": "graph-state",
                         "name": "State graph",
-                        "directory_paths": ["root/team-a"],
+                        "directory_path": "root/team-a",
                         "node_ids": [
                             "trigger-state",
                             "effect-state-update",

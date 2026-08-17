@@ -38,7 +38,7 @@ type WorkflowGraphActivityGraph = {
   graph_id: string;
   name: string;
   description: string | null;
-  directory_paths: string[];
+  directory_path: string;
   user_ids: string[];
   node_ids: string[];
   node_count: number;
@@ -665,7 +665,7 @@ export function ReportsPage() {
                         >
                           <td>
                             <strong>{graph.name}</strong>
-                            <div className="feature-list-meta">{graph.directory_paths.join(", ") || "root"}</div>
+                            <div className="feature-list-meta">{graph.directory_path || "root"}</div>
                             <div className="activity-bar" aria-hidden="true">
                               <span
                                 style={{ width: `${Math.max(4, (graph.activity_count / maxActivity) * 100)}%` }}
@@ -702,7 +702,7 @@ export function ReportsPage() {
                       <div className="mobile-record-title-row">
                         <strong>{graph.name}</strong>
                       </div>
-                      <div className="feature-list-meta">{graph.directory_paths.join(", ") || "root"}</div>
+                      <div className="feature-list-meta">{graph.directory_path || "root"}</div>
                       <div className="activity-bar" aria-hidden="true">
                         <span
                           style={{ width: `${Math.max(4, (graph.activity_count / maxActivity) * 100)}%` }}
