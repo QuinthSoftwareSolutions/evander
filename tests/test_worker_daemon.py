@@ -4494,7 +4494,7 @@ def test_container_mount_paths_are_persisted_for_repo_root_and_agent_home(tmp_pa
     assert paths.repo_root == paths.agent_home / "repos"
 
 
-def test_worker_job_store_migrates_legacy_workspace_path_records(tmp_path: Path) -> None:
+def test_worker_daemon_ignores_retired_worker_job_json_records(tmp_path: Path) -> None:
     runtime_dir = tmp_path / "runtime"
     runtime_dir.mkdir()
     legacy_workspace = tmp_path / "worker-root" / "sessions" / "legacy-session" / "workspace"
@@ -4542,10 +4542,7 @@ def test_worker_job_store_migrates_legacy_workspace_path_records(tmp_path: Path)
     assert response.status_code == 201
     store = WorkerJobStore(store_path)
     assert store.path == runtime_dir / "worker-jobs.db"
-    record = store.get("legacy-job")
-    assert record is not None
-    assert record.repo_root_path == str(legacy_workspace)
-    assert not hasattr(record, "workspace_path")
+    assert store.get("legacy-job") is None
     new_record = store.get("job-1")
     assert new_record is not None
     assert new_record.session_id == "session-1"

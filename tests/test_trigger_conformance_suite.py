@@ -24,6 +24,7 @@ from evander.models import (
 )
 from evander.daemons.trigger_orchestrator import TriggerOrchestratorWorker
 from evander.events.models import TriggerDefinitionDiscriminated, materialize_node_definition
+from evander.messaging.discord_inbox_store import DiscordInboxStore
 from evander.messaging.teams_inbox_store import TeamsInboxMessage, TeamsInboxStore
 from evander.provider_config import ProviderConfigResolver
 from evander.provider_runtime.adapters import trigger_provider_config_blob
@@ -577,23 +578,15 @@ def test_conformance_provider_payload_contracts_and_secret_redaction(
         encoding="utf-8",
     )
 
-    inbox_path = runtime_dir / "discord-inbox-store.json"
-    inbox_path.write_text(
-        json.dumps(
-            {
-                "messages": {
-                    "d-1": DiscordMessageEnvelope(
-                        message_id="d-1",
-                        channel_id="chan-a",
-                        author_id="user-a",
-                        author_name="Alice",
-                        content="hello",
-                        created_at=now,
-                    ).model_dump(mode="json")
-                }
-            }
-        ),
-        encoding="utf-8",
+    DiscordInboxStore(runtime_dir / "discord-inbox-store.db").add_message_if_new(
+        DiscordMessageEnvelope(
+            message_id="d-1",
+            channel_id="chan-a",
+            author_id="user-a",
+            author_name="Alice",
+            content="hello",
+            created_at=datetime.now(timezone.utc),
+        )
     )
 
     email_path = runtime_dir / "emails.json"
@@ -1531,30 +1524,26 @@ def test_conformance_directory_and_filter_scoping(
         encoding="utf-8",
     )
 
-    (runtime_dir / "discord-inbox-store.json").write_text(
-        json.dumps(
-            {
-                "messages": {
-                    "a": DiscordMessageEnvelope(
-                        message_id="a",
-                        channel_id="chan-a",
-                        author_id="user-a",
-                        author_name="A",
-                        content="a",
-                        created_at=now,
-                    ).model_dump(mode="json"),
-                    "b": DiscordMessageEnvelope(
-                        message_id="b",
-                        channel_id="chan-b",
-                        author_id="user-b",
-                        author_name="B",
-                        content="b",
-                        created_at=now + timedelta(seconds=1),
-                    ).model_dump(mode="json"),
-                }
-            }
-        ),
-        encoding="utf-8",
+    discord_now = datetime.now(timezone.utc)
+    DiscordInboxStore(runtime_dir / "discord-inbox-store.db").add_messages_if_new(
+        [
+            DiscordMessageEnvelope(
+                message_id="a",
+                channel_id="chan-a",
+                author_id="user-a",
+                author_name="A",
+                content="a",
+                created_at=discord_now,
+            ),
+            DiscordMessageEnvelope(
+                message_id="b",
+                channel_id="chan-b",
+                author_id="user-b",
+                author_name="B",
+                content="b",
+                created_at=discord_now + timedelta(seconds=1),
+            ),
+        ]
     )
     teams_store = TeamsInboxStore(runtime_dir / "teams-inbox-store.json")
     teams_store.add_message_if_new(

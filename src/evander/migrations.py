@@ -8,11 +8,11 @@ from typing import Any
 
 from evander.config import GatewayConfig
 from evander.directory_config import (
+    DIRECTORY_CONFIG_DOMAIN_FILENAMES,
     AdoWorkerDirectoryConfig,
     DirectoryConfigStore,
     EffectiveIssueSetupDirectoryConfig,
     PrTemplateDirectoryConfig,
-    get_domain_base_config,
 )
 from evander.directories import DirectoryStore
 

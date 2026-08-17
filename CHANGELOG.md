@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-08-18 - Migration And Test Maintenance
+
+- Restored the directory-config filename dependency used by the supported root configuration
+  migration commands after legacy heartbeat cleanup removed it accidentally.
+- Updated CLI help, Discord conformance, and worker-daemon tests to reflect Rich line wrapping and
+  the current SQLite-only Discord inbox and worker-job stores.
+
 ## 2026-08-17 - Team Operator Communication Target Selection
 
 - Changed the Team editor's operator communication target field into a dropdown populated with
