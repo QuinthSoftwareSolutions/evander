@@ -97,6 +97,27 @@ def load_trigger_orchestrator_worker_global_config(
     )
 
 
+def load_trigger_orchestrator_store_config_read_only(
+    project_dir: Path,
+    *,
+    runtime_dir: Path,
+) -> TriggerOrchestratorWorkerGlobalConfig:
+    """Read only the persisted worker settings needed for store maintenance.
+
+    Unlike the runtime loader, this does not initialize directory state, compose workflow packs,
+    validate communication-target stores, or create any runtime files.
+    """
+
+    path = _worker_global_config_path(project_dir)
+    if not path.is_file():
+        raise FileNotFoundError(f"worker config file does not exist: {path}")
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(raw, dict):
+        raise ValueError(f"worker config file {path} must contain a JSON object")
+    _require_canonical_persisted_node_envelopes(raw, context=f"worker config file {path}")
+    return TriggerOrchestratorWorkerGlobalConfig.model_validate({"runtime_dir": runtime_dir, **raw})
+
+
 class TriggerOrchestratorWorkerGlobalConfigReloader:
     def __init__(
         self,

@@ -14,7 +14,7 @@ from dataclasses import asdict, dataclass, is_dataclass
 from datetime import datetime, timedelta, timezone
 from itertools import count
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Any
 
 import httpx
 import typer
@@ -32,7 +32,7 @@ from evander.bootstrap import (
     load_runtime_gateway_config,
 )
 from evander.communication_artifacts import CommunicationArtifactStore
-from evander.config import GatewayConfig
+from evander.config import GatewayConfig, TriggerOrchestratorWorkerGlobalConfig
 from evander.connectors.models import normalize_connector_id
 from evander.connectors.service import ConnectorService, connector_registry_from_addons
 from evander.daemons.ado_issue_worker import run_worker_command
@@ -56,6 +56,7 @@ from evander.execution import (
     ExecutionStatusKind,
     build_execution_backend,
 )
+from evander.host_config import host_config_path, load_host_config
 from evander.messaging.discord_wake import build_discord_wake_worker
 from evander.messaging.scheduled_wake import build_scheduled_wake_worker
 from evander.messaging.teams_auth import TeamsAuthError
@@ -114,7 +115,10 @@ from evander.vm_to_container_migration import (
     select_sessions_for_migration,
     verify_worker_session_state,
 )
-from evander.workflow.runtime_config import load_trigger_orchestrator_worker_global_config
+from evander.workflow.runtime_config import (
+    load_trigger_orchestrator_store_config_read_only,
+    load_trigger_orchestrator_worker_global_config,
+)
 
 _COMMAND_PANELS = {
     "Health and State": 0,
@@ -216,6 +220,25 @@ def _load_runtime_config_from_option(config: Path) -> GatewayConfig:
 
 def _load_host_config_from_option(config: Path):
     return load_host_bootstrap_config(runtime_dir=_runtime_dir_for_config_option(config))
+
+
+def _load_orchestration_finalizer_worker_config(
+    config: Path,
+) -> TriggerOrchestratorWorkerGlobalConfig:
+    runtime_dir = _runtime_dir_for_config_option(config)
+    persisted_host_config_path = host_config_path(runtime_dir)
+    if not persisted_host_config_path.is_file():
+        raise typer.BadParameter(
+            f"runtime directory {runtime_dir} does not contain host-config.json"
+        )
+    try:
+        host_config = load_host_config(runtime_dir)
+        return load_trigger_orchestrator_store_config_read_only(
+            _project_dir_for_config_option(config),
+            runtime_dir=host_config.runtime_dir,
+        )
+    except (OSError, json.JSONDecodeError, ValidationError, ValueError) as exc:
+        raise typer.BadParameter(f"cannot read orchestration finalizer config: {exc}") from exc
 
 
 @team_app.command(
@@ -2455,27 +2478,17 @@ def finalize_orchestration_json_store_command(
         bool, typer.Option("--json", help="Emit machine-readable output.")
     ] = False,
 ) -> None:
-    runtime_config = _load_runtime_config_from_option(config)
-    project_dir = _project_dir_for_config_option(config)
-    worker_config = load_trigger_orchestrator_worker_global_config(
-        project_dir, base_config=runtime_config
-    )
+    worker_config = _load_orchestration_finalizer_worker_config(config)
     if not sqlite_orchestration_store_enabled(worker_config):
         raise typer.BadParameter(
             "orchestration_store_backend must be explicitly configured as 'sqlite'"
         )
 
     destination = Path(database_path or worker_config.orchestration_store_path)
-    effective_archive_root = Path(
-        archive_root or (worker_config.runtime_dir / "archives")
-    )
+    effective_archive_root = Path(archive_root or (worker_config.runtime_dir / "archives"))
     effective_marker_path = Path(
         marker_path
-        or (
-            worker_config.runtime_dir
-            / "migrations"
-            / "orchestration-json-store-finalized-v1.json"
-        )
+        or (worker_config.runtime_dir / "migrations" / "orchestration-json-store-finalized-v1.json")
     )
     effective_retention_days = (
         retention_days if retention_days is not None else worker_config.orchestration_retention_days

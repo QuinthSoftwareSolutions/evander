@@ -11,6 +11,9 @@
 - Added a fail-closed orchestration JSON finalizer with read-only `--check` and lock-protected
   `--apply` modes. It blocks malformed or missing nonterminal state, imports only retained terminal
   history, archives expired history with hashes, and writes a recoverable one-way marker.
+- Fixed the finalizer to bind completed markers to the exact SQLite database, load persisted
+  maintenance settings without initializing runtime state, and document the runtime-directory CLI
+  argument correctly.
 
 ## 2026-08-17 - Discord Forum And Public Thread Communication
 

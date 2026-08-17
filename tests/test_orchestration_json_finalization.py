@@ -5,7 +5,9 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
+from typer.testing import CliRunner
 
+from evander.cli import app
 from evander.config import TriggerOrchestratorWorkerGlobalConfig
 from evander.daemons.effect_orchestrator import (
     EffectExecutionRecord,
@@ -14,6 +16,7 @@ from evander.daemons.effect_orchestrator import (
     SqliteGateExecutionStore,
 )
 from evander.events.internal import InternalEventBus
+from evander.host_config import HostConfig, save_host_config
 from evander.orchestration.host_polling import single_instance_lock
 from evander.orchestration.internal_events import build_internal_event_bus
 from evander.orchestration.json_finalization import (
@@ -273,6 +276,38 @@ def test_finalization_imports_retained_history_and_archives_expired_history(
     assert repeated.already_finalized is True
 
 
+def test_completed_marker_is_rejected_for_a_different_database(tmp_path: Path) -> None:
+    now = datetime(2026, 8, 17, 12, 0, tzinfo=UTC)
+    paths = _paths(tmp_path)
+    ensure_orchestration_schema(paths["database_path"])
+    finalize_orchestration_json_store(
+        **paths,
+        archive_root=tmp_path / "archives",
+        retention_days=30,
+        now=now,
+    )
+    other_database = tmp_path / "other-orchestration.db"
+    ensure_orchestration_schema(other_database)
+    other_paths = {**paths, "database_path": other_database}
+
+    report = check_orchestration_json_finalization(
+        **other_paths,
+        retention_days=30,
+        now=now,
+    )
+
+    assert report.safe_to_apply is False
+    assert report.already_finalized is False
+    assert [blocker.reason for blocker in report.blockers] == ["marker_database_mismatch"]
+    with pytest.raises(OrchestrationJsonFinalizationBlocked):
+        finalize_orchestration_json_store(
+            **other_paths,
+            archive_root=tmp_path / "other-archives",
+            retention_days=30,
+            now=now,
+        )
+
+
 def test_finalization_apply_requires_worker_locks_to_be_free(tmp_path: Path) -> None:
     now = datetime(2026, 8, 17, 12, 0, tzinfo=UTC)
     paths = _paths(tmp_path)
@@ -291,3 +326,82 @@ def test_finalization_apply_requires_worker_locks_to_be_free(tmp_path: Path) -> 
 
     assert [blocker.reason for blocker in exc_info.value.report.blockers] == ["worker_running"]
     assert not paths["marker_path"].exists()
+
+
+def test_cli_check_does_not_initialize_a_missing_runtime_directory(tmp_path: Path) -> None:
+    runtime_dir = tmp_path / "mistyped-runtime"
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "finalize-orchestration-json-store",
+            "--runtime-dir",
+            str(runtime_dir),
+            "--check",
+        ],
+    )
+
+    assert result.exit_code != 0
+    assert "does not contain host-config.json" in result.output
+    assert not runtime_dir.exists()
+
+
+def test_cli_check_with_valid_config_does_not_initialize_runtime_metadata(
+    tmp_path: Path,
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    save_host_config(HostConfig(runtime_dir=runtime_dir))
+    worker_config_path = tmp_path / "config" / "trigger-orchestrator" / "config.json"
+    worker_config_path.parent.mkdir(parents=True, exist_ok=True)
+    worker_config_path.write_text(
+        json.dumps(
+            {
+                "runtime_dir": str(runtime_dir),
+                "orchestration_store_backend": "sqlite",
+            }
+        ),
+        encoding="utf-8",
+    )
+    ensure_orchestration_schema(runtime_dir / "orchestration.db")
+    before_paths = {
+        path.relative_to(runtime_dir) for path in runtime_dir.rglob("*") if path.is_file()
+    }
+    before_metadata = {
+        path.relative_to(runtime_dir): path.read_bytes()
+        for path in runtime_dir.rglob("*")
+        if path.is_file() and not path.name.startswith("orchestration.db")
+    }
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "finalize-orchestration-json-store",
+            "--runtime-dir",
+            str(runtime_dir),
+            "--check",
+            "--json",
+        ],
+    )
+
+    after_paths = {
+        path.relative_to(runtime_dir) for path in runtime_dir.rglob("*") if path.is_file()
+    }
+    after_metadata = {
+        path.relative_to(runtime_dir): path.read_bytes()
+        for path in runtime_dir.rglob("*")
+        if path.is_file() and not path.name.startswith("orchestration.db")
+    }
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.output)["safe_to_apply"] is True
+    assert after_paths == before_paths
+    assert after_metadata == before_metadata
+
+
+def test_finalizer_operations_examples_pass_runtime_directory() -> None:
+    operations = (Path(__file__).resolve().parents[1] / "docs" / "operations.md").read_text(
+        encoding="utf-8"
+    )
+
+    assert "--runtime-dir runtime --check" in operations
+    assert "--runtime-dir runtime --apply" in operations
+    assert "--config runtime/host-config.json" not in operations

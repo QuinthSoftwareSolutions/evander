@@ -167,7 +167,7 @@ restarted onto a build that journals internal-event notifications to SQLite, run
 preflight:
 
 ```bash
-evander-cli finalize-orchestration-json-store --config runtime/host-config.json --check
+evander-cli finalize-orchestration-json-store --runtime-dir runtime --check
 ```
 
 The check strictly parses every legacy source and validates the SQLite database without modifying
@@ -180,7 +180,7 @@ Stop both orchestration workers and apply only a clean report:
 
 ```bash
 sudo systemctl stop evander-trigger-orchestrator.service evander-effect-orchestrator.service
-evander-cli finalize-orchestration-json-store --config runtime/host-config.json --apply
+evander-cli finalize-orchestration-json-store --runtime-dir runtime --apply
 sudo systemctl start evander-effect-orchestrator.service evander-trigger-orchestrator.service
 ```
 

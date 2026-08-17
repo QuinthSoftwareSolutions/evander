@@ -208,8 +208,8 @@ def finalize_orchestration_json_store(
         marker_payload = {
             "version": FINALIZATION_VERSION,
             "state": "archived",
-            "database_path": str(Path(database_path)),
-            "archive_path": str(archive_path),
+            "database_path": str(Path(database_path).expanduser().resolve()),
+            "archive_path": str(archive_path.expanduser().resolve()),
             "started_at": checked_at.isoformat(),
             "retention_days": retention_days,
         }
@@ -264,6 +264,28 @@ def _build_finalization_plan(
     blockers: list[OrchestrationJsonFinalizationBlocker] = []
     marker = _read_marker(Path(marker_path), blockers)
     if marker is not None and marker.get("state") == "complete":
+        marker_database_value = marker.get("database_path")
+        requested_database_path = Path(database_path).expanduser().resolve()
+        try:
+            marker_database_path = (
+                Path(str(marker_database_value)).expanduser().resolve()
+                if marker_database_value
+                else None
+            )
+        except (OSError, RuntimeError, ValueError):
+            marker_database_path = None
+        if marker_database_path != requested_database_path:
+            blockers.append(
+                OrchestrationJsonFinalizationBlocker(
+                    source="marker",
+                    record_id=None,
+                    reason="marker_database_mismatch",
+                    detail=(
+                        f"completed marker database_path {marker_database_value!r} does not "
+                        f"match requested database {requested_database_path}"
+                    ),
+                )
+            )
         archive_value = marker.get("archive_path")
         archive_manifest = Path(str(archive_value)) / "manifest.json" if archive_value else None
         try:
@@ -346,7 +368,6 @@ def _build_finalization_plan(
     )
 
     source_present = any(scan.report.present for scan in scans)
-    already_finalized = bool(marker and marker.get("state") == "complete" and not source_present)
     if marker is not None and marker.get("state") != "complete":
         blockers.append(
             OrchestrationJsonFinalizationBlocker(
@@ -368,6 +389,10 @@ def _build_finalization_plan(
                 detail="a completed marker exists but one or more legacy JSON sources reappeared",
             )
         )
+
+    already_finalized = bool(
+        marker and marker.get("state") == "complete" and not source_present and not blockers
+    )
 
     report = OrchestrationJsonFinalizationReport(
         database_path=str(Path(database_path)),
