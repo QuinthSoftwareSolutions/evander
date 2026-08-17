@@ -43,16 +43,30 @@ def test_workflow_node_envelope_rejects_top_level_config_fields() -> None:
     assert node.config == {"expression": "* * * * *"}
 
 
-def test_workflow_pack_graph_rejects_retired_directory_paths_field() -> None:
+def test_workflow_pack_graph_reads_legacy_directory_paths_but_editor_rejects_it() -> None:
     legacy_graph = {
         "id": "graph-a",
         "name": "Graph A",
-        "directory_paths": ["root"],
+        "directory_paths": ["root/team-a"],
         "node_ids": ["trigger-a"],
     }
-    for model in (WorkflowPackGraph, WorkflowEditorGraphMetadata):
-        with pytest.raises(ValidationError, match="directory_paths is no longer supported"):
-            model.model_validate(legacy_graph)
+    pack_graph = WorkflowPackGraph.model_validate(legacy_graph)
+
+    assert pack_graph.directory_path == "root/team-a"
+    assert "directory_paths" not in pack_graph.model_dump(mode="json")
+    with pytest.raises(ValidationError, match="directory_paths is no longer supported"):
+        WorkflowEditorGraphMetadata.model_validate(legacy_graph)
+
+
+def test_workflow_pack_graph_rejects_multiple_legacy_directories() -> None:
+    with pytest.raises(ValidationError, match="must contain at most one directory"):
+        WorkflowPackGraph.model_validate(
+            {
+                "id": "graph-a",
+                "name": "Graph A",
+                "directory_paths": ["root/team-a", "root/team-b"],
+            }
+        )
 
 
 def compose_workflow_ir(**kwargs):

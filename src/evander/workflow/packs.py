@@ -52,14 +52,44 @@ class WorkflowPackGraph(BaseModel):
 
     @model_validator(mode="before")
     @classmethod
-    def _reject_legacy_directory_paths(cls, value: object) -> object:
+    def _normalize_legacy_directory_paths(cls, value: object) -> object:
         if not isinstance(value, dict):
             return value
-        if "directory_paths" in value:
-            raise ValueError(
-                "Workflow graph directory_paths is no longer supported; use directory_path."
-            )
-        return value
+        payload = dict(value)
+        if "directory_path" in payload:
+            payload.pop("directory_paths", None)
+            return payload
+
+        legacy_directory_paths = payload.pop("directory_paths", None)
+        if legacy_directory_paths is None:
+            payload["directory_path"] = "root"
+            return payload
+
+        if isinstance(legacy_directory_paths, str):
+            raw_directory_paths = [legacy_directory_paths]
+        elif isinstance(legacy_directory_paths, list):
+            raw_directory_paths = legacy_directory_paths
+        else:
+            raw_directory_paths = [legacy_directory_paths]
+
+        normalized_directory_paths: list[str] = []
+        seen_directory_paths: set[str] = set()
+        for raw_directory_path in raw_directory_paths:
+            directory_path = str(raw_directory_path or "").strip()
+            if not directory_path:
+                continue
+            normalized_directory_path = DirectoryPath(segments=directory_path).as_posix()
+            if normalized_directory_path in seen_directory_paths:
+                continue
+            seen_directory_paths.add(normalized_directory_path)
+            normalized_directory_paths.append(normalized_directory_path)
+
+        if len(normalized_directory_paths) > 1:
+            raise ValueError("Workflow graph directory_paths must contain at most one directory.")
+        payload["directory_path"] = (
+            normalized_directory_paths[0] if normalized_directory_paths else "root"
+        )
+        return payload
 
     @field_validator("user_ids", "node_ids", mode="before")
     @classmethod
