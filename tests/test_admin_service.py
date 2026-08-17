@@ -10254,7 +10254,7 @@ def test_workflow_editor_reads_and_saves_named_graphs_inside_single_pack(
     assert pack_payload["graphs"][0]["name"] == "Root ticket intake"
     assert pack_payload["graphs"][0]["description"] == "Visible root-directory graph edit."
     assert pack_payload["graphs"][0]["directory_path"] == "root"
-    assert pack_payload["graphs"][0]["directory_paths"] == ["root"]
+    assert "directory_paths" not in pack_payload["graphs"][0]
     assert pack_payload["graphs"][0]["user_ids"] == ["alice"]
     assert pack_payload["graphs"][0]["node_ids"] == ["trigger-ticket", "effect-ticket"]
     assert pack_payload["graphs"][1]["id"] == "graph-cron"
@@ -10440,6 +10440,7 @@ def test_workflow_graph_activity_report_groups_runtime_records_by_graph(
     assert ticket_graph.gate_execution_count == 1
     assert ticket_graph.effect_execution_count == 1
     assert ticket_graph.status_counts == {"delivered": 1, "succeeded": 2}
+    assert ticket_graph.directory_path == "root"
     assert ticket_graph.user_ids == ["alice"]
     assert [(node.node_id, node.activity_count) for node in ticket_graph.nodes] == [
         ("effect-ticket", 1),

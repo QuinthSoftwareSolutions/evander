@@ -3689,7 +3689,7 @@ def test_admin_web_validates_and_saves_workflow_editor_document(tmp_path: Path) 
                 "id": "graph-cron-15m",
                 "name": "Scheduled prompt",
                 "description": "Prompts an agent on the cron schedule.",
-                "directory_paths": ["root"],
+                "directory_path": "root",
                 "user_ids": ["admin"],
                 "node_ids": ["cron-15m", "prompt-agent"],
             }
@@ -3705,7 +3705,7 @@ def test_admin_web_validates_and_saves_workflow_editor_document(tmp_path: Path) 
     assert save_response.status_code == 200
     assert save_response.json()["layout"]["nodes"]["prompt-agent"] == {"x": 300.0, "y": 50.0}
     assert save_response.json()["graphs"][0]["name"] == "Scheduled prompt"
-    assert save_response.json()["graphs"][0]["directory_paths"] == ["root"]
+    assert save_response.json()["graphs"][0]["directory_path"] == "root"
     assert save_response.json()["graphs"][0]["user_ids"] == ["admin"]
     assert isinstance(save_response.json().get("revision"), str)
     assert isinstance(save_response.json().get("saved_at"), str)
@@ -3752,7 +3752,7 @@ def test_admin_web_workflow_editor_accepts_revision_returned_from_previous_save(
                 "id": "graph-cron-15m",
                 "name": "Scheduled prompt",
                 "description": "Prompts an agent on the cron schedule.",
-                "directory_paths": ["root"],
+                "directory_path": "root",
                 "user_ids": ["admin"],
                 "node_ids": ["cron-15m", "prompt-agent"],
             }
@@ -3908,14 +3908,14 @@ def test_admin_web_workflow_editor_document_filters_unreadable_graphs(
             {
                 "id": "graph-root",
                 "name": "Root workflow",
-                "directory_paths": ["root"],
+                "directory_path": "root",
                 "user_ids": ["owner@example.com"],
                 "node_ids": ["root-start", "root-filter"],
             },
             {
                 "id": "graph-ops",
                 "name": "Ops workflow",
-                "directory_paths": ["root/ops"],
+                "directory_path": "root/ops",
                 "user_ids": ["viewer@example.com"],
                 "node_ids": ["ops-start", "ops-filter"],
             },
@@ -3953,7 +3953,6 @@ def test_admin_web_workflow_editor_document_filters_unreadable_graphs(
             "id": "graph-ops",
             "name": "Ops workflow",
             "directory_path": "root/ops",
-            "directory_paths": ["root/ops"],
             "user_ids": ["viewer@example.com"],
             "node_ids": ["ops-start", "ops-filter"],
         }
@@ -4047,14 +4046,14 @@ def test_admin_web_workflow_editor_routes_enforce_directory_permissions(
             {
                 "id": "graph-root",
                 "name": "Root workflow",
-                "directory_paths": ["root"],
+                "directory_path": "root",
                 "user_ids": ["owner@example.com"],
                 "node_ids": ["root-start", "root-filter"],
             },
             {
                 "id": "graph-ops",
                 "name": "Ops workflow",
-                "directory_paths": ["root/ops"],
+                "directory_path": "root/ops",
                 "user_ids": ["viewer@example.com"],
                 "node_ids": ["ops-start", "ops-filter"],
             },
@@ -4110,7 +4109,7 @@ def test_admin_web_workflow_editor_routes_enforce_directory_permissions(
                 {
                     "id": "graph-ops",
                     "name": "Ops workflow",
-                    "directory_paths": ["root/ops"],
+                    "directory_path": "root/ops",
                     "user_ids": ["viewer@example.com"],
                     "node_ids": ["ops-start", "ops-filter"],
                 }
@@ -4158,7 +4157,7 @@ def test_admin_web_workflow_editor_routes_enforce_directory_permissions(
                 {
                     "id": "graph-ops",
                     "name": "Ops workflow",
-                    "directory_paths": ["root/ops"],
+                    "directory_path": "root/ops",
                     "user_ids": ["viewer@example.com"],
                     "node_ids": ["ops-start", "ops-filter"],
                 }
@@ -5929,7 +5928,7 @@ def test_admin_web_validate_exposes_backend_output_schemas_for_state_nodes(
                     {
                         "id": "graph-state",
                         "name": "State graph",
-                        "directory_paths": ["root"],
+                        "directory_path": "root",
                         "node_ids": [
                             "trigger-state",
                             "effect-state-update-1",
@@ -5998,7 +5997,7 @@ def test_admin_web_validate_scopes_binding_diagnostics_to_workflow_graphs(
         {
             "id": "issue-handling",
             "name": "Issue handling",
-            "directory_paths": ["root"],
+            "directory_path": "root",
             "node_ids": [
                 "trigger-ticket-created-main",
                 "effect-agent-create-1",
@@ -6008,7 +6007,7 @@ def test_admin_web_validate_scopes_binding_diagnostics_to_workflow_graphs(
         {
             "id": "copied-graph",
             "name": "Copied graph",
-            "directory_paths": ["root"],
+            "directory_path": "root",
             "node_ids": [
                 "trigger-ticket-created-copy",
                 "effect-agent-clone-repo-copy",
@@ -7724,7 +7723,7 @@ def _seed_workflow_run_detail_fixture(tmp_path: Path) -> dict[str, str]:
                         "id": "graph-detail",
                         "name": "Detail Graph",
                         "description": "Workflow run detail fixture",
-                        "directory_paths": ["root"],
+                        "directory_path": "root",
                         "user_ids": ["operator"],
                         "node_ids": ["trigger-ticket", "effect-prompt", "gate-await"],
                     }
@@ -7978,7 +7977,7 @@ def test_admin_web_run_search_finds_latest_graph_and_node_runs_without_sessions(
                 {
                     "id": "graph-ticket",
                     "name": "Ticket Graph",
-                    "directory_paths": ["root"],
+                    "directory_path": "root",
                     "user_ids": [],
                     "node_ids": ["trigger-ticket", "effect-notify"],
                 }
@@ -10926,7 +10925,7 @@ def test_workflow_generator_returns_validated_draft_without_writing_files(
             "id": "generated-maintenance",
             "name": "Generated maintenance",
             "description": "Drafted from natural language.",
-            "directory_paths": [],
+            "directory_path": "root",
             "user_ids": [],
         },
         "nodes": [
@@ -10995,7 +10994,7 @@ def test_workflow_generator_returns_validated_draft_without_writing_files(
     assert response.status_code == 200
     payload = response.json()
     assert payload["model"] == "gpt-workflow-test"
-    assert payload["graphs"][0]["directory_paths"] == ["root"]
+    assert payload["graphs"][0]["directory_path"] == "root"
     assert [node["id"] for node in payload["config"]["triggers"]] == ["schedule"]
     assert [node["id"] for node in payload["config"]["effects"]] == ["emit-summary"]
     assert payload["config"]["edges"] == [{"source_id": "schedule", "target_id": "emit-summary"}]

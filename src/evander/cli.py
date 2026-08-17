@@ -62,7 +62,6 @@ from evander.messaging.teams_auth import TeamsAuthError
 from evander.migrations import (
     migrate_ado_worker_env_to_root,
     migrate_directory_ownership_defaults,
-    migrate_heartbeat_config_to_wake,
     migrate_issue_setup_env_to_root,
     migrate_pr_template_to_root,
 )
@@ -2222,33 +2221,6 @@ def migrate_directory_ownership(
     summary = migrate_directory_ownership_defaults(cfg)
     typer.echo(
         f"Backfilled {summary.changed_records} record(s) across {summary.changed_files} file(s)"
-    )
-
-
-@app.command(
-    "migrate-heartbeat-config-to-wake",
-    rich_help_panel="Health and State",
-    short_help="Rename legacy heartbeat directory config files to wake config files.",
-)
-def migrate_heartbeat_config_wake(
-    config: ConfigOption = CLI_DEFAULT_RUNTIME_DIR,
-    overwrite: Annotated[
-        bool,
-        typer.Option(
-            "--overwrite",
-            help="Replace an existing wake.json when it differs from the migrated heartbeat.json.",
-        ),
-    ] = False,
-) -> None:
-    cfg = _load_runtime_config_from_option(config)
-    summary = migrate_heartbeat_config_to_wake(cfg, overwrite=overwrite)
-    typer.echo(
-        "Wake config migration complete: "
-        f"scanned={summary.scanned_files} "
-        f"written={summary.written_files} "
-        f"skipped={summary.skipped_files} "
-        f"removed_legacy={summary.removed_legacy_files} "
-        f"metadata_updated={summary.metadata_updated}"
     )
 
 

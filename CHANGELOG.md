@@ -14,6 +14,10 @@
 
 ## 2026-08-17 - Prompt Case Closure Publication And Explicit Throttle Routes
 
+- Removed the completed heartbeat-directory migration command and its legacy `heartbeat.json`
+  conversion code after the remaining Truman directory configuration was migrated to `wake.json`.
+- Retired the workflow-graph `directory_paths` compatibility field after normalizing live packs;
+  graph configuration, generated drafts, activity reports, and Admin Web now use `directory_path`.
 - Prompted the durable Team outbox publisher after a Case closure is committed through Admin API,
   Team MCP, or a workflow effect, carrying the exact pending outbox record IDs into a targeted
   immediate claim so older backlog cannot displace the closure record. Publication failures remain

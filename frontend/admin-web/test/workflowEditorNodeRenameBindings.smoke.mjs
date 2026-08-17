@@ -135,7 +135,7 @@ function createWorkflowDocument() {
         id: "graph-1",
         name: "Rename bindings smoke",
         description: null,
-        directory_paths: ["root"],
+        directory_path: "root",
         user_ids: [],
         node_ids: ["trigger-old", "gate-old", "effect-old", "query-old"],
       },

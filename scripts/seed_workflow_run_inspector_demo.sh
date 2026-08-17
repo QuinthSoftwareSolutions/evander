@@ -333,7 +333,7 @@ workflow_config_snapshot = {
                 "id": "graph-detail",
                 "name": "Detail Graph",
                 "description": "Workflow run detail fixture",
-                "directory_paths": ["root"],
+                "directory_path": "root",
                 "user_ids": ["operator"],
                 "node_ids": ["trigger-ticket", "effect-prompt", "gate-await"],
             }

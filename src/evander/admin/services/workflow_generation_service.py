@@ -294,7 +294,6 @@ class WorkflowGenerationAdminService:
                         "name",
                         "description",
                         "directory_path",
-                        "directory_paths",
                         "user_ids",
                     ],
                     "properties": {
@@ -302,11 +301,6 @@ class WorkflowGenerationAdminService:
                         "name": {"type": "string"},
                         "description": {"type": ["string", "null"]},
                         "directory_path": {"type": "string"},
-                        "directory_paths": {
-                            "type": "array",
-                            "items": {"type": "string"},
-                            "description": "Legacy compatibility field; one directory only.",
-                        },
                         "user_ids": {"type": "array", "items": {"type": "string"}},
                     },
                 },
@@ -598,7 +592,7 @@ class WorkflowGenerationAdminService:
         graph_id = str(graph_payload.get("id") or "").strip() or "generated-workflow"
         graph_name = str(graph_payload.get("name") or "").strip() or "Generated workflow"
         graph_input = dict(graph_payload)
-        if "directory_path" not in graph_input and "directory_paths" not in graph_input:
+        if "directory_path" not in graph_input:
             graph_input["directory_path"] = directory_path
         graph_input["node_ids"] = ordered_generated_node_ids
         graph = WorkflowEditorGraphMetadata.model_validate(

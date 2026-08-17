@@ -84,19 +84,6 @@ def _graph_directory_paths(graphs: object) -> tuple[str, ...]:
         if not isinstance(graph, dict):
             continue
         directory_path = str(graph.get("directory_path") or "").strip()
-        if not directory_path:
-            legacy_directory_paths = graph.get("directory_paths")
-            if isinstance(legacy_directory_paths, list):
-                directory_path = next(
-                    (
-                        str(candidate or "").strip()
-                        for candidate in legacy_directory_paths
-                        if str(candidate or "").strip()
-                    ),
-                    "",
-                )
-            elif isinstance(legacy_directory_paths, str):
-                directory_path = legacy_directory_paths.strip()
         if not directory_path or directory_path in seen_directory_paths:
             continue
         seen_directory_paths.add(directory_path)

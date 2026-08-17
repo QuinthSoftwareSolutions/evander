@@ -81,7 +81,7 @@ function createWorkflowDocument(toolArgumentPolicies) {
         id: "graph-1",
         name: "Tool argument policies smoke",
         description: null,
-        directory_paths: ["root"],
+        directory_path: "root",
         user_ids: [],
         node_ids: ["trigger-1", "effect-1"],
       },

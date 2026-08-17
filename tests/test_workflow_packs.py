@@ -7,12 +7,14 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
+from evander.admin.payloads import WorkflowEditorGraphMetadata
 from evander.config import OrchestrationCoreConfig
 from evander.workflow.contracts import WorkflowNodeEnvelope
 from evander.workflow import packs as workflow_packs
 from evander.workflow.packs import (
     BUILTIN_HIDDEN_WORKFLOW_PACKS,
     WorkflowPack,
+    WorkflowPackGraph,
     compose_workflow_ir as _compose_workflow_ir,
     load_workflow_pack,
 )
@@ -39,6 +41,18 @@ def test_workflow_node_envelope_rejects_top_level_config_fields() -> None:
         }
     )
     assert node.config == {"expression": "* * * * *"}
+
+
+def test_workflow_pack_graph_rejects_retired_directory_paths_field() -> None:
+    legacy_graph = {
+        "id": "graph-a",
+        "name": "Graph A",
+        "directory_paths": ["root"],
+        "node_ids": ["trigger-a"],
+    }
+    for model in (WorkflowPackGraph, WorkflowEditorGraphMetadata):
+        with pytest.raises(ValidationError, match="directory_paths is no longer supported"):
+            model.model_validate(legacy_graph)
 
 
 def compose_workflow_ir(**kwargs):

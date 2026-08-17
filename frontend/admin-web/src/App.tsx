@@ -856,13 +856,7 @@ function normalizeWorkflowGraphs(
       directory_path:
         typeof graph.directory_path === "string" && graph.directory_path.trim()
           ? graph.directory_path.trim()
-          : Array.from(
-              new Set(
-                (Array.isArray(graph.directory_paths) ? graph.directory_paths : [])
-                  .map((directoryPath) => directoryPath.trim())
-                  .filter(Boolean),
-              ),
-            )[0] ?? defaultDirectoryPath,
+          : defaultDirectoryPath,
       user_ids: Array.from(
         new Set(
           (Array.isArray(graph.user_ids) ? graph.user_ids : [])
@@ -2926,17 +2920,7 @@ function coerceWorkflowGraphMetadataList(value: unknown): WorkflowGraphMetadata[
       : [];
     if (!id || !name || nodeIds.length === 0) return [];
     const directoryPath = typeof entry.directory_path === "string" ? entry.directory_path.trim() : "";
-    const legacyDirectoryPaths = Array.isArray(entry.directory_paths)
-      ? entry.directory_paths
-      : typeof entry.directory_paths === "string"
-        ? [entry.directory_paths]
-        : [];
-    const normalizedDirectoryPath =
-      directoryPath ||
-      legacyDirectoryPaths
-        .map((directoryPathValue) => (typeof directoryPathValue === "string" ? directoryPathValue.trim() : ""))
-        .find((directoryPathValue) => Boolean(directoryPathValue)) ||
-      "root";
+    const normalizedDirectoryPath = directoryPath || "root";
     return [{
       id,
       name,

@@ -209,7 +209,7 @@ test("workflow editor tutorial chooser starts, skips, and exits tutorials", asyn
         id: "graph-1",
         name: "Workflow smoke",
         description: null,
-        directory_paths: ["root"],
+        directory_path: "root",
         user_ids: [],
         node_ids: ["trigger-1", "effect-1"],
       },

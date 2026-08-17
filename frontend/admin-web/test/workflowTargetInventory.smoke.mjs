@@ -60,7 +60,7 @@ function workflowDocument() {
       id: "graph-1",
       name: "Target suggestions",
       description: null,
-      directory_paths: ["root"],
+      directory_path: "root",
       user_ids: [],
       node_ids: ["prompt-1"],
     }],
