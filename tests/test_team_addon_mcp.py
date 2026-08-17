@@ -18,6 +18,7 @@ from evander.events.scheduled import scheduled_internal_event_store_path
 from evander.gateway import create_server
 from evander.models import ApprovalStatus, SessionManifest, ToolName, tool_name_value
 from evander.runtime import build_runtime
+import evander_team_addon.mcp as team_addon_mcp
 from evander_team_addon.mcp import (
     MCP_TOOL_NAMES,
     TEAM_CLOSE_POST_RELEASE_CASE_TOOL,
@@ -1354,7 +1355,26 @@ def test_team_addon_mcp_record_note_uses_command_implementation(
 
 def test_team_addon_mcp_slice6_tools_use_command_implementation(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    publication_requests: list[list[str]] = []
+
+    def _request_outbox_publication(_context, *, outbox_record_ids):
+        normalized_ids = list(outbox_record_ids)
+        if not normalized_ids:
+            return None
+        publication_requests.append(normalized_ids)
+        return {
+            "outbox_record_ids": normalized_ids,
+            "event_ids": ["event-outbox-publication"],
+            "wake_notified": True,
+        }
+
+    monkeypatch.setattr(
+        team_addon_mcp,
+        "request_team_outbox_publication_for_records",
+        _request_outbox_publication,
+    )
     slice6_tools = [
         TEAM_CREATE_CASE_TOOL,
         TEAM_UPDATE_CASE_TOOL,
@@ -1399,6 +1419,16 @@ def test_team_addon_mcp_slice6_tools_use_command_implementation(
             "case_id": "case-mcp",
             "title": "MCP case updated",
             "request_id": "request-mcp-case-update",
+        },
+        _make_request_context(session_id="session-manager"),
+    )
+    closed_case = _call_tool_with_context(
+        server,
+        TEAM_UPDATE_CASE_TOOL,
+        {
+            "case_id": "case-mcp",
+            "status": "closed",
+            "request_id": "request-mcp-case-close",
         },
         _make_request_context(session_id="session-manager"),
     )
@@ -1493,6 +1523,9 @@ def test_team_addon_mcp_slice6_tools_use_command_implementation(
 
     assert created_case["success"] is True
     assert updated_case["updated_case_ids"] == ["case-mcp"]
+    assert closed_case["updated_case_ids"] == ["case-mcp"]
+    assert closed_case["outbox_publication_wake"]["wake_notified"] is True
+    assert publication_requests == [closed_case["outbox_record_ids"]]
     assert created_task["created_task_ids"] == ["task-mcp"]
     assert created_task["published_event_ids"]
     assert created_task["outbox_record_ids"]
@@ -1529,6 +1562,7 @@ def test_team_addon_mcp_slice6_tools_use_command_implementation(
     state = repo.read()
     assert state.stand_downs[stood_down["stand_down_id"]].scope == "agent"
     assert state.cases["case-mcp"].title == "MCP case updated"
+    assert state.cases["case-mcp"].status.value == "closed"
     assert state.tasks["task-mcp"].state.value == "in_progress"
     assert state.tasks["task-mcp"].git_base_branch == "feature/mcp-updated"
     assert state.tasks["task-mcp-batch-a"].git_base_branch == "feature/batch"

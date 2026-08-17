@@ -13,6 +13,14 @@ export function normalizeWorkflowSourcePort(sourcePort: string | null | undefine
   return text || null;
 }
 
+export function normalizeWorkflowEdgeSourcePort(
+  sourceNodeType: string | null | undefined,
+  sourcePort: string | null | undefined,
+): string | null {
+  const normalized = normalizeWorkflowSourcePort(sourcePort);
+  return sourceNodeType === "gate:throttle" && normalized === null ? "default" : normalized;
+}
+
 export function workflowConnectionRouteOptions(
   outputPorts: ReadonlyArray<WorkflowEditorNodePortDefinition>,
 ): WorkflowConnectionRouteOption[] {

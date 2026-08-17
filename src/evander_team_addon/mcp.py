@@ -35,6 +35,7 @@ from .repository import (
     TeamStateConflictError,
     TeamStateRepository,
 )
+from .outbox_publication import request_team_outbox_publication_for_records
 from .chat_attachments import (
     PreparedChatAttachment,
     TeamChatAttachmentPolicyService,
@@ -3883,6 +3884,7 @@ def _team_command_mcp_result(
 ) -> dict[str, Any]:
     payload = dict(result)
     if context is not None:
+        completed_outbox_ids: list[str] = []
         wake_request_events = _wake_request_events(payload.get("events"))
         try:
             published_event_ids = _publish_team_events(context, wake_request_events)
@@ -3903,6 +3905,23 @@ def _team_command_mcp_result(
                 else:
                     if completed_outbox_ids:
                         payload["completed_outbox_record_ids"] = completed_outbox_ids
+        raw_outbox_ids = payload.get("outbox_record_ids")
+        outbox_ids = (
+            {
+                text
+                for record_id in raw_outbox_ids
+                if (text := str(record_id).strip())
+            }
+            if isinstance(raw_outbox_ids, list)
+            else set()
+        )
+        pending_publication_ids = sorted(outbox_ids - set(completed_outbox_ids))
+        publication_wake = request_team_outbox_publication_for_records(
+            context,
+            outbox_record_ids=pending_publication_ids,
+        )
+        if publication_wake is not None:
+            payload["outbox_publication_wake"] = publication_wake
     payload.setdefault("agent_id", caller.agent_id)
     payload.setdefault("governance_group_id", None)
     payload.setdefault("assignment_id", None)

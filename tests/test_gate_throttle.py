@@ -14,6 +14,7 @@ from evander.config import GatewayConfig, TriggerOrchestratorWorkerGlobalConfig
 from evander.daemons.effect_orchestrator import EffectOrchestratorWorker
 from evander.events.models import GateThrottleDefinition
 from evander.triggers.queue import TriggerQueueRecord
+from evander.workflow.compiler import collect_domain_validation_diagnostics
 
 
 def _edge(source_id: str, target_id: str, *, source_port: str | None = None) -> dict[str, object]:
@@ -24,11 +25,14 @@ def _edge(source_id: str, target_id: str, *, source_port: str | None = None) -> 
 
 
 def _worker_config(
-    runtime_dir: Path, *, include_dropped_edge: bool = False
+    runtime_dir: Path,
+    *,
+    default_source_port: str | None = "default",
+    include_dropped_edge: bool = False,
 ) -> TriggerOrchestratorWorkerGlobalConfig:
     edges = [
         _edge("trigger-comment", "gate-throttle"),
-        _edge("gate-throttle", "effect-prompt"),
+        _edge("gate-throttle", "effect-prompt", source_port=default_source_port),
     ]
     if include_dropped_edge:
         edges.append(_edge("gate-throttle", "effect-prompt", source_port="dropped"))
@@ -130,7 +134,9 @@ def test_throttle_freezes_a_bound_limit_for_the_open_window(tmp_path: Path) -> N
     assert [record["resolved_config"]["limit"] for record in records] == [2, 2, 2]
     assert records[2]["resolved_config"]["accepted_count"] == 2
     assert records[2]["resolved_config"]["diagnostic"] == "dropped:window_limit_exceeded"
-    assert len(_completion_events(worker)) == 2
+    completion_events = _completion_events(worker)
+    assert len(completion_events) == 2
+    assert {event["payload"]["__branch_port"] for event in completion_events} == {"default"}
 
 
 def test_throttle_routes_overflow_to_the_dropped_port_when_wired(tmp_path: Path) -> None:
@@ -271,3 +277,34 @@ def test_throttle_definition_rejects_invalid_configuration(
                 **payload,
             }
         )
+
+
+def test_throttle_accepts_legacy_unported_default_edge(tmp_path: Path) -> None:
+    runtime_dir = tmp_path / "runtime"
+    worker = EffectOrchestratorWorker(
+        config=GatewayConfig(runtime_dir=runtime_dir),
+        worker_config=_worker_config(runtime_dir, default_source_port=None),
+        runtime=None,  # type: ignore[arg-type]
+    )
+
+    assert collect_domain_validation_diagnostics(worker.worker_config) == []
+
+    _execute(worker, event_id="legacy-default")
+
+    completion_event = _completion_events(worker)[0]
+    assert "__branch_port" not in completion_event["payload"]
+
+
+def test_throttle_rejects_unknown_outbound_edges(tmp_path: Path) -> None:
+    worker_config = _worker_config(
+        tmp_path / "runtime",
+        default_source_port="other",
+    )
+
+    diagnostics = collect_domain_validation_diagnostics(worker_config)
+
+    assert any(
+        item.code == "node_capability"
+        and "uses invalid source_port value(s)" in item.message
+        for item in diagnostics
+    )

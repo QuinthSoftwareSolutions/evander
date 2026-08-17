@@ -9,10 +9,12 @@ durable paths that can lead to inference:
 - bounded `context_handoff` preparation before manual or idle rotation, and
 - governance-manager wake leasing.
 
-The same runtime cron tick drains the Team outbox. That path publishes internal
-`team.*` events recorded by MCP tools. External Team Chat reply delivery also
-runs from one of those events, but neither outbox publication nor external send
-is itself a wake lease decision.
+The same runtime cron tick drains the Team outbox. Case closure paths also emit a
+`team.outbox.publish_requested` event after commit with the exact outbox record IDs; the immediate
+publisher targets those records so an older backlog cannot consume its bounded batch. The cron
+drain remains the recovery path. Both paths publish internal `team.*` events recorded by MCP tools.
+External Team Chat reply delivery also runs from one of those events, but neither outbox
+publication nor external send is itself a wake lease decision.
 
 ## Runtime Entrypoints
 
@@ -24,6 +26,7 @@ flowchart TD
     start --> wake_event["team.agent.wake_requested event<br/>default debounce: 1s"]
     start --> chat_event["team.chat.message_queued event"]
     start --> gov_event["team.governance.wake_requested event"]
+    start --> outbox_request["team.outbox.publish_requested event<br/>exact record IDs when known"]
 
     cron --> normal_effect["effect:team:wake-due-agents<br/>limit 10, lease 900s, interval 900s"]
     wake_event --> requested_effect["effect:team:wake-due-agents<br/>agent_id from wake event, limit 1<br/>respect_wake_interval=false"]
@@ -31,6 +34,7 @@ flowchart TD
     cron --> gov_effect["effect:team:wake-governance-managers<br/>limit 10, lease 900s, interval 3600s"]
     gov_event --> gov_requested_effect["effect:team:wake-governance-managers<br/>group from event, limit 1"]
     cron --> outbox_effect["effect:team:publish-outbox-events<br/>limit 25"]
+    outbox_request --> requested_outbox_effect["effect:team:publish-outbox-events<br/>requested record IDs, limit 25"]
 
     normal_effect --> wake_invocation
     requested_effect --> wake_invocation
@@ -45,6 +49,7 @@ flowchart TD
     gov_effect --> gov_tree["Evaluate governance groups"]
     gov_requested_effect --> gov_tree
     outbox_effect --> outbox["Publish pending outbox<br/>team.* runtime events"]
+    requested_outbox_effect --> outbox
 
     external_message["Authenticated external communication message"] --> bridge["effect:team:enqueue-operator-chat-message<br/>fixed operator and conversation/agent"]
     bridge --> chat_event
@@ -57,7 +62,7 @@ flowchart TD
     classDef wake fill:#e8fff0,stroke:#208a42,color:#102a16;
     classDef skip fill:#fff1f0,stroke:#b42318,color:#3a0b07;
     classDef process fill:#f5f8ff,stroke:#3867d6,color:#102044;
-    class normal_effect,requested_effect,chat_effect,gov_effect,gov_requested_effect,outbox_effect,wake_invocation,chat_first,normal_tree,gov_tree,outbox,cron,wake_event,chat_event,gov_event,bridge,external_reply,send_external process;
+    class normal_effect,requested_effect,chat_effect,gov_effect,gov_requested_effect,outbox_effect,requested_outbox_effect,wake_invocation,chat_first,normal_tree,gov_tree,outbox,cron,wake_event,chat_event,gov_event,outbox_request,bridge,external_reply,send_external process;
     class record_sent,wake_done wake;
     class cost_skip,record_failed skip;
 ```

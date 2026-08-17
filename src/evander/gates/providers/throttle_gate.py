@@ -13,13 +13,20 @@ logger = logging.getLogger(__name__)
 
 _BRANCH_PORT_PAYLOAD_KEY = "__branch_port"
 _FOR_EXECUTION_IDS_PAYLOAD_KEY = "__for_execution_ids"
+_DEFAULT_BRANCH_PORT = "default"
 _DROPPED_BRANCH_PORT = "dropped"
 
 
 class ThrottleGateProvider(GateProviderBase):
     """Route a bounded number of keyed activations through each fixed time window."""
 
-    capability = NodeCapability(min_inbound=1, max_inbound=1)
+    capability = NodeCapability(
+        min_inbound=1,
+        max_inbound=1,
+        allowed_source_ports=frozenset(
+            {None, _DEFAULT_BRANCH_PORT, _DROPPED_BRANCH_PORT}
+        ),
+    )
 
     def execute(self, **kwargs: Any) -> bool:
         worker = kwargs["worker"]
@@ -93,6 +100,15 @@ class ThrottleGateProvider(GateProviderBase):
         }
         binding_trace = binding_trace_to_payload(resolved.trace)
         if allowed:
+            completion_branch_port = (
+                _DEFAULT_BRANCH_PORT
+                if _has_outbound_source_port(
+                    graph=kwargs.get("graph"),
+                    gate_id=gate.id,
+                    source_port=_DEFAULT_BRANCH_PORT,
+                )
+                else None
+            )
             logger.info(
                 "gate:throttle allowed activation gate_id=%s key=%s event_id=%s "
                 "accepted_count=%s limit=%s window_expires_at=%s",
@@ -116,6 +132,7 @@ class ThrottleGateProvider(GateProviderBase):
                 config_revision=config_revision,
                 binding_trace=binding_trace,
                 publish_completion_event=True,
+                branch_port=completion_branch_port,
             )
             return True
 

@@ -56,16 +56,20 @@ class TeamPublishOutboxEventsEffectDefinition(EffectDefinition):
     type: Literal["effect:team:publish-outbox-events"]
     limit: ConfigValue | None = None
     intent_types: ConfigValue | None = None
+    outbox_record_ids: ConfigValue | None = None
     claim_ttl_seconds: ConfigValue | None = None
     retry_after_seconds: ConfigValue | None = None
     worker_id: ConfigValue | None = None
 
-    @field_validator("intent_types")
+    @field_validator("intent_types", "outbox_record_ids")
     @classmethod
-    def validate_intent_types(cls, value: ConfigValue | None) -> ConfigValue | None:
+    def validate_string_list(cls, value: ConfigValue | None, info) -> ConfigValue | None:
         if value is None or isinstance(value, (list, str)):
             return value
-        raise ValueError("effect:team:publish-outbox-events intent_types must be a JSON array")
+        raise ValueError(
+            "effect:team:publish-outbox-events "
+            f"{info.field_name} must be a JSON array"
+        )
 
 
 class TeamFinalizeAgentDispatchEffectDefinition(EffectDefinition):

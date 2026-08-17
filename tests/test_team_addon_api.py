@@ -31,6 +31,7 @@ from evander.model_usage.store import ModelUsageStore
 from evander.models import SessionManifest
 from evander.repositories.session_manifests import JsonSessionManifestRepository
 from evander_team_addon import api as team_addon_api
+from evander_team_addon import outbox_publication as team_outbox_publication
 import evander_team_addon.costs as team_costs_module
 import evander_team_addon.services.admin_service as admin_service_module
 from evander_team_addon.api import (
@@ -130,7 +131,7 @@ def test_team_outbox_publication_wake_is_durable_and_notifies_trigger_worker(
 ) -> None:
     notified_lock_paths: list[Path] = []
     monkeypatch.setattr(
-        team_addon_api,
+        team_outbox_publication,
         "notify_wake_socket_for_lock",
         lambda lock_path: notified_lock_paths.append(Path(lock_path)) or True,
     )
@@ -2541,7 +2542,7 @@ def test_operator_api_resolving_task_blocker_prompts_outbox_publication(
     repo = _seed_runtime_operations_state(runtime_dir)
     notified_lock_paths: list[Path] = []
     monkeypatch.setattr(
-        team_addon_api,
+        team_outbox_publication,
         "notify_wake_socket_for_lock",
         lambda lock_path: notified_lock_paths.append(Path(lock_path)) or True,
     )
@@ -2630,7 +2631,7 @@ def test_operator_api_blocker_publication_failure_keeps_task_wake_pending(
         raise RuntimeError("trigger workflow configuration is unavailable")
 
     monkeypatch.setattr(
-        team_addon_api,
+        team_outbox_publication,
         "load_trigger_orchestrator_worker_global_config",
         _raise_publication_error,
     )
@@ -6493,7 +6494,16 @@ def test_team_addon_admin_api_create_flow(tmp_path: Path) -> None:
     }
 
 
-def test_team_addon_admin_api_case_flow(tmp_path: Path) -> None:
+def test_team_addon_admin_api_case_flow(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    notified_lock_paths: list[Path] = []
+    monkeypatch.setattr(
+        team_outbox_publication,
+        "notify_wake_socket_for_lock",
+        lambda lock_path: notified_lock_paths.append(Path(lock_path)) or True,
+    )
     client = _client(tmp_path)
 
     response = client.post(
@@ -6592,6 +6602,30 @@ def test_team_addon_admin_api_case_flow(tmp_path: Path) -> None:
     assert state["cases"]["case"]["source_ref"] is None
     assert state["cases"]["case"]["task_ids"] == []
     assert state["tasks"]["task"]["case_id"] is None
+
+    response = client.patch(
+        "/api/addons/team-addon/cases/case",
+        json={
+            "status": "closed",
+            "expected_revision": 7,
+        },
+    )
+    assert response.status_code == 200
+    state = response.json()
+    assert state["cases"]["case"]["status"] == "closed"
+    publication_wake = state["outbox_publication_wake"]
+    assert publication_wake["wake_notified"] is True
+    assert len(publication_wake["outbox_record_ids"]) == 1
+    events = InternalEventBus(internal_event_store_path(tmp_path / "runtime")).list_events()
+    assert len(events) == 1
+    assert events[0].event_type == TEAM_OUTBOX_PUBLISH_REQUESTED_EVENT_TYPE
+    assert publication_wake["event_ids"] == [events[0].event_id]
+    assert notified_lock_paths == [tmp_path / "runtime" / "trigger-orchestrator.lock"]
+
+    repo = TeamStateRepository(tmp_path / "runtime")
+    closure_records = repo.list_outbox_records(intent_type="team.case.closed")
+    assert len(closure_records) == 1
+    assert closure_records[0].status == TeamOutboxStatus.PENDING
 
 
 def test_team_addon_admin_api_create_task_defaults_creator_to_operator(tmp_path: Path) -> None:

@@ -88,6 +88,7 @@ import {
   type ParsedBindingReference,
 } from "./workflowBindings";
 import {
+  normalizeWorkflowEdgeSourcePort,
   normalizeWorkflowSourcePort,
   workflowConnectionRouteOptions,
   workflowEdgeRouteLabel,
@@ -6521,9 +6522,7 @@ export default function App() {
     const workflowDocument = activeWorkflowDocument;
     if (!workflowDocument) return false;
     const sourceNode = nodeById(workflowDocument.config, sourceId);
-    const normalizedSourcePort = sourceNode?.type === "gate:throttle" && sourcePort === "default"
-      ? null
-      : normalizeWorkflowSourcePort(sourcePort);
+    const normalizedSourcePort = normalizeWorkflowEdgeSourcePort(sourceNode?.type, sourcePort);
     const validationError = validateConnection(
       workflowDocument.config,
       activeWorkflowCatalog,

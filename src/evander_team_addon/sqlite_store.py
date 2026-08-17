@@ -462,6 +462,7 @@ class TeamStateSqliteStore:
         worker_id: str,
         limit: int = 1,
         intent_types: Sequence[str] | None = None,
+        record_ids: Sequence[str] | None = None,
         claim_token: str | None = None,
         claim_ttl_seconds: int = 300,
         now: datetime | None = None,
@@ -477,6 +478,13 @@ class TeamStateSqliteStore:
         normalized_intent_types = [
             _required_text(intent_type, "intent_type") for intent_type in (intent_types or [])
         ]
+        normalized_record_ids = list(
+            dict.fromkeys(
+                _required_text(record_id, "record_id") for record_id in (record_ids or [])
+            )
+        )
+        if record_ids is not None and not normalized_record_ids:
+            return []
 
         with self._lock:
             with self._connect() as connection:
@@ -513,6 +521,10 @@ class TeamStateSqliteStore:
                     placeholders = ", ".join("?" for _ in normalized_intent_types)
                     clauses.append(f"intent_type IN ({placeholders})")
                     params.extend(normalized_intent_types)
+                if normalized_record_ids:
+                    placeholders = ", ".join("?" for _ in normalized_record_ids)
+                    clauses.append(f"id IN ({placeholders})")
+                    params.extend(normalized_record_ids)
                 ids = [
                     str(row["id"])
                     for row in connection.execute(

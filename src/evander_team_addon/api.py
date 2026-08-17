@@ -42,7 +42,6 @@ from evander.admin.web.rbac import (
 )
 from evander.admin.web.shared import request_has_privileged_operations
 from evander.admin.web.user_store import normalize_admin_web_login
-from evander.config import GatewayConfig
 from evander.events.internal import (
     InternalEventBus,
     InternalEventSource,
@@ -59,7 +58,6 @@ from evander.execution.container_worker_client import (
 from evander.email.http_utils import ProviderRequestError
 from evander.models import utc_now
 from evander.model_usage.runtime import MODEL_USAGE_STORE_FILENAME, model_usage_store
-from evander.orchestration.host_polling import notify_wake_socket_for_lock
 from evander.voice_sessions import (
     OpenAIRealtimeClientSecretService,
     VoiceQueryDelegator,
@@ -67,7 +65,6 @@ from evander.voice_sessions import (
     sanitize_voice_metadata,
     voice_query_payload,
 )
-from evander.workflow.runtime_config import load_trigger_orchestrator_worker_global_config
 
 from .avatars import (
     AVATAR_MIME_TYPE,
@@ -124,9 +121,14 @@ from .costs import TeamCostService
 from .templates import get_template, template_catalog
 from .timeline import derive_team_timeline
 from .repository import TeamStateConflictError, TeamStateRepository
+from .outbox_publication import (
+    request_team_outbox_publication as _request_team_outbox_publication,
+    request_team_outbox_publication_for_records,
+)
 from .sqlite_store import TeamIdempotencyConflictError
 from .services.domain.chat import CHAT_MESSAGE_QUEUED_EVENT_TYPE
 from .services.domain.case_task import TaskGitBaseValidationError
+from .services.domain.case_events import TEAM_CASE_CLOSED_EVENT_TYPE
 from .services.domain.context_rotation import (
     _append_idle_context_rotation_wake_requested_event,
 )
@@ -137,7 +139,6 @@ from .services.domain.wake import (
     AGENT_WAKE_REQUESTED_EVENT_TYPE,
     _append_agent_wake_requested_event_for_inbox_item,
 )
-from .services.commands.outbox import TEAM_OUTBOX_PUBLISH_REQUESTED_EVENT_TYPE
 from .services.admin_service import TeamAdminService
 from .services.chat_service import (
     TeamChatService,
@@ -2291,7 +2292,28 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
             target_collection="cases",
             target_id=case_id,
         )
-        return _state_response(request, state, rebased_from_revision=rebased_from_revision)
+        closure_outbox_ids = [
+            record.id
+            for record in repository.list_outbox_records(
+                status=TeamOutboxStatus.PENDING,
+                intent_type=TEAM_CASE_CLOSED_EVENT_TYPE,
+                aggregate_id=case_id,
+            )
+        ]
+        publication_wake = request_team_outbox_publication_for_records(
+            context,
+            outbox_record_ids=closure_outbox_ids,
+        )
+        return _state_response(
+            request,
+            state,
+            rebased_from_revision=rebased_from_revision,
+            extra=(
+                {"outbox_publication_wake": publication_wake}
+                if publication_wake is not None
+                else None
+            ),
+        )
 
     async def create_task(request: Request) -> JSONResponse:
         payload = await _read_payload(request)
@@ -7277,61 +7299,6 @@ def _publish_team_events(context: AddonContext, events: object) -> list[str]:
         )
         published_ids.append(published.event_id)
     return published_ids
-
-
-def _request_team_outbox_publication(
-    context: AddonContext,
-    *,
-    correlation_key: str,
-) -> dict[str, object]:
-    """Persist and signal a prompt outbox-publisher workflow wake.
-
-    The Team outbox is already committed before this helper is called. If the
-    trigger event or socket notification cannot be created, the periodic Team
-    runtime tick remains the recovery path rather than rolling back the
-    completed operator action.
-    """
-
-    try:
-        project_dir = (
-            Path(context.project_dir)
-            if context.project_dir is not None
-            else Path(context.runtime_dir).parent
-        )
-        base_config = (
-            context.config
-            if isinstance(context.config, GatewayConfig)
-            else GatewayConfig(runtime_dir=context.runtime_dir)
-        )
-        worker_config = load_trigger_orchestrator_worker_global_config(
-            project_dir,
-            base_config=base_config,
-        )
-        bus = InternalEventBus(
-            worker_config.internal_event_store_path,
-            journal_path=worker_config.workflow_event_journal_path,
-        )
-        event = bus.publish(
-            event_type=TEAM_OUTBOX_PUBLISH_REQUESTED_EVENT_TYPE,
-            payload={},
-            correlation_key=correlation_key,
-            idempotency_key=(f"{TEAM_OUTBOX_PUBLISH_REQUESTED_EVENT_TYPE}:{correlation_key}"),
-            source=InternalEventSource(
-                source_type="team-addon",
-                source_name="team-addon",
-            ),
-        )
-        wake_notified = notify_wake_socket_for_lock(worker_config.lock_path)
-    except Exception as exc:  # noqa: BLE001
-        return {
-            "event_ids": [],
-            "wake_notified": False,
-            "error": str(exc),
-        }
-    return {
-        "event_ids": [event.event_id],
-        "wake_notified": wake_notified,
-    }
 
 
 def _idle_context_rotation_outbox_publication_extra(
