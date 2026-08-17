@@ -209,6 +209,7 @@ type CommunicationTargetDraftEntry = {
   capabilities: string[];
   authProfileRef: string;
   senderIdentity: CommunicationTargetSenderIdentity;
+  discordConversationScope: "channel" | "public_threads" | "channel_and_public_threads";
 };
 
 type CommunicationTargetDraftParseResult = {
@@ -518,6 +519,11 @@ function communicationTargetEntriesFromConfig(value: unknown): CommunicationTarg
       capabilities: draftCapabilities.length ? draftCapabilities : policyCapabilities,
       authProfileRef: String(target.authProfileRef ?? policy.auth_profile_ref ?? ""),
       senderIdentity: communicationTargetSenderIdentityFromValue(target),
+      discordConversationScope:
+        policy.discord_conversation_scope === "public_threads"
+        || policy.discord_conversation_scope === "channel_and_public_threads"
+          ? policy.discord_conversation_scope
+          : "channel",
     };
   });
 }
@@ -600,6 +606,7 @@ function communicationTargetDraftEntriesToConfig(entries: CommunicationTargetDra
       capabilities: string[];
       auth_profile_ref?: string;
       sender_identity?: CommunicationTargetSenderIdentity;
+      discord_conversation_scope?: "channel" | "public_threads" | "channel_and_public_threads";
     } = { capabilities };
     const authProfileRef = entry.authProfileRef.trim();
     if (provider === "email" && authProfileRef) {
@@ -607,6 +614,9 @@ function communicationTargetDraftEntriesToConfig(entries: CommunicationTargetDra
     }
     if (provider === "discord" && entry.senderIdentity === "resolved") {
       policy.sender_identity = "resolved";
+    }
+    if (provider === "discord" && entry.discordConversationScope !== "channel") {
+      policy.discord_conversation_scope = entry.discordConversationScope;
     }
     return {
       id,
@@ -1526,6 +1536,7 @@ export function ConfigurationScreen() {
           capabilities: ["notify"],
           authProfileRef: "",
           senderIdentity: "platform",
+          discordConversationScope: "channel",
         },
       ];
     });
@@ -2127,6 +2138,7 @@ export function ConfigurationScreen() {
                     capabilities: ["notify"],
                     authProfileRef: "",
                     senderIdentity: "platform",
+                    discordConversationScope: "channel",
                   },
                 ])
               }
@@ -2299,6 +2311,8 @@ export function ConfigurationScreen() {
                           kind: normalizeCommunicationTargetKind(provider, target.kind),
                           authProfileRef: provider === "email" ? target.authProfileRef : "",
                           senderIdentity: provider === "discord" ? target.senderIdentity : "platform",
+                          discordConversationScope:
+                            provider === "discord" ? target.discordConversationScope : "channel",
                         });
                       }}
                       disabled={disabled || target.disabled}
@@ -2393,6 +2407,25 @@ export function ConfigurationScreen() {
                       <span>{capability}</span>
                     </label>
                   ))}
+                  {target.provider === "discord" ? (
+                    <label className="field-stack">
+                      <span>Conversation scope</span>
+                      <select
+                        value={target.discordConversationScope}
+                        onChange={(event) =>
+                          updateCommunicationTargetEntry(field, fieldState, targetIndex, {
+                            ...target,
+                            discordConversationScope: event.target.value as CommunicationTargetDraftEntry["discordConversationScope"],
+                          })
+                        }
+                        disabled={disabled || target.disabled}
+                      >
+                        <option value="channel">Channel only</option>
+                        <option value="public_threads">Public threads only</option>
+                        <option value="channel_and_public_threads">Channel and public threads</option>
+                      </select>
+                    </label>
+                  ) : null}
                   {target.provider === "discord" ? (
                     <label className="checkbox-row">
                       <input

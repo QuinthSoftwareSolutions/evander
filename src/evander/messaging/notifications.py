@@ -10,6 +10,7 @@ from evander.messaging.targets import (
     CommunicationTargetDefinition,
     load_communication_targets_config,
 )
+from evander.messaging.discord_inbox_store import DiscordInboxStore
 from evander.runtime import (
     _build_discord_service,
     _build_email_provider,
@@ -50,6 +51,7 @@ class NotificationSender:
             result = self._send_discord(
                 target=target,
                 message=message,
+                thread_id=thread_id,
                 sender_session_id=sender_session_id,
             )
         elif target.provider == "email":
@@ -118,10 +120,18 @@ class NotificationSender:
         *,
         target: CommunicationTargetDefinition,
         message: str,
+        thread_id: str | None,
         sender_session_id: str,
     ) -> Mapping[str, Any]:
-        service = self._discord_service(sender_session_id=sender_session_id, target=target)
-        channel_id = _discord_channel_id(target.address)
+        parent_channel_id, channel_id = self._resolve_discord_destination(
+            target=target,
+            thread_id=thread_id,
+        )
+        service = self._discord_service(
+            sender_session_id=sender_session_id,
+            target=target,
+            additional_channel_ids=[channel_id] if channel_id != parent_channel_id else None,
+        )
         resolve_identity = getattr(self.runtime, "resolve_outbound_identity", None)
         if (
             target.policy.sender_identity == "resolved"
@@ -133,14 +143,57 @@ class NotificationSender:
                 provider="discord",
                 destination=channel_id,
             )
+            identity_kwargs: dict[str, Any] = {
+                "identity": identity_resolution.identity,
+                "identity_status": identity_resolution.status,
+            }
+            if thread_id is not None:
+                identity_kwargs.update(
+                    {
+                        "webhook_channel_id": parent_channel_id,
+                        "thread_id": thread_id,
+                    }
+                )
             return service.post_status_with_identity(
                 message,
                 channel_id,
                 sender_session_id,
-                identity=identity_resolution.identity,
-                identity_status=identity_resolution.status,
+                **identity_kwargs,
             )
         return service.post_status(message, channel_id, sender_session_id)
+
+    def _resolve_discord_destination(
+        self,
+        *,
+        target: CommunicationTargetDefinition,
+        thread_id: str | None,
+    ) -> tuple[str, str]:
+        parent_channel_id = _discord_channel_id(target.address)
+        if thread_id is None:
+            if target.policy.discord_conversation_scope == "public_threads":
+                raise ValueError(
+                    "discord_target_requires_thread: this target only allows public child threads"
+                )
+            return parent_channel_id, parent_channel_id
+        if target.policy.discord_conversation_scope not in {
+            "public_threads",
+            "channel_and_public_threads",
+        }:
+            raise ValueError(
+                "discord_thread_not_authorized: the selected target does not allow public threads"
+            )
+        binding = DiscordInboxStore(
+            self.runtime.config.runtime_dir / "discord-inbox-store.json"
+        ).get_thread_binding(thread_id)
+        if binding is None or binding.parent_channel_id != parent_channel_id:
+            raise ValueError(
+                "discord_thread_not_authorized: thread is not registered under the selected target"
+            )
+        if binding.archived:
+            raise ValueError("discord_thread_archived: archived Discord threads are not reopened")
+        if binding.locked:
+            raise ValueError("discord_thread_locked: locked Discord threads cannot receive replies")
+        return parent_channel_id, binding.thread_id
 
     def _create_email_draft(
         self,
@@ -167,6 +220,7 @@ class NotificationSender:
         *,
         sender_session_id: str = "workflow",
         target: CommunicationTargetDefinition | None = None,
+        additional_channel_ids: list[str] | None = None,
     ) -> Any:
         allowed_channel_ids_provider = None
         if target is not None and target.provider == "discord":
@@ -177,7 +231,7 @@ class NotificationSender:
             channel_id = _discord_channel_id(target.address)
 
             def allowed_target_channel_ids() -> list[str]:
-                return [channel_id]
+                return [channel_id, *(additional_channel_ids or [])]
 
             allowed_channel_ids_provider = allowed_target_channel_ids
         return _build_discord_service(
@@ -241,17 +295,26 @@ class CommunicationMessageSender(NotificationSender):
         *,
         sender_session_id: str = "workflow",
         target: CommunicationTargetDefinition | None = None,
+        additional_channel_ids: list[str] | None = None,
     ) -> Any:
         normalized_session_id = str(sender_session_id or "").strip()
-        if not normalized_session_id or normalized_session_id == "workflow":
-            return super()._discord_service(sender_session_id=sender_session_id, target=target)
+        if (
+            not normalized_session_id
+            or normalized_session_id == "workflow"
+            or additional_channel_ids
+        ):
+            return super()._discord_service(
+                sender_session_id=sender_session_id,
+                target=target,
+                additional_channel_ids=additional_channel_ids,
+            )
         return _build_discord_service(
             self._resolved_config(),
             self.runtime.discord_commands,
             self.runtime.session_repository,
             self.runtime.policy_config,
             session_id=normalized_session_id,
-            capability="write",
+            capability="reply" if additional_channel_ids else "write",
         )
 
     def send_message(
@@ -275,11 +338,10 @@ class CommunicationMessageSender(NotificationSender):
                 sender_session_id=sender_session_id,
             )
         elif target.provider == "discord":
-            if thread_id is not None:
-                raise ValueError("Discord communication targets do not support thread replies.")
             result = self._send_discord(
                 target=target,
                 message=message,
+                thread_id=thread_id,
                 sender_session_id=sender_session_id,
             )
         elif target.provider == "email":

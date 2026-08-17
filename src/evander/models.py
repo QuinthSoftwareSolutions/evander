@@ -1435,6 +1435,8 @@ class DiscordMessageEnvelope(BaseModel):
     content: str
     created_at: datetime
     in_reply_to: str | None = None
+    thread_id: str | None = None
+    parent_channel_id: str | None = None
     raw: dict[str, Any] = Field(default_factory=dict)
 
 

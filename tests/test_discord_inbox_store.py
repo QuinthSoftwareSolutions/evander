@@ -441,3 +441,36 @@ def test_discord_inbox_store_imports_legacy_json_when_sqlite_store_is_empty(
             }
         },
     }
+
+
+def test_discord_inbox_store_persists_public_thread_bindings(tmp_path: Path) -> None:
+    path = tmp_path / "runtime" / "discord-inbox-store.json"
+    observed_at = datetime(2026, 8, 17, 8, 0, tzinfo=timezone.utc)
+    store = DiscordInboxStore(path)
+
+    assert store.register_thread_parent("parent-1", observed_at=observed_at) is True
+    assert store.register_thread_parent("parent-1", observed_at=observed_at) is False
+    assert store.upsert_thread_binding(
+        thread_id="thread-1",
+        parent_channel_id="parent-1",
+        guild_id="guild-1",
+        thread_type=11,
+        archived=False,
+        locked=False,
+        observed_at=observed_at,
+    ) is True
+
+    binding = DiscordInboxStore(path).get_thread_binding("thread-1")
+    assert binding is not None
+    assert binding.parent_channel_id == "parent-1"
+    assert binding.archived is False
+
+    store.mark_missing_parent_threads_archived(
+        parent_channel_id="parent-1",
+        active_thread_ids=[],
+        observed_at=observed_at,
+    )
+    assert store.list_thread_bindings(
+        parent_channel_ids=["parent-1"], include_archived=False
+    ) == []
+    assert store.get_thread_binding("thread-1").archived is True

@@ -559,9 +559,7 @@ class TeamChatService:
         normalized_source_message_id = _required_text(source_message_id, "source_message_id")
         normalized_source_author_id = _required_text(source_author_id, "source_author_id")
         normalized_operator_display_name = _optional_text(operator_display_name)
-        normalized_source_thread_id = (
-            None if normalized_provider == "discord" else _optional_text(source_thread_id)
-        )
+        normalized_source_thread_id = _optional_text(source_thread_id)
         normalized_source_author_name = _optional_text(source_author_name)
 
         def _existing_result(state: TeamState) -> dict[str, Any] | None:

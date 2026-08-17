@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -15,6 +16,7 @@ from evander.messaging.targets import (
     SqliteCommunicationTargetsRepository,
     communication_targets_db_path,
 )
+from evander.messaging.discord_inbox_store import DiscordInboxStore
 from evander.outbound_identity import OutboundIdentity
 from evander.runtime import build_runtime
 
@@ -140,6 +142,85 @@ def test_communication_send_message_posts_to_discord_channel(tmp_path: Path) -> 
     assert output["success"] is True
     assert output["provider"] == "discord"
     assert output["channel_id"] == "234567890123456789"
+
+
+def test_communication_send_message_posts_to_registered_public_discord_thread(
+    tmp_path: Path,
+) -> None:
+    _write_targets(
+        tmp_path,
+        [
+            {
+                "id": "discord-forum",
+                "provider": "discord",
+                "kind": "discord",
+                "address": "123456789012345678/234567890123456789",
+                "policy": {
+                    "capabilities": ["reply"],
+                    "discord_conversation_scope": "public_threads",
+                },
+            }
+        ],
+    )
+    observed_at = datetime(2026, 8, 17, tzinfo=UTC)
+    store = DiscordInboxStore(tmp_path / "runtime" / "discord-inbox-store.json")
+    store.upsert_thread_binding(
+        thread_id="345678901234567890",
+        parent_channel_id="234567890123456789",
+        guild_id="123456789012345678",
+        thread_type=11,
+        archived=False,
+        locked=False,
+        observed_at=observed_at,
+    )
+
+    output = _execute(
+        project_dir=tmp_path,
+        runtime=_runtime(tmp_path),
+        target_id="discord-forum",
+        thread_id="345678901234567890",
+    )
+
+    assert output["success"] is True
+    assert output["channel_id"] == "345678901234567890"
+
+
+def test_communication_send_message_rejects_archived_discord_thread(
+    tmp_path: Path,
+) -> None:
+    _write_targets(
+        tmp_path,
+        [
+            {
+                "id": "discord-forum",
+                "provider": "discord",
+                "kind": "discord",
+                "address": "123456789012345678/234567890123456789",
+                "policy": {
+                    "capabilities": ["reply"],
+                    "discord_conversation_scope": "public_threads",
+                },
+            }
+        ],
+    )
+    observed_at = datetime(2026, 8, 17, tzinfo=UTC)
+    DiscordInboxStore(tmp_path / "runtime" / "discord-inbox-store.json").upsert_thread_binding(
+        thread_id="345678901234567890",
+        parent_channel_id="234567890123456789",
+        guild_id="123456789012345678",
+        thread_type=11,
+        archived=True,
+        locked=False,
+        observed_at=observed_at,
+    )
+
+    with pytest.raises(ValueError, match="discord_thread_archived"):
+        _execute(
+            project_dir=tmp_path,
+            runtime=_runtime(tmp_path),
+            target_id="discord-forum",
+            thread_id="345678901234567890",
+        )
 
 
 def test_communication_send_message_uses_supported_workflow_sender_by_default(

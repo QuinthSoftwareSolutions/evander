@@ -1847,7 +1847,7 @@ Supported directory config domains:
 | `vm.json` | Guest-facing relay/network defaults and libvirt VM template selection data | `bind_network_cidr`, `gateway_url`, OpenAI relay host/port, NuGet relay host/port, HTTP target relay host/port, `libvirt_vm_default_template`, `libvirt_vm_templates` |
 | `connectors.json` | Named host-side REST/filesystem integrations available through the generic connector MCP tools | `auth_profiles`, `connectors`; child overlays deep-merge entries by id and may set `disabled: true` to disable inherited connectors |
 | `host-directories.json` | Named host filesystem roots available through dedicated list/import/delete tools and file-added triggers | `host_directories`; definitions include `display_name`, `description`, absolute non-root `root`, `capabilities`, `delete_requires_approval`, import/watch limits, and `disabled` |
-| `communication_targets` (SQLite) | Directory-scoped communication targets inherited by target ID | `targets` entries with `id`, `provider`, `kind`, `address`, `policy.capabilities`, optional `policy.auth_profile_ref`, optional Discord `policy.sender_identity` (`platform` or `resolved`), or `disabled: true` for inherited target removal |
+| `communication_targets` (SQLite) | Directory-scoped communication targets inherited by target ID | `targets` entries with `id`, `provider`, `kind`, `address`, `policy.capabilities`, optional `policy.auth_profile_ref`, optional Discord `policy.sender_identity` (`platform` or `resolved`), optional Discord `policy.discord_conversation_scope` (`channel`, `public_threads`, or `channel_and_public_threads`; default `channel`), or `disabled: true` for inherited target removal |
 
 Assistant settings fields:
 

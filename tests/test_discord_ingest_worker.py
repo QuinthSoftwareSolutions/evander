@@ -349,6 +349,73 @@ def test_discord_ingest_worker_batches_new_messages_before_advancing_cursor(
     assert store.set_cursor_calls == [("chan-a", "2026-03-30T11:00:02Z")]
 
 
+def test_discord_ingest_discovers_only_public_threads_under_configured_parent(
+    tmp_path: Path,
+) -> None:
+    worker = build_discord_ingest_worker(
+        GatewayConfig.model_validate({"runtime_dir": str(tmp_path / "runtime")}),
+        project_dir=tmp_path,
+    )
+    calls: list[str] = []
+
+    class _FakeResponse:
+        def __init__(self, payload: object) -> None:
+            self.payload = payload
+
+        def json(self):
+            return self.payload
+
+    class _FakeAdapter:
+        api_base_url = "https://discord.test/api/v10"
+
+        def _request_with_retries(self, _client, _method, url, params=None):
+            calls.append(url)
+            if url.endswith("/channels/234567890123456789"):
+                return _FakeResponse({"guild_id": "123456789012345678"})
+            if url.endswith("/guilds/123456789012345678/threads/active"):
+                return _FakeResponse(
+                    {
+                        "threads": [
+                            {
+                                "id": "345678901234567890",
+                                "parent_id": "234567890123456789",
+                                "type": 11,
+                                "thread_metadata": {"archived": False, "locked": False},
+                            },
+                            {
+                                "id": "456789012345678901",
+                                "parent_id": "234567890123456789",
+                                "type": 12,
+                                "thread_metadata": {"archived": False, "locked": False},
+                            },
+                            {
+                                "id": "567890123456789012",
+                                "parent_id": "999999999999999999",
+                                "type": 11,
+                                "thread_metadata": {"archived": False, "locked": False},
+                            },
+                        ]
+                    }
+                )
+            raise AssertionError(url)
+
+    discovered = worker._discover_public_threads(
+        object(),
+        adapter=_FakeAdapter(),
+        channel_scope_by_parent={"234567890123456789": "public_threads"},
+    )
+
+    assert discovered == {"234567890123456789": ["345678901234567890"]}
+    binding = worker.runtime.discord_inbox_service.store.get_thread_binding(
+        "345678901234567890"
+    )
+    assert binding is not None
+    assert binding.parent_channel_id == "234567890123456789"
+    assert calls.count(
+        "https://discord.test/api/v10/guilds/123456789012345678/threads/active"
+    ) == 1
+
+
 def test_discord_ingest_worker_does_not_advance_cursor_when_batch_write_fails(
     tmp_path: Path,
 ) -> None:

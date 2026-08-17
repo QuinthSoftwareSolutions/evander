@@ -71,9 +71,6 @@ class CommunicationMessagesQueryProvider(QueryProviderBase):
             raise ValueError(f"{self.NODE_TYPE} cursor and before_cursor are mutually exclusive")
 
         thread_id = self._normalize_optional_string(payload.get("thread_id"))
-        if target.provider == "discord" and thread_id is not None:
-            raise ValueError("query:communication:messages does not support thread_id for Discord")
-
         if target.provider == "teams":
             result = self._teams_messages(
                 runtime_dir=runtime_dir,
@@ -90,6 +87,7 @@ class CommunicationMessagesQueryProvider(QueryProviderBase):
                 limit=limit,
                 cursor=cursor,
                 before_cursor=before_cursor,
+                thread_id=thread_id,
             )
         else:
             result = self._email_messages(
@@ -310,18 +308,36 @@ class CommunicationMessagesQueryProvider(QueryProviderBase):
         limit: int | None,
         cursor: str | None,
         before_cursor: str | None,
+        thread_id: str | None,
     ) -> dict[str, Any]:
         channel_id = target.address.split("/")[-1].strip()
         if not channel_id:
             raise ValueError("query:communication:messages requires a Discord channel target")
 
-        candidates = (
-            DiscordInboxStore(runtime_dir / "discord-inbox-store.json")
-            .list_all_messages(
-                channel_ids=[channel_id],
-            )
-            .messages
-        )
+        store = DiscordInboxStore(runtime_dir / "discord-inbox-store.json")
+        scope = target.policy.discord_conversation_scope
+        if thread_id is not None:
+            binding = store.get_thread_binding(thread_id)
+            if (
+                scope not in {"public_threads", "channel_and_public_threads"}
+                or binding is None
+                or binding.parent_channel_id != channel_id
+            ):
+                raise ValueError(
+                    "query:communication:messages Discord thread_id is not authorized by the selected target"
+                )
+            selected_channel_ids = [thread_id]
+        else:
+            selected_channel_ids = [] if scope == "public_threads" else [channel_id]
+            if scope in {"public_threads", "channel_and_public_threads"}:
+                selected_channel_ids.extend(
+                    binding.thread_id
+                    for binding in store.list_thread_bindings(
+                        parent_channel_ids=[channel_id],
+                        include_archived=True,
+                    )
+                )
+        candidates = store.list_all_messages(channel_ids=selected_channel_ids).messages
         paged_messages = self._page_discord_messages(
             messages=candidates,
             limit=limit,
@@ -405,7 +421,9 @@ class CommunicationMessagesQueryProvider(QueryProviderBase):
             "author_id": message.author_id,
             "author_name": message.author_name,
             "content": message.content,
-            "thread_id": self._normalize_optional_string(message.in_reply_to),
+            "thread_id": self._normalize_optional_string(message.thread_id),
+            "in_reply_to": self._normalize_optional_string(message.in_reply_to),
+            "parent_channel_id": self._normalize_optional_string(message.parent_channel_id),
             "metadata": dict(message.raw),
             "channel_target": normalized_target,
             "target": normalized_target,

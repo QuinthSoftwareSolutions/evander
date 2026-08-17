@@ -12631,6 +12631,7 @@ def test_admin_web_people_communications_tab_saves_sqlite_communication_targets(
             "capabilities": ["write"],
             "auth_profile_ref": None,
             "sender_identity": "platform",
+            "discord_conversation_scope": "channel",
         },
     }
     assert communications["raw"]["config"]["targets"][1] == {

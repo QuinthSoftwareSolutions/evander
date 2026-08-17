@@ -36,6 +36,7 @@ from evander.messaging.targets import (
     CommunicationTargetCapability,
     CommunicationTargetDefinition,
 )
+from evander.messaging.discord_inbox_store import DiscordInboxStore, DiscordThreadBinding
 from evander.session_backends import session_has_vm_binding, session_is_container_worker_vm
 from evander.services import (
     normalize_teams_target,
@@ -1176,16 +1177,23 @@ class PolicyEngine:
             channel_id,
             capability=capability,
         )
+        binding = self._discord_thread_binding(requested_channel_id)
+        effective_capability = "reply" if binding is not None and capability == "write" else capability
         allowed_channel_ids = set(
             self.policy_config.resolved_discord_channel_ids_for_session(
                 session,
-                capability=capability,
+                capability=effective_capability,
             )
         )
         if requested_channel_id not in allowed_channel_ids:
             raise PolicyError(
                 f"Discord channel is not allowlisted for session {session.session_id}"
             )
+        if binding is not None:
+            if binding.archived:
+                raise PolicyError("discord_thread_archived: archived Discord threads are not reopened")
+            if binding.locked:
+                raise PolicyError("discord_thread_locked: locked Discord threads cannot receive replies")
         return requested_channel_id
 
     def discord_sender_identity_mode(
@@ -1201,7 +1209,53 @@ class PolicyEngine:
             provider="discord",
             capability=capability,
         )
+        binding = self._discord_thread_binding(str(reference or "").strip())
+        if target is None and binding is not None:
+            target = self._discord_parent_target_for_session(
+                session,
+                binding,
+                capability="reply" if capability == "write" else capability,
+            )
         return target.policy.sender_identity if target is not None else "platform"
+
+    def discord_webhook_channel_id(self, channel_id: str) -> str:
+        binding = self._discord_thread_binding(channel_id)
+        return binding.parent_channel_id if binding is not None else str(channel_id).strip()
+
+    def _discord_thread_binding(self, channel_id: str) -> DiscordThreadBinding | None:
+        return DiscordInboxStore(
+            self.policy_config.config.runtime_dir / "discord-inbox-store.json"
+        ).get_thread_binding(str(channel_id or "").strip())
+
+    def _discord_parent_target_for_session(
+        self,
+        session: SessionManifest,
+        binding: DiscordThreadBinding,
+        *,
+        capability: CommunicationTargetCapability,
+    ) -> CommunicationTargetDefinition | None:
+        refs = (
+            session.communication_target_ids
+            if session.communication_target_ids is not None
+            else session.discord_channel_allowlist
+        )
+        for reference in refs:
+            target = self._communication_target_for_session(
+                session,
+                str(reference or "").strip(),
+                provider="discord",
+                capability=capability,
+            )
+            if target is None:
+                continue
+            parent_channel_id = self._discord_channel_id_from_target(target)
+            if (
+                parent_channel_id == binding.parent_channel_id
+                and target.policy.discord_conversation_scope
+                in {"public_threads", "channel_and_public_threads"}
+            ):
+                return target
+        return None
 
     def require_discord_command_source(
         self,

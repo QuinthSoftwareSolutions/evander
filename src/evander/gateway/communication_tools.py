@@ -309,12 +309,25 @@ def register_communication_tools(
                     provider="discord",
                     destination=resolved_channel_id,
                 )
+                webhook_channel_id = context.policy.discord_webhook_channel_id(
+                    resolved_channel_id
+                )
+                identity_kwargs: dict[str, Any] = {
+                    "identity": identity_resolution.identity,
+                    "identity_status": identity_resolution.status,
+                }
+                if webhook_channel_id != resolved_channel_id:
+                    identity_kwargs.update(
+                        {
+                            "webhook_channel_id": webhook_channel_id,
+                            "thread_id": resolved_channel_id,
+                        }
+                    )
                 result = service.post_status_with_identity(
                     message,
                     resolved_channel_id,
                     session_id,
-                    identity=identity_resolution.identity,
-                    identity_status=identity_resolution.status,
+                    **identity_kwargs,
                 )
             else:
                 result = service.post_status(message, resolved_channel_id, session_id)

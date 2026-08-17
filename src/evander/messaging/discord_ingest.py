@@ -28,6 +28,7 @@ from evander.workflow.node_state import workflow_node_is_enabled
 from evander.workflow.runtime_config import load_trigger_orchestrator_worker_global_config
 
 logger = logging.getLogger(__name__)
+_PUBLIC_DISCORD_THREAD_TYPES = {10, 11}
 _ATTACHMENT_SECRET_KEYS = {
     "authorization",
     "token",
@@ -173,6 +174,35 @@ class DiscordIngestWorker:
                 capability="read",
             )
         }
+        try:
+            targets_by_id = load_communication_targets_config(
+                runtime_dir=self.config.runtime_dir,
+                directory_store=self.runtime.directories,
+                directory_path=directory_path,
+            ).by_id()
+        except Exception:
+            targets_by_id = {}
+        for session in active_sessions:
+            if (
+                ToolName.DISCORD_GET_COMMANDS not in session.allowed_tools
+                or not _directory_is_within_scope(session.directory_path, directory_path)
+            ):
+                continue
+            refs = (
+                session.communication_target_ids
+                if session.communication_target_ids is not None
+                else session.discord_channel_allowlist
+            )
+            for ref in refs:
+                target = targets_by_id.get(str(ref or "").strip().lower())
+                if (
+                    target is not None
+                    and target.provider == "discord"
+                    and "read" in set(target.policy.capabilities)
+                    and target.policy.discord_conversation_scope
+                    in {"public_threads", "channel_and_public_threads"}
+                ):
+                    channel_ids.add(_discord_channel_id_from_address(target.address))
         for trigger_directory, trigger_channel_ids in (communication_trigger_targets or {}).items():
             if _directory_is_within_scope(trigger_directory, directory_path):
                 channel_ids.update(trigger_channel_ids)
@@ -262,6 +292,11 @@ class DiscordIngestWorker:
                 provider_config.discord_bot_token_env,
             )
             return
+        channel_scope_by_parent = self._discord_conversation_scopes(
+            directory_path,
+            channel_ids=channel_ids,
+        )
+        allowed_channel_ids = set(channel_ids)
         adapter = DiscordBotApiService(
             self.runtime.discord_commands,
             token=token,
@@ -271,11 +306,171 @@ class DiscordIngestWorker:
             retry_count=provider_config.discord_retry_count,
             retry_base_backoff_seconds=provider_config.discord_retry_base_backoff_seconds,
             retry_max_backoff_seconds=provider_config.discord_retry_max_backoff_seconds,
-            allowed_channel_ids_provider=lambda: channel_ids,
+            allowed_channel_ids_provider=lambda: sorted(allowed_channel_ids),
         )
         with httpx.Client(timeout=provider_config.discord_timeout_seconds) as client:
-            for channel_id in channel_ids:
+            thread_ids_by_parent = self._discover_public_threads(
+                client,
+                adapter=adapter,
+                channel_scope_by_parent=channel_scope_by_parent,
+            )
+            for thread_ids in thread_ids_by_parent.values():
+                allowed_channel_ids.update(thread_ids)
+
+            parent_channels_to_poll = {
+                channel_id
+                for channel_id in channel_ids
+                if channel_scope_by_parent.get(channel_id, "channel")
+                in {"channel", "channel_and_public_threads"}
+            }
+            for channel_id in sorted(parent_channels_to_poll):
                 self._poll_channel(client, adapter=adapter, channel_id=channel_id)
+            for parent_channel_id, thread_ids in sorted(thread_ids_by_parent.items()):
+                parent_was_initialized = self.runtime.discord_inbox_service.store.register_thread_parent(
+                    parent_channel_id,
+                    observed_at=datetime.now(UTC),
+                )
+                for thread_id in thread_ids:
+                    if parent_was_initialized:
+                        self.runtime.discord_inbox_service.store.set_cursor(
+                            thread_id,
+                            datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+                        )
+                        continue
+                    self._poll_channel(
+                        client,
+                        adapter=adapter,
+                        channel_id=thread_id,
+                        parent_channel_id=parent_channel_id,
+                    )
+
+    def _discord_conversation_scopes(
+        self,
+        directory_path: str,
+        *,
+        channel_ids: list[str],
+    ) -> dict[str, str]:
+        selected_channels = set(channel_ids)
+        try:
+            targets = load_communication_targets_config(
+                runtime_dir=self.config.runtime_dir,
+                directory_store=self.runtime.directories,
+                directory_path=directory_path,
+            ).targets
+        except Exception:
+            logger.warning(
+                "Failed to load Discord thread-aware targets for directory=%s",
+                directory_path,
+                exc_info=True,
+            )
+            return {}
+        scopes: dict[str, str] = {}
+        for target in targets:
+            if target.provider != "discord" or "read" not in set(target.policy.capabilities):
+                continue
+            parent_channel_id = _discord_channel_id_from_address(target.address)
+            if parent_channel_id not in selected_channels:
+                continue
+            scope = target.policy.discord_conversation_scope
+            current = scopes.get(parent_channel_id)
+            if current is None:
+                scopes[parent_channel_id] = scope
+            elif scope == "channel_and_public_threads" or {
+                current,
+                scope,
+            } == {"channel", "public_threads"}:
+                scopes[parent_channel_id] = "channel_and_public_threads"
+            elif current == "channel" or scope != "channel":
+                scopes[parent_channel_id] = scope
+        return scopes
+
+    def _discover_public_threads(
+        self,
+        client: httpx.Client,
+        *,
+        adapter: DiscordBotApiService,
+        channel_scope_by_parent: dict[str, str],
+    ) -> dict[str, list[str]]:
+        thread_parents = {
+            parent_id
+            for parent_id, scope in channel_scope_by_parent.items()
+            if scope in {"public_threads", "channel_and_public_threads"}
+        }
+        if not thread_parents:
+            return {}
+
+        guild_by_parent: dict[str, str] = {}
+        for parent_channel_id in sorted(thread_parents):
+            response = adapter._request_with_retries(
+                client,
+                "GET",
+                f"{adapter.api_base_url}/channels/{parent_channel_id}",
+            )
+            payload = response.json()
+            guild_id = str(payload.get("guild_id") or "").strip()
+            if not guild_id:
+                logger.warning(
+                    "Skipping Discord thread discovery for parent=%s because guild_id is missing",
+                    parent_channel_id,
+                )
+                continue
+            guild_by_parent[parent_channel_id] = guild_id
+
+        parents_by_guild: dict[str, set[str]] = {}
+        for parent_channel_id, guild_id in guild_by_parent.items():
+            parents_by_guild.setdefault(guild_id, set()).add(parent_channel_id)
+
+        observed_at = datetime.now(UTC)
+        thread_ids_by_parent = {parent_id: [] for parent_id in guild_by_parent}
+        for guild_id, parent_ids in sorted(parents_by_guild.items()):
+            response = adapter._request_with_retries(
+                client,
+                "GET",
+                f"{adapter.api_base_url}/guilds/{guild_id}/threads/active",
+            )
+            payload = response.json()
+            raw_threads = payload.get("threads") if isinstance(payload, dict) else None
+            for raw_thread in raw_threads if isinstance(raw_threads, list) else []:
+                if not isinstance(raw_thread, dict):
+                    continue
+                thread_id = str(raw_thread.get("id") or "").strip()
+                parent_channel_id = str(raw_thread.get("parent_id") or "").strip()
+                try:
+                    thread_type = int(raw_thread.get("type"))
+                except (TypeError, ValueError):
+                    continue
+                if (
+                    not thread_id
+                    or parent_channel_id not in parent_ids
+                    or thread_type not in _PUBLIC_DISCORD_THREAD_TYPES
+                ):
+                    continue
+                metadata = raw_thread.get("thread_metadata")
+                metadata = metadata if isinstance(metadata, dict) else {}
+                archived = bool(metadata.get("archived", False))
+                locked = bool(metadata.get("locked", False))
+                self.runtime.discord_inbox_service.store.upsert_thread_binding(
+                    thread_id=thread_id,
+                    parent_channel_id=parent_channel_id,
+                    guild_id=guild_id,
+                    thread_type=thread_type,
+                    archived=archived,
+                    locked=locked,
+                    observed_at=observed_at,
+                )
+                if not archived:
+                    thread_ids_by_parent[parent_channel_id].append(thread_id)
+
+        for parent_channel_id, active_thread_ids in thread_ids_by_parent.items():
+            self.runtime.discord_inbox_service.store.mark_missing_parent_threads_archived(
+                parent_channel_id=parent_channel_id,
+                active_thread_ids=active_thread_ids,
+                observed_at=observed_at,
+            )
+        return {
+            parent_id: sorted(thread_ids)
+            for parent_id, thread_ids in thread_ids_by_parent.items()
+        }
 
     def _poll_channel(
         self,
@@ -283,6 +478,7 @@ class DiscordIngestWorker:
         *,
         adapter: DiscordBotApiService,
         channel_id: str,
+        parent_channel_id: str | None = None,
     ) -> None:
         response = adapter._request_with_retries(
             client,
@@ -302,7 +498,10 @@ class DiscordIngestWorker:
                 continue
             discovered.append(
                 self._normalize_message(
-                    channel_id=channel_id, payload=payload, created_at=created_at
+                    channel_id=channel_id,
+                    parent_channel_id=parent_channel_id,
+                    payload=payload,
+                    created_at=created_at,
                 )
             )
         if discovered:
@@ -315,6 +514,7 @@ class DiscordIngestWorker:
         self,
         *,
         channel_id: str,
+        parent_channel_id: str | None = None,
         payload: dict[str, object],
         created_at: datetime,
     ) -> DiscordMessageEnvelope:
@@ -329,9 +529,15 @@ class DiscordIngestWorker:
         safe_payload["attachments"] = attachments
         raw: dict[str, object] = {
             "source": "discord_bot_api",
+            "channel_id": channel_id,
             "attachments": attachments,
             "message": safe_payload,
         }
+        if parent_channel_id is not None:
+            raw["thread_id"] = channel_id
+            raw["parent_channel_id"] = parent_channel_id
+        if in_reply_to is not None:
+            raw["message_reference_id"] = in_reply_to
         if command is not None:
             command_source = str(command.metadata.get("source", "")).strip()
             if command_source:
@@ -353,6 +559,8 @@ class DiscordIngestWorker:
             content=str(payload.get("content", "")),
             created_at=created_at,
             in_reply_to=in_reply_to,
+            thread_id=channel_id if parent_channel_id is not None else None,
+            parent_channel_id=parent_channel_id,
             raw=raw,
         )
 

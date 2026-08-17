@@ -22,6 +22,7 @@ from evander.messaging.targets import (
     CommunicationTargetDefinition,
     load_communication_targets_config,
 )
+from evander.messaging.discord_inbox_store import DiscordInboxStore
 from evander.models import (
     McpToolPolicyRule,
     McpToolName,
@@ -271,12 +272,18 @@ class PolicyConfigResolver:
             if session.communication_target_ids is not None
             else session.discord_channel_allowlist
         )
-        return self._discord_channel_ids_from_refs(
+        channel_ids = self._discord_channel_ids_from_refs(
             directory_path,
             refs,
             capability=capability,
             strict_target_capability=False,
             allow_unresolved_raw_reference=session.communication_target_ids is None,
+        )
+        return self._expand_discord_thread_scopes(
+            directory_path,
+            refs,
+            channel_ids=channel_ids,
+            capability=capability,
         )
 
     def resolved_teams_channel_targets_for_session(
@@ -513,6 +520,45 @@ class PolicyConfigResolver:
             if str(ref or "").strip()
         }
         return sorted(channel_id for channel_id in channel_ids if channel_id)
+
+    def _expand_discord_thread_scopes(
+        self,
+        directory_path: str,
+        refs: list[str],
+        *,
+        channel_ids: list[str],
+        capability: CommunicationTargetCapability,
+    ) -> list[str]:
+        expanded = set(channel_ids)
+        store: DiscordInboxStore | None = None
+        for reference in refs:
+            normalized = str(reference or "").strip()
+            if not normalized:
+                continue
+            try:
+                target = self._target_for_ref(directory_path, normalized, provider="discord")
+            except ValueError:
+                continue
+            if target is None or not self._target_has_capability(target, capability):
+                continue
+            scope = target.policy.discord_conversation_scope
+            if scope == "channel":
+                continue
+            parent_channel_id = _discord_channel_id_from_address(target.address)
+            if scope == "public_threads":
+                expanded.discard(parent_channel_id)
+            if store is None:
+                store = DiscordInboxStore(self.config.runtime_dir / "discord-inbox-store.json")
+            include_archived = capability == "read"
+            expanded.update(
+                binding.thread_id
+                for binding in store.list_thread_bindings(
+                    parent_channel_ids=[parent_channel_id],
+                    include_archived=include_archived,
+                )
+                if include_archived or (not binding.archived and not binding.locked)
+            )
+        return sorted(value for value in expanded if value)
 
     def _teams_channel_target_from_ref(
         self,

@@ -116,6 +116,35 @@ test("send-message blocks Teams chat, Teams user, and Discord literal thread rep
   assert.match(discord?.validation?.message ?? "", /thread replies|Discord targets/);
 });
 
+test("send-message allows a registered thread for a thread-aware Discord target", () => {
+  const state = workflowCommunicationTargetInspectorState(
+    "effect:communication:send-message",
+    option({
+      metadata: {
+        provider: "discord",
+        address: "123456789012345678/234567890123456789",
+        target_shape: "discord_channel",
+        discord_conversation_scope: "public_threads",
+        policy_capabilities: ["reply"],
+        thread_id: {
+          top_level: { supported: false, requires_capability: "write" },
+          reply: {
+            supported: true,
+            requires_capability: "reply",
+            supported_target_shapes: ["teams_channel", "discord_channel"],
+          },
+        },
+      },
+    }),
+    "345678901234567890",
+    "literal",
+  );
+
+  assert.equal(state?.validation, null);
+  assert.match(state?.threadHelp ?? "", /requires a registered public thread_id/);
+  assert.ok(state?.targetHelp.some((line) => line.includes("Conversation scope: public_threads")));
+});
+
 test("notification allows Teams channel thread hints and blocks email literal thread replies", () => {
   const teamsChannel = workflowCommunicationTargetInspectorState(
     "effect:notification:send",

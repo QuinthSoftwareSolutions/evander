@@ -1,5 +1,17 @@
 # Changelog
 
+## 2026-08-17 - Discord Forum And Public Thread Communication
+
+- Added explicit Discord communication-target conversation scopes for flat channels, public child
+  threads, or both, preserving flat-channel behavior for existing targets.
+- Added durable public-thread discovery and parent bindings to Discord ingest, with child-aware
+  communication triggers, message queries, attachment authorization, direct session policy, and
+  Team Chat source provenance.
+- Added validated Discord thread replies for workflow messages and notifications, including
+  parent-owned resolved-identity webhooks, structured archived/locked/unauthorized failures, and
+  no automatic unarchive or private-thread access.
+- Added Admin Web configuration and workflow-editor guidance for Discord thread-aware targets.
+
 ## 2026-08-17 - Prompt Case Closure Publication And Explicit Throttle Routes
 
 - Prompted the durable Team outbox publisher after a Case closure is committed through Admin API,

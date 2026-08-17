@@ -1539,8 +1539,11 @@ class DiscordBotApiService:
         credential: DiscordWebhookCredential,
         payload: dict[str, Any],
         files: Any = None,
+        thread_id: str | None = None,
     ) -> dict[str, Any]:
         url = f"{self.api_base_url}/webhooks/{credential.webhook_id}/{credential.token}?wait=true"
+        if thread_id is not None:
+            url = f"{url}&thread_id={quote(str(thread_id), safe='')}"
         try:
             with httpx.Client(timeout=self.timeout_seconds) as client:
                 if files is None:
@@ -1635,6 +1638,7 @@ class DiscordBotApiService:
         payload: dict[str, Any],
         avatar: DiscordWebhookAvatar | None = None,
         files: Any = None,
+        thread_id: str | None = None,
     ) -> dict[str, Any]:
         credential = self._webhook_credential(channel_id, avatar=avatar)
         try:
@@ -1642,6 +1646,7 @@ class DiscordBotApiService:
                 credential=credential,
                 payload=payload,
                 files=files,
+                thread_id=thread_id,
             )
         except httpx.HTTPStatusError as exc:
             if exc.response.status_code != 404 or self.webhook_store is None:
@@ -1651,6 +1656,7 @@ class DiscordBotApiService:
                 credential=self._webhook_credential(channel_id, avatar=avatar),
                 payload=payload,
                 files=files,
+                thread_id=thread_id,
             )
 
     def test_webhook(
@@ -1799,8 +1805,13 @@ class DiscordBotApiService:
         identity: OutboundIdentity | None = None,
         use_resolved_identity: bool = False,
         identity_status: str = "not_requested",
+        webhook_channel_id: str | None = None,
+        thread_id: str | None = None,
     ) -> dict[str, Any]:
         self._require_allowed_channel_id(channel_id)
+        resolved_webhook_channel_id = webhook_channel_id or channel_id
+        if resolved_webhook_channel_id != channel_id:
+            self._require_allowed_channel_id(resolved_webhook_channel_id)
         if use_resolved_identity and identity is not None:
             (
                 webhook_payload,
@@ -1810,9 +1821,10 @@ class DiscordBotApiService:
             ) = self._webhook_payload(message, identity)
             try:
                 payload = self._execute_identity_webhook(
-                    channel_id=channel_id,
+                    channel_id=resolved_webhook_channel_id,
                     payload=webhook_payload,
                     avatar=webhook_avatar,
+                    thread_id=thread_id,
                 )
                 return self._persist_posted_message(
                     payload,
@@ -1864,6 +1876,8 @@ class DiscordBotApiService:
         *,
         identity: OutboundIdentity | None,
         identity_status: str,
+        webhook_channel_id: str | None = None,
+        thread_id: str | None = None,
     ) -> dict[str, Any]:
         return self._post_status(
             message,
@@ -1872,6 +1886,8 @@ class DiscordBotApiService:
             identity=identity,
             use_resolved_identity=True,
             identity_status=identity_status,
+            webhook_channel_id=webhook_channel_id,
+            thread_id=thread_id,
         )
 
     def add_reaction(

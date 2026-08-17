@@ -1271,6 +1271,59 @@ def test_discord_resolved_identity_lazily_provisions_and_reuses_avatar_webhook(
     assert webhook_store_path.stat().st_mode & 0o777 == 0o600
 
 
+def test_discord_resolved_identity_routes_parent_webhook_to_child_thread(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if request.url.path.endswith("/channels/parent-a/webhooks"):
+            return httpx.Response(
+                200,
+                json={"id": "webhook-1", "token": "webhook-token"},
+                request=request,
+            )
+        if request.url.path.endswith("/webhooks/webhook-1/webhook-token"):
+            return httpx.Response(
+                200,
+                json={"id": "message-1", "content": "reply", "author": {"id": "webhook-1"}},
+                request=request,
+            )
+        raise AssertionError(str(request.url))
+
+    patch_httpx_client(monkeypatch, httpx.MockTransport(handler))
+    service = DiscordBotApiService(
+        JsonStore(tmp_path / "discord.json", DiscordCommandEnvelope),
+        token="test-token",
+        api_base_url="https://discord.test/api/v10",
+        poll_limit=25,
+        timeout_seconds=5.0,
+        retry_count=0,
+        allowed_channel_ids_provider=lambda: ["parent-a", "thread-a"],
+        bot_token_env="DISCORD_BOT_TOKEN",
+        webhook_store_path=tmp_path / "discord-webhooks.json",
+    )
+
+    result = service.post_status_with_identity(
+        "reply",
+        "thread-a",
+        "session-1",
+        identity=OutboundIdentity(display_name="Support", source="test"),
+        identity_status="resolved",
+        webhook_channel_id="parent-a",
+        thread_id="thread-a",
+    )
+
+    webhook_request = next(
+        request for request in requests if "/webhooks/webhook-1/webhook-token" in request.url.path
+    )
+    assert webhook_request.url.params["wait"] == "true"
+    assert webhook_request.url.params["thread_id"] == "thread-a"
+    assert result["channel_id"] == "thread-a"
+
+
 def test_discord_in_flight_send_does_not_restore_admin_recreated_webhook(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

@@ -30,6 +30,7 @@ type WorkflowCommunicationTargetMetadata = {
   address?: unknown;
   target_shape?: unknown;
   policy_capabilities?: unknown;
+  discord_conversation_scope?: unknown;
   thread_id?: {
     top_level?: WorkflowCommunicationTargetThreadRule;
     reply?: WorkflowCommunicationTargetThreadRule;
@@ -114,6 +115,7 @@ function targetThreadHelp(
   nodeType: WorkflowCommunicationTargetNodeType,
   provider: string,
   targetShape: string,
+  discordConversationScope: string,
 ): string {
   if (nodeType === "effect:communication:send-message") {
     if (targetShape === "teams_channel") {
@@ -125,7 +127,11 @@ function targetThreadHelp(
       return "Blank thread_id sends a top-level message. Teams chat and Teams user targets do not support thread replies.";
     }
     if (targetShape === "discord_channel") {
-      return "Blank thread_id sends a top-level message. Discord targets do not support thread replies.";
+      return discordConversationScope === "public_threads"
+        ? "This Discord target requires a registered public thread_id and does not send to the parent channel."
+        : discordConversationScope === "channel_and_public_threads"
+          ? "Blank thread_id sends to the parent Discord channel; a registered public thread_id replies in that thread."
+          : "Blank thread_id sends to the Discord channel. This target is not configured for child threads.";
     }
     return "Blank thread_id sends a top-level message. This target does not support thread replies.";
   }
@@ -137,7 +143,11 @@ function targetThreadHelp(
     return "Blank thread_id sends a top-level notification. Teams chat and Teams user targets reject thread replies at runtime.";
   }
   if (targetShape === "discord_channel") {
-    return "Blank thread_id sends a top-level notification. Discord targets are not thread destinations.";
+    return discordConversationScope === "public_threads"
+      ? "This Discord target requires a registered public thread_id."
+      : discordConversationScope === "channel_and_public_threads"
+        ? "Blank thread_id sends to the parent Discord channel; a registered public thread_id sends within that thread."
+        : "Blank thread_id sends to the Discord channel. This target is not configured for child threads.";
   }
   if (targetShape === "email_recipient") {
     return "Blank thread_id sends a top-level notification. Email targets create drafts rather than thread replies.";
@@ -150,6 +160,7 @@ function targetSummaryLines(option: WorkflowEditorFieldOption, metadata: Workflo
   const targetShape = normalizeText(metadata?.target_shape);
   const capabilities = normalizeStringList(metadata?.policy_capabilities);
   const address = normalizeText(metadata?.address);
+  const discordConversationScope = normalizeText(metadata?.discord_conversation_scope);
   const lines: string[] = [];
 
   if (option.description) {
@@ -166,6 +177,9 @@ function targetSummaryLines(option: WorkflowEditorFieldOption, metadata: Workflo
   }
   if (address) {
     lines.push(`Address: ${address}`);
+  }
+  if (provider === "discord") {
+    lines.push(`Conversation scope: ${discordConversationScope || "channel"}`);
   }
 
   return lines;
@@ -281,7 +295,13 @@ export function workflowCommunicationTargetInspectorState(
   const targetHelp = option ? targetSummaryLines(option, metadata) : [];
   const provider = normalizeText(metadata?.provider);
   const targetShape = normalizeText(metadata?.target_shape);
-  const threadHelp = targetThreadHelp(nodeType, provider, targetShape);
+  const discordConversationScope = normalizeText(metadata?.discord_conversation_scope);
+  const threadHelp = targetThreadHelp(
+    nodeType,
+    provider,
+    targetShape,
+    discordConversationScope,
+  );
   const validation = validateLiteralThreadSelection(nodeType, metadata, threadValue, threadMode);
   const advisory = threadMode === "literal" || !normalizeText(threadValue)
     ? null
