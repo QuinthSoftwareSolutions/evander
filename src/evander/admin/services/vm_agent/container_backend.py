@@ -60,7 +60,7 @@ class VmAgentContainerBackendMixin:
         )
 
         return ContainerWorkerExecutionRepository(
-            self._deps.config.runtime_dir / "container-worker-executions.json"
+            self._deps.config.runtime_dir / "container-worker-executions.db"
         )
 
     def container_execution_records_for_session(self, session_id: str) -> list[Any]:

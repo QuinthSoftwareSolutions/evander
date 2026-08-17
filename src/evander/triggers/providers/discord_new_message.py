@@ -29,7 +29,7 @@ class DiscordNewMessageTriggerProvider(TriggerProviderBase):
         ]
         recent_message_id_set = set(recent_message_ids)
 
-        inbox_store = DiscordInboxStore(self._runtime_dir() / "discord-inbox-store.json")
+        inbox_store = DiscordInboxStore(self._runtime_dir() / "discord-inbox-store.db")
 
         channel_filter = {value.strip() for value in trigger.channel_ids if value.strip()}
         user_filter = {value.strip() for value in trigger.user_ids if value.strip()}

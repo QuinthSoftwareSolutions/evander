@@ -53,9 +53,9 @@ def _legacy_payload(record: WorkerJobRecord) -> dict[str, object]:
     return payload
 
 
-def _store_path(tmp_path: Path, name: str = "worker-jobs.json") -> Path:
+def _store_path(tmp_path: Path, name: str = "worker-jobs.db") -> Path:
     runtime_dir = tmp_path / "runtime"
-    runtime_dir.mkdir()
+    runtime_dir.mkdir(exist_ok=True)
     return runtime_dir / name
 
 
@@ -67,12 +67,6 @@ def _process_put_worker_job(path: str, payload: dict[str, object], barrier, erro
     except BaseException as exc:
         errors.put(repr(exc))
         raise
-
-
-def test_worker_job_store_derives_sqlite_path_from_legacy_json_path(tmp_path: Path) -> None:
-    store = WorkerJobStore(_store_path(tmp_path))
-
-    assert store.path == tmp_path / "runtime" / "worker-jobs.db"
 
 
 @pytest.mark.parametrize(
@@ -245,10 +239,10 @@ def test_worker_job_store_lists_created_jobs_as_active(tmp_path: Path) -> None:
     ]
 
 
-def test_worker_job_store_imports_legacy_json_when_sqlite_is_empty_and_keeps_file_untouched(
+def test_worker_job_store_ignores_retired_json_input(
     tmp_path: Path,
 ) -> None:
-    legacy_path = _store_path(tmp_path)
+    legacy_path = _store_path(tmp_path, "worker-jobs.json")
     legacy_record = _record(
         "legacy-job",
         session_id="legacy-session",
@@ -258,72 +252,9 @@ def test_worker_job_store_imports_legacy_json_when_sqlite_is_empty_and_keeps_fil
     )
     legacy_payload = {"legacy-job": _legacy_payload(legacy_record)}
     legacy_path.write_text(json.dumps(legacy_payload), encoding="utf-8")
-    original_bytes = legacy_path.read_bytes()
+    store = WorkerJobStore(_store_path(tmp_path))
 
-    store = WorkerJobStore(legacy_path)
-    imported = store.get("legacy-job")
-
-    assert store.path == tmp_path / "runtime" / "worker-jobs.db"
-    assert imported == legacy_record
-    assert imported is not None
-    assert imported.repo_root_path == str(
-        Path("/worker-root") / "sessions" / "legacy-session" / "repos"
-    )
-
-    store.put(_record("new-job", session_id="legacy-session", started_at=_STARTED_AT))
-
-    assert legacy_path.read_bytes() == original_bytes
-
-
-def test_worker_job_store_does_not_import_legacy_json_when_sqlite_has_rows(
-    tmp_path: Path,
-) -> None:
-    legacy_path = _store_path(tmp_path)
-    legacy_record = _record("legacy-job", session_id="legacy-session", started_at=_STARTED_AT)
-    legacy_path.write_text(
-        json.dumps({"legacy-job": _legacy_payload(legacy_record)}),
-        encoding="utf-8",
-    )
-
-    sqlite_store = WorkerJobStore(tmp_path / "runtime" / "worker-jobs.db")
-    sqlite_store.ensure_schema()
-    sqlite_record = _record("sqlite-job", session_id="sqlite-session", started_at=_STARTED_AT)
-    sqlite_store.put(sqlite_record)
-
-    store = WorkerJobStore(legacy_path)
-
-    assert store.get(sqlite_record.job_id) == sqlite_record
     assert store.get(legacy_record.job_id) is None
-    assert list(store.read_all()) == [sqlite_record.job_id]
-
-
-@pytest.mark.parametrize(
-    ("legacy_text", "expected_exception"),
-    [
-        (None, None),
-        ("", None),
-        ("   ", None),
-        ("{", json.JSONDecodeError),
-        (json.dumps(["not-an-object"]), ValueError),
-    ],
-)
-def test_worker_job_store_handles_missing_empty_and_invalid_legacy_json(
-    tmp_path: Path,
-    legacy_text: str | None,
-    expected_exception: type[BaseException] | None,
-) -> None:
-    legacy_path = _store_path(tmp_path)
-    if legacy_text is not None:
-        legacy_path.write_text(legacy_text, encoding="utf-8")
-
-    if expected_exception is not None:
-        with pytest.raises(expected_exception):
-            WorkerJobStore(legacy_path)
-        return
-
-    store = WorkerJobStore(legacy_path)
-
-    assert store.path == tmp_path / "runtime" / "worker-jobs.db"
     assert store.read_all() == {}
 
 

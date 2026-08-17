@@ -37,7 +37,6 @@ from evander.repositories.records import (
     JsonEmailRecordsRepository,
     SqliteTeamsRecordsRepository,
     TeamsRecordsRepository,
-    teams_records_db_path,
 )
 from evander.repositories.session_manifests import (
     JsonSessionManifestRepository,
@@ -356,13 +355,10 @@ def _build_runtime_context(config: GatewayConfig) -> RuntimeContext:
         config, directory_store=directories, session_store=session_repository
     )
     discord_commands = JsonDiscordRecordsRepository(config.discord_command_store_path)
-    teams_messages = SqliteTeamsRecordsRepository(
-        teams_records_db_path(config.teams_message_store_path),
-        legacy_json_path=config.teams_message_store_path,
-    )
+    teams_messages = SqliteTeamsRecordsRepository(config.teams_message_store_path)
     teams_user_chat_cache: dict[str, str] = {}
-    discord_inbox_service = DiscordInboxService(config.runtime_dir / "discord-inbox-store.json")
-    wake_store = WakeRequestStore(config.runtime_dir / "wake-requests-store.json")
+    discord_inbox_service = DiscordInboxService(config.runtime_dir / "discord-inbox-store.db")
+    wake_store = WakeRequestStore(config.runtime_dir / "wake-requests-store.db")
     agent_prompt_store = AgentPromptStore(config.runtime_dir / "agent-prompt-store.json")
     script_run_request_store = ScriptRunRequestStore(
         config.runtime_dir / "script-run-requests-store.json"

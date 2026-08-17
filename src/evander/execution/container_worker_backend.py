@@ -67,7 +67,7 @@ class ContainerWorkerVmExecutionBackend:
             timeout_seconds=config.container_worker_request_timeout_seconds,
         )
         self.repository = repository or ContainerWorkerExecutionRepository(
-            config.runtime_dir / "container-worker-executions.json"
+            config.runtime_dir / "container-worker-executions.db"
         )
 
     @property

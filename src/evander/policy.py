@@ -1230,7 +1230,7 @@ class PolicyEngine:
 
     def _discord_thread_binding(self, channel_id: str) -> DiscordThreadBinding | None:
         return DiscordInboxStore(
-            self.policy_config.config.runtime_dir / "discord-inbox-store.json"
+            self.policy_config.config.runtime_dir / "discord-inbox-store.db"
         ).get_thread_binding(str(channel_id or "").strip())
 
     def _discord_parent_target_for_session(

@@ -26,7 +26,7 @@ class TeamsNewMessageTriggerProvider(TriggerProviderBase):
         state = cursor_store.get(trigger.id)
         matcher = TeamsNewMessageEventMatcher.from_cursor_state(trigger, state)
         inbox_store = JsonTeamsInboxCursorRepository(
-            self._resolved_config().runtime_dir / "teams-inbox-store.json"
+            self._resolved_config().runtime_dir / "teams-inbox-store.db"
         )
         raw_messages = inbox_store.list_all_messages(
             channel_targets=list(matcher.target_filters) if matcher.target_filters else None,

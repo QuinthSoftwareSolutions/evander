@@ -57,7 +57,7 @@ from evander.runtime import (
     _build_delegated_teams_token_provider,
     build_runtime,
 )
-from evander.repositories.records import SqliteTeamsRecordsRepository, teams_records_db_path
+from evander.repositories.records import SqliteTeamsRecordsRepository
 from evander.services import (
     GraphTeamsService,
     TeamsAuthenticationError,
@@ -186,7 +186,7 @@ class TeamsIngestWorker:
         self.project_dir = Path(project_dir) if project_dir is not None else Path.cwd()
         self.session_repository = runtime.session_repository
         self.store = store or JsonTeamsInboxCursorRepository(
-            config.runtime_dir / "teams-inbox-store.json"
+            config.runtime_dir / "teams-inbox-store.db"
         )
         self._trigger_wake_notifier = trigger_wake_notifier
         self._effect_wake_notifier = effect_wake_notifier
@@ -824,10 +824,7 @@ class TeamsIngestWorker:
         else:
             resolved_token_provider = token_provider
         return GraphTeamsService(
-            SqliteTeamsRecordsRepository(
-                teams_records_db_path(self.config.teams_message_store_path),
-                legacy_json_path=self.config.teams_message_store_path,
-            ),
+            SqliteTeamsRecordsRepository(self.config.teams_message_store_path),
             token=token,
             token_provider=resolved_token_provider,
             api_base_url=provider_config.teams_graph_api_base_url,

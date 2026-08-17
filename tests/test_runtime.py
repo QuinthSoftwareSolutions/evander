@@ -16,7 +16,6 @@ from evander.messaging.discord_inbox_store import DiscordInboxStore
 from evander.models import SessionManifest, ToolName
 from evander.repositories.records import (
     SqliteTeamsRecordsRepository,
-    teams_records_db_path,
 )
 from evander.runtime import _resolve_allowed_discord_channel_ids, build_runtime
 from evander.services import (
@@ -85,7 +84,7 @@ def test_build_runtime_initializes_sqlite_teams_message_store(tmp_path: Path) ->
     runtime = build_runtime(config)
 
     assert isinstance(runtime.teams_messages, SqliteTeamsRecordsRepository)
-    assert runtime.teams_messages.path == teams_records_db_path(config.teams_message_store_path)
+    assert runtime.teams_messages.path == config.teams_message_store_path
     assert runtime.teams_messages.path.exists()
 
 
@@ -219,7 +218,7 @@ def test_build_runtime_initializes_discord_inbox_service(tmp_path: Path) -> None
     runtime = build_runtime(make_config(tmp_path))
 
     assert isinstance(runtime.discord_inbox_service, DiscordInboxService)
-    assert runtime.discord_inbox_service.store_path == tmp_path / "discord-inbox-store.json"
+    assert runtime.discord_inbox_service.store_path == tmp_path / "discord-inbox-store.db"
     assert runtime.discord_inbox_service.store.path == tmp_path / "discord-inbox-store.db"
     assert runtime.discord_inbox_service.store.path.exists()
 

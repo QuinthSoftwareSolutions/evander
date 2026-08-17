@@ -23,10 +23,7 @@ from evander.admin.web.user_store import AdminWebUserStore
 
 def _admin_web_user_store(tmp_path: Path) -> AdminWebUserStore:
     runtime_dir = tmp_path / "runtime"
-    return AdminWebUserStore(
-        runtime_dir / "admin-web.db",
-        legacy_json_path=runtime_dir / "admin-web-users.json",
-    )
+    return AdminWebUserStore(runtime_dir / "admin-web.db")
 
 
 def test_admin_web_rbac_seeds_builtin_groups(tmp_path: Path) -> None:
@@ -55,7 +52,7 @@ def test_admin_web_rbac_seeds_builtin_groups(tmp_path: Path) -> None:
     )
 
 
-def test_admin_web_rbac_migrates_legacy_roles_to_assignments(
+def test_admin_web_rbac_ignores_retired_json_users(
     tmp_path: Path,
 ) -> None:
     runtime_dir = tmp_path / "runtime"
@@ -85,22 +82,7 @@ def test_admin_web_rbac_migrates_legacy_roles_to_assignments(
     )
     store = _admin_web_user_store(tmp_path)
 
-    assignments = {
-        (assignment.login, assignment.group_id, assignment.directory_path)
-        for assignment in store.list_user_group_assignments()
-    }
-
-    assert assignments == {
-        ("operator@example.com", OPERATOR_GROUP_ID, "root"),
-        ("owner@example.com", OWNER_GROUP_ID, "root"),
-    }
-    assert store.can("owner@example.com", ADMIN_OWNER_PERMISSION)
-    assert store.can("owner@example.com", TEAM_HUMAN_REVIEWS_DECIDE_PERMISSION)
-    assert store.can("operator@example.com", WORKFLOWS_WRITE_PERMISSION)
-    assert store.can("operator@example.com", WORKFLOW_RUNS_CONTROL_PERMISSION)
-    assert store.can("operator@example.com", TEAM_CHATS_MUTATE_PERMISSION)
-    assert store.can("operator@example.com", TEAM_HUMAN_REVIEWS_DECIDE_PERMISSION) is False
-    assert store.can("operator@example.com", USERS_MANAGE_PERMISSION) is False
+    assert store.list_users() == []
 
 
 def test_admin_web_rbac_applies_directory_scope_and_direct_workflow_grants(

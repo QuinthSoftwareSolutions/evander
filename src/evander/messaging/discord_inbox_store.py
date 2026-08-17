@@ -48,16 +48,10 @@ class DiscordThreadBinding:
 class DiscordInboxStore:
     """SQLite-backed store for Discord messages, provider cursors, and session reads."""
 
-    def __init__(self, path: Path, *, legacy_json_path: Path | None = None) -> None:
-        original_path = Path(path)
-        self.original_path = original_path
-        self.path = discord_inbox_db_path(original_path)
-        if legacy_json_path is None and self.path != original_path:
-            legacy_json_path = original_path
-        self.legacy_json_path = legacy_json_path
+    def __init__(self, path: Path) -> None:
+        self.path = discord_inbox_db_path(Path(path))
         self._lock = RLock()
         self.ensure_schema()
-        self._import_legacy_json_if_empty()
 
     def get_cursor(self, channel_id: str) -> str | None:
         with self._lock, self._connect() as connection:
@@ -534,103 +528,6 @@ class DiscordInboxStore:
                 if "locked" not in str(exc).casefold() or time.monotonic() >= deadline:
                     raise
                 time.sleep(0.05)
-
-    def _import_legacy_json_if_empty(self) -> None:
-        legacy_json_path = self.legacy_json_path
-        if (
-            legacy_json_path is None
-            or not legacy_json_path.exists()
-            or legacy_json_path.suffix.lower() in _SQLITE_DISCORD_INBOX_SUFFIXES
-        ):
-            return
-
-        with self._lock, self._connect() as connection:
-            row = connection.execute(
-                """
-                SELECT
-                    (SELECT COUNT(*) FROM discord_inbox_messages) AS message_count,
-                    (SELECT COUNT(*) FROM discord_inbox_cursors) AS cursor_count,
-                    (SELECT COUNT(*) FROM discord_inbox_session_reads) AS session_read_count
-                """
-            ).fetchone()
-            if row is not None and (
-                int(row["message_count"] or 0) > 0
-                or int(row["cursor_count"] or 0) > 0
-                or int(row["session_read_count"] or 0) > 0
-            ):
-                return
-
-            payload = self._read_legacy_payload(legacy_json_path)
-            raw_cursors = payload.get("cursors", {})
-            if isinstance(raw_cursors, dict):
-                for channel_id, raw_cursor in raw_cursors.items():
-                    normalized_channel_id = str(channel_id)
-                    if raw_cursor is None:
-                        continue
-                    connection.execute(
-                        """
-                        INSERT INTO discord_inbox_cursors(channel_id, cursor)
-                        VALUES (?, ?)
-                        ON CONFLICT(channel_id) DO UPDATE SET
-                            cursor = excluded.cursor
-                        """,
-                        (normalized_channel_id, str(raw_cursor)),
-                    )
-
-            raw_messages = payload.get("messages", {})
-            if isinstance(raw_messages, dict):
-                for raw_value in raw_messages.values():
-                    message = self._validate_message(raw_value)
-                    if message is None:
-                        continue
-                    connection.execute(
-                        """
-                        INSERT OR IGNORE INTO discord_inbox_messages(
-                            message_id,
-                            channel_id,
-                            author_id,
-                            author_name,
-                            created_at,
-                            in_reply_to,
-                            payload_json
-                        )
-                        VALUES (?, ?, ?, ?, ?, ?, ?)
-                        """,
-                        self._message_row(message),
-                    )
-
-            raw_session_reads = payload.get("session_reads", {})
-            if isinstance(raw_session_reads, dict):
-                for session_id, session_reads in raw_session_reads.items():
-                    if not isinstance(session_reads, dict):
-                        continue
-                    normalized_session_id = str(session_id)
-                    for channel_id, raw_cursor in session_reads.items():
-                        if raw_cursor is None:
-                            continue
-                        connection.execute(
-                            """
-                            INSERT INTO discord_inbox_session_reads(
-                                session_id,
-                                channel_id,
-                                cursor
-                            )
-                            VALUES (?, ?, ?)
-                            ON CONFLICT(session_id, channel_id) DO UPDATE SET
-                                cursor = excluded.cursor
-                            """,
-                            (normalized_session_id, str(channel_id), str(raw_cursor)),
-                        )
-
-            self._compact_messages(connection)
-
-    @staticmethod
-    def _read_legacy_payload(path: Path) -> dict[str, Any]:
-        text = path.read_text(encoding="utf-8")
-        raw = json.loads(text)
-        if not isinstance(raw, dict):
-            raise ValueError(f"Discord inbox JSON store at {path} must contain an object")
-        return raw
 
     def _compact_messages(self, connection: sqlite3.Connection) -> None:
         cutoff = self._datetime_to_storage(datetime.now(timezone.utc) - _DISCORD_MESSAGE_RETENTION)

@@ -758,10 +758,7 @@ The host-side backend records the control-plane mapping in:
 ```
 
 That SQLite store maps the host execution id and session id to the worker job id, worker URL,
-target name, timestamps, last observed status, directory path, and sanitized metadata. Existing
-configuration and code paths still pass `<runtime-dir>/container-worker-executions.json`; on
-startup the repository resolves that legacy path to the sibling SQLite database and imports the
-JSON file once if the database is empty. The JSON file is left untouched as migration input.
+target name, timestamps, last observed status, directory path, and sanitized metadata.
 Operators can target an execution by execution id, worker job id, target name, or an unambiguous
 session id.
 
@@ -925,11 +922,7 @@ metadata-protection boundary.
 
 ## Job Store
 
-The active runtime store is `<runtime-dir>/worker-jobs.db`. Worker daemon code still constructs
-`WorkerJobStore(runtime_dir / "worker-jobs.json")` for compatibility; the store resolves that
-legacy JSON path to the sibling SQLite database and imports an existing JSON file only when the
-SQLite table is empty. The legacy JSON file is left untouched after import and remains only a
-migration input or troubleshooting artifact.
+The active runtime store is `<runtime-dir>/worker-jobs.db`.
 
 The SQLite `worker_jobs` table records query columns for job id, session id, container name,
 status, cleanup status, timestamps, and a full JSON payload for `WorkerJobRecord` round trips.

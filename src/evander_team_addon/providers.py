@@ -3747,7 +3747,7 @@ class TeamEnqueueOperatorChatMessageEffectProvider(EffectProviderBase):
                     f"communication target {target.id!r} does not allow Discord public threads"
                 )
             binding = DiscordInboxStore(
-                _runtime_dir(context) / "discord-inbox-store.json"
+                _runtime_dir(context) / "discord-inbox-store.db"
             ).get_thread_binding(source_thread_id)
             parent_channel_id = str(target.address).strip().split("/")[-1]
             if binding is None or binding.parent_channel_id != parent_channel_id:

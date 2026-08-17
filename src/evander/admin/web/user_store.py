@@ -220,13 +220,11 @@ class AdminWebWorkflowGrantRecord(BaseModel):
 
 
 class AdminWebUserStore:
-    def __init__(self, path: Path, *, legacy_json_path: Path | None = None) -> None:
+    def __init__(self, path: Path) -> None:
         if path.suffix == ".json":
             self.path = path.with_name("admin-web.db")
-            self.legacy_json_path = legacy_json_path or path
         else:
             self.path = path
-            self.legacy_json_path = legacy_json_path
         self._lock = RLock()
         self._initialized = False
 
@@ -1073,23 +1071,8 @@ class AdminWebUserStore:
             with self._connect() as connection:
                 connection.execute("BEGIN IMMEDIATE")
                 self._seed_builtin_groups(connection)
-                self._import_legacy_json_if_empty(connection)
                 self._migrate_legacy_roles_to_assignments(connection)
             self._initialized = True
-
-    def _import_legacy_json_if_empty(self, connection: sqlite3.Connection) -> None:
-        if self.legacy_json_path is None or not self.legacy_json_path.exists():
-            return
-        if self._user_count(connection) > 0:
-            return
-        raw = json.loads(self.legacy_json_path.read_text(encoding="utf-8") or "{}")
-        if not isinstance(raw, dict):
-            raise ValueError(
-                f"legacy admin web user store {self.legacy_json_path} must contain a JSON object"
-            )
-        for value in raw.values():
-            record = AdminWebUserRecord.model_validate(value)
-            self._insert_or_replace_user(connection, record)
 
     def _seed_builtin_groups(self, connection: sqlite3.Connection) -> None:
         now = _datetime_to_storage(utc_now())

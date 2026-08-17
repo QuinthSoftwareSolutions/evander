@@ -27,7 +27,6 @@ from .models import (
 
 ADDON_ID = "team-addon"
 STATE_DB_FILE = "state.db"
-LEGACY_STATE_FILE = "state.json"
 SQLITE_SCHEMA_VERSION = 58
 _SQLITE_WAL_ENABLE_TIMEOUT_SECONDS = 5.0
 
@@ -69,10 +68,9 @@ class TeamStateSqliteStore:
     def __init__(self, runtime_dir: str | Path) -> None:
         self.runtime_dir = Path(runtime_dir)
         self.path = addon_storage_path(self.runtime_dir, ADDON_ID, STATE_DB_FILE)
-        self.legacy_json_path = addon_storage_path(self.runtime_dir, ADDON_ID, LEGACY_STATE_FILE)
         self._lock = RLock()
         self.ensure_schema()
-        self._import_legacy_json_or_initialize()
+        self._initialize_if_empty()
 
     def read_object(self) -> dict[str, Any]:
         with self._lock:
@@ -1736,50 +1734,12 @@ class TeamStateSqliteStore:
                     raise
                 time.sleep(0.05)
 
-    def _import_legacy_json_or_initialize(self) -> None:
+    def _initialize_if_empty(self) -> None:
         with self._lock:
             with self._connect() as connection:
                 if self._has_state(connection):
                     return
                 connection.execute("BEGIN IMMEDIATE")
-                if self.legacy_json_path.is_file():
-                    text = self.legacy_json_path.read_text(encoding="utf-8")
-                    payload = json.loads(text)
-                    _migrate_legacy_json_outcome_kind_records(payload)
-                    affected_deliverable_ids = _normalize_rejected_acceptance_override_payload(
-                        payload
-                    )
-                    state = TeamState.model_validate(payload)
-                    if affected_deliverable_ids:
-                        _reconcile_rejected_acceptance_overrides(
-                            state,
-                            deliverable_ids=affected_deliverable_ids,
-                            now=utc_now(),
-                        )
-                    self._write_state(connection, state)
-                    # Schema creation precedes the supported JSON import, so a
-                    # version-gated data backfill sees an empty database on the
-                    # first open. Backfill the imported rows in the same
-                    # transaction before recording the import as complete.
-                    _migrate_task_git_base_snapshots(connection)
-                    _migrate_release_canonical_base_snapshots(connection)
-                    now = utc_now().isoformat()
-                    connection.executemany(
-                        """
-                        INSERT INTO team_state_metadata(key, value)
-                        VALUES (?, ?)
-                        ON CONFLICT(key) DO UPDATE SET value = excluded.value
-                        """,
-                        (
-                            ("legacy_json_imported_at", now),
-                            ("legacy_json_path", str(self.legacy_json_path)),
-                            (
-                                "legacy_json_sha256",
-                                hashlib.sha256(text.encode("utf-8")).hexdigest(),
-                            ),
-                        ),
-                    )
-                    return
                 self._write_state(connection, TeamState.empty())
 
     @staticmethod
@@ -5513,38 +5473,6 @@ def _normalize_rejected_acceptance_override_rows(
     return affected_ids
 
 
-def _normalize_rejected_acceptance_override_payload(payload: object) -> list[str]:
-    """Apply the same compatibility normalization to a legacy JSON snapshot."""
-
-    if not isinstance(payload, dict):
-        return []
-    deliverables = payload.get("deliverables")
-    reviews = payload.get("review_requests")
-    if not isinstance(deliverables, dict):
-        return []
-    current_review_deliverable_ids = {
-        str(review.get("deliverable_id"))
-        for review in (reviews.values() if isinstance(reviews, dict) else ())
-        if isinstance(review, Mapping)
-        and review.get("deliverable_id") is not None
-        and review.get("retired_at") is None
-        and review.get("superseded_by_review_request_id") is None
-    }
-    affected_ids: list[str] = []
-    for deliverable_id, raw_deliverable in deliverables.items():
-        if not isinstance(raw_deliverable, dict):
-            continue
-        if not _acceptance_decision_is_rejected(raw_deliverable.get("acceptance_decision")):
-            continue
-        normalized_id = str(deliverable_id)
-        state = raw_deliverable.get("state")
-        state_value = getattr(state, "value", state)
-        if state_value == "rejected" and normalized_id not in current_review_deliverable_ids:
-            continue
-        raw_deliverable["state"] = "rejected"
-        affected_ids.append(normalized_id)
-    return sorted(affected_ids)
-
 
 def _reconcile_rejected_acceptance_overrides(
     state: TeamState,
@@ -6679,324 +6607,6 @@ _KNOWN_OUTCOME_KIND_MIGRATIONS: dict[str, dict[str, str]] = {
     },
 }
 
-
-def _migrate_legacy_json_outcome_kind_records(payload: object) -> None:
-    if not isinstance(payload, dict):
-        return
-    raw_definitions = payload.get("outcome_kind_definitions")
-    if raw_definitions is None:
-        definitions: dict[str, Any] = {}
-        payload["outcome_kind_definitions"] = definitions
-    elif isinstance(raw_definitions, dict):
-        definitions = raw_definitions
-    else:
-        return
-
-    def records(name: str) -> dict[str, Any]:
-        value = payload.get(name)
-        return value if isinstance(value, dict) else {}
-
-    projects = records("projects")
-    tasks = records("tasks")
-    deliverables = records("deliverables")
-    profiles = records("review_profiles")
-    reviews = records("review_requests")
-    releases = records("release_packages")
-
-    def text(value: object) -> str:
-        return str(value or "").strip()
-
-    def optional_text(value: object) -> str | None:
-        normalized = text(value)
-        return normalized or None
-
-    def kind_list(value: object) -> list[str]:
-        if not isinstance(value, list):
-            return []
-        result: list[str] = []
-        for item in value:
-            kind = text(item)
-            if kind and kind not in result:
-                result.append(kind)
-        return result
-
-    def project_team_id(project_id: str | None) -> str | None:
-        project = projects.get(project_id) if project_id is not None else None
-        return optional_text(project.get("team_id")) if isinstance(project, Mapping) else None
-
-    def definition_for(
-        *,
-        team_id: str,
-        project_id: str | None,
-        kind: str,
-        exact_scope: bool = False,
-    ) -> Mapping[str, Any] | None:
-        inherited: Mapping[str, Any] | None = None
-        for definition in definitions.values():
-            if not isinstance(definition, Mapping):
-                continue
-            if (
-                optional_text(definition.get("team_id")) != team_id
-                or text(definition.get("kind")) != kind
-            ):
-                continue
-            definition_project_id = optional_text(definition.get("project_id"))
-            if definition_project_id == project_id:
-                return definition
-            if not exact_scope and definition_project_id is None:
-                inherited = definition
-        return inherited
-
-    def add_definition(
-        *,
-        team_id: str | None,
-        project_id: str | None,
-        kind: str,
-        source: Mapping[str, Any],
-        profile_guidance: str | None = None,
-        exact_scope: bool = False,
-    ) -> Mapping[str, Any] | None:
-        if team_id is None or not kind:
-            return None
-        existing = definition_for(
-            team_id=team_id,
-            project_id=project_id,
-            kind=kind,
-            exact_scope=exact_scope,
-        )
-        if existing is not None:
-            return existing
-        known = _KNOWN_OUTCOME_KIND_MIGRATIONS.get(kind)
-        name = (
-            known["name"] if known is not None else kind.replace("_", " ").replace("-", " ").title()
-        )
-        description = (
-            known["description"]
-            if known is not None
-            else text(source.get("description") or source.get("name"))
-            or f"Migrated definition for the {name} outcome kind."
-        )
-        reference_requirements = (
-            known["reference_requirements"]
-            if known is not None
-            else f"Provide durable reference IDs for {name}."
-        )
-        evidence_requirements = (
-            known["evidence_requirements"]
-            if known is not None
-            else profile_guidance or "Provide evidence sufficient to verify the claimed outcome."
-        )
-        digest = hashlib.sha256(f"{team_id}:{project_id or ''}:{kind}".encode("utf-8")).hexdigest()[
-            :16
-        ]
-        base_id = f"outcome-kind-{digest}"
-        definition_id = base_id
-        suffix = 2
-        while definition_id in definitions:
-            definition_id = f"{base_id}-{suffix}"
-            suffix += 1
-        definition: dict[str, Any] = {
-            "id": definition_id,
-            "team_id": team_id,
-            "project_id": project_id,
-            "kind": kind,
-            "name": name,
-            "description": description,
-            "reference_requirements": reference_requirements,
-            "evidence_requirements": evidence_requirements,
-            "archived": False,
-        }
-        for timestamp_field in ("created_at", "updated_at"):
-            if source.get(timestamp_field) is not None:
-                definition[timestamp_field] = source[timestamp_field]
-        definitions[definition_id] = definition
-        return definition
-
-    def snapshot(
-        definition: Mapping[str, Any] | None,
-    ) -> dict[str, str] | None:
-        if definition is None:
-            return None
-        kind = text(definition.get("kind"))
-        name = text(definition.get("name"))
-        if not kind or not name:
-            return None
-        return {
-            "kind": kind,
-            "name": name,
-            "description": text(definition.get("description")),
-            "reference_requirements": text(definition.get("reference_requirements")),
-            "evidence_requirements": text(definition.get("evidence_requirements")),
-        }
-
-    for profile in profiles.values():
-        if not isinstance(profile, Mapping):
-            continue
-        team_id = optional_text(profile.get("team_id"))
-        project_id = optional_text(profile.get("project_id"))
-        criteria = profile.get("criteria")
-        guidance = (
-            "; ".join(
-                text(criterion.get("description") or criterion.get("label"))
-                for criterion in criteria
-                if isinstance(criterion, Mapping)
-                and text(criterion.get("description") or criterion.get("label"))
-            )
-            if isinstance(criteria, list)
-            else ""
-        )
-        for kind in kind_list(profile.get("required_outcome_kinds")):
-            add_definition(
-                team_id=team_id,
-                project_id=project_id,
-                kind=kind,
-                source=profile,
-                profile_guidance=guidance,
-                exact_scope=True,
-            )
-
-    for task in tasks.values():
-        if not isinstance(task, dict):
-            continue
-        contract = task.get("outcome_contract")
-        if not isinstance(contract, dict):
-            continue
-        legacy_forbidden = kind_list(contract.pop("forbidden_effect_kinds", []))
-        forbidden = kind_list(contract.get("forbidden_outcome_kinds"))
-        contract["forbidden_outcome_kinds"] = [
-            *forbidden,
-            *(kind for kind in legacy_forbidden if kind not in forbidden),
-        ]
-        project_id = optional_text(task.get("project_id"))
-        team_id = project_team_id(project_id)
-        kinds = [
-            *kind_list(contract.get("required_outcome_kinds")),
-            *contract["forbidden_outcome_kinds"],
-        ]
-        for kind in kinds:
-            add_definition(
-                team_id=team_id,
-                project_id=project_id,
-                kind=kind,
-                source=task,
-            )
-
-    for deliverable in deliverables.values():
-        if not isinstance(deliverable, Mapping):
-            continue
-        task = tasks.get(optional_text(deliverable.get("task_id")))
-        project_id = optional_text(task.get("project_id")) if isinstance(task, Mapping) else None
-        team_id = project_team_id(project_id)
-        outcomes = deliverable.get("outcomes")
-        if not isinstance(outcomes, list):
-            continue
-        for outcome in outcomes:
-            if not isinstance(outcome, Mapping):
-                continue
-            add_definition(
-                team_id=team_id,
-                project_id=project_id,
-                kind=text(outcome.get("kind")),
-                source=deliverable,
-            )
-
-    for task in tasks.values():
-        if not isinstance(task, Mapping):
-            continue
-        contract = task.get("outcome_contract")
-        if not isinstance(contract, dict):
-            continue
-        project_id = optional_text(task.get("project_id"))
-        team_id = project_team_id(project_id)
-        kinds = [
-            *kind_list(contract.get("required_outcome_kinds")),
-            *kind_list(contract.get("forbidden_outcome_kinds")),
-        ]
-        existing_snapshots = {
-            text(item.get("kind")): dict(item)
-            for item in contract.get("outcome_kind_definitions", [])
-            if isinstance(item, Mapping) and text(item.get("kind"))
-        }
-        contract["outcome_kind_definitions"] = [
-            resolved
-            for kind in kinds
-            if (
-                resolved := existing_snapshots.get(kind)
-                or snapshot(
-                    definition_for(
-                        team_id=team_id or "",
-                        project_id=project_id,
-                        kind=kind,
-                    )
-                )
-            )
-            is not None
-        ]
-
-    for deliverable in deliverables.values():
-        if not isinstance(deliverable, Mapping):
-            continue
-        task = tasks.get(optional_text(deliverable.get("task_id")))
-        project_id = optional_text(task.get("project_id")) if isinstance(task, Mapping) else None
-        team_id = project_team_id(project_id)
-        outcomes = deliverable.get("outcomes")
-        if not isinstance(outcomes, list):
-            continue
-        for outcome in outcomes:
-            if not isinstance(outcome, dict) or isinstance(
-                outcome.get("definition_snapshot"),
-                Mapping,
-            ):
-                continue
-            outcome["definition_snapshot"] = snapshot(
-                definition_for(
-                    team_id=team_id or "",
-                    project_id=project_id,
-                    kind=text(outcome.get("kind")),
-                )
-            )
-
-    for review in reviews.values():
-        if not isinstance(review, dict):
-            continue
-        profile = profiles.get(optional_text(review.get("review_profile_id")))
-        if not isinstance(profile, Mapping):
-            continue
-        team_id = optional_text(profile.get("team_id"))
-        deliverable = deliverables.get(optional_text(review.get("deliverable_id")))
-        task = (
-            tasks.get(optional_text(deliverable.get("task_id")))
-            if isinstance(deliverable, Mapping)
-            else None
-        )
-        release = releases.get(optional_text(review.get("release_package_id")))
-        project_id = (
-            optional_text(task.get("project_id"))
-            if isinstance(task, Mapping)
-            else optional_text(release.get("project_id"))
-            if isinstance(release, Mapping)
-            else optional_text(profile.get("project_id"))
-        )
-        existing_snapshots = {
-            text(item.get("kind")): dict(item)
-            for item in review.get("required_outcome_kind_definitions", [])
-            if isinstance(item, Mapping) and text(item.get("kind"))
-        }
-        review["required_outcome_kind_definitions"] = [
-            resolved
-            for kind in kind_list(profile.get("required_outcome_kinds"))
-            if (
-                resolved := existing_snapshots.get(kind)
-                or snapshot(
-                    definition_for(
-                        team_id=team_id or "",
-                        project_id=project_id,
-                        kind=kind,
-                    )
-                )
-            )
-            is not None
-        ]
 
 
 def _migrate_legacy_outcome_kind_definitions(
@@ -8923,7 +8533,6 @@ CREATE INDEX IF NOT EXISTS idx_team_outbox_aggregate
 
 
 __all__ = [
-    "LEGACY_STATE_FILE",
     "STATE_DB_FILE",
     "TeamIdempotencyConflictError",
     "TeamStateSqliteStore",

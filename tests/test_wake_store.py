@@ -72,67 +72,15 @@ def test_wake_request_store_resolves_json_path_to_sibling_db_and_creates_schema(
     } <= indexes
 
 
-def test_wake_request_store_imports_legacy_json_into_sibling_db_and_leaves_json_untouched(
+def test_wake_request_store_ignores_retired_json_input(
     tmp_path: Path,
 ) -> None:
     path = tmp_path / "wake-store.json"
-    request = WakeScheduledRequest(
-        request_id="wake-1",
-        session_id="session-1",
-        schedule=WakeScheduleDefinition(
-            resume_at=datetime(2026, 4, 1, 10, 30, tzinfo=UTC),
-        ),
-        resume_prompt=WakeResumePromptPayload(
-            prompt="Resume from pending feedback.",
-            metadata={"trace_id": "trace-1"},
-        ),
-        source="gateway-tool",
-        created_at=datetime(2026, 4, 1, 10, 0, tzinfo=UTC),
-        updated_at=datetime(2026, 4, 1, 10, 0, tzinfo=UTC),
-        last_dispatched_at=datetime(2026, 4, 1, 10, 1, tzinfo=UTC),
-        next_run_at=datetime(2026, 4, 1, 10, 30, tzinfo=UTC),
-    )
-    dispatch = WakeDispatchRecord(
-        dispatch_id="dispatch-1",
-        request_id="wake-1",
-        session_id="session-1",
-        status="dispatched",
-        resume_prompt=WakeResumePromptPayload(
-            prompt="Resume from pending feedback.",
-            metadata={"trace_id": "trace-1"},
-        ),
-        dispatched_at=datetime(2026, 4, 1, 10, 31, tzinfo=UTC),
-        source="gateway-tool",
-        metadata={"trace_id": "trace-1"},
-    )
-    message = WakeMessageEnvelope(
-        message_id="wake:dispatch-1",
-        request_id="wake-1",
-        dispatch_id="dispatch-1",
-        session_id="session-1",
-        status="dispatched",
-        resume_prompt=WakeResumePromptPayload(
-            prompt="Resume from pending feedback.",
-            metadata={"trace_id": "trace-1"},
-        ),
-        created_at=datetime(2026, 4, 1, 10, 31, tzinfo=UTC),
-        metadata={"trace_id": "trace-1"},
-    )
-    legacy_payload = {
-        "requests": {"wake-1": request.model_dump(mode="json")},
-        "dispatches": {"dispatch-1": dispatch.model_dump(mode="json")},
-        "messages": {"wake:dispatch-1": message.model_dump(mode="json")},
-    }
-    original_text = json.dumps(legacy_payload)
-    path.write_text(original_text, encoding="utf-8")
+    path.write_text("{not json", encoding="utf-8")
 
     store = WakeRequestStore(path)
     assert store.path == tmp_path / "wake-store.db"
-
-    assert store.read_raw() == legacy_payload
-    assert store.list_requests() == [request]
-    assert store.latest_dispatch_by_request_id() == {"wake-1": dispatch}
-    assert path.read_text(encoding="utf-8") == original_text
+    assert store.read_raw() == {"requests": {}, "dispatches": {}, "messages": {}}
 
 
 @pytest.mark.parametrize(
@@ -378,51 +326,6 @@ def test_record_dispatch_keeps_failed_timestamp_cleared_until_success(
     assert payload["requests"]["wake-1"]["last_dispatched_at"] == "2026-04-01T10:31:00Z"
     assert latest.status == "dispatched"
     assert latest.dispatched_at == success_time
-
-
-def test_wake_request_store_imports_legacy_requests_with_lifecycle_defaults(
-    tmp_path: Path,
-) -> None:
-    path = tmp_path / "wake-store.json"
-    legacy_payload = {
-        "requests": {
-            "wake-legacy": {
-                "request_id": "wake-legacy",
-                "session_id": "session-1",
-                "schedule": {
-                    "resume_at": "2026-04-01T10:30:00Z",
-                },
-                "resume_prompt": {
-                    "prompt": "Resume work.",
-                    "metadata": {},
-                },
-                "resume_mode": "same_context",
-                "enabled": True,
-                "source": "gateway-tool",
-                "created_at": "2026-04-01T10:00:00Z",
-                "updated_at": "2026-04-01T10:00:00Z",
-                "last_dispatched_at": None,
-                "next_run_at": "2026-04-01T10:30:00Z",
-            }
-        },
-        "dispatches": {},
-        "messages": {},
-    }
-    path.write_text(json.dumps(legacy_payload), encoding="utf-8")
-
-    store = WakeRequestStore(path)
-    request = store.get_request("wake-legacy")
-
-    assert request is not None
-    assert request.status == "pending"
-    assert request.status_reason is None
-    assert request.status_updated_at is None
-    assert request.last_dispatch_id is None
-    assert request.last_dispatch_status is None
-    assert request.last_error is None
-    assert request.last_error_at is None
-    assert request.completed_at is None
-    assert request.completion_evidence == {}
 
 
 @pytest.mark.parametrize(
@@ -1195,130 +1098,6 @@ def test_find_due_requests_advances_first_cron_run_and_sorts_results(
     refreshed = store.get_request("wake-cron")
     assert refreshed is not None
     assert refreshed.next_run_at == next_cron_time("*/15 * * * 0-6", now - timedelta(minutes=1))
-
-
-@pytest.mark.parametrize("legacy_text", [None, "", "   \n"])
-def test_wake_request_store_treats_missing_or_empty_legacy_json_as_empty_store(
-    tmp_path: Path, legacy_text: str | None
-) -> None:
-    path = tmp_path / "wake-store.json"
-    if legacy_text is not None:
-        path.write_text(legacy_text, encoding="utf-8")
-
-    store = WakeRequestStore(path)
-
-    assert store.read_raw() == {"requests": {}, "dispatches": {}, "messages": {}}
-
-
-@pytest.mark.parametrize(
-    ("legacy_text", "expected_exception"),
-    [
-        ("{not json", json.JSONDecodeError),
-        (json.dumps(["not", "an", "object"]), ValueError),
-    ],
-)
-def test_wake_request_store_rejects_invalid_legacy_payload_when_db_is_empty(
-    tmp_path: Path,
-    legacy_text: str,
-    expected_exception: type[Exception],
-) -> None:
-    path = tmp_path / "wake-store.json"
-    path.write_text(legacy_text, encoding="utf-8")
-
-    with pytest.raises(expected_exception):
-        WakeRequestStore(path)
-
-    db_path = tmp_path / "wake-store.db"
-    with sqlite3.connect(db_path) as connection:
-        counts = {
-            row[0]: row[1]
-            for row in connection.execute(
-                """
-                SELECT 'wake_requests' AS table_name, COUNT(*) AS row_count
-                FROM wake_requests
-                UNION ALL
-                SELECT 'wake_dispatches' AS table_name, COUNT(*) AS row_count
-                FROM wake_dispatches
-                UNION ALL
-                SELECT 'wake_messages' AS table_name, COUNT(*) AS row_count
-                FROM wake_messages
-                """
-            )
-        }
-
-    assert counts == {
-        "wake_requests": 0,
-        "wake_dispatches": 0,
-        "wake_messages": 0,
-    }
-
-
-def test_wake_request_store_rejects_invalid_legacy_wake_records_when_db_is_empty(
-    tmp_path: Path,
-) -> None:
-    path = tmp_path / "wake-store.json"
-    payload = {
-        "requests": {
-            "wake-1": {
-                "request_id": "wake-1",
-            }
-        },
-        "dispatches": {},
-        "messages": {},
-    }
-    path.write_text(json.dumps(payload), encoding="utf-8")
-
-    with pytest.raises(Exception):
-        WakeRequestStore(path)
-
-    db_path = tmp_path / "wake-store.db"
-    with sqlite3.connect(db_path) as connection:
-        counts = {
-            row[0]: row[1]
-            for row in connection.execute(
-                """
-                SELECT 'wake_requests' AS table_name, COUNT(*) AS row_count
-                FROM wake_requests
-                UNION ALL
-                SELECT 'wake_dispatches' AS table_name, COUNT(*) AS row_count
-                FROM wake_dispatches
-                UNION ALL
-                SELECT 'wake_messages' AS table_name, COUNT(*) AS row_count
-                FROM wake_messages
-                """
-            )
-        }
-
-    assert counts == {
-        "wake_requests": 0,
-        "wake_dispatches": 0,
-        "wake_messages": 0,
-    }
-
-
-def test_wake_request_store_skips_invalid_legacy_json_after_db_is_seeded(
-    tmp_path: Path,
-) -> None:
-    path = tmp_path / "wake-store.json"
-    store = WakeRequestStore(path)
-    seeded = store.schedule_resume_request(
-        session_id="session-1",
-        prompt="Resume work.",
-        schedule=WakeScheduleDefinition(resume_at=datetime(2026, 4, 1, 10, 30, tzinfo=UTC)),
-        request_id="wake-seeded",
-        source="gateway-tool",
-        resume_mode="same_context",
-        enabled=True,
-        metadata={},
-    )
-
-    path.write_text("{not json", encoding="utf-8")
-
-    reopened = WakeRequestStore(path)
-    payload = reopened.read_raw()
-
-    assert payload["requests"] == {"wake-seeded": seeded.model_dump(mode="json")}
-    assert path.read_text(encoding="utf-8") == "{not json"
 
 
 def test_wake_request_store_retains_independent_request_and_dispatch_updates_across_instances(

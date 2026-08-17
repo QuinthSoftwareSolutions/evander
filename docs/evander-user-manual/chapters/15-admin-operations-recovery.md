@@ -172,7 +172,7 @@ evander-cli status --runtime-dir runtime --json
 ./scripts/install_systemd_units.sh --preflight
 ```
 
-Check SQLite integrity with the SQLite tooling appropriate to each database, inspect migrations/import markers, and verify a read through the owning API. Rebuild only derived indexes such as `audit.db`. Do not replace a current SQLite authority with a legacy JSON import file: import paths are deliberately one-way and often marker-gated.
+Check SQLite integrity with the SQLite tooling appropriate to each database, inspect migration provenance where retained, and verify a read through the owning API. Rebuild only derived indexes such as `audit.db`. Do not replace a current SQLite authority with a retired JSON file; restore only the canonical database or an approved backup.
 
 For a partially failed operation, prefer domain reconciliation over rollback by file editing. Examples: reconcile a managed Git operation against its pinned SHA and destination lease; reconcile an effect attempt against provider state; reconcile a Team lease/outbox entry through Team operations; reconcile a wake against its dispatch history.
 

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import fcntl
-import json
 import sqlite3
 from datetime import datetime
 from pathlib import Path
@@ -52,10 +51,8 @@ class ContainerWorkerExecutionRepository:
         original_path = Path(path)
         if original_path.suffix == ".json":
             self.path = original_path.with_name("container-worker-executions.db")
-            self.legacy_json_path = original_path
         else:
             self.path = original_path
-            self.legacy_json_path = None
         self.lock_path = self.path.with_name(f".{self.path.name}.lock")
         self._lock = RLock()
         self._initialized = False
@@ -276,7 +273,6 @@ class ContainerWorkerExecutionRepository:
                 return
             with self._initialization_lock():
                 self._create_schema()
-                self._import_legacy_json_if_empty()
             self._initialized = True
 
     @contextmanager
@@ -319,27 +315,6 @@ class ContainerWorkerExecutionRepository:
                     ON container_worker_executions(directory_path, created_at);
                 """
             )
-
-    def _import_legacy_json_if_empty(self) -> None:
-        legacy_json_path = self.legacy_json_path
-        if legacy_json_path is None or not legacy_json_path.exists():
-            return
-        with self._connect() as connection:
-            connection.execute("BEGIN IMMEDIATE")
-            if self._row_count(connection) > 0:
-                return
-            raw = json.loads(legacy_json_path.read_text(encoding="utf-8") or "{}")
-            if not isinstance(raw, dict):
-                raise ValueError(
-                    f"legacy container worker execution store {legacy_json_path} must contain a JSON object"
-                )
-            for execution_id, value in raw.items():
-                if not isinstance(value, dict):
-                    continue
-                payload = dict(value)
-                payload["execution_id"] = str(execution_id)
-                record = ContainerWorkerExecutionRecord.model_validate(payload)
-                self._insert_record(connection, record)
 
     def _insert_record(
         self, connection: sqlite3.Connection, record: ContainerWorkerExecutionRecord

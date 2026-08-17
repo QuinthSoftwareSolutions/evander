@@ -598,7 +598,7 @@ class PolicyConfigResolver:
             if scope == "public_threads":
                 expanded.discard(parent_channel_id)
             if store is None:
-                store = DiscordInboxStore(self.config.runtime_dir / "discord-inbox-store.json")
+                store = DiscordInboxStore(self.config.runtime_dir / "discord-inbox-store.db")
             include_archived = capability == "read" and include_archived_threads
             expanded.update(
                 binding.thread_id

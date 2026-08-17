@@ -4384,10 +4384,10 @@ environment-supplied bootstrap/break-glass account.</td>
 <code>none</code>. Production administrators should set the mode
 deliberately rather than relying on that convenience behavior.</p>
 <p>The durable user, group, assignment, and direct-grant store is SQLite
-at <code>runtime/admin-web.db</code>. Legacy JSON user data is migration
-input. Local passwords use PBKDF2-HMAC-SHA-256 with 200,000 iterations
-and a 32-byte random salt. The database stores a verifier, not the
-plaintext password.</p>
+at <code>runtime/admin-web.db</code>. Retired JSON user files are not
+read by the runtime. Local passwords use PBKDF2-HMAC-SHA-256 with
+200,000 iterations and a 32-byte random salt. The database stores a
+verifier, not the plaintext password.</p>
 <p>Successful authentication creates an HMAC-signed
 <code>evander_admin_session</code> cookie. The default session TTL is
 43,200 seconds (12 hours), with a minimum of 60 seconds. Set a stable
@@ -9262,11 +9262,11 @@ workers.</li>
 <div class="sourceCode" id="cb58"><pre class="sourceCode bash"><code class="sourceCode bash"><span id="cb58-1"><a href="#cb58-1" aria-hidden="true" tabindex="-1"></a><span class="ex">evander-cli</span> status <span class="at">--runtime-dir</span> runtime <span class="at">--json</span></span>
 <span id="cb58-2"><a href="#cb58-2" aria-hidden="true" tabindex="-1"></a><span class="ex">./scripts/install_systemd_units.sh</span> <span class="at">--preflight</span></span></code></pre></div>
 <p>Check SQLite integrity with the SQLite tooling appropriate to each
-database, inspect migrations/import markers, and verify a read through
-the owning API. Rebuild only derived indexes such as
+database, inspect migration provenance where retained, and verify a read
+through the owning API. Rebuild only derived indexes such as
 <code>audit.db</code>. Do not replace a current SQLite authority with a
-legacy JSON import file: import paths are deliberately one-way and often
-marker-gated.</p>
+retired JSON file; restore only the canonical database or an approved
+backup.</p>
 <p>For a partially failed operation, prefer domain reconciliation over
 rollback by file editing. Examples: reconcile a managed Git operation
 against its pinned SHA and destination lease; reconcile an effect
@@ -9473,9 +9473,8 @@ canonical Team store</strong></p>
 <p>It contains the validated Team domain plus command-support tables for
 dispatch activity, idempotency, and the durable outbox. The store uses
 foreign-key enforcement, a busy timeout, write-ahead logging, and
-serialized write transactions. On the first database initialization
-only, an old <code>state.json</code> may be imported. That JSON file is
-migration input, not a live fallback.</p>
+serialized write transactions. A new database initializes an empty Team
+state; retired <code>state.json</code> files are not read.</p>
 </blockquote>
 <p>The following useful projections are deliberately non-canonical:</p>
 <table>
@@ -16052,13 +16051,11 @@ claim rows, renew leases, retry, page results, and preserve history
 needs transactions and indexes, so SQLite is a better fit. An
 append-only security record benefits from JSONL&#39;s simple canonical
 sequence, even when SQLite makes searching it faster.</p>
-<p>The wake and worker migrations illustrate the usual pattern:
-initialize SQLite, import legacy JSON while the database is empty, and
-thereafter treat the populated database as live authority. Some
-repositories, including Team, also record explicit migration metadata.
-The source file remains untouched as rollback evidence, and the
-repository API can remain stable while its persistence semantics change.
-Editing the source JSON afterward does not edit live state.</p>
+<p>The wake and worker migrations used a temporary one-way JSON import
+while SQLite became the live authority. After the supported deployments
+were verified, those import paths were removed and the JSON sources were
+archived. The repository APIs remained stable while their persistence
+semantics changed.</p>
 </blockquote>
 <p>This was never a blanket “JSON is obsolete” migration. The owner
 repository and concurrency contract determine the format.</p>
@@ -16294,10 +16291,10 @@ It should not leave both ends accepting ordinary writes indefinitely.
 Two writable representations invite dual authority: each can be
 internally valid while disagreeing about the real state.</p>
 </blockquote>
-<p>Once a SQLite repository has imported legacy JSON and made the
-database live authority, editing the legacy file should not change live
-state. Keep it only as documented rollback evidence until finalization
-says it may be archived.</p>
+<p>Once a SQLite repository is live authority, editing a retired JSON
+file must not change live state. Archive it with a manifest after
+finalization; do not leave an executable import path as rollback
+machinery.</p>
 <h2 id="retired-designs-do-not-revive-them">Retired designs: do not
 revive them</h2>
 <table>

@@ -150,7 +150,7 @@ process falls back to `none`. Production administrators should set the mode deli
 than relying on that convenience behavior.
 
 The durable user, group, assignment, and direct-grant store is SQLite at `runtime/admin-web.db`.
-Legacy JSON user data is migration input. Local passwords use PBKDF2-HMAC-SHA-256 with 200,000
+Retired JSON user files are not read by the runtime. Local passwords use PBKDF2-HMAC-SHA-256 with 200,000
 iterations and a 32-byte random salt. The database stores a verifier, not the plaintext password.
 
 Successful authentication creates an HMAC-signed `evander_admin_session` cookie. The default

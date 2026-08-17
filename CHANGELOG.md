@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-08-17 - JSON Store Migration Retirement
+
+- Retired completed first-use JSON-to-SQLite imports for Admin Web users, Team state, Teams and
+  Discord inboxes, Teams messages, scheduled wakes, container-worker executions, and worker jobs.
+- Updated runtime defaults and production callers to use their canonical `.db` stores directly.
+
 ## 2026-08-17 - Discord Forum And Public Thread Communication
 
 - Added explicit Discord communication-target conversation scopes for flat channels, public child

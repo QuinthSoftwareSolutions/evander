@@ -121,8 +121,7 @@ The execution CLI never mutates the configured backend. `start-container-job` an
 `status`, `logs`, `stop`, and `destroy` auto-use the container backend only when the target
 resolves in the container worker execution mapping store, or when the operator passes
 `--backend container_worker_vm`. The mapping store is backed by
-`runtime/container-worker-executions.db`; `runtime/container-worker-executions.json` is still
-accepted as the configured path and as one-time legacy import input.
+`runtime/container-worker-executions.db`.
 
 Portable workflow nodes use `effect:agent:*` for session setup. On `libvirt_vm` they delegate to
 the existing VM services. On `container_worker_vm`, `effect:agent:create` prepares a durable

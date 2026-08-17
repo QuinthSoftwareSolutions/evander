@@ -58,15 +58,10 @@ class TeamsInboxMessage(BaseModel):
 class TeamsInboxStore:
     """SQLite-backed store for Teams inbox messages and per-channel cursors."""
 
-    def __init__(self, path: Path, *, legacy_json_path: Path | None = None) -> None:
-        original_path = Path(path)
-        self.path = teams_inbox_db_path(original_path)
-        if legacy_json_path is None and self.path != original_path:
-            legacy_json_path = original_path
-        self.legacy_json_path = legacy_json_path
+    def __init__(self, path: Path) -> None:
+        self.path = teams_inbox_db_path(Path(path))
         self._lock = RLock()
         self.ensure_schema()
-        self._import_legacy_json_if_empty()
 
     def get_cursor(self, channel_target: str) -> str | None:
         state = self.get_cursor_state(channel_target)
@@ -455,82 +450,6 @@ class TeamsInboxStore:
                     raise
                 time.sleep(0.05)
 
-    def _import_legacy_json_if_empty(self) -> None:
-        legacy_json_path = self.legacy_json_path
-        if (
-            legacy_json_path is None
-            or not legacy_json_path.exists()
-            or legacy_json_path.suffix.lower() in _SQLITE_TEAMS_INBOX_SUFFIXES
-        ):
-            return
-        with self._lock, self._connect() as connection:
-            row = connection.execute(
-                """
-                SELECT
-                    (SELECT COUNT(*) FROM teams_inbox_messages) AS message_count,
-                    (SELECT COUNT(*) FROM teams_inbox_cursors) AS cursor_count
-                """
-            ).fetchone()
-            if row is not None and (
-                int(row["message_count"] or 0) > 0 or int(row["cursor_count"] or 0) > 0
-            ):
-                return
-            payload = self._read_legacy_payload(legacy_json_path)
-            raw_cursors = payload.get("cursors", {})
-            if isinstance(raw_cursors, dict):
-                for channel_target, raw_state in raw_cursors.items():
-                    state = self._validate_cursor_state(raw_state)
-                    normalized_target = str(channel_target or "").strip().strip("/")
-                    if state is None or not normalized_target:
-                        continue
-                    connection.execute(
-                        """
-                        INSERT OR REPLACE INTO teams_inbox_cursors(
-                            channel_target,
-                            cursor,
-                            created_at,
-                            payload_json
-                        )
-                        VALUES (?, ?, ?, ?)
-                        """,
-                        self._cursor_row(normalized_target, state),
-                    )
-            raw_messages = payload.get("messages", {})
-            if isinstance(raw_messages, dict):
-                for raw_value in raw_messages.values():
-                    message = self._validate_message(raw_value)
-                    if message is None:
-                        continue
-                    connection.execute(
-                        """
-                        INSERT OR IGNORE INTO teams_inbox_messages(
-                            cursor,
-                            message_id,
-                            channel_target,
-                            team_id,
-                            channel_id,
-                            chat_id,
-                            thread_id,
-                            author_id,
-                            created_at,
-                            payload_json
-                        )
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                        """,
-                        self._message_row(message),
-                    )
-            self._compact_messages(connection)
-
-    @staticmethod
-    def _read_legacy_payload(path: Path) -> dict[str, Any]:
-        text = path.read_text(encoding="utf-8")
-        if not text.strip():
-            return {"cursors": {}, "messages": {}}
-        raw = json.loads(text)
-        if not isinstance(raw, dict):
-            raise ValueError(f"Teams inbox JSON store at {path} must contain an object")
-        return raw
-
     def _compact_messages(self, connection: sqlite3.Connection) -> None:
         cutoff = self._datetime_to_storage(datetime.now(timezone.utc) - _TEAMS_MESSAGE_RETENTION)
         connection.execute(
@@ -580,18 +499,6 @@ class TeamsInboxStore:
             self._datetime_to_storage(state.created_at) if state.created_at is not None else None,
             _json_dumps(state.model_dump(mode="json")),
         )
-
-    @staticmethod
-    def _validate_cursor_state(raw_value: object) -> TeamsInboxCursorState | None:
-        if not isinstance(raw_value, dict):
-            return None
-        return TeamsInboxCursorState.model_validate(raw_value)
-
-    @staticmethod
-    def _validate_message(raw_value: object) -> TeamsInboxMessage | None:
-        if not isinstance(raw_value, dict):
-            return None
-        return TeamsInboxMessage.model_validate(raw_value)
 
     @staticmethod
     def _channel_target(message: TeamsInboxMessage) -> str:

@@ -186,7 +186,7 @@ class CommunicationMessagesQueryProvider(QueryProviderBase):
         target_messages = [
             message
             for message in TeamsInboxStore(
-                runtime_dir / "teams-inbox-store.json"
+                runtime_dir / "teams-inbox-store.db"
             ).list_all_messages(channel_targets=[normalized_target])
             if teams_target_from_message(
                 team_id=message.team_id,
@@ -314,7 +314,7 @@ class CommunicationMessagesQueryProvider(QueryProviderBase):
         if not channel_id:
             raise ValueError("query:communication:messages requires a Discord channel target")
 
-        store = DiscordInboxStore(runtime_dir / "discord-inbox-store.json")
+        store = DiscordInboxStore(runtime_dir / "discord-inbox-store.db")
         scope = target.policy.discord_conversation_scope
         if thread_id is not None:
             binding = store.get_thread_binding(thread_id)
