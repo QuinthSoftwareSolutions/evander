@@ -78,6 +78,12 @@ from evander.models import (
     ToolName,
 )
 from evander.orchestration.migration import migrate_orchestration_store_to_sqlite
+from evander.orchestration.json_finalization import (
+    OrchestrationJsonFinalizationBlocked,
+    check_orchestration_json_finalization,
+    finalize_orchestration_json_store,
+)
+from evander.orchestration.wal_maintenance import sqlite_orchestration_store_enabled
 from evander.policy_config import EffectivePolicyConfig
 from evander.pr_feedback.store import PrFeedbackStore
 from evander.pr_tracking import PrMapStore
@@ -2400,6 +2406,146 @@ def migrate_orchestration_store(
         f"gate_executions={result.retention_gate_executions_deleted} "
         f"workflow_events={result.retention_workflow_events_deleted}"
     )
+
+
+@app.command(
+    "finalize-orchestration-json-store",
+    rich_help_panel="Health and State",
+    short_help="Validate, archive, and retire legacy orchestration JSON stores.",
+)
+def finalize_orchestration_json_store_command(
+    config: ConfigOption = CLI_DEFAULT_RUNTIME_DIR,
+    apply: Annotated[
+        bool,
+        typer.Option(
+            "--apply/--check",
+            help="Apply the validated retirement, or perform the default read-only check.",
+        ),
+    ] = False,
+    database_path: Annotated[
+        Path | None,
+        typer.Option(
+            "--database-path",
+            help="Override the authoritative SQLite database path.",
+        ),
+    ] = None,
+    archive_root: Annotated[
+        Path | None,
+        typer.Option(
+            "--archive-root",
+            help="Override the archive root. Defaults to runtime/archives.",
+        ),
+    ] = None,
+    marker_path: Annotated[
+        Path | None,
+        typer.Option(
+            "--marker-path",
+            help="Override the durable finalization marker path.",
+        ),
+    ] = None,
+    retention_days: Annotated[
+        int | None,
+        typer.Option(
+            "--retention-days",
+            min=0,
+            help="History retention cutoff used to decide import versus archive-only.",
+        ),
+    ] = None,
+    json_output: Annotated[
+        bool, typer.Option("--json", help="Emit machine-readable output.")
+    ] = False,
+) -> None:
+    runtime_config = _load_runtime_config_from_option(config)
+    project_dir = _project_dir_for_config_option(config)
+    worker_config = load_trigger_orchestrator_worker_global_config(
+        project_dir, base_config=runtime_config
+    )
+    if not sqlite_orchestration_store_enabled(worker_config):
+        raise typer.BadParameter(
+            "orchestration_store_backend must be explicitly configured as 'sqlite'"
+        )
+
+    destination = Path(database_path or worker_config.orchestration_store_path)
+    effective_archive_root = Path(
+        archive_root or (worker_config.runtime_dir / "archives")
+    )
+    effective_marker_path = Path(
+        marker_path
+        or (
+            worker_config.runtime_dir
+            / "migrations"
+            / "orchestration-json-store-finalized-v1.json"
+        )
+    )
+    effective_retention_days = (
+        retention_days if retention_days is not None else worker_config.orchestration_retention_days
+    )
+    common_arguments = {
+        "database_path": destination,
+        "trigger_events_path": Path(worker_config.event_queue_store_path),
+        "effect_executions_path": Path(worker_config.effect_execution_store_path),
+        "gate_executions_path": Path(worker_config.gate_execution_store_path),
+        "workflow_events_path": Path(worker_config.workflow_event_journal_path),
+        "marker_path": effective_marker_path,
+        "retention_days": int(effective_retention_days),
+    }
+
+    if apply:
+        try:
+            result = finalize_orchestration_json_store(
+                **common_arguments,
+                archive_root=effective_archive_root,
+                lock_paths=(
+                    Path(worker_config.lock_path),
+                    Path(worker_config.effect_lock_path),
+                ),
+            )
+        except OrchestrationJsonFinalizationBlocked as exc:
+            _emit_orchestration_json_finalization_report(
+                exc.report.as_dict(), json_output=json_output
+            )
+            raise typer.Exit(code=1) from exc
+        payload = result.as_dict()
+    else:
+        report = check_orchestration_json_finalization(**common_arguments)
+        payload = report.as_dict()
+
+    _emit_orchestration_json_finalization_report(payload, json_output=json_output)
+    if not payload["safe_to_apply"]:
+        raise typer.Exit(code=1)
+
+
+def _emit_orchestration_json_finalization_report(
+    payload: dict[str, Any], *, json_output: bool
+) -> None:
+    if json_output:
+        typer.echo(json.dumps(payload, indent=2, sort_keys=True))
+        return
+    if payload.get("applied"):
+        status = "applied"
+    elif payload.get("already_finalized"):
+        status = "already-finalized"
+    elif payload.get("safe_to_apply"):
+        status = "ready"
+    else:
+        status = "blocked"
+    typer.echo(f"Orchestration JSON finalization: {status}")
+    typer.echo(f"database={payload['database_path']}")
+    if payload.get("archive_path"):
+        typer.echo(f"archive={payload['archive_path']}")
+    for source in payload["sources"]:
+        typer.echo(
+            f"{source['source']} present={source['present']} records={source['records']} "
+            f"existing={source['existing']} importable={source['importable']} "
+            f"archive_only={source['archive_only']} invalid={source['invalid']}"
+        )
+    for blocker in payload["blockers"]:
+        subject = f" record={blocker['record_id']}" if blocker.get("record_id") else ""
+        typer.echo(
+            f"BLOCKER source={blocker['source']}{subject} reason={blocker['reason']}: "
+            f"{blocker['detail']}",
+            err=True,
+        )
 
 
 @app.command(

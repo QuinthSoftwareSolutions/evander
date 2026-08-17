@@ -30,6 +30,7 @@ from evander.consultations import (
     verify_consultation_token,
 )
 from evander.events.internal import InternalEventBus, InternalEventSource, internal_event_store_path
+from evander.orchestration.internal_events import build_internal_event_bus_for_runtime
 from evander.events.scheduled import (
     ScheduledInternalEventStore,
     scheduled_internal_event_store_path,
@@ -175,13 +176,17 @@ class BoundCodeConsultationServiceFactory:
         resolved_config = config or self._config
         if resolved_config is None:
             raise RuntimeError("code consultation configuration is unavailable")
+        resolved_event_bus = event_bus or build_internal_event_bus_for_runtime(
+            resolved_config.runtime_dir,
+            base_config=resolved_config,
+        )
         return CodeConsultationService(
             resolved_config,
             snapshot_port_factory=self._snapshot_port_factory,
             environment=self._environment if environment is None else environment,
             dispatcher=CodeConsultationEventDispatcher(
                 resolved_config.runtime_dir,
-                event_bus=event_bus,
+                event_bus=resolved_event_bus,
             ),
             requested_source=requested_source,
             cancellation_source=cancellation_source,

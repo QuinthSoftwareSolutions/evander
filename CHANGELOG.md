@@ -5,6 +5,12 @@
 - Retired completed first-use JSON-to-SQLite imports for Admin Web users, Team state, Teams and
   Discord inboxes, Teams messages, scheduled wakes, container-worker executions, and worker jobs.
 - Updated runtime defaults and production callers to use their canonical `.db` stores directly.
+- Routed internal-event workflow notifications through `orchestration.db` whenever the SQLite
+  orchestration backend is active, removing the last live `workflow-events.jsonl` writer on that
+  backend while preserving the explicit JSON rollback path.
+- Added a fail-closed orchestration JSON finalizer with read-only `--check` and lock-protected
+  `--apply` modes. It blocks malformed or missing nonterminal state, imports only retained terminal
+  history, archives expired history with hashes, and writes a recoverable one-way marker.
 
 ## 2026-08-17 - Discord Forum And Public Thread Communication
 

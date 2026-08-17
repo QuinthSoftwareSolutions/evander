@@ -43,14 +43,13 @@ from evander.admin.web.rbac import (
 from evander.admin.web.shared import request_has_privileged_operations
 from evander.admin.web.user_store import normalize_admin_web_login
 from evander.events.internal import (
-    InternalEventBus,
     InternalEventSource,
-    internal_event_store_path,
 )
 from evander.events.scheduled import (
     ScheduledInternalEventStore,
     scheduled_internal_event_store_path,
 )
+from evander.orchestration.internal_events import build_internal_event_bus_for_runtime
 from evander.execution.container_worker_client import (
     ContainerWorkerClient,
     ContainerWorkerClientError,
@@ -458,7 +457,12 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
         ),
     )
     chat_service = TeamChatService(repository)
-    runtime_service = TeamRuntimeService(repository)
+    runtime_service = TeamRuntimeService(
+        repository,
+        event_bus_factory=lambda: build_internal_event_bus_for_runtime(
+            context.runtime_dir, project_dir=context.project_dir, base_config=context.config
+        ),
+    )
     avatar_storage = AvatarStorage(context.runtime_dir)
     chat_attachment_storage = TeamChatAttachmentStorage(context.runtime_dir)
     chat_attachment_policy_service = TeamChatAttachmentPolicyService(repository)
@@ -7259,7 +7263,11 @@ def _limit_text(value: Any, max_length: int) -> str | None:
 def _publish_team_events(context: AddonContext, events: object) -> list[str]:
     if not isinstance(events, list):
         return []
-    bus = InternalEventBus(internal_event_store_path(context.runtime_dir))
+    bus = build_internal_event_bus_for_runtime(
+        context.runtime_dir,
+        project_dir=context.project_dir,
+        base_config=context.config,
+    )
     scheduled_store = ScheduledInternalEventStore(
         scheduled_internal_event_store_path(context.runtime_dir)
     )

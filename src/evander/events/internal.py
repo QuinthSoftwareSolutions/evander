@@ -12,7 +12,11 @@ from uuid import uuid4
 from pydantic import BaseModel, Field, field_validator
 
 from evander.storage import JsonStore
-from evander.workflow.events import WorkflowEventJournal, workflow_event_journal_path
+from evander.workflow.events import (
+    SqliteWorkflowEventJournal,
+    WorkflowEventJournal,
+    workflow_event_journal_path,
+)
 
 _EVENT_TYPE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]*$")
 EXTERNAL_WORKFLOW_EVENT_PREFIX = "external."
@@ -77,12 +81,14 @@ class InternalEventBus:
         path: Path | str,
         *,
         journal_path: Path | str | None = None,
+        journal: WorkflowEventJournal | SqliteWorkflowEventJournal | None = None,
     ) -> None:
+        if journal is not None and journal_path is not None:
+            raise ValueError("journal and journal_path are mutually exclusive")
         self.path = Path(path)
         self._store = JsonStore(path=self.path, model=InternalEvent)
-        self._journal = WorkflowEventJournal(
-            journal_path or workflow_event_journal_path(self.path.parent)
-        )
+        self._journal = journal
+        self._journal_path = Path(journal_path or workflow_event_journal_path(self.path.parent))
         self._lock = RLock()
 
     def publish(
@@ -138,7 +144,7 @@ class InternalEventBus:
             event = self._store.update_all(update)
             if not published:
                 return event
-            self._journal.append(
+            self._event_journal().append(
                 "workflow.internal_event.published",
                 source="internal_event_bus",
                 subject_id=event.event_id,
@@ -149,6 +155,11 @@ class InternalEventBus:
                 },
             )
             return event
+
+    def _event_journal(self) -> WorkflowEventJournal | SqliteWorkflowEventJournal:
+        if self._journal is None:
+            self._journal = WorkflowEventJournal(self._journal_path)
+        return self._journal
 
     def list_events(self) -> list[InternalEvent]:
         with self._lock:

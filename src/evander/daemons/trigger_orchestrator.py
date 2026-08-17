@@ -25,7 +25,7 @@ from evander.events.models import (
     TriggerEvent,
     validate_output_mapping_keys,
 )
-from evander.events.internal import InternalEventBus, InternalEventSource
+from evander.events.internal import InternalEventSource
 from evander.events.scheduled import (
     ScheduledInternalEventStore,
     scheduled_internal_event_wake_socket_path,
@@ -59,6 +59,7 @@ from evander.orchestration.wal_maintenance import (
     OrchestrationWalCheckpointMaintenance,
     sqlite_orchestration_store_enabled,
 )
+from evander.orchestration.internal_events import build_internal_event_bus
 from evander.orchestration.wiring import TriggerWorkerWiring, build_trigger_worker_wiring
 from evander.orchestration.wiring.trigger import build_trigger_provider_runtime_wiring
 from evander.repositories.orchestration import GateCursorRepository
@@ -328,10 +329,7 @@ class TriggerOrchestratorWorker:
         if not due_events:
             return 0
 
-        internal_event_bus = InternalEventBus(
-            worker_config.internal_event_store_path,
-            journal_path=worker_config.workflow_event_journal_path,
-        )
+        internal_event_bus = build_internal_event_bus(worker_config)
         published_count = 0
         for scheduled_event in due_events:
             source = _scheduled_internal_event_source(scheduled_event.source)
