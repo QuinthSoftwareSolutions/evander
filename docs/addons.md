@@ -782,9 +782,11 @@ safe even after its core session has been destroyed.
 When a Case genuinely moves from a non-closed status to `closed`, Team stores a
 transactional `team.case.closed` outbox event for generic `trigger:event`
 workflows. The event is correlated by `case_id` and includes the Team, project,
-owner, prior status, source provenance, and `closed_at`. Creating an initially
-closed Case, resolving a Case, and no-op updates of an already closed Case do
-not emit it.
+owner, prior status, source provenance, `closed_at`, and an immutable snapshot
+of the Case at closure. Workflows can therefore route a final customer message
+from the recorded outcome and source-thread metadata without re-reading a
+subsequently edited Case. Creating an initially closed Case, resolving a Case,
+and no-op updates of an already closed Case do not emit it.
 
 The generic workflow composition is: create the core session, register its
 Team agent, assign or wake work, close the Case, retire children before parents,

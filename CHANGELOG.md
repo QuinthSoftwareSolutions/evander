@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-08-17 - Support Workflow Closure Safety
+
+- Added a closed-Case snapshot to the durable `team.case.closed` event so a
+  workflow can send a deterministic, source-thread-specific outcome message
+  without racing later Case edits.
+
 ## 2026-08-17 - JSON Store Migration Retirement
 
 - Retired completed first-use JSON-to-SQLite imports for Admin Web users, Team state, Teams and

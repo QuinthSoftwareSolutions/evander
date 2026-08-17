@@ -794,6 +794,8 @@ def test_case_close_event_is_outboxed_once_and_not_for_initial_or_resolved_cases
         case_id="open-case",
         team_id="team",
         title="Close through workflow",
+        description="The customer confirmed that the recovery worked.",
+        metadata={"source_thread": "thread-42"},
         expected_revision=repo.read().revision,
     )
     admin.update_case(
@@ -808,6 +810,29 @@ def test_case_close_event_is_outboxed_once_and_not_for_initial_or_resolved_cases
     assert event["case_id"] == "open-case"
     assert event["team_id"] == "team"
     assert event["previous_status"] == "open"
+    assert event["case"] | {
+        "created_at": None,
+        "updated_at": None,
+        "closed_at": None,
+    } == {
+        "id": "open-case",
+        "team_id": "team",
+        "project_id": None,
+        "title": "Close through workflow",
+        "description": "The customer confirmed that the recovery worked.",
+        "status": "closed",
+        "priority": "normal",
+        "owner_agent_id": None,
+        "source": None,
+        "source_ref": None,
+        "tags": [],
+        "metadata": {"source_thread": "thread-42"},
+        "task_ids": [],
+        "created_at": None,
+        "updated_at": None,
+        "closed_at": None,
+    }
+    assert event["case"]["closed_at"].replace("Z", "+00:00") == event["closed_at"]
     assert records[0].idempotency_key
 
     admin.update_case(

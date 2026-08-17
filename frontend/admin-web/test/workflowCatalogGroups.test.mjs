@@ -22,8 +22,13 @@ test("groups effect node types by related functionality", () => {
     catalogNode("effect", "effect:state:update", "State update"),
     catalogNode("effect", "effect:agent:prompt", "Agent prompt"),
     catalogNode("effect", "effect:chat-assistant:ensure-session", "Chat assistant ensure session"),
+    catalogNode("effect", "effect:agent:clone-repo", "Clone a managed repository"),
+    catalogNode("effect", "effect:agent:grant-repo-access", "Grant repository access"),
+    catalogNode("effect", "effect:agent:prepare-reference-repositories", "Prepare reference repositories"),
+    catalogNode("effect", "effect:agent:revoke-repo-access", "Revoke repository access"),
     catalogNode("effect", "effect:vm:start", "VM start"),
     catalogNode("effect", "effect:agent:exec", "Agent exec"),
+    catalogNode("effect", "effect:git:promote-branch", "Promote managed branch"),
     catalogNode("effect", "effect:pr:create", "PR create"),
     catalogNode("effect", "effect:pull-request:update", "Pull request update"),
     catalogNode("effect", "effect:issue:update-metadata", "Issue update metadata"),
@@ -55,6 +60,15 @@ test("groups effect node types by related functionality", () => {
           "effect:agent:exec",
           "effect:agent:prompt",
           "effect:chat-assistant:ensure-session",
+        ],
+      },
+      {
+        label: "Agent repositories",
+        types: [
+          "effect:agent:clone-repo",
+          "effect:agent:grant-repo-access",
+          "effect:agent:prepare-reference-repositories",
+          "effect:agent:revoke-repo-access",
         ],
       },
       {
@@ -100,7 +114,11 @@ test("groups effect node types by related functionality", () => {
         types: ["effect:session:update-metadata"],
       },
       {
-        label: "Git & PRs",
+        label: "Managed Git",
+        types: ["effect:git:promote-branch"],
+      },
+      {
+        label: "Pull requests",
         types: [
           "effect:pr:create",
           "effect:pull-request:add-tag",
@@ -177,7 +195,7 @@ test("groups trigger node types into domain families", () => {
   );
 });
 
-test("groups pull request query nodes with git metadata", () => {
+test("groups Git and pull request query nodes separately", () => {
   const groups = groupWorkflowNodeCatalogEntries([
     catalogNode("query", "query:pull-request:list", "Pull request list"),
     catalogNode("query", "query:pull-request:get", "Pull request get"),
@@ -223,8 +241,12 @@ test("groups pull request query nodes with git metadata", () => {
         types: ["query:communication:messages"],
       },
       {
-        label: "Git & PRs",
-        types: ["query:git:pr-note", "query:pull-request:get", "query:pull-request:list"],
+        label: "Git",
+        types: ["query:git:pr-note"],
+      },
+      {
+        label: "Pull requests",
+        types: ["query:pull-request:get", "query:pull-request:list"],
       },
       {
         label: "Usage & telemetry",
