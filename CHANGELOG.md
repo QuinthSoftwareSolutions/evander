@@ -1,5 +1,18 @@
 # Changelog
 
+## 2026-08-18 - Migration And Test Maintenance
+
+- Restored the directory-config filename dependency used by the supported root configuration
+  migration commands after legacy heartbeat cleanup removed it accidentally.
+- Updated CLI help, Discord conformance, and worker-daemon tests to reflect Rich line wrapping and
+  the current SQLite-only Discord inbox and worker-job stores.
+
+## 2026-08-17 - Team Operator Communication Target Selection
+
+- Changed the Team editor's operator communication target field into a dropdown populated with
+  every communication target registered for the root directory, while retaining an unavailable
+  existing selection so operators can repair or clear it safely.
+
 ## 2026-08-17 - Support Workflow Closure Safety
 
 - Added a closed-Case snapshot to the durable `team.case.closed` event so a
@@ -20,6 +33,12 @@
 - Fixed the finalizer to bind completed markers to the exact SQLite database, load persisted
   maintenance settings without initializing runtime state, and document the runtime-directory CLI
   argument correctly.
+- Made cached workflow journals honor the completed one-way marker dynamically, so a service that
+  was already running during finalization switches to SQLite instead of recreating
+  `workflow-events.jsonl` on its next notification.
+- Serialized workflow-event appends with the JSON finalizer, made incomplete or invalid markers
+  fail closed, translated live-reader cursors across the JSON-to-SQLite cutover, and recorded the
+  actual configured journal, marker, and database paths in an adjacent durable tombstone.
 
 ## 2026-08-17 - Discord Forum And Public Thread Communication
 

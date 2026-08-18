@@ -1396,7 +1396,7 @@ function writeChatStreamSnapshot(streamRecord, state) {
   streamRecord.response.write(`data: ${JSON.stringify(payload)}\n\n`);
 }
 
-function bootstrapPayload(state) {
+function bootstrapPayload(state, communicationTargets = null) {
   return {
     revision: state.revision,
     views: teamViewIds,
@@ -1406,6 +1406,12 @@ function bootstrapPayload(state) {
     selected_operator: { user_id: "admin", display_name: "Admin" },
     can_view_all_operators: true,
     operator_options: [{ user_id: "admin", display_name: "Admin" }],
+    communication_targets: communicationTargets ?? [
+      {
+        value: "team-alerts",
+        label: "team-alerts (teams/teams, read, reply, write)",
+      },
+    ],
     counts: {
       teams: Object.keys(state.teams || {}).length,
       governance_groups: Object.keys(state.governance_groups || {}).length,
@@ -1481,6 +1487,7 @@ async function createTeamAddonServer(
     costsDelayMs = 0,
     costsPayload = null,
     coreAgentItems = null,
+    communicationTargets = null,
     initialState = null,
     timelinePayload = null,
   } = {},
@@ -1587,7 +1594,7 @@ async function createTeamAddonServer(
         return;
       }
       if (request.method === "GET" && pathname === "/api/addons/team-addon/bootstrap") {
-        jsonResponse(response, bootstrapPayload(state));
+        jsonResponse(response, bootstrapPayload(state, communicationTargets));
         return;
       }
       if (
@@ -3016,6 +3023,49 @@ test("team add-on Teams tab creates teams from the top-level action", async (t) 
   assert.equal(teamRequest.payload.manager_display_name, "Launch Manager");
   assert.equal(teamRequest.payload.manager_role_name, "Manager");
   assert.equal(teamRequest.payload.operator_communication_target_id, "ops-launch");
+});
+
+test("team add-on team editor selects from all registered communication targets", async (t) => {
+  const initialState = seededOrgChartState();
+  initialState.teams.team.operator_communication_target_id = "team-alerts";
+  const { port, requests } = await createTeamAddonServer(t, {
+    initialState,
+    communicationTargets: [
+      {
+        value: "team-alerts",
+        label: "team-alerts (teams/teams, read, reply, write)",
+      },
+      {
+        value: "ops-notify-only",
+        label: "ops-notify-only (teams/teams, notify)",
+      },
+    ],
+  });
+  const page = await openBrowserPage(t, port);
+
+  await openTeams(page);
+  await page.locator('#people-agent-detail-view [data-edit-type="team"][data-edit-id="team"]').click();
+
+  const form = page.locator("#edit-record-form");
+  const target = form.locator('select[name="operator_communication_target_id"]');
+  await target.waitFor({ state: "visible" });
+  assert.deepEqual(
+    await target.locator("option").evaluateAll((options) => options.map((option) => option.value)),
+    ["", "ops-notify-only", "team-alerts"],
+  );
+  assert.equal(await target.inputValue(), "team-alerts");
+
+  await target.selectOption("ops-notify-only");
+  await form.getByRole("button", { name: "Save changes" }).click();
+  await page.locator("#status-message", { hasText: /Saved revision \d+\./ }).waitFor({ state: "visible" });
+
+  const update = requests.find(
+    (request) =>
+      request.method === "PATCH"
+      && request.pathname === "/api/addons/team-addon/teams/team",
+  );
+  assert.ok(update);
+  assert.equal(update.payload.operator_communication_target_id, "ops-notify-only");
 });
 
 test("team add-on UI imports Git repo config into project forms", async (t) => {

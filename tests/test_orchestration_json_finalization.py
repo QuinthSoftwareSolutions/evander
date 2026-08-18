@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 import json
+from threading import Event
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -19,6 +21,7 @@ from evander.events.internal import InternalEventBus
 from evander.host_config import HostConfig, save_host_config
 from evander.orchestration.host_polling import single_instance_lock
 from evander.orchestration.internal_events import build_internal_event_bus
+from evander.orchestration import json_finalization as json_finalization_module
 from evander.orchestration.json_finalization import (
     OrchestrationJsonFinalizationBlocked,
     check_orchestration_json_finalization,
@@ -26,7 +29,12 @@ from evander.orchestration.json_finalization import (
 )
 from evander.repositories.orchestration_db import ensure_orchestration_schema
 from evander.triggers.queue import SqliteTriggerEventQueue, TriggerQueueRecord
-from evander.workflow.events import SqliteWorkflowEventJournal, WorkflowChangeEvent
+from evander.workflow.events import (
+    SqliteWorkflowEventJournal,
+    WorkflowChangeEvent,
+    WorkflowEventJournal,
+    workflow_event_finalization_state_path,
+)
 
 
 def _worker_config(tmp_path: Path, *, backend: str = "sqlite"):
@@ -109,6 +117,235 @@ def test_reading_internal_events_does_not_recreate_legacy_workflow_journal(
 
     assert bus.list_events() == []
     assert not (tmp_path / "workflow-events.jsonl").exists()
+
+
+def test_cached_json_journal_switches_to_sqlite_after_finalization(
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "orchestration.db"
+    journal_path = tmp_path / "workflow-events.jsonl"
+    marker_path = tmp_path / "migrations" / "orchestration-json-store-finalized-v1.json"
+    bus = InternalEventBus(tmp_path / "internal-events.json")
+    bus.publish(event_type="test.before-finalization")
+    assert journal_path.exists()
+
+    ensure_orchestration_schema(database_path)
+    marker_path.parent.mkdir(parents=True)
+    marker_path.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "state": "complete",
+                "database_path": str(database_path.resolve()),
+                "retention_days": 30,
+            }
+        ),
+        encoding="utf-8",
+    )
+    journal_path.unlink()
+
+    published = bus.publish(event_type="test.after-finalization")
+
+    assert not journal_path.exists()
+    events, _cursor = SqliteWorkflowEventJournal(database_path).read_after(0)
+    assert [(event.event_type, event.subject_id) for event in events] == [
+        ("workflow.internal_event.published", published.event_id)
+    ]
+
+
+def test_completed_marker_with_missing_database_does_not_recreate_json_journal(
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "missing-orchestration.db"
+    journal_path = tmp_path / "workflow-events.jsonl"
+    marker_path = tmp_path / "migrations" / "orchestration-json-store-finalized-v1.json"
+    bus = InternalEventBus(tmp_path / "internal-events.json")
+    bus.publish(event_type="test.before-finalization")
+    marker_path.parent.mkdir(parents=True)
+    marker_path.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "state": "complete",
+                "database_path": str(database_path.resolve()),
+                "retention_days": 30,
+            }
+        ),
+        encoding="utf-8",
+    )
+    journal_path.unlink()
+
+    with pytest.raises(RuntimeError, match="marker references a missing database"):
+        bus.publish(event_type="test.after-finalization")
+
+    assert not journal_path.exists()
+    assert not database_path.exists()
+
+
+@pytest.mark.parametrize(
+    "marker_payload",
+    (
+        "{not-json",
+        json.dumps(
+            {
+                "version": 1,
+                "state": "archived",
+                "database_path": "/tmp/not-yet-active.db",
+            }
+        ),
+    ),
+    ids=("malformed", "archived"),
+)
+def test_existing_noncomplete_marker_blocks_json_recreation(
+    tmp_path: Path, marker_payload: str
+) -> None:
+    journal_path = tmp_path / "workflow-events.jsonl"
+    marker_path = tmp_path / "migrations" / "orchestration-json-store-finalized-v1.json"
+    journal = WorkflowEventJournal(journal_path)
+    journal.append("test.before-finalization", source="test")
+    marker_path.parent.mkdir(parents=True)
+    marker_path.write_text(marker_payload, encoding="utf-8")
+    journal_path.unlink()
+
+    with pytest.raises(RuntimeError, match="workflow event finalization marker"):
+        journal.append("test.after-finalization", source="test")
+
+    assert not journal_path.exists()
+
+
+def test_finalization_honors_configured_journal_and_marker_paths(tmp_path: Path) -> None:
+    paths = _paths(tmp_path)
+    paths["workflow_events_path"] = tmp_path / "custom-events" / "changes.ndjson"
+    paths["marker_path"] = tmp_path / "operator-markers" / "cutover.json"
+    ensure_orchestration_schema(paths["database_path"])
+    bus = InternalEventBus(
+        tmp_path / "internal-events.json",
+        journal_path=paths["workflow_events_path"],
+    )
+    bus.publish(event_type="test.before-finalization")
+
+    finalize_orchestration_json_store(
+        **paths,
+        archive_root=tmp_path / "archives",
+        retention_days=30,
+    )
+    published = bus.publish(event_type="test.after-finalization")
+
+    assert not paths["workflow_events_path"].exists()
+    state = json.loads(
+        workflow_event_finalization_state_path(paths["workflow_events_path"]).read_text(
+            encoding="utf-8"
+        )
+    )
+    assert state["state"] == "complete"
+    assert state["marker_path"] == str(paths["marker_path"].resolve())
+    events, _cursor = SqliteWorkflowEventJournal(paths["database_path"]).read_after(0)
+    assert [event.subject_id for event in events][-1] == published.event_id
+
+
+def test_json_cursor_is_translated_when_cached_journal_switches_to_sqlite(
+    tmp_path: Path,
+) -> None:
+    paths = _paths(tmp_path)
+    ensure_orchestration_schema(paths["database_path"])
+    journal = WorkflowEventJournal(paths["workflow_events_path"])
+    journal.append("test.before-finalization", source="test")
+    json_cursor = journal.cursor()
+    assert getattr(json_cursor, "backend", None) == "json"
+
+    finalize_orchestration_json_store(
+        **paths,
+        archive_root=tmp_path / "archives",
+        retention_days=30,
+    )
+    published = journal.append("test.after-finalization", source="test")
+    events, sqlite_cursor = journal.read_after(json_cursor)
+
+    assert [event.event_id for event in events][-1] == published.event_id
+    assert getattr(sqlite_cursor, "backend", None) == "sqlite"
+
+
+def test_repeated_apply_repairs_an_incomplete_cutover_tombstone(tmp_path: Path) -> None:
+    paths = _paths(tmp_path)
+    ensure_orchestration_schema(paths["database_path"])
+    finalize_orchestration_json_store(
+        **paths,
+        archive_root=tmp_path / "archives",
+        retention_days=30,
+    )
+    state_path = workflow_event_finalization_state_path(paths["workflow_events_path"])
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    state["state"] = "archived"
+    state_path.write_text(json.dumps(state), encoding="utf-8")
+
+    with pytest.raises(RuntimeError, match="cutover state is not complete"):
+        WorkflowEventJournal(paths["workflow_events_path"])
+
+    repeated = finalize_orchestration_json_store(
+        **paths,
+        archive_root=tmp_path / "archives",
+        retention_days=30,
+    )
+
+    assert repeated.applied is False
+    assert json.loads(state_path.read_text(encoding="utf-8"))["state"] == "complete"
+    journal = WorkflowEventJournal(paths["workflow_events_path"])
+    published = journal.append("test.after-repair", source="test")
+    assert not paths["workflow_events_path"].exists()
+    events, _cursor = SqliteWorkflowEventJournal(paths["database_path"]).read_after(0)
+    assert [event.event_id for event in events][-1] == published.event_id
+
+
+def test_finalization_serializes_cutover_with_cached_json_append(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    paths = _paths(tmp_path)
+    ensure_orchestration_schema(paths["database_path"])
+    bus = InternalEventBus(tmp_path / "internal-events.json")
+    bus.publish(event_type="test.before-finalization")
+    archived_marker_written = Event()
+    release_finalizer = Event()
+    publisher_started = Event()
+    publisher_finished = Event()
+    original_write_json_atomic = json_finalization_module._write_json_atomic
+
+    def pausing_write_json_atomic(path: Path, payload: dict[str, object]) -> None:
+        original_write_json_atomic(path, payload)
+        if Path(path) == paths["marker_path"] and payload.get("state") == "archived":
+            archived_marker_written.set()
+            if not release_finalizer.wait(timeout=5):
+                raise AssertionError("timed out waiting to release finalizer")
+
+    def publish_during_cutover():
+        publisher_started.set()
+        try:
+            return bus.publish(event_type="test.during-finalization")
+        finally:
+            publisher_finished.set()
+
+    monkeypatch.setattr(
+        json_finalization_module, "_write_json_atomic", pausing_write_json_atomic
+    )
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        finalization = pool.submit(
+            finalize_orchestration_json_store,
+            **paths,
+            archive_root=tmp_path / "archives",
+            retention_days=30,
+        )
+        assert archived_marker_written.wait(timeout=5)
+        publication = pool.submit(publish_during_cutover)
+        assert publisher_started.wait(timeout=5)
+        try:
+            assert not publisher_finished.wait(timeout=0.2)
+        finally:
+            release_finalizer.set()
+        assert finalization.result(timeout=5).applied is True
+        published = publication.result(timeout=5)
+
+    assert not paths["workflow_events_path"].exists()
+    events, _cursor = SqliteWorkflowEventJournal(paths["database_path"]).read_after(0)
+    assert [event.subject_id for event in events][-1] == published.event_id
 
 
 def test_internal_event_bus_preserves_explicit_json_rollback_journal(

@@ -188,8 +188,11 @@ sudo systemctl start evander-effect-orchestrator.service evander-trigger-orchest
 hash-manifested directory under `runtime/archives/`, imports only retained terminal history, then
 removes the legacy sources and writes
 `runtime/migrations/orchestration-json-store-finalized-v1.json`. It fails closed if a source changes
-or reappears. If the marker is left in `archived` state by an interrupted run, inspect the recorded
-`archive_path` before recovery; the command will not continue automatically.
+or reappears. It also writes a journal-adjacent cutover tombstone that records the actual configured
+journal, marker, and database paths; publishers share its lock and will not recreate JSON while the
+cutover is running. If either marker is left in `archived` state by an interrupted run, inspect the
+recorded `archive_path` before recovery; publishers fail closed and the command will not continue
+automatically.
 
 Gate execution state is useful when debugging workflow gates:
 

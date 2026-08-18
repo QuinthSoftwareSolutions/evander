@@ -17,7 +17,11 @@ from evander.daemons.effect_orchestrator import EffectExecutionRecord, GateExecu
 from evander.orchestration.host_polling import single_instance_lock
 from evander.repositories.orchestration_db import connect_orchestration_db, json_dumps
 from evander.triggers.queue import SqliteTriggerEventQueue, TriggerQueueRecord
-from evander.workflow.events import WorkflowChangeEvent
+from evander.workflow.events import (
+    WorkflowChangeEvent,
+    workflow_event_finalization_lock,
+    workflow_event_finalization_state_path,
+)
 
 FINALIZATION_VERSION = 1
 _EXPECTED_TABLES = frozenset(
@@ -157,8 +161,30 @@ def finalize_orchestration_json_store(
         now=checked_at,
     )
     if initial_plan.report.already_finalized and initial_plan.report.safe_to_apply:
+        with workflow_event_finalization_lock(workflow_events_path):
+            completed_plan = _build_finalization_plan(
+                database_path=database_path,
+                trigger_events_path=trigger_events_path,
+                effect_executions_path=effect_executions_path,
+                gate_executions_path=gate_executions_path,
+                workflow_events_path=workflow_events_path,
+                marker_path=marker_path,
+                retention_days=retention_days,
+                now=checked_at,
+            )
+            if not (
+                completed_plan.report.safe_to_apply
+                and completed_plan.report.already_finalized
+            ):
+                raise OrchestrationJsonFinalizationBlocked(completed_plan.report)
+            _repair_completed_workflow_event_cutover_state(
+                database_path=Path(database_path),
+                workflow_events_path=Path(workflow_events_path),
+                marker_path=Path(marker_path),
+                retention_days=retention_days,
+            )
         return OrchestrationJsonFinalizationResult(
-            report=initial_plan.report,
+            report=completed_plan.report,
             applied=False,
             archive_path=_completed_marker_archive_path(marker_path),
         )
@@ -188,6 +214,7 @@ def finalize_orchestration_json_store(
                 )
                 raise OrchestrationJsonFinalizationBlocked(blocked_report) from exc
 
+        stack.enter_context(workflow_event_finalization_lock(workflow_events_path))
         plan = _build_finalization_plan(
             database_path=database_path,
             trigger_events_path=trigger_events_path,
@@ -204,15 +231,24 @@ def finalize_orchestration_json_store(
         archive_path = _create_archive(plan, Path(archive_root), checked_at)
         _import_plan(Path(database_path), plan)
         _verify_source_fingerprints(plan)
+        workflow_event_cursor = 0
 
         marker_payload = {
             "version": FINALIZATION_VERSION,
             "state": "archived",
             "database_path": str(Path(database_path).expanduser().resolve()),
+            "workflow_events_path": str(Path(workflow_events_path).expanduser().resolve()),
+            "workflow_event_cursor": workflow_event_cursor,
             "archive_path": str(archive_path.expanduser().resolve()),
             "started_at": checked_at.isoformat(),
             "retention_days": retention_days,
         }
+        cutover_state_path = workflow_event_finalization_state_path(workflow_events_path)
+        cutover_payload = _workflow_event_cutover_payload(
+            marker_payload,
+            marker_path=Path(marker_path),
+        )
+        _write_json_atomic(cutover_state_path, cutover_payload)
         _write_json_atomic(Path(marker_path), marker_payload)
 
         for scan in plan.scans:
@@ -234,6 +270,9 @@ def finalize_orchestration_json_store(
         marker_payload["state"] = "complete"
         marker_payload["completed_at"] = completed_at.isoformat()
         _write_json_atomic(Path(marker_path), marker_payload)
+        cutover_payload["state"] = "complete"
+        cutover_payload["completed_at"] = completed_at.isoformat()
+        _write_json_atomic(cutover_state_path, cutover_payload)
 
     completed_report = replace(
         plan.report,
@@ -286,6 +325,28 @@ def _build_finalization_plan(
                     ),
                 )
             )
+        marker_workflow_events_value = marker.get("workflow_events_path")
+        if marker_workflow_events_value:
+            requested_workflow_events_path = Path(workflow_events_path).expanduser().resolve()
+            try:
+                marker_workflow_events_path = (
+                    Path(str(marker_workflow_events_value)).expanduser().resolve()
+                )
+            except (OSError, RuntimeError, ValueError):
+                marker_workflow_events_path = None
+            if marker_workflow_events_path != requested_workflow_events_path:
+                blockers.append(
+                    OrchestrationJsonFinalizationBlocker(
+                        source="marker",
+                        record_id=None,
+                        reason="marker_workflow_events_mismatch",
+                        detail=(
+                            "completed marker workflow_events_path "
+                            f"{marker_workflow_events_value!r} does not match requested journal "
+                            f"{requested_workflow_events_path}"
+                        ),
+                    )
+                )
         archive_value = marker.get("archive_path")
         archive_manifest = Path(str(archive_value)) / "manifest.json" if archive_value else None
         try:
@@ -923,6 +984,56 @@ def _completed_marker_archive_path(marker_path: Path) -> str | None:
         return None
     value = payload.get("archive_path") if isinstance(payload, dict) else None
     return str(value) if value else None
+
+
+def _workflow_event_cutover_payload(
+    marker_payload: dict[str, Any], *, marker_path: Path
+) -> dict[str, Any]:
+    return {
+        "version": FINALIZATION_VERSION,
+        "state": marker_payload["state"],
+        "marker_path": str(marker_path.expanduser().resolve()),
+        "database_path": marker_payload["database_path"],
+        "workflow_events_path": marker_payload["workflow_events_path"],
+        "workflow_event_cursor": marker_payload["workflow_event_cursor"],
+        "archive_path": marker_payload["archive_path"],
+        "retention_days": marker_payload["retention_days"],
+        "started_at": marker_payload["started_at"],
+    }
+
+
+def _repair_completed_workflow_event_cutover_state(
+    *,
+    database_path: Path,
+    workflow_events_path: Path,
+    marker_path: Path,
+    retention_days: int,
+) -> None:
+    marker_payload = json.loads(marker_path.read_text(encoding="utf-8"))
+    cursor_value = marker_payload.get("workflow_event_cursor")
+    workflow_event_cursor = 0 if cursor_value is None else max(0, int(cursor_value))
+    marker_retention_value = marker_payload.get("retention_days")
+    marker_retention_days = (
+        retention_days
+        if marker_retention_value is None
+        else max(0, int(marker_retention_value))
+    )
+    completed_at = marker_payload.get("completed_at") or datetime.now(UTC).isoformat()
+    cutover_payload = {
+        "version": FINALIZATION_VERSION,
+        "state": "complete",
+        "marker_path": str(marker_path.expanduser().resolve()),
+        "database_path": str(database_path.expanduser().resolve()),
+        "workflow_events_path": str(workflow_events_path.expanduser().resolve()),
+        "workflow_event_cursor": workflow_event_cursor,
+        "archive_path": marker_payload.get("archive_path"),
+        "retention_days": marker_retention_days,
+        "started_at": marker_payload.get("started_at") or completed_at,
+        "completed_at": completed_at,
+    }
+    _write_json_atomic(
+        workflow_event_finalization_state_path(workflow_events_path), cutover_payload
+    )
 
 
 def _write_json_atomic(path: Path, payload: dict[str, Any]) -> None:

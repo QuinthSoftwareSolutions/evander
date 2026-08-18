@@ -28,6 +28,10 @@ from evander.events.scheduled import (
 )
 from evander.model_usage.models import ModelInferenceUsageEvent
 from evander.model_usage.store import ModelUsageStore
+from evander.messaging.targets import (
+    SqliteCommunicationTargetsRepository,
+    communication_targets_db_path,
+)
 from evander.models import SessionManifest
 from evander.repositories.session_manifests import JsonSessionManifestRepository
 from evander_team_addon import api as team_addon_api
@@ -3522,6 +3526,50 @@ def test_team_addon_bootstrap_and_chat_view_are_scoped(tmp_path: Path) -> None:
     missing_view = client.get("/api/addons/team-addon/views/overview")
     assert missing_view.status_code == 404
     assert missing_view.json() == {"error": "view not found"}
+
+
+def test_team_addon_bootstrap_lists_all_registered_communication_targets(
+    tmp_path: Path,
+) -> None:
+    client = _client(tmp_path)
+    runtime_dir = tmp_path / "runtime"
+    SqliteCommunicationTargetsRepository(
+        communication_targets_db_path(runtime_dir)
+    ).write_overlay(
+        "root",
+        {
+            "targets": [
+                {
+                    "id": "ops-discord",
+                    "provider": "discord",
+                    "kind": "discord",
+                    "address": "123456789012345678",
+                    "policy": {"capabilities": ["write"]},
+                },
+                {
+                    "id": "ops-notify-only",
+                    "provider": "teams",
+                    "kind": "teams",
+                    "address": "team-ops/notifications",
+                    "policy": {"capabilities": ["notify"]},
+                },
+            ]
+        },
+    )
+
+    response = client.get("/api/addons/team-addon/bootstrap")
+
+    assert response.status_code == 200
+    assert response.json()["communication_targets"] == [
+        {
+            "value": "ops-discord",
+            "label": "ops-discord (discord/discord, write)",
+        },
+        {
+            "value": "ops-notify-only",
+            "label": "ops-notify-only (teams/teams, notify)",
+        },
+    ]
 
 
 def test_team_addon_planning_and_operations_views_include_renderer_dependencies(
