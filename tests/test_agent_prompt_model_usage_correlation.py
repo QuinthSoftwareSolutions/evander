@@ -7,7 +7,7 @@ from types import SimpleNamespace
 import pytest
 
 from evander.config import GatewayConfig
-from evander.daemons.effect_orchestrator import EffectExecutionRecord, JsonExecutionStore
+from evander.daemons.effect_orchestrator import EffectExecutionRecord, SqliteExecutionStore
 from evander.effects.providers.agent_enqueue_prompt import AgentEnqueuePromptEffectProvider
 from evander.effects.providers.agent_prompt import AgentPromptEffectProvider
 from evander.effects.providers.lifecycle_hooks import AgentEnqueuePromptQueueDispatchHook
@@ -385,7 +385,7 @@ def test_queued_libvirt_prompt_dispatch_registers_only_when_dispatched(
             metadata={"workflow_run_id": "workflow-1"},
         )
     )
-    execution_store = JsonExecutionStore(runtime_dir / "effect-orchestrator-executions.json")
+    execution_store = SqliteExecutionStore(runtime_dir / "orchestration.db")
     result = SimpleNamespace(success=True, thread_id="thread-queued")
     resume_calls: list[dict[str, object]] = []
     worker = SimpleNamespace(
@@ -504,7 +504,7 @@ def test_queued_container_prompt_dispatch_registers_and_clears_correlation_conte
         "evander.effects.providers.lifecycle_hooks.build_execution_backend",
         lambda config, admin_service: backend,
     )
-    execution_store = JsonExecutionStore(runtime_dir / "effect-orchestrator-executions.json")
+    execution_store = SqliteExecutionStore(runtime_dir / "orchestration.db")
     worker = SimpleNamespace(
         config=config,
         queued_agent_prompt_store=queue_store,

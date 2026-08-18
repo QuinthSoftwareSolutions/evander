@@ -287,7 +287,6 @@ def test_workflow_reports_service_delegates_report_operations() -> None:
             project_dir=Path("."),
             config=SimpleNamespace(runtime_dir=Path(".")),
             runtime=SimpleNamespace(),
-            trigger_event_repository=SimpleNamespace(),
             workflow_config_admin=SimpleNamespace(),
             list_agents=lambda **kwargs: [],
         )

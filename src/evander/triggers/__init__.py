@@ -6,14 +6,14 @@ from typing import Any
 __all__ = [
     "TriggerDefinitionDiscriminated",
     "TriggerEvent",
-    "TriggerEventQueue",
+    "SqliteTriggerEventQueue",
     "TriggerQueueRecord",
 ]
 
 _EXPORT_MODULES = {
     "TriggerDefinitionDiscriminated": "evander.events.models",
     "TriggerEvent": "evander.events.models",
-    "TriggerEventQueue": ".queue",
+    "SqliteTriggerEventQueue": ".queue",
     "TriggerQueueRecord": ".queue",
 }
 

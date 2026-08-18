@@ -1,8 +1,12 @@
 from __future__ import annotations
 
-from config_helpers import canonical_worker_config
+from config_helpers import (
+    canonical_worker_config,
+    effect_execution_payload,
+    gate_execution_payload,
+    trigger_queue_payload,
+)
 
-import json
 from concurrent.futures import Future
 from datetime import datetime, timezone
 from pathlib import Path
@@ -127,19 +131,17 @@ def _run_cycles(worker: EffectOrchestratorWorker, count: int = 5) -> None:
 
 
 def _gate_records(worker: EffectOrchestratorWorker) -> list[dict[str, object]]:
-    payload = json.loads(worker.worker_config.gate_execution_store_path.read_text(encoding="utf-8"))
+    payload = gate_execution_payload(worker.worker_config)
     return list(payload.values())
 
 
 def _effect_records(worker: EffectOrchestratorWorker) -> list[dict[str, object]]:
-    payload = json.loads(
-        worker.worker_config.effect_execution_store_path.read_text(encoding="utf-8")
-    )
+    payload = effect_execution_payload(worker.worker_config)
     return list(payload.values())
 
 
 def _queue_records(worker: EffectOrchestratorWorker) -> list[dict[str, object]]:
-    payload = json.loads(worker.worker_config.event_queue_store_path.read_text(encoding="utf-8"))
+    payload = trigger_queue_payload(worker.worker_config)
     return list(payload.values())
 
 

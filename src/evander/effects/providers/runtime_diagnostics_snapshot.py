@@ -11,6 +11,7 @@ from typing import Any
 
 from evander.worker.models import WorkerJobRecord
 from evander.worker.store import WorkerJobStore
+from evander.repositories.orchestration_db import connect_orchestration_db
 
 from .base import EffectProviderBase
 
@@ -280,21 +281,41 @@ class RuntimeDiagnosticsSnapshotEffectProvider(EffectProviderBase):
             lines.extend(filtered or ["no matching audit errors or denials"])
         lines.append("")
         lines.append("## Recent orchestrator execution failures")
-        for relative_path in (
-            "effect-orchestrator-executions.json",
-            "gate-orchestrator-executions.json",
-        ):
-            path = runtime_dir / relative_path
-            lines.append("")
-            lines.append(f"### {path}")
-            text = self._read_tail(path, max_bytes=max_bytes, errors=errors)
-            if text is None:
-                lines.append("missing")
-                continue
-            filtered = self._filter_lines(text, EXECUTION_FAILURE_FILTER, limit=120)
-            lines.extend(filtered or ["no matching failures"])
+        lines.extend(self._orchestration_failures_section(runtime_dir=runtime_dir, errors=errors))
         lines.append("")
         lines.extend(self._worker_job_failures_section(runtime_dir=runtime_dir, errors=errors))
+        return lines
+
+    @staticmethod
+    def _orchestration_failures_section(*, runtime_dir: Path, errors: list[str]) -> list[str]:
+        db_path = runtime_dir / "orchestration.db"
+        lines = ["", f"### {db_path}"]
+        if not db_path.exists():
+            return [*lines, "missing"]
+        try:
+            with connect_orchestration_db(db_path) as connection:
+                rows = connection.execute(
+                    """
+                    SELECT payload_json, finished_at, execution_id
+                    FROM effect_executions
+                    WHERE status IN ('failed', 'error', 'error_routed')
+                       OR error IS NOT NULL
+                    UNION ALL
+                    SELECT payload_json, finished_at, execution_id
+                    FROM gate_executions
+                    WHERE status IN ('failed', 'error', 'error_routed')
+                       OR error IS NOT NULL
+                    ORDER BY finished_at DESC, execution_id DESC
+                    LIMIT 120
+                    """
+                ).fetchall()
+        except (OSError, ValueError, sqlite3.Error) as exc:
+            message = f"orchestration store {db_path}: {exc}"
+            errors.append(message)
+            return [*lines, message]
+        lines.extend(str(row["payload_json"]) for row in rows)
+        if not rows:
+            lines.append("no matching failures")
         return lines
 
     @classmethod

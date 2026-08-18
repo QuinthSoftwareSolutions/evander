@@ -14,7 +14,7 @@ from evander.events.models import TriggerEvent
 from evander.local_inference_capacity import local_inference_capacity_store
 from evander.models import VmSummary
 from evander.orchestration.host_polling import notify_wake_socket_for_lock
-from evander.triggers.queue import SqliteTriggerEventQueue, TriggerEventQueue
+from evander.triggers.queue import SqliteTriggerEventQueue
 
 logger = logging.getLogger(__name__)
 
@@ -117,10 +117,7 @@ def await_agent_completion_and_publish(
     runtime_dir: Path,
     vm_name: str,
     dispatch_id: str,
-    event_queue_store_path: Path | None = None,
-    workflow_event_journal_path: Path | None = None,
     effect_lock_path: Path | None = None,
-    orchestration_store_backend: str = "json",
     orchestration_store_path: Path | None = None,
     orchestration_retention_days: int | None = None,
     vm_user: str = _DEFAULT_VM_USER,
@@ -132,21 +129,10 @@ def await_agent_completion_and_publish(
     local_inference_slot_id: str | None = None,
 ) -> bool:
     admin_runtime = build_admin_runtime(runtime_dir=runtime_dir)
-    if orchestration_store_backend == "sqlite":
-        event_queue = SqliteTriggerEventQueue(
-            orchestration_store_path or runtime_dir / "orchestration.db",
-            retention_days=orchestration_retention_days,
-        )
-    else:
-        queue_kwargs = (
-            {"journal_path": workflow_event_journal_path}
-            if workflow_event_journal_path is not None
-            else {}
-        )
-        event_queue = TriggerEventQueue(
-            event_queue_store_path or runtime_dir / "trigger-orchestrator-events.json",
-            **queue_kwargs,
-        )
+    event_queue = SqliteTriggerEventQueue(
+        orchestration_store_path or runtime_dir / "orchestration.db",
+        retention_days=orchestration_retention_days,
+    )
     resolved_effect_lock_path = effect_lock_path or runtime_dir / "effect-orchestrator.lock"
     started_at = time.monotonic()
 
@@ -198,10 +184,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--runtime-dir", required=True)
     parser.add_argument("--vm-name", required=True)
     parser.add_argument("--dispatch-id", required=True)
-    parser.add_argument("--event-queue-store-path")
-    parser.add_argument("--workflow-event-journal-path")
     parser.add_argument("--effect-lock-path")
-    parser.add_argument("--orchestration-store-backend", choices=("json", "sqlite"), default="json")
     parser.add_argument("--orchestration-store-path")
     parser.add_argument("--orchestration-retention-days", type=int)
     parser.add_argument("--vm-user", default=_DEFAULT_VM_USER)
@@ -228,14 +211,7 @@ def main() -> int:
         runtime_dir=Path(args.runtime_dir),
         vm_name=args.vm_name,
         dispatch_id=args.dispatch_id,
-        event_queue_store_path=Path(args.event_queue_store_path)
-        if args.event_queue_store_path
-        else None,
-        workflow_event_journal_path=Path(args.workflow_event_journal_path)
-        if args.workflow_event_journal_path
-        else None,
         effect_lock_path=Path(args.effect_lock_path) if args.effect_lock_path else None,
-        orchestration_store_backend=args.orchestration_store_backend,
         orchestration_store_path=Path(args.orchestration_store_path)
         if args.orchestration_store_path
         else None,

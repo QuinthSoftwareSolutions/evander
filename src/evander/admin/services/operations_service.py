@@ -28,7 +28,7 @@ from evander.admin.services.ports import PrivilegedHelperFactoryPort, Privileged
 from evander.config import AssistantSettingsConfig, TriggerOrchestratorWorkerGlobalConfig
 from evander.events.internal import InternalEventSource
 from evander.orchestration.host_polling import notify_wake_socket_for_lock
-from evander.triggers.queue import SqliteTriggerEventQueue, TriggerEventQueue
+from evander.triggers.queue import SqliteTriggerEventQueue
 from evander.events.models import TriggerEvent
 
 from evander.models import ToolName
@@ -434,16 +434,10 @@ class OperationsAdminService:
     ) -> dict[str, object]:
         document = self.ensure_chat_assistant_workflow()
         worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(document.config)
-        if worker_config.orchestration_store_backend == "sqlite":
-            queue = SqliteTriggerEventQueue(
-                worker_config.orchestration_store_path,
-                retention_days=worker_config.orchestration_retention_days,
-            )
-        else:
-            queue = TriggerEventQueue(
-                worker_config.event_queue_store_path,
-                journal_path=worker_config.workflow_event_journal_path,
-            )
+        queue = SqliteTriggerEventQueue(
+            worker_config.orchestration_store_path,
+            retention_days=worker_config.orchestration_retention_days,
+        )
         normalized_backend = str(backend or self._config.execution_backend).strip() or "libvirt_vm"
         normalized_capability_mode = str(assistant_capability_mode or "").strip() or "read-only"
         if normalized_capability_mode != "full-access":

@@ -75,13 +75,10 @@ from evander.provider_config import ProviderConfigResolver
 from evander.pr_feedback import FeedbackEnvelope, PrFeedbackStore
 from evander.messaging.agent_prompt_store import AgentPromptRecord
 from evander.managed_git_grants import managed_git_ssh_alias
-from evander.triggers.queue import SqliteTriggerEventQueue
-from evander.triggers.queue import TriggerEventQueue
+from evander.triggers.queue import SqliteTriggerEventQueue, TriggerQueueRecord
 from evander.daemons.effect_orchestrator import (
     GateExecutionRecord,
     EffectExecutionRecord,
-    JsonExecutionStore,
-    JsonGateExecutionStore,
     SqliteExecutionStore,
     SqliteGateExecutionStore,
 )
@@ -210,11 +207,7 @@ def wait_for_agent_create_operation(
 def write_failure_cluster_config(
     tmp_path: Path,
     *,
-    orchestration_store_backend: str = "sqlite",
     orchestration_store_path: Path | None = None,
-    event_queue_store_path: Path | None = None,
-    effect_execution_store_path: Path | None = None,
-    gate_execution_store_path: Path | None = None,
 ) -> Path:
     runtime_dir = tmp_path / "runtime"
     packs_dir = tmp_path / "config" / "workflow-packs"
@@ -270,24 +263,11 @@ def write_failure_cluster_config(
     normalized_orchestration_store_path = orchestration_store_path or (
         runtime_dir / "orchestration.db"
     )
-    normalized_event_queue_store_path = event_queue_store_path or (
-        runtime_dir / "trigger-orchestrator-events.json"
-    )
-    normalized_effect_execution_store_path = effect_execution_store_path or (
-        runtime_dir / "effect-orchestrator-executions.json"
-    )
-    normalized_gate_execution_store_path = gate_execution_store_path or (
-        runtime_dir / "gate-orchestrator-executions.json"
-    )
     config_path.write_text(
         json.dumps(
             {
                 "runtime_dir": str(runtime_dir),
-                "orchestration_store_backend": orchestration_store_backend,
                 "orchestration_store_path": str(normalized_orchestration_store_path),
-                "event_queue_store_path": str(normalized_event_queue_store_path),
-                "effect_execution_store_path": str(normalized_effect_execution_store_path),
-                "gate_execution_store_path": str(normalized_gate_execution_store_path),
                 "workflow_packs": ["failure-clusters.v1.json"],
             }
         ),
@@ -1551,7 +1531,7 @@ def test_read_capacity_health_aggregates_sessions_workers_queue_and_prompts(
     )
 
     queue_path = service.config.runtime_dir / "workflow-events.json"
-    queue = TriggerEventQueue(queue_path)
+    queue = SqliteTriggerEventQueue(queue_path)
     queue.publish(
         TriggerEvent(
             event_id="evt-old",
@@ -1573,13 +1553,7 @@ def test_read_capacity_health_aggregates_sessions_workers_queue_and_prompts(
     queue.mark_inflight("evt-new")
 
     workflow_paths = {
-        "orchestration_store_backend": "json",
-        "orchestration_store_path": service.config.runtime_dir / "orchestration.db",
-        "event_queue_store_path": queue_path,
-        "effect_execution_store_path": service.config.runtime_dir / "effect-executions.json",
-        "gate_execution_store_path": service.config.runtime_dir / "gate-executions.json",
-        "workflow_config_snapshot_store_path": service.config.runtime_dir
-        / "workflow-config-snapshots.json",
+        "orchestration_store_path": queue_path,
         "await_agent_store_path": service.config.runtime_dir / "await-agent.json",
         "legacy_await_agent_store_path": service.config.runtime_dir / "legacy-await-agent.json",
     }
@@ -1799,7 +1773,7 @@ def test_read_capacity_health_aggregates_sessions_workers_queue_and_prompts(
         "healthz_live_probe"
     )
     assert health.queue.status is TelemetryStatus.AVAILABLE
-    assert health.queue.backend == "json"
+    assert health.queue.backend == "sqlite"
     assert health.queue.pending_count == 1
     assert health.queue.inflight_count == 1
     assert health.queue.oldest_event_id == "evt-old"
@@ -3614,10 +3588,10 @@ def test_run_admin_agent_action_prompt_agent_records_libvirt_waiting_execution(
     )
 
     stores = service.workflow_config_admin._workflow_run_store_paths()
-    if service.workflow_config_admin._workflow_uses_sqlite_store(stores):
+    if stores:
         execution_store = SqliteExecutionStore(Path(stores["orchestration_store_path"]))
     else:
-        execution_store = JsonExecutionStore(Path(stores["effect_execution_store_path"]))
+        execution_store = SqliteExecutionStore(Path(stores["orchestration_store_path"]))
     records = list(execution_store.read_all().values())
 
     assert result["queued"] is False
@@ -3683,10 +3657,10 @@ def test_run_admin_agent_action_tracks_same_context_dispatch_without_new_thread_
     )
 
     stores = service.workflow_config_admin._workflow_run_store_paths()
-    if service.workflow_config_admin._workflow_uses_sqlite_store(stores):
+    if stores:
         execution_store = SqliteExecutionStore(Path(stores["orchestration_store_path"]))
     else:
-        execution_store = JsonExecutionStore(Path(stores["effect_execution_store_path"]))
+        execution_store = SqliteExecutionStore(Path(stores["orchestration_store_path"]))
     records = list(execution_store.read_all().values())
 
     assert resume_modes == ["same_context"]
@@ -3828,10 +3802,10 @@ def test_run_admin_agent_action_prompt_agent_records_direct_container_dispatch(
     )
 
     stores = service.workflow_config_admin._workflow_run_store_paths()
-    if service.workflow_config_admin._workflow_uses_sqlite_store(stores):
+    if stores:
         execution_store = SqliteExecutionStore(Path(stores["orchestration_store_path"]))
     else:
-        execution_store = JsonExecutionStore(Path(stores["effect_execution_store_path"]))
+        execution_store = SqliteExecutionStore(Path(stores["orchestration_store_path"]))
     records = list(execution_store.read_all().values())
 
     assert result["success"] is True
@@ -3937,10 +3911,10 @@ def test_resume_agent_routes_container_session_through_container_prompt_dispatch
     )
 
     stores = service.workflow_config_admin._workflow_run_store_paths()
-    if service.workflow_config_admin._workflow_uses_sqlite_store(stores):
+    if stores:
         execution_store = SqliteExecutionStore(Path(stores["orchestration_store_path"]))
     else:
-        execution_store = JsonExecutionStore(Path(stores["effect_execution_store_path"]))
+        execution_store = SqliteExecutionStore(Path(stores["orchestration_store_path"]))
     records = list(execution_store.read_all().values())
 
     assert result.success is True
@@ -5122,10 +5096,6 @@ def test_resume_agent_passes_explicit_resume_thread_id(tmp_path: Path, monkeypat
     ]
     assert "--dispatch-id" in watcher["cmd"]
     assert "dispatch-keep-1" in watcher["cmd"]
-    assert "--event-queue-store-path" in watcher["cmd"]
-    assert "--orchestration-store-backend" in watcher["cmd"]
-    backend_index = watcher["cmd"].index("--orchestration-store-backend")
-    assert watcher["cmd"][backend_index + 1] == "sqlite"
     assert "--orchestration-store-path" in watcher["cmd"]
     store_index = watcher["cmd"].index("--orchestration-store-path")
     assert watcher["cmd"][store_index + 1] == str(service.config.runtime_dir / "orchestration.db")
@@ -10350,81 +10320,98 @@ def test_workflow_graph_activity_report_groups_runtime_records_by_graph(
         json.dumps({"runtime_dir": str(runtime_dir), "workflow_packs": ["demo.v1.json"]}),
         encoding="utf-8",
     )
-    (runtime_dir / "trigger-orchestrator-events.json").write_text(
-        json.dumps(
+    database_path = runtime_dir / "orchestration.db"
+    queue_store = SqliteTriggerEventQueue(database_path)
+    trigger_records = {
+        "evt-ticket": {
+            "event_id": "evt-ticket",
+            "trigger_id": "trigger-ticket",
+            "trigger_type": "trigger:ticket:created",
+            "trace_id": "trace-ticket",
+            "occurred_at": "2026-05-01T10:00:00Z",
+            "delivery_state": "delivered",
+            "payload": {},
+        },
+        "evt-cron": {
+            "event_id": "evt-cron",
+            "trigger_id": "trigger-cron",
+            "trigger_type": "trigger:cron",
+            "trace_id": "trace-cron",
+            "occurred_at": "2026-05-01T11:00:00Z",
+            "delivery_state": "delivered",
+            "payload": {},
+        },
+        "evt-old": {
+            "event_id": "evt-old",
+            "trigger_id": "trigger-ticket",
+            "trigger_type": "trigger:ticket:created",
+            "trace_id": "trace-old",
+            "occurred_at": "2026-04-30T10:00:00Z",
+            "delivery_state": "delivered",
+            "payload": {},
+        },
+    }
+
+    def seed_trigger_records(records):
+        records.update(
             {
-                "evt-ticket": {
-                    "event_id": "evt-ticket",
-                    "trigger_id": "trigger-ticket",
-                    "trigger_type": "trigger:ticket:created",
-                    "trace_id": "trace-ticket",
-                    "occurred_at": "2026-05-01T10:00:00Z",
-                    "delivery_state": "delivered",
-                    "payload": {},
-                },
-                "evt-cron": {
-                    "event_id": "evt-cron",
-                    "trigger_id": "trigger-cron",
-                    "trigger_type": "trigger:cron",
-                    "trace_id": "trace-cron",
-                    "occurred_at": "2026-05-01T11:00:00Z",
-                    "delivery_state": "delivered",
-                    "payload": {},
-                },
-                "evt-old": {
-                    "event_id": "evt-old",
-                    "trigger_id": "trigger-ticket",
-                    "trigger_type": "trigger:ticket:created",
-                    "trace_id": "trace-old",
-                    "occurred_at": "2026-04-30T10:00:00Z",
-                    "delivery_state": "delivered",
-                    "payload": {},
-                },
+                event_id: TriggerQueueRecord.model_validate(record)
+                for event_id, record in trigger_records.items()
             }
-        ),
-        encoding="utf-8",
+        )
+
+    queue_store.update_all(seed_trigger_records)
+    SqliteGateExecutionStore(database_path).record_execution(
+        GateExecutionRecord(
+            execution_id="gate-ticket",
+            idempotency_key="gate-ticket",
+            event_id="evt-ticket",
+            trace_id="trace-ticket",
+            source_node_id="trigger-ticket",
+            source_trigger_type="trigger:ticket:created",
+            gate_id="gate-filter",
+            gate_type="gate:filter",
+            status="succeeded",
+            started_at=datetime(2026, 5, 1, 10, 1, tzinfo=UTC),
+            finished_at=datetime(2026, 5, 1, 10, 1, 2, tzinfo=UTC),
+            resolved_config_hash="fixture",
+        )
     )
-    (runtime_dir / "gate-orchestrator-executions.json").write_text(
-        json.dumps(
-            {
-                "gate-ticket": {
-                    "execution_id": "gate-ticket",
-                    "event_id": "evt-ticket",
-                    "trace_id": "trace-ticket",
-                    "gate_id": "gate-filter",
-                    "status": "succeeded",
-                    "started_at": "2026-05-01T10:01:00Z",
-                    "finished_at": "2026-05-01T10:01:02Z",
-                }
-            }
+    effect_store = SqliteExecutionStore(database_path)
+    for execution_id, event_id, trace_id, effect_id, started_at, finished_at in (
+        (
+            "effect-ticket",
+            "evt-ticket",
+            "trace-ticket",
+            "effect-ticket",
+            datetime(2026, 5, 1, 10, 2, tzinfo=UTC),
+            datetime(2026, 5, 1, 10, 3, tzinfo=UTC),
         ),
-        encoding="utf-8",
-    )
-    (runtime_dir / "effect-orchestrator-executions.json").write_text(
-        json.dumps(
-            {
-                "effect-ticket": {
-                    "execution_id": "effect-ticket",
-                    "event_id": "evt-ticket",
-                    "trace_id": "trace-ticket",
-                    "effect_id": "effect-ticket",
-                    "status": "succeeded",
-                    "started_at": "2026-05-01T10:02:00Z",
-                    "finished_at": "2026-05-01T10:03:00Z",
-                },
-                "effect-cron-old": {
-                    "execution_id": "effect-cron-old",
-                    "event_id": "evt-cron-old",
-                    "trace_id": "trace-cron-old",
-                    "effect_id": "effect-cron",
-                    "status": "succeeded",
-                    "started_at": "2026-04-30T10:02:00Z",
-                    "finished_at": "2026-04-30T10:03:00Z",
-                },
-            }
+        (
+            "effect-cron-old",
+            "evt-cron-old",
+            "trace-cron-old",
+            "effect-cron",
+            datetime(2026, 4, 30, 10, 2, tzinfo=UTC),
+            datetime(2026, 4, 30, 10, 3, tzinfo=UTC),
         ),
-        encoding="utf-8",
-    )
+    ):
+        effect_store.record_execution(
+            EffectExecutionRecord(
+                execution_id=execution_id,
+                idempotency_key=execution_id,
+                event_id=event_id,
+                trace_id=trace_id,
+                source_node_id="trigger-ticket",
+                source_trigger_type="trigger:ticket:created",
+                effect_id=effect_id,
+                effect_type="effect:test",
+                status="succeeded",
+                started_at=started_at,
+                finished_at=finished_at,
+                resolved_config_hash="fixture",
+            )
+        )
     service = build_admin_runtime(write_config(tmp_path))
 
     report = service.workflow_reports_admin.read_workflow_graph_activity_report(
@@ -10865,19 +10852,14 @@ def test_read_workflow_failure_clusters_report_clusters_volatile_sqlite_records_
     assert empty_period.has_more is False
 
 
-def test_read_workflow_failure_clusters_report_uses_json_fallback_without_initializing_missing_files(
+def test_read_workflow_failure_clusters_report_initializes_missing_sqlite_store(
     tmp_path: Path,
 ) -> None:
     write_config(tmp_path)
-    event_queue_store_path = tmp_path / "runtime" / "trigger-orchestrator-events.json"
-    effect_execution_store_path = tmp_path / "runtime" / "effect-orchestrator-executions.json"
-    gate_execution_store_path = tmp_path / "runtime" / "gate-orchestrator-executions.json"
+    orchestration_store_path = tmp_path / "runtime" / "orchestration.db"
     write_failure_cluster_config(
         tmp_path,
-        orchestration_store_backend="json",
-        event_queue_store_path=event_queue_store_path,
-        effect_execution_store_path=effect_execution_store_path,
-        gate_execution_store_path=gate_execution_store_path,
+        orchestration_store_path=orchestration_store_path,
     )
     service = build_admin_runtime(write_config(tmp_path))
 
@@ -10888,9 +10870,7 @@ def test_read_workflow_failure_clusters_report_uses_json_fallback_without_initia
     )
 
     assert report.clusters == []
-    assert event_queue_store_path.exists() is False
-    assert effect_execution_store_path.exists() is False
-    assert gate_execution_store_path.exists() is False
+    assert orchestration_store_path.exists() is True
 
 
 def test_workflow_failure_cluster_payload_models_validate_representative_json() -> None:
@@ -11347,13 +11327,8 @@ def test_admin_service_keeps_completion_pending_workflow_runs_visible_and_cleara
     runtime_dir.mkdir(parents=True, exist_ok=True)
     stores = {
         "runtime_dir": runtime_dir,
-        "orchestration_store_backend": "json",
         "orchestration_store_path": runtime_dir / "orchestration.db",
         "orchestration_retention_days": 30,
-        "event_queue_store_path": runtime_dir / "trigger-orchestrator-events.json",
-        "effect_execution_store_path": runtime_dir / "effect-orchestrator-executions.json",
-        "gate_execution_store_path": runtime_dir / "gate-orchestrator-executions.json",
-        "workflow_config_snapshot_store_path": runtime_dir / "workflow-config-snapshots.json",
         "await_agent_store_path": runtime_dir
         / "providers"
         / "gates"
@@ -11371,7 +11346,7 @@ def test_admin_service_keeps_completion_pending_workflow_runs_visible_and_cleara
 
     started_at = datetime(2026, 5, 20, 11, 0, tzinfo=UTC)
     finished_at = datetime(2026, 5, 20, 11, 1, tzinfo=UTC)
-    effect_store = JsonExecutionStore(stores["effect_execution_store_path"])
+    effect_store = SqliteExecutionStore(stores["orchestration_store_path"])
     effect_store.record_execution(
         EffectExecutionRecord(
             execution_id="exec-effect-1",
@@ -11393,7 +11368,7 @@ def test_admin_service_keeps_completion_pending_workflow_runs_visible_and_cleara
             completion_event_branch_port="main",
         )
     )
-    gate_store = JsonGateExecutionStore(stores["gate_execution_store_path"])
+    gate_store = SqliteGateExecutionStore(stores["orchestration_store_path"])
     gate_store.record_execution(
         GateExecutionRecord(
             execution_id="exec-gate-1",
@@ -11437,10 +11412,10 @@ def test_admin_service_keeps_completion_pending_workflow_runs_visible_and_cleara
     assert clear.effect_records_updated == 1
     assert clear.gate_records_updated == 1
 
-    cleared_effect = JsonExecutionStore(stores["effect_execution_store_path"]).get_execution(
+    cleared_effect = SqliteExecutionStore(stores["orchestration_store_path"]).get_execution(
         "exec-effect-1"
     )
-    cleared_gate = JsonGateExecutionStore(stores["gate_execution_store_path"]).get_execution(
+    cleared_gate = SqliteGateExecutionStore(stores["orchestration_store_path"]).get_execution(
         "exec-gate-1"
     )
     assert cleared_effect is not None
@@ -11461,13 +11436,8 @@ def test_admin_service_read_workflow_run_search_uses_sqlite_event_slice(
     runtime_dir.mkdir(parents=True, exist_ok=True)
     stores = {
         "runtime_dir": runtime_dir,
-        "orchestration_store_backend": "sqlite",
         "orchestration_store_path": runtime_dir / "orchestration.db",
         "orchestration_retention_days": 365,
-        "event_queue_store_path": runtime_dir / "trigger-orchestrator-events.json",
-        "effect_execution_store_path": runtime_dir / "effect-orchestrator-executions.json",
-        "gate_execution_store_path": runtime_dir / "gate-orchestrator-executions.json",
-        "workflow_config_snapshot_store_path": runtime_dir / "workflow-config-snapshots.json",
         "await_agent_store_path": runtime_dir
         / "providers"
         / "gates"
@@ -11596,13 +11566,8 @@ def test_admin_service_read_workflow_run_search_without_session_reaches_past_sql
     runtime_dir.mkdir(parents=True, exist_ok=True)
     stores = {
         "runtime_dir": runtime_dir,
-        "orchestration_store_backend": "sqlite",
         "orchestration_store_path": runtime_dir / "orchestration.db",
         "orchestration_retention_days": 365,
-        "event_queue_store_path": runtime_dir / "trigger-orchestrator-events.json",
-        "effect_execution_store_path": runtime_dir / "effect-orchestrator-executions.json",
-        "gate_execution_store_path": runtime_dir / "gate-orchestrator-executions.json",
-        "workflow_config_snapshot_store_path": runtime_dir / "workflow-config-snapshots.json",
         "await_agent_store_path": runtime_dir
         / "providers"
         / "gates"
@@ -11695,172 +11660,6 @@ def test_admin_service_read_workflow_run_search_without_session_reaches_past_sql
     assert active_only_search.runs == []
 
 
-def test_admin_service_read_workflow_run_snapshot_includes_recent_node_activity_from_json_stores(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    service = build_admin_runtime(write_config(tmp_path))
-    workflow_admin = service.workflow_reports_admin
-    runtime_dir = tmp_path / "runtime"
-    runtime_dir.mkdir(parents=True, exist_ok=True)
-    now = datetime(2026, 5, 21, 12, 0, tzinfo=UTC)
-    monkeypatch.setattr(workflow_reports_service, "_utc_now", lambda: now)
-    stores = {
-        "runtime_dir": runtime_dir,
-        "orchestration_store_backend": "json",
-        "orchestration_store_path": runtime_dir / "orchestration.db",
-        "orchestration_retention_days": 30,
-        "event_queue_store_path": runtime_dir / "trigger-orchestrator-events.json",
-        "effect_execution_store_path": runtime_dir / "effect-orchestrator-executions.json",
-        "gate_execution_store_path": runtime_dir / "gate-orchestrator-executions.json",
-        "workflow_config_snapshot_store_path": runtime_dir / "workflow-config-snapshots.json",
-        "await_agent_store_path": runtime_dir
-        / "providers"
-        / "gates"
-        / "await-agent"
-        / "pending.json",
-        "legacy_await_agent_store_path": runtime_dir / "await-agent-pending.json",
-    }
-    monkeypatch.setattr(workflow_admin, "_workflow_run_store_paths", lambda: stores)
-    monkeypatch.setattr(
-        workflow_admin,
-        "_read_composed_workflow_editor_document",
-        lambda: SimpleNamespace(graphs=[]),
-    )
-
-    queue_store = TriggerEventQueue(stores["event_queue_store_path"])
-    queue_store.publish(
-        TriggerEvent(
-            event_id="evt-trigger-recent",
-            trigger_id="trigger-recent",
-            trigger_type="trigger:test",
-            occurred_at=now - timedelta(seconds=20),
-            payload={"kind": "json"},
-            trace_id="trace-trigger-recent",
-        )
-    )
-    queue_store.mark_delivered("evt-trigger-recent", delivered_at=now - timedelta(seconds=3))
-
-    effect_store = JsonExecutionStore(stores["effect_execution_store_path"])
-    effect_store.record_execution(
-        EffectExecutionRecord(
-            execution_id="exec-effect-recent",
-            idempotency_key="evt-effect-recent::effect-recent",
-            event_id="evt-effect-recent",
-            trace_id="trace-effect-recent",
-            source_node_id="trigger-recent",
-            source_trigger_type="trigger:test",
-            effect_id="effect-recent",
-            effect_type="effect:test",
-            status="succeeded",
-            started_at=now - timedelta(seconds=4),
-            finished_at=now - timedelta(seconds=2),
-            resolved_config_hash="hash-effect-recent",
-            resolved_config={},
-            input_payload={},
-            outputs={},
-        )
-    )
-    effect_store.record_execution(
-        EffectExecutionRecord(
-            execution_id="exec-effect-old",
-            idempotency_key="evt-effect-old::effect-old",
-            event_id="evt-effect-old",
-            trace_id="trace-effect-old",
-            source_node_id="trigger-old",
-            source_trigger_type="trigger:test",
-            effect_id="effect-old",
-            effect_type="effect:test",
-            status="succeeded",
-            started_at=now - timedelta(seconds=30),
-            finished_at=now - timedelta(seconds=20),
-            resolved_config_hash="hash-effect-old",
-            resolved_config={},
-            input_payload={},
-            outputs={},
-        )
-    )
-
-    gate_store = JsonGateExecutionStore(stores["gate_execution_store_path"])
-    gate_store.record_execution(
-        GateExecutionRecord(
-            execution_id="exec-gate-recent",
-            idempotency_key="evt-gate-recent::gate-recent",
-            event_id="evt-gate-recent",
-            trace_id="trace-gate-recent",
-            source_node_id="effect-recent",
-            source_trigger_type="trigger:test",
-            gate_id="gate-recent",
-            gate_type="gate:test",
-            status="succeeded",
-            started_at=now - timedelta(seconds=3),
-            finished_at=now - timedelta(seconds=1),
-            resolved_config_hash="hash-gate-recent",
-            resolved_config={},
-            input_payload={},
-            outputs={},
-            inputs_by_source={},
-            input_event_ids_by_source={},
-            input_occurred_at_by_source={},
-        )
-    )
-
-    snapshot = service.workflow_config_admin.read_workflow_run_snapshot()
-    payload = snapshot.model_dump(mode="json")
-
-    assert snapshot.generated_at == now
-    assert payload["runs"] == []
-    assert payload["node_activity"] == {}
-    assert [item["node_id"] for item in payload["recent_node_activity"]] == [
-        "gate-recent",
-        "effect-recent",
-        "trigger-recent",
-    ]
-    assert payload["recent_node_activity"][2]["activity_at"] == "2026-05-21T11:59:57Z"
-    assert payload["recent_node_activity"][0]["source"] == "gate_execution"
-
-
-def test_admin_service_read_workflow_run_snapshot_json_does_not_initialize_store_files(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    service = build_admin_runtime(write_config(tmp_path))
-    workflow_admin = service.workflow_reports_admin
-    runtime_dir = tmp_path / "json-runtime"
-    stores = {
-        "runtime_dir": runtime_dir,
-        "orchestration_store_backend": "json",
-        "orchestration_store_path": runtime_dir / "orchestration.db",
-        "orchestration_retention_days": 30,
-        "event_queue_store_path": runtime_dir / "trigger-orchestrator-events.json",
-        "effect_execution_store_path": runtime_dir / "effect-orchestrator-executions.json",
-        "gate_execution_store_path": runtime_dir / "gate-orchestrator-executions.json",
-        "workflow_config_snapshot_store_path": runtime_dir / "workflow-config-snapshots.json",
-        "await_agent_store_path": runtime_dir
-        / "providers"
-        / "gates"
-        / "await-agent"
-        / "pending.json",
-        "legacy_await_agent_store_path": runtime_dir / "await-agent-pending.json",
-    }
-    monkeypatch.setattr(workflow_admin, "_workflow_run_store_paths", lambda: stores)
-    monkeypatch.setattr(
-        workflow_admin,
-        "_workflow_run_store_bundle",
-        lambda _: pytest.fail("JSON snapshot read constructed workflow stores"),
-    )
-    monkeypatch.setattr(
-        workflow_admin,
-        "_read_composed_workflow_editor_document",
-        lambda: SimpleNamespace(graphs=[]),
-    )
-
-    snapshot = service.workflow_config_admin.read_workflow_run_snapshot()
-
-    assert snapshot.runs == []
-    assert snapshot.node_activity == {}
-    assert snapshot.recent_node_activity == []
-    assert not runtime_dir.exists()
-
-
 def test_admin_service_read_workflow_run_snapshot_includes_recent_node_activity_from_sqlite_stores(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -11872,13 +11671,8 @@ def test_admin_service_read_workflow_run_snapshot_includes_recent_node_activity_
     monkeypatch.setattr(workflow_reports_service, "_utc_now", lambda: now)
     stores = {
         "runtime_dir": runtime_dir,
-        "orchestration_store_backend": "sqlite",
         "orchestration_store_path": runtime_dir / "orchestration.db",
         "orchestration_retention_days": 365,
-        "event_queue_store_path": runtime_dir / "trigger-orchestrator-events.json",
-        "effect_execution_store_path": runtime_dir / "effect-orchestrator-executions.json",
-        "gate_execution_store_path": runtime_dir / "gate-orchestrator-executions.json",
-        "workflow_config_snapshot_store_path": runtime_dir / "workflow-config-snapshots.json",
         "await_agent_store_path": runtime_dir
         / "providers"
         / "gates"

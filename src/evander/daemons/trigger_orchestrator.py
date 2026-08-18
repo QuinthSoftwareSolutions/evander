@@ -37,7 +37,7 @@ from evander.orchestration.adapters import (
     TriggerExecutionRecorderAdapter,
 )
 from evander.workflow.engine import OrchestrationLoop
-from evander.triggers.queue import SqliteTriggerEventQueue, TriggerEventQueue
+from evander.triggers.queue import SqliteTriggerEventQueue
 from evander.workflow.runtime_config import (
     FixedTriggerOrchestratorWorkerGlobalConfigReloader,
     TriggerOrchestratorWorkerGlobalConfigReloader,
@@ -57,7 +57,6 @@ from evander.orchestration.host_polling import (
 from evander.orchestration.kernels import PollingKernelConfig, PollingOrchestratorKernel
 from evander.orchestration.wal_maintenance import (
     OrchestrationWalCheckpointMaintenance,
-    sqlite_orchestration_store_enabled,
 )
 from evander.orchestration.internal_events import build_internal_event_bus
 from evander.orchestration.wiring import TriggerWorkerWiring, build_trigger_worker_wiring
@@ -463,15 +462,10 @@ def _effective_trigger_directory_path(
 
 def _build_trigger_event_queue(
     worker_config: TriggerOrchestratorWorkerGlobalConfig,
-) -> TriggerEventQueue | SqliteTriggerEventQueue:
-    if sqlite_orchestration_store_enabled(worker_config):
-        return SqliteTriggerEventQueue(
-            worker_config.orchestration_store_path,
-            retention_days=worker_config.orchestration_retention_days,
-        )
-    return TriggerEventQueue(
-        worker_config.event_queue_store_path,
-        journal_path=worker_config.workflow_event_journal_path,
+) -> SqliteTriggerEventQueue:
+    return SqliteTriggerEventQueue(
+        worker_config.orchestration_store_path,
+        retention_days=worker_config.orchestration_retention_days,
     )
 
 

@@ -50,14 +50,9 @@ PYTHONPATH="${ROOT_DIR}/src${PYTHONPATH:+:${PYTHONPATH}}" \
 from __future__ import annotations
 
 import json
-import os
 import sys
-import tempfile
-import time
 from datetime import datetime, timezone
-from contextlib import contextmanager
 from pathlib import Path
-import fcntl
 
 from evander.events.models import TriggerEvent
 from evander.orchestration.host_polling import HostWakeNotifier, wake_socket_path_for_lock
@@ -175,13 +170,6 @@ def _resolve_effect_lock_path(
     return runtime_dir / "effect-orchestrator.lock"
 
 
-def _uses_sqlite_queue(config: dict) -> bool:
-    return (
-        "orchestration_store_backend" in config
-        and str(config.get("orchestration_store_backend", "")).strip().lower() == "sqlite"
-    )
-
-
 def _branch_name(ref_name: str) -> str | None:
     normalized = ref_name.strip()
     prefix = "refs/heads/"
@@ -189,18 +177,6 @@ def _branch_name(ref_name: str) -> str | None:
         return None
     branch = normalized.removeprefix(prefix).strip()
     return branch or None
-
-
-@contextmanager
-def _locked_queue(path: Path):
-    lock_path = path.with_name(f"{path.name}.lock")
-    lock_path.parent.mkdir(parents=True, exist_ok=True)
-    with lock_path.open("a+", encoding="utf-8") as lock_file:
-        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
-        try:
-            yield
-        finally:
-            fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
 
 
 def _build_trigger_events(
@@ -267,56 +243,6 @@ def _publish_sqlite_events(database_path: Path, events: list[TriggerEvent]) -> i
     return published
 
 
-def _publish_json_events(queue_store_path: Path, events: list[TriggerEvent]) -> int:
-    queue_store_path.parent.mkdir(parents=True, exist_ok=True)
-    published = 0
-    with _locked_queue(queue_store_path):
-        hold_seconds = float(os.environ.get("EVANDER_TRIGGER_QUEUE_LOCK_HOLD_SECONDS", "0") or "0")
-        if hold_seconds > 0:
-            time.sleep(hold_seconds)
-        if queue_store_path.exists():
-            try:
-                queue_payload = json.loads(queue_store_path.read_text(encoding="utf-8"))
-            except (OSError, json.JSONDecodeError):
-                queue_payload = {}
-            if not isinstance(queue_payload, dict):
-                queue_payload = {}
-        else:
-            queue_payload = {}
-
-        for event in events:
-            if event.event_id in queue_payload:
-                continue
-            published += 1
-            queue_payload[event.event_id] = {
-                "event_id": event.event_id,
-                "trigger_id": event.trigger_id,
-                "trigger_type": event.trigger_type,
-                "occurred_at": event.occurred_at.isoformat(),
-                "payload": event.payload,
-                "delivery_state": "pending",
-                "inflight_at": None,
-                "delivered_at": None,
-                "idempotency_key": None,
-            }
-
-        temp_fd, temp_path = tempfile.mkstemp(
-            prefix=f"{queue_store_path.name}.",
-            suffix=".tmp",
-            dir=str(queue_store_path.parent),
-        )
-        try:
-            with os.fdopen(temp_fd, "w", encoding="utf-8") as handle:
-                json.dump(queue_payload, handle, indent=2, sort_keys=True)
-            os.replace(temp_path, queue_store_path)
-        finally:
-            try:
-                os.unlink(temp_path)
-            except FileNotFoundError:
-                pass
-    return published
-
-
 def _notify_effect_worker(effect_lock_path: Path) -> None:
     HostWakeNotifier(wake_socket_path_for_lock(effect_lock_path)).notify()
 
@@ -331,11 +257,6 @@ def main() -> int:
     updates_path = Path(sys.argv[4]).expanduser().resolve()
     config = _load_config(config_path)
     runtime_dir = _resolve_config_path(config.get("runtime_dir", "runtime"), config_path=config_path, project_dir=project_dir)
-    queue_path = config.get("event_queue_store_path")
-    if queue_path:
-        queue_store_path = _resolve_config_path(queue_path, config_path=config_path, project_dir=project_dir)
-    else:
-        queue_store_path = runtime_dir / "trigger-orchestrator-events.json"
     orchestration_store_path = _resolve_orchestration_store_path(
         config, runtime_dir=runtime_dir, config_path=config_path, project_dir=project_dir
     )
@@ -361,10 +282,7 @@ def main() -> int:
         repo_path=repo_path,
         git_push_triggers=git_push_triggers,
     )
-    if _uses_sqlite_queue(config):
-        published = _publish_sqlite_events(orchestration_store_path, events)
-    else:
-        published = _publish_json_events(queue_store_path, events)
+    published = _publish_sqlite_events(orchestration_store_path, events)
     if published > 0:
         _notify_effect_worker(effect_lock_path)
 

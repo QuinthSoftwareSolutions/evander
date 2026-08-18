@@ -80,36 +80,21 @@ from evander.host_directories.models import HostDirectoryDirectoryConfig
 from evander.messaging.targets import COMMUNICATION_TARGETS_DOMAIN
 from evander.orchestration.host_polling import notify_wake_socket_for_lock
 from evander.orchestration.internal_events import build_internal_event_bus
-from evander.repositories.orchestration import (
-    JsonWorkflowConfigSnapshotRepository,
-    SqliteWorkflowConfigSnapshotRepository,
-)
+from evander.repositories.orchestration import SqliteWorkflowConfigSnapshotRepository
 from evander.repositories.skills_library import validate_skill_name
-from evander.repositories.triggers import (
-    JsonTriggerEventRepository,
-    TriggerConfigDocument,
-)
-from evander.storage import JsonStore
+from evander.repositories.triggers import TriggerConfigDocument
 from evander.triggers.providers._local_tickets import (
     seed_new_ticket_created_trigger_cursors,
 )
 from evander.triggers.providers._new_message_baselines import (
     seed_new_message_trigger_cursors,
 )
-from evander.triggers.queue import (
-    SqliteTriggerEventQueue,
-    TriggerEventQueue,
-    TriggerQueueRecord,
-)
+from evander.triggers.queue import SqliteTriggerEventQueue
 from evander.workflow.catalog import (
     WorkflowEditorCatalogPayload,
     WorkflowInternalEventCatalogEntry,
 )
-from evander.workflow.events import (
-    SqliteWorkflowEventJournal,
-    WorkflowEventJournal,
-    workflow_event_journal_path,
-)
+from evander.workflow.events import SqliteWorkflowEventJournal
 from evander.workflow.packs import WorkflowPack, compose_workflow_ir, load_workflow_pack
 from evander.workflow.runtime_config import (
     _append_builtin_hidden_workflows,
@@ -357,9 +342,6 @@ class WorkflowConfigAdminService:
     def workflow_run_store_paths(self) -> dict[str, Any]:
         return self._workflow_run_store_paths()
 
-    def workflow_uses_sqlite_store(self, stores: Mapping[str, Any]) -> bool:
-        return self._workflow_uses_sqlite_store(stores)
-
     def workflow_run_store_bundle(self, stores: Mapping[str, Any]) -> tuple[Any, Any, Any]:
         return self._workflow_run_store_bundle(stores)
 
@@ -382,7 +364,7 @@ class WorkflowConfigAdminService:
     def resume_workflow_run(self, event_id: str) -> WorkflowRunResumePayload:
         return self._resume_workflow_run(event_id)
 
-    def workflow_event_journal(self) -> WorkflowEventJournal | SqliteWorkflowEventJournal:
+    def workflow_event_journal(self) -> SqliteWorkflowEventJournal:
         return self._workflow_event_journal()
 
     def _worker_global_config_path(self, worker_id: str) -> Path | None:
@@ -2575,9 +2557,6 @@ class WorkflowConfigAdminService:
             raise ValueError("Workflow run event_id is required.")
 
         stores = self._workflow_run_store_paths()
-        event_queue_store_path = stores["event_queue_store_path"]
-        effect_execution_store_path = stores["effect_execution_store_path"]
-        gate_execution_store_path = stores["gate_execution_store_path"]
         await_agent_store_path = stores["await_agent_store_path"]
         legacy_await_agent_store_path = stores["legacy_await_agent_store_path"]
 
@@ -2585,85 +2564,25 @@ class WorkflowConfigAdminService:
         clear_reason = "manual_clear_stale_workflow_runs"
         clear_error = "Manually cleared stale workflow run from editor state."
 
-        if self._workflow_uses_sqlite_store(stores):
-            queue_store, effect_store, gate_store = self._workflow_sqlite_store_bundle(stores)
-            queue_records_updated = queue_store.mark_event_cleared(
-                normalized_event_id,
-                cleared_at=cleared_at,
-                clear_reason=clear_reason,
-                error=clear_error,
-            )
-            effect_records_updated = effect_store.clear_event_records(
-                normalized_event_id,
-                cleared_at=cleared_at,
-                clear_reason=clear_reason,
-                clear_error=clear_error,
-            )
-            gate_records_updated = gate_store.clear_event_records(
-                normalized_event_id,
-                cleared_at=cleared_at,
-                clear_reason=clear_reason,
-                clear_error=clear_error,
-            )
-        else:
-
-            def _clear_queue_records(records: dict[str, TriggerQueueRecord]) -> int:
-                updated = 0
-                for record_key, record in records.items():
-                    record_event_id = str(record.event_id or record_key).strip()
-                    if record_event_id != normalized_event_id:
-                        continue
-                    if record.delivery_state == "delivered":
-                        continue
-                    record.delivery_state = "delivered"
-                    record.delivered_at = cleared_at
-                    record.clear_reason = clear_reason
-                    record.error = clear_error
-                    records[record_key] = record
-                    updated += 1
-                return updated
-
-            from evander.daemons.effect_orchestrator import (
-                JsonExecutionStore,
-                JsonGateExecutionStore,
-            )
-
-            queue_records_updated = JsonStore(
-                event_queue_store_path, TriggerQueueRecord
-            ).update_all(_clear_queue_records)
-
-            def _clear_execution_records(records: dict[str, Any]) -> int:
-                updated = 0
-                for execution_id, record in records.items():
-                    record_event_id = str(getattr(record, "event_id", execution_id) or "").strip()
-                    if record_event_id != normalized_event_id:
-                        continue
-                    status = str(getattr(record, "status", "") or "").strip()
-                    if status == "failed":
-                        record.dismissed_at = cleared_at
-                        record.dismiss_reason = "manual_dismiss_errored_workflow_run"
-                        records[execution_id] = record
-                        updated += 1
-                        continue
-                    if status not in {"running", "waiting", "completion_pending"}:
-                        continue
-                    record.status = "failed"
-                    record.finished_at = cleared_at
-                    record.cleared_at = cleared_at
-                    record.clear_reason = clear_reason
-                    record.error = clear_error
-                    record.dismissed_at = cleared_at
-                    record.dismiss_reason = "manual_clear_stale_workflow_runs"
-                    records[execution_id] = record
-                    updated += 1
-                return updated
-
-            effect_records_updated = JsonExecutionStore(effect_execution_store_path).update_all(
-                _clear_execution_records
-            )
-            gate_records_updated = JsonGateExecutionStore(gate_execution_store_path).update_all(
-                _clear_execution_records
-            )
+        queue_store, effect_store, gate_store = self._workflow_sqlite_store_bundle(stores)
+        queue_records_updated = queue_store.mark_event_cleared(
+            normalized_event_id,
+            cleared_at=cleared_at,
+            clear_reason=clear_reason,
+            error=clear_error,
+        )
+        effect_records_updated = effect_store.clear_event_records(
+            normalized_event_id,
+            cleared_at=cleared_at,
+            clear_reason=clear_reason,
+            clear_error=clear_error,
+        )
+        gate_records_updated = gate_store.clear_event_records(
+            normalized_event_id,
+            cleared_at=cleared_at,
+            clear_reason=clear_reason,
+            clear_error=clear_error,
+        )
 
         await_agent_records_removed = 0
         await_agent_payload = _read_json_object(await_agent_store_path)
@@ -2765,16 +2684,7 @@ class WorkflowConfigAdminService:
                 lambda records: _dismiss_failed_records(records, node_id_field=node_id_field)
             )
 
-        if self._workflow_uses_sqlite_store(stores):
-            _, effect_store, gate_store = self._workflow_sqlite_store_bundle(stores)
-        else:
-            from evander.daemons.effect_orchestrator import (
-                JsonExecutionStore,
-                JsonGateExecutionStore,
-            )
-
-            effect_store = JsonExecutionStore(stores["effect_execution_store_path"])
-            gate_store = JsonGateExecutionStore(stores["gate_execution_store_path"])
+        _, effect_store, gate_store = self._workflow_sqlite_store_bundle(stores)
 
         effect_records_updated = _dismiss_store(effect_store, node_id_field="effect_id")
         gate_records_updated = _dismiss_store(gate_store, node_id_field="gate_id")
@@ -2803,34 +2713,22 @@ class WorkflowConfigAdminService:
             raise ValueError("Workflow run event_id is required.")
 
         stores = self._workflow_run_store_paths()
-        event_queue_store_path = stores["event_queue_store_path"]
-        effect_execution_store_path = stores["effect_execution_store_path"]
-        gate_execution_store_path = stores["gate_execution_store_path"]
-
-        queue_store = None
-        if self._workflow_uses_sqlite_store(stores):
-            queue_store, effect_store, gate_store = self._workflow_sqlite_store_bundle(stores)
-            failed_record = self._latest_resumable_failed_workflow_record(
-                event_id=normalized_event_id,
-                effect_payload={
-                    record.execution_id: record.model_dump(mode="json")
-                    for record in effect_store.list_records_for_event(
-                        normalized_event_id, statuses={"failed"}
-                    )
-                },
-                gate_payload={
-                    record.execution_id: record.model_dump(mode="json")
-                    for record in gate_store.list_records_for_event(
-                        normalized_event_id, statuses={"failed"}
-                    )
-                },
-            )
-        else:
-            failed_record = self._latest_resumable_failed_workflow_record(
-                event_id=normalized_event_id,
-                effect_payload=_read_json_object(effect_execution_store_path),
-                gate_payload=_read_json_object(gate_execution_store_path),
-            )
+        queue_store, effect_store, gate_store = self._workflow_sqlite_store_bundle(stores)
+        failed_record = self._latest_resumable_failed_workflow_record(
+            event_id=normalized_event_id,
+            effect_payload={
+                record.execution_id: record.model_dump(mode="json")
+                for record in effect_store.list_records_for_event(
+                    normalized_event_id, statuses={"failed"}
+                )
+            },
+            gate_payload={
+                record.execution_id: record.model_dump(mode="json")
+                for record in gate_store.list_records_for_event(
+                    normalized_event_id, statuses={"failed"}
+                )
+            },
+        )
         if failed_record is None:
             raise ValueError(f"Workflow run is not resumable: {normalized_event_id}")
 
@@ -2851,10 +2749,7 @@ class WorkflowConfigAdminService:
             occurred_at=resumed_at,
             payload=input_payload,
         )
-        if queue_store is not None:
-            queue_store.publish(resume_event)
-        else:
-            TriggerEventQueue(event_queue_store_path).publish(resume_event)
+        queue_store.publish(resume_event)
         notify_wake_socket_for_lock(stores["effect_lock_path"])
         self._workflow_event_journal().append(
             "workflow.run.resumed",
@@ -2875,82 +2770,31 @@ class WorkflowConfigAdminService:
         )
 
     def _workflow_run_store_paths(self) -> dict[str, Any]:
-        worker_payload = self._read_worker_global_config("trigger-orchestrator")
-        worker_config = worker_payload.config
+        worker_config = self._read_worker_global_config("trigger-orchestrator").config
         runtime_dir = _resolve_path_setting(
             base_dir=self.project_dir,
             value=worker_config.get("runtime_dir"),
             fallback=self.config.runtime_dir,
         )
-        backend = str(worker_config.get("orchestration_store_backend") or "sqlite").strip().lower()
-        if backend not in {"sqlite", "json"}:
-            backend = "sqlite"
-        backend_explicit = False
-        try:
-            worker_config_path = Path(worker_payload.path)
-            if worker_config_path.exists():
-                raw_worker_config = json.loads(worker_config_path.read_text(encoding="utf-8"))
-                backend_explicit = (
-                    isinstance(raw_worker_config, dict)
-                    and "orchestration_store_backend" in raw_worker_config
-                )
-        except (OSError, json.JSONDecodeError):
-            backend_explicit = False
         orchestration_store_path = _resolve_path_setting(
             base_dir=self.project_dir,
             value=worker_config.get("orchestration_store_path"),
             fallback=runtime_dir / "orchestration.db",
-        )
-        event_queue_store_path = _resolve_path_setting(
-            base_dir=self.project_dir,
-            value=worker_config.get("event_queue_store_path"),
-            fallback=runtime_dir / "trigger-orchestrator-events.json",
-        )
-        effect_execution_store_path = _resolve_path_setting(
-            base_dir=self.project_dir,
-            value=worker_config.get("effect_execution_store_path"),
-            fallback=runtime_dir / "effect-orchestrator-executions.json",
-        )
-        gate_execution_store_path = _resolve_path_setting(
-            base_dir=self.project_dir,
-            value=worker_config.get("gate_execution_store_path"),
-            fallback=runtime_dir / "gate-orchestrator-executions.json",
-        )
-        workflow_config_snapshot_store_path = _resolve_path_setting(
-            base_dir=self.project_dir,
-            value=worker_config.get("workflow_config_snapshot_store_path"),
-            fallback=runtime_dir / "workflow-config-snapshots.json",
         )
         effect_lock_path = _resolve_path_setting(
             base_dir=self.project_dir,
             value=worker_config.get("effect_lock_path"),
             fallback=runtime_dir / "effect-orchestrator.lock",
         )
-        if (
-            backend == "sqlite"
-            and not backend_explicit
-            and not orchestration_store_path.exists()
-            and (
-                event_queue_store_path.exists()
-                or effect_execution_store_path.exists()
-                or gate_execution_store_path.exists()
-            )
-        ):
-            backend = "json"
         return {
             "runtime_dir": runtime_dir,
-            "orchestration_store_backend": backend,
             "orchestration_store_path": orchestration_store_path,
             "orchestration_retention_days": int(
                 worker_config.get("orchestration_retention_days")
                 if worker_config.get("orchestration_retention_days") is not None
                 else 30
             ),
-            "event_queue_store_path": event_queue_store_path,
-            "effect_execution_store_path": effect_execution_store_path,
-            "gate_execution_store_path": gate_execution_store_path,
             "effect_lock_path": effect_lock_path,
-            "workflow_config_snapshot_store_path": workflow_config_snapshot_store_path,
             "await_agent_store_path": runtime_dir
             / "providers"
             / "gates"
@@ -2958,9 +2802,6 @@ class WorkflowConfigAdminService:
             / "pending.json",
             "legacy_await_agent_store_path": runtime_dir / "await-agent-pending.json",
         }
-
-    def _workflow_uses_sqlite_store(self, stores: Mapping[str, Any]) -> bool:
-        return str(stores.get("orchestration_store_backend") or "").lower() == "sqlite"
 
     def _workflow_sqlite_store_bundle(self, stores: Mapping[str, Any]) -> tuple[Any, Any, Any]:
         from evander.daemons.effect_orchestrator import (
@@ -3040,53 +2881,27 @@ class WorkflowConfigAdminService:
         return candidates[0]
 
     def _workflow_run_store_bundle(self, stores: Mapping[str, Any]) -> tuple[Any, Any, Any]:
-        if self._workflow_uses_sqlite_store(stores):
-            return self._workflow_sqlite_store_bundle(stores)
-        from evander.daemons.effect_orchestrator import (
-            JsonExecutionStore,
-            JsonGateExecutionStore,
-        )
-
-        return (
-            TriggerEventQueue(Path(stores["event_queue_store_path"])),
-            JsonExecutionStore(Path(stores["effect_execution_store_path"])),
-            JsonGateExecutionStore(Path(stores["gate_execution_store_path"])),
-        )
+        return self._workflow_sqlite_store_bundle(stores)
 
     def _workflow_run_event_records(self, stores: Mapping[str, Any]) -> dict[str, Any]:
-        if self._workflow_uses_sqlite_store(stores):
-            queue_store, _, _ = self._workflow_sqlite_store_bundle(stores)
-            return {
-                record.event_id: record.model_dump(mode="json")
-                for record in queue_store.read_all().values()
-            }
-        return JsonTriggerEventRepository().read_events(stores["event_queue_store_path"])
+        queue_store, _, _ = self._workflow_sqlite_store_bundle(stores)
+        return {
+            record.event_id: record.model_dump(mode="json")
+            for record in queue_store.read_all().values()
+        }
 
     def _workflow_config_snapshot_repository(
         self, stores: Mapping[str, Any]
-    ) -> JsonWorkflowConfigSnapshotRepository | SqliteWorkflowConfigSnapshotRepository:
-        if self._workflow_uses_sqlite_store(stores):
-            return SqliteWorkflowConfigSnapshotRepository(Path(stores["orchestration_store_path"]))
-        return JsonWorkflowConfigSnapshotRepository(
-            Path(stores["workflow_config_snapshot_store_path"])
-        )
+    ) -> SqliteWorkflowConfigSnapshotRepository:
+        return SqliteWorkflowConfigSnapshotRepository(Path(stores["orchestration_store_path"]))
 
-    def _workflow_event_journal(self) -> WorkflowEventJournal | SqliteWorkflowEventJournal:
+    def _workflow_event_journal(self) -> SqliteWorkflowEventJournal:
         stores = self._workflow_run_store_paths()
-        if self._workflow_uses_sqlite_store(stores):
-            raw_retention_days = stores.get("orchestration_retention_days")
-            return SqliteWorkflowEventJournal(
-                stores["orchestration_store_path"],
-                retention_days=int(raw_retention_days if raw_retention_days is not None else 30),
-            )
-        worker_config = self._read_worker_global_config("trigger-orchestrator").config
-        runtime_dir = stores["runtime_dir"]
-        journal_path = _resolve_path_setting(
-            base_dir=self.project_dir,
-            value=worker_config.get("workflow_event_journal_path"),
-            fallback=workflow_event_journal_path(runtime_dir),
+        raw_retention_days = stores.get("orchestration_retention_days")
+        return SqliteWorkflowEventJournal(
+            stores["orchestration_store_path"],
+            retention_days=int(raw_retention_days if raw_retention_days is not None else 30),
         )
-        return WorkflowEventJournal(journal_path)
 
     def _collect_workflow_node_ids(self, config: dict[str, object]) -> set[str]:
         node_ids: set[str] = set()

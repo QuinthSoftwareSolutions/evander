@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from config_helpers import canonical_worker_config
+from config_helpers import canonical_worker_config, effect_execution_payload
 
 import json
 import os
@@ -18,7 +18,7 @@ from evander.effects.providers.base import EffectProviderBase
 from evander.effects.registry import EffectProviderFactory, EffectProviderRegistry
 from evander.events.models import EffectDefinitionDiscriminated, TriggerEvent
 from evander.provider_config import ProviderConfigResolver
-from evander.triggers.queue import TriggerEventQueue
+from evander.triggers.queue import SqliteTriggerEventQueue
 from config_helpers import canonical_workflow_node, canonical_workflow_payload
 
 REPORT_ENV_VAR = "EVANDER_EFFECT_CONFORMANCE_REPORT"
@@ -576,9 +576,7 @@ def test_effect_binding_resolution_and_chained_output_propagation(
     for _ in range(6):
         worker.run_once()
 
-    payload = json.loads(
-        (runtime_dir / "effect-orchestrator-executions.json").read_text(encoding="utf-8")
-    )
+    payload = effect_execution_payload(worker.worker_config)
     by_effect = {entry["effect_id"]: entry for entry in payload.values()}
     assert by_effect["effect-1"]["status"] == "succeeded"
     assert by_effect["effect-2"]["status"] == "succeeded"
@@ -599,7 +597,7 @@ def test_effect_queue_and_execution_idempotency(
     tmp_path: Path, report_collector: dict[str, Any]
 ) -> None:
     runtime_dir = tmp_path / "runtime"
-    queue = TriggerEventQueue(runtime_dir / "queue.json")
+    queue = SqliteTriggerEventQueue(runtime_dir / "queue.json")
     event = TriggerEvent(
         event_id="evt-1",
         trigger_id="trigger-1",
@@ -649,9 +647,7 @@ def test_effect_queue_and_execution_idempotency(
     for _ in range(4):
         worker.run_once()
 
-    executions = json.loads(
-        (runtime_dir / "effect-orchestrator-executions.json").read_text(encoding="utf-8")
-    )
+    executions = effect_execution_payload(worker_config)
     assert len(executions) == 1
 
     _record_result(
@@ -710,9 +706,7 @@ def test_effect_regression_missing_upstream_output_reference_records_failed_exec
 
     worker.run_once()
 
-    payload = json.loads(
-        (runtime_dir / "effect-orchestrator-executions.json").read_text(encoding="utf-8")
-    )
+    payload = effect_execution_payload(worker.worker_config)
     record = next(iter(payload.values()))
     assert record["status"] == "failed"
     assert "not declared by upstream node" in record["error"]
@@ -775,9 +769,7 @@ def test_effect_regression_provider_execution_failure_records_failed_status(
     worker.run_once()
     worker.run_once()
 
-    payload = json.loads(
-        (runtime_dir / "effect-orchestrator-executions.json").read_text(encoding="utf-8")
-    )
+    payload = effect_execution_payload(worker.worker_config)
     record = next(iter(payload.values()))
     assert record["status"] == "failed"
     assert "provider boom" in record["error"]

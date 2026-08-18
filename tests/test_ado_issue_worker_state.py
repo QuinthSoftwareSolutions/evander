@@ -38,7 +38,7 @@ from evander.models import GetPullRequestResponse, LocalIssueRecord
 from evander.pr_feedback import FeedbackEnvelope
 from evander.services import PrFeedbackService
 from evander.storage import JsonStore
-from evander.triggers.queue import TriggerEventQueue
+from evander.triggers.queue import SqliteTriggerEventQueue
 from config_helpers import canonical_workflow_payload, write_runtime_config
 
 
@@ -1669,7 +1669,7 @@ def test_publish_directory_pr_feedback_events_enqueues_azure_feedback(
 
     assert published == 1
     assert wake_paths == [worker_config.runtime_dir / "effect-orchestrator.lock"]
-    queue = TriggerEventQueue(worker_config.runtime_dir / "trigger-orchestrator-events.json")
+    queue = SqliteTriggerEventQueue(worker_config.runtime_dir / "orchestration.db")
     events = queue.list_pending(trigger_id="trigger-pr-feedback")
     assert len(events) == 1
     assert events[0].payload["session_id"] == "session-6070"
@@ -1952,7 +1952,7 @@ def test_publish_directory_pr_feedback_events_handles_agent_authored_feedback(
     assert wake_paths == (
         [worker_config.runtime_dir / "effect-orchestrator.lock"] if expected_published else []
     )
-    queue = TriggerEventQueue(worker_config.runtime_dir / "trigger-orchestrator-events.json")
+    queue = SqliteTriggerEventQueue(worker_config.runtime_dir / "orchestration.db")
     events = queue.list_pending(trigger_id="trigger-pr-feedback")
     assert len(events) == expected_published
     if expected_published:
@@ -2071,7 +2071,7 @@ def test_publish_directory_pr_completion_events_updates_pr_map_and_enqueues_even
 
     assert published == 1
     assert calls == [("org/repo", "6070", False, False)]
-    queue = TriggerEventQueue(worker_config.runtime_dir / "trigger-orchestrator-events.json")
+    queue = SqliteTriggerEventQueue(worker_config.runtime_dir / "orchestration.db")
     events = queue.list_pending(trigger_id="trigger-pr-completed")
     assert len(events) == 1
     assert events[0].payload["session_id"] == "session-6070"
@@ -2279,7 +2279,7 @@ def test_publish_directory_pr_feedback_events_uses_explicit_pr_query_candidates_
         ("https://dev.azure.com/example-org", "Example Project", "org/repo", "6070")
     ]
     assert not (worker_config.runtime_dir / "pr-map.json").exists()
-    queue = TriggerEventQueue(worker_config.runtime_dir / "trigger-orchestrator-events.json")
+    queue = SqliteTriggerEventQueue(worker_config.runtime_dir / "orchestration.db")
     events = queue.list_pending(trigger_id="trigger-pr-feedback-explicit")
     assert len(events) == 1
     assert "session_id" not in events[0].payload
@@ -2429,7 +2429,7 @@ def test_publish_directory_pr_feedback_events_keeps_explicit_stream_unbound_with
         )
 
     assert published == 2
-    queue = TriggerEventQueue(worker_config.runtime_dir / "trigger-orchestrator-events.json")
+    queue = SqliteTriggerEventQueue(worker_config.runtime_dir / "orchestration.db")
     legacy_events = queue.list_pending(trigger_id="trigger-pr-feedback-legacy")
     explicit_events = queue.list_pending(trigger_id="trigger-pr-feedback-explicit")
     assert len(legacy_events) == 1
@@ -2617,7 +2617,7 @@ def test_publish_directory_pr_completion_events_uses_explicit_pr_query_candidate
         )
     ]
     assert not (worker_config.runtime_dir / "pr-map.json").exists()
-    queue = TriggerEventQueue(worker_config.runtime_dir / "trigger-orchestrator-events.json")
+    queue = SqliteTriggerEventQueue(worker_config.runtime_dir / "orchestration.db")
     events = queue.list_pending(trigger_id="trigger-pr-completed-explicit")
     assert len(events) == 1
     assert "session_id" not in events[0].payload
@@ -2763,7 +2763,7 @@ def test_publish_directory_pr_completion_events_defaults_explicit_query_to_termi
 
     assert list_statuses == ["completed", "abandoned"]
     assert published == 2
-    queue = TriggerEventQueue(worker_config.runtime_dir / "trigger-orchestrator-events.json")
+    queue = SqliteTriggerEventQueue(worker_config.runtime_dir / "orchestration.db")
     events = queue.list_pending(trigger_id="trigger-pr-completed-explicit")
     assert [event.payload["status"] for event in events] == ["completed", "abandoned"]
     assert [event.payload["merged"] for event in events] == [True, False]
@@ -2966,7 +2966,7 @@ def test_publish_directory_pr_feedback_events_skips_missing_pr_stream_and_contin
     assert calls == [("org/repo", "100"), ("org/repo", "200")]
     assert published == 1
     assert "Skipping Azure PR feedback stream after 404" in caplog.text
-    queue = TriggerEventQueue(worker_config.runtime_dir / "trigger-orchestrator-events.json")
+    queue = SqliteTriggerEventQueue(worker_config.runtime_dir / "orchestration.db")
     events = queue.list_pending(trigger_id="trigger-pr-feedback")
     assert len(events) == 1
     assert events[0].payload["session_id"] == "session-200"
@@ -3089,7 +3089,7 @@ def test_publish_directory_pr_feedback_events_skips_ignored_feedback_ids(
         )
 
     assert published == 0
-    queue = TriggerEventQueue(worker_config.runtime_dir / "trigger-orchestrator-events.json")
+    queue = SqliteTriggerEventQueue(worker_config.runtime_dir / "orchestration.db")
     assert queue.list_pending(trigger_id="trigger-pr-feedback") == []
     feedback_store_payload = json.loads(
         (worker_config.runtime_dir / "pr-feedback-store.json").read_text(encoding="utf-8")
@@ -3106,18 +3106,18 @@ def test_publish_directory_pr_feedback_events_skips_ignored_feedback_ids(
     assert unread.feedback == []
 
 
-def test_publish_directory_pr_feedback_events_uses_configured_trigger_queue_path(
+def test_publish_directory_pr_feedback_events_uses_configured_orchestration_store_path(
     worker_config: WorkerConfig,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from evander.daemons import ado_issue_worker as ado_worker
 
-    queue_path = worker_config.runtime_dir / "custom-trigger-events.json"
+    queue_path = worker_config.runtime_dir / "custom-orchestration.db"
     trigger_worker_config = canonical_worker_config(
         canonical_workflow_payload(
             {
                 "runtime_dir": str(worker_config.runtime_dir),
-                "event_queue_store_path": str(queue_path),
+                "orchestration_store_path": str(queue_path),
                 "triggers": [
                     {
                         "id": "trigger-pr-feedback",
@@ -3209,7 +3209,7 @@ def test_publish_directory_pr_feedback_events_uses_configured_trigger_queue_path
         )
 
     assert published == 1
-    queue = TriggerEventQueue(queue_path)
+    queue = SqliteTriggerEventQueue(queue_path)
     events = queue.list_pending(trigger_id="trigger-pr-feedback")
     assert len(events) == 1
 

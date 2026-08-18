@@ -23,7 +23,6 @@ class OperatorSteeringAdminDependencies:
     runtime_dir: Path
     normalize_agent_record_directory_path: Callable[[Any], str]
     workflow_run_store_paths: Callable[[], dict[str, Any]]
-    workflow_uses_sqlite_store: Callable[[Mapping[str, Any]], bool]
     container_execution_records_for_session: Callable[[str], list[Any]]
     container_worker_backend: Callable[..., Any]
     container_worker_url_for_target: Callable[..., str | None]
@@ -423,15 +422,10 @@ class OperatorSteeringAdminService:
         return cancelled
 
     def _operator_steering_execution_store(self):
-        from evander.daemons.effect_orchestrator import (
-            JsonExecutionStore,
-            SqliteExecutionStore,
-        )
+        from evander.daemons.effect_orchestrator import SqliteExecutionStore
 
         stores = self._deps.workflow_run_store_paths()
-        if self._deps.workflow_uses_sqlite_store(stores):
-            return SqliteExecutionStore(Path(stores["orchestration_store_path"]))
-        return JsonExecutionStore(Path(stores["effect_execution_store_path"]))
+        return SqliteExecutionStore(Path(stores["orchestration_store_path"]))
 
     def _find_operator_steering_container_waiting_record(
         self,

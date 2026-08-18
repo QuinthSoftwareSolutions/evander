@@ -70,15 +70,9 @@ class _SequenceConfigReloader:
 def _reload_worker_config(
     runtime_dir: Path,
     *,
-    orchestration_store_backend: str | None = None,
     orchestration_store_path: Path | None = None,
-    event_queue_store_path: Path | None = None,
-    workflow_event_journal_path: Path | None = None,
     internal_event_store_path: Path | None = None,
-    gate_execution_store_path: Path | None = None,
-    effect_execution_store_path: Path | None = None,
     effect_cursor_store_path: Path | None = None,
-    workflow_config_snapshot_store_path: Path | None = None,
     effect_lock_path: Path | None = None,
     provider_modules: list[str] | None = None,
     triggers: list[dict[str, object]] | None = None,
@@ -93,23 +87,8 @@ def _reload_worker_config(
             "poll_interval_seconds": 1,
             "jitter_seconds": 0,
             **(
-                {"orchestration_store_backend": orchestration_store_backend}
-                if orchestration_store_backend is not None
-                else {}
-            ),
-            **(
                 {"orchestration_store_path": orchestration_store_path}
                 if orchestration_store_path is not None
-                else {}
-            ),
-            **(
-                {"event_queue_store_path": event_queue_store_path}
-                if event_queue_store_path is not None
-                else {}
-            ),
-            **(
-                {"workflow_event_journal_path": workflow_event_journal_path}
-                if workflow_event_journal_path is not None
                 else {}
             ),
             **(
@@ -118,23 +97,8 @@ def _reload_worker_config(
                 else {}
             ),
             **(
-                {"gate_execution_store_path": gate_execution_store_path}
-                if gate_execution_store_path is not None
-                else {}
-            ),
-            **(
-                {"effect_execution_store_path": effect_execution_store_path}
-                if effect_execution_store_path is not None
-                else {}
-            ),
-            **(
                 {"effect_cursor_store_path": effect_cursor_store_path}
                 if effect_cursor_store_path is not None
-                else {}
-            ),
-            **(
-                {"workflow_config_snapshot_store_path": workflow_config_snapshot_store_path}
-                if workflow_config_snapshot_store_path is not None
                 else {}
             ),
             **({"effect_lock_path": effect_lock_path} if effect_lock_path is not None else {}),
@@ -531,33 +495,22 @@ def test_effect_worker_reloads_custom_provider_module(tmp_path: Path, monkeypatc
     )
 
 
-def test_effect_worker_reloads_to_sqlite_queue_backend_without_restart(
+def test_effect_worker_reloads_to_new_orchestration_store_without_restart(
     tmp_path: Path, monkeypatch
 ) -> None:
     runtime_dir = tmp_path / "runtime"
     config = GatewayConfig(runtime_dir=runtime_dir)
-    legacy_queue_path = runtime_dir / "legacy-trigger-events.json"
-    legacy_journal_path = runtime_dir / "legacy-workflow-events.jsonl"
-    legacy_internal_path = runtime_dir / "legacy-internal-events.json"
-    legacy_effect_execution_path = runtime_dir / "legacy-effect-executions.json"
-    legacy_gate_execution_path = runtime_dir / "legacy-gate-executions.json"
-    legacy_snapshot_path = runtime_dir / "legacy-workflow-config-snapshots.json"
-    legacy_cursor_path = runtime_dir / "legacy-effect-cursors.json"
-    legacy_lock_path = runtime_dir / "legacy-effect-orchestrator.lock"
+    initial_store_path = runtime_dir / "initial-orchestration.db"
+    initial_cursor_path = runtime_dir / "initial-effect-cursors.json"
+    initial_lock_path = runtime_dir / "initial-effect-orchestrator.lock"
     reloaded_store_path = runtime_dir / "reloaded-orchestration.db"
     reloaded_cursor_path = runtime_dir / "reloaded-effect-cursors.json"
 
     initial_config = _reload_worker_config(
         runtime_dir,
-        orchestration_store_backend="json",
-        event_queue_store_path=legacy_queue_path,
-        workflow_event_journal_path=legacy_journal_path,
-        internal_event_store_path=legacy_internal_path,
-        gate_execution_store_path=legacy_gate_execution_path,
-        effect_execution_store_path=legacy_effect_execution_path,
-        effect_cursor_store_path=legacy_cursor_path,
-        workflow_config_snapshot_store_path=legacy_snapshot_path,
-        effect_lock_path=legacy_lock_path,
+        orchestration_store_path=initial_store_path,
+        effect_cursor_store_path=initial_cursor_path,
+        effect_lock_path=initial_lock_path,
     )
     _save_worker_config(tmp_path, initial_config)
 
@@ -574,12 +527,11 @@ def test_effect_worker_reloads_to_sqlite_queue_backend_without_restart(
     initial_effect_cycle = effect_worker.run_once()
     assert initial_trigger_cycle.events_published == 0
     assert initial_effect_cycle.events_processed == 0
-    assert trigger_worker.event_queue.path == legacy_queue_path
-    assert effect_worker.event_queue.path == legacy_queue_path
+    assert trigger_worker.event_queue.path == initial_store_path
+    assert effect_worker.event_queue.path == initial_store_path
 
     updated_config = _reload_worker_config(
         runtime_dir,
-        orchestration_store_backend="sqlite",
         orchestration_store_path=reloaded_store_path,
         effect_cursor_store_path=reloaded_cursor_path,
         provider_modules=[module_name],
@@ -623,8 +575,6 @@ def test_effect_worker_reloads_to_sqlite_queue_backend_without_restart(
     assert trigger_worker.event_queue.path == reloaded_store_path
     assert effect_worker.event_queue.path == reloaded_store_path
     assert effect_worker.cursor_path == reloaded_cursor_path
-    assert trigger_worker.worker_config.orchestration_store_backend == "sqlite"
-    assert effect_worker.worker_config.orchestration_store_backend == "sqlite"
     assert trigger_worker.worker_config.orchestration_store_path == reloaded_store_path
     assert effect_worker.worker_config.orchestration_store_path == reloaded_store_path
 
@@ -663,19 +613,14 @@ def test_effect_worker_reloads_wake_sleeper_and_notifier_with_lock_path(
     assert effect_worker._kernel.config.lock_path == reloaded_lock_path
 
 
-def test_effect_worker_drains_completed_future_before_sqlite_store_rebind(
+def test_effect_worker_drains_completed_future_before_store_rebind(
     tmp_path: Path,
 ) -> None:
     runtime_dir = tmp_path / "runtime"
     config = GatewayConfig(runtime_dir=runtime_dir)
-    legacy_queue_path = runtime_dir / "legacy-trigger-events.json"
-    legacy_journal_path = runtime_dir / "legacy-workflow-events.jsonl"
-    legacy_internal_path = runtime_dir / "legacy-internal-events.json"
-    legacy_effect_execution_path = runtime_dir / "legacy-effect-executions.json"
-    legacy_gate_execution_path = runtime_dir / "legacy-gate-executions.json"
-    legacy_snapshot_path = runtime_dir / "legacy-workflow-config-snapshots.json"
-    legacy_cursor_path = runtime_dir / "legacy-effect-cursors.json"
-    legacy_lock_path = runtime_dir / "legacy-effect-orchestrator.lock"
+    initial_store_path = runtime_dir / "initial-orchestration.db"
+    initial_cursor_path = runtime_dir / "initial-effect-cursors.json"
+    initial_lock_path = runtime_dir / "initial-effect-orchestrator.lock"
     reloaded_store_path = runtime_dir / "reloaded-orchestration.db"
     reloaded_cursor_path = runtime_dir / "reloaded-effect-cursors.json"
 
@@ -709,20 +654,13 @@ def test_effect_worker_drains_completed_future_before_sqlite_store_rebind(
     }
     initial_config = _reload_worker_config(
         runtime_dir,
-        orchestration_store_backend="json",
-        event_queue_store_path=legacy_queue_path,
-        workflow_event_journal_path=legacy_journal_path,
-        internal_event_store_path=legacy_internal_path,
-        gate_execution_store_path=legacy_gate_execution_path,
-        effect_execution_store_path=legacy_effect_execution_path,
-        effect_cursor_store_path=legacy_cursor_path,
-        workflow_config_snapshot_store_path=legacy_snapshot_path,
-        effect_lock_path=legacy_lock_path,
+        orchestration_store_path=initial_store_path,
+        effect_cursor_store_path=initial_cursor_path,
+        effect_lock_path=initial_lock_path,
         **workflow_nodes,
     )
     updated_config = _reload_worker_config(
         runtime_dir,
-        orchestration_store_backend="sqlite",
         orchestration_store_path=reloaded_store_path,
         effect_cursor_store_path=reloaded_cursor_path,
         **workflow_nodes,
@@ -764,26 +702,26 @@ def test_effect_worker_drains_completed_future_before_sqlite_store_rebind(
     second_cycle = effect_worker.run_once()
 
     assert second_cycle.completion_events_published >= 1
-    assert effect_worker.event_queue.path == legacy_queue_path
-    legacy_queue = json.loads(legacy_queue_path.read_text(encoding="utf-8"))
+    assert effect_worker.event_queue.path == initial_store_path
+    initial_queue = effect_worker.event_queue.read_all()
     slow_completion_records = [
-        record for record in legacy_queue.values() if record["trigger_id"] == "slow-effect"
+        record for record in initial_queue.values() if record.trigger_id == "slow-effect"
     ]
     assert len(slow_completion_records) == 1
-    assert slow_completion_records[0]["delivery_state"] == "delivered"
+    assert slow_completion_records[0].delivery_state == "delivered"
 
     for _ in range(5):
-        legacy_queue = json.loads(legacy_queue_path.read_text(encoding="utf-8"))
+        initial_queue = effect_worker.event_queue.read_all()
         if "downstream-effect" in effect_calls and all(
-            record["delivery_state"] == "delivered" for record in legacy_queue.values()
+            record.delivery_state == "delivered" for record in initial_queue.values()
         ):
             break
         effect_worker._wait_for_inflight_completion(timeout_seconds=2)
         effect_worker.run_once()
 
     assert effect_calls == ["slow-effect", "downstream-effect"]
-    legacy_queue = json.loads(legacy_queue_path.read_text(encoding="utf-8"))
-    assert all(record["delivery_state"] == "delivered" for record in legacy_queue.values())
+    initial_queue = effect_worker.event_queue.read_all()
+    assert all(record.delivery_state == "delivered" for record in initial_queue.values())
 
     for _ in range(5):
         if effect_worker.event_queue.path == reloaded_store_path:

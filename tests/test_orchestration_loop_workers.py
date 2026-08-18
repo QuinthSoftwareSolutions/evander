@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from config_helpers import canonical_worker_config
+from config_helpers import canonical_worker_config, trigger_queue_payload
 
 import json
 from datetime import datetime, timezone
@@ -108,7 +108,7 @@ def test_effect_queue_delivery_semantics_are_preserved(tmp_path: Path) -> None:
     assert result.pending_events_scanned == 1
     assert result.events_processed == 1
     assert result.next_sleep_seconds == 0.0
-    queue_payload = json.loads(worker_config.event_queue_store_path.read_text(encoding="utf-8"))
+    queue_payload = trigger_queue_payload(worker_config)
     assert queue_payload["event-1"]["delivery_state"] == "delivered"
 
 
@@ -124,7 +124,6 @@ def test_effect_worker_wiring_uses_effect_cursor_path_for_processed_checkpoint(
             "runtime_dir": runtime_dir,
             "poll_interval_seconds": 1,
             "jitter_seconds": 0,
-            "orchestration_store_backend": "json",
             "triggers": [],
             "gates": [],
             "effects": [],
@@ -166,7 +165,6 @@ def test_effect_worker_runs_wal_checkpoint_maintenance_from_worker_cycle(
             "runtime_dir": runtime_dir,
             "poll_interval_seconds": 1,
             "jitter_seconds": 0,
-            "orchestration_store_backend": "sqlite",
             "orchestration_wal_checkpoint_min_bytes": 0,
             "orchestration_wal_checkpoint_interval_seconds": 300,
             "triggers": [],

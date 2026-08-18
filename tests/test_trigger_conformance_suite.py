@@ -43,7 +43,7 @@ from evander.triggers.providers.teams_direct_message import TeamsDirectMessageTr
 from evander.triggers.providers.teams_new_message import TeamsNewMessageTriggerProvider
 from evander.triggers.providers.ticket_changed import TicketChangedTriggerProvider
 from evander.triggers.providers.ticket_created import TicketCreatedTriggerProvider
-from evander.triggers.queue import TriggerEventQueue
+from evander.triggers.queue import SqliteTriggerEventQueue
 from config_helpers import canonical_workflow_node, canonical_workflow_payload
 
 
@@ -2257,7 +2257,7 @@ def test_conformance_orchestrator_integration_locking_jitter_and_idempotency(
     assert sleep_calls
     assert abs(sleep_calls[0] - 3.25) < 1e-6
 
-    queue = TriggerEventQueue(worker_config.event_queue_store_path)
+    queue = SqliteTriggerEventQueue(worker_config.orchestration_store_path)
     assert len(queue.list_pending()) == 1
 
     _record_result(

@@ -16,13 +16,12 @@ from evander.provider_profiles import (
     resolve_provider_module_names,
 )
 from evander.repositories.orchestration_db import maybe_checkpoint_orchestration_wal
-from evander.orchestration.wal_maintenance import sqlite_orchestration_store_enabled
 from evander.orchestration.internal_events import internal_event_bus_metadata
 from evander.gates.registry import GateProviderFactory
 from evander.queries.registry import QueryProviderFactory
 from evander.runtime import RuntimeContext
-from evander.triggers.queue import SqliteTriggerEventQueue, TriggerEventQueue
-from evander.workflow.events import SqliteWorkflowEventJournal, WorkflowEventJournal
+from evander.triggers.queue import SqliteTriggerEventQueue
+from evander.workflow.events import SqliteWorkflowEventJournal
 from evander.workflow.plugins import load_provider_plugins
 from ..adapters.provider_factories import (
     build_agent_prompt_dispatch_port,
@@ -36,10 +35,7 @@ from ..effect_extensions import (
     LifecycleReconciliationHook,
     SpecialEventHandler,
 )
-from evander.repositories.orchestration import (
-    JsonWorkflowConfigSnapshotRepository,
-    SqliteWorkflowConfigSnapshotRepository,
-)
+from evander.repositories.orchestration import SqliteWorkflowConfigSnapshotRepository
 
 
 @dataclass(frozen=True)
@@ -58,8 +54,8 @@ class EffectProviderRuntimeWiring:
 
 @dataclass(frozen=True)
 class EffectWorkerStoreWiring:
-    workflow_event_journal: WorkflowEventJournal | SqliteWorkflowEventJournal
-    event_queue: TriggerEventQueue | SqliteTriggerEventQueue
+    workflow_event_journal: SqliteWorkflowEventJournal
+    event_queue: SqliteTriggerEventQueue
     lock_path: Path
     cursor_path: Path
     effect_cursor_repository: object
@@ -163,8 +159,6 @@ def build_effect_worker_store_wiring(
     runtime: RuntimeContext,
 ) -> EffectWorkerStoreWiring:
     from evander.daemons.effect_orchestrator import (
-        JsonExecutionStore,
-        JsonGateExecutionStore,
         SqliteExecutionStore,
         SqliteGateExecutionStore,
         _resolve_worker_path,
@@ -172,61 +166,35 @@ def build_effect_worker_store_wiring(
     )
 
     retention_days = int(worker_config.orchestration_retention_days)
-    if _sqlite_orchestration_store_enabled(worker_config):
-        workflow_event_journal = SqliteWorkflowEventJournal(
-            worker_config.orchestration_store_path,
-            retention_days=retention_days,
-        )
-        event_queue = SqliteTriggerEventQueue(
-            worker_config.orchestration_store_path,
-            journal=workflow_event_journal,
-            retention_days=retention_days,
-        )
-        execution_store = SqliteExecutionStore(
-            worker_config.orchestration_store_path,
-            journal=workflow_event_journal,
-            retention_days=retention_days,
-        )
-        gate_execution_store = SqliteGateExecutionStore(
-            worker_config.orchestration_store_path,
-            journal=workflow_event_journal,
-            retention_days=retention_days,
-        )
-        workflow_config_snapshot_store = SqliteWorkflowConfigSnapshotRepository(
-            worker_config.orchestration_store_path
-        )
-        maybe_checkpoint_orchestration_wal(
-            worker_config.orchestration_store_path,
-            mode=worker_config.orchestration_wal_checkpoint_mode,
-            min_bytes=worker_config.orchestration_wal_checkpoint_min_bytes,
-            interval_seconds=worker_config.orchestration_wal_checkpoint_interval_seconds,
-            busy_timeout_ms=worker_config.orchestration_wal_checkpoint_busy_timeout_ms,
-        )
-    else:
-        workflow_event_journal = WorkflowEventJournal(worker_config.workflow_event_journal_path)
-        event_queue = TriggerEventQueue(
-            worker_config.event_queue_store_path,
-            journal_path=worker_config.workflow_event_journal_path,
-        )
-        execution_store = JsonExecutionStore(
-            worker_config.effect_execution_store_path,
-            journal_path=worker_config.workflow_event_journal_path,
-        )
-        gate_execution_store = JsonGateExecutionStore(
-            _resolve_worker_path(
-                worker_config,
-                "gate_execution_store_path",
-                fallback=worker_config.runtime_dir / "gate-orchestrator-executions.json",
-            ),
-            journal_path=worker_config.workflow_event_journal_path,
-        )
-        workflow_config_snapshot_store = JsonWorkflowConfigSnapshotRepository(
-            _resolve_worker_path(
-                worker_config,
-                "workflow_config_snapshot_store_path",
-                fallback=worker_config.runtime_dir / "workflow-config-snapshots.json",
-            )
-        )
+    workflow_event_journal = SqliteWorkflowEventJournal(
+        worker_config.orchestration_store_path,
+        retention_days=retention_days,
+    )
+    event_queue = SqliteTriggerEventQueue(
+        worker_config.orchestration_store_path,
+        journal=workflow_event_journal,
+        retention_days=retention_days,
+    )
+    execution_store = SqliteExecutionStore(
+        worker_config.orchestration_store_path,
+        journal=workflow_event_journal,
+        retention_days=retention_days,
+    )
+    gate_execution_store = SqliteGateExecutionStore(
+        worker_config.orchestration_store_path,
+        journal=workflow_event_journal,
+        retention_days=retention_days,
+    )
+    workflow_config_snapshot_store = SqliteWorkflowConfigSnapshotRepository(
+        worker_config.orchestration_store_path
+    )
+    maybe_checkpoint_orchestration_wal(
+        worker_config.orchestration_store_path,
+        mode=worker_config.orchestration_wal_checkpoint_mode,
+        min_bytes=worker_config.orchestration_wal_checkpoint_min_bytes,
+        interval_seconds=worker_config.orchestration_wal_checkpoint_interval_seconds,
+        busy_timeout_ms=worker_config.orchestration_wal_checkpoint_busy_timeout_ms,
+    )
     lock_path = _resolve_worker_path(
         worker_config,
         "effect_lock_path",
@@ -259,8 +227,8 @@ def build_effect_worker_store_wiring(
 @dataclass(frozen=True)
 class EffectWorkerWiring:
     provider_config_resolver: ProviderConfigResolver
-    workflow_event_journal: WorkflowEventJournal | SqliteWorkflowEventJournal
-    event_queue: TriggerEventQueue | SqliteTriggerEventQueue
+    workflow_event_journal: SqliteWorkflowEventJournal
+    event_queue: SqliteTriggerEventQueue
     lock_path: Path
     cursor_path: Path
     effect_cursor_repository: object
@@ -328,9 +296,3 @@ def build_effect_worker_wiring(
         completion_dispatch_hooks=runtime_wiring.completion_dispatch_hooks,
         managed_git_maintenance=runtime_wiring.managed_git_maintenance,
     )
-
-
-def _sqlite_orchestration_store_enabled(
-    worker_config: TriggerOrchestratorWorkerGlobalConfig,
-) -> bool:
-    return sqlite_orchestration_store_enabled(worker_config)

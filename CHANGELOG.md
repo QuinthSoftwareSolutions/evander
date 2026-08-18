@@ -1,5 +1,14 @@
 # Changelog
 
+## 2026-08-18 - Orchestration JSON Backend Removal
+
+- Made SQLite the unconditional orchestration queue, execution, snapshot, and workflow-journal
+  backend, while rejecting stale configuration that still requests `json`.
+- Removed the completed JSON migration/finalization commands and their compatibility tests after
+  both supported deployments were archived, marked, and repaired.
+- Removed JSON-backend worker, Admin, wake, Teams, ADO, and managed-Git hook branches together with
+  their obsolete configuration settings and operator documentation.
+
 ## 2026-08-18 - Migration And Test Maintenance
 
 - Restored the directory-config filename dependency used by the supported root configuration

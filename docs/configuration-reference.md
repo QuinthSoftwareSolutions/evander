@@ -153,26 +153,21 @@ For orchestration-only deployments, use `config/trigger-orchestrator/orchestrati
 | `poll_interval_seconds` | `config/trigger-orchestrator/config.json` | Trigger orchestrator worker polling cadence. |
 | `jitter_seconds` | `config/trigger-orchestrator/config.json` | Trigger orchestrator worker jitter between cycles. |
 | `lock_path` | `config/trigger-orchestrator/config.json` | Trigger orchestrator single-instance lock file path. |
-| `orchestration_store_backend` | `config/trigger-orchestrator/config.json` | Hot orchestration store backend. Defaults to `sqlite`; set to `json` for rollback to legacy files. |
-| `orchestration_store_path` | `config/trigger-orchestrator/config.json` | SQLite database path for trigger events, effect executions, gate executions, and workflow events. Defaults to `runtime/orchestration.db`. |
-| `orchestration_retention_days` | `config/trigger-orchestrator/config.json` | Completed orchestration history retention window for the SQLite backend. Defaults to `30`. |
+| `orchestration_store_path` | `config/trigger-orchestrator/config.json` | Authoritative SQLite database path for trigger events, effect executions, gate executions, workflow events, and workflow configuration snapshots. Defaults to `runtime/orchestration.db`. |
+| `orchestration_retention_days` | `config/trigger-orchestrator/config.json` | Completed orchestration history retention window. Defaults to `30`. |
 | `orchestration_wal_checkpoint_mode` | `config/trigger-orchestrator/config.json` | SQLite WAL checkpoint mode for bounded orchestration-store maintenance. Defaults to `truncate`; set to `disabled` to skip explicit checkpoints. |
 | `orchestration_wal_checkpoint_min_bytes` | `config/trigger-orchestrator/config.json` | Minimum `orchestration.db-wal` size before explicit checkpointing. Defaults to `67108864` bytes. |
 | `orchestration_wal_checkpoint_interval_seconds` | `config/trigger-orchestrator/config.json` | Minimum interval between explicit WAL checkpoint attempts. Defaults to `300`. |
 | `orchestration_wal_checkpoint_busy_timeout_ms` | `config/trigger-orchestrator/config.json` | Short busy timeout used only for explicit WAL checkpoint attempts. Defaults to `1000`. |
-| `event_queue_store_path` | `config/trigger-orchestrator/config.json` | Legacy JSON trigger queue path used when `orchestration_store_backend` is `json` and audited by the JSON-store finalizer. |
 | `event_queue_cursor_store_path` | `config/trigger-orchestrator/config.json` | Trigger orchestrator event queue cursor/checkpoint store path. |
-| `workflow_event_journal_path` | `config/trigger-orchestrator/config.json` | Legacy JSONL workflow event journal path used when `orchestration_store_backend` is `json` and audited by the JSON-store finalizer. SQLite internal-event publishers journal directly to `orchestration.db`. |
 | `scheduled_internal_event_store_path` | `config/trigger-orchestrator/config.json` | Durable one-shot scheduled internal event store path used by `effect:event:schedule`. Defaults to `runtime/scheduled-internal-events.json`. |
 | `workflow_packs` | `config/trigger-orchestrator/config.json` | Ordered workflow-pack filenames under `config/workflow-packs/` to compose into executable IR. |
 | `workflow_ir` | `config/trigger-orchestrator/config.json` | Optional inline IR overlay (`version`, `nodes`, `edges`) merged after pack composition. |
 | `workflow_graphs` | `config/trigger-orchestrator/config.json` | Optional editor metadata for connected graphs when using inline/non-pack workflows (`id`, `name`, `description`, `directory_path`, `user_ids`, `node_ids`). Each graph has exactly one canonical directory. `user_ids` are ownership/audit metadata, not a visibility boundary; Admin Web group assignments and direct workflow grants control graph visibility. Pack-backed workflows store the same metadata as `graphs` inside the pack file; the pack loader read-normalizes a legacy one-item `directory_paths` value for operator-owned ignored packs, but new writes and model output use only `directory_path`. |
 | `workflow_transforms` | `config/trigger-orchestrator/config.json` | Optional ordered transform plugin names (for example `await_agent_completion`) applied after structural compile/validation. |
 | `triggers` | `config/trigger-orchestrator/config.json` | Trigger orchestrator definition list; event envelopes live in `src/evander/events/models.py`, while trigger-specific schemas and implementations live under `src/evander/triggers/`. |
-| `gate_execution_store_path` | `config/trigger-orchestrator/config.json` | Legacy JSON gate execution log path used when `orchestration_store_backend` is `json` and audited by the JSON-store finalizer. |
 | `gate_cursor_store_path` | `config/trigger-orchestrator/config.json` | Gate orchestrator cursor/checkpoint path. |
 | `gate_lock_path` | `config/trigger-orchestrator/config.json` | Gate orchestrator single-instance lock file path. |
-| `effect_execution_store_path` | `config/trigger-orchestrator/config.json` | Legacy JSON effect execution log path used when `orchestration_store_backend` is `json` and audited by the JSON-store finalizer. |
 | `effect_cursor_store_path` | `config/trigger-orchestrator/config.json` | Effect orchestrator cursor/checkpoint path. |
 | `effects` | `config/trigger-orchestrator/config.json` | Effect definition list (`src/evander/events/models.py`). Effects no longer take `upstream_id`; they are wired with edges. |
 | `gates` | `config/trigger-orchestrator/config.json` | Gate definition list (filter/map/merge nodes). |

@@ -1,6 +1,13 @@
 from __future__ import annotations
 
-from config_helpers import canonical_worker_config
+from config_helpers import (
+    canonical_worker_config,
+    effect_execution_payload,
+    gate_execution_payload,
+    trigger_queue_payload,
+    workflow_config_snapshot_payload,
+    workflow_event_payload,
+)
 
 import json
 import logging
@@ -34,7 +41,6 @@ from evander.daemons.effect_orchestrator import (
     ExecutionGraph,
     GateExecutionRecord,
     EventScheduleEffectExecutor,
-    JsonExecutionStore,
     SqliteExecutionStore,
     SqliteGateExecutionStore,
     _await_agent_pending_target,
@@ -769,9 +775,7 @@ def test_effect_orchestrator_executes_state_nodes_with_graph_isolation(
     for _ in range(8):
         worker.run_once()
 
-    execution_payload = json.loads(
-        (runtime_dir / "effect-orchestrator-executions.json").read_text(encoding="utf-8")
-    )
+    execution_payload = effect_execution_payload(worker_config)
     records_by_effect_id = {record["effect_id"]: record for record in execution_payload.values()}
 
     alpha_effect = records_by_effect_id["effect-alpha-state"]
@@ -1520,9 +1524,7 @@ def test_effect_orchestrator_marks_removed_source_node_event_as_skipped(tmp_path
 
     worker.run_once()
 
-    execution_payload = json.loads(
-        (runtime_dir / "effect-orchestrator-executions.json").read_text(encoding="utf-8")
-    )
+    execution_payload = effect_execution_payload(worker_config)
     only = next(iter(execution_payload.values()))
     assert only["status"] == "skipped"
     assert only["error"] == "source_node_removed_from_graph:effect-removed"
@@ -1600,9 +1602,7 @@ def test_effect_orchestrator_executes_gate_and_effect_chain(tmp_path: Path) -> N
     for _ in range(12):
         worker.run_once()
 
-    effect_payload = json.loads(
-        (runtime_dir / "effect-orchestrator-executions.json").read_text(encoding="utf-8")
-    )
+    effect_payload = effect_execution_payload(worker_config)
     by_effect = {item["effect_id"]: item for item in effect_payload.values()}
     assert sorted(item["status"] for item in effect_payload.values()) == ["succeeded", "succeeded"]
     assert by_effect["effect-1"]["binding_trace"]["entries"][0]["config_path"] == "$.vm_name"
@@ -1615,18 +1615,14 @@ def test_effect_orchestrator_executes_gate_and_effect_chain(tmp_path: Path) -> N
     assert (
         by_effect["effect-2"]["binding_trace"]["entries"][1]["reference"] == "effect-1.session_id"
     )
-    gate_payload = json.loads(
-        (runtime_dir / "gate-orchestrator-executions.json").read_text(encoding="utf-8")
-    )
+    gate_payload = gate_execution_payload(worker_config)
     only_gate = next(iter(gate_payload.values()))
     assert only_gate["status"] == "succeeded"
     assert only_gate["outputs"] == {"vm_name": "vm-123"}
     assert only_gate["binding_trace"]["entries"][0]["config_path"] == "$.vm_name"
     assert only_gate["binding_trace"]["entries"][0]["reference"] == "trigger-1.ticket_id"
 
-    snapshot_payload = json.loads(
-        (runtime_dir / "workflow-config-snapshots.json").read_text(encoding="utf-8")
-    )
+    snapshot_payload = workflow_config_snapshot_payload(worker_config)
     only_snapshot = next(iter(snapshot_payload.values()))
     assert only_snapshot["snapshot_type"] == "compiled_runtime_graph"
     assert [item["id"] for item in only_snapshot["triggers"]] == ["trigger-1"]
@@ -1634,7 +1630,7 @@ def test_effect_orchestrator_executes_gate_and_effect_chain(tmp_path: Path) -> N
     assert [item["id"] for item in only_snapshot["effects"]] == ["effect-1", "effect-2"]
     assert only_snapshot["edges"][0]["source_id"] == "trigger-1"
 
-    queue_payload = json.loads(worker_config.event_queue_store_path.read_text(encoding="utf-8"))
+    queue_payload = trigger_queue_payload(worker_config)
     assert any(item["trigger_id"] == "gate-1" for item in queue_payload.values())
     assert any(item["trigger_id"] == "effect-1" for item in queue_payload.values())
     assert any(item["trigger_id"] == "effect-2" for item in queue_payload.values())
@@ -1713,9 +1709,7 @@ def test_effect_orchestrator_hot_drains_fast_completion_chain(tmp_path: Path) ->
 
     assert [result.next_sleep_seconds for result in active_results] == [0.0, 0.0, 0.0]
     assert idle_result.next_sleep_seconds == 1
-    effect_payload = json.loads(
-        (runtime_dir / "effect-orchestrator-executions.json").read_text(encoding="utf-8")
-    )
+    effect_payload = effect_execution_payload(worker_config)
     by_effect = {item["effect_id"]: item for item in effect_payload.values()}
     assert by_effect["effect-1"]["status"] == "succeeded"
     assert by_effect["effect-2"]["status"] == "succeeded"
@@ -1768,9 +1762,7 @@ def test_effect_orchestrator_executes_query_nodes(tmp_path: Path) -> None:
     for _ in range(4):
         worker.run_once()
 
-    effect_payload = json.loads(
-        (runtime_dir / "effect-orchestrator-executions.json").read_text(encoding="utf-8")
-    )
+    effect_payload = effect_execution_payload(worker_config)
     record = next(iter(effect_payload.values()))
     assert record["effect_id"] == "query-1"
     assert record["effect_type"] == "query:vm:run-state"
@@ -1876,9 +1868,7 @@ def test_effect_orchestrator_session_list_query_applies_graph_directory_metadata
     for _ in range(4):
         worker.run_once()
 
-    effect_payload = json.loads(
-        (runtime_dir / "effect-orchestrator-executions.json").read_text(encoding="utf-8")
-    )
+    effect_payload = effect_execution_payload(worker_config)
     record = next(iter(effect_payload.values()))
 
     assert record["effect_id"] == "query-sessions"
@@ -1939,9 +1929,7 @@ def test_effect_orchestrator_executes_issue_get_query_nodes(tmp_path: Path) -> N
     for _ in range(4):
         worker.run_once()
 
-    effect_payload = json.loads(
-        (runtime_dir / "effect-orchestrator-executions.json").read_text(encoding="utf-8")
-    )
+    effect_payload = effect_execution_payload(worker_config)
     record = next(iter(effect_payload.values()))
     assert record["effect_id"] == "query-1"
     assert record["effect_type"] == "query:issue:get"
@@ -1997,9 +1985,7 @@ def test_effect_orchestrator_persists_binding_error_on_failed_resolution(
     for _ in range(2):
         worker.run_once()
 
-    effect_payload = json.loads(
-        (runtime_dir / "effect-orchestrator-executions.json").read_text(encoding="utf-8")
-    )
+    effect_payload = effect_execution_payload(worker_config)
     record = next(iter(effect_payload.values()))
     assert record["status"] == "failed"
     assert "not declared" in record["binding_error"]
@@ -2014,7 +2000,6 @@ def test_effect_orchestrator_persists_workflow_config_snapshot_in_sqlite_backend
     worker_config = canonical_worker_config(
         {
             "runtime_dir": runtime_dir,
-            "orchestration_store_backend": "sqlite",
             "poll_interval_seconds": 1,
             "jitter_seconds": 0,
             "triggers": [
@@ -2115,9 +2100,7 @@ def test_effect_orchestrator_persists_provider_reported_failure_message(tmp_path
     for _ in range(4):
         worker.run_once()
 
-    effect_payload = json.loads(
-        (runtime_dir / "effect-orchestrator-executions.json").read_text(encoding="utf-8")
-    )
+    effect_payload = effect_execution_payload(worker_config)
     record = next(iter(effect_payload.values()))
     assert record["status"] == "succeeded"
     assert record["error"] == "sudo: a password is required"
@@ -2179,9 +2162,7 @@ def test_effect_orchestrator_executes_issue_update_state_effect(tmp_path: Path) 
     for _ in range(4):
         worker.run_once()
 
-    effect_payload = json.loads(
-        (runtime_dir / "effect-orchestrator-executions.json").read_text(encoding="utf-8")
-    )
+    effect_payload = effect_execution_payload(worker_config)
     record = next(iter(effect_payload.values()))
     assert record["effect_type"] == "effect:issue:update-state"
     assert record["status"] == "succeeded"
@@ -2258,9 +2239,7 @@ def test_for_gate_iterates_body_then_routes_to_done(tmp_path: Path) -> None:
     for _ in range(20):
         worker.run_once()
 
-    effect_payload = json.loads(
-        (runtime_dir / "effect-orchestrator-executions.json").read_text(encoding="utf-8")
-    )
+    effect_payload = effect_execution_payload(worker_config)
     body_records = [item for item in effect_payload.values() if item["effect_id"] == "effect-body"]
     done_records = [item for item in effect_payload.values() if item["effect_id"] == "effect-done"]
 
@@ -2276,9 +2255,7 @@ def test_for_gate_iterates_body_then_routes_to_done(tmp_path: Path) -> None:
     ]
     assert done_records[0]["resolved_config"]["command"] == "done 3"
 
-    gate_payload = json.loads(
-        (runtime_dir / "gate-orchestrator-executions.json").read_text(encoding="utf-8")
-    )
+    gate_payload = gate_execution_payload(worker_config)
     for_records = [item for item in gate_payload.values() if item["gate_id"] == "for-1"]
     assert len(for_records) == 4
     assert sum(1 for item in for_records if item["outputs"].get("is_done") is False) == 3
@@ -2375,9 +2352,7 @@ def test_for_gate_resumes_legacy_trace_scoped_state_key(tmp_path: Path) -> None:
     for _ in range(12):
         worker.run_once()
 
-    effect_payload = json.loads(
-        (runtime_dir / "effect-orchestrator-executions.json").read_text(encoding="utf-8")
-    )
+    effect_payload = effect_execution_payload(worker_config)
     body_records = [item for item in effect_payload.values() if item["effect_id"] == "effect-body"]
     done_records = [item for item in effect_payload.values() if item["effect_id"] == "effect-done"]
     assert [item["resolved_config"]["command"] for item in body_records] == ["work 2:gamma"]
@@ -2442,16 +2417,12 @@ def test_for_gate_without_body_edge_routes_immediately_to_done(tmp_path: Path) -
     for _ in range(8):
         worker.run_once()
 
-    effect_payload = json.loads(
-        (runtime_dir / "effect-orchestrator-executions.json").read_text(encoding="utf-8")
-    )
+    effect_payload = effect_execution_payload(worker_config)
     done_records = [item for item in effect_payload.values() if item["effect_id"] == "effect-done"]
     assert len(done_records) == 1
     assert done_records[0]["resolved_config"]["command"] == "done 3"
 
-    gate_payload = json.loads(
-        (runtime_dir / "gate-orchestrator-executions.json").read_text(encoding="utf-8")
-    )
+    gate_payload = gate_execution_payload(worker_config)
     for_records = [item for item in gate_payload.values() if item["gate_id"] == "for-1"]
     assert len(for_records) == 1
     assert for_records[0]["outputs"] == {
@@ -2522,9 +2493,7 @@ def test_for_gate_without_done_edge_terminates_after_body_iterations(
     for _ in range(12):
         worker.run_once()
 
-    effect_payload = json.loads(
-        (runtime_dir / "effect-orchestrator-executions.json").read_text(encoding="utf-8")
-    )
+    effect_payload = effect_execution_payload(worker_config)
     body_records = [item for item in effect_payload.values() if item["effect_id"] == "effect-body"]
     assert len(body_records) == 2
     assert sorted(item["resolved_config"]["command"] for item in body_records) == [
@@ -2532,9 +2501,7 @@ def test_for_gate_without_done_edge_terminates_after_body_iterations(
         "work 1:beta",
     ]
 
-    gate_payload = json.loads(
-        (runtime_dir / "gate-orchestrator-executions.json").read_text(encoding="utf-8")
-    )
+    gate_payload = gate_execution_payload(worker_config)
     for_records = [item for item in gate_payload.values() if item["gate_id"] == "for-1"]
     assert len(for_records) == 3
     assert sum(1 for item in for_records if item["outputs"].get("is_done") is False) == 2
@@ -2591,15 +2558,10 @@ def test_for_gate_without_outgoing_edges_terminates_immediately(tmp_path: Path) 
     for _ in range(5):
         worker.run_once()
 
-    effect_path = runtime_dir / "effect-orchestrator-executions.json"
-    effect_payload = (
-        json.loads(effect_path.read_text(encoding="utf-8")) if effect_path.exists() else {}
-    )
+    effect_payload = effect_execution_payload(worker_config)
     assert effect_payload == {}
 
-    gate_payload = json.loads(
-        (runtime_dir / "gate-orchestrator-executions.json").read_text(encoding="utf-8")
-    )
+    gate_payload = gate_execution_payload(worker_config)
     for_records = [item for item in gate_payload.values() if item["gate_id"] == "for-1"]
     assert len(for_records) == 1
     assert for_records[0]["outputs"] == {
@@ -2668,16 +2630,12 @@ def test_while_gate_false_condition_routes_to_done(tmp_path: Path) -> None:
     for _ in range(8):
         worker.run_once()
 
-    effect_payload = json.loads(
-        (runtime_dir / "effect-orchestrator-executions.json").read_text(encoding="utf-8")
-    )
+    effect_payload = effect_execution_payload(worker_config)
     done_records = [item for item in effect_payload.values() if item["effect_id"] == "effect-done"]
     assert len(done_records) == 1
     assert done_records[0]["resolved_config"]["command"] == "done 0"
 
-    gate_payload = json.loads(
-        (runtime_dir / "gate-orchestrator-executions.json").read_text(encoding="utf-8")
-    )
+    gate_payload = gate_execution_payload(worker_config)
     while_records = [item for item in gate_payload.values() if item["gate_id"] == "while-1"]
     assert len(while_records) == 1
     assert while_records[0]["outputs"] == {
@@ -2764,9 +2722,7 @@ def test_while_gate_exhausts_after_max_iterations(tmp_path: Path) -> None:
     for _ in range(16):
         worker.run_once()
 
-    effect_payload = json.loads(
-        (runtime_dir / "effect-orchestrator-executions.json").read_text(encoding="utf-8")
-    )
+    effect_payload = effect_execution_payload(worker_config)
     body_records = [item for item in effect_payload.values() if item["effect_id"] == "effect-body"]
     exhausted_records = [
         item for item in effect_payload.values() if item["effect_id"] == "effect-exhausted"
@@ -2779,9 +2735,7 @@ def test_while_gate_exhausts_after_max_iterations(tmp_path: Path) -> None:
     assert len(exhausted_records) == 1
     assert exhausted_records[0]["resolved_config"]["command"] == "exhausted 2"
 
-    gate_payload = json.loads(
-        (runtime_dir / "gate-orchestrator-executions.json").read_text(encoding="utf-8")
-    )
+    gate_payload = gate_execution_payload(worker_config)
     while_records = [item for item in gate_payload.values() if item["gate_id"] == "while-1"]
     assert len(while_records) == 3
     assert sum(1 for item in while_records if item["outputs"].get("is_done") is False) == 2
@@ -2890,9 +2844,7 @@ def test_while_gate_resumes_legacy_trace_scoped_state_key(tmp_path: Path) -> Non
     for _ in range(12):
         worker.run_once()
 
-    effect_payload = json.loads(
-        (runtime_dir / "effect-orchestrator-executions.json").read_text(encoding="utf-8")
-    )
+    effect_payload = effect_execution_payload(worker_config)
     body_records = [item for item in effect_payload.values() if item["effect_id"] == "effect-body"]
     exhausted_records = [
         item for item in effect_payload.values() if item["effect_id"] == "effect-exhausted"
@@ -2999,9 +2951,7 @@ def test_for_gate_restarts_iteration_for_each_fresh_invocation_in_same_trace(
     for _ in range(24):
         worker.run_once()
 
-    effect_payload = json.loads(
-        (runtime_dir / "effect-orchestrator-executions.json").read_text(encoding="utf-8")
-    )
+    effect_payload = effect_execution_payload(worker_config)
     body_records = [item for item in effect_payload.values() if item["effect_id"] == "effect-body"]
     done_records = [item for item in effect_payload.values() if item["effect_id"] == "effect-done"]
 
@@ -3018,9 +2968,7 @@ def test_for_gate_restarts_iteration_for_each_fresh_invocation_in_same_trace(
         "done 2",
     ]
 
-    gate_payload = json.loads(
-        (runtime_dir / "gate-orchestrator-executions.json").read_text(encoding="utf-8")
-    )
+    gate_payload = gate_execution_payload(worker_config)
     for_records = [item for item in gate_payload.values() if item["gate_id"] == "for-1"]
     assert len(for_records) == 6
     assert sum(1 for item in for_records if item["outputs"].get("is_done") is False) == 4
@@ -3074,15 +3022,13 @@ def test_effect_orchestrator_rejects_reserved_runtime_output_name(tmp_path: Path
     for _ in range(4):
         worker.run_once()
 
-    effect_payload = json.loads(
-        (runtime_dir / "effect-orchestrator-executions.json").read_text(encoding="utf-8")
-    )
+    effect_payload = effect_execution_payload(worker_config)
     record = next(iter(effect_payload.values()))
     assert record["status"] == "failed"
     assert record["outputs"] == {"__node_outputs": "forbidden"}
     assert "reserved output name" in record["error"]
 
-    queue_payload = json.loads(worker_config.event_queue_store_path.read_text(encoding="utf-8"))
+    queue_payload = trigger_queue_payload(worker_config)
     assert set(queue_payload.keys()) == {"event-1"}
     assert queue_payload["event-1"]["delivery_state"] == "delivered"
 
@@ -3156,9 +3102,7 @@ def test_effect_orchestrator_preserves_upstream_payload_across_multi_hop_chain(
     for _ in range(8):
         worker.run_once()
 
-    execution_payload = json.loads(
-        (runtime_dir / "effect-orchestrator-executions.json").read_text(encoding="utf-8")
-    )
+    execution_payload = effect_execution_payload(worker_config)
     by_effect = {item["effect_id"]: item for item in execution_payload.values()}
     assert by_effect["effect-1"]["status"] == "succeeded"
     assert by_effect["effect-2"]["status"] == "succeeded"
@@ -3226,9 +3170,7 @@ def test_effect_orchestrator_supports_disambiguated_references_for_same_key_name
     for _ in range(6):
         worker.run_once()
 
-    execution_payload = json.loads(
-        (runtime_dir / "effect-orchestrator-executions.json").read_text(encoding="utf-8")
-    )
+    execution_payload = effect_execution_payload(worker_config)
     by_effect = {item["effect_id"]: item for item in execution_payload.values()}
     assert by_effect["effect-1"]["status"] == "succeeded"
     assert by_effect["effect-2"]["status"] == "succeeded"
@@ -3313,12 +3255,10 @@ def test_effect_orchestrator_dispatches_without_waiting_for_long_effect(tmp_path
 
     assert elapsed < 0.5
     assert first_result.next_sleep_seconds == 0.0
-    execution_payload = json.loads(
-        (runtime_dir / "effect-orchestrator-executions.json").read_text(encoding="utf-8")
-    )
+    execution_payload = effect_execution_payload(worker_config)
     only = next(iter(execution_payload.values()))
     assert only["status"] == "running"
-    queue_payload = json.loads(worker_config.event_queue_store_path.read_text(encoding="utf-8"))
+    queue_payload = trigger_queue_payload(worker_config)
     assert queue_payload["event-long-1"]["delivery_state"] == "inflight"
 
     idle_result = worker.run_once()
@@ -3330,9 +3270,7 @@ def test_effect_orchestrator_dispatches_without_waiting_for_long_effect(tmp_path
     only = None
     for _ in range(5):
         worker.run_once()
-        execution_payload = json.loads(
-            (runtime_dir / "effect-orchestrator-executions.json").read_text(encoding="utf-8")
-        )
+        execution_payload = effect_execution_payload(worker_config)
         only = next(iter(execution_payload.values()))
         if only["status"] == "succeeded":
             break
@@ -3340,7 +3278,7 @@ def test_effect_orchestrator_dispatches_without_waiting_for_long_effect(tmp_path
 
     assert only is not None
     assert only["status"] == "succeeded"
-    queue_payload = json.loads(worker_config.event_queue_store_path.read_text(encoding="utf-8"))
+    queue_payload = trigger_queue_payload(worker_config)
     assert queue_payload["event-long-1"]["delivery_state"] == "delivered"
 
 
@@ -3389,7 +3327,7 @@ def test_effect_orchestrator_retries_running_effect_after_restart(tmp_path: Path
     )
 
     first_worker.run_once()
-    queue_payload = json.loads(worker_config.event_queue_store_path.read_text(encoding="utf-8"))
+    queue_payload = trigger_queue_payload(worker_config)
     assert queue_payload["event-restart-1"]["delivery_state"] == "inflight"
 
     restarted_worker = EffectOrchestratorWorker(
@@ -3399,21 +3337,17 @@ def test_effect_orchestrator_retries_running_effect_after_restart(tmp_path: Path
 
     for _ in range(5):
         restarted_worker.run_once()
-        execution_payload = json.loads(
-            (runtime_dir / "effect-orchestrator-executions.json").read_text(encoding="utf-8")
-        )
+        execution_payload = effect_execution_payload(worker_config)
         only = next(iter(execution_payload.values()))
         if only["status"] == "succeeded":
             break
         time.sleep(0.01)
 
     block_event.set()
-    execution_payload = json.loads(
-        (runtime_dir / "effect-orchestrator-executions.json").read_text(encoding="utf-8")
-    )
+    execution_payload = effect_execution_payload(worker_config)
     only = next(iter(execution_payload.values()))
     assert only["status"] == "succeeded"
-    queue_payload = json.loads(worker_config.event_queue_store_path.read_text(encoding="utf-8"))
+    queue_payload = trigger_queue_payload(worker_config)
     assert queue_payload["event-restart-1"]["delivery_state"] == "delivered"
     assert any(item["trigger_id"] == "effect-1" for item in queue_payload.values())
 
@@ -3460,15 +3394,13 @@ def test_effect_orchestrator_marks_provider_failure_failed(tmp_path: Path) -> No
 
     worker.run_once()
 
-    execution_payload = json.loads(
-        (runtime_dir / "effect-orchestrator-executions.json").read_text(encoding="utf-8")
-    )
+    execution_payload = effect_execution_payload(worker_config)
     record = next(iter(execution_payload.values()))
     assert record["status"] == "failed"
     assert record["error"] == "provider boom"
     assert record["outputs"] == {}
 
-    queue_payload = json.loads(worker_config.event_queue_store_path.read_text(encoding="utf-8"))
+    queue_payload = trigger_queue_payload(worker_config)
     assert queue_payload["event-provider-failure-1"]["delivery_state"] == "delivered"
 
 
@@ -3514,9 +3446,7 @@ def test_effect_orchestrator_records_provider_failure_outputs(tmp_path: Path) ->
 
     worker.run_once()
 
-    execution_payload = json.loads(
-        (runtime_dir / "effect-orchestrator-executions.json").read_text(encoding="utf-8")
-    )
+    execution_payload = effect_execution_payload(worker_config)
     record = next(iter(execution_payload.values()))
     assert record["status"] == "failed"
     assert record["error"] == "checked provider boom"
@@ -3587,9 +3517,7 @@ def test_effect_orchestrator_routes_generic_provider_failure_to_error_branch(
     for _ in range(3):
         worker.run_once()
 
-    execution_payload = json.loads(
-        (runtime_dir / "effect-orchestrator-executions.json").read_text(encoding="utf-8")
-    )
+    execution_payload = effect_execution_payload(worker_config)
     by_effect = {item["effect_id"]: item for item in execution_payload.values()}
     failed_send = by_effect["effect-1"]
     recorder = by_effect["effect-error"]
@@ -3658,9 +3586,7 @@ def test_effect_orchestrator_marks_completion_publish_failure_pending(
 
     worker.run_once()
 
-    execution_payload = json.loads(
-        (runtime_dir / "effect-orchestrator-executions.json").read_text(encoding="utf-8")
-    )
+    execution_payload = effect_execution_payload(worker_config)
     record = next(iter(execution_payload.values()))
     assert record["status"] == "completion_pending"
     assert record["completion_pending_status"] == "succeeded"
@@ -3670,7 +3596,7 @@ def test_effect_orchestrator_marks_completion_publish_failure_pending(
     assert record["error"] == "completion publish boom"
     assert len(counting_factory.execute_calls) == 1
 
-    queue_payload = json.loads(worker_config.event_queue_store_path.read_text(encoding="utf-8"))
+    queue_payload = trigger_queue_payload(worker_config)
     assert queue_payload["event-completion-publish-failure-1"]["delivery_state"] == "inflight"
 
 
@@ -3730,9 +3656,7 @@ def test_effect_orchestrator_retries_pending_completion_publish_after_restart(
 
     first_worker.run_once()
 
-    execution_payload = json.loads(
-        (runtime_dir / "effect-orchestrator-executions.json").read_text(encoding="utf-8")
-    )
+    execution_payload = effect_execution_payload(worker_config)
     record = next(iter(execution_payload.values()))
     assert record["status"] == "completion_pending"
     assert record["outputs"] == {"session_id": "session-123"}
@@ -3740,7 +3664,7 @@ def test_effect_orchestrator_retries_pending_completion_publish_after_restart(
     assert record["completion_event_enqueued_at"] is None
     assert len(counting_factory.execute_calls) == 1
 
-    queue_payload = json.loads(worker_config.event_queue_store_path.read_text(encoding="utf-8"))
+    queue_payload = trigger_queue_payload(worker_config)
     assert queue_payload["event-completion-retry-1"]["delivery_state"] == "inflight"
     assert all(item["trigger_id"] != "effect-1" for item in queue_payload.values())
 
@@ -3752,9 +3676,7 @@ def test_effect_orchestrator_retries_pending_completion_publish_after_restart(
 
     restarted_worker.run_once()
 
-    execution_payload = json.loads(
-        (runtime_dir / "effect-orchestrator-executions.json").read_text(encoding="utf-8")
-    )
+    execution_payload = effect_execution_payload(worker_config)
     record = next(iter(execution_payload.values()))
     assert record["status"] == "succeeded"
     assert record["outputs"] == {"session_id": "session-123"}
@@ -3762,7 +3684,7 @@ def test_effect_orchestrator_retries_pending_completion_publish_after_restart(
     assert record["completion_event_enqueued_at"] is not None
     assert len(counting_factory.execute_calls) == 1
 
-    queue_payload = json.loads(worker_config.event_queue_store_path.read_text(encoding="utf-8"))
+    queue_payload = trigger_queue_payload(worker_config)
     assert queue_payload["event-completion-retry-1"]["delivery_state"] == "delivered"
     assert sum(1 for item in queue_payload.values() if item["trigger_id"] == "effect-1") == 1
 
@@ -3832,9 +3754,7 @@ def test_effect_orchestrator_retries_pending_started_branch_publish_after_restar
 
     first_worker.run_once()
 
-    execution_payload = json.loads(
-        (runtime_dir / "effect-orchestrator-executions.json").read_text(encoding="utf-8")
-    )
+    execution_payload = effect_execution_payload(worker_config)
     record = next(iter(execution_payload.values()))
     assert record["status"] == "completion_pending"
     assert record["completion_pending_status"] == "waiting"
@@ -3845,7 +3765,7 @@ def test_effect_orchestrator_retries_pending_started_branch_publish_after_restar
     assert record["error"] == "started branch publish boom"
     assert len(counting_factory.execute_calls) == 1
 
-    queue_payload = json.loads(worker_config.event_queue_store_path.read_text(encoding="utf-8"))
+    queue_payload = trigger_queue_payload(worker_config)
     assert queue_payload["event-started-branch-retry-1"]["delivery_state"] == "inflight"
     assert all(item["trigger_id"] != "effect-1" for item in queue_payload.values())
 
@@ -3857,16 +3777,14 @@ def test_effect_orchestrator_retries_pending_started_branch_publish_after_restar
 
     restarted_worker.run_once()
 
-    execution_payload = json.loads(
-        (runtime_dir / "effect-orchestrator-executions.json").read_text(encoding="utf-8")
-    )
+    execution_payload = effect_execution_payload(worker_config)
     record = next(iter(execution_payload.values()))
     assert record["status"] == "waiting"
     assert record["published_event_id"] is not None
     assert record["completion_event_enqueued_at"] is not None
     assert len(counting_factory.execute_calls) == 1
 
-    queue_payload = json.loads(worker_config.event_queue_store_path.read_text(encoding="utf-8"))
+    queue_payload = trigger_queue_payload(worker_config)
     assert queue_payload["event-started-branch-retry-1"]["delivery_state"] == "delivered"
     started_events = [
         item
@@ -3934,7 +3852,7 @@ def test_effect_orchestrator_retries_partially_published_completion_publish_once
 
     first_worker.run_once()
 
-    queue_payload = json.loads(worker_config.event_queue_store_path.read_text(encoding="utf-8"))
+    queue_payload = trigger_queue_payload(worker_config)
     completion_records = [
         item
         for item in queue_payload.values()
@@ -3951,7 +3869,7 @@ def test_effect_orchestrator_retries_partially_published_completion_publish_once
 
     restarted_worker.run_once()
 
-    queue_payload = json.loads(worker_config.event_queue_store_path.read_text(encoding="utf-8"))
+    queue_payload = trigger_queue_payload(worker_config)
     completion_records = [
         item
         for item in queue_payload.values()
@@ -4054,9 +3972,7 @@ def test_effect_orchestrator_retries_partially_published_gate_completion_publish
 
     worker.run_once()
 
-    gate_payload = json.loads(
-        (runtime_dir / "gate-orchestrator-executions.json").read_text(encoding="utf-8")
-    )
+    gate_payload = gate_execution_payload(worker_config)
     gate_records = [item for item in gate_payload.values() if item["gate_id"] == "gate-map"]
     assert len(gate_records) == 1
     gate_record = gate_records[0]
@@ -4068,7 +3984,7 @@ def test_effect_orchestrator_retries_partially_published_gate_completion_publish
     assert gate_record["error"] == "gate completion publish boom after write"
     assert gate_execute_calls == 1
 
-    queue_payload = json.loads(worker_config.event_queue_store_path.read_text(encoding="utf-8"))
+    queue_payload = trigger_queue_payload(worker_config)
     completion_records = [
         item for item in queue_payload.values() if item["trigger_id"] == "gate-map"
     ]
@@ -4079,9 +3995,7 @@ def test_effect_orchestrator_retries_partially_published_gate_completion_publish
 
     worker.run_once()
 
-    gate_payload = json.loads(
-        (runtime_dir / "gate-orchestrator-executions.json").read_text(encoding="utf-8")
-    )
+    gate_payload = gate_execution_payload(worker_config)
     gate_records = [item for item in gate_payload.values() if item["gate_id"] == "gate-map"]
     assert len(gate_records) == 1
     gate_record = gate_records[0]
@@ -4091,15 +4005,13 @@ def test_effect_orchestrator_retries_partially_published_gate_completion_publish
     assert gate_record["outputs"] == {"value": "hello"}
     assert gate_execute_calls == 1
 
-    effect_payload = json.loads(
-        (runtime_dir / "effect-orchestrator-executions.json").read_text(encoding="utf-8")
-    )
+    effect_payload = effect_execution_payload(worker_config)
     effect_records = [item for item in effect_payload.values() if item["effect_id"] == "effect-1"]
     assert len(effect_records) == 1
     assert effect_records[0]["status"] == "succeeded"
     assert len(counting_factory.execute_calls) == 1
 
-    queue_payload = json.loads(worker_config.event_queue_store_path.read_text(encoding="utf-8"))
+    queue_payload = trigger_queue_payload(worker_config)
     completion_records = [
         item for item in queue_payload.values() if item["trigger_id"] == "gate-map"
     ]
@@ -4163,9 +4075,7 @@ def test_effect_orchestrator_records_binding_resolution_failure_and_advances_que
     for _ in range(5):
         worker.run_once()
 
-    execution_payload = json.loads(
-        (runtime_dir / "effect-orchestrator-executions.json").read_text(encoding="utf-8")
-    )
+    execution_payload = effect_execution_payload(worker_config)
     by_effect = {item["effect_id"]: item for item in execution_payload.values()}
     assert by_effect["effect-bad"]["status"] == "failed"
     assert by_effect["effect-good"]["status"] == "succeeded"
@@ -4231,16 +4141,12 @@ def test_filter_gate_forwards_matching_payload_with_recursive_subset_match(tmp_p
     for _ in range(5):
         worker.run_once()
 
-    gate_payload = json.loads(
-        (runtime_dir / "gate-orchestrator-executions.json").read_text(encoding="utf-8")
-    )
+    gate_payload = gate_execution_payload(worker_config)
     record = next(iter(gate_payload.values()))
     assert record["status"] == "succeeded"
     assert record["outputs"] == {"ticket": {"priority": "high", "id": 7}, "state": "Committed"}
 
-    effect_payload = json.loads(
-        (runtime_dir / "effect-orchestrator-executions.json").read_text(encoding="utf-8")
-    )
+    effect_payload = effect_execution_payload(worker_config)
     effect_record = next(iter(effect_payload.values()))
     assert effect_record["status"] == "succeeded"
 
@@ -4285,12 +4191,10 @@ def test_filter_gate_drops_non_matching_payload(tmp_path: Path) -> None:
 
     worker.run_once()
 
-    gate_payload = json.loads(
-        (runtime_dir / "gate-orchestrator-executions.json").read_text(encoding="utf-8")
-    )
+    gate_payload = gate_execution_payload(worker_config)
     record = next(iter(gate_payload.values()))
     assert record["status"] == "dropped"
-    queue_payload = json.loads(worker_config.event_queue_store_path.read_text(encoding="utf-8"))
+    queue_payload = trigger_queue_payload(worker_config)
     assert not any(item["trigger_id"] == "gate-filter" for item in queue_payload.values())
 
 
@@ -4376,15 +4280,11 @@ def test_filter_gate_when_supports_string_branch_operators(tmp_path: Path) -> No
     for _ in range(4):
         worker.run_once()
 
-    gate_payload = json.loads(
-        (runtime_dir / "gate-orchestrator-executions.json").read_text(encoding="utf-8")
-    )
+    gate_payload = gate_execution_payload(worker_config)
     gate_record = next(iter(gate_payload.values()))
     assert gate_record["status"] == "succeeded"
 
-    effect_payload = json.loads(
-        (runtime_dir / "effect-orchestrator-executions.json").read_text(encoding="utf-8")
-    )
+    effect_payload = effect_execution_payload(worker_config)
     assert {item["effect_id"] for item in effect_payload.values()} == {"effect-1"}
 
 
@@ -4468,17 +4368,13 @@ def test_filter_gate_when_can_match_ancestor_effect_outputs(tmp_path: Path) -> N
     for _ in range(6):
         worker.run_once()
 
-    gate_payload = json.loads(
-        (runtime_dir / "gate-orchestrator-executions.json").read_text(encoding="utf-8")
-    )
+    gate_payload = gate_execution_payload(worker_config)
     gate_record = next(iter(gate_payload.values()))
     assert gate_record["status"] == "succeeded"
     assert gate_record["resolved_config"]["when"]["all"][0]["left"] is True
     assert gate_record["resolved_config"]["when"]["all"][1]["left"] == "session-123"
 
-    effect_payload = json.loads(
-        (runtime_dir / "effect-orchestrator-executions.json").read_text(encoding="utf-8")
-    )
+    effect_payload = effect_execution_payload(worker_config)
     assert {item["effect_id"] for item in effect_payload.values()} == {"effect-1", "effect-2"}
 
 
@@ -4551,9 +4447,7 @@ def test_agent_prompt_on_completion_releases_downstream_effect_without_await_gat
     for _ in range(4):
         worker.run_once()
 
-    effect_payload = json.loads(
-        (runtime_dir / "effect-orchestrator-executions.json").read_text(encoding="utf-8")
-    )
+    effect_payload = effect_execution_payload(worker_config)
     by_effect = {item["effect_id"]: item for item in effect_payload.values()}
     assert by_effect["effect-1"]["status"] == "waiting"
     assert "effect-2" not in by_effect
@@ -4592,9 +4486,7 @@ def test_agent_prompt_on_completion_releases_downstream_effect_without_await_gat
     for _ in range(6):
         worker.run_once()
 
-    effect_payload = json.loads(
-        (runtime_dir / "effect-orchestrator-executions.json").read_text(encoding="utf-8")
-    )
+    effect_payload = effect_execution_payload(worker_config)
     by_effect = {item["effect_id"]: item for item in effect_payload.values()}
     assert by_effect["effect-1"]["status"] == "succeeded"
     assert by_effect["effect-1"]["outputs"]["vm_name"] == "vm-issue-42"
@@ -4673,9 +4565,7 @@ def test_agent_enqueue_prompt_started_port_releases_downstream_after_dispatch(
     for _ in range(4):
         worker.run_once()
 
-    effect_payload = json.loads(
-        (runtime_dir / "effect-orchestrator-executions.json").read_text(encoding="utf-8")
-    )
+    effect_payload = effect_execution_payload(worker_config)
     by_effect = {item["effect_id"]: item for item in effect_payload.values()}
     assert by_effect["effect-1"]["status"] == "waiting"
     assert by_effect["effect-2"]["status"] == "succeeded"
@@ -4749,9 +4639,7 @@ def test_agent_enqueue_prompt_completed_port_waits_for_agent_completion(
     for _ in range(4):
         worker.run_once()
 
-    effect_payload = json.loads(
-        (runtime_dir / "effect-orchestrator-executions.json").read_text(encoding="utf-8")
-    )
+    effect_payload = effect_execution_payload(worker_config)
     by_effect = {item["effect_id"]: item for item in effect_payload.values()}
     assert by_effect["effect-1"]["status"] == "waiting"
     assert "effect-2" not in by_effect
@@ -4783,9 +4671,7 @@ def test_agent_enqueue_prompt_completed_port_waits_for_agent_completion(
     for _ in range(6):
         worker.run_once()
 
-    effect_payload = json.loads(
-        (runtime_dir / "effect-orchestrator-executions.json").read_text(encoding="utf-8")
-    )
+    effect_payload = effect_execution_payload(worker_config)
     by_effect = {item["effect_id"]: item for item in effect_payload.values()}
     assert by_effect["effect-1"]["status"] == "succeeded"
     assert by_effect["effect-2"]["status"] == "succeeded"
@@ -4856,9 +4742,7 @@ def test_agent_enqueue_prompt_queues_when_target_agent_is_running(
     for _ in range(3):
         worker.run_once()
 
-    effect_payload = json.loads(
-        (runtime_dir / "effect-orchestrator-executions.json").read_text(encoding="utf-8")
-    )
+    effect_payload = effect_execution_payload(worker_config)
     only = next(iter(effect_payload.values()))
     assert only["status"] == "succeeded"
     assert only["outputs"]["queued"] is True
@@ -5239,9 +5123,7 @@ def test_agent_enqueue_prompt_queues_racing_prompt_while_dispatch_is_inflight(
     )
     assert queued_payload["vm-1"]["prompt"] == "second"
 
-    effect_payload = json.loads(
-        (runtime_dir / "effect-orchestrator-executions.json").read_text(encoding="utf-8")
-    )
+    effect_payload = effect_execution_payload(worker_config)
     by_event = {item["event_id"]: item for item in effect_payload.values()}
     assert by_event["event-1"]["status"] == "waiting"
     assert by_event["event-1"]["outputs"]["queued"] is False
@@ -5707,9 +5589,7 @@ def test_agent_enqueue_prompt_queued_completion_preserves_upstream_workflow_cont
             "metadata": {"issue_id": "ISSUE-123", "agent_done": True},
         }
     ]
-    effect_payload = json.loads(
-        (runtime_dir / "effect-orchestrator-executions.json").read_text(encoding="utf-8")
-    )
+    effect_payload = effect_execution_payload(worker_config)
     effect_2_records = [
         record for record in effect_payload.values() if record["effect_id"] == "effect-2"
     ]
@@ -5850,9 +5730,7 @@ def test_agent_enqueue_prompt_queued_started_loopback_preserves_for_gate_state(
         {"target": "session-1", "metadata": {"for_done": True}},
     ]
 
-    gate_payload = json.loads(
-        (runtime_dir / "gate-orchestrator-executions.json").read_text(encoding="utf-8")
-    )
+    gate_payload = gate_execution_payload(worker_config)
     for_records = [item for item in gate_payload.values() if item["gate_id"] == "for-1"]
     assert len(for_records) == 2
     assert sum(1 for item in for_records if item["outputs"].get("is_done") is False) == 1
@@ -6094,7 +5972,7 @@ def test_agent_enqueue_prompt_capacity_denial_keeps_one_coalescing_row(
     worker = SimpleNamespace(
         config=config,
         queued_agent_prompt_store=queue_store,
-        execution_store=JsonExecutionStore(tmp_path / "effect-orchestrator-executions.json"),
+        execution_store=SqliteExecutionStore(tmp_path / "orchestration.db"),
         agent_run_status_port=_AgentRunStatusPortStub(
             [
                 VmSummary(
@@ -6272,7 +6150,7 @@ def test_agent_enqueue_prompt_replay_discards_libvirt_row_after_waiting_record_c
         effect_id="effect-libvirt",
     )
     queue_store.put(queued)
-    execution_store = JsonExecutionStore(tmp_path / "effect-orchestrator-executions.json")
+    execution_store = SqliteExecutionStore(tmp_path / "orchestration.db")
     execution_store.put(_queued_prompt_execution_record(queued, status="waiting"))
     resume_calls: list[dict[str, object]] = []
     published_started: list[tuple[str | None, str]] = []
@@ -6347,7 +6225,7 @@ def test_agent_enqueue_prompt_replay_discards_container_row_after_terminal_recor
         effect_id="effect-container",
     )
     queue_store.put(queued)
-    execution_store = JsonExecutionStore(tmp_path / "effect-orchestrator-executions.json")
+    execution_store = SqliteExecutionStore(tmp_path / "orchestration.db")
     execution_store.put(_queued_prompt_execution_record(queued, status="succeeded"))
     backend_calls: list[object] = []
     published_started: list[tuple[str | None, str]] = []
@@ -6395,7 +6273,7 @@ def test_agent_enqueue_prompt_replay_retries_terminal_started_event_before_delet
         effect_id="effect-terminal-retry",
     )
     queue_store.put(queued)
-    execution_store = JsonExecutionStore(tmp_path / "effect-orchestrator-executions.json")
+    execution_store = SqliteExecutionStore(tmp_path / "orchestration.db")
     terminal = _queued_prompt_execution_record(queued, status="succeeded")
     execution_store.put(terminal)
     publish_attempts: list[str] = []
@@ -6447,7 +6325,7 @@ def test_agent_enqueue_prompt_reconcile_publishes_queued_started_before_terminal
             "execution_id": "worker-execution-1",
         }
     )
-    execution_store = JsonExecutionStore(tmp_path / "effect-orchestrator-executions.json")
+    execution_store = SqliteExecutionStore(tmp_path / "orchestration.db")
     execution_store.put(waiting)
     queue_store = AgentPromptQueueStore(tmp_path / "queued-agent-prompts.json")
     queue_store.put(queued)
@@ -6533,7 +6411,7 @@ def test_agent_enqueue_prompt_restart_repairs_claimed_row_then_respects_retentio
 
     waiting = _queued_prompt_execution_record(claimed, status="waiting")
     waiting.outputs["dispatched_from_queue"] = True
-    execution_store = JsonExecutionStore(tmp_path / "effect-orchestrator-executions.json")
+    execution_store = SqliteExecutionStore(tmp_path / "orchestration.db")
     execution_store.put(waiting)
     publish_calls: list[str] = []
 
@@ -6634,7 +6512,7 @@ def test_agent_enqueue_prompt_replay_retains_row_for_different_active_dispatch(
         dispatch_id="dispatch-active",
         effect_id="effect-active",
     )
-    execution_store = JsonExecutionStore(tmp_path / "effect-orchestrator-executions.json")
+    execution_store = SqliteExecutionStore(tmp_path / "orchestration.db")
     execution_store.put(_queued_prompt_execution_record(active, status="waiting"))
     resume_calls: list[dict[str, object]] = []
     worker = SimpleNamespace(
@@ -6707,7 +6585,7 @@ def test_agent_enqueue_prompt_libvirt_replay_keeps_prompts_arriving_during_launc
                 )
             return result
 
-    execution_store = JsonExecutionStore(tmp_path / "effect-orchestrator-executions.json")
+    execution_store = SqliteExecutionStore(tmp_path / "orchestration.db")
     worker = SimpleNamespace(
         queued_agent_prompt_store=queue_store,
         execution_store=execution_store,
@@ -6768,7 +6646,7 @@ def test_agent_enqueue_prompt_failed_claimed_replay_keeps_newer_prompts_coalesci
     resume_calls: list[dict[str, object]] = []
     worker = SimpleNamespace(
         queued_agent_prompt_store=queue_store,
-        execution_store=JsonExecutionStore(tmp_path / "effect-orchestrator-executions.json"),
+        execution_store=SqliteExecutionStore(tmp_path / "orchestration.db"),
         agent_run_status_port=_AgentRunStatusPortStub(
             [
                 VmSummary(
@@ -6881,7 +6759,7 @@ def test_agent_enqueue_prompt_container_replay_keeps_prompts_arriving_during_lau
         "evander.effects.providers.lifecycle_hooks.build_execution_backend",
         lambda config, admin_service: backend,
     )
-    execution_store = JsonExecutionStore(tmp_path / "effect-orchestrator-executions.json")
+    execution_store = SqliteExecutionStore(tmp_path / "orchestration.db")
     worker = SimpleNamespace(
         config=config,
         queued_agent_prompt_store=queue_store,
@@ -6975,7 +6853,7 @@ def test_agent_enqueue_prompt_container_ineligible_replay_keeps_one_coalescing_r
     worker = SimpleNamespace(
         config=config,
         queued_agent_prompt_store=queue_store,
-        execution_store=JsonExecutionStore(tmp_path / "effect-orchestrator-executions.json"),
+        execution_store=SqliteExecutionStore(tmp_path / "orchestration.db"),
         agent_prompt_dispatch_port=object(),
         provider_config_resolver=SimpleNamespace(resolve_for_session_id=lambda _id: config),
         provider_factory=SimpleNamespace(
@@ -7034,7 +6912,7 @@ def test_agent_enqueue_prompt_dispatch_keeps_libvirt_behind_older_busy_container
     resume_calls: list[dict[str, object]] = []
     worker = SimpleNamespace(
         queued_agent_prompt_store=queue_store,
-        execution_store=JsonExecutionStore(tmp_path / "effect-orchestrator-executions.json"),
+        execution_store=SqliteExecutionStore(tmp_path / "orchestration.db"),
         agent_run_status_port=_AgentRunStatusPortStub(
             [
                 VmSummary(
@@ -7169,7 +7047,7 @@ def test_agent_enqueue_prompt_dispatch_skips_expired_libvirt_queued_prompt(
             resume_calls,
             type("Result", (), {"success": True, "thread_id": "thread-queued"})(),
         ),
-        execution_store=JsonExecutionStore(runtime_dir / "effect-orchestrator-executions.json"),
+        execution_store=SqliteExecutionStore(runtime_dir / "orchestration.db"),
         provider_factory=SimpleNamespace(
             admin_service=SimpleNamespace(
                 runtime=SimpleNamespace(session_repository=session_repository)
@@ -7246,7 +7124,7 @@ def test_agent_enqueue_prompt_dispatch_skips_expired_container_queued_prompt(
     worker = SimpleNamespace(
         queued_agent_prompt_store=queue_store,
         agent_prompt_dispatch_port=object(),
-        execution_store=JsonExecutionStore(runtime_dir / "effect-orchestrator-executions.json"),
+        execution_store=SqliteExecutionStore(runtime_dir / "orchestration.db"),
         provider_factory=SimpleNamespace(
             admin_service=SimpleNamespace(
                 runtime=SimpleNamespace(session_repository=session_repository)
@@ -7376,7 +7254,7 @@ def test_agent_enqueue_prompt_dispatch_reads_and_updates_resume_thread_metadata_
             effect_id="effect-1",
         )
     )
-    execution_store = JsonExecutionStore(runtime_dir / "effect-orchestrator-executions.json")
+    execution_store = SqliteExecutionStore(runtime_dir / "orchestration.db")
     resume_calls: list[dict[str, object]] = []
     worker = SimpleNamespace(
         queued_agent_prompt_store=queue_store,
@@ -7464,7 +7342,7 @@ def test_agent_enqueue_prompt_dispatch_does_not_fallback_to_default_thread_for_n
             effect_id="effect-1",
         )
     )
-    execution_store = JsonExecutionStore(runtime_dir / "effect-orchestrator-executions.json")
+    execution_store = SqliteExecutionStore(runtime_dir / "orchestration.db")
     resume_calls: list[dict[str, object]] = []
     worker = SimpleNamespace(
         queued_agent_prompt_store=queue_store,
@@ -7597,9 +7475,7 @@ def test_session_renew_if_expired_runs_before_prompting(
 
     renewed_session = session_repository.get_session("session-1")
     assert renewed_session is not None
-    execution_payload = json.loads(
-        (runtime_dir / "effect-orchestrator-executions.json").read_text(encoding="utf-8")
-    )
+    execution_payload = effect_execution_payload(worker_config)
     records_by_effect = {record["effect_id"]: record for record in execution_payload.values()}
     assert set(records_by_effect) == {"effect-renew", "effect-prompt"}
     assert records_by_effect["effect-renew"]["status"] == "succeeded"
@@ -7675,9 +7551,7 @@ def test_session_prompt_without_renewal_still_fails_for_expired_session(
 
     worker.run_once()
 
-    execution_payload = json.loads(
-        (runtime_dir / "effect-orchestrator-executions.json").read_text(encoding="utf-8")
-    )
+    execution_payload = effect_execution_payload(worker_config)
     record = next(iter(execution_payload.values()))
     assert record["status"] == "failed"
     assert "prompt guard saw expired session session-1" in record["error"]
@@ -7718,7 +7592,7 @@ def test_agent_enqueue_prompt_dispatch_serializes_distinct_queue_keys_for_same_s
                 effect_id="effect-1",
             )
         )
-    execution_store = JsonExecutionStore(runtime_dir / "effect-orchestrator-executions.json")
+    execution_store = SqliteExecutionStore(runtime_dir / "orchestration.db")
     resume_calls: list[dict[str, object]] = []
     worker = SimpleNamespace(
         queued_agent_prompt_store=queue_store,
@@ -7780,7 +7654,7 @@ def test_agent_enqueue_prompt_queue_dispatch_skips_and_retries_when_inventory_fa
             effect_id="effect-1",
         )
     )
-    execution_store = JsonExecutionStore(runtime_dir / "effect-orchestrator-executions.json")
+    execution_store = SqliteExecutionStore(runtime_dir / "orchestration.db")
     resume_calls: list[dict[str, object]] = []
     worker = SimpleNamespace(
         queued_agent_prompt_store=queue_store,
@@ -7867,7 +7741,7 @@ def test_agent_enqueue_prompt_dispatches_admin_prompt_without_graph_effect(
             effect_id="orphan-prompt",
         )
     )
-    execution_store = JsonExecutionStore(runtime_dir / "effect-orchestrator-executions.json")
+    execution_store = SqliteExecutionStore(runtime_dir / "orchestration.db")
     resume_calls: list[dict[str, object]] = []
     worker = SimpleNamespace(
         queued_agent_prompt_store=queue_store,
@@ -8039,7 +7913,7 @@ def test_agent_enqueue_prompt_dispatch_hook_tracks_container_queue_until_complet
         "evander.effects.providers.agent_prompt.build_execution_backend",
         lambda config, admin_service: backend,
     )
-    execution_store = JsonExecutionStore(tmp_path / "effect-orchestrator-executions.json")
+    execution_store = SqliteExecutionStore(tmp_path / "orchestration.db")
     published_events: list[tuple[str | None, dict[str, object]]] = []
     worker = SimpleNamespace(
         config=config,
@@ -8162,7 +8036,7 @@ def test_container_prompt_completion_without_agent_output_fails_without_persisti
         "evander.effects.providers.agent_prompt.build_execution_backend",
         lambda config, admin_service: backend,
     )
-    execution_store = JsonExecutionStore(tmp_path / "effect-orchestrator-executions.json")
+    execution_store = SqliteExecutionStore(tmp_path / "orchestration.db")
     published_events: list[tuple[str | None, dict[str, object]]] = []
     started_at = datetime.now(timezone.utc)
     record = EffectExecutionRecord(
@@ -8295,7 +8169,7 @@ def test_agent_enqueue_prompt_dispatch_hook_uses_queued_container_resume_mode(
         "evander.effects.providers.lifecycle_hooks.build_execution_backend",
         lambda config, admin_service: backend,
     )
-    execution_store = JsonExecutionStore(tmp_path / "effect-orchestrator-executions.json")
+    execution_store = SqliteExecutionStore(tmp_path / "orchestration.db")
     published_events: list[tuple[str | None, dict[str, object]]] = []
     worker = SimpleNamespace(
         config=config,
@@ -8431,7 +8305,7 @@ def test_agent_enqueue_prompt_dispatch_hook_discards_cancelled_scheduled_wake_qu
         "evander.effects.providers.lifecycle_hooks.build_execution_backend",
         lambda config, admin_service: backend,
     )
-    execution_store = JsonExecutionStore(tmp_path / "effect-orchestrator-executions.json")
+    execution_store = SqliteExecutionStore(tmp_path / "orchestration.db")
     worker = SimpleNamespace(
         config=config,
         execution_store=execution_store,
@@ -8504,7 +8378,7 @@ def test_agent_enqueue_prompt_dispatch_hook_preserves_queued_container_agent_pro
         "evander.effects.providers.lifecycle_hooks.build_execution_backend",
         lambda config, admin_service: backend,
     )
-    execution_store = JsonExecutionStore(tmp_path / "effect-orchestrator-executions.json")
+    execution_store = SqliteExecutionStore(tmp_path / "orchestration.db")
     worker = SimpleNamespace(
         config=config,
         execution_store=execution_store,
@@ -8695,7 +8569,7 @@ def test_agent_prompt_container_reconciliation_times_out_running_job(
         "evander.effects.providers.agent_prompt.build_execution_backend",
         lambda config, admin_service: backend,
     )
-    execution_store = JsonExecutionStore(tmp_path / "effect-orchestrator-executions.json")
+    execution_store = SqliteExecutionStore(tmp_path / "orchestration.db")
     record = EffectExecutionRecord(
         execution_id="exec-timeout",
         idempotency_key="event-1::effect-1",
@@ -8826,9 +8700,7 @@ def test_agent_enqueue_prompt_queues_and_fails_when_immediate_resume_fails(
     for _ in range(3):
         worker.run_once()
 
-    effect_payload = json.loads(
-        (runtime_dir / "effect-orchestrator-executions.json").read_text(encoding="utf-8")
-    )
+    effect_payload = effect_execution_payload(worker_config)
     only = next(iter(effect_payload.values()))
     assert only["status"] == "failed"
     assert "queued prompt for retry" in only["error"]
@@ -8927,9 +8799,7 @@ def test_agent_enqueue_prompt_routes_retry_context_to_error_branch(
     for _ in range(4):
         worker.run_once()
 
-    effect_payload = json.loads(
-        (runtime_dir / "effect-orchestrator-executions.json").read_text(encoding="utf-8")
-    )
+    effect_payload = effect_execution_payload(worker_config)
     by_effect = {item["effect_id"]: item for item in effect_payload.values()}
     enqueue_record = by_effect["effect-1"]
     downstream_record = by_effect["effect-error"]
@@ -9072,9 +8942,7 @@ def test_agent_prompt_fails_when_resume_agent_reports_unsuccessful_result(
     for _ in range(3):
         worker.run_once()
 
-    effect_payload = json.loads(
-        (runtime_dir / "effect-orchestrator-executions.json").read_text(encoding="utf-8")
-    )
+    effect_payload = effect_execution_payload(worker_config)
     only = next(iter(effect_payload.values()))
     assert only["status"] == "failed"
     assert "resume_agent failed" in only["error"]
@@ -9085,7 +8953,7 @@ def test_agent_prompt_fails_when_resume_agent_reports_unsuccessful_result(
     assert only["outputs"]["failed_phase"] == "dispatch"
     assert "resume_agent failed" in only["outputs"]["error_message"]
 
-    queue_payload = json.loads(worker_config.event_queue_store_path.read_text(encoding="utf-8"))
+    queue_payload = trigger_queue_payload(worker_config)
     assert all(item["trigger_id"] != "effect-1" for item in queue_payload.values())
 
 
@@ -9149,9 +9017,7 @@ def test_agent_prompt_routes_failed_outputs_to_error_branch(
     for _ in range(4):
         worker.run_once()
 
-    execution_payload = json.loads(
-        (runtime_dir / "effect-orchestrator-executions.json").read_text(encoding="utf-8")
-    )
+    execution_payload = effect_execution_payload(worker_config)
     by_effect = {item["effect_id"]: item for item in execution_payload.values()}
 
     prompt_record = by_effect["effect-prompt"]
@@ -9173,7 +9039,7 @@ def test_agent_prompt_routes_failed_outputs_to_error_branch(
     assert downstream_record["outputs"]["success"] is True
     assert downstream_record["outputs"]["handled"] is True
 
-    queue_payload = json.loads(worker_config.event_queue_store_path.read_text(encoding="utf-8"))
+    queue_payload = trigger_queue_payload(worker_config)
     error_branch_events = [
         item for item in queue_payload.values() if item["trigger_id"] == "effect-prompt"
     ]
@@ -9247,9 +9113,7 @@ def test_agent_prompt_error_branch_publish_failure_fails_loudly(
 
     worker.run_once()
 
-    execution_payload = json.loads(
-        (runtime_dir / "effect-orchestrator-executions.json").read_text(encoding="utf-8")
-    )
+    execution_payload = effect_execution_payload(worker_config)
     prompt_record = next(
         record for record in execution_payload.values() if record["effect_id"] == "effect-prompt"
     )
@@ -9264,7 +9128,7 @@ def test_agent_prompt_error_branch_publish_failure_fails_loudly(
     assert prompt_record["outputs"]["error_message"] == "checked provider boom"
     assert prompt_record["outputs"]["error_class"] == "EffectProviderExecutionError"
 
-    queue_payload = json.loads(worker_config.event_queue_store_path.read_text(encoding="utf-8"))
+    queue_payload = trigger_queue_payload(worker_config)
     assert all(item["trigger_id"] != "effect-prompt" for item in queue_payload.values())
 
 
@@ -9343,15 +9207,11 @@ def test_filter_gate_when_drops_payload_when_predicate_is_false(tmp_path: Path) 
     for _ in range(6):
         worker.run_once()
 
-    gate_payload = json.loads(
-        (runtime_dir / "gate-orchestrator-executions.json").read_text(encoding="utf-8")
-    )
+    gate_payload = gate_execution_payload(worker_config)
     gate_record = next(iter(gate_payload.values()))
     assert gate_record["status"] == "dropped"
 
-    effect_payload = json.loads(
-        (runtime_dir / "effect-orchestrator-executions.json").read_text(encoding="utf-8")
-    )
+    effect_payload = effect_execution_payload(worker_config)
     assert {item["effect_id"] for item in effect_payload.values()} == {"effect-1"}
 
 
@@ -9443,9 +9303,7 @@ def test_vm_copy_files_template_source_renders_bindings_before_dispatch(tmp_path
     for _ in range(6):
         worker.run_once()
 
-    effect_payload = json.loads(
-        (runtime_dir / "effect-orchestrator-executions.json").read_text(encoding="utf-8")
-    )
+    effect_payload = effect_execution_payload(worker_config)
     copy_record = next(item for item in effect_payload.values() if item["effect_id"] == "effect-2")
     rendered_file = copy_record["resolved_config"]["files"][0]
     assert "source_path" not in rendered_file
@@ -9531,9 +9389,7 @@ def test_await_agent_gate_releases_follow_up_on_matching_completion(tmp_path: Pa
     for _ in range(4):
         worker.run_once()
 
-    before_completion = json.loads(
-        (runtime_dir / "effect-orchestrator-executions.json").read_text(encoding="utf-8")
-    )
+    before_completion = effect_execution_payload(worker_config)
     assert {item["effect_id"] for item in before_completion.values()} == {"effect-1"}
 
     worker.event_queue.publish(
@@ -9570,14 +9426,10 @@ def test_await_agent_gate_releases_follow_up_on_matching_completion(tmp_path: Pa
     for _ in range(6):
         worker.run_once()
 
-    effect_payload = json.loads(
-        (runtime_dir / "effect-orchestrator-executions.json").read_text(encoding="utf-8")
-    )
+    effect_payload = effect_execution_payload(worker_config)
     assert {item["effect_id"] for item in effect_payload.values()} == {"effect-1", "effect-2"}
 
-    gate_payload = json.loads(
-        (runtime_dir / "gate-orchestrator-executions.json").read_text(encoding="utf-8")
-    )
+    gate_payload = gate_execution_payload(worker_config)
     assert any(
         item["gate_id"] == "await-agent-1" and item["status"] == "succeeded"
         for item in gate_payload.values()
@@ -9693,14 +9545,10 @@ def test_await_agent_gate_releases_follow_up_from_in_process_vm_poll(
     for _ in range(6):
         worker.run_once()
 
-    effect_payload = json.loads(
-        (runtime_dir / "effect-orchestrator-executions.json").read_text(encoding="utf-8")
-    )
+    effect_payload = effect_execution_payload(worker_config)
     assert {item["effect_id"] for item in effect_payload.values()} == {"effect-1", "effect-2"}
 
-    gate_payload = json.loads(
-        (runtime_dir / "gate-orchestrator-executions.json").read_text(encoding="utf-8")
-    )
+    gate_payload = gate_execution_payload(worker_config)
     assert any(
         item["gate_id"] == "await-agent-1" and item["status"] == "succeeded"
         for item in gate_payload.values()
@@ -9820,14 +9668,10 @@ def test_await_agent_gate_releases_follow_up_from_in_process_vm_poll_for_same_di
 
     assert pending_key not in _await_agent_store(worker).read_all()
 
-    effect_payload = json.loads(
-        (runtime_dir / "effect-orchestrator-executions.json").read_text(encoding="utf-8")
-    )
+    effect_payload = effect_execution_payload(worker_config)
     assert {item["effect_id"] for item in effect_payload.values()} == {"effect-1", "effect-2"}
 
-    gate_payload = json.loads(
-        (runtime_dir / "gate-orchestrator-executions.json").read_text(encoding="utf-8")
-    )
+    gate_payload = gate_execution_payload(worker_config)
     assert any(
         item["gate_id"] == "await-agent-1" and item["status"] == "succeeded"
         for item in gate_payload.values()
@@ -9947,9 +9791,7 @@ def test_await_agent_gate_preserves_upstream_node_outputs_for_follow_up_bindings
     for _ in range(6):
         worker.run_once()
 
-    effect_payload = json.loads(
-        (runtime_dir / "effect-orchestrator-executions.json").read_text(encoding="utf-8")
-    )
+    effect_payload = effect_execution_payload(worker_config)
     by_effect = {item["effect_id"]: item for item in effect_payload.values()}
     assert by_effect["effect-1"]["status"] == "succeeded"
     assert by_effect["effect-2"]["status"] == "succeeded"
@@ -10065,9 +9907,7 @@ def test_force_complete_await_agent_releases_follow_up(tmp_path: Path, monkeypat
 
     assert worker.force_complete_await_agent("dispatch-effect-1-abc123") is True
 
-    effect_payload = json.loads(
-        (runtime_dir / "effect-orchestrator-executions.json").read_text(encoding="utf-8")
-    )
+    effect_payload = effect_execution_payload(worker_config)
     assert {item["effect_id"] for item in effect_payload.values()} == {"effect-1", "effect-2"}
 
 
@@ -10243,9 +10083,7 @@ def test_waiting_agent_prompt_reconciliation_completes_from_idle_matching_dispat
     for _ in range(6):
         worker.run_once()
 
-    effect_payload = json.loads(
-        (runtime_dir / "effect-orchestrator-executions.json").read_text(encoding="utf-8")
-    )
+    effect_payload = effect_execution_payload(worker_config)
     by_effect = {item["effect_id"]: item for item in effect_payload.values()}
     assert by_effect["effect-1"]["status"] == "succeeded"
     assert by_effect["effect-1"]["published_event_id"] is not None
@@ -10352,9 +10190,7 @@ def test_waiting_agent_prompt_reconciliation_completes_idle_summary_without_disp
     for _ in range(6):
         worker.run_once()
 
-    effect_payload = json.loads(
-        (runtime_dir / "effect-orchestrator-executions.json").read_text(encoding="utf-8")
-    )
+    effect_payload = effect_execution_payload(worker_config)
     by_effect = {item["effect_id"]: item for item in effect_payload.values()}
     assert by_effect["effect-1"]["status"] == "succeeded"
     assert by_effect["effect-2"]["status"] == "succeeded"
@@ -10365,7 +10201,7 @@ def test_waiting_agent_prompt_reconciliation_skips_and_retries_when_inventory_fa
 ) -> None:
     runtime_dir = tmp_path / "runtime"
     runtime_dir.mkdir(parents=True, exist_ok=True)
-    execution_store = JsonExecutionStore(runtime_dir / "effect-orchestrator-executions.json")
+    execution_store = SqliteExecutionStore(runtime_dir / "orchestration.db")
     record = EffectExecutionRecord(
         execution_id="exec-waiting",
         idempotency_key="event-1::effect-1",
@@ -10521,9 +10357,7 @@ def test_await_agent_gate_releases_when_settled_summary_lacks_dispatch_id(
     for _ in range(6):
         worker.run_once()
 
-    effect_payload = json.loads(
-        (runtime_dir / "effect-orchestrator-executions.json").read_text(encoding="utf-8")
-    )
+    effect_payload = effect_execution_payload(worker_config)
     assert {item["effect_id"] for item in effect_payload.values()} == {"effect-1", "effect-2"}
 
 
@@ -11070,9 +10904,7 @@ def test_await_agent_reconciliation_completes_settled_current_dispatch_record_fo
 
     assert pending_key not in _await_agent_store(worker).read_all()
 
-    gate_payload = json.loads(
-        (runtime_dir / "gate-orchestrator-executions.json").read_text(encoding="utf-8")
-    )
+    gate_payload = gate_execution_payload(worker_config)
     assert any(
         item["gate_id"] == "await-agent-1" and item["status"] == "succeeded"
         for item in gate_payload.values()
@@ -11165,17 +10997,12 @@ def test_map_gate_records_failed_status_on_unresolved_reference(tmp_path: Path) 
 
     worker.run_once()
 
-    gate_payload = json.loads(
-        (runtime_dir / "gate-orchestrator-executions.json").read_text(encoding="utf-8")
-    )
+    gate_payload = gate_execution_payload(worker_config)
     record = next(iter(gate_payload.values()))
     assert record["status"] == "failed"
     assert "not found in upstream payload" in record["error"]
 
-    effect_path = runtime_dir / "effect-orchestrator-executions.json"
-    if effect_path.exists():
-        effect_payload = json.loads(effect_path.read_text(encoding="utf-8"))
-        assert effect_payload == {}
+    assert effect_execution_payload(worker_config) == {}
 
 
 def test_deserialize_gate_emits_parsed_object_outputs(tmp_path: Path) -> None:
@@ -11245,9 +11072,7 @@ def test_deserialize_gate_emits_parsed_object_outputs(tmp_path: Path) -> None:
     for _ in range(4):
         worker.run_once()
 
-    gate_payload = json.loads(
-        (runtime_dir / "gate-orchestrator-executions.json").read_text(encoding="utf-8")
-    )
+    gate_payload = gate_execution_payload(worker_config)
     gate_record = next(iter(gate_payload.values()))
     assert gate_record["status"] == "succeeded"
     assert gate_record["outputs"] == {
@@ -11256,9 +11081,7 @@ def test_deserialize_gate_emits_parsed_object_outputs(tmp_path: Path) -> None:
         "count": 2,
     }
 
-    effect_payload = json.loads(
-        (runtime_dir / "effect-orchestrator-executions.json").read_text(encoding="utf-8")
-    )
+    effect_payload = effect_execution_payload(worker_config)
     effect_record = next(iter(effect_payload.values()))
     assert effect_record["resolved_config"]["prompt"] == "Review Fix relay P1"
 
@@ -11319,9 +11142,7 @@ def test_deserialize_gate_records_failed_status_when_content_is_not_object(
 
     worker.run_once()
 
-    gate_payload = json.loads(
-        (runtime_dir / "gate-orchestrator-executions.json").read_text(encoding="utf-8")
-    )
+    gate_payload = gate_execution_payload(worker_config)
     record = next(iter(gate_payload.values()))
     assert record["status"] == "failed"
     assert record["error"] == "gate:deserialize content must decode to an object"
@@ -11391,9 +11212,7 @@ def test_serialize_gate_emits_json_content_for_downstream_bindings(tmp_path: Pat
     for _ in range(4):
         worker.run_once()
 
-    gate_payload = json.loads(
-        (runtime_dir / "gate-orchestrator-executions.json").read_text(encoding="utf-8")
-    )
+    gate_payload = gate_execution_payload(worker_config)
     gate_record = next(iter(gate_payload.values()))
     assert gate_record["status"] == "succeeded"
     assert gate_record["outputs"] == {
@@ -11401,9 +11220,7 @@ def test_serialize_gate_emits_json_content_for_downstream_bindings(tmp_path: Pat
         "format": "json",
     }
 
-    effect_payload = json.loads(
-        (runtime_dir / "effect-orchestrator-executions.json").read_text(encoding="utf-8")
-    )
+    effect_payload = effect_execution_payload(worker_config)
     effect_record = next(iter(effect_payload.values()))
     assert (
         effect_record["resolved_config"]["prompt"]
@@ -11484,9 +11301,7 @@ def test_aggregate_gate_emits_totals_for_downstream_bindings(tmp_path: Path) -> 
     for _ in range(4):
         worker.run_once()
 
-    gate_payload = json.loads(
-        (runtime_dir / "gate-orchestrator-executions.json").read_text(encoding="utf-8")
-    )
+    gate_payload = gate_execution_payload(worker_config)
     gate_record = next(iter(gate_payload.values()))
     assert gate_record["status"] == "succeeded"
     assert gate_record["outputs"] == {
@@ -11497,9 +11312,7 @@ def test_aggregate_gate_emits_totals_for_downstream_bindings(tmp_path: Path) -> 
         "average_tokens": 21.5,
     }
 
-    effect_payload = json.loads(
-        (runtime_dir / "effect-orchestrator-executions.json").read_text(encoding="utf-8")
-    )
+    effect_payload = effect_execution_payload(worker_config)
     effect_record = next(iter(effect_payload.values()))
     assert (
         effect_record["resolved_config"]["prompt"] == "Tokens 43 across 3 event(s); average 21.5."
@@ -11550,9 +11363,7 @@ def test_serialize_gate_emits_yaml_content(tmp_path: Path) -> None:
 
     worker.run_once()
 
-    gate_payload = json.loads(
-        (runtime_dir / "gate-orchestrator-executions.json").read_text(encoding="utf-8")
-    )
+    gate_payload = gate_execution_payload(worker_config)
     gate_record = next(iter(gate_payload.values()))
     assert gate_record["status"] == "succeeded"
     assert yaml.safe_load(gate_record["outputs"]["content"]) == {
@@ -11631,18 +11442,14 @@ def test_merge_gate_re_emits_shared_payload_keys(tmp_path: Path) -> None:
     for _ in range(6):
         worker.run_once()
 
-    gate_payload = json.loads(
-        (runtime_dir / "gate-orchestrator-executions.json").read_text(encoding="utf-8")
-    )
+    gate_payload = gate_execution_payload(worker_config)
     records = sorted(gate_payload.values(), key=lambda item: item["event_id"])
     assert records[0]["status"] == "succeeded"
     assert records[0]["outputs"] == {"shared": "one"}
     assert records[1]["status"] == "succeeded"
     assert records[1]["outputs"] == {"shared": "two"}
 
-    effect_payload = json.loads(
-        (runtime_dir / "effect-orchestrator-executions.json").read_text(encoding="utf-8")
-    )
+    effect_payload = effect_execution_payload(worker_config)
     effect_record = next(iter(effect_payload.values()))
     assert effect_record["status"] == "succeeded"
 
@@ -11733,9 +11540,7 @@ def test_merge_gate_preserves_guaranteed_pre_branch_context(tmp_path: Path) -> N
     for _ in range(8):
         worker.run_once()
 
-    effect_payload = json.loads(
-        (runtime_dir / "effect-orchestrator-executions.json").read_text(encoding="utf-8")
-    )
+    effect_payload = effect_execution_payload(worker_config)
     after_records = [
         item for item in effect_payload.values() if item["effect_id"] == "effect-after"
     ]
@@ -11819,9 +11624,7 @@ def test_merge_gate_drops_branch_local_context(tmp_path: Path) -> None:
     for _ in range(8):
         worker.run_once()
 
-    effect_payload = json.loads(
-        (runtime_dir / "effect-orchestrator-executions.json").read_text(encoding="utf-8")
-    )
+    effect_payload = effect_execution_payload(worker_config)
     after_records = [
         item for item in effect_payload.values() if item["effect_id"] == "effect-after"
     ]
@@ -11901,9 +11704,7 @@ def test_debounce_gate_preserves_context_for_delayed_release(tmp_path: Path) -> 
     for _ in range(6):
         worker.run_once()
 
-    effect_payload = json.loads(
-        (runtime_dir / "effect-orchestrator-executions.json").read_text(encoding="utf-8")
-    )
+    effect_payload = effect_execution_payload(worker_config)
     after_record = next(
         item for item in effect_payload.values() if item["effect_id"] == "effect-after"
     )
@@ -11971,8 +11772,8 @@ def test_event_emit_effect_evaluates_payload_and_writes_internal_event(tmp_path:
     assert emitted["correlation_key"] == "issue:ISSUE-1"
     assert emitted["source"]["workflow_run_id"] == "trace-1"
     assert emitted["source"]["node_id"] == "emit-plan"
-    journal = worker_config.workflow_event_journal_path.read_text(encoding="utf-8")
-    assert "workflow.internal_event.published" in journal
+    journal = workflow_event_payload(worker_config)
+    assert "workflow.internal_event.published" in {event["event_type"] for event in journal}
 
 
 def test_run_once_processes_unrelated_event_when_inventory_reconciliation_fails(
@@ -12119,7 +11920,7 @@ def test_event_emit_effect_can_start_event_trigger_workflow(tmp_path: Path) -> N
     result = trigger_worker.run_once()
 
     assert result.events_published >= 1
-    queue_payload = json.loads(worker_config.event_queue_store_path.read_text(encoding="utf-8"))
+    queue_payload = trigger_queue_payload(worker_config)
     event_trigger_records = [
         record for record in queue_payload.values() if record["trigger_id"] == "event-trigger"
     ]

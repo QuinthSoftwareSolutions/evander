@@ -97,12 +97,7 @@ from evander.issues.service import IssueService
 from evander.ownership import DirectoryOwnershipQueries
 from evander.provider_config import ProviderConfigResolver
 from evander.repositories.audit_index import ToolCallAuditIndex
-from evander.repositories.triggers import (
-    JsonTriggerEventRepository,
-    TriggerEventRepository,
-    TriggerRepository,
-    WorkerConfigTriggerRepository,
-)
+from evander.repositories.triggers import TriggerRepository, WorkerConfigTriggerRepository
 from evander.repositories.skills_library import SkillLibraryRepository
 from evander.runtime import RuntimeContext, build_runtime
 from evander.storage import JsonStore
@@ -257,7 +252,6 @@ class AdminRuntimeComponents:
     pr_integration_preflight_admin: PrIntegrationPreflightAdminService
     operations_admin: OperationsAdminService
     trigger_repository: TriggerRepository
-    trigger_event_repository: TriggerEventRepository
     agent_create_operations: JsonStore
     agent_create_operation_owner_id: str
     agent_create_operation_payloads: dict[str, dict[str, Any]]
@@ -519,7 +513,6 @@ def _build_admin_runtime_components(
             project_dir=project_dir,
             config=config,
             runtime=runtime,
-            trigger_event_repository=JsonTriggerEventRepository(),
             workflow_config_admin=workflow_config_admin,
             list_agents=host.list_agents,
             project_dir_provider=lambda: host.project_dir,
@@ -680,7 +673,6 @@ def _build_admin_runtime_components(
             runtime_dir=config.runtime_dir,
             normalize_agent_record_directory_path=vm_agent_admin.normalize_agent_record_directory_path,
             workflow_run_store_paths=workflow_config_admin.workflow_run_store_paths,
-            workflow_uses_sqlite_store=workflow_config_admin.workflow_uses_sqlite_store,
             container_execution_records_for_session=(
                 vm_agent_admin.container_execution_records_for_session
             ),
@@ -805,7 +797,6 @@ def _build_admin_runtime_components(
         pr_integration_preflight_admin=pr_integration_preflight_admin,
         operations_admin=operations_admin,
         trigger_repository=trigger_repository,
-        trigger_event_repository=JsonTriggerEventRepository(),
         agent_create_operations=agent_create_operations,
         agent_create_operation_owner_id=agent_create_operation_owner_id,
         agent_create_operation_payloads=agent_create_operation_payloads,

@@ -251,7 +251,7 @@ logic remains isolated:
   `evander-trigger-orchestrator.service` under systemd) owns:
   - loading/validating global trigger config (`config/trigger-orchestrator/config.json`)
   - provider polling cadence + single-instance locking
-  - durable event queue persistence (`trigger-orchestrator-events.json`)
+  - durable event queue persistence (`orchestration.db`, table `trigger_events`)
   - cursor/checkpoint snapshots (`trigger-orchestrator-cursors.json`)
 - Provider workers/hooks own:
   - provider-specific fetch/filter semantics (Discord/email/PR/etc.)

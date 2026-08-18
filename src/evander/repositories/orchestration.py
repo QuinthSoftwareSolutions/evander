@@ -18,8 +18,6 @@ from evander.repositories.orchestration_db import (
     json_loads_object,
     maybe_run_orchestration_retention,
 )
-from evander.storage import JsonObjectStore, JsonStore
-from evander.workflow.events import WorkflowEventJournal
 
 logger = logging.getLogger(__name__)
 
@@ -211,57 +209,6 @@ class JsonEffectCursorRepository(JsonCursorRepository):
         self.update(_update)
 
 
-class JsonWorkflowConfigSnapshotRepository:
-    def __init__(self, path: Path) -> None:
-        self.path = path
-        self._store = JsonObjectStore(path, {})
-        self._lock = RLock()
-
-    def read_all(self) -> dict[str, dict[str, Any]]:
-        with self._lock:
-            payload = self._store.read_object()
-        if not isinstance(payload, dict):
-            return {}
-        normalized: dict[str, dict[str, Any]] = {}
-        for revision, snapshot in payload.items():
-            revision_key = str(revision or "").strip()
-            if not revision_key or not isinstance(snapshot, dict):
-                continue
-            normalized[revision_key] = dict(snapshot)
-        return normalized
-
-    def get_snapshot(self, revision: str) -> dict[str, Any] | None:
-        normalized_revision = str(revision or "").strip()
-        if not normalized_revision:
-            return None
-        return self.read_all().get(normalized_revision)
-
-    def list_snapshots(self) -> list[dict[str, Any]]:
-        snapshots = list(self.read_all().values())
-        snapshots.sort(
-            key=lambda snapshot: (
-                str(snapshot.get("captured_at") or ""),
-                str(snapshot.get("revision") or ""),
-            ),
-            reverse=True,
-        )
-        return snapshots
-
-    def put_snapshot(self, snapshot: dict[str, Any]) -> None:
-        revision = str(snapshot.get("revision") or "").strip()
-        captured_at = str(snapshot.get("captured_at") or "").strip()
-        if not revision:
-            raise ValueError("workflow config snapshot requires revision")
-        if not captured_at:
-            raise ValueError("workflow config snapshot requires captured_at")
-
-        def _update(payload: dict[str, Any]) -> None:
-            payload[revision] = dict(snapshot)
-
-        with self._lock:
-            self._store.update_object(_update)
-
-
 class SqliteWorkflowConfigSnapshotRepository:
     def __init__(self, path: Path) -> None:
         self.path = Path(path)
@@ -316,108 +263,6 @@ class SqliteWorkflowConfigSnapshotRepository:
                 """,
                 (revision, captured_at, json_dumps(snapshot)),
             )
-
-
-class JsonExecutionRepository(Generic[TRecord]):
-    def __init__(
-        self,
-        path: Path,
-        model: type[TRecord],
-        *,
-        journal_path: Path | None = None,
-        source: str | None = None,
-    ) -> None:
-        self.path = path
-        self.model = model
-        self._store = JsonStore(path, model)
-        self._journal = WorkflowEventJournal(journal_path) if journal_path is not None else None
-        self._journal_source = source
-        self._lock = RLock()
-
-    def read_all(self) -> dict[str, TRecord]:
-        with self._lock:
-            return self._store.read_all()
-
-    def get_execution(self, execution_id: str) -> TRecord | None:
-        return self.read_all().get(execution_id)
-
-    def list_executions(self) -> list[TRecord]:
-        return list(self.read_all().values())
-
-    def list_records_by_node_type_and_statuses(
-        self, *, node_type: str, statuses: set[str]
-    ) -> list[TRecord]:
-        normalized_type = str(node_type or "").strip()
-        normalized_statuses = {
-            str(status or "").strip() for status in statuses if str(status or "").strip()
-        }
-        if not normalized_type or not normalized_statuses:
-            return []
-        return [
-            record
-            for record in self.read_all().values()
-            if str(getattr(record, "status", "") or "").strip() in normalized_statuses
-            and normalized_type
-            in {
-                str(getattr(record, "effect_type", "") or "").strip(),
-                str(getattr(record, "gate_type", "") or "").strip(),
-            }
-        ]
-
-    def list_waiting_records(self, node_type: str | None = None) -> list[TRecord]:
-        normalized_type = str(node_type or "").strip()
-        records = []
-        for record in self.read_all().values():
-            if str(getattr(record, "status", "") or "").strip() != "waiting":
-                continue
-            if normalized_type and normalized_type not in {
-                str(getattr(record, "effect_type", "") or "").strip(),
-                str(getattr(record, "gate_type", "") or "").strip(),
-            }:
-                continue
-            records.append(record)
-        return records
-
-    def list_completion_pending_records(self) -> list[TRecord]:
-        return [
-            record
-            for record in self.read_all().values()
-            if str(getattr(record, "status", "") or "").strip() == "completion_pending"
-        ]
-
-    def record_execution(self, record: TRecord) -> None:
-        self.put(record)
-
-    def put(self, record: TRecord) -> None:
-        def _put_record(payload: dict[str, TRecord]) -> None:
-            payload[getattr(record, "execution_id")] = record
-
-        with self._lock:
-            self._store.update_all(_put_record)
-        if self._journal is not None and self._journal_source is not None:
-            self._journal.append(
-                "workflow.execution.updated",
-                source=self._journal_source,
-                subject_id=str(getattr(record, "execution_id")),
-                payload={
-                    "event_id": str(getattr(record, "event_id", "")),
-                    "status": str(getattr(record, "status", "")),
-                },
-            )
-
-    def find_by_idempotency_key(self, idempotency_key: str) -> TRecord | None:
-        with self._lock:
-            for record in self._store.read_all().values():
-                if getattr(record, "idempotency_key") == idempotency_key:
-                    return record
-        return None
-
-    def find_execution_by_idempotency_key(self, idempotency_key: str) -> TRecord | None:
-        return self.find_by_idempotency_key(idempotency_key)
-
-    def update_all(self, updater: Callable[[dict[str, TRecord]], R]) -> R:
-        with self._lock:
-            return self._store.update_all(updater)
 
 
 class SqliteExecutionRepository(Generic[TRecord]):
@@ -573,7 +418,9 @@ class SqliteExecutionRepository(Generic[TRecord]):
                 f"""
                 SELECT payload_json
                 FROM {self.table_name}
-                WHERE status IN ('running', 'waiting', 'failed', 'completion_pending')
+                WHERE status IN (
+                    'running', 'waiting', 'failed', 'completion_pending', 'error_routed'
+                )
                   AND dismissed_at IS NULL
                 ORDER BY COALESCE(finished_at, started_at) DESC, execution_id DESC
                 """

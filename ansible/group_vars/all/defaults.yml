@@ -476,7 +476,6 @@ evander_trigger_orchestrator_config:
   poll_interval_seconds: 5
   jitter_seconds: 5
   lock_path: null
-  event_queue_store_path: null
   event_queue_cursor_store_path: null
   workflow_packs:
     - "agent-container-worker.v1.json"

@@ -1,17 +1,13 @@
 {
   "effect_cursor_store_path": "runtime/effect-orchestrator-cursors.json",
-  "effect_execution_store_path": "runtime/effect-orchestrator-executions.json",
   "effect_lock_path": "runtime/effect-orchestrator.lock",
   "event_queue_cursor_store_path": "runtime/trigger-orchestrator-cursors.json",
-  "event_queue_store_path": "runtime/trigger-orchestrator-events.json",
   "gate_cursor_store_path": "runtime/gate-orchestrator-cursors.json",
-  "gate_execution_store_path": "runtime/gate-orchestrator-executions.json",
   "jitter_seconds": 1.0,
   "lock_path": "runtime/trigger-orchestrator.lock",
   "max_events_per_cycle": 200,
   "max_graph_depth": 32,
   "orchestration_retention_days": 30,
-  "orchestration_store_backend": "sqlite",
   "orchestration_store_path": "runtime/orchestration.db",
   "orchestration_wal_checkpoint_busy_timeout_ms": 1000,
   "orchestration_wal_checkpoint_interval_seconds": 300,
@@ -29,7 +25,6 @@
     "enabled_addon_ids": null
   },
   "runtime_dir": "runtime",
-  "workflow_event_journal_path": "runtime/workflow-events.jsonl",
   "scheduled_internal_event_store_path": "runtime/scheduled-internal-events.json",
   "workflow_packs": [
     "agent-default.v1.json"

@@ -75,8 +75,6 @@ from evander.config import GatewayConfig
 from evander.daemons.effect_orchestrator import (
     EffectExecutionRecord,
     GateExecutionRecord,
-    JsonExecutionStore,
-    JsonGateExecutionStore,
     SqliteExecutionStore,
     SqliteGateExecutionStore,
 )
@@ -125,8 +123,8 @@ from evander.events.internal import InternalEventBus
 from evander.events.models import TriggerEvent
 from evander.orchestration.host_polling import wake_socket_path_for_lock
 from evander.repositories.orchestration_db import connect_orchestration_db
-from evander.triggers.queue import SqliteTriggerEventQueue
-from evander.triggers.queue import TriggerEventQueue
+from evander.repositories.orchestration import SqliteWorkflowConfigSnapshotRepository
+from evander.triggers.queue import SqliteTriggerEventQueue, TriggerQueueRecord
 from evander.worker.models import WorkerSessionRecord
 from config_helpers import (
     canonical_workflow_payload,
@@ -180,7 +178,6 @@ def _write_trigger_orchestrator_sqlite_config(tmp_path: Path) -> Path:
         json.dumps(
             {
                 "runtime_dir": str(runtime_dir),
-                "orchestration_store_backend": "sqlite",
                 "orchestration_store_path": str(runtime_dir / "orchestration.db"),
                 "orchestration_retention_days": 365,
                 "poll_interval_seconds": 1,
@@ -3346,133 +3343,6 @@ def test_admin_web_exposes_workflow_run_stream(tmp_path: Path) -> None:
     assert asyncio.run(read_first_event()).startswith("event: snapshot\n")
 
 
-def test_admin_web_exposes_recent_workflow_node_activity_from_json_stores(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    runtime_dir = tmp_path / "runtime"
-    runtime_dir.mkdir(parents=True, exist_ok=True)
-    now = datetime(2026, 5, 21, 12, 0, tzinfo=timezone.utc)
-    monkeypatch.setattr(workflow_reports_service, "_utc_now", lambda: now)
-
-    service = build_admin_runtime(write_config(tmp_path))
-    workflow_admin = service.workflow_reports_admin
-    stores = {
-        "runtime_dir": runtime_dir,
-        "orchestration_store_backend": "json",
-        "orchestration_store_path": runtime_dir / "orchestration.db",
-        "orchestration_retention_days": 30,
-        "event_queue_store_path": runtime_dir / "trigger-orchestrator-events.json",
-        "effect_execution_store_path": runtime_dir / "effect-orchestrator-executions.json",
-        "gate_execution_store_path": runtime_dir / "gate-orchestrator-executions.json",
-        "workflow_config_snapshot_store_path": runtime_dir / "workflow-config-snapshots.json",
-        "await_agent_store_path": runtime_dir
-        / "providers"
-        / "gates"
-        / "await-agent"
-        / "pending.json",
-        "legacy_await_agent_store_path": runtime_dir / "await-agent-pending.json",
-    }
-    monkeypatch.setattr(workflow_admin, "_workflow_run_store_paths", lambda: stores)
-    monkeypatch.setattr(
-        workflow_admin,
-        "_read_composed_workflow_editor_document",
-        lambda: SimpleNamespace(graphs=[]),
-    )
-
-    trigger_queue = TriggerEventQueue(stores["event_queue_store_path"])
-    trigger_queue.publish(
-        TriggerEvent(
-            event_id="evt-trigger-recent",
-            trigger_id="trigger-recent",
-            trigger_type="trigger:test",
-            occurred_at=now - timedelta(seconds=20),
-            payload={"kind": "json"},
-            trace_id="trace-trigger-recent",
-        )
-    )
-    trigger_queue.mark_delivered("evt-trigger-recent", delivered_at=now - timedelta(seconds=1))
-    trigger_queue.publish(
-        TriggerEvent(
-            event_id="evt-trigger-old",
-            trigger_id="trigger-old",
-            trigger_type="trigger:test",
-            occurred_at=now - timedelta(seconds=30),
-            payload={"kind": "json"},
-            trace_id="trace-trigger-old",
-        )
-    )
-    trigger_queue.mark_delivered("evt-trigger-old", delivered_at=now - timedelta(seconds=20))
-
-    effect_store = JsonExecutionStore(stores["effect_execution_store_path"])
-    gate_store = JsonGateExecutionStore(stores["gate_execution_store_path"])
-
-    gate_store.record_execution(
-        _gate_execution_record(
-            execution_id="exec-gate-recent",
-            idempotency_key="evt-gate-recent::gate-recent",
-            event_id="evt-gate-recent",
-            gate_id="gate-recent",
-            status="succeeded",
-            started_at=now - timedelta(seconds=5),
-            finished_at=now - timedelta(seconds=2),
-        )
-    )
-    effect_store.record_execution(
-        _effect_execution_record(
-            execution_id="exec-effect-old",
-            idempotency_key="evt-effect-old::effect-old",
-            event_id="evt-effect-old",
-            effect_id="effect-old",
-            status="succeeded",
-            started_at=now - timedelta(seconds=40),
-            finished_at=now - timedelta(seconds=35),
-        )
-    )
-    gate_store.record_execution(
-        _gate_execution_record(
-            execution_id="exec-gate-old",
-            idempotency_key="evt-gate-old::gate-old",
-            event_id="evt-gate-old",
-            gate_id="gate-old",
-            status="succeeded",
-            started_at=now - timedelta(seconds=40),
-            finished_at=now - timedelta(seconds=35),
-        )
-    )
-
-    for index in range(201):
-        effect_store.record_execution(
-            _effect_execution_record(
-                execution_id=f"exec-effect-{index}",
-                idempotency_key=f"evt-effect-{index}::effect-{index}",
-                event_id=f"evt-effect-{index}",
-                effect_id=f"effect-{index}",
-                status="succeeded",
-                started_at=now - timedelta(seconds=4, microseconds=index),
-                finished_at=now - timedelta(seconds=3, microseconds=index),
-            )
-        )
-
-    client = TestClient(create_app(service))
-    response = client.get("/api/workflow-editor/runs")
-
-    assert response.status_code == 200
-    payload = response.json()
-    assert payload["runs"] == []
-    assert payload["node_activity"] == {}
-    assert len(payload["recent_node_activity"]) == 200
-    assert [item["node_id"] for item in payload["recent_node_activity"][:3]] == [
-        "trigger-recent",
-        "gate-recent",
-        "effect-0",
-    ]
-    assert payload["recent_node_activity"][0]["source"] == "trigger_event"
-    assert payload["recent_node_activity"][0]["status"] == "delivered"
-    assert payload["recent_node_activity"][0]["activity_at"] == "2026-05-21T11:59:59Z"
-    assert payload["recent_node_activity"][-1]["node_id"] == "effect-197"
-    assert payload["recent_node_activity"][-1]["source"] == "effect_execution"
-
-
 def test_admin_web_exposes_recent_workflow_node_activity_from_sqlite_stores(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -3486,13 +3356,8 @@ def test_admin_web_exposes_recent_workflow_node_activity_from_sqlite_stores(
     workflow_admin = service.workflow_reports_admin
     stores = {
         "runtime_dir": runtime_dir,
-        "orchestration_store_backend": "sqlite",
         "orchestration_store_path": runtime_dir / "orchestration.db",
         "orchestration_retention_days": 365,
-        "event_queue_store_path": runtime_dir / "trigger-orchestrator-events.json",
-        "effect_execution_store_path": runtime_dir / "effect-orchestrator-executions.json",
-        "gate_execution_store_path": runtime_dir / "gate-orchestrator-executions.json",
-        "workflow_config_snapshot_store_path": runtime_dir / "workflow-config-snapshots.json",
         "await_agent_store_path": runtime_dir
         / "providers"
         / "gates"
@@ -4394,8 +4259,9 @@ def test_admin_web_workflow_run_routes_enforce_directory_permissions(
             }
         },
     )
-    _write_json_payload(
-        runtime_dir / "trigger-orchestrator-events.json",
+    _write_orchestration_payload(
+        runtime_dir,
+        "trigger_events",
         {
             "evt-root": {
                 "event_id": "evt-root",
@@ -4423,8 +4289,9 @@ def test_admin_web_workflow_run_routes_enforce_directory_permissions(
             },
         },
     )
-    _write_json_payload(
-        runtime_dir / "effect-orchestrator-executions.json",
+    _write_orchestration_payload(
+        runtime_dir,
+        "effect_executions",
         {
             "exec-root": {
                 "execution_id": "exec-root",
@@ -4914,8 +4781,9 @@ def test_admin_web_workflow_run_controls_require_workflow_runs_control(
             }
         },
     )
-    _write_json_payload(
-        runtime_dir / "trigger-orchestrator-events.json",
+    _write_orchestration_payload(
+        runtime_dir,
+        "trigger_events",
         {
             "evt-ops": {
                 "event_id": "evt-ops",
@@ -4931,8 +4799,9 @@ def test_admin_web_workflow_run_controls_require_workflow_runs_control(
             }
         },
     )
-    _write_json_payload(
-        runtime_dir / "effect-orchestrator-executions.json",
+    _write_orchestration_payload(
+        runtime_dir,
+        "effect_executions",
         {
             "exec-ops": {
                 "execution_id": "exec-ops",
@@ -4975,8 +4844,7 @@ def test_admin_web_workflow_run_controls_require_workflow_runs_control(
     dismiss_denied = client.delete("/api/workflow-editor/node-failures/ops-effect")
     after_snapshot = _snapshot_runtime_files(runtime_dir)
     relevant_keys = {
-        "trigger-orchestrator-events.json",
-        "effect-orchestrator-executions.json",
+        "orchestration.db",
         "await-agent-pending.json",
     }
     relevant_before = {
@@ -6055,8 +5923,11 @@ def test_admin_web_validate_reports_malformed_binding_fallback(tmp_path: Path) -
 def test_admin_web_exposes_active_workflow_runs(tmp_path: Path) -> None:
     runtime_dir = tmp_path / "runtime"
     runtime_dir.mkdir(parents=True, exist_ok=True)
-    (runtime_dir / "trigger-orchestrator-events.json").write_text(
-        """
+    _write_orchestration_payload(
+        runtime_dir,
+        "trigger_events",
+        json.loads(
+            """
 {
   "evt-queued": {
     "event_id": "evt-queued",
@@ -6083,11 +5954,14 @@ def test_admin_web_exposes_active_workflow_runs(tmp_path: Path) -> None:
     "idempotency_key": null
   }
 }
-""".strip(),
-        encoding="utf-8",
+""".strip()
+        ),
     )
-    (runtime_dir / "effect-orchestrator-executions.json").write_text(
-        """
+    _write_orchestration_payload(
+        runtime_dir,
+        "effect_executions",
+        json.loads(
+            """
 {
   "exec-running": {
     "execution_id": "exec-running",
@@ -6124,8 +5998,8 @@ def test_admin_web_exposes_active_workflow_runs(tmp_path: Path) -> None:
     "outputs": {"dispatch_id": "dispatch-7"}
   }
 }
-""".strip(),
-        encoding="utf-8",
+""".strip()
+        ),
     )
     (runtime_dir / "await-agent-pending.json").write_text(
         """
@@ -6165,8 +6039,11 @@ def test_admin_web_exposes_active_workflow_runs(tmp_path: Path) -> None:
 def test_admin_web_can_clear_specific_workflow_run(tmp_path: Path) -> None:
     runtime_dir = tmp_path / "runtime"
     runtime_dir.mkdir(parents=True, exist_ok=True)
-    (runtime_dir / "trigger-orchestrator-events.json").write_text(
-        """
+    _write_orchestration_payload(
+        runtime_dir,
+        "trigger_events",
+        json.loads(
+            """
 {
   "evt-stale": {
     "event_id": "evt-stale",
@@ -6193,11 +6070,14 @@ def test_admin_web_can_clear_specific_workflow_run(tmp_path: Path) -> None:
     "idempotency_key": null
   }
 }
-""".strip(),
-        encoding="utf-8",
+""".strip()
+        ),
     )
-    (runtime_dir / "effect-orchestrator-executions.json").write_text(
-        """
+    _write_orchestration_payload(
+        runtime_dir,
+        "effect_executions",
+        json.loads(
+            """
 {
   "exec-stale": {
     "execution_id": "exec-stale",
@@ -6217,8 +6097,8 @@ def test_admin_web_can_clear_specific_workflow_run(tmp_path: Path) -> None:
     "outputs": {"dispatch_id": "dispatch-stale"}
   }
 }
-""".strip(),
-        encoding="utf-8",
+""".strip()
+        ),
     )
     (runtime_dir / "await-agent-pending.json").write_text(
         """
@@ -6255,22 +6135,26 @@ def test_admin_web_can_clear_specific_workflow_run(tmp_path: Path) -> None:
     assert after_response.status_code == 200
     assert [run["event_id"] for run in after_response.json()["runs"]] == ["evt-keep"]
 
-    updated_queue = (runtime_dir / "trigger-orchestrator-events.json").read_text(encoding="utf-8")
-    updated_effects = (runtime_dir / "effect-orchestrator-executions.json").read_text(
-        encoding="utf-8"
-    )
+    database_path = runtime_dir / "orchestration.db"
+    updated_queue = SqliteTriggerEventQueue(database_path).read_all()
+    updated_effects = SqliteExecutionStore(database_path).read_all()
     updated_await = (runtime_dir / "await-agent-pending.json").read_text(encoding="utf-8")
-    assert '"delivery_state": "delivered"' in updated_queue
-    assert '"status": "failed"' in updated_effects
-    assert "Manually cleared stale workflow run from editor state." in updated_effects
+    assert updated_queue["evt-stale"].delivery_state == "delivered"
+    assert updated_effects["exec-stale"].status == "failed"
+    assert updated_effects["exec-stale"].error == (
+        "Manually cleared stale workflow run from editor state."
+    )
     assert '"gate-await:dispatch-stale"' not in updated_await
 
 
 def test_admin_web_includes_errored_workflow_runs_and_can_resume_them(tmp_path: Path) -> None:
     runtime_dir = tmp_path / "runtime"
     runtime_dir.mkdir(parents=True, exist_ok=True)
-    (runtime_dir / "trigger-orchestrator-events.json").write_text(
-        """
+    _write_orchestration_payload(
+        runtime_dir,
+        "trigger_events",
+        json.loads(
+            """
 {
   "evt-failed": {
     "event_id": "evt-failed",
@@ -6285,11 +6169,14 @@ def test_admin_web_includes_errored_workflow_runs_and_can_resume_them(tmp_path: 
     "idempotency_key": null
   }
 }
-""".strip(),
-        encoding="utf-8",
+""".strip()
+        ),
     )
-    (runtime_dir / "effect-orchestrator-executions.json").write_text(
-        """
+    _write_orchestration_payload(
+        runtime_dir,
+        "effect_executions",
+        json.loads(
+            """
 {
   "exec-failed": {
     "execution_id": "exec-failed",
@@ -6310,8 +6197,8 @@ def test_admin_web_includes_errored_workflow_runs_and_can_resume_them(tmp_path: 
     "error": "guest agent crashed"
   }
 }
-""".strip(),
-        encoding="utf-8",
+""".strip()
+        ),
     )
 
     client = TestClient(create_app(build_admin_runtime(write_config(tmp_path))))
@@ -6334,9 +6221,12 @@ def test_admin_web_includes_errored_workflow_runs_and_can_resume_them(tmp_path: 
     assert resume_response.json()["event_id"] == "evt-failed"
     assert resume_response.json()["target_node_id"] == "effect-prompt"
 
-    queue_payload = json.loads(
-        (runtime_dir / "trigger-orchestrator-events.json").read_text(encoding="utf-8")
-    )
+    queue_payload = {
+        event_id: record.model_dump(mode="json")
+        for event_id, record in SqliteTriggerEventQueue(runtime_dir / "orchestration.db")
+        .read_all()
+        .items()
+    }
     resume_event_id = next(
         event_id for event_id in queue_payload if event_id.startswith("evt-failed:resume:")
     )
@@ -6352,88 +6242,87 @@ def test_admin_web_reports_error_routed_workflow_runs_without_terminal_failure(
 ) -> None:
     fixture = _seed_workflow_run_detail_fixture(tmp_path)
     runtime_dir = tmp_path / "runtime"
-    trigger_events_path = runtime_dir / "trigger-orchestrator-events.json"
-    effect_executions_path = runtime_dir / "effect-orchestrator-executions.json"
-
-    trigger_events = json.loads(trigger_events_path.read_text(encoding="utf-8"))
-    trigger_events["evt-routed"] = {
-        "event_id": "evt-routed",
-        "trigger_id": "trigger-ticket",
-        "trigger_type": "trigger:ticket:created",
-        "trace_id": "trace-routed",
-        "occurred_at": "2026-05-01T11:00:00Z",
-        "payload": {"issue_number": "101"},
-        "delivery_state": "delivered",
-        "inflight_at": "2026-05-01T11:00:05Z",
-        "delivered_at": "2026-05-01T11:00:06Z",
-        "idempotency_key": None,
+    trigger_events = {
+        "evt-routed": {
+            "event_id": "evt-routed",
+            "trigger_id": "trigger-ticket",
+            "trigger_type": "trigger:ticket:created",
+            "trace_id": "trace-routed",
+            "occurred_at": "2026-05-01T11:00:00Z",
+            "payload": {"issue_number": "101"},
+            "delivery_state": "delivered",
+            "inflight_at": "2026-05-01T11:00:05Z",
+            "delivered_at": "2026-05-01T11:00:06Z",
+            "idempotency_key": None,
+        }
     }
-    _write_json_payload(trigger_events_path, trigger_events)
+    _write_orchestration_payload(runtime_dir, "trigger_events", trigger_events)
 
-    effect_executions = json.loads(effect_executions_path.read_text(encoding="utf-8"))
-    effect_executions["exec-routed"] = {
-        "execution_id": "exec-routed",
-        "idempotency_key": "evt-routed::effect-prompt",
-        "event_id": "evt-routed",
-        "trace_id": "trace-routed",
-        "source_node_id": "trigger-ticket",
-        "source_trigger_type": "trigger:ticket:created",
-        "effect_id": "effect-prompt",
-        "effect_type": "effect:agent:prompt",
-        "status": "error_routed",
-        "started_at": "2026-05-01T11:00:10Z",
-        "finished_at": "2026-05-01T11:00:11Z",
-        "resolved_config_hash": "hash-routed",
-        "resolved_config": {
-            "session_id": fixture["session_id"],
-            "vm_name": "vm-detail",
-            "prompt": "Investigate the issue",
-            "dispatch_id": "dispatch-routed",
-            "thread_id": "thread-routed",
-            "execution_id": "execution-routed",
-            "artifact_ids": [],
-            "request_id": "approval-rich",
-        },
-        "input_payload": {
-            "issue_number": "101",
-            "session_id": fixture["session_id"],
-            "request_id": "approval-rich",
-        },
-        "outputs": {
-            "success": False,
-            "dispatch_id": "dispatch-routed",
-            "session_id": fixture["session_id"],
-            "vm_name": "vm-detail",
-            "error_message": "prompt dispatch failed",
-            "error_class": "DispatchError",
-            "failed_phase": "dispatch",
+    effect_executions = {
+        "exec-routed": {
+            "execution_id": "exec-routed",
+            "idempotency_key": "evt-routed::effect-prompt",
+            "event_id": "evt-routed",
+            "trace_id": "trace-routed",
+            "source_node_id": "trigger-ticket",
+            "source_trigger_type": "trigger:ticket:created",
+            "effect_id": "effect-prompt",
+            "effect_type": "effect:agent:prompt",
+            "status": "error_routed",
+            "started_at": "2026-05-01T11:00:10Z",
+            "finished_at": "2026-05-01T11:00:11Z",
+            "resolved_config_hash": "hash-routed",
+            "resolved_config": {
+                "session_id": fixture["session_id"],
+                "vm_name": "vm-detail",
+                "prompt": "Investigate the issue",
+                "dispatch_id": "dispatch-routed",
+                "thread_id": "thread-routed",
+                "execution_id": "execution-routed",
+                "artifact_ids": [],
+                "request_id": "approval-rich",
+            },
+            "input_payload": {
+                "issue_number": "101",
+                "session_id": fixture["session_id"],
+                "request_id": "approval-rich",
+            },
+            "outputs": {
+                "success": False,
+                "dispatch_id": "dispatch-routed",
+                "session_id": fixture["session_id"],
+                "vm_name": "vm-detail",
+                "error_message": "prompt dispatch failed",
+                "error_class": "DispatchError",
+                "failed_phase": "dispatch",
+                "published_event_id": "evt-routed-published",
+                "completion_event_branch_port": "error",
+            },
+            "binding_trace": {
+                "consumed_output_keys": ["trigger-ticket.issue_number"],
+                "entries": [
+                    {
+                        "config_path": "$.prompt",
+                        "expression": "${{trigger-ticket.issue_number}}",
+                        "reference": "trigger-ticket.issue_number",
+                        "source_node_id": "trigger-ticket",
+                        "output_path": "issue_number",
+                        "fallback_used": False,
+                        "status": "resolved",
+                        "resolved_value_preview": '"101"',
+                        "value_type": "str",
+                        "error": None,
+                    }
+                ],
+            },
+            "binding_error": None,
             "published_event_id": "evt-routed-published",
-            "completion_event_branch_port": "error",
-        },
-        "binding_trace": {
-            "consumed_output_keys": ["trigger-ticket.issue_number"],
-            "entries": [
-                {
-                    "config_path": "$.prompt",
-                    "expression": "${{trigger-ticket.issue_number}}",
-                    "reference": "trigger-ticket.issue_number",
-                    "source_node_id": "trigger-ticket",
-                    "output_path": "issue_number",
-                    "fallback_used": False,
-                    "status": "resolved",
-                    "resolved_value_preview": '"101"',
-                    "value_type": "str",
-                    "error": None,
-                }
-            ],
-        },
-        "binding_error": None,
-        "published_event_id": "evt-routed-published",
-        "completion_event_enqueued_at": "2026-05-01T11:00:12Z",
-        "config_revision": fixture["rich_revision"],
-        "error": "prompt dispatch failed",
+            "completion_event_enqueued_at": "2026-05-01T11:00:12Z",
+            "config_revision": fixture["rich_revision"],
+            "error": "prompt dispatch failed",
+        }
     }
-    _write_json_payload(effect_executions_path, effect_executions)
+    _write_orchestration_payload(runtime_dir, "effect_executions", effect_executions)
 
     client = TestClient(create_app(build_admin_runtime(write_config(tmp_path))))
 
@@ -6474,8 +6363,11 @@ def test_admin_web_reports_error_routed_workflow_runs_without_terminal_failure(
 def test_admin_web_can_dismiss_errored_workflow_run(tmp_path: Path) -> None:
     runtime_dir = tmp_path / "runtime"
     runtime_dir.mkdir(parents=True, exist_ok=True)
-    (runtime_dir / "effect-orchestrator-executions.json").write_text(
-        """
+    _write_orchestration_payload(
+        runtime_dir,
+        "effect_executions",
+        json.loads(
+            """
 {
   "exec-failed": {
     "execution_id": "exec-failed",
@@ -6496,8 +6388,8 @@ def test_admin_web_can_dismiss_errored_workflow_run(tmp_path: Path) -> None:
     "error": "guest agent crashed"
   }
 }
-""".strip(),
-        encoding="utf-8",
+""".strip()
+        ),
     )
 
     client = TestClient(create_app(build_admin_runtime(write_config(tmp_path))))
@@ -6513,18 +6405,20 @@ def test_admin_web_can_dismiss_errored_workflow_run(tmp_path: Path) -> None:
     assert after_response.status_code == 200
     assert after_response.json()["runs"] == []
 
-    updated_effects = (runtime_dir / "effect-orchestrator-executions.json").read_text(
-        encoding="utf-8"
+    updated_effect = SqliteExecutionStore(runtime_dir / "orchestration.db").get_execution(
+        "exec-failed"
     )
-    assert '"dismissed_at"' in updated_effects
-    assert '"dismiss_reason": "manual_dismiss_errored_workflow_run"' in updated_effects
+    assert updated_effect is not None
+    assert updated_effect.dismissed_at is not None
+    assert updated_effect.dismiss_reason == "manual_dismiss_errored_workflow_run"
 
 
 def test_admin_web_can_dismiss_all_failed_runs_for_workflow_node(tmp_path: Path) -> None:
     runtime_dir = tmp_path / "runtime"
     runtime_dir.mkdir(parents=True, exist_ok=True)
-    _write_json_payload(
-        runtime_dir / "effect-orchestrator-executions.json",
+    _write_orchestration_payload(
+        runtime_dir,
+        "effect_executions",
         {
             "exec-failed-1": {
                 "execution_id": "exec-failed-1",
@@ -6618,8 +6512,9 @@ def test_admin_web_can_dismiss_all_failed_runs_for_workflow_node(tmp_path: Path)
             },
         },
     )
-    _write_json_payload(
-        runtime_dir / "gate-orchestrator-executions.json",
+    _write_orchestration_payload(
+        runtime_dir,
+        "gate_executions",
         {
             "gate-failed": {
                 "execution_id": "gate-failed",
@@ -6665,13 +6560,11 @@ def test_admin_web_can_dismiss_all_failed_runs_for_workflow_node(tmp_path: Path)
     assert after_response.json()["node_activity"]["effect-other"] == {"failed": 1}
     assert after_response.json()["node_activity"]["gate-review"] == {"failed": 1}
 
-    updated_effects = json.loads(
-        (runtime_dir / "effect-orchestrator-executions.json").read_text(encoding="utf-8")
-    )
-    assert updated_effects["exec-failed-1"]["dismiss_reason"] == "manual_dismiss_node_failures"
-    assert updated_effects["exec-failed-2"]["dismiss_reason"] == "manual_dismiss_node_failures"
-    assert updated_effects["exec-running"].get("dismissed_at") is None
-    assert updated_effects["exec-other"].get("dismissed_at") is None
+    updated_effects = SqliteExecutionStore(runtime_dir / "orchestration.db").read_all()
+    assert updated_effects["exec-failed-1"].dismiss_reason == "manual_dismiss_node_failures"
+    assert updated_effects["exec-failed-2"].dismiss_reason == "manual_dismiss_node_failures"
+    assert updated_effects["exec-running"].dismissed_at is None
+    assert updated_effects["exec-other"].dismissed_at is None
 
     dismiss_gate_response = client.delete("/api/workflow-editor/node-failures/gate-review")
     final_response = client.get("/api/workflow-editor/runs")
@@ -7204,6 +7097,61 @@ def test_admin_web_uploads_single_file_as_published_artifact(tmp_path: Path) -> 
         assert member.read() == b"docx bytes"
 
 
+def _write_orchestration_payload(
+    runtime_dir: Path,
+    table: str,
+    payload: dict[str, object],
+) -> None:
+    database_path = runtime_dir / "orchestration.db"
+    if table == "trigger_events":
+        queue = SqliteTriggerEventQueue(database_path)
+
+        def seed(records):
+            records.update(
+                {
+                    str(event_id): TriggerQueueRecord.model_validate(record)
+                    for event_id, record in payload.items()
+                }
+            )
+
+        queue.update_all(seed)
+    elif table == "effect_executions":
+        store = SqliteExecutionStore(database_path)
+        for execution_id, raw_record in payload.items():
+            record = dict(raw_record)  # type: ignore[arg-type]
+            record.setdefault("idempotency_key", str(execution_id))
+            record.setdefault("source_node_id", "trigger-fixture")
+            record.setdefault("source_trigger_type", "trigger:test")
+            record.setdefault("effect_type", "effect:test")
+            record.setdefault("resolved_config_hash", "fixture")
+            store.record_execution(EffectExecutionRecord.model_validate(record))
+    elif table == "gate_executions":
+        store = SqliteGateExecutionStore(database_path)
+        for execution_id, raw_record in payload.items():
+            record = dict(raw_record)  # type: ignore[arg-type]
+            record.setdefault("idempotency_key", str(execution_id))
+            record.setdefault("source_node_id", "trigger-fixture")
+            record.setdefault("source_trigger_type", "trigger:test")
+            record.setdefault("gate_type", "gate:test")
+            record.setdefault("resolved_config_hash", "fixture")
+            store.record_execution(GateExecutionRecord.model_validate(record))
+    elif table == "workflow_config_snapshots":
+        store = SqliteWorkflowConfigSnapshotRepository(database_path)
+        for snapshot in payload.values():
+            store.put_snapshot(dict(snapshot))  # type: ignore[arg-type]
+    else:
+        raise ValueError(f"Unknown orchestration table fixture: {table}")
+    with connect_orchestration_db(database_path) as connection:
+        connection.execute(
+            """
+            INSERT INTO orchestration_metadata(key, value_json)
+            VALUES ('last_retention_date', ?)
+            ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json
+            """,
+            (json.dumps({"date": datetime.now(timezone.utc).date().isoformat()}),),
+        )
+
+
 def _write_json_payload(path: Path, payload: dict[str, object]) -> None:
     if path.name == "config.json" and path.parent.name == "trigger-orchestrator":
         payload = canonical_workflow_payload(payload)
@@ -7421,8 +7369,9 @@ def _seed_workflow_run_detail_fixture(tmp_path: Path) -> dict[str, str]:
         session_id=session_id,
         vm_id="vm-detail",
     )
-    _write_json_payload(
-        runtime_dir / "trigger-orchestrator-events.json",
+    _write_orchestration_payload(
+        runtime_dir,
+        "trigger_events",
         {
             "evt-detail": {
                 "event_id": "evt-detail",
@@ -7473,8 +7422,9 @@ def _seed_workflow_run_detail_fixture(tmp_path: Path) -> dict[str, str]:
             },
         },
     )
-    _write_json_payload(
-        runtime_dir / "effect-orchestrator-executions.json",
+    _write_orchestration_payload(
+        runtime_dir,
+        "effect_executions",
         {
             "exec-detail": {
                 "execution_id": "exec-detail",
@@ -7586,8 +7536,9 @@ def _seed_workflow_run_detail_fixture(tmp_path: Path) -> dict[str, str]:
             },
         },
     )
-    _write_json_payload(
-        runtime_dir / "gate-orchestrator-executions.json",
+    _write_orchestration_payload(
+        runtime_dir,
+        "gate_executions",
         {
             "gate-detail": {
                 "execution_id": "gate-detail",
@@ -7671,8 +7622,9 @@ def _seed_workflow_run_detail_fixture(tmp_path: Path) -> dict[str, str]:
             }
         },
     )
-    _write_json_payload(
-        runtime_dir / "workflow-config-snapshots.json",
+    _write_orchestration_payload(
+        runtime_dir,
+        "workflow_config_snapshots",
         {
             rich_revision: {
                 "revision": rich_revision,
@@ -7871,7 +7823,9 @@ def test_admin_web_run_detail_resolves_identifiers_and_links(tmp_path: Path) -> 
     )
 
 
-def test_admin_web_run_detail_requires_real_audit_identifiers(tmp_path: Path) -> None:
+def test_admin_web_run_detail_preserves_event_scoped_audit_link_with_generated_trace(
+    tmp_path: Path,
+) -> None:
     _seed_workflow_run_detail_fixture(tmp_path)
     client = TestClient(create_app(build_admin_runtime(write_config(tmp_path))))
 
@@ -7880,7 +7834,7 @@ def test_admin_web_run_detail_requires_real_audit_identifiers(tmp_path: Path) ->
     assert response.status_code == 200
     payload = response.json()
     assert payload["event_id"] == "evt-notrace"
-    assert payload["trace_id"] is None
+    assert payload["trace_id"]
     assert [link["tool_name"] for link in payload["tool_call_links"]] == ["read_file"]
     assert payload["tool_call_links"][0]["workflow_run_id"] == "evt-notrace"
 
@@ -7981,8 +7935,9 @@ def test_admin_web_run_search_finds_latest_graph_and_node_runs_without_sessions(
             ],
         },
     )
-    _write_json_payload(
-        runtime_dir / "trigger-orchestrator-events.json",
+    _write_orchestration_payload(
+        runtime_dir,
+        "trigger_events",
         {
             "evt-no-session-old": {
                 "event_id": "evt-no-session-old",
@@ -8022,8 +7977,9 @@ def test_admin_web_run_search_finds_latest_graph_and_node_runs_without_sessions(
             },
         },
     )
-    _write_json_payload(
-        runtime_dir / "effect-orchestrator-executions.json",
+    _write_orchestration_payload(
+        runtime_dir,
+        "effect_executions",
         {
             "exec-no-session-old": {
                 "execution_id": "exec-no-session-old",
@@ -8121,8 +8077,11 @@ def test_admin_web_workflow_runs_resolve_relative_paths_independent_of_cwd(
 ) -> None:
     runtime_dir = tmp_path / "runtime"
     runtime_dir.mkdir(parents=True, exist_ok=True)
-    (runtime_dir / "trigger-orchestrator-events.json").write_text(
-        """
+    _write_orchestration_payload(
+        runtime_dir,
+        "trigger_events",
+        json.loads(
+            """
 {
   "evt-running": {
     "event_id": "evt-running",
@@ -8137,8 +8096,8 @@ def test_admin_web_workflow_runs_resolve_relative_paths_independent_of_cwd(
     "idempotency_key": null
   }
 }
-""".strip(),
-        encoding="utf-8",
+""".strip()
+        ),
     )
     config_path = write_config(tmp_path)
     monkeypatch.chdir("/")
@@ -8161,9 +8120,6 @@ def test_admin_web_workflow_runs_resolve_project_relative_store_paths(tmp_path: 
         """
 {
   "runtime_dir": "runtime",
-  "event_queue_store_path": "runtime/trigger-orchestrator-events.json",
-  "effect_execution_store_path": "runtime/effect-orchestrator-executions.json",
-  "gate_execution_store_path": "runtime/gate-orchestrator-executions.json",
   "triggers": [],
   "gates": [],
   "effects": [],
@@ -8173,8 +8129,11 @@ def test_admin_web_workflow_runs_resolve_project_relative_store_paths(tmp_path: 
 """.strip(),
         encoding="utf-8",
     )
-    (runtime_dir / "trigger-orchestrator-events.json").write_text(
-        """
+    _write_orchestration_payload(
+        runtime_dir,
+        "trigger_events",
+        json.loads(
+            """
 {
   "evt-running": {
     "event_id": "evt-running",
@@ -8189,8 +8148,8 @@ def test_admin_web_workflow_runs_resolve_project_relative_store_paths(tmp_path: 
     "idempotency_key": null
   }
 }
-""".strip(),
-        encoding="utf-8",
+""".strip()
+        ),
     )
 
     client = TestClient(create_app(build_admin_runtime(write_config(tmp_path))))
@@ -9116,7 +9075,6 @@ def test_workflow_event_api_published_event_is_consumed_by_event_trigger(
         canonical_workflow_payload(
             {
                 "runtime_dir": runtime_dir,
-                "orchestration_store_backend": "sqlite",
                 "poll_interval_seconds": 1,
                 "jitter_seconds": 0,
                 "triggers": [
@@ -13522,7 +13480,6 @@ def _install_vm_issue_mutation_stub(
                 "create_issue_vm_from_local_issue",
                 MethodType(create_issue_vm_from_local_issue, service.vm_agent_admin),
             )
-        return
     if case == "issue-update":
 
         def update_local_issue(self, issue_identifier, **_payload):

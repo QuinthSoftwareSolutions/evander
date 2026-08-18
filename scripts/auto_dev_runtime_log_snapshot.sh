@@ -13,6 +13,44 @@ cleanup() {
 }
 trap cleanup EXIT
 
+dump_orchestration_failures() {
+  local database_path="$RUNTIME_DIR/orchestration.db"
+  local python_bin="$PROJECT_DIR/.venv/bin/python"
+  printf '\n### %s\n' "$database_path"
+  if [ ! -f "$database_path" ]; then
+    printf 'missing\n'
+    return
+  fi
+  if [ ! -x "$python_bin" ]; then
+    printf 'unable to inspect: missing %s\n' "$python_bin"
+    return
+  fi
+  "$python_bin" - "$database_path" <<'PY'
+import sqlite3
+import sys
+
+database_path = sys.argv[1]
+with sqlite3.connect(database_path) as connection:
+    rows = connection.execute(
+        """
+        SELECT payload_json, finished_at, execution_id
+        FROM effect_executions
+        WHERE status IN ('failed', 'error', 'error_routed') OR error IS NOT NULL
+        UNION ALL
+        SELECT payload_json, finished_at, execution_id
+        FROM gate_executions
+        WHERE status IN ('failed', 'error', 'error_routed') OR error IS NOT NULL
+        ORDER BY finished_at DESC, execution_id DESC
+        LIMIT 120
+        """
+    ).fetchall()
+for payload_json, _, _ in rows:
+    print(payload_json)
+if not rows:
+    print("no matching failures")
+PY
+}
+
 redact_snapshot() {
   if ! command -v perl >/dev/null 2>&1; then
     printf '# Truman runtime log snapshot\n'
@@ -73,10 +111,10 @@ redact_snapshot() {
   fi
 
   printf '\n## Recent orchestrator execution failures\n'
-  for file in \
-    "$RUNTIME_DIR/effect-orchestrator-executions.json" \
-    "$RUNTIME_DIR/gate-orchestrator-executions.json" \
-    "$RUNTIME_DIR/worker-jobs.json"; do
+  dump_orchestration_failures
+
+  printf '\n## Recent worker job failures\n'
+  for file in "$RUNTIME_DIR/worker-jobs.json"; do
     printf '\n### %s\n' "$file"
     if [ -f "$file" ]; then
       tail -c 120000 "$file" \
