@@ -303,6 +303,7 @@ Type-specific keys:
 | `type` | Required keys | Optional keys |
 |---|---|---|
 | `trigger:event` | `event_type` | `correlation_key` |
+| `trigger:agent:artifact-staged` | — | `artifact_path`, `path_prefix` |
 | `trigger:http:webhook` | `slug`, `secret_env` | `event_type` |
 | `trigger:cron` | `expression` | — |
 | `trigger:ticket:created` | `directories` | — |
@@ -401,6 +402,13 @@ cursors in `runtime/trigger-cursors-remote-issues.json`; the comment trigger sto
 `trigger:event` consumes durable internal workflow events. The Admin Web HTTP ingress publishes
 caller-supplied event names under the reserved `external.` prefix, so a POST with
 `event_type=deploy_requested` should be matched with `event_type=external.deploy_requested`.
+
+`trigger:agent:artifact-staged` consumes only the durable event written by a successful agent
+`stage_artifact` gateway call. It can filter on one exact relative `artifact_path` or a
+`path_prefix`; the two filters are mutually exclusive. Its payload includes the originating
+`session_id`, normalized artifact path, stage counts, VM/backend, and configuration directory.
+The trigger does not interpret the artifact content: use `query:agent:artifact-text`, then validate
+the content and the originating session metadata in the workflow before taking an external action.
 The HTTP ingress requires either a bearer token minted by a signed-in Admin Web user or a
 configured machine token from `EVANDER_WORKFLOW_EVENT_MACHINE_TOKENS`. Machine tokens are
 configured as comma-separated `source-name:token` entries; the matching source name is recorded on

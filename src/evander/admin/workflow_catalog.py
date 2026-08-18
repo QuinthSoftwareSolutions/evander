@@ -639,6 +639,7 @@ def _remote_issue_comment_fields() -> list[WorkflowEditorFieldDefinition]:
 _WORKFLOW_EDITOR_NODE_DESCRIPTIONS: dict[str, str] = {
     "trigger:cron": "Start a workflow on a recurring cron schedule.",
     "trigger:event": "Start when an internal workflow event is emitted.",
+    "trigger:agent:artifact-staged": "Start when an agent successfully stages an artifact.",
     "trigger:http:webhook": "Start from a signed HTTP webhook delivered to a public endpoint.",
     "trigger:ticket:created": "Start when a tracked ticket is created.",
     "trigger:ticket:changed": "Start when a tracked ticket changes state or metadata.",
@@ -852,6 +853,30 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
                 ),
             ),
             _field("correlation_key", "Correlation key", "string"),
+        ],
+    ),
+    WorkflowEditorNodeCatalogEntry(
+        kind="trigger",
+        type="trigger:agent:artifact-staged",
+        label="Agent artifact staged",
+        fields=[
+            _field(
+                "artifact_path",
+                "Exact artifact path",
+                "string",
+                description=(
+                    "Optional exact session-artifact path. Use this for a declared handoff file."
+                ),
+            ),
+            _field(
+                "path_prefix",
+                "Artifact path prefix",
+                "string",
+                description=(
+                    "Optional session-artifact directory or path prefix. Mutually exclusive with "
+                    "the exact artifact path."
+                ),
+            ),
         ],
     ),
     WorkflowEditorNodeCatalogEntry(

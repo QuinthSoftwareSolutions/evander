@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-08-18 - Agent Artifact-Staged Workflow Trigger
+
+- Added `trigger:agent:artifact-staged`, which reacts only to durable control-plane events emitted
+  after a successful agent `stage_artifact` call. Operators can restrict it to an exact artifact
+  path or a path prefix, then use the originating session metadata and artifact-text query for
+  workflow-specific validation.
+
 ## 2026-08-18 - Team Ephemeral Session Directory Inheritance
 
 - Made Team ephemeral workers inherit the logical configuration directory from their persistent

@@ -18,6 +18,7 @@ from evander.events.provider_types import (
 )
 from evander.host_directories.models import normalize_host_directory_id
 from evander.host_directories.paths import normalize_relative_host_path
+from evander.session_artifacts import normalize_artifact_relative_path
 from evander.workflow.contracts import normalize_directory_paths, normalize_string_list
 
 _WEBHOOK_SLUG_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
@@ -50,6 +51,26 @@ class EventTriggerDefinition(TriggerDefinition):
             return None
         text = str(value).strip()
         return text or None
+
+
+class AgentArtifactStagedTriggerDefinition(TriggerDefinition):
+    type: Literal["trigger:agent:artifact-staged"]
+    artifact_path: str | None = None
+    path_prefix: str | None = None
+
+    @field_validator("artifact_path", "path_prefix", mode="before")
+    @classmethod
+    def normalize_artifact_path(cls, value: object) -> str | None:
+        if value is None:
+            return None
+        text = str(value).strip()
+        return normalize_artifact_relative_path(text) if text else None
+
+    @model_validator(mode="after")
+    def validate_path_filter(self) -> "AgentArtifactStagedTriggerDefinition":
+        if self.artifact_path is not None and self.path_prefix is not None:
+            raise ValueError("artifact_path and path_prefix are mutually exclusive")
+        return self
 
 
 class WebhookTriggerDefinition(TriggerDefinition):

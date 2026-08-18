@@ -11,8 +11,13 @@ from mcp.server.fastmcp.exceptions import ToolError
 from evander import gateway
 from evander.config import GatewayConfig
 from evander.effects.providers.agent_session import build_container_session_manifest
+from evander.events.agent_artifacts import (
+    AGENT_ARTIFACT_STAGED_EVENT_SOURCE_TYPE,
+    AGENT_ARTIFACT_STAGED_EVENT_TYPE,
+)
 from evander.gateway import create_server
 from evander.models import SessionManifest, ToolName
+from evander.orchestration.internal_events import build_internal_event_bus_for_runtime
 from evander.runtime import build_runtime
 
 
@@ -37,6 +42,18 @@ class FakeArtifactStageEffectProvider:
             "artifacts_root": "/artifacts",
             "copied_count": 2,
             "byte_count": 42,
+        }
+
+
+class FailedArtifactStageEffectProvider(FakeArtifactStageEffectProvider):
+    def execute(self) -> dict[str, object]:
+        return {
+            "success": False,
+            "action": "artifact_stage",
+            "message": "Artifact staging failed",
+            "session_id": "session-1",
+            "vm_name": "vm-1",
+            "execution_backend": "container_worker_vm",
         }
 
 
@@ -107,6 +124,28 @@ def test_stage_artifact_delegates_to_artifact_stage_provider(
     assert result["copied_count"] == 2
     assert result["byte_count"] == 42
 
+    staged_events = build_internal_event_bus_for_runtime(
+        tmp_path,
+        base_config=context.config,
+    ).list_events()
+    assert len(staged_events) == 1
+    staged_event = staged_events[0]
+    assert staged_event.event_type == AGENT_ARTIFACT_STAGED_EVENT_TYPE
+    assert staged_event.correlation_key == "session-1"
+    assert staged_event.source is not None
+    assert staged_event.source.source_type == AGENT_ARTIFACT_STAGED_EVENT_SOURCE_TYPE
+    assert staged_event.payload == {
+        "session_id": "session-1",
+        "artifact_path": "reports",
+        "source_path": "/home/agent/repos/project/reports",
+        "artifacts_root": "/artifacts",
+        "copied_count": 2,
+        "byte_count": 42,
+        "vm_name": "vm-1",
+        "execution_backend": "container_worker_vm",
+        "directory_path": "root",
+    }
+
     effect, runtime_context = FakeArtifactStageEffectProvider.calls[0]
     assert effect.type == "effect:artifact:stage"
     assert effect.session_id == "session-1"
@@ -144,6 +183,35 @@ def test_stage_artifact_requires_allowed_tool(
         )
 
     assert FakeArtifactStageEffectProvider.calls == []
+
+
+def test_stage_artifact_does_not_emit_event_when_provider_reports_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(gateway, "ArtifactStageEffectProvider", FailedArtifactStageEffectProvider)
+    context = make_context(tmp_path)
+    context.session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-1",
+            vm_id="vm-1",
+            allowed_tools=[ToolName.STAGE_ARTIFACT],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+            directory_path="root",
+        )
+    )
+    server = create_server(context)
+
+    result = call_tool(
+        server,
+        "stage_artifact",
+        {"session_id": "session-1", "path": "reports/out.txt"},
+    )
+
+    assert result["success"] is False
+    assert (
+        build_internal_event_bus_for_runtime(tmp_path, base_config=context.config).list_events() == []
+    )
 
 
 def test_container_session_manifest_allows_stage_artifact_by_default(tmp_path: Path) -> None:

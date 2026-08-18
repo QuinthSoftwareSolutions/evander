@@ -88,6 +88,21 @@ def test_workflow_editor_catalog_excludes_addon_nodes_when_addon_disabled(
     assert "team.agent.wake_requested" not in internal_event_types
 
 
+def test_workflow_editor_catalog_includes_agent_artifact_staged_trigger(tmp_path: Path) -> None:
+    payload = _catalog_payload(tmp_path, enable_team_addon=False)
+
+    nodes = {node["type"]: node for node in payload["nodes"]}
+    trigger = nodes["trigger:agent:artifact-staged"]
+
+    assert trigger["kind"] == "trigger"
+    assert trigger["label"] == "Agent artifact staged"
+    assert [field["key"] for field in trigger["fields"]] == [
+        "artifact_path",
+        "path_prefix",
+    ]
+    assert all(field["description"] for field in trigger["fields"])
+
+
 def test_workflow_editor_catalog_includes_team_addon_nodes_when_enabled(
     tmp_path: Path,
 ) -> None:

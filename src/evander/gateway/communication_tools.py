@@ -24,6 +24,11 @@ from evander.email.http_utils import ProviderRequestError
 from evander.email.providers import EmailDraftAttachment, EmailMessageSearchQuery
 from evander.gateway.dependencies import _compat_gateway_attr
 from evander.gateway.session_context import _resolve_session_id_from_context
+from evander.events.agent_artifacts import (
+    AGENT_ARTIFACT_STAGED_EVENT_SOURCE_TYPE,
+    AGENT_ARTIFACT_STAGED_EVENT_TYPE,
+)
+from evander.events.internal import InternalEventSource
 from evander.models import (
     CommunicationAttachmentRef,
     CommunicationCopyArtifactToWorkspaceResponse,
@@ -73,6 +78,8 @@ from evander.effects.providers.schemas import (
     ArtifactStageEffectDefinition,
     VmCopyFilesItemDefinition,
 )
+from evander.orchestration.internal_events import publish_internal_event_for_runtime
+from evander.session_artifacts import normalize_artifact_relative_path
 
 TeamsMentionRefsArgument = Annotated[
     list[str] | None,
@@ -2100,6 +2107,29 @@ def register_communication_tools(
                 byte_count=int(stage_result.get("byte_count") or 0),
                 result=dict(stage_result),
             )
+            if response.success:
+                artifact_path = normalize_artifact_relative_path(response.artifact_path)
+                publish_internal_event_for_runtime(
+                    context.config.runtime_dir,
+                    event_type=AGENT_ARTIFACT_STAGED_EVENT_TYPE,
+                    payload={
+                        "session_id": response.session_id,
+                        "artifact_path": artifact_path,
+                        "source_path": response.source_path,
+                        "artifacts_root": response.artifacts_root,
+                        "copied_count": response.copied_count,
+                        "byte_count": response.byte_count,
+                        "vm_name": response.vm_name,
+                        "execution_backend": response.execution_backend,
+                        "directory_path": session.directory_path or "root",
+                    },
+                    correlation_key=response.session_id,
+                    source=InternalEventSource(
+                        source_type=AGENT_ARTIFACT_STAGED_EVENT_SOURCE_TYPE,
+                        source_name=ToolName.STAGE_ARTIFACT.value,
+                    ),
+                    base_config=context.config,
+                )
             result = response.model_dump(mode="json")
             audit_success(
                 session_id,

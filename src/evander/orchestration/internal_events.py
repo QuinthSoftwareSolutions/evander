@@ -5,7 +5,13 @@ from pathlib import Path
 from typing import Any
 
 from evander.config import GatewayConfig, TriggerOrchestratorWorkerGlobalConfig
-from evander.events.internal import InternalEventBus, internal_event_store_path
+from evander.events.internal import (
+    InternalEvent,
+    InternalEventBus,
+    InternalEventSource,
+    internal_event_store_path,
+)
+from evander.orchestration.host_polling import notify_wake_socket_for_lock
 from evander.workflow.events import SqliteWorkflowEventJournal
 
 
@@ -40,6 +46,42 @@ def build_internal_event_bus_for_runtime(
         base_config=resolved_config,
     )
     return build_internal_event_bus(worker_config)
+
+
+def publish_internal_event_for_runtime(
+    runtime_dir: Path | str,
+    *,
+    event_type: object,
+    payload: Mapping[str, Any] | None = None,
+    correlation_key: object | None = None,
+    source: InternalEventSource | dict[str, Any] | None = None,
+    idempotency_key: str | None = None,
+    project_dir: Path | str | None = None,
+    base_config: GatewayConfig | None = None,
+) -> InternalEvent:
+    """Publish a durable event and promptly wake the trigger worker when it is running."""
+
+    from evander.workflow.runtime_config import load_trigger_orchestrator_worker_global_config
+
+    resolved_runtime_dir = Path(runtime_dir)
+    resolved_config = (
+        base_config
+        if isinstance(base_config, GatewayConfig)
+        else GatewayConfig(runtime_dir=resolved_runtime_dir)
+    )
+    worker_config = load_trigger_orchestrator_worker_global_config(
+        Path(project_dir) if project_dir is not None else resolved_runtime_dir.parent,
+        base_config=resolved_config,
+    )
+    event = build_internal_event_bus(worker_config).publish(
+        event_type=event_type,
+        payload=dict(payload or {}),
+        correlation_key=correlation_key,
+        source=source,
+        idempotency_key=idempotency_key,
+    )
+    notify_wake_socket_for_lock(worker_config.lock_path)
+    return event
 
 
 def internal_event_bus_metadata(
@@ -77,4 +119,5 @@ __all__ = [
     "build_internal_event_bus_for_runtime",
     "build_internal_event_bus_from_metadata",
     "internal_event_bus_metadata",
+    "publish_internal_event_for_runtime",
 ]
