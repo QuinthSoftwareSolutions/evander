@@ -58,7 +58,7 @@ def test_admin_web_user_store_mutations_use_sqlite(tmp_path: Path) -> None:
     assert stored_logins == ["operator@example.com"]
 
 
-def test_admin_web_user_store_migrates_existing_role_column_before_writes(
+def test_admin_web_user_store_preserves_completed_role_assignments_before_writes(
     tmp_path: Path,
 ) -> None:
     runtime_dir = tmp_path / "runtime"
@@ -99,16 +99,27 @@ def test_admin_web_user_store_migrates_existing_role_column_before_writes(
             [
                 ("owner@example.com", "admin", "Owner", timestamp, timestamp),
                 ("operator@example.com", "regular", "Operator", timestamp, timestamp),
+                (
+                    "scoped-owner@example.com",
+                    "admin",
+                    "Scoped Owner",
+                    timestamp,
+                    timestamp,
+                ),
             ],
         )
-        connection.execute(
+        connection.executemany(
             """
             INSERT INTO admin_web_user_group_assignments(
                 login, group_id, directory_path, created_at
             )
-            VALUES ('owner@example.com', 'owner', 'root', ?)
+            VALUES (?, ?, ?, ?)
             """,
-            (timestamp,),
+            [
+                ("owner@example.com", "owner", "root", timestamp),
+                ("operator@example.com", "operator", "root/ops", timestamp),
+                ("scoped-owner@example.com", "owner", "root/finance", timestamp),
+            ],
         )
         connection.execute(
             """
@@ -130,8 +141,9 @@ def test_admin_web_user_store_migrates_existing_role_column_before_writes(
         (assignment.login, assignment.group_id, assignment.directory_path)
         for assignment in store.list_user_group_assignments()
     ] == [
-        ("operator@example.com", "operator", "root"),
+        ("operator@example.com", "operator", "root/ops"),
         ("owner@example.com", "owner", "root"),
+        ("scoped-owner@example.com", "owner", "root/finance"),
     ]
 
     with sqlite3.connect(db_path) as connection:
@@ -154,6 +166,62 @@ def test_admin_web_user_store_migrates_existing_role_column_before_writes(
         ).fetchone()
     assert "role" not in columns
     assert owner_assignment_created_at == timestamp
+    assert migration_table is None
+
+
+def test_admin_web_user_store_translates_unmigrated_roles_before_dropping_column(
+    tmp_path: Path,
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    runtime_dir.mkdir()
+    db_path = runtime_dir / "admin-web.db"
+    timestamp = "2026-08-18T00:00:00Z"
+    with sqlite3.connect(db_path) as connection:
+        connection.executescript(
+            """
+            CREATE TABLE admin_web_users (
+                login TEXT PRIMARY KEY,
+                role TEXT NOT NULL CHECK(role IN ('admin', 'regular')),
+                display_name TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                last_login_at TEXT
+            );
+            """
+        )
+        connection.executemany(
+            """
+            INSERT INTO admin_web_users(
+                login, role, display_name, created_at, updated_at, last_login_at
+            )
+            VALUES (?, ?, ?, ?, ?, NULL)
+            """,
+            [
+                ("owner@example.com", "admin", "Owner", timestamp, timestamp),
+                ("operator@example.com", "regular", "Operator", timestamp, timestamp),
+            ],
+        )
+
+    store = AdminWebUserStore(db_path)
+
+    assert [
+        (assignment.login, assignment.group_id, assignment.directory_path)
+        for assignment in store.list_user_group_assignments()
+    ] == [
+        ("operator@example.com", "operator", "root"),
+        ("owner@example.com", "owner", "root"),
+    ]
+
+    with sqlite3.connect(db_path) as connection:
+        columns = [row[1] for row in connection.execute("PRAGMA table_info(admin_web_users)")]
+        migration_table = connection.execute(
+            """
+            SELECT 1
+            FROM sqlite_master
+            WHERE type = 'table' AND name = 'admin_web_rbac_migrations'
+            """
+        ).fetchone()
+    assert "role" not in columns
     assert migration_table is None
 
 

@@ -29,6 +29,7 @@ from evander.admin.web.rbac import (
 
 _UNSET = object()
 SQLITE_BUSY_TIMEOUT_MS = 30_000
+LEGACY_ROLE_ASSIGNMENT_MIGRATION_KEY = "legacy_role_assignments_v1"
 LOCAL_PASSWORD_ALGORITHM = "pbkdf2_sha256"
 LOCAL_PASSWORD_HASH_NAME = "sha256"
 LOCAL_PASSWORD_ITERATIONS = 200_000
@@ -1071,24 +1072,44 @@ class AdminWebUserStore:
         if "role" not in columns:
             return
 
-        now = _datetime_to_storage(utc_now())
-        rows = connection.execute(
-            "SELECT login, role FROM admin_web_users ORDER BY login"
-        ).fetchall()
-        for row in rows:
-            group_id = OWNER_GROUP_ID if str(row["role"]) == "admin" else OPERATOR_GROUP_ID
-            connection.execute(
+        migration_table = connection.execute(
+            """
+            SELECT 1
+            FROM sqlite_master
+            WHERE type = 'table' AND name = 'admin_web_rbac_migrations'
+            """
+        ).fetchone()
+        migration_completed = (
+            migration_table is not None
+            and connection.execute(
                 """
-                INSERT OR IGNORE INTO admin_web_user_group_assignments(
-                    login,
-                    group_id,
-                    directory_path,
-                    created_at
-                )
-                VALUES (?, ?, 'root', ?)
+                SELECT 1
+                FROM admin_web_rbac_migrations
+                WHERE migration_key = ?
                 """,
-                (str(row["login"]), group_id, now),
-            )
+                (LEGACY_ROLE_ASSIGNMENT_MIGRATION_KEY,),
+            ).fetchone()
+            is not None
+        )
+        if not migration_completed:
+            now = _datetime_to_storage(utc_now())
+            rows = connection.execute(
+                "SELECT login, role FROM admin_web_users ORDER BY login"
+            ).fetchall()
+            for row in rows:
+                group_id = OWNER_GROUP_ID if str(row["role"]) == "admin" else OPERATOR_GROUP_ID
+                connection.execute(
+                    """
+                    INSERT OR IGNORE INTO admin_web_user_group_assignments(
+                        login,
+                        group_id,
+                        directory_path,
+                        created_at
+                    )
+                    VALUES (?, ?, 'root', ?)
+                    """,
+                    (str(row["login"]), group_id, now),
+                )
 
         connection.execute(
             """

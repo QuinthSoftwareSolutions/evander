@@ -7,8 +7,8 @@
   while safely ignoring the known retired global keys in persisted upgrade-era worker files.
 - Rejected the retired workflow `directory_paths` field now that live packs use `directory_path`.
 - Made Admin Web group assignments the sole authorization source and removed stored/API/UI user
-  roles; existing SQLite stores translate legacy roles into root group assignments and rebuild the
-  user table automatically before accepting writes.
+  roles; existing SQLite stores preserve assignments from completed role migrations, or translate
+  unmigrated legacy roles into root assignments, before rebuilding the user table.
 - Removed the remaining `agent-sandbox` rename readers and cleanup paths after normalizing guest,
   worker, host-network, SSH-key, service, and configuration state on both supported deployments.
 - Made retired Admin Web auth, session, and Azure SSO environment variables fail startup explicitly
