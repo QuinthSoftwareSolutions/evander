@@ -9,7 +9,6 @@ from typing import Any
 from evander.config import GatewayConfig
 from evander.directory_config import (
     DIRECTORY_CONFIG_DOMAIN_FILENAMES,
-    AdoWorkerDirectoryConfig,
     DirectoryConfigStore,
     EffectiveIssueSetupDirectoryConfig,
     PrTemplateDirectoryConfig,
@@ -47,32 +46,10 @@ def migrate_directory_ownership_defaults(config: GatewayConfig) -> OwnershipMigr
     if pr_map_changed:
         per_file_changes[str(config.pr_map_path)] = pr_map_changed
 
-    ado_processed_path = config.runtime_dir / "ado-processed-work-items.json"
-    ado_processed_changed = _backfill_top_level_directory_path(ado_processed_path)
-    if ado_processed_changed:
-        per_file_changes[str(ado_processed_path)] = ado_processed_changed
-
     return OwnershipMigrationSummary(
         changed_files=len(per_file_changes),
         changed_records=sum(per_file_changes.values()),
         per_file_changes=per_file_changes,
-    )
-
-
-def migrate_ado_worker_env_to_root(
-    config: GatewayConfig,
-    *,
-    env_file: Path | None = None,
-    overwrite: bool = False,
-) -> DomainMigrationResult:
-    env_values = _load_optional_env_file(env_file) if env_file is not None else {}
-    payload = AdoWorkerDirectoryConfig(
-        ado_area_filters=_csv_values(_merged_env_value("ADO_AREA_FILTERS", env_values)),
-        ado_team_filters=_csv_values(_merged_env_value("ADO_TEAM_FILTERS", env_values)),
-        ado_repo_source=_merged_env_value("ADO_REPO_PATH", env_values) or None,
-    ).model_dump(mode="json", exclude_none=True)
-    return _migrate_domain_payload_to_root(
-        config, domain="ado_worker", payload=payload, overwrite=overwrite
     )
 
 

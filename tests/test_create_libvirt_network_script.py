@@ -7,7 +7,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def test_create_libvirt_network_migrates_legacy_agent_sandbox_network(
+def test_create_libvirt_network_creates_canonical_network(
     tmp_path: Path,
 ) -> None:
     fake_bin = tmp_path / "bin"
@@ -20,10 +20,6 @@ def test_create_libvirt_network_migrates_legacy_agent_sandbox_network(
                 'printf "%s\\n" "$*" >> "${VIRSH_LOG}"',
                 'if [[ "$1 $2" == "net-info evander" ]]; then',
                 "  exit 1",
-                "fi",
-                'if [[ "$1 $2" == "net-info agent-sandbox" ]]; then',
-                '  printf "Name: agent-sandbox\\nActive: yes\\n"',
-                "  exit 0",
                 "fi",
                 "exit 0",
             ]
@@ -47,16 +43,9 @@ def test_create_libvirt_network_migrates_legacy_agent_sandbox_network(
     )
 
     commands = log_path.read_text(encoding="utf-8").splitlines()
-    assert "Migrating legacy libvirt network 'agent-sandbox' to 'evander'" in result.stdout
     assert "Created libvirt network 'evander'" in result.stdout
-    assert commands[:5] == [
+    assert commands == [
         "net-info evander",
-        "net-info agent-sandbox",
-        "net-info agent-sandbox",
-        "net-destroy agent-sandbox",
-        "net-undefine agent-sandbox",
-    ]
-    assert commands[-3:] == [
         f"net-define {ROOT / 'config' / 'libvirt-network.xml'}",
         "net-autostart evander",
         "net-start evander",

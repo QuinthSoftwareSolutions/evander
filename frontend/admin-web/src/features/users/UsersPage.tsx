@@ -12,7 +12,6 @@ import type {
   AdminWebGroupRecord,
   AdminWebUserGroupAssignmentRecord,
   AdminWebUserRecord,
-  AdminWebUserRole,
   AdminWebWorkflowGrantRecord,
 } from "../admin/types";
 
@@ -34,7 +33,6 @@ type DirectorySelectOption = {
 type UserFormState = {
   login: string;
   displayName: string;
-  role: AdminWebUserRole;
   password: string;
   contactId: string;
   initialContactId: string;
@@ -52,7 +50,6 @@ type GroupFormState = {
 const EMPTY_FORM: UserFormState = {
   login: "",
   displayName: "",
-  role: "regular",
   password: "",
   contactId: "",
   initialContactId: "",
@@ -261,7 +258,6 @@ export function UsersPage() {
     setForm({
       login: selectedUser.login,
       displayName: selectedUser.display_name ?? "",
-      role: selectedUser.role,
       password: "",
       contactId: selectedUser.contact_id ?? "",
       initialContactId: selectedUser.contact_id ?? "",
@@ -332,7 +328,15 @@ export function UsersPage() {
   function beginNewUser() {
     selectMode("users");
     setSelectedLogin(null);
-    setForm(EMPTY_FORM);
+    setForm({
+      ...EMPTY_FORM,
+      groupAssignments:
+        users.length === 0 && groupsById.has("owner")
+          ? [{ groupId: "owner", directoryPath: "root" }]
+          : groupsById.has("operator")
+            ? [{ groupId: "operator", directoryPath: "root" }]
+            : [],
+    });
     setStatus(null);
     setError(null);
   }
@@ -357,7 +361,6 @@ export function UsersPage() {
     try {
       const requestPayload: {
         login: string;
-        role: AdminWebUserRole;
         display_name: string | null;
         password?: string;
         contact_id?: string | null;
@@ -365,7 +368,6 @@ export function UsersPage() {
         workflow_grants?: Array<{ permission: "workflows.read" | "workflows.write"; directory_path: string }>;
       } = {
         login,
-        role: form.role,
         display_name: form.displayName.trim() || null,
       };
       if (authMode === "local_password") {
@@ -560,7 +562,7 @@ export function UsersPage() {
           </div>
         </div>
         {!canManageUsers ? (
-          <div className="callout warning-callout">Admin role is required to manage users and groups.</div>
+          <div className="callout warning-callout">User-management permission is required to manage users and groups.</div>
         ) : null}
         <div className="users-page-mode-tabs" role="tablist" aria-label="Users and groups mode">
           <button
@@ -604,9 +606,6 @@ export function UsersPage() {
               >
                 <div className="feature-list-title-row user-list-item-row">
                   <strong>{userLabel(user)}</strong>
-                  <span className={`status-pill state-${user.role === "admin" ? "running" : "idle"}`}>
-                    {user.role}
-                  </span>
                 </div>
                 <div className="feature-list-meta">{user.login}</div>
                 <div className="feature-list-meta">
@@ -674,9 +673,6 @@ export function UsersPage() {
               </div>
               {selectedUser ? (
                 <div className="feature-toolbar-actions">
-                  <span className={`status-pill state-${selectedUser.role === "admin" ? "running" : "idle"}`}>
-                    {selectedUser.role}
-                  </span>
                   <button
                     type="button"
                     className="admin-action-button danger compact"
@@ -714,22 +710,6 @@ export function UsersPage() {
                     disabled={actionDisabled}
                     placeholder="Optional"
                   />
-                </label>
-                <label className="field-stack">
-                  <span>Role</span>
-                  <select
-                    value={form.role}
-                    onChange={(event) =>
-                      setForm((current) => ({
-                        ...current,
-                        role: event.target.value as AdminWebUserRole,
-                      }))
-                    }
-                    disabled={actionDisabled}
-                  >
-                    <option value="admin">Admin</option>
-                    <option value="regular">Regular</option>
-                  </select>
                 </label>
                 {authMode === "local_password" ? (
                   <label className="field-stack">
@@ -940,7 +920,7 @@ export function UsersPage() {
                   <thead>
                     <tr>
                       <th>Login</th>
-                      <th>Role</th>
+                      <th>Groups</th>
                       <th>Display name</th>
                       <th>Contact</th>
                       <th>Password</th>
@@ -956,11 +936,7 @@ export function UsersPage() {
                         onClick={() => setSelectedLogin(user.login)}
                       >
                         <td>{user.login}</td>
-                        <td>
-                          <span className={`status-pill state-${user.role === "admin" ? "running" : "idle"}`}>
-                            {user.role}
-                          </span>
-                        </td>
+                        <td>{(user.group_assignments ?? []).map((assignment) => assignment.group_id).join(", ") || "None"}</td>
                         <td>{user.display_name || "None"}</td>
                         <td>{user.contact ? user.contact.name : "None"}</td>
                         <td>{user.local_password_enabled ? "Set" : "None"}</td>
@@ -989,9 +965,6 @@ export function UsersPage() {
                   >
                     <div className="mobile-record-title-row">
                       <strong>{userLabel(user)}</strong>
-                      <span className={`status-pill state-${user.role === "admin" ? "running" : "idle"}`}>
-                        {user.role}
-                      </span>
                     </div>
                     <div className="mobile-record-row">
                       <span>Login</span>
@@ -1002,8 +975,8 @@ export function UsersPage() {
                       <span>{user.display_name || "None"}</span>
                     </div>
                     <div className="mobile-record-row">
-                      <span>Role</span>
-                      <span>{user.role}</span>
+                      <span>Groups</span>
+                      <span>{(user.group_assignments ?? []).map((assignment) => assignment.group_id).join(", ") || "None"}</span>
                     </div>
                     <div className="mobile-record-row">
                       <span>Contact</span>

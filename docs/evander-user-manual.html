@@ -4170,8 +4170,8 @@ session also names the directory whose policy applies to that job.</p>
 <tbody>
 <tr class="odd">
 <td>You can sign in, but a page or edit is unavailable</td>
-<td>Authentication succeeded, but your role does not grant that action
-in the selected directory</td>
+<td>Authentication succeeded, but your effective group assignments do
+not grant that action in the selected directory</td>
 <td>Confirm the directory and ask an owner to review your
 assignment</td>
 </tr>
@@ -4242,10 +4242,11 @@ point when an agent can work but cannot perform one expected action.</p>
 
 <h2 id="the-privileged-operations-lock-is-a-safety-catch">The
 privileged-operations lock is a safety catch</h2>
-<p>Some sensitive Admin Web changes require both the necessary role and
-an unlocked browser session. Login begins locked. Unlocking marks only
-the current authenticated Admin Web session; locking, logging out,
-cookie expiry, or an Admin Web restart removes that mark.</p>
+<p>Some sensitive Admin Web changes require both the necessary effective
+permission and an unlocked browser session. Login begins locked.
+Unlocking marks only the current authenticated Admin Web session;
+locking, logging out, cookie expiry, or an Admin Web restart removes
+that mark.</p>
 <p>This is protection against an accidental click or an unattended open
 console. It is not a second password, multi-factor authentication, or a
 human approval for an agent&#39;s tool call. Workflow and MCP approvals are
@@ -6690,10 +6691,8 @@ relay URL, HTTP-target relay prefix, and package locations. It also sets
 a placeholder <code>OPENAI_API_KEY</code> so tools that insist on an
 API-key variable can start. That placeholder is not the upstream
 provider secret.</p>
-<p>Current bootstrap scripts still read
-<code>/etc/agent-sandbox/session.env</code> as an upgrade compatibility
-fallback, but <code>/etc/evander/session.env</code> is the current path.
-A shell that was already open before a bootstrap repair may need:</p>
+<p>A shell that was already open before a bootstrap repair may need to
+reload the canonical environment:</p>
 <div class="sourceCode" id="cb33"><pre class="sourceCode bash"><code class="sourceCode bash"><span id="cb33-1"><a href="#cb33-1" aria-hidden="true" tabindex="-1"></a><span class="bu">source</span> ~/.profile</span></code></pre></div>
 <p>Session-bearing relay requests are authenticated with the session&#39;s
 MCP token. The token may be carried in a supported header, query

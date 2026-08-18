@@ -279,10 +279,6 @@ if [ -f ~/.agent/config.env ]; then
   # shellcheck disable=SC1091
   . ~/.agent/config.env
 fi
-if [ -f /etc/agent-sandbox/session.env ]; then
-  # shellcheck disable=SC1091
-  . /etc/agent-sandbox/session.env
-fi
 if [ -f /etc/evander/session.env ]; then
   # shellcheck disable=SC1091
   . /etc/evander/session.env
@@ -301,10 +297,10 @@ if token:
 print(urlunsplit(parts._replace(query=urlencode(query))))
 PY
 }
-CODEX_LLM_BASE_URL="${LLM_BASE_URL:-${EVANDER_LLM_BASE_URL:-${AGENT_SANDBOX_LLM_BASE_URL:-http://192.168.250.1:11434/v1}}}"
-CODEX_GATEWAY_URL="${EVANDER_GATEWAY_URL:-${AGENT_SANDBOX_GATEWAY_URL:-http://192.168.250.1:8000/mcp}}"
-CODEX_SESSION_ID="${EVANDER_SESSION_ID:-${AGENT_SANDBOX_SESSION_ID:-}}"
-CODEX_MCP_SESSION_TOKEN="${EVANDER_MCP_SESSION_TOKEN:-${AGENT_SANDBOX_MCP_SESSION_TOKEN:-}}"
+CODEX_LLM_BASE_URL="${LLM_BASE_URL:-${EVANDER_LLM_BASE_URL:-http://192.168.250.1:11434/v1}}"
+CODEX_GATEWAY_URL="${EVANDER_GATEWAY_URL:-http://192.168.250.1:8000/mcp}"
+CODEX_SESSION_ID="${EVANDER_SESSION_ID:-}"
+CODEX_MCP_SESSION_TOKEN="${EVANDER_MCP_SESSION_TOKEN:-}"
 if [ -n "${CODEX_SESSION_ID:-}" ]; then
   CODEX_LLM_BASE_URL="${CODEX_LLM_BASE_URL%/}/session/${CODEX_SESSION_ID}"
   CODEX_GATEWAY_URL="$(append_evander_mcp_query "${CODEX_GATEWAY_URL}" "${CODEX_SESSION_ID}" "${CODEX_MCP_SESSION_TOKEN}")"
@@ -366,7 +362,6 @@ def repair_missing_session_env_fi(profile_lines):
         out.append(line)
         if stripped in {
             "if [ -f /etc/evander/session.env ]; then",
-            "if [ -f /etc/agent-sandbox/session.env ]; then",
             'if [ -f "$HOME/.claude/settings.json" ]; then',
         }:
             in_session_env = True
@@ -380,7 +375,6 @@ filtered = [
     if line.strip() not in {
         'export PATH="$HOME/bin:$PATH"',
         'export CODEX_HOME="${CODEX_HOME:-$HOME/.config/evander/codex}"',
-        'export CODEX_HOME="${CODEX_HOME:-$HOME/.config/agent-sandbox/codex}"',
     }
     and not (
         line.strip().startswith("export OPENAI_API_KEY=")
@@ -392,15 +386,6 @@ filtered.append('export CODEX_HOME="${CODEX_HOME:-$HOME/.config/evander/codex}"'
 target.write_text("\n".join(filtered) + "\n", encoding="utf-8")
 PY
   if ! grep -q 'export OPENAI_API_KEY=' "${target}" 2>/dev/null; then
-    if ! grep -q '/etc/agent-sandbox/session.env' "${target}" 2>/dev/null; then
-      cat >> "${target}" <<'PROFILE'
-if [ -f /etc/agent-sandbox/session.env ]; then
-  set -a
-  . /etc/agent-sandbox/session.env
-  set +a
-fi
-PROFILE
-    fi
     if ! grep -q '/etc/evander/session.env' "${target}" 2>/dev/null; then
       cat >> "${target}" <<'PROFILE'
 if [ -f /etc/evander/session.env ]; then
@@ -411,7 +396,7 @@ fi
 PROFILE
     fi
     cat >> "${target}" <<PROFILE
-export OPENAI_API_KEY="\${OPENAI_API_KEY:-\${EVANDER_MCP_SESSION_TOKEN:-\${AGENT_SANDBOX_MCP_SESSION_TOKEN:-relay-placeholder}}}"
+export OPENAI_API_KEY="\${OPENAI_API_KEY:-\${EVANDER_MCP_SESSION_TOKEN:-relay-placeholder}}"
 PROFILE
   fi
 }
@@ -422,7 +407,7 @@ append_shell_setup ~/.bashrc
 mkdir -p "${CODEX_HOME}/skills"
 export PATH="$HOME/bin:$HOME/codex-vendor/path:$HOME/codex-vendor/codex-path:$PATH"
 export CODEX_HOME
-export OPENAI_API_KEY="${OPENAI_API_KEY:-${EVANDER_MCP_SESSION_TOKEN:-${AGENT_SANDBOX_MCP_SESSION_TOKEN:-relay-placeholder}}}"
+export OPENAI_API_KEY="${OPENAI_API_KEY:-${EVANDER_MCP_SESSION_TOKEN:-relay-placeholder}}"
 codex --version
 
 echo "Host-side wake workers are now responsible for feedback wakeups by default."

@@ -111,20 +111,16 @@ if [ -f ~/.agent/config.env ]; then
   # shellcheck disable=SC1091
   . ~/.agent/config.env
 fi
-if [ -f /etc/agent-sandbox/session.env ]; then
-  # shellcheck disable=SC1091
-  . /etc/agent-sandbox/session.env
-fi
 if [ -f /etc/evander/session.env ]; then
   # shellcheck disable=SC1091
   . /etc/evander/session.env
 fi
-COPILOT_GATEWAY_URL="${EVANDER_GATEWAY_URL:-${AGENT_SANDBOX_GATEWAY_URL:-http://192.168.250.1:8000/mcp}}"
-COPILOT_SESSION_ID="${EVANDER_SESSION_ID:-${AGENT_SANDBOX_SESSION_ID:-}}"
+COPILOT_GATEWAY_URL="${EVANDER_GATEWAY_URL:-http://192.168.250.1:8000/mcp}"
+COPILOT_SESSION_ID="${EVANDER_SESSION_ID:-}"
 if [ -n "${COPILOT_SESSION_ID:-}" ]; then
   COPILOT_GATEWAY_URL="${COPILOT_GATEWAY_URL}?session_id=${COPILOT_SESSION_ID}"
 fi
-COPILOT_GATEWAY_BASE_URL="$(python3 -c 'import os; from urllib.parse import urlsplit, urlunsplit; raw = os.environ.get("EVANDER_GATEWAY_URL") or os.environ.get("AGENT_SANDBOX_GATEWAY_URL") or "http://192.168.250.1:8000/mcp"; parts = urlsplit(raw); print(urlunsplit((parts.scheme, parts.netloc, "", "", "")))')"
+COPILOT_GATEWAY_BASE_URL="$(python3 -c 'import os; from urllib.parse import urlsplit, urlunsplit; raw = os.environ.get("EVANDER_GATEWAY_URL") or "http://192.168.250.1:8000/mcp"; parts = urlsplit(raw); print(urlunsplit((parts.scheme, parts.netloc, "", "", "")))')"
 COPILOT_HOST_AUTH_URL="${COPILOT_GATEWAY_BASE_URL}/copilot-auth/token"
 cat > ~/.copilot/config.json <<CONFIG
 {
@@ -150,12 +146,10 @@ copilot_host_auth_token() {
   local session_id=""
   if [ -n "\${EVANDER_SESSION_ID:-}" ]; then
     session_id="\${EVANDER_SESSION_ID}"
-  elif [ -n "\${AGENT_SANDBOX_SESSION_ID:-}" ]; then
-    session_id="\${AGENT_SANDBOX_SESSION_ID:-}"
   else
     session_id="${COPILOT_SESSION_ID}"
   fi
-  local mcp_session_token="\${EVANDER_MCP_SESSION_TOKEN:-\${AGENT_SANDBOX_MCP_SESSION_TOKEN:-}}"
+  local mcp_session_token="\${EVANDER_MCP_SESSION_TOKEN:-}"
   python3 - "${COPILOT_HOST_AUTH_URL}" "\${session_id}" "\${mcp_session_token}" <<'PY'
 import sys
 import urllib.error
@@ -165,7 +159,7 @@ url = sys.argv[1]
 session_id = sys.argv[2].strip()
 mcp_session_token = sys.argv[3].strip()
 if not session_id:
-    print("EVANDER_SESSION_ID or AGENT_SANDBOX_SESSION_ID is not set for host-mediated Copilot auth.", file=sys.stderr)
+    print("EVANDER_SESSION_ID is not set for host-mediated Copilot auth.", file=sys.stderr)
     raise SystemExit(1)
 headers = {
     "Accept": "text/plain",

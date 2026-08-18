@@ -19,7 +19,6 @@ if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
 fi
 
 TABLE="inet evander"
-LEGACY_TABLE="inet agent_sandbox"
 INPUT_CHAIN="input"
 FORWARD_CHAIN="forward"
 BRIDGE_IF="virbr250"
@@ -40,7 +39,6 @@ delete_table_if_exists() {
   fi
 }
 
-delete_table_if_exists "${LEGACY_TABLE}"
 delete_table_if_exists "${TABLE}"
 
 nft add table ${TABLE}

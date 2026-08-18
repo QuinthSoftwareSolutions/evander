@@ -64,24 +64,17 @@ def test_install_systemd_units_preflight_checks_for_mssql_worker_password_when_e
     assert "evander-managed-git-refresh.service" in text
 
 
-def test_install_systemd_units_retires_legacy_agent_sandbox_units() -> None:
+def test_install_systemd_units_uses_only_canonical_evander_names() -> None:
     text = _script_text()
 
-    assert 'LEGACY_LOCAL_SECRETS_FILE="/etc/agent-sandbox/local-secrets.env"' in text
     assert 'LOCAL_SECRETS_FILE="/etc/evander/local-secrets.env"' in text
     assert "Environment=EVANDER_SECRETS_ENV_FILE=%s" in text
     assert "grant_local_secrets_git_access" in text
     assert 'local git_user="${EVANDER_GIT_USER:-${RUN_USER}}"' in text
     assert 'setfacl -m "u:${git_user}:--x" "${secrets_dir}"' in text
     assert 'setfacl -m "u:${git_user}:r--" "${secrets_file}"' in text
-    assert "migrate_legacy_local_secrets" in text
-    assert "retire_legacy_agent_sandbox_units" in text
-    assert "agent-sandbox-gateway.service" in text
-    assert "agent-sandbox-admin-web.service" in text
-    assert "agent-sandbox-nexus.service" not in text
-    assert "agent-sandbox-worker-daemon.service" not in text
-    assert 'systemctl disable --now "${unit}"' in text
-    assert 'rm -rf "${SYSTEMD_DIR:?}/${unit}.d"' in text
+    assert "configure_local_secrets" in text
+    assert "agent-sandbox" not in text
     assert 'systemctl enable "${EVANDER_UNITS[@]}"' in text
 
 

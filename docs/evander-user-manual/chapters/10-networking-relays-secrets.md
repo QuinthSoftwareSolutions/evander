@@ -95,7 +95,7 @@ MCP is therefore a central capability boundary, but not the only reachable host 
 
 Cloud-init writes `/etc/evander/session.env`, and the shell profile loads it for the `agent` user. The file contains routing data such as session identity, MCP URL/token, model relay URL, HTTP-target relay prefix, and package locations. It also sets a placeholder `OPENAI_API_KEY` so tools that insist on an API-key variable can start. That placeholder is not the upstream provider secret.
 
-Current bootstrap scripts still read `/etc/agent-sandbox/session.env` as an upgrade compatibility fallback, but `/etc/evander/session.env` is the current path. A shell that was already open before a bootstrap repair may need:
+A shell that was already open before a bootstrap repair may need to reload the canonical environment:
 
 ```bash
 source ~/.profile

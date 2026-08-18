@@ -60,7 +60,6 @@ from evander.messaging.discord_wake import build_discord_wake_worker
 from evander.messaging.scheduled_wake import build_scheduled_wake_worker
 from evander.messaging.teams_auth import TeamsAuthError
 from evander.migrations import (
-    migrate_ado_worker_env_to_root,
     migrate_directory_ownership_defaults,
     migrate_issue_setup_env_to_root,
     migrate_pr_template_to_root,
@@ -2217,40 +2216,6 @@ def migrate_directory_ownership(
     summary = migrate_directory_ownership_defaults(cfg)
     typer.echo(
         f"Backfilled {summary.changed_records} record(s) across {summary.changed_files} file(s)"
-    )
-
-
-@app.command(
-    "migrate-ado-worker-env-to-root",
-    rich_help_panel="Health and State",
-    short_help="Import ado-worker env settings into root ado_worker config.",
-)
-def migrate_ado_worker_env_root(
-    config: ConfigOption = CLI_DEFAULT_RUNTIME_DIR,
-    env_file: Annotated[
-        Path | None,
-        typer.Option(
-            "--env-file",
-            help="Path to the ado-worker env file to import. Current process env vars override file values.",
-        ),
-    ] = None,
-    overwrite: Annotated[
-        bool,
-        typer.Option(
-            "--overwrite/--no-overwrite",
-            help="Replace existing root ado_worker config when it differs.",
-        ),
-    ] = True,
-) -> None:
-    cfg = _load_runtime_config_from_option(config)
-    resolved_env_file = (
-        env_file.expanduser()
-        if env_file is not None
-        else _workspace_root_for_config_option(config) / "config" / "ado-worker.env"
-    )
-    result = migrate_ado_worker_env_to_root(cfg, env_file=resolved_env_file, overwrite=overwrite)
-    typer.echo(
-        f"ADO worker env migration complete: {result.status} {result.domain} -> {result.path}"
     )
 
 
@@ -5251,17 +5216,8 @@ def proxy_issue_sync(
 )
 def poll_ado_backlog(
     log_level: Annotated[str, typer.Option("--log-level", help="Python logging level.")] = "INFO",
-    forget: Annotated[
-        int | None,
-        typer.Option(
-            "--forget", help="Forget a specific work item ID in the processed store, then exit."
-        ),
-    ] = None,
 ) -> None:
-    run_worker_command(
-        log_level=log_level,
-        forget=forget,
-    )
+    run_worker_command(log_level=log_level)
 
 
 if __name__ == "__main__":

@@ -9,7 +9,6 @@ from evander.admin.composition import AdminRuntimeComponents
 from evander.admin.web.shared import AdminWebAuth, json_error, json_ok
 from evander.admin.web.user_store import (
     AdminWebGroupRecord,
-    AdminWebUserRole,
     AdminWebUserStore,
     normalize_admin_web_login,
 )
@@ -327,10 +326,12 @@ def admin_user_routes(
             directory_path = _directory_path_from_request(service, request)
             contacts_config = _contacts_config_for_directory(service, directory_path)
             payload = await _json_body(request)
+            if "role" in payload:
+                return json_error(
+                    "role is no longer supported; use group_assignments",
+                    status_code=400,
+                )
             login = payload.get("login")
-            role = str(payload.get("role") or "").strip().lower()
-            if role not in {"admin", "regular"}:
-                return json_error("role must be admin or regular")
             has_password, password = _optional_password_payload(payload)
             existing_user = user_store.get_user(login)
             normalized_login = normalize_admin_web_login(login)
@@ -354,7 +355,6 @@ def admin_user_routes(
             )
             update: dict[str, Any] = {
                 "login": login,
-                "role": role,
             }
             if "display_name" in payload:
                 update["display_name"] = payload["display_name"]
@@ -399,15 +399,13 @@ def admin_user_routes(
             directory_path = _directory_path_from_request(service, request)
             contacts_config = _contacts_config_for_directory(service, directory_path)
             payload = await _json_body(request)
-            raw_role = payload.get("role")
-            role: AdminWebUserRole | None
-            if raw_role is None:
-                role = None
-            else:
-                candidate = str(raw_role).strip().lower()
-                if candidate not in {"admin", "regular"}:
-                    return json_error("role must be admin or regular")
-                role = candidate  # type: ignore[assignment]
+            if "role" in payload:
+                return json_error(
+                    "role is no longer supported; use group_assignments",
+                    status_code=400,
+                )
+            if user_store.get_user(login) is None:
+                return json_error("Admin web user not found", status_code=404)
             has_password, password = _optional_password_payload(payload)
             if has_password and auth.config.auth_mode != "local_password":
                 return json_error("password can only be set when auth mode is local_password")
@@ -420,20 +418,20 @@ def admin_user_routes(
                 if "contact_id" in payload
                 else None
             )
-            update: dict[str, Any] = {"login": login, "role": role}
+            update: dict[str, Any] = {"login": login}
             if "display_name" in payload:
                 update["display_name"] = payload["display_name"]
+            _apply_user_access_payload(
+                user_store,
+                login=login,
+                group_assignments=_assignment_payloads(payload),
+                workflow_grants=_workflow_grant_payloads(payload),
+            )
             user = user_store.update_user(**update)
             if user is None:
                 return json_error("Admin web user not found", status_code=404)
             if password is not None:
                 user_store.set_local_password(login=user.login, password=password)
-            _apply_user_access_payload(
-                user_store,
-                login=user.login,
-                group_assignments=_assignment_payloads(payload),
-                workflow_grants=_workflow_grant_payloads(payload),
-            )
             if "contact_id" in payload:
                 _write_user_contact_link(
                     service,

@@ -461,8 +461,7 @@ def test_ansible_nexus_package_cache_defaults_and_role_contract() -> None:
     assert "evander_worker_npm_registry_url" in defaults
 
     assert "evander_nexus_admin_password must be set from Vault" in tasks
-    assert "agent-sandbox-nexus.service" in tasks
-    assert "/etc/systemd/system/agent-sandbox-nexus.service.d" in tasks
+    assert "agent-sandbox-nexus.service" not in tasks
     assert "quiet: true" in tasks
     assert "Assert Nexus admin password is configured\n" in tasks
     assert "Read Nexus Community Edition EULA status" in tasks
@@ -593,8 +592,7 @@ def test_ansible_qdrant_semantic_store_defaults_and_role_contract() -> None:
     assert "guest/worker firewall allowances" in defaults
 
     assert "Stop Qdrant semantic store when disabled" in tasks
-    assert "agent-sandbox-qdrant.service" in tasks
-    assert "/etc/systemd/system/agent-sandbox-qdrant.service.d" in tasks
+    assert "agent-sandbox-qdrant.service" not in tasks
     assert "evander-qdrant.service" in tasks
     assert "Install Docker for Qdrant semantic store" in tasks
     assert "name: docker.io" in tasks
@@ -704,7 +702,7 @@ def test_worker_apt_proxy_runs_before_host_prereqs_and_can_be_disabled() -> None
     assert "ansible/roles/worker_apt_proxy" in worker_defaults
 
     assert "Remove managed worker apt proxy when disabled" in tasks
-    assert "/etc/apt/apt.conf.d/01agent-sandbox-proxy" in tasks
+    assert "/etc/apt/apt.conf.d/01agent-sandbox-proxy" not in tasks
     assert "state: absent" in tasks
     assert "loop:" in tasks
     assert "when: not (evander_worker_use_apt_proxy | bool)" in tasks
@@ -923,7 +921,8 @@ def test_ansible_ado_worker_defaults_omit_retired_setup_keys() -> None:
     )
 
     assert "evander_ado_worker_config:" in defaults
-    assert "processed_store_path:" in defaults
+    assert "processed_store_path:" not in defaults
+    assert "ADO_WORK_ITEMS_AZURE_DEVOPS_PAT" not in defaults
     assert "setup_log_dir:" not in defaults
     assert "setup_script_path:" not in defaults
     assert "setup_timeout_seconds:" not in defaults

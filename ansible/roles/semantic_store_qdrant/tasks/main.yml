@@ -1,25 +1,4 @@
 ---
-- name: Stop legacy Qdrant semantic store service from retired operational name
-  ansible.builtin.systemd:
-    name: agent-sandbox-qdrant.service
-    enabled: false
-    state: stopped
-  failed_when: false
-
-- name: Remove legacy Qdrant semantic store unit files
-  ansible.builtin.file:
-    path: "{{ item }}"
-    state: absent
-  loop:
-    - /etc/systemd/system/agent-sandbox-qdrant.service
-    - /etc/systemd/system/agent-sandbox-qdrant.service.d
-  register: evander_legacy_qdrant_unit_remove
-
-- name: Reload systemd after removing legacy Qdrant unit files
-  ansible.builtin.systemd:
-    daemon_reload: true
-  when: evander_legacy_qdrant_unit_remove.changed
-
 - name: Stop Qdrant semantic store when disabled
   ansible.builtin.systemd:
     name: evander-qdrant.service

@@ -4892,7 +4892,6 @@ def _codex_outcome_log_line(outcome: dict[str, object]) -> str:
 def _codex_session_jsonl_paths(agent_home: Path, thread_id: str) -> list[Path]:
     roots = [
         agent_home / ".config" / "evander" / "codex" / "sessions",
-        agent_home / ".config" / "agent-sandbox" / "codex" / "sessions",
         agent_home / ".codex" / "sessions",
     ]
     paths: dict[Path, None] = {}
@@ -4912,7 +4911,6 @@ def _codex_session_jsonl_paths(agent_home: Path, thread_id: str) -> list[Path]:
 def _recent_codex_session_ids(agent_home: Path, *, limit: int = 5) -> list[str]:
     roots = [
         agent_home / ".config" / "evander" / "codex" / "sessions",
-        agent_home / ".config" / "agent-sandbox" / "codex" / "sessions",
         agent_home / ".codex" / "sessions",
     ]
     paths: dict[Path, None] = {}

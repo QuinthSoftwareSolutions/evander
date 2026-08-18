@@ -846,7 +846,7 @@
         {
           "number": "17.1",
           "title": "User Records",
-          "description": "Describe login identifier, display name, local password, legacy role, contact, group assignments, direct workflow grants, and deletion."
+          "description": "Describe login identifier, display name, local password, contact, group assignments, direct workflow grants, and deletion."
         },
         {
           "number": "17.2",

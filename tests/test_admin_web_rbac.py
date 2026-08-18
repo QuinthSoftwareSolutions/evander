@@ -12,7 +12,6 @@ from evander.admin.web.rbac import (
     PERMISSION_CATALOG,
     TEAM_CHATS_MUTATE_PERMISSION,
     TEAM_HUMAN_REVIEWS_DECIDE_PERMISSION,
-    USERS_MANAGE_PERMISSION,
     VIEWER_GROUP_ID,
     WORKFLOW_RUNS_CONTROL_PERMISSION,
     WORKFLOWS_READ_PERMISSION,
@@ -89,8 +88,8 @@ def test_admin_web_rbac_applies_directory_scope_and_direct_workflow_grants(
     tmp_path: Path,
 ) -> None:
     store = _admin_web_user_store(tmp_path)
-    store.upsert_user(login="owner@example.com", role="admin")
-    store.upsert_user(login="reader@example.com", role="regular")
+    store.upsert_user(login="owner@example.com")
+    store.upsert_user(login="reader@example.com")
     store.remove_user_group_assignment(
         login="reader@example.com", group_id=OPERATOR_GROUP_ID, directory_path="root"
     )
@@ -118,8 +117,8 @@ def test_admin_web_rbac_scopes_human_review_decisions_to_assigned_directory(
     tmp_path: Path,
 ) -> None:
     store = _admin_web_user_store(tmp_path)
-    store.upsert_user(login="owner@example.com", role="admin")
-    store.upsert_user(login="reviewer@example.com", role="regular")
+    store.upsert_user(login="owner@example.com")
+    store.upsert_user(login="reviewer@example.com")
     store.remove_user_group_assignment(
         login="reviewer@example.com",
         group_id=OPERATOR_GROUP_ID,
@@ -154,7 +153,7 @@ def test_admin_web_rbac_scopes_human_review_decisions_to_assigned_directory(
 
 def test_admin_web_rbac_blocks_removing_last_effective_owner(tmp_path: Path) -> None:
     store = _admin_web_user_store(tmp_path)
-    store.upsert_user(login="owner@example.com", role="admin")
+    store.upsert_user(login="owner@example.com")
 
     with pytest.raises(ValueError, match="effective owner"):
         store.set_group_permissions(OWNER_GROUP_ID, set())

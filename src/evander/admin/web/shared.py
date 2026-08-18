@@ -62,25 +62,8 @@ def _env_flag(name: str, default: bool = False) -> bool:
     return raw.strip().lower() in {"1", "true", "yes", "on"}
 
 
-def _env_flag_with_legacy(name: str, legacy_name: str, default: bool = False) -> bool:
-    raw = os.environ.get(name)
-    if raw is None or not raw.strip():
-        raw = os.environ.get(legacy_name)
-    if raw is None:
-        return default
-    return raw.strip().lower() in {"1", "true", "yes", "on"}
-
-
 def _env_csv(name: str) -> tuple[str, ...]:
     raw = os.environ.get(name, "")
-    values = [item.strip() for item in raw.split(",")]
-    return tuple(item for item in values if item)
-
-
-def _env_csv_with_legacy(name: str, legacy_name: str) -> tuple[str, ...]:
-    raw = os.environ.get(name)
-    if raw is None or not raw.strip():
-        raw = os.environ.get(legacy_name, "")
     values = [item.strip() for item in raw.split(",")]
     return tuple(item for item in values if item)
 
@@ -92,27 +75,8 @@ def _env_text(name: str, default: str) -> str:
     return raw.strip() or default
 
 
-def _env_text_with_legacy(name: str, legacy_name: str, default: str) -> str:
-    raw = os.environ.get(name)
-    if raw is None or not raw.strip():
-        raw = os.environ.get(legacy_name)
-    if raw is None:
-        return default
-    return raw.strip() or default
-
-
 def _env_optional_text(name: str) -> str | None:
     raw = os.environ.get(name)
-    if raw is None:
-        return None
-    normalized = raw.strip()
-    return normalized or None
-
-
-def _env_optional_text_with_legacy(name: str, legacy_name: str) -> str | None:
-    raw = os.environ.get(name)
-    if raw is None or not raw.strip():
-        raw = os.environ.get(legacy_name)
     if raw is None:
         return None
     normalized = raw.strip()
@@ -139,10 +103,7 @@ def _env_branding_asset_reference(name: str) -> str | None:
 
 
 def _env_workflow_event_machine_tokens() -> tuple["WorkflowEventMachineToken", ...]:
-    values = _env_csv_with_legacy(
-        "EVANDER_WORKFLOW_EVENT_MACHINE_TOKENS",
-        "AGENT_SANDBOX_WORKFLOW_EVENT_MACHINE_TOKENS",
-    )
+    values = _env_csv("EVANDER_WORKFLOW_EVENT_MACHINE_TOKENS")
     records: list[WorkflowEventMachineToken] = []
     seen_tokens: set[str] = set()
 
@@ -338,22 +299,9 @@ class AdminWebConfig:
 
     @classmethod
     def from_env(cls) -> "AdminWebConfig":
-        username = _env_text_with_legacy(
-            "EVANDER_ADMIN_WEB_USERNAME",
-            "AGENT_SANDBOX_ADMIN_WEB_USERNAME",
-            "admin",
-        )
-        password = _env_optional_text_with_legacy(
-            "EVANDER_ADMIN_WEB_PASSWORD",
-            "AGENT_SANDBOX_ADMIN_WEB_PASSWORD",
-        )
-        raw_mode = (
-            _env_optional_text_with_legacy(
-                "EVANDER_ADMIN_WEB_AUTH_MODE",
-                "AGENT_SANDBOX_ADMIN_WEB_AUTH_MODE",
-            )
-            or ""
-        ).lower()
+        username = _env_text("EVANDER_ADMIN_WEB_USERNAME", "admin")
+        password = _env_optional_text("EVANDER_ADMIN_WEB_PASSWORD")
+        raw_mode = (_env_optional_text("EVANDER_ADMIN_WEB_AUTH_MODE") or "").lower()
         if raw_mode:
             if raw_mode not in {"none", "local_password", "azure_sso"}:
                 raise ValueError(
@@ -377,28 +325,16 @@ class AdminWebConfig:
             auth_mode=auth_mode,
             username=username,
             password=password,
-            session_secret=_env_text_with_legacy(
-                "EVANDER_ADMIN_WEB_SESSION_SECRET",
-                "AGENT_SANDBOX_ADMIN_WEB_SESSION_SECRET",
-                "",
-            )
+            session_secret=_env_text("EVANDER_ADMIN_WEB_SESSION_SECRET", "")
             or secrets.token_urlsafe(32),
             session_ttl_seconds=max(
                 60,
                 int(
-                    _env_text_with_legacy(
-                        "EVANDER_ADMIN_WEB_SESSION_TTL_SECONDS",
-                        "AGENT_SANDBOX_ADMIN_WEB_SESSION_TTL_SECONDS",
-                        "43200",
-                    )
+                    _env_text("EVANDER_ADMIN_WEB_SESSION_TTL_SECONDS", "43200")
                 ),
             ),
             cookie_name="evander_admin_session",
-            cookie_secure=_env_flag_with_legacy(
-                "EVANDER_ADMIN_WEB_COOKIE_SECURE",
-                "AGENT_SANDBOX_ADMIN_WEB_COOKIE_SECURE",
-                default=False,
-            ),
+            cookie_secure=_env_flag("EVANDER_ADMIN_WEB_COOKIE_SECURE", default=False),
             workflow_event_machine_tokens=_env_workflow_event_machine_tokens(),
             azure_sso=azure_sso,
             branding=AdminWebBrandingConfig.from_env(),
@@ -409,53 +345,20 @@ class AdminWebConfig:
     def _azure_sso_from_env(cls, auth_mode: AdminAuthMode) -> AzureSsoConfig | None:
         if auth_mode != "azure_sso":
             return None
-        tenant_id = (
-            _env_optional_text_with_legacy(
-                "EVANDER_ADMIN_WEB_AZURE_TENANT_ID",
-                "AGENT_SANDBOX_ADMIN_WEB_AZURE_TENANT_ID",
-            )
-            or ""
-        )
-        client_id = (
-            _env_optional_text_with_legacy(
-                "EVANDER_ADMIN_WEB_AZURE_CLIENT_ID",
-                "AGENT_SANDBOX_ADMIN_WEB_AZURE_CLIENT_ID",
-            )
-            or ""
-        )
-        client_secret = (
-            _env_optional_text_with_legacy(
-                "EVANDER_ADMIN_WEB_AZURE_CLIENT_SECRET",
-                "AGENT_SANDBOX_ADMIN_WEB_AZURE_CLIENT_SECRET",
-            )
-            or ""
-        )
-        authority_base_url = _env_text_with_legacy(
+        tenant_id = _env_optional_text("EVANDER_ADMIN_WEB_AZURE_TENANT_ID") or ""
+        client_id = _env_optional_text("EVANDER_ADMIN_WEB_AZURE_CLIENT_ID") or ""
+        client_secret = _env_optional_text("EVANDER_ADMIN_WEB_AZURE_CLIENT_SECRET") or ""
+        authority_base_url = _env_text(
             "EVANDER_ADMIN_WEB_AZURE_AUTHORITY_BASE_URL",
-            "AGENT_SANDBOX_ADMIN_WEB_AZURE_AUTHORITY_BASE_URL",
             "https://login.microsoftonline.com",
         ).rstrip("/")
         public_base_url = (
-            _env_optional_text_with_legacy(
-                "EVANDER_ADMIN_WEB_PUBLIC_BASE_URL",
-                "AGENT_SANDBOX_ADMIN_WEB_PUBLIC_BASE_URL",
-            )
-            or ""
+            _env_optional_text("EVANDER_ADMIN_WEB_PUBLIC_BASE_URL") or ""
         ).rstrip("/")
-        redirect_uri = (
-            _env_optional_text_with_legacy(
-                "EVANDER_ADMIN_WEB_AZURE_REDIRECT_URI",
-                "AGENT_SANDBOX_ADMIN_WEB_AZURE_REDIRECT_URI",
-            )
-            or ""
-        )
+        redirect_uri = _env_optional_text("EVANDER_ADMIN_WEB_AZURE_REDIRECT_URI") or ""
         if not redirect_uri and public_base_url:
             redirect_uri = f"{public_base_url}{AZURE_SSO_CALLBACK_PATH}"
-        post_login_redirect = _env_text_with_legacy(
-            "EVANDER_ADMIN_WEB_AZURE_POST_LOGIN_REDIRECT",
-            "AGENT_SANDBOX_ADMIN_WEB_AZURE_POST_LOGIN_REDIRECT",
-            "/",
-        )
+        post_login_redirect = _env_text("EVANDER_ADMIN_WEB_AZURE_POST_LOGIN_REDIRECT", "/")
         if not post_login_redirect.startswith("/") or post_login_redirect.startswith("//"):
             raise ValueError(
                 "EVANDER_ADMIN_WEB_AZURE_POST_LOGIN_REDIRECT must be an absolute in-app path"
@@ -464,10 +367,7 @@ class AdminWebConfig:
             item
             for item in (
                 _normalize_user_identifier(value)
-                for value in _env_csv_with_legacy(
-                    "EVANDER_ADMIN_WEB_AZURE_ALLOWED_USERS",
-                    "AGENT_SANDBOX_ADMIN_WEB_AZURE_ALLOWED_USERS",
-                )
+                for value in _env_csv("EVANDER_ADMIN_WEB_AZURE_ALLOWED_USERS")
             )
             if item
         )
@@ -537,7 +437,6 @@ class AdminWebAuth:
             "authenticated": session is not None or not self.config.auth_required,
             "username": session.get("login") if session else default_identity,
             "display_name": session.get("name") if session else default_identity,
-            "role": self._role_for_permissions(permissions) if identity else None,
             "can_manage_users": self._can_manage_users_for_permissions(permissions),
             "permissions": permissions,
             "effective_permissions": permissions,
@@ -574,7 +473,6 @@ class AdminWebAuth:
             "login": str(session.get("login") or ""),
             "name": str(session.get("name") or ""),
             "sid": str(session.get("sid") or ""),
-            "role": str(session.get("role") or ""),
             "allowed_event_prefix": WORKFLOW_EVENT_API_ALLOWED_PREFIX,
             "iat": issued_at,
             "exp": expires_at,
@@ -679,7 +577,6 @@ class AdminWebAuth:
                 "sid": "local-dev",
                 "login": self.config.username,
                 "name": self.config.username,
-                "role": "admin",
                 "can_manage_users": True,
                 "permissions": sorted(PERMISSION_CATALOG),
                 "effective_permissions": sorted(PERMISSION_CATALOG),
@@ -694,7 +591,6 @@ class AdminWebAuth:
                     "sid": "local-dev",
                     "login": self.config.username,
                     "name": self.config.username,
-                    "role": "admin",
                     "can_manage_users": True,
                 }
             )
@@ -798,11 +694,6 @@ class AdminWebAuth:
             )
         )
 
-    def _role_for_permissions(self, permissions: list[str] | tuple[str, ...]) -> str:
-        if ADMIN_OWNER_PERMISSION in permissions or USERS_MANAGE_PERMISSION in permissions:
-            return "admin"
-        return "regular"
-
     def _can_manage_users_for_permissions(self, permissions: list[str] | tuple[str, ...]) -> bool:
         return any(
             permission in permissions
@@ -818,7 +709,6 @@ class AdminWebAuth:
         enriched = dict(payload)
         login = normalize_admin_web_login(enriched.get("login"))
         permissions = list(self._effective_permissions_for_login(login, directory_path))
-        enriched["role"] = self._role_for_permissions(permissions)
         enriched["can_manage_users"] = self._can_manage_users_for_permissions(permissions)
         enriched["permissions"] = permissions
         enriched["effective_permissions"] = permissions

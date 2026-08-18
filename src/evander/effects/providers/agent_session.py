@@ -954,11 +954,6 @@ def build_container_session_files(
             "content": codex_config_content,
         },
         {
-            "destination_path": "/home/agent/.config/agent-sandbox/codex/config.toml",
-            "mode": "0600",
-            "content": codex_config_content,
-        },
-        {
             "destination_path": "/home/agent/.claude/settings.json",
             "mode": "0600",
             "content": _claude_settings_content(
@@ -1559,7 +1554,6 @@ def codex_session_roots():
     home = Path(os.environ.get("HOME") or "/home/agent")
     roots.extend(
         [
-            home / ".config" / "agent-sandbox" / "codex" / "sessions",
             home / ".config" / "evander" / "codex" / "sessions",
             home / ".codex" / "sessions",
         ]

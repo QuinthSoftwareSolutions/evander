@@ -225,10 +225,6 @@ if [ -f ~/.agent/config.env ]; then
   # shellcheck disable=SC1091
   . ~/.agent/config.env
 fi
-if [ -f /etc/agent-sandbox/session.env ]; then
-  # shellcheck disable=SC1091
-  . /etc/agent-sandbox/session.env
-fi
 if [ -f /etc/evander/session.env ]; then
   # shellcheck disable=SC1091
   . /etc/evander/session.env
@@ -248,10 +244,10 @@ if token:
 print(urlunsplit(parts._replace(query=urlencode(query))))
 PY
 }
-CLAUDE_ANTHROPIC_BASE_URL="${ANTHROPIC_BASE_URL:-${EVANDER_ANTHROPIC_BASE_URL:-${AGENT_SANDBOX_ANTHROPIC_BASE_URL:-http://192.168.250.1:11434}}}"
-CLAUDE_GATEWAY_URL="${GATEWAY_URL:-${EVANDER_GATEWAY_URL:-${AGENT_SANDBOX_GATEWAY_URL:-http://192.168.250.1:8000/mcp}}}"
-CLAUDE_SESSION_ID="${EVANDER_SESSION_ID:-${AGENT_SANDBOX_SESSION_ID:-}}"
-CLAUDE_MCP_SESSION_TOKEN="${EVANDER_MCP_SESSION_TOKEN:-${AGENT_SANDBOX_MCP_SESSION_TOKEN:-}}"
+CLAUDE_ANTHROPIC_BASE_URL="${ANTHROPIC_BASE_URL:-${EVANDER_ANTHROPIC_BASE_URL:-http://192.168.250.1:11434}}"
+CLAUDE_GATEWAY_URL="${GATEWAY_URL:-${EVANDER_GATEWAY_URL:-http://192.168.250.1:8000/mcp}}"
+CLAUDE_SESSION_ID="${EVANDER_SESSION_ID:-}"
+CLAUDE_MCP_SESSION_TOKEN="${EVANDER_MCP_SESSION_TOKEN:-}"
 if [ -n "${CLAUDE_SESSION_ID:-}" ]; then
   CLAUDE_ANTHROPIC_BASE_URL="${CLAUDE_ANTHROPIC_BASE_URL%/}/session/${CLAUDE_SESSION_ID}"
   CLAUDE_GATEWAY_URL="$(append_evander_mcp_query "${CLAUDE_GATEWAY_URL}" "${CLAUDE_SESSION_ID}" "${CLAUDE_MCP_SESSION_TOKEN}")"
@@ -309,7 +305,6 @@ def repair_missing_profile_fi(profile_lines):
         out.append(line)
         if stripped in {
             "if [ -f /etc/evander/session.env ]; then",
-            "if [ -f /etc/agent-sandbox/session.env ]; then",
             'if [ -f "$HOME/.claude/settings.json" ]; then',
         }:
             in_managed_block = True
@@ -319,7 +314,7 @@ def repair_missing_profile_fi(profile_lines):
 managed = {
     'export PATH="$HOME/bin:$PATH"',
     'export AGENT_PROVIDER="${AGENT_PROVIDER:-claude}"',
-    'export ANTHROPIC_AUTH_TOKEN="${ANTHROPIC_AUTH_TOKEN:-${EVANDER_MCP_SESSION_TOKEN:-${AGENT_SANDBOX_MCP_SESSION_TOKEN:-relay-placeholder}}}"',
+    'export ANTHROPIC_AUTH_TOKEN="${ANTHROPIC_AUTH_TOKEN:-${EVANDER_MCP_SESSION_TOKEN:-relay-placeholder}}"',
 }
 lines = repair_missing_profile_fi(lines)
 filtered = [

@@ -103,7 +103,7 @@ def _seed_reviewer_directory(
         [TEAM_HUMAN_REVIEWS_DECIDE_PERMISSION],
     )
     for user_id in reviewer_user_ids:
-        user_store.upsert_user(login=user_id, role="regular")
+        user_store.upsert_user(login=user_id)
         user_store.assign_user_group(
             login=user_id,
             group_id="release-reviewers",

@@ -387,9 +387,9 @@ class WorkflowConfigAdminService:
                 raise ValueError(f"worker config file {path} must contain a JSON object")
         else:
             model = _WORKER_GLOBAL_CONFIG_MODELS[worker_id]
-            raw = model.model_validate(self.config.model_dump(mode="json")).model_dump(
-                mode="json", exclude_none=True
-            )
+            raw = model.model_validate(
+                {} if worker_id == "ado" else self.config.model_dump(mode="json")
+            ).model_dump(mode="json", exclude_none=True)
         model = _WORKER_GLOBAL_CONFIG_MODELS[worker_id]
         config = self._validate_worker_global_config_payload(worker_id, raw)
         return WorkerGlobalConfigPayload(

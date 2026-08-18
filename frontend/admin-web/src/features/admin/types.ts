@@ -12,8 +12,6 @@ export type AdminView =
   | "users"
   | "workers";
 
-export type AdminWebUserRole = "admin" | "regular";
-
 export type AdminAddonLoaderConfig = {
   modules: string[];
   enabled_entry_points: boolean;
@@ -99,7 +97,6 @@ export type AdminWebWorkflowGrantRecord = {
 
 export type AdminWebUserRecord = {
   login: string;
-  role: AdminWebUserRole;
   display_name: string | null;
   contact_id: string | null;
   contact: AdminContactSummary | null;

@@ -12,7 +12,7 @@ from starlette.testclient import TestClient
 
 from evander.admin.composition import AdminRuntimeComponents, build_admin_runtime
 from evander.admin.web.app import create_app
-from evander.admin.web.rbac import OWNER_GROUP_ID
+from evander.admin.web.rbac import ADMIN_OWNER_PERMISSION, OWNER_GROUP_ID
 from evander.admin.web.shared import AdminWebAuth, AdminWebConfig
 from evander.admin.web.sessions_approvals import session_approval_routes
 from evander.messaging.targets import (
@@ -105,13 +105,13 @@ def _authenticated_owner_and_operator_clients(
         "/api/auth/login", json={"username": "admin", "password": "admin-pass"}
     )
     assert owner_login.status_code == 200
-    assert owner_login.json()["role"] == "admin"
+    assert ADMIN_OWNER_PERMISSION in owner_login.json()["effective_permissions"]
 
     created = owner_client.post(
         "/api/admin/users",
         json={
             "login": "operator@example.com",
-            "role": "regular",
+            "group_assignments": [{"group_id": "operator", "directory_path": "root"}],
             "password": "operator-pass",
         },
     )
@@ -122,7 +122,7 @@ def _authenticated_owner_and_operator_clients(
         json={"username": "operator@example.com", "password": "operator-pass"},
     )
     assert operator_login.status_code == 200
-    assert operator_login.json()["role"] == "regular"
+    assert ADMIN_OWNER_PERMISSION not in operator_login.json()["effective_permissions"]
 
     return service, owner_client, operator_client
 
@@ -139,7 +139,7 @@ def _authenticated_scoped_owner_client(
     monkeypatch.setenv("EVANDER_ADMIN_WEB_SESSION_SECRET", "test-secret")
     app = create_app(service)
     store = app.state.admin_user_store
-    store.upsert_user(login="ops-owner@example.com", role="regular", display_name="Ops Owner")
+    store.upsert_user(login="ops-owner@example.com", display_name="Ops Owner")
     store.remove_user_group_assignment(
         login="ops-owner@example.com",
         group_id="operator",
@@ -305,7 +305,6 @@ def test_admin_web_builtin_owner_directory_filters_reject_malformed_paths(
         monkeypatch.setenv("EVANDER_ADMIN_WEB_PASSWORD", "admin-pass")
     else:
         monkeypatch.delenv("EVANDER_ADMIN_WEB_PASSWORD", raising=False)
-        monkeypatch.delenv("AGENT_SANDBOX_ADMIN_WEB_PASSWORD", raising=False)
     service = build_admin_runtime(write_config(tmp_path, enable_directory_scoped_config=True))
     _seed_session(service, "root-session")
     service.runtime.approvals.put(

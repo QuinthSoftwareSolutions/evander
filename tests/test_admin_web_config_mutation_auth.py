@@ -44,7 +44,7 @@ def _authenticated_clients(tmp_path: Path, monkeypatch):
     _stub_worker_listing(service, monkeypatch)
     app = create_app(service)
     app.state.admin_user_store.upsert_user(
-        login="operator@example.com", role="regular", display_name="Operator"
+        login="operator@example.com", display_name="Operator"
     )
     app.state.admin_user_store.set_local_password(
         login="operator@example.com", password="operator-pass"

@@ -3588,7 +3588,7 @@ def test_container_session_files_do_not_leak_azure_openai_settings() -> None:
     )
     assert by_path["/home/agent/.codex/config.toml"] == expected_codex_config
     assert by_path["/home/agent/.config/evander/codex/config.toml"] == expected_codex_config
-    assert by_path["/home/agent/.config/agent-sandbox/codex/config.toml"] == expected_codex_config
+    assert not any("agent-sandbox" in path for path in by_path)
     assert (
         'OPENAI_API_KEY="${OPENAI_API_KEY:-${EVANDER_MCP_SESSION_TOKEN:-relay-placeholder}}"'
         in by_path["/home/agent/.profile"]
@@ -3692,10 +3692,6 @@ def test_container_session_files_propagate_mcp_token_to_relay_clients() -> None:
         'base_url = "http://relay.test:11434/v1/session/session-1/auth/correct-token"'
         in by_path["/home/agent/.codex/config.toml"]
     )
-    assert (
-        'base_url = "http://relay.test:11434/v1/session/session-1/auth/correct-token"'
-        in by_path["/home/agent/.config/agent-sandbox/codex/config.toml"]
-    )
     assert '"ANTHROPIC_AUTH_TOKEN": "correct-token"' in by_path["/home/agent/.claude/settings.json"]
     assert (
         '"ANTHROPIC_BASE_URL": "http://relay.test:11434/session/session-1"'
@@ -3704,10 +3700,6 @@ def test_container_session_files_propagate_mcp_token_to_relay_clients() -> None:
     assert (
         'url = "http://relay.test:8000/mcp?session_id=session-1&mcp_session_token=correct-token"'
         in by_path["/home/agent/.codex/config.toml"]
-    )
-    assert (
-        'url = "http://relay.test:8000/mcp?session_id=session-1&mcp_session_token=correct-token"'
-        in by_path["/home/agent/.config/agent-sandbox/codex/config.toml"]
     )
     assert (
         "HTTP_TARGET_RELAY_BASE_URL=http://http-target.test:11777/auth/correct-token\n"

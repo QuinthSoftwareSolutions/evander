@@ -30,7 +30,7 @@ that job.
 
 | What you see | What it usually means | Useful next step |
 |---|---|---|
-| You can sign in, but a page or edit is unavailable | Authentication succeeded, but your role does not grant that action in the selected directory | Confirm the directory and ask an owner to review your assignment |
+| You can sign in, but a page or edit is unavailable | Authentication succeeded, but your effective group assignments do not grant that action in the selected directory | Confirm the directory and ask an owner to review your assignment |
 | You can work in one project but not its sibling | Directory assignments flow downward to descendants, not sideways to siblings | Check that the correct project is selected |
 | A sensitive edit says privileged operations are locked | Your current browser session is authorized but its temporary safety lock is still engaged | Review the action, then use the supported unlock control if appropriate |
 | An agent has no visible tools | The session may be expired, unproved, incorrectly bound, or intentionally granted no tools | Record the session ID, directory, expiry, and visible status |
@@ -71,7 +71,7 @@ action.
 
 ## The privileged-operations lock is a safety catch
 
-Some sensitive Admin Web changes require both the necessary role and an unlocked browser session.
+Some sensitive Admin Web changes require both the necessary effective permission and an unlocked browser session.
 Login begins locked. Unlocking marks only the current authenticated Admin Web session; locking,
 logging out, cookie expiry, or an Admin Web restart removes that mark.
 

@@ -454,7 +454,7 @@ def test_setup_local_container_worker_git_access_generates_client_key_without_pr
     assert "EVANDER_GIT_AUTH_REPO_PREFIX_B64=" not in config_text
 
 
-def test_setup_local_container_worker_git_access_repairs_legacy_key_name(
+def test_setup_local_container_worker_git_access_ignores_retired_key_name(
     tmp_path: Path, monkeypatch
 ) -> None:
     manager = SetupManager(project_dir=ROOT, runtime_dir=tmp_path / "runtime")
@@ -474,14 +474,28 @@ def test_setup_local_container_worker_git_access_repairs_legacy_key_name(
         ),
         encoding="utf-8",
     )
+    generated_public_key = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGenerated generated"
+
+    def fake_run(args: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        key_path = Path(args[-1])
+        key_path.write_text("generated private key\n", encoding="utf-8")
+        key_path.with_suffix(key_path.suffix + ".pub").write_text(
+            generated_public_key + "\n",
+            encoding="utf-8",
+        )
+        return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(setup_engine.subprocess, "run", fake_run)
     manager._ensure_local_container_worker_git_access(
         git_user="git-user",
         git_ssh_alias="agent-sandbox-git-host",
         git_ssh_source_dir=ssh_dir,
     )
 
-    assert (ssh_dir / "evander-git").read_text(encoding="utf-8") == "legacy private key\n"
-    assert (ssh_dir / "evander-git.pub").read_text(encoding="utf-8").strip() == legacy_public_key
+    assert (ssh_dir / "evander-git").read_text(encoding="utf-8") == "generated private key\n"
+    assert (ssh_dir / "evander-git.pub").read_text(encoding="utf-8").strip() == (
+        generated_public_key
+    )
     config_text = (ssh_dir / "config").read_text(encoding="utf-8")
     assert config_text.index("Host agent-sandbox-git-host") < config_text.index("Host existing")
     assert "IdentityFile ~/.ssh/evander-git" in config_text

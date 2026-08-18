@@ -5067,7 +5067,7 @@ def test_execution_logs_skip_codex_no_response_requested_artifact(tmp_path: Path
     assert output == (f"session id: {thread_id}\nlatest raw output\nreal session status\n")
 
 
-def test_execution_logs_read_legacy_agent_sandbox_codex_home(tmp_path: Path) -> None:
+def test_execution_logs_ignore_retired_agent_sandbox_codex_home(tmp_path: Path) -> None:
     thread_id = "019de31a-8393-71d2-8990-e5f4fb0a4df2"
     started_at = datetime(2026, 5, 5, 8, 19, tzinfo=UTC)
     runtime = FakeContainerRuntime()
@@ -5116,7 +5116,7 @@ def test_execution_logs_read_legacy_agent_sandbox_codex_home(tmp_path: Path) -> 
 
     output = daemon.get_logs(record, mode="execution")
 
-    assert output == (f"session id: {thread_id}\nlatest raw output\nlegacy home status\n")
+    assert output == (f"session id: {thread_id}\nlatest raw output\n")
 
 
 def test_completed_codex_job_allows_successful_chat_reply_with_empty_final_message(

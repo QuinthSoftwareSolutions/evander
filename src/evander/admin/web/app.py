@@ -53,7 +53,6 @@ from evander.admin.web.shared import (
     json_error,
 )
 from evander.admin.web.pr_integration import pr_integration_routes
-from evander.admin.web.rbac import ADMIN_OWNER_PERMISSION, USERS_MANAGE_PERMISSION
 from evander.admin.web.reports import report_routes
 from evander.admin.web.tool_calls import tool_call_routes
 from evander.admin.web.tool_visibility import tool_visibility_routes
@@ -292,11 +291,6 @@ def create_app(service: AdminRuntimeComponents) -> Starlette:
     def privileged_operations_unlocked_for_request(request: Request) -> bool:
         return auth.privileged_for_request(request)
 
-    def _role_for_permissions(permissions: list[str] | tuple[str, ...]) -> str:
-        if ADMIN_OWNER_PERMISSION in permissions or USERS_MANAGE_PERMISSION in permissions:
-            return "admin"
-        return "regular"
-
     def branding_payload() -> dict[str, object]:
         return _branding_payload_with_hashed_defaults(
             auth.config.branding.to_payload(), dist_dir, auth.config.branding_asset_dir
@@ -330,7 +324,6 @@ def create_app(service: AdminRuntimeComponents) -> Starlette:
                 "authenticated": True,
                 "username": session.get("login"),
                 "display_name": session.get("name"),
-                "role": session.get("role") or _role_for_permissions(permissions),
                 "can_manage_users": bool(session.get("can_manage_users")),
                 "permissions": permissions,
                 "effective_permissions": permissions,
@@ -410,9 +403,6 @@ def create_app(service: AdminRuntimeComponents) -> Starlette:
                 "authenticated": not auth.config.auth_required,
                 "username": auth.config.username if not auth.config.auth_required else None,
                 "display_name": auth.config.username if not auth.config.auth_required else None,
-                "role": (
-                    _role_for_permissions(permissions) if not auth.config.auth_required else None
-                ),
                 "can_manage_users": not auth.config.auth_required,
                 "permissions": permissions,
                 "effective_permissions": permissions,
@@ -455,7 +445,6 @@ def create_app(service: AdminRuntimeComponents) -> Starlette:
                 "execution_backend": service.vm_agent_admin.effective_execution_backend(
                     selected_directory_path
                 ),
-                "role": _role_for_permissions(permissions) if session else None,
                 "can_manage_users": auth.can_manage_users(
                     session, directory_path=selected_directory_path
                 ),

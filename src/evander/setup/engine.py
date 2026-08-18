@@ -1067,14 +1067,6 @@ class SetupManager:
         ssh_dir.chmod(0o700)
         key_path = ssh_dir / key_name
         pub_path = ssh_dir / f"{key_name}.pub"
-        legacy_key_path = ssh_dir / "agent-sandbox-git"
-        legacy_pub_path = ssh_dir / "agent-sandbox-git.pub"
-        if not key_path.exists() and legacy_key_path.is_file():
-            shutil.copyfile(legacy_key_path, key_path)
-            key_path.chmod(0o600)
-        if key_path.exists() and not pub_path.exists() and legacy_pub_path.is_file():
-            shutil.copyfile(legacy_pub_path, pub_path)
-            pub_path.chmod(0o644)
         if not key_path.exists() and pub_path.exists():
             raise ValueError(f"worker Git private key is missing: {key_path}")
         if not key_path.exists():

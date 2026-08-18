@@ -437,8 +437,8 @@ evander-cli poll-ado-backlog --log-level INFO
 The ADO worker reads the canonical Azure DevOps origin derived from `ado_organization` and
 `azure_devops_project` from the
 effective provider config and uses `AZURE_DEVOPS_PR_PAT` or the configured
-`azure_devops_pr_pat_env` when Azure DevOps PR polling is enabled. It no longer polls backlog work
-items or requires `ADO_WORK_ITEMS_AZURE_DEVOPS_PAT` to run PR feedback/completion paths.
+`azure_devops_pr_pat_env` when Azure DevOps PR polling is enabled. Backlog work-item polling and
+its separate environment/configuration surface have been removed.
 
 Azure DevOps work-item intake is workflow-owned. Use `trigger:ado:work-item-matching` to emit raw
 work-item payloads on first match and when `System.ChangedDate` advances, or use

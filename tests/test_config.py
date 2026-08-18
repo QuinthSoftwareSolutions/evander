@@ -1106,10 +1106,11 @@ def test_teams_ingest_worker_global_config_directory_paths_are_normalized() -> N
     assert config.directories == ["root/team-a", "root/team-a/subdir"]
 
 
-def test_ado_worker_global_config_defaults_include_dedicated_pat_env_name() -> None:
+def test_ado_worker_global_config_is_canonical_and_rejects_retired_fields() -> None:
     config = AdoWorkerGlobalConfig.model_validate({})
-    assert config.ado_work_items_azure_devops_pat_env == "ADO_WORK_ITEMS_AZURE_DEVOPS_PAT"
     assert config.directories == []
+    with pytest.raises(ValueError, match="Extra inputs are not permitted"):
+        AdoWorkerGlobalConfig.model_validate({"include_comments": True})
 
 
 def test_directory_scoped_config_flag_defaults_to_disabled() -> None:

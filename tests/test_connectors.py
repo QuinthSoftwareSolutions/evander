@@ -1104,7 +1104,7 @@ def test_admin_connector_api_authorizes_scoped_owner_at_requested_directory(
 
     app = create_app(service)
     store = app.state.admin_user_store
-    store.upsert_user(login="ops-owner@example.com", role="regular", display_name="Ops Owner")
+    store.upsert_user(login="ops-owner@example.com", display_name="Ops Owner")
     store.remove_user_group_assignment(
         login="ops-owner@example.com",
         group_id="operator",
