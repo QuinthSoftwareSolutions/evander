@@ -7,6 +7,7 @@ from types import SimpleNamespace
 import pytest
 
 from evander.config import GatewayConfig
+from evander.daemons.effect_orchestrator import EffectExecutionRecord, SqliteExecutionStore
 from evander.effects.providers.base import EffectRuntimeContext
 from evander.effects.providers.runtime_diagnostics_snapshot import (
     RuntimeDiagnosticsSnapshotEffectProvider,
@@ -46,13 +47,22 @@ def test_runtime_diagnostics_snapshot_reads_bounded_sources_and_redacts(
         '{"decision": "denied", "api_key": "audit-secret", "safe": "visible"}\n',
         encoding="utf-8",
     )
-    (runtime_dir / "effect-orchestrator-executions.json").write_text(
-        '{"success": false, "error": "password=execution-secret"}\n',
-        encoding="utf-8",
-    )
-    (runtime_dir / "gate-orchestrator-executions.json").write_text(
-        '{"status": "succeeded"}\n',
-        encoding="utf-8",
+    SqliteExecutionStore(runtime_dir / "orchestration.db").record_execution(
+        EffectExecutionRecord(
+            execution_id="execution-failed",
+            idempotency_key="execution-failed",
+            event_id="event-failed",
+            trace_id="trace-failed",
+            source_node_id="trigger-test",
+            source_trigger_type="trigger:test",
+            effect_id="effect-test",
+            effect_type="effect:test",
+            status="failed",
+            started_at="2026-08-18T10:00:00Z",
+            finished_at="2026-08-18T10:00:01Z",
+            resolved_config_hash="fixture",
+            error="password=execution-secret",
+        )
     )
     WorkerJobStore(runtime_dir / "worker-jobs.json").put(
         WorkerJobRecord(

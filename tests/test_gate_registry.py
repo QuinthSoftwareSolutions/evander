@@ -1,8 +1,7 @@
 from __future__ import annotations
 
-from config_helpers import canonical_worker_config
+from config_helpers import canonical_worker_config, gate_execution_payload
 
-import json
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -61,9 +60,7 @@ def test_effect_orchestrator_runs_without_await_agent_provider(tmp_path: Path) -
     result = worker.run_once()
 
     assert result.events_processed == 1
-    gate_payload = json.loads(
-        (runtime_dir / "gate-orchestrator-executions.json").read_text(encoding="utf-8")
-    )
+    gate_payload = gate_execution_payload(worker_config)
     only = next(iter(gate_payload.values()))
     assert only["status"] == "failed"
     assert only["error"] == "no_gate_provider_registered:gate:await-agent"

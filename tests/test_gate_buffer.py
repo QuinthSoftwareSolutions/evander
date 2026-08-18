@@ -1,8 +1,7 @@
 from __future__ import annotations
 
-from config_helpers import canonical_worker_config
+from config_helpers import canonical_worker_config, gate_execution_payload, trigger_queue_payload
 
-import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -129,10 +128,7 @@ def _make_all_buffer_states_due(worker: EffectOrchestratorWorker) -> None:
 def _gate_records(
     worker: EffectOrchestratorWorker, gate_id: str = "gate-buffer"
 ) -> list[dict[str, Any]]:
-    path = worker.worker_config.gate_execution_store_path
-    if not path.exists():
-        return []
-    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload = gate_execution_payload(worker.worker_config)
     return [record for record in payload.values() if record.get("gate_id") == gate_id]
 
 
@@ -141,7 +137,7 @@ def _succeeded_buffer_records(worker: EffectOrchestratorWorker) -> list[dict[str
 
 
 def _completion_events(worker: EffectOrchestratorWorker) -> list[dict[str, Any]]:
-    payload = json.loads(worker.worker_config.event_queue_store_path.read_text(encoding="utf-8"))
+    payload = trigger_queue_payload(worker.worker_config)
     return [event for event in payload.values() if event.get("trigger_id") == "gate-buffer"]
 
 
@@ -280,10 +276,14 @@ def test_buffer_duplicate_event_id_does_not_double_count(tmp_path: Path) -> None
     worker.run_once()
 
     worker.event_queue.mark_delivered("event-1")
-    record = worker.event_queue._store.get("event-1")
-    assert record is not None
-    record.delivery_state = "pending"
-    worker.event_queue._store.put("event-1", record)
+
+    def replay(records):
+        record = records["event-1"]
+        record.delivery_state = "pending"
+        record.delivered_at = None
+        records["event-1"] = record
+
+    worker.event_queue.update_all(replay)
     worker.run_once()
 
     states = list(_buffer_provider(worker).load_state().read_all().values())

@@ -143,9 +143,8 @@ def test_loaded_worker_config_defaults_to_sqlite_orchestration_store(tmp_path: P
         project_dir, base_config=GatewayConfig(runtime_dir=runtime_dir)
     )
 
-    assert config.orchestration_store_backend == "sqlite"
     assert config.orchestration_store_path == runtime_dir / "orchestration.db"
-    assert "orchestration_store_backend" in config.model_fields_set
+    assert "orchestration_store_backend" not in type(config).model_fields
 
 
 def test_persisted_worker_config_rejects_top_level_provider_fields(tmp_path: Path) -> None:

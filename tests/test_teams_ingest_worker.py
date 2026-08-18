@@ -35,7 +35,7 @@ from evander.triggers.providers.communication_new_message import (
 )
 from evander.triggers.providers.teams_direct_message import TeamsDirectMessageTriggerProvider
 from evander.triggers.providers.teams_new_message import TeamsNewMessageTriggerProvider
-from evander.triggers.queue import TriggerEventQueue
+from evander.triggers.queue import SqliteTriggerEventQueue
 from config_helpers import canonical_workflow_payload
 
 
@@ -2118,7 +2118,7 @@ def test_teams_ingest_worker_directly_publishes_all_matching_teams_trigger_types
             "teams_backend": "graph_api",
         }
     )
-    queue = TriggerEventQueue(tmp_path / "runtime" / "direct-events.json")
+    queue = SqliteTriggerEventQueue(tmp_path / "runtime" / "direct-events.json")
     effect_wakes: list[str] = []
     trigger_wakes: list[str] = []
     worker = build_teams_ingest_worker(
@@ -2259,7 +2259,7 @@ def test_teams_ingest_worker_polls_teams_trigger_in_workflow_graph_directory(
             "teams_graph_access_token_env": "TEAM_GRAPH_TEAMS_ACCESS_TOKEN",
         }
     )
-    queue = TriggerEventQueue(tmp_path / "runtime" / "direct-events.json")
+    queue = SqliteTriggerEventQueue(tmp_path / "runtime" / "direct-events.json")
     worker = build_teams_ingest_worker(
         config,
         project_dir=tmp_path,
@@ -2401,7 +2401,7 @@ def test_teams_ingest_worker_wakes_effect_after_all_cycle_publications(
             "teams_backend": "graph_api",
         }
     )
-    queue = TriggerEventQueue(tmp_path / "runtime" / "direct-events.json")
+    queue = SqliteTriggerEventQueue(tmp_path / "runtime" / "direct-events.json")
     pending_counts_at_wake: list[int] = []
     worker = build_teams_ingest_worker(
         config,
@@ -2470,7 +2470,7 @@ def test_teams_ingest_worker_direct_publication_can_be_disabled(
             "teams_backend": "graph_api",
         }
     )
-    queue = TriggerEventQueue(tmp_path / "runtime" / "direct-events.json")
+    queue = SqliteTriggerEventQueue(tmp_path / "runtime" / "direct-events.json")
     effect_wakes: list[str] = []
     trigger_wakes: list[str] = []
     worker = build_teams_ingest_worker(
@@ -2630,7 +2630,7 @@ def test_teams_ingest_worker_direct_publication_honors_saved_trigger_baseline(
     config = GatewayConfig.model_validate(
         {"runtime_dir": str(runtime_dir), "teams_backend": "graph_api"}
     )
-    queue = TriggerEventQueue(runtime_dir / "direct-events.json")
+    queue = SqliteTriggerEventQueue(runtime_dir / "direct-events.json")
     worker = build_teams_ingest_worker(
         config,
         project_dir=tmp_path,
@@ -2703,7 +2703,7 @@ def test_teams_ingest_worker_applies_trigger_config_change_on_next_cycle(
             "teams_backend": "graph_api",
         }
     )
-    queue = TriggerEventQueue(tmp_path / "runtime" / "direct-events.json")
+    queue = SqliteTriggerEventQueue(tmp_path / "runtime" / "direct-events.json")
     worker = build_teams_ingest_worker(
         config,
         project_dir=tmp_path,
@@ -2767,7 +2767,7 @@ def test_teams_ingest_worker_recovers_from_materialization_and_trigger_wake_fail
             "teams_backend": "graph_api",
         }
     )
-    queue = TriggerEventQueue(tmp_path / "runtime" / "direct-events.json")
+    queue = SqliteTriggerEventQueue(tmp_path / "runtime" / "direct-events.json")
     worker = build_teams_ingest_worker(
         config,
         project_dir=tmp_path,
@@ -2835,7 +2835,7 @@ def test_teams_ingest_worker_keeps_durable_event_when_wake_notifications_fail(
             "teams_backend": "graph_api",
         }
     )
-    queue = TriggerEventQueue(tmp_path / "runtime" / "direct-events.json")
+    queue = SqliteTriggerEventQueue(tmp_path / "runtime" / "direct-events.json")
     worker = build_teams_ingest_worker(
         config,
         project_dir=tmp_path,

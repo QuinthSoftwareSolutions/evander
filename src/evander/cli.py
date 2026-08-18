@@ -14,7 +14,7 @@ from dataclasses import asdict, dataclass, is_dataclass
 from datetime import datetime, timedelta, timezone
 from itertools import count
 from pathlib import Path
-from typing import Annotated, Any
+from typing import Annotated
 
 import httpx
 import typer
@@ -32,7 +32,7 @@ from evander.bootstrap import (
     load_runtime_gateway_config,
 )
 from evander.communication_artifacts import CommunicationArtifactStore
-from evander.config import GatewayConfig, TriggerOrchestratorWorkerGlobalConfig
+from evander.config import GatewayConfig
 from evander.connectors.models import normalize_connector_id
 from evander.connectors.service import ConnectorService, connector_registry_from_addons
 from evander.daemons.ado_issue_worker import run_worker_command
@@ -56,7 +56,6 @@ from evander.execution import (
     ExecutionStatusKind,
     build_execution_backend,
 )
-from evander.host_config import host_config_path, load_host_config
 from evander.messaging.discord_wake import build_discord_wake_worker
 from evander.messaging.scheduled_wake import build_scheduled_wake_worker
 from evander.messaging.teams_auth import TeamsAuthError
@@ -78,13 +77,6 @@ from evander.models import (
     SessionManifest,
     ToolName,
 )
-from evander.orchestration.migration import migrate_orchestration_store_to_sqlite
-from evander.orchestration.json_finalization import (
-    OrchestrationJsonFinalizationBlocked,
-    check_orchestration_json_finalization,
-    finalize_orchestration_json_store,
-)
-from evander.orchestration.wal_maintenance import sqlite_orchestration_store_enabled
 from evander.policy_config import EffectivePolicyConfig
 from evander.pr_feedback.store import PrFeedbackStore
 from evander.pr_tracking import PrMapStore
@@ -114,10 +106,6 @@ from evander.vm_to_container_migration import (
     restore_selected_manifests_from_backup,
     select_sessions_for_migration,
     verify_worker_session_state,
-)
-from evander.workflow.runtime_config import (
-    load_trigger_orchestrator_store_config_read_only,
-    load_trigger_orchestrator_worker_global_config,
 )
 
 _COMMAND_PANELS = {
@@ -220,25 +208,6 @@ def _load_runtime_config_from_option(config: Path) -> GatewayConfig:
 
 def _load_host_config_from_option(config: Path):
     return load_host_bootstrap_config(runtime_dir=_runtime_dir_for_config_option(config))
-
-
-def _load_orchestration_finalizer_worker_config(
-    config: Path,
-) -> TriggerOrchestratorWorkerGlobalConfig:
-    runtime_dir = _runtime_dir_for_config_option(config)
-    persisted_host_config_path = host_config_path(runtime_dir)
-    if not persisted_host_config_path.is_file():
-        raise typer.BadParameter(
-            f"runtime directory {runtime_dir} does not contain host-config.json"
-        )
-    try:
-        host_config = load_host_config(runtime_dir)
-        return load_trigger_orchestrator_store_config_read_only(
-            _project_dir_for_config_option(config),
-            runtime_dir=host_config.runtime_dir,
-        )
-    except (OSError, json.JSONDecodeError, ValidationError, ValueError) as exc:
-        raise typer.BadParameter(f"cannot read orchestration finalizer config: {exc}") from exc
 
 
 @team_app.command(
@@ -453,9 +422,7 @@ def _build_execution_backend_from_option(config: Path):
 
 
 def _container_worker_repository(config: GatewayConfig) -> ContainerWorkerExecutionRepository:
-    return ContainerWorkerExecutionRepository(
-        config.runtime_dir / "container-worker-executions.db"
-    )
+    return ContainerWorkerExecutionRepository(config.runtime_dir / "container-worker-executions.db")
 
 
 def _container_worker_target_exists(config: GatewayConfig, target: str) -> bool:
@@ -2349,216 +2316,6 @@ def migrate_pr_template_root(
         cfg, template_file=resolved_template_file, overwrite=overwrite
     )
     typer.echo(f"PR template migration complete: {result.status} {result.domain} -> {result.path}")
-
-
-@app.command(
-    "migrate-orchestration-store",
-    rich_help_panel="Health and State",
-    short_help="Import orchestration JSON stores into the SQLite runtime database.",
-)
-def migrate_orchestration_store(
-    config: ConfigOption = CLI_DEFAULT_RUNTIME_DIR,
-    database_path: Annotated[
-        Path | None,
-        typer.Option(
-            "--database-path",
-            help="Override destination SQLite database path. Defaults to worker orchestration_store_path.",
-        ),
-    ] = None,
-    retention_days: Annotated[
-        int | None,
-        typer.Option(
-            "--retention-days",
-            min=0,
-            help="Completed history retention after import. Defaults to worker orchestration_retention_days.",
-        ),
-    ] = None,
-    json_output: Annotated[
-        bool, typer.Option("--json", help="Emit machine-readable output.")
-    ] = False,
-) -> None:
-    runtime_config = _load_runtime_config_from_option(config)
-    project_dir = _project_dir_for_config_option(config)
-    worker_config = load_trigger_orchestrator_worker_global_config(
-        project_dir, base_config=runtime_config
-    )
-    destination = database_path or worker_config.orchestration_store_path
-    effective_retention_days = (
-        retention_days if retention_days is not None else worker_config.orchestration_retention_days
-    )
-    result = migrate_orchestration_store_to_sqlite(
-        database_path=destination,
-        trigger_events_path=worker_config.event_queue_store_path,
-        effect_executions_path=worker_config.effect_execution_store_path,
-        gate_executions_path=worker_config.gate_execution_store_path,
-        workflow_events_path=worker_config.workflow_event_journal_path,
-        retention_days=effective_retention_days,
-    )
-    if json_output:
-        typer.echo(json.dumps(result.as_dict(), indent=2, sort_keys=True))
-        return
-    typer.echo(f"Orchestration store migration complete: {result.database_path}")
-    typer.echo(
-        "trigger_events "
-        f"imported={result.trigger_events_imported} "
-        f"existing={result.trigger_events_existing} "
-        f"skipped={result.trigger_events_skipped}"
-    )
-    typer.echo(
-        "effect_executions "
-        f"imported={result.effect_executions_imported} "
-        f"existing={result.effect_executions_existing} "
-        f"skipped={result.effect_executions_skipped}"
-    )
-    typer.echo(
-        "gate_executions "
-        f"imported={result.gate_executions_imported} "
-        f"existing={result.gate_executions_existing} "
-        f"skipped={result.gate_executions_skipped}"
-    )
-    typer.echo(
-        "workflow_events "
-        f"imported={result.workflow_events_imported} "
-        f"existing={result.workflow_events_existing} "
-        f"skipped={result.workflow_events_skipped}"
-    )
-    typer.echo(
-        "retention_deleted "
-        f"trigger_events={result.retention_trigger_events_deleted} "
-        f"effect_executions={result.retention_effect_executions_deleted} "
-        f"gate_executions={result.retention_gate_executions_deleted} "
-        f"workflow_events={result.retention_workflow_events_deleted}"
-    )
-
-
-@app.command(
-    "finalize-orchestration-json-store",
-    rich_help_panel="Health and State",
-    short_help="Validate, archive, and retire legacy orchestration JSON stores.",
-)
-def finalize_orchestration_json_store_command(
-    config: ConfigOption = CLI_DEFAULT_RUNTIME_DIR,
-    apply: Annotated[
-        bool,
-        typer.Option(
-            "--apply/--check",
-            help="Apply the validated retirement, or perform the default read-only check.",
-        ),
-    ] = False,
-    database_path: Annotated[
-        Path | None,
-        typer.Option(
-            "--database-path",
-            help="Override the authoritative SQLite database path.",
-        ),
-    ] = None,
-    archive_root: Annotated[
-        Path | None,
-        typer.Option(
-            "--archive-root",
-            help="Override the archive root. Defaults to runtime/archives.",
-        ),
-    ] = None,
-    marker_path: Annotated[
-        Path | None,
-        typer.Option(
-            "--marker-path",
-            help="Override the durable finalization marker path.",
-        ),
-    ] = None,
-    retention_days: Annotated[
-        int | None,
-        typer.Option(
-            "--retention-days",
-            min=0,
-            help="History retention cutoff used to decide import versus archive-only.",
-        ),
-    ] = None,
-    json_output: Annotated[
-        bool, typer.Option("--json", help="Emit machine-readable output.")
-    ] = False,
-) -> None:
-    worker_config = _load_orchestration_finalizer_worker_config(config)
-    if not sqlite_orchestration_store_enabled(worker_config):
-        raise typer.BadParameter(
-            "orchestration_store_backend must be explicitly configured as 'sqlite'"
-        )
-
-    destination = Path(database_path or worker_config.orchestration_store_path)
-    effective_archive_root = Path(archive_root or (worker_config.runtime_dir / "archives"))
-    effective_marker_path = Path(
-        marker_path
-        or (worker_config.runtime_dir / "migrations" / "orchestration-json-store-finalized-v1.json")
-    )
-    effective_retention_days = (
-        retention_days if retention_days is not None else worker_config.orchestration_retention_days
-    )
-    common_arguments = {
-        "database_path": destination,
-        "trigger_events_path": Path(worker_config.event_queue_store_path),
-        "effect_executions_path": Path(worker_config.effect_execution_store_path),
-        "gate_executions_path": Path(worker_config.gate_execution_store_path),
-        "workflow_events_path": Path(worker_config.workflow_event_journal_path),
-        "marker_path": effective_marker_path,
-        "retention_days": int(effective_retention_days),
-    }
-
-    if apply:
-        try:
-            result = finalize_orchestration_json_store(
-                **common_arguments,
-                archive_root=effective_archive_root,
-                lock_paths=(
-                    Path(worker_config.lock_path),
-                    Path(worker_config.effect_lock_path),
-                ),
-            )
-        except OrchestrationJsonFinalizationBlocked as exc:
-            _emit_orchestration_json_finalization_report(
-                exc.report.as_dict(), json_output=json_output
-            )
-            raise typer.Exit(code=1) from exc
-        payload = result.as_dict()
-    else:
-        report = check_orchestration_json_finalization(**common_arguments)
-        payload = report.as_dict()
-
-    _emit_orchestration_json_finalization_report(payload, json_output=json_output)
-    if not payload["safe_to_apply"]:
-        raise typer.Exit(code=1)
-
-
-def _emit_orchestration_json_finalization_report(
-    payload: dict[str, Any], *, json_output: bool
-) -> None:
-    if json_output:
-        typer.echo(json.dumps(payload, indent=2, sort_keys=True))
-        return
-    if payload.get("applied"):
-        status = "applied"
-    elif payload.get("already_finalized"):
-        status = "already-finalized"
-    elif payload.get("safe_to_apply"):
-        status = "ready"
-    else:
-        status = "blocked"
-    typer.echo(f"Orchestration JSON finalization: {status}")
-    typer.echo(f"database={payload['database_path']}")
-    if payload.get("archive_path"):
-        typer.echo(f"archive={payload['archive_path']}")
-    for source in payload["sources"]:
-        typer.echo(
-            f"{source['source']} present={source['present']} records={source['records']} "
-            f"existing={source['existing']} importable={source['importable']} "
-            f"archive_only={source['archive_only']} invalid={source['invalid']}"
-        )
-    for blocker in payload["blockers"]:
-        subject = f" record={blocker['record_id']}" if blocker.get("record_id") else ""
-        typer.echo(
-            f"BLOCKER source={blocker['source']}{subject} reason={blocker['reason']}: "
-            f"{blocker['detail']}",
-            err=True,
-        )
 
 
 @app.command(

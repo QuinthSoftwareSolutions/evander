@@ -304,9 +304,7 @@ _DIRECTORY_CONFIG_FIELD_LABELS: dict[tuple[str, str], str] = {
     ("providers", "communication_artifact_link_ttl_seconds"): (
         "Communication artifact link TTL seconds"
     ),
-    ("providers", "discord_persona_webhook_cache_limit"): (
-        "Discord persona webhook cache limit"
-    ),
+    ("providers", "discord_persona_webhook_cache_limit"): ("Discord persona webhook cache limit"),
     ("policy", "mcp_tool_policies"): "MCP tool approval policy",
     ("policy", "tool_argument_policies"): "Tool argument policy",
 }
@@ -586,10 +584,8 @@ _WORKER_GLOBAL_CONFIG_TOOLTIPS: dict[str, str] = {
     "resume_timeout_seconds": "Timeout in seconds for a resume invocation.",
     "session_cooldown_path": "JSON state file used for per-session cooldown tracking.",
     "scheduled_wake_prefix_text": "Static text prepended to scheduled resume prompts before dispatch.",
-    "event_queue_store_path": "JSON queue file used to persist pending workflow events.",
     "event_queue_cursor_store_path": "JSON cursor state file tracking workflow poll progress.",
-    "workflow_event_journal_path": "JSONL journal used to notify workflow editor streams about runtime state changes.",
-    "effect_execution_store_path": "JSON execution log for effect-orchestrator runs.",
+    "orchestration_store_path": "SQLite database containing orchestration queue, execution, and journal state.",
     "orchestration_wal_checkpoint_mode": "SQLite orchestration-store WAL checkpoint mode.",
     "orchestration_wal_checkpoint_min_bytes": "Minimum WAL size before explicit checkpoint maintenance runs.",
     "orchestration_wal_checkpoint_interval_seconds": "Minimum interval between explicit WAL checkpoint attempts.",

@@ -14,6 +14,9 @@ EOF
 }
 
 RUNTIME_DIR="runtime/workflow-run-inspector-demo"
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_DIR="$(cd -- "$SCRIPT_DIR/.." && pwd)"
+PYTHON_BIN="${EVANDER_PYTHON:-$PROJECT_DIR/.venv/bin/python}"
 
 if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
   show_help
@@ -43,11 +46,27 @@ if [[ -z "${RUNTIME_DIR}" ]]; then
   exit 1
 fi
 
-python3 - "${RUNTIME_DIR}" <<'PY'
+if [[ ! -x "$PYTHON_BIN" ]]; then
+  echo "Python environment not found: $PYTHON_BIN" >&2
+  exit 1
+fi
+
+"$PYTHON_BIN" - "${RUNTIME_DIR}" <<'PY'
 import json
+from datetime import UTC, datetime
 from hashlib import sha256
 from pathlib import Path
 import sys
+
+from evander.daemons.effect_orchestrator import (
+    EffectExecutionRecord,
+    GateExecutionRecord,
+    SqliteExecutionStore,
+    SqliteGateExecutionStore,
+)
+from evander.repositories.orchestration import SqliteWorkflowConfigSnapshotRepository
+from evander.repositories.orchestration_db import connect_orchestration_db
+from evander.triggers.queue import SqliteTriggerEventQueue, TriggerQueueRecord
 
 
 runtime_dir = Path(sys.argv[1]).expanduser()
@@ -406,11 +425,35 @@ audit_entries = [
 
 write_json(runtime_dir / "approvals.json", {approval_request["request_id"]: approval_request})
 write_json(runtime_dir / "sessions.json", {session_manifest["session_id"]: session_manifest})
-write_json(runtime_dir / "trigger-orchestrator-events.json", trigger_events)
-write_json(runtime_dir / "effect-orchestrator-executions.json", effect_executions)
-write_json(runtime_dir / "gate-orchestrator-executions.json", gate_executions)
+database_path = runtime_dir / "orchestration.db"
+trigger_queue = SqliteTriggerEventQueue(database_path)
+trigger_queue.update_all(
+    lambda records: records.update(
+        {
+            event_id: TriggerQueueRecord.model_validate(record)
+            for event_id, record in trigger_events.items()
+        }
+    )
+)
+effect_store = SqliteExecutionStore(database_path)
+for record in effect_executions.values():
+    effect_store.record_execution(EffectExecutionRecord.model_validate(record))
+gate_store = SqliteGateExecutionStore(database_path)
+for record in gate_executions.values():
+    gate_store.record_execution(GateExecutionRecord.model_validate(record))
+snapshot_store = SqliteWorkflowConfigSnapshotRepository(database_path)
+for snapshot in workflow_config_snapshot.values():
+    snapshot_store.put_snapshot(snapshot)
+with connect_orchestration_db(database_path) as connection:
+    connection.execute(
+        """
+        INSERT INTO orchestration_metadata(key, value_json)
+        VALUES ('last_retention_date', ?)
+        ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json
+        """,
+        (json.dumps({"date": datetime.now(UTC).date().isoformat()}),),
+    )
 write_json(runtime_dir / "await-agent-pending.json", await_agent_pending)
-write_json(runtime_dir / "workflow-config-snapshots.json", workflow_config_snapshot)
 write_jsonl(runtime_dir / "audit.jsonl", audit_entries)
 (artifact_dir / f"{artifact_id}.json").write_text(
     json.dumps(artifact_metadata, indent=2, sort_keys=True) + "\n",

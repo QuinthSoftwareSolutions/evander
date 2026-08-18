@@ -1,8 +1,7 @@
 from __future__ import annotations
 
-from config_helpers import canonical_worker_config
+from config_helpers import canonical_worker_config, effect_execution_payload
 
-import json
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -57,9 +56,7 @@ def test_effect_worker_runs_without_domain_handlers_in_pure_mode(tmp_path: Path)
 
     worker.run_once()
 
-    execution_payload = json.loads(
-        (runtime_dir / "effect-orchestrator-executions.json").read_text(encoding="utf-8")
-    )
+    execution_payload = effect_execution_payload(worker_config)
     only = next(iter(execution_payload.values()))
     assert only["status"] == "skipped"
     assert only["error"] == "source_node_removed_from_graph:__await-agent-completion__"
@@ -84,7 +81,5 @@ def test_effect_worker_agent_default_handler_pack_consumes_agent_completion_even
 
     worker.run_once()
 
-    execution_payload = json.loads(
-        (runtime_dir / "effect-orchestrator-executions.json").read_text(encoding="utf-8")
-    )
+    execution_payload = effect_execution_payload(worker_config)
     assert execution_payload == {}

@@ -25,6 +25,13 @@ def _canonical_config_path(path: Path) -> str:
     return str(path)
 
 
+def _queue_payload(path: Path) -> dict[str, dict[str, object]]:
+    return {
+        event_id: record.model_dump(mode="json")
+        for event_id, record in SqliteTriggerEventQueue(path).read_all().items()
+    }
+
+
 def _configure_managed_repo(
     repo_path: Path,
     *,
@@ -65,7 +72,7 @@ def test_handle_git_push_trigger_enqueues_matching_branch_updates(tmp_path: Path
         json.dumps(
             {
                 "runtime_dir": str(tmp_path / "runtime"),
-                "event_queue_store_path": str(queue_path),
+                "orchestration_store_path": str(queue_path),
                 "triggers": [
                     {
                         "id": "git-main",
@@ -108,7 +115,7 @@ def test_handle_git_push_trigger_enqueues_matching_branch_updates(tmp_path: Path
     assert result.returncode == 0, result.stderr
     assert ready
 
-    queue_payload = json.loads(queue_path.read_text(encoding="utf-8"))
+    queue_payload = _queue_payload(queue_path)
     assert list(queue_payload.keys()) == [f"git-main:main:{'1' * 40}"]
     record = queue_payload[f"git-main:main:{'1' * 40}"]
     assert record["trigger_type"] == "trigger:git:push"
@@ -156,21 +163,18 @@ def test_handle_git_push_trigger_rejects_flat_persisted_node_config(tmp_path: Pa
     assert "must place provider fields under config: managed_repo_id" in result.stderr
 
 
-def test_handle_git_push_trigger_enqueues_to_sqlite_backend(tmp_path: Path) -> None:
+def test_handle_git_push_trigger_uses_configured_orchestration_store(tmp_path: Path) -> None:
     root = Path(__file__).resolve().parents[1]
     script = root / "scripts" / "handle_git_push_trigger.sh"
 
     repo_path = (tmp_path / "runtime" / "managed-git" / "mr_0123456789abcdefabcd.git").resolve()
     _configure_managed_repo(repo_path)
-    queue_path = tmp_path / "runtime" / "trigger-events.json"
     db_path = tmp_path / "runtime" / "orchestration.db"
     config_path = tmp_path / "trigger-config.json"
     config_path.write_text(
         json.dumps(
             {
                 "runtime_dir": str(tmp_path / "runtime"),
-                "event_queue_store_path": str(queue_path),
-                "orchestration_store_backend": "sqlite",
                 "orchestration_store_path": str(db_path),
                 "triggers": [
                     {
@@ -199,7 +203,6 @@ def test_handle_git_push_trigger_enqueues_to_sqlite_backend(tmp_path: Path) -> N
     )
 
     assert result.returncode == 0, result.stderr
-    assert not queue_path.exists()
     queued = SqliteTriggerEventQueue(db_path).read_all()
     assert list(queued) == [f"git-main:main:{'1' * 40}"]
     record = queued[f"git-main:main:{'1' * 40}"]
@@ -230,7 +233,7 @@ def test_handle_git_push_trigger_ignores_non_matching_repo(tmp_path: Path) -> No
         json.dumps(
             {
                 "runtime_dir": str(tmp_path / "runtime"),
-                "event_queue_store_path": str(queue_path),
+                "orchestration_store_path": str(queue_path),
                 "triggers": [
                     {
                         "id": "git-main",
@@ -259,7 +262,7 @@ def test_handle_git_push_trigger_ignores_non_matching_repo(tmp_path: Path) -> No
 
     assert result.returncode == 0, result.stderr
     if queue_path.exists():
-        assert json.loads(queue_path.read_text(encoding="utf-8")) == {}
+        assert _queue_payload(queue_path) == {}
 
 
 def test_handle_git_push_trigger_enforces_explicit_directory_trust_scope(
@@ -275,7 +278,7 @@ def test_handle_git_push_trigger_enforces_explicit_directory_trust_scope(
         json.dumps(
             {
                 "runtime_dir": str(tmp_path / "runtime"),
-                "event_queue_store_path": str(queue_path),
+                "orchestration_store_path": str(queue_path),
                 "triggers": [
                     {
                         "id": "git-sibling",
@@ -311,7 +314,7 @@ def test_handle_git_push_trigger_enforces_explicit_directory_trust_scope(
     )
 
     assert result.returncode == 0, result.stderr
-    queue_payload = json.loads(queue_path.read_text(encoding="utf-8"))
+    queue_payload = _queue_payload(queue_path)
     assert list(queue_payload) == [f"git-descendant:main:{'1' * 40}"]
 
 
@@ -328,7 +331,7 @@ def test_handle_git_push_trigger_enforces_effective_graph_directory_trust_scope(
         json.dumps(
             {
                 "runtime_dir": str(tmp_path / "runtime"),
-                "event_queue_store_path": str(queue_path),
+                "orchestration_store_path": str(queue_path),
                 "workflow_graphs": [
                     {
                         "id": "sibling-graph",
@@ -380,7 +383,7 @@ def test_handle_git_push_trigger_enforces_effective_graph_directory_trust_scope(
     )
 
     assert result.returncode == 0, result.stderr
-    queue_payload = json.loads(queue_path.read_text(encoding="utf-8"))
+    queue_payload = _queue_payload(queue_path)
     assert list(queue_payload) == [f"git-descendant:main:{'1' * 40}"]
 
 
@@ -399,7 +402,7 @@ def test_handle_git_push_trigger_emits_repo_metadata_and_session_id(tmp_path: Pa
         json.dumps(
             {
                 "runtime_dir": str(tmp_path / "runtime"),
-                "event_queue_store_path": str(queue_path),
+                "orchestration_store_path": str(queue_path),
                 "triggers": [
                     {
                         "id": "git-main",
@@ -427,7 +430,7 @@ def test_handle_git_push_trigger_emits_repo_metadata_and_session_id(tmp_path: Pa
     )
 
     assert result.returncode == 0, result.stderr
-    queue_payload = json.loads(queue_path.read_text(encoding="utf-8"))
+    queue_payload = _queue_payload(queue_path)
     record = queue_payload[f"git-main:agents/session-1/topic-branch:{'1' * 40}"]
     assert record["payload"]["session_id"] == "session-1"
     assert record["payload"]["review_branch"] == "review/session-1/topic-branch"
@@ -502,7 +505,7 @@ def test_handle_git_push_trigger_enqueues_notes_only_update_for_matching_agent_b
         json.dumps(
             {
                 "runtime_dir": str(tmp_path / "runtime"),
-                "event_queue_store_path": str(queue_path),
+                "orchestration_store_path": str(queue_path),
                 "triggers": [
                     {
                         "id": "git-main",
@@ -530,7 +533,7 @@ def test_handle_git_push_trigger_enqueues_notes_only_update_for_matching_agent_b
     )
 
     assert result.returncode == 0, result.stderr
-    queue_payload = json.loads(queue_path.read_text(encoding="utf-8"))
+    queue_payload = _queue_payload(queue_path)
     record = queue_payload[f"git-main:agents/session-1/topic:{new_notes_rev}"]
     assert record["payload"]["branch_name"] == "agents/session-1/topic"
     assert record["payload"]["session_id"] == "session-1"
@@ -601,7 +604,7 @@ def test_handle_git_push_trigger_enqueues_per_session_notes_only_update(
         json.dumps(
             {
                 "runtime_dir": str(tmp_path / "runtime"),
-                "event_queue_store_path": str(queue_path),
+                "orchestration_store_path": str(queue_path),
                 "triggers": [
                     {
                         "id": "git-main",
@@ -629,7 +632,7 @@ def test_handle_git_push_trigger_enqueues_per_session_notes_only_update(
     )
 
     assert result.returncode == 0, result.stderr
-    queue_payload = json.loads(queue_path.read_text(encoding="utf-8"))
+    queue_payload = _queue_payload(queue_path)
     record = queue_payload[f"git-main:agents/session-1/topic:{new_notes_rev}"]
     assert record["payload"]["notes_ref"] == notes_ref
 
@@ -646,7 +649,7 @@ def test_handle_git_push_trigger_is_idempotent_for_repeated_updates(tmp_path: Pa
         json.dumps(
             {
                 "runtime_dir": str(tmp_path / "runtime"),
-                "event_queue_store_path": str(queue_path),
+                "orchestration_store_path": str(queue_path),
                 "triggers": [
                     {
                         "id": "git-main",
@@ -689,11 +692,11 @@ def test_handle_git_push_trigger_is_idempotent_for_repeated_updates(tmp_path: Pa
 
     assert first.returncode == 0, first.stderr
     assert second.returncode == 0, second.stderr
-    queue_payload = json.loads(queue_path.read_text(encoding="utf-8"))
+    queue_payload = _queue_payload(queue_path)
     assert list(queue_payload.keys()) == [f"git-main:main:{'1' * 40}"]
 
 
-def test_handle_git_push_trigger_resolves_relative_queue_paths_from_config_dir(
+def test_handle_git_push_trigger_resolves_relative_store_path_from_config_dir(
     tmp_path: Path,
 ) -> None:
     root = Path(__file__).resolve().parents[1]
@@ -704,7 +707,7 @@ def test_handle_git_push_trigger_resolves_relative_queue_paths_from_config_dir(
     config_dir = tmp_path / "orchestrator"
     config_dir.mkdir()
     config_path = config_dir / "trigger-config.json"
-    queue_path = config_dir / "runtime" / "trigger-orchestrator-events.json"
+    queue_path = config_dir / "runtime" / "orchestration.db"
     config_path.write_text(
         json.dumps(
             {
@@ -740,7 +743,7 @@ def test_handle_git_push_trigger_resolves_relative_queue_paths_from_config_dir(
 
     assert result.returncode == 0, result.stderr
     assert queue_path.exists()
-    assert not (bare_repo_cwd / "runtime" / "trigger-orchestrator-events.json").exists()
+    assert not (bare_repo_cwd / "runtime" / "orchestration.db").exists()
 
 
 def test_handle_git_push_trigger_resolves_relative_queue_paths_from_project_root_for_repo_config(
@@ -762,7 +765,7 @@ def test_handle_git_push_trigger_resolves_relative_queue_paths_from_project_root
         json.dumps(
             {
                 "runtime_dir": "runtime",
-                "event_queue_store_path": str(relative_queue),
+                "orchestration_store_path": str(relative_queue),
                 "triggers": [
                     {
                         "id": "git-main",
@@ -860,7 +863,7 @@ def test_handle_git_push_trigger_resolves_git_push_triggers_from_workflow_packs(
         json.dumps(
             {
                 "runtime_dir": "runtime",
-                "event_queue_store_path": str(relative_queue),
+                "orchestration_store_path": str(relative_queue),
                 "triggers": [
                     {
                         "id": "system-chat",
@@ -891,7 +894,7 @@ def test_handle_git_push_trigger_resolves_git_push_triggers_from_workflow_packs(
         )
 
         assert result.returncode == 0, result.stderr
-        queue_payload = json.loads(queue_path.read_text(encoding="utf-8"))
+        queue_payload = _queue_payload(queue_path)
         assert list(queue_payload.keys()) == [f"git-pack-trigger:main:{'1' * 40}"]
     finally:
         config_path.unlink(missing_ok=True)
@@ -910,17 +913,12 @@ def test_handle_git_push_trigger_serializes_concurrent_queue_updates(tmp_path: P
     repo_path = (tmp_path / "runtime" / "managed-git" / "mr_0123456789abcdefabcd.git").resolve()
     _configure_managed_repo(repo_path)
     queue_path = tmp_path / "runtime" / "trigger-events.json"
-    queue_path.parent.mkdir(parents=True, exist_ok=True)
-    queue_path.write_text(
-        json.dumps({f"seed-{index}": {"event_id": f"seed-{index}"} for index in range(2000)}),
-        encoding="utf-8",
-    )
     config_path = tmp_path / "trigger-config.json"
     config_path.write_text(
         json.dumps(
             {
                 "runtime_dir": str(tmp_path / "runtime"),
-                "event_queue_store_path": str(queue_path),
+                "orchestration_store_path": str(queue_path),
                 "triggers": [
                     {
                         "id": "git-main",
@@ -972,7 +970,7 @@ def test_handle_git_push_trigger_serializes_concurrent_queue_updates(tmp_path: P
     assert second.returncode == 0, second.stderr
     assert first_stdout == ""
     assert first_stderr == ""
-    queue_payload = json.loads(queue_path.read_text(encoding="utf-8"))
+    queue_payload = _queue_payload(queue_path)
     assert f"git-main:main:{'1' * 40}" in queue_payload
     assert f"git-main:feature:{'2' * 40}" in queue_payload
 

@@ -51,7 +51,6 @@ from evander.orchestration.kernels import (
     PollingOrchestratorKernel,
     compute_next_sleep_seconds,
 )
-from evander.orchestration.wal_maintenance import sqlite_orchestration_store_enabled
 from evander.runtime import (
     RuntimeContext,
     _build_delegated_teams_token_provider,
@@ -70,7 +69,7 @@ from evander.triggers.providers.teams_message_events import (
     TeamsDirectMessageEventMatcher,
     TeamsNewMessageEventMatcher,
 )
-from evander.triggers.queue import SqliteTriggerEventQueue, TriggerEventQueue
+from evander.triggers.queue import SqliteTriggerEventQueue
 from evander.workflow.graph_metadata import resolve_workflow_graph_metadata
 from evander.workflow.runtime_config import load_trigger_orchestrator_worker_global_config
 from evander.workflow.node_state import workflow_node_is_enabled
@@ -140,7 +139,7 @@ _TeamsMessageMatcher = (
     | TeamsDirectMessageEventMatcher
     | CommunicationTeamsMessageEventMatcher
 )
-_TriggerEventQueue = TriggerEventQueue | SqliteTriggerEventQueue
+_TriggerEventQueue = SqliteTriggerEventQueue
 
 
 @dataclass(frozen=True)
@@ -607,34 +606,18 @@ class TeamsIngestWorker:
     ) -> _TriggerEventQueue:
         if self._event_queue_override is not None:
             return self._event_queue_override
-        if sqlite_orchestration_store_enabled(trigger_config):
-            cache_key: tuple[object, ...] = (
-                "sqlite",
-                str(trigger_config.orchestration_store_path),
-                trigger_config.orchestration_retention_days,
+        cache_key: tuple[object, ...] = (
+            str(trigger_config.orchestration_store_path),
+            trigger_config.orchestration_retention_days,
+        )
+        if self._event_queue_cache is None or self._event_queue_cache[0] != cache_key:
+            self._event_queue_cache = (
+                cache_key,
+                SqliteTriggerEventQueue(
+                    trigger_config.orchestration_store_path,
+                    retention_days=trigger_config.orchestration_retention_days,
+                ),
             )
-            if self._event_queue_cache is None or self._event_queue_cache[0] != cache_key:
-                self._event_queue_cache = (
-                    cache_key,
-                    SqliteTriggerEventQueue(
-                        trigger_config.orchestration_store_path,
-                        retention_days=trigger_config.orchestration_retention_days,
-                    ),
-                )
-        else:
-            cache_key = (
-                "json",
-                str(trigger_config.event_queue_store_path),
-                str(trigger_config.workflow_event_journal_path),
-            )
-            if self._event_queue_cache is None or self._event_queue_cache[0] != cache_key:
-                self._event_queue_cache = (
-                    cache_key,
-                    TriggerEventQueue(
-                        trigger_config.event_queue_store_path,
-                        journal_path=trigger_config.workflow_event_journal_path,
-                    ),
-                )
         assert self._event_queue_cache is not None
         return self._event_queue_cache[1]
 

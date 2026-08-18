@@ -1,8 +1,7 @@
 from __future__ import annotations
 
-from config_helpers import canonical_worker_config
+from config_helpers import canonical_worker_config, gate_execution_payload
 
-import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
@@ -90,8 +89,7 @@ def _make_all_states_due(worker: EffectOrchestratorWorker, *, reason: str = "qui
 
 
 def _succeeded_gate_records(worker: EffectOrchestratorWorker) -> list[dict[str, object]]:
-    path = worker.worker_config.runtime_dir / "gate-orchestrator-executions.json"
-    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload = gate_execution_payload(worker.worker_config)
     return [record for record in payload.values() if record["status"] == "succeeded"]
 
 
@@ -211,10 +209,14 @@ def test_debounce_duplicate_event_does_not_emit_twice(tmp_path: Path) -> None:
     worker.run_once()
 
     worker.event_queue.mark_delivered("event-1")
-    record = worker.event_queue._store.get("event-1")
-    assert record is not None
-    record.delivery_state = "pending"
-    worker.event_queue._store.put("event-1", record)
+
+    def replay(records):
+        record = records["event-1"]
+        record.delivery_state = "pending"
+        record.delivered_at = None
+        records["event-1"] = record
+
+    worker.event_queue.update_all(replay)
     worker.run_once()
 
     provider = _debounce_provider(worker)

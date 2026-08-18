@@ -1361,7 +1361,6 @@ class OrchestrationCoreConfig(BaseModel):
     runtime_dir: Path = Path("runtime")
     poll_interval_seconds: float = Field(default=5.0, gt=0)
     jitter_seconds: float = Field(default=5.0, ge=0)
-    orchestration_store_backend: Literal["sqlite", "json"] = "sqlite"
     orchestration_store_path: Path | None = None
     orchestration_retention_days: int = Field(default=30, ge=0)
     orchestration_wal_checkpoint_mode: Literal[
@@ -1371,17 +1370,12 @@ class OrchestrationCoreConfig(BaseModel):
     orchestration_wal_checkpoint_interval_seconds: int = Field(default=5 * 60, ge=0)
     orchestration_wal_checkpoint_busy_timeout_ms: int = Field(default=1_000, ge=0)
     lock_path: Path | None = None
-    event_queue_store_path: Path | None = None
     event_queue_cursor_store_path: Path | None = None
-    workflow_event_journal_path: Path | None = None
     internal_event_store_path: Path | None = None
     scheduled_internal_event_store_path: Path | None = None
-    gate_execution_store_path: Path | None = None
     gate_cursor_store_path: Path | None = None
-    effect_execution_store_path: Path | None = None
     effect_cursor_store_path: Path | None = None
     effect_lock_path: Path | None = None
-    workflow_config_snapshot_store_path: Path | None = None
     workflow_packs: list[str] = Field(default_factory=list)
     workflow_graphs: list[WorkflowPackGraph] = Field(default_factory=list)
     workflow_ir: dict[str, Any] | None = None
@@ -1393,6 +1387,19 @@ class OrchestrationCoreConfig(BaseModel):
     queries: list[QueryDefinitionDiscriminated] = Field(default_factory=list)
     max_graph_depth: int = Field(default=16, ge=1)
     max_events_per_cycle: int = Field(default=200, ge=1)
+
+    @model_validator(mode="before")
+    @classmethod
+    def reject_legacy_json_orchestration_backend(cls, value: object) -> object:
+        if not isinstance(value, dict):
+            return value
+        backend = value.get("orchestration_store_backend")
+        if backend is not None and str(backend).strip().casefold() != "sqlite":
+            raise ValueError(
+                "orchestration_store_backend='json' is no longer supported; "
+                "orchestration state is always stored in SQLite"
+            )
+        return value
 
     @model_validator(mode="after")
     def validate_unique_graph_node_ids(self) -> OrchestrationCoreConfig:
@@ -1453,38 +1460,24 @@ class OrchestrationCoreConfig(BaseModel):
     def apply_runtime_path_defaults(self) -> OrchestrationCoreConfig:
         if self.lock_path is None:
             self.lock_path = self.runtime_dir / "trigger-orchestrator.lock"
-        if self.event_queue_store_path is None:
-            self.event_queue_store_path = self.runtime_dir / "trigger-orchestrator-events.json"
         if self.orchestration_store_path is None:
             self.orchestration_store_path = self.runtime_dir / "orchestration.db"
         if self.event_queue_cursor_store_path is None:
             self.event_queue_cursor_store_path = (
                 self.runtime_dir / "trigger-orchestrator-cursors.json"
             )
-        if self.workflow_event_journal_path is None:
-            self.workflow_event_journal_path = self.runtime_dir / "workflow-events.jsonl"
         if self.internal_event_store_path is None:
             self.internal_event_store_path = self.runtime_dir / "internal-events.json"
         if self.scheduled_internal_event_store_path is None:
             self.scheduled_internal_event_store_path = runtime_scheduled_internal_event_store_path(
                 self.runtime_dir
             )
-        if self.gate_execution_store_path is None:
-            self.gate_execution_store_path = self.runtime_dir / "gate-orchestrator-executions.json"
         if self.gate_cursor_store_path is None:
             self.gate_cursor_store_path = self.runtime_dir / "gate-orchestrator-cursors.json"
-        if self.effect_execution_store_path is None:
-            self.effect_execution_store_path = (
-                self.runtime_dir / "effect-orchestrator-executions.json"
-            )
         if self.effect_cursor_store_path is None:
             self.effect_cursor_store_path = self.runtime_dir / "effect-orchestrator-cursors.json"
         if self.effect_lock_path is None:
             self.effect_lock_path = self.runtime_dir / "effect-orchestrator.lock"
-        if self.workflow_config_snapshot_store_path is None:
-            self.workflow_config_snapshot_store_path = (
-                self.runtime_dir / "workflow-config-snapshots.json"
-            )
         return self
 
 

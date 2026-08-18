@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -15,6 +14,7 @@ from evander.events.scheduled import (
 )
 from evander.orchestration.host_polling import HostWakeSleeper
 from evander.storage import JsonStore
+from evander.workflow.events import SqliteWorkflowEventJournal
 
 
 def test_internal_event_publish_uses_single_store_update(
@@ -36,7 +36,7 @@ def test_concurrent_internal_event_publish_preserves_both_events(
     tmp_path: Path, monkeypatch: MonkeyPatch
 ) -> None:
     event_path = tmp_path / "internal-events.json"
-    journal_path = tmp_path / "workflow-events.jsonl"
+    database_path = tmp_path / "orchestration.db"
     start = Barrier(3)
     read_barrier = Barrier(2)
     failures: list[str] = []
@@ -50,7 +50,10 @@ def test_concurrent_internal_event_publish_preserves_both_events(
 
     def publish(value: str) -> None:
         try:
-            bus = InternalEventBus(event_path, journal_path=journal_path)
+            bus = InternalEventBus(
+                event_path,
+                journal=SqliteWorkflowEventJournal(database_path),
+            )
             start.wait(timeout=2)
             bus.publish(event_type="custom.concurrent", payload={"value": value})
         except BaseException as exc:  # pragma: no cover - surfaced by assertion below
@@ -70,15 +73,14 @@ def test_concurrent_internal_event_publish_preserves_both_events(
             assert not thread.is_alive()
 
     assert failures == []
-    events = InternalEventBus(event_path, journal_path=journal_path).list_events()
+    events = InternalEventBus(
+        event_path,
+        journal=SqliteWorkflowEventJournal(database_path),
+    ).list_events()
     assert sorted(event.payload["value"] for event in events) == ["one", "two"]
 
-    journal_events = [
-        json.loads(line)
-        for line in journal_path.read_text(encoding="utf-8").splitlines()
-        if line.strip()
-    ]
-    assert [event["event_type"] for event in journal_events].count(
+    journal_events, _ = SqliteWorkflowEventJournal(database_path).read_after(0)
+    assert [event.event_type for event in journal_events].count(
         "workflow.internal_event.published"
     ) == 2
 

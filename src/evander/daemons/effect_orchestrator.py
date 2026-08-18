@@ -117,7 +117,6 @@ from evander.repositories.orchestration import (
     EffectExecutionRepository,
     GateExecutionRepository,
     JsonEffectCursorRepository,
-    JsonExecutionRepository,
     SqliteExecutionRepository,
     SqliteGateExecutionRepository,
 )
@@ -512,13 +511,7 @@ class EffectOrchestratorWorker:
         self.lock_path = resolved_wiring.lock_path
         self.cursor_path = resolved_wiring.cursor_path
         self.cursor_repository = resolved_wiring.effect_cursor_repository
-        self.execution_store_path = self.worker_config.effect_execution_store_path
         self.execution_store: EffectExecutionRepository = resolved_wiring.execution_store
-        self.gate_execution_store_path = _resolve_worker_path(
-            self.worker_config,
-            "gate_execution_store_path",
-            fallback=self.worker_config.runtime_dir / "gate-orchestrator-executions.json",
-        )
         self.gate_execution_store: GateExecutionRepository = resolved_wiring.gate_execution_store
         self.workflow_config_snapshot_store = resolved_wiring.workflow_config_snapshot_store
         self.queued_agent_prompt_store = resolved_wiring.queued_agent_prompt_store
@@ -715,9 +708,7 @@ class EffectOrchestratorWorker:
                     self.lock_path = store_wiring.lock_path
                     self.cursor_path = store_wiring.cursor_path
                     self.cursor_repository = store_wiring.effect_cursor_repository
-                    self.execution_store_path = latest_config.effect_execution_store_path
                     self.execution_store = store_wiring.execution_store
-                    self.gate_execution_store_path = latest_config.gate_execution_store_path
                     self.gate_execution_store = store_wiring.gate_execution_store
                     self.workflow_config_snapshot_store = (
                         store_wiring.workflow_config_snapshot_store
@@ -759,8 +750,6 @@ class EffectOrchestratorWorker:
                 elif store_wiring is not None and (
                     latest_config.internal_event_store_path
                     != previous_config.internal_event_store_path
-                    or latest_config.workflow_event_journal_path
-                    != previous_config.workflow_event_journal_path
                 ):
                     self._register_default_node_executors()
                 logger.info(
@@ -1667,8 +1656,7 @@ class EffectOrchestratorWorker:
             except Exception:  # noqa: BLE001
                 provider_name = provider.__class__.__name__ if provider is not None else None
                 logger.exception(
-                    "Effect orchestrator deadline lookup failed "
-                    "gate_type=%s provider=%s",
+                    "Effect orchestrator deadline lookup failed gate_type=%s provider=%s",
                     gate_type,
                     provider_name,
                 )
@@ -2593,36 +2581,6 @@ class EffectOrchestratorWorker:
         self._last_graph_edge_count = edge_count
 
 
-class JsonExecutionStore(JsonExecutionRepository[EffectExecutionRecord]):
-    def __init__(self, path: Path, *, journal_path: Path | None = None) -> None:
-        super().__init__(
-            path, EffectExecutionRecord, journal_path=journal_path, source="effect_execution"
-        )
-
-
-class JsonGateExecutionStore(JsonExecutionRepository[GateExecutionRecord]):
-    def __init__(self, path: Path, *, journal_path: Path | None = None) -> None:
-        super().__init__(
-            path, GateExecutionRecord, journal_path=journal_path, source="gate_execution"
-        )
-
-    def find_latest_by_gate_id(self, gate_id: str) -> GateExecutionRecord | None:
-        return self.find_latest_execution_for_gate(gate_id)
-
-    def find_latest_execution_for_gate(self, gate_id: str) -> GateExecutionRecord | None:
-        latest: GateExecutionRecord | None = None
-        for record in self.list_executions():
-            if record.gate_id != gate_id:
-                continue
-            if latest is None or (record.finished_at, record.started_at, record.execution_id) > (
-                latest.finished_at,
-                latest.started_at,
-                latest.execution_id,
-            ):
-                latest = record
-        return latest
-
-
 class SqliteExecutionStore(SqliteExecutionRepository[EffectExecutionRecord]):
     def __init__(
         self,
@@ -3336,30 +3294,10 @@ def _effect_store_binding_signature(
 ) -> str:
     payload = {
         "runtime_dir": str(worker_config.runtime_dir),
-        "orchestration_store_backend": worker_config.orchestration_store_backend,
-        "orchestration_store_backend_explicit": "orchestration_store_backend"
-        in worker_config.model_fields_set,
         "orchestration_store_path": str(worker_config.orchestration_store_path)
         if worker_config.orchestration_store_path is not None
         else None,
         "orchestration_retention_days": worker_config.orchestration_retention_days,
-        "event_queue_store_path": str(worker_config.event_queue_store_path)
-        if worker_config.event_queue_store_path is not None
-        else None,
-        "workflow_event_journal_path": str(worker_config.workflow_event_journal_path)
-        if worker_config.workflow_event_journal_path is not None
-        else None,
-        "effect_execution_store_path": str(worker_config.effect_execution_store_path)
-        if worker_config.effect_execution_store_path is not None
-        else None,
-        "gate_execution_store_path": str(worker_config.gate_execution_store_path)
-        if worker_config.gate_execution_store_path is not None
-        else None,
-        "workflow_config_snapshot_store_path": str(
-            worker_config.workflow_config_snapshot_store_path
-        )
-        if worker_config.workflow_config_snapshot_store_path is not None
-        else None,
         "effect_cursor_store_path": str(worker_config.effect_cursor_store_path)
         if worker_config.effect_cursor_store_path is not None
         else None,

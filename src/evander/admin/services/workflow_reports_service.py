@@ -17,7 +17,6 @@ from pydantic import BaseModel
 from evander.admin.common import (
     _coerce_optional_datetime,
     _coerce_optional_string,
-    _read_json_object,
     _read_merged_json_objects,
     _utc_now,
 )
@@ -95,7 +94,6 @@ class WorkflowReportsAdminDependencies:
     project_dir: Path
     config: Any
     runtime: Any
-    trigger_event_repository: Any
     workflow_config_admin: Any
     list_agents: Callable[..., list[AgentRecord]]
     project_dir_provider: Callable[[], Path] | None = None
@@ -109,7 +107,6 @@ class WorkflowReportsAdminService:
         self._project_dir_provider = dependencies.project_dir_provider
         self.config = dependencies.config
         self.runtime = dependencies.runtime
-        self.trigger_event_repository = dependencies.trigger_event_repository
         self._workflow_config_admin = dependencies.workflow_config_admin
         self._list_agents = dependencies.list_agents
 
@@ -157,9 +154,6 @@ class WorkflowReportsAdminService:
     def _workflow_run_store_paths(self):
         return self._workflow_config_admin._workflow_run_store_paths()
 
-    def _workflow_uses_sqlite_store(self, *args: Any, **kwargs: Any):
-        return self._workflow_config_admin._workflow_uses_sqlite_store(*args, **kwargs)
-
     def _workflow_run_store_bundle(self, *args: Any, **kwargs: Any):
         return self._workflow_config_admin._workflow_run_store_bundle(*args, **kwargs)
 
@@ -186,9 +180,6 @@ class WorkflowReportsAdminService:
         now = _utc_now()
         lookback_start = now - timedelta(seconds=8)
         runtime_dir = stores["runtime_dir"]
-        event_queue_store_path = stores["event_queue_store_path"]
-        effect_execution_store_path = stores["effect_execution_store_path"]
-        gate_execution_store_path = stores["gate_execution_store_path"]
         runs_by_event: dict[str, dict[str, object]] = {}
         node_activity: dict[str, dict[str, int]] = {}
         recent_node_activity: list[WorkflowRunRecentNodeActivityPayload] = []
@@ -391,36 +382,26 @@ class WorkflowReportsAdminService:
                     else None,
                 )
 
-        if self._workflow_uses_sqlite_store(stores):
-            queue_store, effect_store, gate_store = self._workflow_run_store_bundle(stores)
-            queue_payload = {
-                record.event_id: record.model_dump(mode="json")
-                for record in queue_store.list_active_records()
-            }
-            execution_payload = {
-                record.execution_id: record.model_dump(mode="json")
-                for record in effect_store.list_active_records()
-            }
-            gate_payload = {
-                record.execution_id: record.model_dump(mode="json")
-                for record in gate_store.list_active_records()
-            }
-            queue_recent_records = queue_store.list_activity_between(
-                start_at=lookback_start, end_at=now
-            )
-            execution_recent_records = effect_store.list_activity_between(
-                start_at=lookback_start, end_at=now
-            )
-            gate_recent_records = gate_store.list_activity_between(
-                start_at=lookback_start, end_at=now
-            )
-        else:
-            queue_payload = self.trigger_event_repository.read_events(event_queue_store_path)
-            execution_payload = _read_json_object(effect_execution_store_path)
-            gate_payload = _read_json_object(gate_execution_store_path)
-            queue_recent_records = list(queue_payload.values())
-            execution_recent_records = list(execution_payload.values())
-            gate_recent_records = list(gate_payload.values())
+        queue_store, effect_store, gate_store = self._workflow_run_store_bundle(stores)
+        queue_payload = {
+            record.event_id: record.model_dump(mode="json")
+            for record in queue_store.list_active_records()
+        }
+        execution_payload = {
+            record.execution_id: record.model_dump(mode="json")
+            for record in effect_store.list_active_records()
+        }
+        gate_payload = {
+            record.execution_id: record.model_dump(mode="json")
+            for record in gate_store.list_active_records()
+        }
+        queue_recent_records = queue_store.list_activity_between(
+            start_at=lookback_start, end_at=now
+        )
+        execution_recent_records = effect_store.list_activity_between(
+            start_at=lookback_start, end_at=now
+        )
+        gate_recent_records = gate_store.list_activity_between(start_at=lookback_start, end_at=now)
 
         for event_id, raw_record in queue_payload.items():
             if not isinstance(raw_record, dict):
@@ -626,31 +607,23 @@ class WorkflowReportsAdminService:
             stores["legacy_await_agent_store_path"],
             stores["await_agent_store_path"],
         )
-        sqlite_matched_count: int | None = None
-        sqlite_has_more_candidates = False
-        if self._workflow_uses_sqlite_store(stores):
-            (
-                sqlite_event_ids,
-                sqlite_matched_count,
-                sqlite_has_more_candidates,
-            ) = self._workflow_run_search_sqlite_event_ids(
+        (
+            sqlite_event_ids,
+            sqlite_matched_count,
+            sqlite_has_more_candidates,
+        ) = self._workflow_run_search_sqlite_event_ids(
+            stores,
+            target_node_ids=target_node_ids,
+            include_completed=include_completed,
+            limit=normalized_limit,
+            without_session=without_session,
+        )
+        queue_records, effect_records, gate_records = (
+            self._workflow_run_sqlite_records_for_event_ids(
                 stores,
-                target_node_ids=target_node_ids,
-                include_completed=include_completed,
-                limit=normalized_limit,
-                without_session=without_session,
+                event_ids=sqlite_event_ids,
             )
-            queue_records, effect_records, gate_records = (
-                self._workflow_run_sqlite_records_for_event_ids(
-                    stores,
-                    event_ids=sqlite_event_ids,
-                )
-            )
-        else:
-            _, effect_store, gate_store = self._workflow_run_store_bundle(stores)
-            queue_records = self._workflow_run_event_records(stores)
-            effect_records = effect_store.read_all()
-            gate_records = gate_store.read_all()
+        )
         approval_requests = self.runtime.approvals.read_all()
         artifact_store = self._communication_artifact_store()
 
@@ -663,38 +636,6 @@ class WorkflowReportsAdminService:
 
         def record_event_id(record: dict[str, Any], fallback: object) -> str:
             return _coerce_optional_string(record.get("event_id")) or str(fallback)
-
-        def collect_json_candidate_event_ids() -> set[str] | None:
-            if self._workflow_uses_sqlite_store(stores) or without_session:
-                return None
-            event_ids: set[str] = set()
-            for record_key, record in queue_records.items():
-                raw_record = normalize_record_payload(record)
-                if not raw_record:
-                    continue
-                if _coerce_optional_string(raw_record.get("trigger_id")) in target_node_ids:
-                    event_ids.add(record_event_id(raw_record, record_key))
-            for execution_id, record in effect_records.items():
-                raw_record = normalize_record_payload(record)
-                if not raw_record:
-                    continue
-                if _coerce_optional_string(raw_record.get("effect_id")) in target_node_ids:
-                    event_ids.add(record_event_id(raw_record, execution_id))
-            for execution_id, record in gate_records.items():
-                raw_record = normalize_record_payload(record)
-                if not raw_record:
-                    continue
-                if _coerce_optional_string(raw_record.get("gate_id")) in target_node_ids:
-                    event_ids.add(record_event_id(raw_record, execution_id))
-            for record_key, raw_record in await_agent_payload.items():
-                if not isinstance(raw_record, dict):
-                    continue
-                if _coerce_optional_string(raw_record.get("gate_id")) in target_node_ids:
-                    event_ids.add(
-                        _coerce_optional_string(raw_record.get("prompt_event_id"))
-                        or str(record_key)
-                    )
-            return event_ids
 
         def latest_of(*values: object) -> datetime | None:
             parsed = [
@@ -833,7 +774,7 @@ class WorkflowReportsAdminService:
             )
 
         groups: dict[str, dict[str, Any]] = {}
-        candidate_event_ids = collect_json_candidate_event_ids()
+        candidate_event_ids = None
         for record_key, record in queue_records.items():
             raw_record = normalize_record_payload(record)
             if not raw_record:
@@ -1218,7 +1159,7 @@ class WorkflowReportsAdminService:
             return max(parsed_values) if parsed_values else None
 
         stores = self._workflow_run_store_paths()
-        if self._workflow_uses_sqlite_store(stores):
+        if stores:
             start_text = datetime_to_storage(start_at)
             end_text = datetime_to_storage(end_at)
             db_path = Path(stores["orchestration_store_path"])
@@ -1326,59 +1267,6 @@ class WorkflowReportsAdminService:
                     state = graph_states.get(str(row["graph_id"] or ""))
                     if state is not None:
                         state["run_count"] = int(row["run_count"] or 0)
-        else:
-            queue_payload = _read_json_object(stores["event_queue_store_path"])
-            effect_payload = _read_json_object(stores["effect_execution_store_path"])
-            gate_payload = _read_json_object(stores["gate_execution_store_path"])
-
-            for record_key, raw_record in queue_payload.items():
-                if not isinstance(raw_record, dict):
-                    continue
-                event_id = _coerce_optional_string(raw_record.get("event_id")) or record_key
-                trace_id = _coerce_optional_string(raw_record.get("trace_id"))
-                register_activity(
-                    node_id=str(raw_record.get("trigger_id") or ""),
-                    timestamp=(
-                        _coerce_optional_datetime(raw_record.get("occurred_at"))
-                        or latest_datetime(
-                            raw_record.get("delivered_at"), raw_record.get("inflight_at")
-                        )
-                    ),
-                    source="trigger",
-                    status=_coerce_optional_string(raw_record.get("delivery_state")) or "event",
-                    run_key=trace_id or event_id,
-                )
-
-            for execution_id, raw_record in effect_payload.items():
-                if not isinstance(raw_record, dict):
-                    continue
-                event_id = _coerce_optional_string(raw_record.get("event_id")) or execution_id
-                trace_id = _coerce_optional_string(raw_record.get("trace_id"))
-                register_activity(
-                    node_id=str(raw_record.get("effect_id") or ""),
-                    timestamp=latest_datetime(
-                        raw_record.get("finished_at"), raw_record.get("started_at")
-                    ),
-                    source="effect",
-                    status=_coerce_optional_string(raw_record.get("status")),
-                    run_key=trace_id or event_id,
-                )
-
-            for execution_id, raw_record in gate_payload.items():
-                if not isinstance(raw_record, dict):
-                    continue
-                event_id = _coerce_optional_string(raw_record.get("event_id")) or execution_id
-                trace_id = _coerce_optional_string(raw_record.get("trace_id"))
-                register_activity(
-                    node_id=str(raw_record.get("gate_id") or ""),
-                    timestamp=latest_datetime(
-                        raw_record.get("finished_at"), raw_record.get("started_at")
-                    ),
-                    source="gate",
-                    status=_coerce_optional_string(raw_record.get("status")),
-                    run_key=trace_id or event_id,
-                )
-
         graphs: list[WorkflowGraphActivityGraphPayload] = []
         for graph_id, state in graph_states.items():
             graph = state["graph"]
@@ -1728,7 +1616,7 @@ class WorkflowReportsAdminService:
             activity_records.append(record)
 
         stores = self._workflow_run_store_paths()
-        if self._workflow_uses_sqlite_store(stores):
+        if stores:
             start_text = datetime_to_storage(start_at)
             end_text = datetime_to_storage(end_at)
             db_path = Path(stores["orchestration_store_path"])
@@ -1791,57 +1679,6 @@ class WorkflowReportsAdminService:
                             or ""
                         ),
                     )
-        else:
-            queue_payload = _read_json_object(stores["event_queue_store_path"])
-            effect_payload = _read_json_object(stores["effect_execution_store_path"])
-            gate_payload = _read_json_object(stores["gate_execution_store_path"])
-
-            for record_key, raw_record in queue_payload.items():
-                if not isinstance(raw_record, dict):
-                    continue
-                activity_at = latest_of(
-                    raw_record.get("delivered_at"),
-                    raw_record.get("inflight_at"),
-                    raw_record.get("occurred_at"),
-                )
-                if activity_at is None or not (start_at <= activity_at <= end_at):
-                    continue
-                register_record(
-                    raw_record,
-                    source_kind="trigger",
-                    record_key=str(
-                        _coerce_optional_string(raw_record.get("event_id")) or record_key
-                    ),
-                )
-
-            for record_key, raw_record in effect_payload.items():
-                if not isinstance(raw_record, dict):
-                    continue
-                activity_at = latest_of(raw_record.get("finished_at"), raw_record.get("started_at"))
-                if activity_at is None or not (start_at <= activity_at <= end_at):
-                    continue
-                register_record(
-                    raw_record,
-                    source_kind="effect",
-                    record_key=str(
-                        _coerce_optional_string(raw_record.get("execution_id")) or record_key
-                    ),
-                )
-
-            for record_key, raw_record in gate_payload.items():
-                if not isinstance(raw_record, dict):
-                    continue
-                activity_at = latest_of(raw_record.get("finished_at"), raw_record.get("started_at"))
-                if activity_at is None or not (start_at <= activity_at <= end_at):
-                    continue
-                register_record(
-                    raw_record,
-                    source_kind="gate",
-                    record_key=str(
-                        _coerce_optional_string(raw_record.get("execution_id")) or record_key
-                    ),
-                )
-
         activity_records.sort(
             key=lambda item: (
                 item["activity_at"] or datetime.min.replace(tzinfo=UTC),
@@ -2481,8 +2318,6 @@ class WorkflowReportsAdminService:
         stores: Mapping[str, Any],
         lookup: WorkflowRunLookupPayload,
     ) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]] | None:
-        if not self._workflow_uses_sqlite_store(stores):
-            return None
         event_keys = {
             value for value in (lookup.run_id, lookup.event_id, lookup.trigger_event_id) if value
         }

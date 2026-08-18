@@ -54,7 +54,7 @@ Once the event is safely stored, Evander wakes the part of the system that advan
 >
 > The trigger orchestrator polls enabled trigger definitions, resolves directory-scoped provider settings, and asks each provider for candidate events. A provider supplies a stable event identity, source identity and type, and payload; it may also supply an idempotency key. The queue deduplicates the event ID and, when present, the idempotency key. Only after durable publication does the worker call the provider's acknowledgement hook and advance its cursor.
 >
-> The default event and execution store is SQLite at `runtime/orchestration.db`. A legacy JSON backend remains available as a rollback path. These storage choices matter to administrators and recovery tooling, but they do not change the operator-level promise: acknowledgement follows durable publication.
+> The event and execution store is SQLite at `runtime/orchestration.db`. This storage choice matters to administrators and recovery tooling, but it does not change the operator-level promise: acknowledgement follows durable publication.
 
 ## Stage 2: the workflow decides what should happen
 

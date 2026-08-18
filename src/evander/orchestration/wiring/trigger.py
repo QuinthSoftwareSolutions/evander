@@ -10,10 +10,9 @@ from evander.config import GatewayConfig, TriggerOrchestratorWorkerGlobalConfig
 from evander.provider_config import ProviderConfigResolver
 from evander.provider_profiles import resolve_provider_module_names
 from evander.repositories.orchestration_db import maybe_checkpoint_orchestration_wal
-from evander.orchestration.wal_maintenance import sqlite_orchestration_store_enabled
 from evander.orchestration.internal_events import internal_event_bus_metadata
 from evander.runtime import RuntimeContext
-from evander.triggers.queue import SqliteTriggerEventQueue, TriggerEventQueue
+from evander.triggers.queue import SqliteTriggerEventQueue
 from evander.triggers.registry import TriggerProviderFactory
 from evander.workflow.plugins import load_provider_plugins
 from evander.repositories.orchestration import JsonGateCursorRepository
@@ -68,7 +67,7 @@ def build_trigger_provider_runtime_wiring(
 @dataclass(frozen=True)
 class TriggerWorkerWiring:
     provider_config_resolver: ProviderConfigResolver
-    event_queue: TriggerEventQueue | SqliteTriggerEventQueue
+    event_queue: SqliteTriggerEventQueue
     provider_factory: TriggerProviderFactory
     gate_cursor_repository: JsonGateCursorRepository
     managed_git_maintenance: ManagedGitMaintenancePort
@@ -82,23 +81,17 @@ def build_trigger_worker_wiring(
     provider_config_resolver: ProviderConfigResolver | None = None,
     addon_base_dir: str | Path | None = None,
 ) -> TriggerWorkerWiring:
-    if _sqlite_orchestration_store_enabled(worker_config):
-        event_queue = SqliteTriggerEventQueue(
-            worker_config.orchestration_store_path,
-            retention_days=int(worker_config.orchestration_retention_days),
-        )
-        maybe_checkpoint_orchestration_wal(
-            worker_config.orchestration_store_path,
-            mode=worker_config.orchestration_wal_checkpoint_mode,
-            min_bytes=worker_config.orchestration_wal_checkpoint_min_bytes,
-            interval_seconds=worker_config.orchestration_wal_checkpoint_interval_seconds,
-            busy_timeout_ms=worker_config.orchestration_wal_checkpoint_busy_timeout_ms,
-        )
-    else:
-        event_queue = TriggerEventQueue(
-            worker_config.event_queue_store_path,
-            journal_path=worker_config.workflow_event_journal_path,
-        )
+    event_queue = SqliteTriggerEventQueue(
+        worker_config.orchestration_store_path,
+        retention_days=int(worker_config.orchestration_retention_days),
+    )
+    maybe_checkpoint_orchestration_wal(
+        worker_config.orchestration_store_path,
+        mode=worker_config.orchestration_wal_checkpoint_mode,
+        min_bytes=worker_config.orchestration_wal_checkpoint_min_bytes,
+        interval_seconds=worker_config.orchestration_wal_checkpoint_interval_seconds,
+        busy_timeout_ms=worker_config.orchestration_wal_checkpoint_busy_timeout_ms,
+    )
     gate_cursor_repository = JsonGateCursorRepository(worker_config.event_queue_cursor_store_path)
     runtime_wiring = build_trigger_provider_runtime_wiring(
         config=config,
@@ -114,9 +107,3 @@ def build_trigger_worker_wiring(
         gate_cursor_repository=gate_cursor_repository,
         managed_git_maintenance=runtime_wiring.managed_git_maintenance,
     )
-
-
-def _sqlite_orchestration_store_enabled(
-    worker_config: TriggerOrchestratorWorkerGlobalConfig,
-) -> bool:
-    return sqlite_orchestration_store_enabled(worker_config)

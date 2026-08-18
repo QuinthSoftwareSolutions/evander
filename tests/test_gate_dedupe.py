@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from config_helpers import canonical_worker_config
+from config_helpers import canonical_worker_config, gate_execution_payload, trigger_queue_payload
 
 import json
 from concurrent.futures import ThreadPoolExecutor
@@ -118,12 +118,12 @@ def _run_cycles(worker: EffectOrchestratorWorker, count: int = 4) -> None:
 
 
 def _gate_records(worker: EffectOrchestratorWorker) -> list[dict[str, object]]:
-    payload = json.loads(worker.worker_config.gate_execution_store_path.read_text(encoding="utf-8"))
+    payload = gate_execution_payload(worker.worker_config)
     return list(payload.values())
 
 
 def _completion_events(worker: EffectOrchestratorWorker) -> list[dict[str, object]]:
-    payload = json.loads(worker.worker_config.event_queue_store_path.read_text(encoding="utf-8"))
+    payload = trigger_queue_payload(worker.worker_config)
     return [item for item in payload.values() if item.get("trigger_id") == "gate-dedupe"]
 
 

@@ -133,11 +133,8 @@ The workflow orchestrators share runtime state under `runtime/` (or your configu
 `runtime_dir`):
 
 - `orchestration.db`: authoritative trigger queue, workflow-event journal, gate/effect execution
-  history, and workflow configuration snapshots when `orchestration_store_backend` is `sqlite`.
-- `trigger-orchestrator-events.json`, `gate-orchestrator-executions.json`,
-  `effect-orchestrator-executions.json`, and `workflow-events.jsonl`: rollback-backend files and
-  legacy migration sources. SQLite deployments do not write workflow notifications to the JSONL
-  journal.
+  history, and workflow configuration snapshots. JSON orchestration stores are no longer
+  supported.
 - `trigger-orchestrator-cursors.json`: trigger-worker cursors/checkpoints.
 - `trigger-cursors-host-directories.json`: per-trigger Host Directory baseline, settle candidate,
   pending-event, and acknowledgement state.
@@ -160,40 +157,6 @@ The workflow orchestrators share runtime state under `runtime/` (or your configu
 - `trigger-conformance-report.json` and `effect-conformance-report.json`: conformance snapshots
   written by the trigger and effect suites under the configured `runtime_dir`.
 
-### Finalize legacy orchestration JSON
-
-After a deployment has run on an explicitly configured SQLite backend and all processes have been
-restarted onto a build that journals internal-event notifications to SQLite, run the read-only
-preflight:
-
-```bash
-evander-cli finalize-orchestration-json-store --runtime-dir runtime --check
-```
-
-The check strictly parses every legacy source and validates the SQLite database without modifying
-either. A malformed record or a record that is missing from SQLite and still `pending`, `inflight`,
-`running`, `waiting`, `completion_pending`, or an undismissed `failed` execution is a blocker.
-Terminal history inside `orchestration_retention_days` is marked for import; older terminal history
-is marked archive-only.
-
-Stop both orchestration workers and apply only a clean report:
-
-```bash
-sudo systemctl stop evander-trigger-orchestrator.service evander-effect-orchestrator.service
-evander-cli finalize-orchestration-json-store --runtime-dir runtime --apply
-sudo systemctl start evander-effect-orchestrator.service evander-trigger-orchestrator.service
-```
-
-`--apply` independently repeats the check, acquires both worker locks, copies each source into a
-hash-manifested directory under `runtime/archives/`, imports only retained terminal history, then
-removes the legacy sources and writes
-`runtime/migrations/orchestration-json-store-finalized-v1.json`. It fails closed if a source changes
-or reappears. It also writes a journal-adjacent cutover tombstone that records the actual configured
-journal, marker, and database paths; publishers share its lock and will not recreate JSON while the
-cutover is running. If either marker is left in `archived` state by an interrupted run, inspect the
-recorded `archive_path` before recovery; publishers fail closed and the command will not continue
-automatically.
-
 Gate execution state is useful when debugging workflow gates:
 
 - `succeeded`: the gate emitted a downstream event.
@@ -206,7 +169,7 @@ Troubleshooting checklist:
 1. **No downstream nodes running**
    - Confirm `triggers`, `gates`, and `effects` exist, and confirm there is at least one edge from
      the upstream node that should start the flow.
-   - Confirm pending source events exist in `trigger-orchestrator-events.json`.
+   - Confirm pending source events exist in `orchestration.db` table `trigger_events`.
 2. **Bindings fail with missing output references**
    - Check upstream node `outputs` declarations and the actual upstream payload keys.
    - Exact `${{node.output_name}}` and embedded `"...${{node.output_name}}..."` both require the referenced key to exist.
@@ -220,7 +183,7 @@ Troubleshooting checklist:
      for inspection.
 
 4. **Merge output looks incomplete or wrong**
-   - Inspect `gate-orchestrator-executions.json` for the recorded `resolved_config`, the latest
+   - Inspect `orchestration.db` table `gate_executions` for the recorded `resolved_config`, the latest
      inbound payload remembered for each source, and the emitted `outputs` for the specific event.
    - Verify the configured shared `outputs` projection matches the keys that should be forwarded
      from each inbound event.
@@ -233,7 +196,7 @@ Troubleshooting checklist:
    - Inspect the gate execution record to confirm the serialized string was recorded under
      `outputs.content`.
 7. **Unexpected duplicate behavior**
-   - Check idempotency collisions in `gate-orchestrator-executions.json` using
+   - Check idempotency collisions in `orchestration.db` table `gate_executions` using
      `idempotency_key=<event_id>::<node_id>`.
 8. **Cycle-like configs**
    - Direct cycles are marked `skipped` with `error: cycle_detected`; break the loop by changing
@@ -2843,7 +2806,7 @@ Failure recovery:
 - Global worker config lives at `config/trigger-orchestrator/config.json`.
 - For orchestration-only production deployments, start from `config/trigger-orchestrator/orchestration-core.config.json.example` (uses `runtime/orchestration-core` + `profiles/core-minimal`).
 - Runtime defaults (when config fields are null/omitted):
-  - queue: `runtime/trigger-orchestrator-events.json`
+  - orchestration database: `runtime/orchestration.db` (queue, executions, graph snapshots, and workflow events)
   - cursor: `runtime/trigger-orchestrator-cursors.json`
   - lock: `runtime/trigger-orchestrator.lock`
   - wake socket: `runtime/trigger-orchestrator.wake.sock`

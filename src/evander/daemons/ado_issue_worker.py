@@ -58,7 +58,7 @@ from evander.services import AzureDevOpsPrQueryProvider, _normalize_ignored_feed
 from evander.storage import JsonStore
 from evander.triggers.providers._cursor_state import TriggerCursorStore
 from evander.triggers.providers.pull_request_new_feedback import _parse_dt
-from evander.triggers.queue import SqliteTriggerEventQueue, TriggerEventQueue
+from evander.triggers.queue import SqliteTriggerEventQueue
 from evander.workflow.node_state import workflow_node_is_enabled
 from evander.workflow.runtime_config import load_trigger_orchestrator_worker_global_config
 
@@ -1600,20 +1600,14 @@ def _build_trigger_event_queue_for_worker_config(
     config: WorkerConfig,
     worker_config: TriggerOrchestratorWorkerGlobalConfig | None,
 ):
-    if (
-        worker_config is not None
-        and worker_config.orchestration_store_backend == "sqlite"
-        and "orchestration_store_backend" in worker_config.model_fields_set
-    ):
-        return SqliteTriggerEventQueue(
-            worker_config.orchestration_store_path,
-            retention_days=worker_config.orchestration_retention_days,
-        )
-    return TriggerEventQueue(
-        (worker_config.event_queue_store_path if worker_config is not None else None)
-        or config.runtime_dir / "trigger-orchestrator-events.json",
-        journal_path=(
-            worker_config.workflow_event_journal_path if worker_config is not None else None
+    return SqliteTriggerEventQueue(
+        (
+            worker_config.orchestration_store_path
+            if worker_config is not None
+            else config.runtime_dir / "orchestration.db"
+        ),
+        retention_days=(
+            worker_config.orchestration_retention_days if worker_config is not None else None
         ),
     )
 

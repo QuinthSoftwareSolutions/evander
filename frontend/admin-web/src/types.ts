@@ -20,11 +20,8 @@ export type WorkflowConfig = {
   poll_interval_seconds?: number;
   jitter_seconds?: number;
   lock_path?: string | null;
-  event_queue_store_path?: string | null;
   event_queue_cursor_store_path?: string | null;
-  gate_execution_store_path?: string | null;
   gate_cursor_store_path?: string | null;
-  effect_execution_store_path?: string | null;
   effect_cursor_store_path?: string | null;
   effect_lock_path?: string | null;
   triggers: WorkflowNodeConfig[];

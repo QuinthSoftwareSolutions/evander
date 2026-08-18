@@ -1,8 +1,6 @@
 from __future__ import annotations
 
-import fcntl
 import json
-import threading
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -11,15 +9,12 @@ import pytest
 from evander.daemons.effect_orchestrator import (
     EffectExecutionRecord,
     GateExecutionRecord,
-    JsonExecutionStore,
-    JsonGateExecutionStore,
     SqliteExecutionStore,
     SqliteGateExecutionStore,
 )
 from evander.repositories.orchestration import (
     JsonEffectCursorRepository,
     JsonGateCursorRepository,
-    JsonWorkflowConfigSnapshotRepository,
     SqliteWorkflowConfigSnapshotRepository,
 )
 from evander.repositories.orchestration_db import (
@@ -198,8 +193,8 @@ def test_effect_cursor_repository_records_last_processed_event(tmp_path: Path) -
 def test_execution_repository_supports_semantic_idempotency_and_gate_queries(
     tmp_path: Path,
 ) -> None:
-    execution_store = JsonExecutionStore(tmp_path / "effect-executions.json")
-    gate_store = JsonGateExecutionStore(tmp_path / "gate-executions.json")
+    execution_store = SqliteExecutionStore(tmp_path / "effect-executions.json")
+    gate_store = SqliteGateExecutionStore(tmp_path / "gate-executions.json")
 
     running = _effect_record(execution_id="exec-1", idempotency_key="idem-1")
     execution_store.record_execution(running)
@@ -222,59 +217,6 @@ def test_execution_repository_supports_semantic_idempotency_and_gate_queries(
     assert execution_store.find_execution_by_idempotency_key("idem-1") == running
     assert execution_store.get_execution("exec-1") == running
     assert gate_store.find_latest_execution_for_gate("merge-1") == newer_gate
-
-
-def test_execution_repository_put_uses_shared_file_lock(tmp_path: Path) -> None:
-    path = tmp_path / "effect-executions.json"
-    execution_store = JsonExecutionStore(path)
-    lock_path = path.with_name(f".{path.name}.lock")
-    writer_entered = threading.Event()
-    writer_finished = threading.Event()
-
-    def write_record() -> None:
-        writer_entered.set()
-        execution_store.record_execution(
-            _effect_record(execution_id="exec-locked", idempotency_key="idem-locked")
-        )
-        writer_finished.set()
-
-    lock_path.parent.mkdir(parents=True, exist_ok=True)
-    with lock_path.open("a+", encoding="utf-8") as handle:
-        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
-        writer = threading.Thread(target=write_record)
-        writer.start()
-        assert writer_entered.wait(timeout=1)
-        assert not writer_finished.wait(timeout=0.1)
-        fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
-
-    writer.join(timeout=1)
-    assert writer_finished.is_set()
-    assert execution_store.get_execution("exec-locked") is not None
-
-
-def test_execution_repository_update_all_preserves_records_written_after_stale_snapshot(
-    tmp_path: Path,
-) -> None:
-    path = tmp_path / "effect-executions.json"
-    execution_store = JsonExecutionStore(path)
-    execution_store.record_execution(_effect_record(execution_id="exec-old", idempotency_key="old"))
-
-    stale_snapshot = json.loads(path.read_text(encoding="utf-8"))
-    assert list(stale_snapshot) == ["exec-old"]
-
-    execution_store.record_execution(_effect_record(execution_id="exec-new", idempotency_key="new"))
-
-    def fail_old_record(records: dict[str, EffectExecutionRecord]) -> int:
-        record = records["exec-old"]
-        record.status = "failed"
-        records["exec-old"] = record
-        return 1
-
-    assert execution_store.update_all(fail_old_record) == 1
-
-    payload = json.loads(path.read_text(encoding="utf-8"))
-    assert payload["exec-old"]["status"] == "failed"
-    assert payload["exec-new"]["status"] == "running"
 
 
 def test_sqlite_execution_repository_supports_indexed_queries(tmp_path: Path) -> None:
@@ -593,10 +535,7 @@ def test_sqlite_gate_execution_repository_dismisses_failed_records_for_node(
 def test_execution_repositories_list_waiting_and_completion_pending_records(
     tmp_path: Path,
 ) -> None:
-    stores = [
-        JsonExecutionStore(tmp_path / "effect-executions.json"),
-        SqliteExecutionStore(tmp_path / "orchestration.db"),
-    ]
+    stores = [SqliteExecutionStore(tmp_path / "orchestration.db")]
     for index, execution_store in enumerate(stores):
         waiting_target = _effect_record(
             execution_id=f"exec-waiting-target-{index}",
@@ -640,10 +579,7 @@ def test_execution_repositories_list_waiting_and_completion_pending_records(
 def test_execution_repositories_list_records_by_node_type_and_statuses(
     tmp_path: Path,
 ) -> None:
-    stores = [
-        JsonExecutionStore(tmp_path / "effect-executions.json"),
-        SqliteExecutionStore(tmp_path / "orchestration.db"),
-    ]
+    stores = [SqliteExecutionStore(tmp_path / "orchestration.db")]
     for index, execution_store in enumerate(stores):
         succeeded_target = _effect_record(
             execution_id=f"exec-succeeded-target-{index}",
@@ -706,10 +642,7 @@ def test_sqlite_execution_repository_filtered_query_does_not_read_all(
 def test_gate_execution_repositories_list_waiting_and_completion_pending_records(
     tmp_path: Path,
 ) -> None:
-    stores = [
-        JsonGateExecutionStore(tmp_path / "gate-executions.json"),
-        SqliteGateExecutionStore(tmp_path / "orchestration.db"),
-    ]
+    stores = [SqliteGateExecutionStore(tmp_path / "orchestration.db")]
     for index, gate_store in enumerate(stores):
         waiting_target = _gate_record(
             execution_id=f"gate-waiting-target-{index}",
@@ -860,17 +793,11 @@ def test_sqlite_execution_repository_clears_target_event_without_full_file_store
     assert execution_store.get_execution("exec-2").status == "running"
 
 
-def test_workflow_config_snapshot_repository_supports_json_and_sqlite_backends(
-    tmp_path: Path,
-) -> None:
+def test_workflow_config_snapshot_repository_round_trips_snapshot(tmp_path: Path) -> None:
     snapshot = _workflow_config_snapshot_payload()
-    json_repo = JsonWorkflowConfigSnapshotRepository(tmp_path / "workflow-config-snapshots.json")
-    sqlite_repo = SqliteWorkflowConfigSnapshotRepository(tmp_path / "orchestration.db")
+    repository = SqliteWorkflowConfigSnapshotRepository(tmp_path / "orchestration.db")
 
-    json_repo.put_snapshot(snapshot)
-    sqlite_repo.put_snapshot(snapshot)
+    repository.put_snapshot(snapshot)
 
-    assert json_repo.get_snapshot("revision-1") == snapshot
-    assert sqlite_repo.get_snapshot("revision-1") == snapshot
-    assert json_repo.list_snapshots() == [snapshot]
-    assert sqlite_repo.list_snapshots() == [snapshot]
+    assert repository.get_snapshot("revision-1") == snapshot
+    assert repository.list_snapshots() == [snapshot]

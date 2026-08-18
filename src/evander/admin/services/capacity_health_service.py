@@ -264,22 +264,9 @@ class CapacityHealthAdminService:
         if workflow_stores:
             paths.extend(
                 [
-                    ("workflow_event_queue", Path(workflow_stores["event_queue_store_path"])),
                     (
                         "workflow_orchestration_store",
                         Path(workflow_stores["orchestration_store_path"]),
-                    ),
-                    (
-                        "workflow_effect_executions",
-                        Path(workflow_stores["effect_execution_store_path"]),
-                    ),
-                    (
-                        "workflow_gate_executions",
-                        Path(workflow_stores["gate_execution_store_path"]),
-                    ),
-                    (
-                        "workflow_config_snapshots",
-                        Path(workflow_stores["workflow_config_snapshot_store_path"]),
                     ),
                     (
                         "workflow_await_agent_store",
@@ -643,7 +630,7 @@ class CapacityHealthAdminService:
                     )
                 ],
             )
-        backend = str(stores.get("orchestration_store_backend") or "").strip().casefold() or None
+        backend = "sqlite"
         try:
             queue_store, _, _ = self._deps.workflow_run_store_bundle(stores)
             active_records = list(queue_store.list_active_records())

@@ -13,9 +13,62 @@ from evander.directory_config import (
 )
 from evander.directories import DirectoryStore
 from evander.host_config import HostConfig, save_host_config
+from evander.daemons.effect_orchestrator import SqliteExecutionStore, SqliteGateExecutionStore
+from evander.repositories.orchestration import SqliteWorkflowConfigSnapshotRepository
+from evander.triggers.queue import SqliteTriggerEventQueue
+from evander.workflow.events import SqliteWorkflowEventJournal
 
 _WORKFLOW_NODE_COLLECTIONS = ("triggers", "gates", "effects", "queries")
 _WORKFLOW_NODE_ENVELOPE_FIELDS = frozenset({"id", "display_name", "type", "config", "outputs"})
+
+
+def trigger_queue_payload(
+    config: TriggerOrchestratorWorkerGlobalConfig,
+) -> dict[str, dict[str, Any]]:
+    return {
+        event_id: record.model_dump(mode="json")
+        for event_id, record in SqliteTriggerEventQueue(config.orchestration_store_path)
+        .read_all()
+        .items()
+    }
+
+
+def effect_execution_payload(
+    config: TriggerOrchestratorWorkerGlobalConfig,
+) -> dict[str, dict[str, Any]]:
+    return {
+        execution_id: record.model_dump(mode="json")
+        for execution_id, record in SqliteExecutionStore(config.orchestration_store_path)
+        .read_all()
+        .items()
+    }
+
+
+def gate_execution_payload(
+    config: TriggerOrchestratorWorkerGlobalConfig,
+) -> dict[str, dict[str, Any]]:
+    return {
+        execution_id: record.model_dump(mode="json")
+        for execution_id, record in SqliteGateExecutionStore(config.orchestration_store_path)
+        .read_all()
+        .items()
+    }
+
+
+def workflow_event_payload(
+    config: TriggerOrchestratorWorkerGlobalConfig,
+) -> list[dict[str, Any]]:
+    events, _ = SqliteWorkflowEventJournal(config.orchestration_store_path).read_after(0)
+    return [event.model_dump(mode="json") for event in events]
+
+
+def workflow_config_snapshot_payload(
+    config: TriggerOrchestratorWorkerGlobalConfig,
+) -> dict[str, dict[str, Any]]:
+    snapshots = SqliteWorkflowConfigSnapshotRepository(
+        config.orchestration_store_path
+    ).list_snapshots()
+    return {str(snapshot["revision"]): snapshot for snapshot in snapshots}
 
 
 def canonical_workflow_payload(payload: dict[str, Any]) -> dict[str, Any]:

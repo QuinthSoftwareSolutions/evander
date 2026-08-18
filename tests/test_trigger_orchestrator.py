@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from config_helpers import canonical_worker_config
+from config_helpers import canonical_worker_config, trigger_queue_payload
 
 import json
 from datetime import UTC, datetime, timedelta
@@ -150,7 +150,7 @@ def test_build_trigger_orchestrator_worker_uses_sqlite_default_from_loader(
 
     queue = SqliteTriggerEventQueue(runtime_dir / "orchestration.db")
     assert queue.contains("event-1") is True
-    assert not (runtime_dir / "trigger-orchestrator-events.json").exists()
+    assert (runtime_dir / "orchestration.db").exists()
 
 
 def test_trigger_orchestrator_run_once_publishes_and_updates_cursor(tmp_path: Path) -> None:
@@ -193,7 +193,7 @@ def test_trigger_orchestrator_run_once_publishes_and_updates_cursor(tmp_path: Pa
     assert result.next_sleep_seconds == 0.0
     assert wake_calls == ["effect"]
 
-    queue_payload = json.loads(worker_config.event_queue_store_path.read_text(encoding="utf-8"))
+    queue_payload = trigger_queue_payload(worker_config)
     assert list(queue_payload.keys()) == ["event-1"]
     assert queue_payload["event-1"]["trace_id"]
     cursor_payload = json.loads(
@@ -676,7 +676,7 @@ def test_trigger_orchestrator_publishes_multiple_events_from_one_provider_poll(
     assert result.events_discovered == 2
     assert result.events_published == 2
 
-    queue_payload = json.loads(worker_config.event_queue_store_path.read_text(encoding="utf-8"))
+    queue_payload = trigger_queue_payload(worker_config)
     assert list(queue_payload.keys()) == ["event-1", "event-2"]
     cursor_payload = json.loads(
         worker_config.event_queue_cursor_store_path.read_text(encoding="utf-8")
@@ -789,7 +789,7 @@ def test_trigger_orchestrator_rejects_reserved_runtime_output_name(tmp_path: Pat
     assert result.configured_triggers == 1
     assert result.events_discovered == 1
     assert result.events_published == 0
-    queue_payload = json.loads(worker_config.event_queue_store_path.read_text(encoding="utf-8"))
+    queue_payload = trigger_queue_payload(worker_config)
     assert queue_payload == {}
 
 
@@ -1025,7 +1025,7 @@ def test_trigger_orchestrator_reloads_provider_factory_after_provider_loader_cha
     assert "provider_loader reload failed" in caplog.text
     assert "restart or fix configuration before retrying" in caplog.text
 
-    queue_payload = json.loads(updated_config.event_queue_store_path.read_text(encoding="utf-8"))
+    queue_payload = trigger_queue_payload(updated_config)
     assert list(queue_payload.keys()) == ["reload-event-1"]
 
 
@@ -1072,10 +1072,7 @@ def test_due_scheduled_internal_event_publishes_before_event_trigger_poll(
     assert created is True
     assert result.events_published == 1
 
-    internal_events = InternalEventBus(
-        worker_config.internal_event_store_path,
-        journal_path=worker_config.workflow_event_journal_path,
-    ).list_events()
+    internal_events = InternalEventBus(worker_config.internal_event_store_path).list_events()
     assert len(internal_events) == 1
     published_event = internal_events[0]
     assert published_event.event_type == "issue.plan_committed"
@@ -1090,7 +1087,7 @@ def test_due_scheduled_internal_event_publishes_before_event_trigger_poll(
     assert published_event.source.node_id == "node-1"
     assert published_event.source.node_type == "effect:event:schedule"
 
-    queue_payload = json.loads(worker_config.event_queue_store_path.read_text(encoding="utf-8"))
+    queue_payload = trigger_queue_payload(worker_config)
     assert list(queue_payload.keys()) == [f"event-listener:{published_event.event_id}"]
     record = queue_payload[f"event-listener:{published_event.event_id}"]
     assert record["payload"]["event_type"] == "issue.plan_committed"
@@ -1174,10 +1171,7 @@ def test_events_scheduled_during_trigger_poll_are_delivered_same_cycle_without_e
     assert first_result.events_published == 2
     assert first_result.next_sleep_seconds == 0.0
     assert external_poll_count == 1
-    internal_events = InternalEventBus(
-        worker_config.internal_event_store_path,
-        journal_path=worker_config.workflow_event_journal_path,
-    ).list_events()
+    internal_events = InternalEventBus(worker_config.internal_event_store_path).list_events()
     assert [event.payload["issue_id"] for event in internal_events] == [
         "ISSUE-EARLIER",
         "ISSUE-LATER",
@@ -1308,10 +1302,7 @@ def test_due_scheduled_internal_event_is_published_once_across_cycles(
     assert first_cycle.events_published == 0
     assert second_cycle.events_published == 0
 
-    internal_events = InternalEventBus(
-        worker_config.internal_event_store_path,
-        journal_path=worker_config.workflow_event_journal_path,
-    ).list_events()
+    internal_events = InternalEventBus(worker_config.internal_event_store_path).list_events()
     assert len(internal_events) == 1
     assert internal_events[0].idempotency_key == f"scheduled-event:{scheduled_event.schedule_id}"
 
@@ -1474,10 +1465,7 @@ def test_event_trigger_matches_internal_event_and_preserves_payload(tmp_path: Pa
             ],
         }
     )
-    bus = InternalEventBus(
-        worker_config.internal_event_store_path,
-        journal_path=worker_config.workflow_event_journal_path,
-    )
+    bus = InternalEventBus(worker_config.internal_event_store_path)
     internal = bus.publish(
         event_type="issue.plan_committed",
         payload={"issue_id": "ISSUE-1", "plan_version": 3},
@@ -1489,7 +1477,7 @@ def test_event_trigger_matches_internal_event_and_preserves_payload(tmp_path: Pa
     result = worker.run_once()
 
     assert result.events_published == 1
-    queue_payload = json.loads(worker_config.event_queue_store_path.read_text(encoding="utf-8"))
+    queue_payload = trigger_queue_payload(worker_config)
     record = queue_payload[f"event-listener:{internal.event_id}"]
     assert record["trigger_id"] == "event-listener"
     assert record["trigger_type"] == "trigger:event"
@@ -1519,10 +1507,7 @@ def test_event_trigger_ignores_non_matching_type_and_correlation_key(tmp_path: P
             ],
         }
     )
-    bus = InternalEventBus(
-        worker_config.internal_event_store_path,
-        journal_path=worker_config.workflow_event_journal_path,
-    )
+    bus = InternalEventBus(worker_config.internal_event_store_path)
     bus.publish(event_type="issue.step_completed", payload={}, idempotency_key="wrong-type")
     bus.publish(
         event_type="issue.plan_committed",
@@ -1535,7 +1520,7 @@ def test_event_trigger_ignores_non_matching_type_and_correlation_key(tmp_path: P
     result = worker.run_once()
 
     assert result.events_published == 0
-    assert json.loads(worker_config.event_queue_store_path.read_text(encoding="utf-8")) == {}
+    assert trigger_queue_payload(worker_config) == {}
 
 
 def test_multiple_event_triggers_can_listen_to_same_internal_event(tmp_path: Path) -> None:
@@ -1564,10 +1549,7 @@ def test_multiple_event_triggers_can_listen_to_same_internal_event(tmp_path: Pat
             ],
         }
     )
-    bus = InternalEventBus(
-        worker_config.internal_event_store_path,
-        journal_path=worker_config.workflow_event_journal_path,
-    )
+    bus = InternalEventBus(worker_config.internal_event_store_path)
     event = bus.publish(
         event_type="human.question_answered",
         payload={"answer": "yes"},
@@ -1578,7 +1560,7 @@ def test_multiple_event_triggers_can_listen_to_same_internal_event(tmp_path: Pat
     result = worker.run_once()
 
     assert result.events_published == 2
-    queue_payload = json.loads(worker_config.event_queue_store_path.read_text(encoding="utf-8"))
+    queue_payload = trigger_queue_payload(worker_config)
     assert sorted(queue_payload) == [
         f"listener-a:{event.event_id}",
         f"listener-b:{event.event_id}",
@@ -1588,10 +1570,7 @@ def test_multiple_event_triggers_can_listen_to_same_internal_event(tmp_path: Pat
 def test_event_trigger_acknowledges_internal_event_after_publish(tmp_path: Path) -> None:
     runtime_dir = tmp_path / "runtime"
     config = GatewayConfig(runtime_dir=runtime_dir)
-    event_bus = InternalEventBus(
-        runtime_dir / "internal-events.json",
-        journal_path=runtime_dir / "workflow-events.jsonl",
-    )
+    event_bus = InternalEventBus(runtime_dir / "internal-events.json")
     internal = event_bus.publish(
         event_type="issue.plan_committed",
         payload={"issue_id": "ISSUE-1", "plan_version": 3},
@@ -1660,10 +1639,7 @@ def _webhook_provider(runtime_dir: Path, *, trigger_id: str, slug: str) -> Webho
 
 
 def _webhook_event_bus(runtime_dir: Path) -> InternalEventBus:
-    return InternalEventBus(
-        runtime_dir / "internal-events.json",
-        journal_path=runtime_dir / "workflow-events.jsonl",
-    )
+    return InternalEventBus(runtime_dir / "internal-events.json")
 
 
 def test_webhook_trigger_emits_only_matching_signed_webhook_events(
@@ -1824,7 +1800,7 @@ def test_trigger_orchestrator_publishes_webhook_events_and_keeps_cursor_state(
     assert second.events_discovered == 0
     assert second.events_published == 0
 
-    queue_payload = json.loads(worker_config.event_queue_store_path.read_text(encoding="utf-8"))
+    queue_payload = trigger_queue_payload(worker_config)
     assert list(queue_payload) == [f"webhook-1:{internal.event_id}"]
     assert queue_payload[f"webhook-1:{internal.event_id}"]["trace_id"]
 

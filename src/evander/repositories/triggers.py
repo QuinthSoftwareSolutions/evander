@@ -1,8 +1,6 @@
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Callable, Protocol
 
 
@@ -37,22 +35,3 @@ class WorkerConfigTriggerRepository:
 
     def write_document(self, config: dict[str, object]) -> TriggerConfigDocument:
         return self._write_config(config)
-
-
-class TriggerEventRepository(Protocol):
-    """Repository contract for persisted trigger queue event records."""
-
-    def read_events(self, path: Path | None) -> dict[str, object]: ...
-
-
-class JsonTriggerEventRepository:
-    """JSON-backed trigger event repository with defensive parsing semantics."""
-
-    def read_events(self, path: Path | None) -> dict[str, object]:
-        if path is None or not path.exists():
-            return {}
-        try:
-            payload = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            return {}
-        return payload if isinstance(payload, dict) else {}

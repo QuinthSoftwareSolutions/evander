@@ -245,9 +245,8 @@ remain in repository-backed JSON paths, for example `trigger-cursors-*.json` and
 `trigger-orchestrator-cursors.json`. SQLite WAL supports independent trigger, effect, and Admin
 readers/writers while the repository applies a busy timeout and transactions.
 
-The `json` backend remains a rollback/compatibility option with legacy paths for queue, cursors,
-journals, execution records, and snapshots. It is not the preferred concurrent production backend.
-`evander-cli migrate-orchestration-store` imports legacy state through a supported migration flow.
+SQLite at `runtime/orchestration.db` is the only supported orchestration state backend. It stores
+the queue, workflow journal, execution records, and workflow configuration snapshots.
 
 ### The effect orchestrator
 

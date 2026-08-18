@@ -268,15 +268,10 @@ class VmAgentPromptMixin:
         )
 
     def _direct_agent_prompt_execution_store(self) -> Any:
-        from evander.daemons.effect_orchestrator import (
-            JsonExecutionStore,
-            SqliteExecutionStore,
-        )
+        from evander.daemons.effect_orchestrator import SqliteExecutionStore
 
         stores = self._workflow_run_store_paths()
-        if self._workflow_uses_sqlite_store(stores):
-            return SqliteExecutionStore(Path(stores["orchestration_store_path"]))
-        return JsonExecutionStore(Path(stores["effect_execution_store_path"]))
+        return SqliteExecutionStore(Path(stores["orchestration_store_path"]))
 
     def _record_direct_libvirt_admin_prompt_execution(
         self,
@@ -399,17 +394,13 @@ class VmAgentPromptMixin:
 
         from evander.daemons.effect_orchestrator import (
             EffectExecutionRecord,
-            JsonExecutionStore,
             SqliteExecutionStore,
         )
 
         event_id = f"admin-agent-prompt:{session_id}:{dispatch_id}"
         idempotency_key = f"{event_id}::{effect_id}"
         stores = self._workflow_run_store_paths()
-        if self._workflow_uses_sqlite_store(stores):
-            execution_store = SqliteExecutionStore(Path(stores["orchestration_store_path"]))
-        else:
-            execution_store = JsonExecutionStore(Path(stores["effect_execution_store_path"]))
+        execution_store = SqliteExecutionStore(Path(stores["orchestration_store_path"]))
         if execution_store.find_execution_by_idempotency_key(idempotency_key) is not None:
             return
 

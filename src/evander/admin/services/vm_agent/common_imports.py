@@ -93,7 +93,6 @@ from evander.vm.defaults_config import EffectiveVmDefaultsConfig, VmDefaultsConf
 from evander.vm.provider import VmProviderRegistry
 from evander.vm.templates import resolve_libvirt_vm_template_selector
 from evander.workflow.catalog import WorkflowEditorFieldOption
-from evander.workflow.events import workflow_event_journal_path
 from evander.worker.security import sanitize_text
 
 COMMUNICATION_FILE_SESSION_POLICY_FIELDS = session_helpers.COMMUNICATION_FILE_SESSION_POLICY_FIELDS
@@ -235,5 +234,4 @@ __all__ = [
     "uuid4",
     "validate_allowed_contact_ids_for_directory",
     "vm_helpers",
-    "workflow_event_journal_path",
 ]

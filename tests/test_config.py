@@ -1141,11 +1141,6 @@ def test_teams_backend_accepts_delegated_graph_api_when_identity_is_bound() -> N
 def test_trigger_orchestrator_worker_global_config_defaults_follow_runtime_dir() -> None:
     config = _validate_trigger_config({"runtime_dir": "/tmp/evander-runtime"})
     assert str(config.lock_path) == "/tmp/evander-runtime/trigger-orchestrator.lock"
-    assert (
-        str(config.event_queue_store_path)
-        == "/tmp/evander-runtime/trigger-orchestrator-events.json"
-    )
-    assert config.orchestration_store_backend == "sqlite"
     assert str(config.orchestration_store_path) == "/tmp/evander-runtime/orchestration.db"
     assert config.orchestration_retention_days == 30
     assert config.orchestration_wal_checkpoint_mode == "truncate"
@@ -1156,32 +1151,30 @@ def test_trigger_orchestrator_worker_global_config_defaults_follow_runtime_dir()
         str(config.event_queue_cursor_store_path)
         == "/tmp/evander-runtime/trigger-orchestrator-cursors.json"
     )
-    assert str(config.workflow_event_journal_path) == "/tmp/evander-runtime/workflow-events.jsonl"
     assert (
         str(config.scheduled_internal_event_store_path)
         == "/tmp/evander-runtime/scheduled-internal-events.json"
     )
     assert (
-        str(config.gate_execution_store_path)
-        == "/tmp/evander-runtime/gate-orchestrator-executions.json"
-    )
-    assert (
         str(config.gate_cursor_store_path) == "/tmp/evander-runtime/gate-orchestrator-cursors.json"
-    )
-    assert (
-        str(config.effect_execution_store_path)
-        == "/tmp/evander-runtime/effect-orchestrator-executions.json"
     )
     assert (
         str(config.effect_cursor_store_path)
         == "/tmp/evander-runtime/effect-orchestrator-cursors.json"
     )
     assert str(config.effect_lock_path) == "/tmp/evander-runtime/effect-orchestrator.lock"
-    assert (
-        str(config.workflow_config_snapshot_store_path)
-        == "/tmp/evander-runtime/workflow-config-snapshots.json"
-    )
     assert config.triggers == []
+
+
+def test_trigger_orchestrator_worker_config_accepts_stale_explicit_sqlite_backend() -> None:
+    config = _validate_trigger_config({"orchestration_store_backend": "sqlite"})
+
+    assert "orchestration_store_backend" not in type(config).model_fields
+
+
+def test_trigger_orchestrator_worker_config_rejects_removed_json_backend() -> None:
+    with pytest.raises(ValueError, match="no longer supported"):
+        _validate_trigger_config({"orchestration_store_backend": "json"})
 
 
 def test_trigger_orchestrator_filter_gate_accepts_when_predicates() -> None:

@@ -9,7 +9,7 @@ import pytest
 
 from evander.config import GatewayConfig
 from evander.execution import ExecutionBackendKind
-from evander.daemons.effect_orchestrator import JsonExecutionStore
+from evander.daemons.effect_orchestrator import SqliteExecutionStore
 from evander.effects.providers.lifecycle_hooks import (
     AgentEnqueuePromptQueueDispatchHook,
 )
@@ -1125,9 +1125,7 @@ def test_scheduled_wake_worker_preserves_claude_queue_metadata_for_later_dispatc
     assert queued.metadata["wake_dispatch_id"] == latest.dispatch_id
 
     replay_backend = _ContainerBackendStub(active=False)
-    execution_store = JsonExecutionStore(
-        tmp_path / "runtime" / "effect-orchestrator-executions.json"
-    )
+    execution_store = SqliteExecutionStore(tmp_path / "runtime" / "orchestration.db")
     replay_config = GatewayConfig(
         runtime_dir=tmp_path / "runtime",
         execution_backend="container_worker_vm",

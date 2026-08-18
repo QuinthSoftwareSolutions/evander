@@ -8,23 +8,16 @@ from evander.config import GatewayConfig, TriggerOrchestratorWorkerGlobalConfig
 from evander.events.internal import InternalEventBus, internal_event_store_path
 from evander.workflow.events import SqliteWorkflowEventJournal
 
-from .wal_maintenance import sqlite_orchestration_store_enabled
-
 
 def build_internal_event_bus(
     worker_config: TriggerOrchestratorWorkerGlobalConfig,
 ) -> InternalEventBus:
-    if sqlite_orchestration_store_enabled(worker_config):
-        return InternalEventBus(
-            worker_config.internal_event_store_path,
-            journal=SqliteWorkflowEventJournal(
-                worker_config.orchestration_store_path,
-                retention_days=int(worker_config.orchestration_retention_days),
-            ),
-        )
     return InternalEventBus(
         worker_config.internal_event_store_path,
-        journal_path=worker_config.workflow_event_journal_path,
+        journal=SqliteWorkflowEventJournal(
+            worker_config.orchestration_store_path,
+            retention_days=int(worker_config.orchestration_retention_days),
+        ),
     )
 
 
@@ -54,11 +47,6 @@ def internal_event_bus_metadata(
 ) -> dict[str, str | int]:
     return {
         "internal_event_store_path": str(worker_config.internal_event_store_path),
-        "workflow_event_journal_path": str(worker_config.workflow_event_journal_path),
-        "orchestration_store_backend": worker_config.orchestration_store_backend,
-        "orchestration_store_backend_explicit": int(
-            "orchestration_store_backend" in worker_config.model_fields_set
-        ),
         "orchestration_store_path": str(worker_config.orchestration_store_path),
         "orchestration_retention_days": int(worker_config.orchestration_retention_days),
     }
@@ -73,25 +61,14 @@ def build_internal_event_bus_from_metadata(
     event_path = Path(
         values.get("internal_event_store_path") or internal_event_store_path(runtime_dir)
     )
-    backend_explicit = values.get("orchestration_store_backend_explicit")
-    if (
-        str(values.get("orchestration_store_backend") or "").strip().casefold() == "sqlite"
-        and str(backend_explicit or "").strip().casefold() not in {"", "0", "false", "no"}
-        and values.get("orchestration_store_path")
-    ):
-        retention_value = values.get("orchestration_retention_days")
-        retention_days = int(retention_value) if retention_value is not None else None
-        return InternalEventBus(
-            event_path,
-            journal=SqliteWorkflowEventJournal(
-                Path(values["orchestration_store_path"]),
-                retention_days=retention_days,
-            ),
-        )
-    journal_path = values.get("workflow_event_journal_path")
+    retention_value = values.get("orchestration_retention_days")
+    retention_days = int(retention_value) if retention_value is not None else None
     return InternalEventBus(
         event_path,
-        journal_path=Path(journal_path) if journal_path else None,
+        journal=SqliteWorkflowEventJournal(
+            Path(values.get("orchestration_store_path") or Path(runtime_dir) / "orchestration.db"),
+            retention_days=retention_days,
+        ),
     )
 
 

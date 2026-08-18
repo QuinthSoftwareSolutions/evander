@@ -3,7 +3,10 @@ from __future__ import annotations
 import os
 import stat
 import subprocess
+import sys
 from pathlib import Path
+
+from evander.daemons.effect_orchestrator import EffectExecutionRecord, SqliteExecutionStore
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -52,13 +55,23 @@ def test_auto_dev_runtime_log_snapshot_redacts_secret_shapes(tmp_path: Path) -> 
         + "\n",
         encoding="utf-8",
     )
-    (runtime_dir / "effect-orchestrator-executions.json").write_text(
-        '{"success": false, "access_token": "raw-access-token"}\n',
-        encoding="utf-8",
-    )
-    (runtime_dir / "gate-orchestrator-executions.json").write_text(
-        '{"status": "error", "connstr": "Server=tcp:db;Password=swordfish;"}\n',
-        encoding="utf-8",
+    SqliteExecutionStore(runtime_dir / "orchestration.db").record_execution(
+        EffectExecutionRecord(
+            execution_id="execution-failed",
+            idempotency_key="execution-failed",
+            event_id="event-failed",
+            trace_id="trace-failed",
+            source_node_id="trigger-test",
+            source_trigger_type="trigger:test",
+            effect_id="effect-test",
+            effect_type="effect:test",
+            status="failed",
+            started_at="2026-08-18T10:00:00Z",
+            finished_at="2026-08-18T10:00:01Z",
+            resolved_config_hash="fixture",
+            resolved_config={"access_token": "raw-access-token"},
+            error="connstr=Server=tcp:db;Password=swordfish;",
+        )
     )
 
     env = {
@@ -66,6 +79,7 @@ def test_auto_dev_runtime_log_snapshot_redacts_secret_shapes(tmp_path: Path) -> 
         "PATH": f"{fake_bin}:{os.environ['PATH']}",
         "AUTO_DEV_LOG_SINCE": "1 minute ago",
         "AUTO_DEV_LOG_OUTPUT": str(snapshot_path),
+        "EVANDER_PYTHON": sys.executable,
     }
 
     result = subprocess.run(

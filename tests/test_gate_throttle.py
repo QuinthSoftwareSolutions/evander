@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from config_helpers import canonical_worker_config
+from config_helpers import canonical_worker_config, gate_execution_payload, trigger_queue_payload
 
 import json
 from concurrent.futures import ThreadPoolExecutor
@@ -113,12 +113,11 @@ def _execute(
 
 
 def _gate_records(worker: EffectOrchestratorWorker) -> list[dict[str, object]]:
-    path = worker.worker_config.runtime_dir / "gate-orchestrator-executions.json"
-    return list(json.loads(path.read_text(encoding="utf-8")).values())
+    return list(gate_execution_payload(worker.worker_config).values())
 
 
 def _completion_events(worker: EffectOrchestratorWorker) -> list[dict[str, object]]:
-    payload = json.loads(worker.worker_config.event_queue_store_path.read_text(encoding="utf-8"))
+    payload = trigger_queue_payload(worker.worker_config)
     return [item for item in payload.values() if item.get("trigger_id") == "gate-throttle"]
 
 
@@ -304,7 +303,6 @@ def test_throttle_rejects_unknown_outbound_edges(tmp_path: Path) -> None:
     diagnostics = collect_domain_validation_diagnostics(worker_config)
 
     assert any(
-        item.code == "node_capability"
-        and "uses invalid source_port value(s)" in item.message
+        item.code == "node_capability" and "uses invalid source_port value(s)" in item.message
         for item in diagnostics
     )

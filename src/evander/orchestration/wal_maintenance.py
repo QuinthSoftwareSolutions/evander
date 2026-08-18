@@ -13,15 +13,6 @@ from evander.repositories.orchestration_db import (
 )
 
 
-def sqlite_orchestration_store_enabled(
-    worker_config: TriggerOrchestratorWorkerGlobalConfig,
-) -> bool:
-    return (
-        worker_config.orchestration_store_backend == "sqlite"
-        and "orchestration_store_backend" in worker_config.model_fields_set
-    )
-
-
 @dataclass
 class OrchestrationWalCheckpointMaintenance:
     clock: Callable[[], float] = time.monotonic
@@ -32,11 +23,6 @@ class OrchestrationWalCheckpointMaintenance:
         self,
         worker_config: TriggerOrchestratorWorkerGlobalConfig,
     ) -> OrchestrationWalCheckpointResult | None:
-        if not sqlite_orchestration_store_enabled(worker_config):
-            self._last_settings = None
-            self._next_check_at = 0.0
-            return None
-
         settings = (
             Path(worker_config.orchestration_store_path),
             worker_config.orchestration_wal_checkpoint_mode,

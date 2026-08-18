@@ -2,13 +2,11 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 from concurrent.futures import ThreadPoolExecutor
-import json
 from threading import Barrier
 
-import pytest
-
 from evander.events.models import TriggerEvent
-from evander.triggers.queue import SqliteTriggerEventQueue, TriggerEventQueue
+from evander.triggers.queue import SqliteTriggerEventQueue
+from evander.workflow.events import SqliteWorkflowEventJournal
 
 
 def _event(*, event_id: str, trigger_id: str = "discord", offset_seconds: int = 0) -> TriggerEvent:
@@ -22,7 +20,7 @@ def _event(*, event_id: str, trigger_id: str = "discord", offset_seconds: int = 
 
 
 def test_publish_and_list_pending(tmp_path) -> None:
-    queue = TriggerEventQueue(tmp_path / "events.json")
+    queue = SqliteTriggerEventQueue(tmp_path / "orchestration.db")
 
     published = queue.publish(_event(event_id="evt-1"))
 
@@ -33,7 +31,7 @@ def test_publish_and_list_pending(tmp_path) -> None:
 
 
 def test_publish_preserves_trace_id_when_provided(tmp_path) -> None:
-    queue = TriggerEventQueue(tmp_path / "events.json")
+    queue = SqliteTriggerEventQueue(tmp_path / "orchestration.db")
 
     published = queue.publish(
         _event(event_id="evt-1").model_copy(update={"trace_id": "trace-123"}),
@@ -43,7 +41,7 @@ def test_publish_preserves_trace_id_when_provided(tmp_path) -> None:
 
 
 def test_publish_honors_idempotency_key(tmp_path) -> None:
-    queue = TriggerEventQueue(tmp_path / "events.json")
+    queue = SqliteTriggerEventQueue(tmp_path / "orchestration.db")
 
     first = queue.publish(_event(event_id="evt-1"), idempotency_key="provider:delivery-1")
     second = queue.publish(_event(event_id="evt-2"), idempotency_key="provider:delivery-1")
@@ -52,13 +50,9 @@ def test_publish_honors_idempotency_key(tmp_path) -> None:
     assert [item.event_id for item in queue.list_pending()] == ["evt-1"]
 
 
-@pytest.mark.parametrize("backend", ["json", "sqlite"])
-def test_publish_result_atomically_reports_one_creator_under_race(tmp_path, backend: str) -> None:
-    path = tmp_path / ("events.json" if backend == "json" else "orchestration.db")
-    queues = [
-        TriggerEventQueue(path) if backend == "json" else SqliteTriggerEventQueue(path)
-        for _ in range(8)
-    ]
+def test_publish_result_atomically_reports_one_creator_under_race(tmp_path) -> None:
+    path = tmp_path / "orchestration.db"
+    queues = [SqliteTriggerEventQueue(path) for _ in range(8)]
     barrier = Barrier(len(queues))
 
     def publish(queue):
@@ -76,21 +70,8 @@ def test_publish_result_atomically_reports_one_creator_under_race(tmp_path, back
     assert [record.event_id for record in queues[0].list_pending()] == ["evt-race"]
 
 
-def test_publish_uses_single_store_update(tmp_path, monkeypatch) -> None:
-    queue = TriggerEventQueue(tmp_path / "events.json")
-
-    def fail_split_write(*_args, **_kwargs):
-        raise AssertionError("publish must not use split read/write store updates")
-
-    monkeypatch.setattr(queue._store, "write_all", fail_split_write)
-
-    queue.publish(_event(event_id="evt-1"))
-
-    assert [item.event_id for item in queue.list_pending()] == ["evt-1"]
-
-
 def test_publish_normalizes_blank_idempotency_key(tmp_path) -> None:
-    queue = TriggerEventQueue(tmp_path / "events.json")
+    queue = SqliteTriggerEventQueue(tmp_path / "orchestration.db")
 
     first = queue.publish(_event(event_id="evt-1"), idempotency_key="   ")
     second = queue.publish(_event(event_id="evt-2"), idempotency_key=None)
@@ -100,20 +81,17 @@ def test_publish_normalizes_blank_idempotency_key(tmp_path) -> None:
 
 
 def test_queue_persists_records_on_disk(tmp_path) -> None:
-    queue_path = tmp_path / "events.json"
-    queue = TriggerEventQueue(queue_path)
+    queue_path = tmp_path / "orchestration.db"
+    queue = SqliteTriggerEventQueue(queue_path)
     queue.publish(_event(event_id="evt-1"))
 
-    raw = json.loads(queue_path.read_text(encoding="utf-8"))
-    assert "evt-1" in raw
-    assert raw["evt-1"]["delivery_state"] == "pending"
-
-    reloaded = TriggerEventQueue(queue_path)
+    reloaded = SqliteTriggerEventQueue(queue_path)
+    assert reloaded.read_all()["evt-1"].delivery_state == "pending"
     assert [item.event_id for item in reloaded.list_pending()] == ["evt-1"]
 
 
 def test_list_pending_filters_and_ordering(tmp_path) -> None:
-    queue = TriggerEventQueue(tmp_path / "events.json")
+    queue = SqliteTriggerEventQueue(tmp_path / "orchestration.db")
     queue.publish(_event(event_id="evt-2", trigger_id="discord", offset_seconds=2))
     queue.publish(_event(event_id="evt-1", trigger_id="discord", offset_seconds=1))
     queue.publish(_event(event_id="evt-3", trigger_id="email", offset_seconds=3))
@@ -124,53 +102,36 @@ def test_list_pending_filters_and_ordering(tmp_path) -> None:
 
 
 def test_mark_delivered_updates_state(tmp_path) -> None:
-    queue = TriggerEventQueue(tmp_path / "events.json")
+    database_path = tmp_path / "orchestration.db"
+    queue = SqliteTriggerEventQueue(database_path)
     queue.publish(_event(event_id="evt-1"))
 
     assert queue.mark_delivered("evt-1") is True
     assert queue.mark_delivered("evt-missing") is False
 
     assert queue.list_pending() == []
-    journal_events = [
-        json.loads(line)
-        for line in (tmp_path / "workflow-events.jsonl").read_text(encoding="utf-8").splitlines()
-    ]
-    assert [event["event_type"] for event in journal_events] == [
+    journal_events, _ = SqliteWorkflowEventJournal(database_path).read_after(0)
+    assert [event.event_type for event in journal_events] == [
         "workflow.trigger_event.published",
         "workflow.trigger_event.delivered",
     ]
 
 
 def test_mark_inflight_and_reset_inflight(tmp_path) -> None:
-    queue = TriggerEventQueue(tmp_path / "events.json")
+    queue = SqliteTriggerEventQueue(tmp_path / "orchestration.db")
     queue.publish(_event(event_id="evt-1"))
 
     assert queue.mark_inflight("evt-1") is True
-    payload = json.loads((tmp_path / "events.json").read_text(encoding="utf-8"))
-    assert payload["evt-1"]["delivery_state"] == "inflight"
-    assert payload["evt-1"]["inflight_at"] is not None
+    record = queue.read_all()["evt-1"]
+    assert record.delivery_state == "inflight"
+    assert record.inflight_at is not None
     assert queue.list_pending() == []
 
     assert queue.reset_inflight() == 1
-    payload = json.loads((tmp_path / "events.json").read_text(encoding="utf-8"))
-    assert payload["evt-1"]["delivery_state"] == "pending"
-    assert payload["evt-1"]["inflight_at"] is None
+    record = queue.read_all()["evt-1"]
+    assert record.delivery_state == "pending"
+    assert record.inflight_at is None
     assert [item.event_id for item in queue.list_pending()] == ["evt-1"]
-
-
-def test_state_transitions_use_single_store_update(tmp_path, monkeypatch) -> None:
-    queue = TriggerEventQueue(tmp_path / "events.json")
-    queue.publish(_event(event_id="evt-1"))
-
-    def fail_split_write(*_args, **_kwargs):
-        raise AssertionError("state transitions must not use split read/write store updates")
-
-    monkeypatch.setattr(queue._store, "write_all", fail_split_write)
-
-    assert queue.mark_inflight("evt-1") is True
-    assert queue.reset_inflight() == 1
-    assert queue.mark_delivered("evt-1") is True
-    assert queue.list_pending() == []
 
 
 def test_sqlite_trigger_queue_publish_idempotency_and_transitions(tmp_path) -> None:
