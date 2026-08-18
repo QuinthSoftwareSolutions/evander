@@ -47,6 +47,7 @@ from ..domain.ephemeral import (
     _ephemeral_assignment_event_payload,
     _ephemeral_request_result,
 )
+from ..ephemeral_directory import resolve_ephemeral_parent_directory_path
 
 from .outbox import _team_event_outbox_records
 from .executor import TeamCommandExecutor
@@ -174,6 +175,10 @@ class TeamEphemeralCommandService(TeamCommandExecutor):
                 _create_ephemeral_assignments(
                     state,
                     parent=agent,
+                    parent_directory_path=resolve_ephemeral_parent_directory_path(
+                        self._session_lookup,
+                        agent.session_id,
+                    ),
                     requests=[dict(item) for item in normalized_assignments],
                     dispatch_id=resolved.dispatch_id,
                     result=result,

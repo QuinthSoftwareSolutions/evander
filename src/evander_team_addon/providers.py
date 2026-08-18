@@ -4816,7 +4816,10 @@ class TeamRequestEphemeralAgentsEffectProvider(EffectProviderBase):
         if resolved_config:
             payload.update(dict(resolved_config))
         repo = TeamStateRepository(_runtime_dir(self.runtime_context))
-        ephemeral_service = TeamEphemeralService(repo)
+        ephemeral_service = TeamEphemeralService(
+            repo,
+            session_lookup=_session_repository_from_context(self.runtime_context),
+        )
         try:
             _state, result = ephemeral_service.request_ephemeral_assignments(
                 parent_agent_id=_required_text(payload.get("parent_agent_id"), "parent_agent_id"),

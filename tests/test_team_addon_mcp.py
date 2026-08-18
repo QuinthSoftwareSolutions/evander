@@ -13,6 +13,7 @@ from mcp.server.fastmcp.exceptions import ToolError
 
 from evander.addons import AddonLoaderConfig
 from evander.config import GatewayConfig
+from evander.directories import DirectoryService
 from evander.effects.providers.agent_exec import AgentExecEffectProvider
 from evander.events.scheduled import scheduled_internal_event_store_path
 from evander.gateway import create_server
@@ -183,13 +184,19 @@ def _make_request_context(*, session_id: str) -> object:
     )
 
 
-def _upsert_session(context, *, session_id: str, allowed_tools: list[str]) -> None:
+def _upsert_session(
+    context,
+    *,
+    session_id: str,
+    allowed_tools: list[str],
+    directory_path: str = "root",
+) -> None:
     context.session_repository.upsert_session(
         SessionManifest(
             session_id=session_id,
             allowed_tools=allowed_tools,
             expires_at=datetime.now(UTC) + timedelta(hours=1),
-            directory_path="root",
+            directory_path=directory_path,
         )
     )
 
@@ -1939,7 +1946,15 @@ def test_team_addon_mcp_slice9_tools_smoke_and_worker_visibility(
         TEAM_ACCEPT_EPHEMERAL_RESULT_TOOL,
     ]
     context = _runtime(tmp_path, allowed_tools=[])
-    _upsert_session(context, session_id="session-backend", allowed_tools=persistent_tools)
+    directories = DirectoryService(context.directories)
+    directories.create(parent="root", name="teams")
+    directories.create(parent="root/teams", name="alpha")
+    _upsert_session(
+        context,
+        session_id="session-backend",
+        allowed_tools=persistent_tools,
+        directory_path="root/teams/alpha",
+    )
     repo = _seed_planning_state(context.config.runtime_dir)
     _team_admin_service(repo).create_or_reprioritize_task(
         task_id="task",
@@ -1977,6 +1992,7 @@ def test_team_addon_mcp_slice9_tools_smoke_and_worker_visibility(
         context,
         session_id="session-ephemeral",
         allowed_tools=requested["events"][0]["payload"]["allowed_tools"],
+        directory_path=requested["events"][0]["payload"]["directory_path"],
     )
     worker_session = context.policy.get_session("session-ephemeral")
     visible = {
@@ -2011,6 +2027,7 @@ def test_team_addon_mcp_slice9_tools_smoke_and_worker_visibility(
     assert requested["async_effect_pending"] is True
     assert requested["assignment_id"] == "ephemeral-1"
     assert requested["worker_session_id"] == "session-ephemeral"
+    assert requested["events"][0]["payload"]["directory_path"] == "root/teams/alpha"
     assert requested["events"][0]["payload"]["allowed_tools"] == [TEAM_REPORT_EPHEMERAL_RESULT_TOOL]
     assert visible == {TEAM_REPORT_EPHEMERAL_RESULT_TOOL}
     assert reported["success"] is True

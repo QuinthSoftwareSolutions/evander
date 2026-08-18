@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-08-18 - Team Ephemeral Session Directory Inheritance
+
+- Made Team ephemeral workers inherit the logical configuration directory from their persistent
+  parent agent's backing core session. A conflicting requested directory is rejected, so generated
+  Team workflow-pack refreshes cannot redirect the worker into another configuration scope.
+
 ## 2026-08-18 - Orchestration JSON Backend Removal
 
 - Made SQLite the unconditional orchestration queue, execution, snapshot, and workflow-journal

@@ -26,11 +26,18 @@ from .domain.ephemeral import (
     _ephemeral_request_result,
     _resolve_ephemeral_assignment,
 )
+from .ephemeral_directory import resolve_ephemeral_parent_directory_path
 
 
 class TeamEphemeralService:
-    def __init__(self, repository: TeamStateRepository) -> None:
+    def __init__(
+        self,
+        repository: TeamStateRepository,
+        *,
+        session_lookup: Any | None = None,
+    ) -> None:
         self._repository = repository
+        self._session_lookup = session_lookup
 
     @property
     def repository(self) -> TeamStateRepository:
@@ -54,6 +61,10 @@ class TeamEphemeralService:
             _create_ephemeral_assignments(
                 state_model,
                 parent=parent,
+                parent_directory_path=resolve_ephemeral_parent_directory_path(
+                    self._session_lookup,
+                    parent.session_id,
+                ),
                 requests=normalized_requests,
                 dispatch_id=normalized_dispatch_id,
                 result=result,

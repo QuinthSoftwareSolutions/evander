@@ -90,6 +90,7 @@ from .domain.ephemeral import (
     _create_ephemeral_assignments,
     _ephemeral_assignment_event_payload,
 )
+from .ephemeral_directory import resolve_ephemeral_parent_directory_path
 from .domain.git_promotion import (
     _apply_git_feature_update,
     _apply_git_review_promotion,
@@ -149,10 +150,12 @@ class TeamAgentActionService:
         *,
         human_review_eligibility_resolver: Callable[[Any], list[str]] | None = None,
         git_default_branch_resolver: Callable[..., object] | None = None,
+        session_lookup: Any | None = None,
     ) -> None:
         self._repository = repository
         self._human_review_eligibility_resolver = human_review_eligibility_resolver
         self._git_default_branch_resolver = git_default_branch_resolver
+        self._session_lookup = session_lookup
 
     @property
     def repository(self) -> TeamStateRepository:
@@ -1136,6 +1139,10 @@ class TeamAgentActionService:
                     _create_ephemeral_assignments(
                         state_model,
                         parent=agent,
+                        parent_directory_path=resolve_ephemeral_parent_directory_path(
+                            self._session_lookup,
+                            agent.session_id,
+                        ),
                         requests=ephemeral_requests,
                         dispatch_id=normalized_dispatch_id or runtime.active_dispatch_id,
                         result=result,
