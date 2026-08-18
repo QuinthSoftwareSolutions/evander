@@ -1059,6 +1059,63 @@ class AdminWebUserStore:
                     ON admin_web_user_workflow_grants(login, directory_path);
                 """
             )
+            connection.execute("BEGIN IMMEDIATE")
+            self._migrate_users_role_column(connection)
+            connection.execute("DROP TABLE IF EXISTS admin_web_rbac_migrations")
+
+    def _migrate_users_role_column(self, connection: sqlite3.Connection) -> None:
+        columns = {
+            str(row["name"])
+            for row in connection.execute("PRAGMA table_info(admin_web_users)").fetchall()
+        }
+        if "role" not in columns:
+            return
+
+        now = _datetime_to_storage(utc_now())
+        rows = connection.execute(
+            "SELECT login, role FROM admin_web_users ORDER BY login"
+        ).fetchall()
+        for row in rows:
+            group_id = OWNER_GROUP_ID if str(row["role"]) == "admin" else OPERATOR_GROUP_ID
+            connection.execute(
+                """
+                INSERT OR IGNORE INTO admin_web_user_group_assignments(
+                    login,
+                    group_id,
+                    directory_path,
+                    created_at
+                )
+                VALUES (?, ?, 'root', ?)
+                """,
+                (str(row["login"]), group_id, now),
+            )
+
+        connection.execute(
+            """
+            CREATE TABLE admin_web_users_without_role (
+                login TEXT PRIMARY KEY,
+                display_name TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                last_login_at TEXT
+            )
+            """
+        )
+        connection.execute(
+            """
+            INSERT INTO admin_web_users_without_role(
+                login,
+                display_name,
+                created_at,
+                updated_at,
+                last_login_at
+            )
+            SELECT login, display_name, created_at, updated_at, last_login_at
+            FROM admin_web_users
+            """
+        )
+        connection.execute("DROP TABLE admin_web_users")
+        connection.execute("ALTER TABLE admin_web_users_without_role RENAME TO admin_web_users")
 
     def _ensure_ready(self) -> None:
         with self._lock:

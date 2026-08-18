@@ -9531,7 +9531,7 @@ def test_admin_web_config_maps_password_only_deployments_to_local_password(monke
     assert config.auth_required is True
 
 
-def test_admin_web_config_ignores_retired_local_password_env(monkeypatch) -> None:
+def test_admin_web_config_rejects_retired_local_password_env(monkeypatch) -> None:
     monkeypatch.delenv("EVANDER_ADMIN_WEB_AUTH_MODE", raising=False)
     monkeypatch.delenv("EVANDER_ADMIN_WEB_USERNAME", raising=False)
     monkeypatch.delenv("EVANDER_ADMIN_WEB_PASSWORD", raising=False)
@@ -9539,15 +9539,11 @@ def test_admin_web_config_ignores_retired_local_password_env(monkeypatch) -> Non
     monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_USERNAME", "legacy-operator")
     monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_PASSWORD", "legacy-secret")
 
-    config = AdminWebConfig.from_env()
-
-    assert config.auth_mode == "none"
-    assert config.username == "admin"
-    assert config.password is None
-    assert config.auth_required is False
+    with pytest.raises(ValueError, match="AGENT_SANDBOX_ADMIN_WEB_AUTH_MODE"):
+        AdminWebConfig.from_env()
 
 
-def test_admin_web_config_ignores_retired_session_settings(monkeypatch) -> None:
+def test_admin_web_config_rejects_retired_session_settings(monkeypatch) -> None:
     for name in (
         "EVANDER_ADMIN_WEB_SESSION_SECRET",
         "EVANDER_ADMIN_WEB_SESSION_TTL_SECONDS",
@@ -9558,14 +9554,11 @@ def test_admin_web_config_ignores_retired_session_settings(monkeypatch) -> None:
     monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_SESSION_TTL_SECONDS", "7200")
     monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_COOKIE_SECURE", "true")
 
-    config = AdminWebConfig.from_env()
-
-    assert config.session_secret != "legacy-session-secret"
-    assert config.session_ttl_seconds == 43200
-    assert config.cookie_secure is False
+    with pytest.raises(ValueError, match="AGENT_SANDBOX_ADMIN_WEB_SESSION_SECRET"):
+        AdminWebConfig.from_env()
 
 
-def test_admin_web_config_ignores_retired_azure_sso_env(monkeypatch) -> None:
+def test_admin_web_config_rejects_retired_azure_sso_env(monkeypatch) -> None:
     for name in (
         "EVANDER_ADMIN_WEB_AUTH_MODE",
         "EVANDER_ADMIN_WEB_AZURE_TENANT_ID",
@@ -9589,10 +9582,8 @@ def test_admin_web_config_ignores_retired_azure_sso_env(monkeypatch) -> None:
         "Operator@Example.Test,viewer@example.test",
     )
 
-    config = AdminWebConfig.from_env()
-
-    assert config.auth_mode == "none"
-    assert config.azure_sso is None
+    with pytest.raises(ValueError, match="AGENT_SANDBOX_ADMIN_WEB_AUTH_MODE"):
+        AdminWebConfig.from_env()
 
 
 def test_admin_web_config_rejects_incomplete_azure_sso(monkeypatch) -> None:

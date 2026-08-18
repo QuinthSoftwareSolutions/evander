@@ -1106,11 +1106,31 @@ def test_teams_ingest_worker_global_config_directory_paths_are_normalized() -> N
     assert config.directories == ["root/team-a", "root/team-a/subdir"]
 
 
-def test_ado_worker_global_config_is_canonical_and_rejects_retired_fields() -> None:
+def test_ado_worker_global_config_is_canonical_and_tolerates_retired_fields() -> None:
     config = AdoWorkerGlobalConfig.model_validate({})
     assert config.directories == []
+
+    upgraded = AdoWorkerGlobalConfig.model_validate(
+        {
+            "runtime_dir": "runtime",
+            "poll_interval_seconds": 5,
+            "directories": ["root/team-a"],
+            "yaml_output_dir": None,
+            "processed_store_path": None,
+            "ado_work_items_azure_devops_pat_env": "ADO_WORK_ITEMS_AZURE_DEVOPS_PAT",
+            "fetch_retry_count": 2,
+            "fetch_retry_backoff_seconds": 2.0,
+            "include_comments": True,
+            "comments_max_count": 20,
+            "comment_text_max_chars": 4000,
+        }
+    )
+
+    assert upgraded.directories == ["root/team-a"]
+    assert set(upgraded.model_dump()) == {"runtime_dir", "poll_interval_seconds", "directories"}
+
     with pytest.raises(ValueError, match="Extra inputs are not permitted"):
-        AdoWorkerGlobalConfig.model_validate({"include_comments": True})
+        AdoWorkerGlobalConfig.model_validate({"unknown_worker_setting": True})
 
 
 def test_directory_scoped_config_flag_defaults_to_disabled() -> None:

@@ -29,10 +29,20 @@ def _trigger(*, artifact_path: str | None = None, path_prefix: str | None = None
     )
 
 
-def _publish_staged_event(bus: InternalEventBus, *, artifact_path: str) -> None:
+def _publish_staged_event(
+    bus: InternalEventBus,
+    *,
+    artifact_path: str,
+    directory_path: str = "root",
+) -> None:
     bus.publish(
         event_type=AGENT_ARTIFACT_STAGED_EVENT_TYPE,
-        payload={"session_id": "session-1", "artifact_path": artifact_path, "byte_count": 42},
+        payload={
+            "session_id": "session-1",
+            "artifact_path": artifact_path,
+            "byte_count": 42,
+            "directory_path": directory_path,
+        },
         correlation_key="session-1",
         source=InternalEventSource(
             source_type=AGENT_ARTIFACT_STAGED_EVENT_SOURCE_TYPE,
@@ -48,7 +58,10 @@ def test_agent_artifact_staged_trigger_accepts_only_trusted_exact_path(tmp_path:
     _publish_staged_event(bus, artifact_path="handoffs/diagnostics.json")
     bus.publish(
         event_type=AGENT_ARTIFACT_STAGED_EVENT_TYPE,
-        payload={"session_id": "session-untrusted", "artifact_path": "handoffs/support-ticket.json"},
+        payload={
+            "session_id": "session-untrusted",
+            "artifact_path": "handoffs/support-ticket.json",
+        },
         source=InternalEventSource(source_type="workflow", source_name="event-emit"),
     )
 
@@ -83,6 +96,56 @@ def test_agent_artifact_staged_trigger_matches_path_prefix_boundary(tmp_path: Pa
     events = provider.poll()
 
     assert [event.payload["payload"]["artifact_path"] for event in events] == ["handoffs/a.json"]
+
+
+def test_agent_artifact_staged_trigger_enforces_graph_directory_scope(tmp_path: Path) -> None:
+    runtime_dir = tmp_path / "runtime"
+    bus = InternalEventBus(runtime_dir / "internal-events.json")
+    _publish_staged_event(
+        bus,
+        artifact_path="handoffs/exact.json",
+        directory_path="root/team-a",
+    )
+    _publish_staged_event(
+        bus,
+        artifact_path="handoffs/child.json",
+        directory_path="root/team-a/child",
+    )
+    _publish_staged_event(
+        bus,
+        artifact_path="handoffs/sibling.json",
+        directory_path="root/team-b",
+    )
+    _publish_staged_event(
+        bus,
+        artifact_path="handoffs/prefix-sibling.json",
+        directory_path="root/team-a-archive",
+    )
+    bus.publish(
+        event_type=AGENT_ARTIFACT_STAGED_EVENT_TYPE,
+        payload={"session_id": "session-missing-scope", "artifact_path": "handoffs/missing.json"},
+        source=InternalEventSource(
+            source_type=AGENT_ARTIFACT_STAGED_EVENT_SOURCE_TYPE,
+            source_name="stage_artifact",
+        ),
+    )
+
+    provider = AgentArtifactStagedTriggerProvider()
+    provider.initialize(
+        _trigger(path_prefix="handoffs"),
+        TriggerRuntimeContext(
+            resolved_config=GatewayConfig(runtime_dir=runtime_dir),
+            env={},
+            metadata={"directory_path": "root/team-a"},
+        ),
+    )
+
+    events = provider.poll()
+
+    assert [event.payload["payload"]["directory_path"] for event in events] == [
+        "root/team-a",
+        "root/team-a/child",
+    ]
 
 
 def test_agent_artifact_staged_trigger_rejects_unsafe_or_ambiguous_path_filter() -> None:

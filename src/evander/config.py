@@ -4,7 +4,7 @@ from collections import Counter
 from ipaddress import ip_address, ip_network
 from pathlib import Path
 import re
-from typing import Any, Literal
+from typing import Any, Literal, Mapping
 from urllib.parse import urlsplit
 import unicodedata
 
@@ -1099,6 +1099,23 @@ class AdoWorkerGlobalConfig(BaseModel):
     poll_interval_seconds: float = Field(default=5.0, gt=0)
     directories: list[str] = Field(default_factory=list)
 
+    @model_validator(mode="before")
+    @classmethod
+    def discard_retired_worker_fields(cls, value: object) -> object:
+        if not isinstance(value, Mapping):
+            return value
+        retired_fields = {
+            "yaml_output_dir",
+            "processed_store_path",
+            "ado_work_items_azure_devops_pat_env",
+            "fetch_retry_count",
+            "fetch_retry_backoff_seconds",
+            "include_comments",
+            "comments_max_count",
+            "comment_text_max_chars",
+        }
+        return {key: item for key, item in value.items() if key not in retired_fields}
+
     @field_validator("directories", mode="before")
     @classmethod
     def normalize_directories(cls, value: object) -> object:
@@ -1115,6 +1132,7 @@ class AdoWorkerGlobalConfig(BaseModel):
                 continue
             normalized.append(DirectoryPath(segments=text).as_posix())
         return normalized
+
 
 class ProxyIssueSyncWorkerGlobalConfig(BaseModel):
     runtime_dir: Path = Path("runtime")
