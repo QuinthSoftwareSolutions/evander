@@ -1,25 +1,4 @@
 ---
-- name: Stop legacy worker egress policy service from retired operational name
-  ansible.builtin.systemd:
-    name: agent-sandbox-worker-egress-policy.service
-    enabled: false
-    state: stopped
-  failed_when: false
-
-- name: Remove legacy worker egress policy unit files
-  ansible.builtin.file:
-    path: "{{ item }}"
-    state: absent
-  loop:
-    - /etc/systemd/system/agent-sandbox-worker-egress-policy.service
-    - /etc/systemd/system/agent-sandbox-worker-egress-policy.service.d
-  register: evander_legacy_worker_egress_policy_unit_remove
-
-- name: Reload systemd after removing legacy worker egress policy unit files
-  ansible.builtin.systemd:
-    daemon_reload: true
-  when: evander_legacy_worker_egress_policy_unit_remove.changed
-
 - name: Resolve worker egress policy activation
   ansible.builtin.set_fact:
     evander_worker_egress_policy_active: >-

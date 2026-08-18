@@ -1,5 +1,34 @@
 # Changelog
 
+## 2026-08-18 - Compatibility Surface Retirement
+
+- Removed the retired Azure DevOps work-item helper and environment/configuration fallback surface;
+  the ADO worker now handles pull-request feedback and completion from canonical configuration only,
+  while safely ignoring the known retired global keys in persisted upgrade-era worker files.
+- Rejected the retired workflow `directory_paths` field now that live packs use `directory_path`.
+- Made Admin Web group assignments the sole authorization source and removed stored/API/UI user
+  roles; existing SQLite stores preserve assignments from completed role migrations, or translate
+  unmigrated legacy roles into root assignments, before rebuilding the user table.
+- Removed the remaining `agent-sandbox` rename readers and cleanup paths after normalizing guest,
+  worker, host-network, SSH-key, service, and configuration state on both supported deployments.
+- Made retired Admin Web auth, session, and Azure SSO environment variables fail startup explicitly
+  instead of silently selecting unauthenticated mode.
+
+## 2026-08-18 - Agent Artifact-Staged Workflow Trigger
+
+- Added `trigger:agent:artifact-staged`, which reacts only to durable control-plane events emitted
+  after a successful agent `stage_artifact` call. Operators can restrict it to an exact artifact
+  path or a path prefix, then use the originating session metadata and artifact-text query for
+  workflow-specific validation.
+- Scoped staged-artifact activations to the workflow graph directory and its descendants so a
+  sibling directory's session and artifact identifiers cannot enter the graph.
+
+## 2026-08-18 - Team Ephemeral Session Directory Inheritance
+
+- Made Team ephemeral workers inherit the logical configuration directory from their persistent
+  parent agent's backing core session. A conflicting requested directory is rejected, so generated
+  Team workflow-pack refreshes cannot redirect the worker into another configuration scope.
+
 ## 2026-08-18 - Orchestration JSON Backend Removal
 
 - Made SQLite the unconditional orchestration queue, execution, snapshot, and workflow-journal
@@ -8,6 +37,11 @@
   both supported deployments were archived, marked, and repaired.
 - Removed JSON-backend worker, Admin, wake, Teams, ADO, and managed-Git hook branches together with
   their obsolete configuration settings and operator documentation.
+
+## 2026-08-18 - Direct Communication Workflow Validation
+
+- Prevented workflow communication-target validation from treating generated node output schemas
+  as literal target references, allowing direct communication-message triggers to reload safely.
 
 ## 2026-08-18 - Migration And Test Maintenance
 

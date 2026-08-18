@@ -46,7 +46,6 @@ evander_render_shared_secrets_env: true
 evander_shared_secrets_env:
   OPENAI_API_KEY: "{{ vault_openai_api_key }}"
   AZURE_ARTIFACTS_PAT: "{{ vault_azure_artifacts_pat }}"
-  ADO_WORK_ITEMS_AZURE_DEVOPS_PAT: "{{ vault_ado_work_items_pat }}"
   AZURE_DEVOPS_PAT: "{{ vault_azure_devops_pat }}"
   AZURE_DEVOPS_DEPLOY_PAT: "{{ vault_azure_devops_pat }}"
   AZURE_DEVOPS_PR_PAT: "{{ vault_azure_devops_pr_pat }}"

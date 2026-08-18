@@ -2,6 +2,9 @@ from __future__ import annotations
 
 from typing import Any
 from uuid import uuid4
+
+from evander.models import DirectoryPath
+
 from ...git_naming import ephemeral_agent_branch
 from ...models import (
     AGENT_OPERATOR_ONLY_FIELDS,
@@ -59,12 +62,14 @@ def _create_ephemeral_assignments(
     state: TeamState,
     *,
     parent: PersistentAgent,
+    parent_directory_path: str,
     requests: list[dict[str, Any]],
     dispatch_id: str | None,
     result: dict[str, Any],
 ) -> None:
     if not requests:
         return
+    normalized_parent_directory_path = DirectoryPath(segments=parent_directory_path).as_posix()
     active_count = len(_active_ephemeral_assignments_for_parent(state, parent.id))
     max_concurrent = parent.ephemeral_policy.max_concurrent
     if max_concurrent <= 0:
@@ -77,6 +82,19 @@ def _create_ephemeral_assignments(
     normalized: list[tuple[dict[str, Any], AgentTask]] = []
     seen_ids: set[str] = set()
     for request in requests:
+        requested_directory_path = _optional_text(request.get("directory_path"))
+        if requested_directory_path is not None:
+            normalized_requested_directory_path = DirectoryPath(
+                segments=requested_directory_path
+            ).as_posix()
+            if normalized_requested_directory_path != normalized_parent_directory_path:
+                raise ValueError(
+                    "ephemeral worker directory_path must match the parent agent backing "
+                    f"session directory {normalized_parent_directory_path!r}"
+                )
+        # The parent backing session is authoritative.  Preserve the derived value in
+        # both the assignment and the event that the generated workflow pack consumes.
+        request["directory_path"] = normalized_parent_directory_path
         task_id = _required_text(request.get("task_id"), "task_id")
         task = _require_present(state.tasks, task_id, "task")
         if task.owner_agent_id != parent.id:
@@ -112,7 +130,7 @@ def _create_ephemeral_assignments(
             container_image=_optional_text(request.get("container_image")),
             allowed_tools=_string_list(request.get("allowed_tools"), "allowed_tools"),
             ttl_hours=int(request["ttl_hours"]) if request.get("ttl_hours") is not None else None,
-            directory_path=_optional_text(request.get("directory_path")),
+            directory_path=normalized_parent_directory_path,
             metadata=_optional_mapping(request.get("metadata"), "metadata") or {},
             created_at=now,
             updated_at=now,

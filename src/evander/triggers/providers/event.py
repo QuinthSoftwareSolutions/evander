@@ -44,7 +44,7 @@ class EventTriggerProvider(TriggerProviderBase):
             if str(value).strip()
         }
 
-        matched = [event for event in self._event_bus().list_events() if _matches(trigger, event)]
+        matched = [event for event in self._event_bus().list_events() if self._matches(event)]
         events: list[TriggerEvent] = []
         for event in matched:
             if event.event_id in emitted_ids:
@@ -78,6 +78,9 @@ class EventTriggerProvider(TriggerProviderBase):
         if not isinstance(self.trigger_definition, EventTriggerDefinition):
             raise RuntimeError("EventTriggerProvider initialized with wrong definition")
         return self.trigger_definition
+
+    def _matches(self, event: InternalEvent) -> bool:
+        return _matches(self._trigger(), event)
 
     def _event_bus(self) -> InternalEventBus:
         if self.runtime_context is None:

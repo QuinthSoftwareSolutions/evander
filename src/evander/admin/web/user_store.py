@@ -17,17 +17,15 @@ from evander.admin.web.rbac import (
     ADMIN_OWNER_PERMISSION,
     BUILTIN_GROUP_DEFINITIONS,
     DIRECT_WORKFLOW_PERMISSIONS,
-    LEGACY_ROLE_GROUP_IDS,
+    OWNER_GROUP_ID,
+    OPERATOR_GROUP_ID,
     PERMISSION_CATALOG,
     can as rbac_can,
     effective_permissions as rbac_effective_permissions,
-    legacy_role_group_id,
     normalize_admin_web_directory_path,
     normalize_admin_web_group_id,
     normalize_admin_web_permission,
 )
-
-AdminWebUserRole = Literal["admin", "regular"]
 
 _UNSET = object()
 SQLITE_BUSY_TIMEOUT_MS = 30_000
@@ -52,7 +50,6 @@ def _normalize_display_name(value: object) -> str | None:
 
 class AdminWebUserRecord(BaseModel):
     login: str
-    role: AdminWebUserRole
     display_name: str | None = None
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)
@@ -233,7 +230,7 @@ class AdminWebUserStore:
         with self._connect() as connection:
             rows = connection.execute(
                 """
-                SELECT login, role, display_name, created_at, updated_at, last_login_at
+                SELECT login, display_name, created_at, updated_at, last_login_at
                 FROM admin_web_users
                 ORDER BY login
                 """
@@ -248,7 +245,7 @@ class AdminWebUserStore:
         with self._connect() as connection:
             row = connection.execute(
                 """
-                SELECT login, role, display_name, created_at, updated_at, last_login_at
+                SELECT login, display_name, created_at, updated_at, last_login_at
                 FROM admin_web_users
                 WHERE login = ?
                 """,
@@ -270,12 +267,19 @@ class AdminWebUserStore:
                     continue
                 record = AdminWebUserRecord(
                     login=login,
-                    role="admin",
                     created_at=now,
                     updated_at=now,
                 )
                 self._insert_or_replace_user(connection, record)
-                self._replace_legacy_role_assignment(connection, login=login, role="admin")
+                self._store_user_group_assignment(
+                    connection,
+                    AdminWebUserGroupAssignmentRecord(
+                        login=login,
+                        group_id=OWNER_GROUP_ID,
+                        directory_path="root",
+                        created_at=now,
+                    ),
+                )
                 records.append(record)
             if records:
                 self.ensure_effective_owner_exists(connection)
@@ -296,13 +300,20 @@ class AdminWebUserStore:
             now = utc_now()
             record = AdminWebUserRecord(
                 login=normalized,
-                role="admin",
                 display_name=_normalize_display_name(login),
                 created_at=now,
                 updated_at=now,
             )
             self._insert_or_replace_user(connection, record)
-            self._replace_legacy_role_assignment(connection, login=normalized, role="admin")
+            self._store_user_group_assignment(
+                connection,
+                AdminWebUserGroupAssignmentRecord(
+                    login=normalized,
+                    group_id=OWNER_GROUP_ID,
+                    directory_path="root",
+                    created_at=now,
+                ),
+            )
             self._store_local_password(connection, login=normalized, password=str(password))
             self.ensure_effective_owner_exists(connection)
             return record
@@ -311,25 +322,19 @@ class AdminWebUserStore:
         self,
         *,
         login: object,
-        role: AdminWebUserRole,
         display_name: object = _UNSET,
     ) -> AdminWebUserRecord:
         normalized = normalize_admin_web_login(login)
         if normalized is None:
             raise ValueError("login is required")
-        if role not in {"admin", "regular"}:
-            raise ValueError("role must be admin or regular")
         self._ensure_ready()
         with self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
             existing = self._get_user(connection, normalized)
-            if existing is None and self._user_count(connection) == 0 and role != "admin":
-                raise ValueError("First admin web user must have the admin role")
-            self._ensure_not_last_admin_demotion(connection, existing=existing, next_role=role)
+            first_user = existing is None and self._user_count(connection) == 0
             now = utc_now()
             record = AdminWebUserRecord(
                 login=normalized,
-                role=role,
                 display_name=(
                     existing.display_name
                     if display_name is _UNSET and existing is not None
@@ -342,7 +347,16 @@ class AdminWebUserStore:
                 last_login_at=existing.last_login_at if existing is not None else None,
             )
             self._insert_or_replace_user(connection, record)
-            self._replace_legacy_role_assignment(connection, login=normalized, role=role)
+            if existing is None:
+                self._store_user_group_assignment(
+                    connection,
+                    AdminWebUserGroupAssignmentRecord(
+                        login=normalized,
+                        group_id=OWNER_GROUP_ID if first_user else OPERATOR_GROUP_ID,
+                        directory_path="root",
+                        created_at=now,
+                    ),
+                )
             self.ensure_effective_owner_exists(connection)
             return record
 
@@ -350,25 +364,19 @@ class AdminWebUserStore:
         self,
         *,
         login: object,
-        role: AdminWebUserRole | None = None,
         display_name: object = _UNSET,
     ) -> AdminWebUserRecord | None:
         normalized = normalize_admin_web_login(login)
         if normalized is None:
             raise ValueError("login is required")
-        if role is not None and role not in {"admin", "regular"}:
-            raise ValueError("role must be admin or regular")
         self._ensure_ready()
         with self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
             existing = self._get_user(connection, normalized)
             if existing is None:
                 return None
-            next_role = role or existing.role
-            self._ensure_not_last_admin_demotion(connection, existing=existing, next_role=next_role)
             record = AdminWebUserRecord(
                 login=existing.login,
-                role=next_role,
                 display_name=(
                     existing.display_name
                     if display_name is _UNSET
@@ -379,7 +387,6 @@ class AdminWebUserStore:
                 last_login_at=existing.last_login_at,
             )
             self._insert_or_replace_user(connection, record)
-            self._replace_legacy_role_assignment(connection, login=normalized, role=next_role)
             self.ensure_effective_owner_exists(connection)
             return record
 
@@ -393,8 +400,6 @@ class AdminWebUserStore:
             existing = self._get_user(connection, normalized)
             if existing is None:
                 return None
-            if existing.role == "admin" and self._admin_count(connection) <= 1:
-                raise ValueError("Cannot remove the last admin user")
             self._delete_user_related_rows(connection, normalized)
             connection.execute("DELETE FROM admin_web_users WHERE login = ?", (normalized,))
             self.ensure_effective_owner_exists(connection)
@@ -490,7 +495,6 @@ class AdminWebUserStore:
             now = utc_now()
             record = AdminWebUserRecord(
                 login=existing.login,
-                role=existing.role,
                 display_name=existing.display_name or _normalize_display_name(display_name),
                 created_at=existing.created_at,
                 updated_at=now,
@@ -983,7 +987,6 @@ class AdminWebUserStore:
                 """
                 CREATE TABLE IF NOT EXISTS admin_web_users (
                     login TEXT PRIMARY KEY,
-                    role TEXT NOT NULL CHECK(role IN ('admin', 'regular')),
                     display_name TEXT,
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL,
@@ -1041,11 +1044,6 @@ class AdminWebUserStore:
                     PRIMARY KEY (login, permission, directory_path)
                 );
 
-                CREATE TABLE IF NOT EXISTS admin_web_rbac_migrations (
-                    migration_key TEXT PRIMARY KEY,
-                    completed_at TEXT NOT NULL
-                );
-
                 CREATE INDEX IF NOT EXISTS idx_admin_web_user_preferences_login
                     ON admin_web_user_preferences(login, preference_key);
 
@@ -1062,6 +1060,83 @@ class AdminWebUserStore:
                     ON admin_web_user_workflow_grants(login, directory_path);
                 """
             )
+            connection.execute("BEGIN IMMEDIATE")
+            self._migrate_users_role_column(connection)
+            connection.execute("DROP TABLE IF EXISTS admin_web_rbac_migrations")
+
+    def _migrate_users_role_column(self, connection: sqlite3.Connection) -> None:
+        columns = {
+            str(row["name"])
+            for row in connection.execute("PRAGMA table_info(admin_web_users)").fetchall()
+        }
+        if "role" not in columns:
+            return
+
+        migration_table = connection.execute(
+            """
+            SELECT 1
+            FROM sqlite_master
+            WHERE type = 'table' AND name = 'admin_web_rbac_migrations'
+            """
+        ).fetchone()
+        migration_completed = (
+            migration_table is not None
+            and connection.execute(
+                """
+                SELECT 1
+                FROM admin_web_rbac_migrations
+                WHERE migration_key = ?
+                """,
+                (LEGACY_ROLE_ASSIGNMENT_MIGRATION_KEY,),
+            ).fetchone()
+            is not None
+        )
+        if not migration_completed:
+            now = _datetime_to_storage(utc_now())
+            rows = connection.execute(
+                "SELECT login, role FROM admin_web_users ORDER BY login"
+            ).fetchall()
+            for row in rows:
+                group_id = OWNER_GROUP_ID if str(row["role"]) == "admin" else OPERATOR_GROUP_ID
+                connection.execute(
+                    """
+                    INSERT OR IGNORE INTO admin_web_user_group_assignments(
+                        login,
+                        group_id,
+                        directory_path,
+                        created_at
+                    )
+                    VALUES (?, ?, 'root', ?)
+                    """,
+                    (str(row["login"]), group_id, now),
+                )
+
+        connection.execute(
+            """
+            CREATE TABLE admin_web_users_without_role (
+                login TEXT PRIMARY KEY,
+                display_name TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                last_login_at TEXT
+            )
+            """
+        )
+        connection.execute(
+            """
+            INSERT INTO admin_web_users_without_role(
+                login,
+                display_name,
+                created_at,
+                updated_at,
+                last_login_at
+            )
+            SELECT login, display_name, created_at, updated_at, last_login_at
+            FROM admin_web_users
+            """
+        )
+        connection.execute("DROP TABLE admin_web_users")
+        connection.execute("ALTER TABLE admin_web_users_without_role RENAME TO admin_web_users")
 
     def _ensure_ready(self) -> None:
         with self._lock:
@@ -1071,7 +1146,6 @@ class AdminWebUserStore:
             with self._connect() as connection:
                 connection.execute("BEGIN IMMEDIATE")
                 self._seed_builtin_groups(connection)
-                self._migrate_legacy_roles_to_assignments(connection)
             self._initialized = True
 
     def _seed_builtin_groups(self, connection: sqlite3.Connection) -> None:
@@ -1110,63 +1184,6 @@ class AdminWebUserStore:
                     """,
                     (group_id, permission, now),
                 )
-
-    def _migrate_legacy_roles_to_assignments(self, connection: sqlite3.Connection) -> None:
-        migrated = connection.execute(
-            """
-            SELECT 1
-            FROM admin_web_rbac_migrations
-            WHERE migration_key = ?
-            """,
-            (LEGACY_ROLE_ASSIGNMENT_MIGRATION_KEY,),
-        ).fetchone()
-        if migrated is not None:
-            return
-        assignment_count = connection.execute(
-            "SELECT COUNT(*) AS count FROM admin_web_user_group_assignments"
-        ).fetchone()
-        if int(assignment_count["count"] if assignment_count is not None else 0) > 0:
-            connection.execute(
-                """
-                INSERT OR REPLACE INTO admin_web_rbac_migrations(
-                    migration_key,
-                    completed_at
-                )
-                VALUES (?, ?)
-                """,
-                (LEGACY_ROLE_ASSIGNMENT_MIGRATION_KEY, _datetime_to_storage(utc_now())),
-            )
-            return
-        rows = connection.execute(
-            """
-            SELECT login, role
-            FROM admin_web_users
-            ORDER BY login
-            """
-        ).fetchall()
-        for row in rows:
-            group_id = legacy_role_group_id(row["role"])
-            if group_id is None:
-                continue
-            self._store_user_group_assignment(
-                connection,
-                AdminWebUserGroupAssignmentRecord(
-                    login=row["login"],
-                    group_id=group_id,
-                    directory_path="root",
-                    created_at=utc_now(),
-                ),
-            )
-        connection.execute(
-            """
-            INSERT OR REPLACE INTO admin_web_rbac_migrations(
-                migration_key,
-                completed_at
-            )
-            VALUES (?, ?)
-            """,
-            (LEGACY_ROLE_ASSIGNMENT_MIGRATION_KEY, _datetime_to_storage(utc_now())),
-        )
 
     def ensure_effective_owner_exists(self, connection: sqlite3.Connection) -> None:
         if not self._has_effective_owner(connection):
@@ -1402,29 +1419,6 @@ class AdminWebUserStore:
         ).fetchall()
         return [(str(row["permission"]), str(row["directory_path"])) for row in rows]
 
-    def _replace_legacy_role_assignment(
-        self, connection: sqlite3.Connection, *, login: str, role: AdminWebUserRole
-    ) -> None:
-        group_id = legacy_role_group_id(role)
-        if group_id is None:
-            return
-        connection.execute(
-            """
-            DELETE FROM admin_web_user_group_assignments
-            WHERE login = ? AND directory_path = 'root' AND group_id IN (?, ?)
-            """,
-            (login, LEGACY_ROLE_GROUP_IDS["admin"], LEGACY_ROLE_GROUP_IDS["regular"]),
-        )
-        self._store_user_group_assignment(
-            connection,
-            AdminWebUserGroupAssignmentRecord(
-                login=login,
-                group_id=group_id,
-                directory_path="root",
-                created_at=utc_now(),
-            ),
-        )
-
     def _delete_user_related_rows(self, connection: sqlite3.Connection, login: str) -> None:
         connection.execute(
             "DELETE FROM admin_web_local_password_credentials WHERE login = ?",
@@ -1505,24 +1499,6 @@ class AdminWebUserStore:
             created_at=created_at if isinstance(created_at, datetime) else utc_now(),
         )
 
-    def _ensure_not_last_admin_demotion(
-        self,
-        connection: sqlite3.Connection,
-        *,
-        existing: AdminWebUserRecord | None,
-        next_role: AdminWebUserRole,
-    ) -> None:
-        if existing is None or existing.role != "admin" or next_role == "admin":
-            return
-        if self._admin_count(connection) <= 1:
-            raise ValueError("Cannot demote the last admin user")
-
-    def _admin_count(self, connection: sqlite3.Connection) -> int:
-        row = connection.execute(
-            "SELECT COUNT(*) AS count FROM admin_web_users WHERE role = 'admin'"
-        ).fetchone()
-        return int(row["count"] if row is not None else 0)
-
     def _user_count(self, connection: sqlite3.Connection) -> int:
         row = connection.execute("SELECT COUNT(*) AS count FROM admin_web_users").fetchone()
         return int(row["count"] if row is not None else 0)
@@ -1530,7 +1506,7 @@ class AdminWebUserStore:
     def _get_user(self, connection: sqlite3.Connection, login: str) -> AdminWebUserRecord | None:
         row = connection.execute(
             """
-            SELECT login, role, display_name, created_at, updated_at, last_login_at
+            SELECT login, display_name, created_at, updated_at, last_login_at
             FROM admin_web_users
             WHERE login = ?
             """,
@@ -1545,17 +1521,15 @@ class AdminWebUserStore:
             """
             INSERT OR REPLACE INTO admin_web_users(
                 login,
-                role,
                 display_name,
                 created_at,
                 updated_at,
                 last_login_at
             )
-            VALUES (?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?)
             """,
             (
                 record.login,
-                record.role,
                 record.display_name,
                 _datetime_to_storage(record.created_at),
                 _datetime_to_storage(record.updated_at),
@@ -1613,7 +1587,6 @@ class AdminWebUserStore:
         return AdminWebUserRecord.model_validate(
             {
                 "login": row["login"],
-                "role": row["role"],
                 "display_name": row["display_name"],
                 "created_at": row["created_at"],
                 "updated_at": row["updated_at"],
@@ -1656,7 +1629,6 @@ __all__ = [
     "AdminWebGroupRecord",
     "AdminWebLocalPasswordCredentialRecord",
     "AdminWebUserRecord",
-    "AdminWebUserRole",
     "AdminWebUserGroupAssignmentRecord",
     "AdminWebUserStore",
     "AdminWebWorkflowGrantRecord",

@@ -209,6 +209,28 @@ _TRIGGER_OUTPUT_SCHEMAS = {
         "source": {"type": ["object", "null"]},
         "idempotency_key": {"type": ["string", "null"]},
     },
+    "trigger:agent:artifact-staged": {
+        "event_id": {"type": "string"},
+        "event_type": {"type": "string"},
+        "payload": {
+            "type": "object",
+            "properties": {
+                "session_id": {"type": "string"},
+                "artifact_path": {"type": "string"},
+                "source_path": {"type": "string"},
+                "artifacts_root": {"type": "string"},
+                "copied_count": {"type": "integer"},
+                "byte_count": {"type": "integer"},
+                "vm_name": {"type": ["string", "null"]},
+                "execution_backend": {"type": ["string", "null"]},
+                "directory_path": {"type": "string"},
+            },
+        },
+        "correlation_key": {"type": ["string", "null"]},
+        "created_at": {"type": "string"},
+        "source": {"type": ["object", "null"]},
+        "idempotency_key": {"type": ["string", "null"]},
+    },
     "trigger:approval:pending-created": _APPROVAL_PENDING_CREATED_OUTPUT_SCHEMA,
     "trigger:http:webhook": {
         "slug": {"type": "string"},

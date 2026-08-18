@@ -184,7 +184,9 @@ class _TeamCommandTestHarness(
 
 
 def _command_service(repo: TeamStateRepository) -> _TeamCommandTestHarness:
-    return _TeamCommandTestHarness(repo)
+    service = _TeamCommandTestHarness(repo)
+    service._session_lookup = _root_session_lookup
+    return service
 
 
 def _team_admin_service(repo: TeamStateRepository) -> TeamAdminService:
@@ -212,11 +214,15 @@ def _team_runtime_service(repo: TeamStateRepository) -> TeamRuntimeService:
 
 
 def _team_agent_action_service(repo: TeamStateRepository) -> TeamAgentActionService:
-    return TeamAgentActionService(repo)
+    return TeamAgentActionService(repo, session_lookup=_root_session_lookup)
 
 
 def _team_ephemeral_service(repo: TeamStateRepository) -> TeamEphemeralService:
-    return TeamEphemeralService(repo)
+    return TeamEphemeralService(repo, session_lookup=_root_session_lookup)
+
+
+def _root_session_lookup(_session_id: str) -> dict[str, str]:
+    return {"directory_path": "root"}
 
 
 def _team_git_release_service(repo: TeamStateRepository) -> TeamGitReleaseService:
@@ -10753,6 +10759,51 @@ def test_repository_slice9_request_ephemeral_agents_is_all_or_nothing(
     assert state.ephemeral_assignments == {}
     assert repo.read().ephemeral_assignments == {}
     assert repo.list_outbox_records() == []
+
+
+def test_repository_slice9_ephemeral_request_derives_parent_session_directory(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _seed_task(repo, task_id="task")
+    _lease_backend(repo, dispatch_id="dispatch-ephemeral-directory")
+
+    def _enable_ephemeral(state):
+        state.agents["backend"].ephemeral_policy = EphemeralAgentPolicy(max_concurrent=1)
+        return state
+
+    repo.update(_enable_ephemeral)
+
+    def session_lookup(session_id: str) -> dict[str, str] | None:
+        if session_id == "session-backend":
+            return {"directory_path": "root/teams/alpha"}
+        return None
+
+    commands = TeamEphemeralCommandService(repo, session_lookup=session_lookup)
+    _state, rejected = commands.request_ephemeral_agent_command(
+        session_id="session-backend",
+        request_id="request-ephemeral-wrong-directory",
+        task_id="task",
+        title="Wrong directory",
+        prompt="Do not escape the parent scope.",
+        directory_path="root/other-team",
+    )
+
+    assert rejected["success"] is False
+    assert rejected["errors"][0]["code"] == "ephemeral_request_failed"
+    assert repo.read().ephemeral_assignments == {}
+
+    state, requested = commands.request_ephemeral_agent_command(
+        session_id="session-backend",
+        request_id="request-ephemeral-inherited-directory",
+        task_id="task",
+        title="Inherited directory",
+        prompt="Use the parent configuration scope.",
+    )
+
+    assignment = state.ephemeral_assignments[requested["assignment_id"]]
+    assert assignment.directory_path == "root/teams/alpha"
+    assert requested["events"][0]["payload"]["directory_path"] == "root/teams/alpha"
 
 
 def test_repository_slice9_report_replay_does_not_duplicate_notice_or_event(

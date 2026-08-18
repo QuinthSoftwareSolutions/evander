@@ -14,6 +14,7 @@ from evander.messaging.targets import (
     SqliteCommunicationTargetsRepository,
     communication_targets_db_path,
     validate_communication_new_message_trigger_targets,
+    validate_communication_target_refs,
 )
 from evander.events.provider_models import CommunicationNewMessageTriggerDefinition
 
@@ -74,6 +75,7 @@ def test_communication_targets_apply_provider_address_validation() -> None:
             ]
         }
     )
+
     assert config.targets[0].address == "user:operator@example.com"
 
     with pytest.raises(ValueError, match="discord address must be"):
@@ -89,6 +91,29 @@ def test_communication_targets_apply_provider_address_validation() -> None:
                 ]
             }
         )
+
+
+def test_communication_target_refs_ignore_node_output_schemas() -> None:
+    validate_communication_target_refs(
+        payload={
+            "effects": [
+                {
+                    "id": "send-message",
+                    "config": {"communication_target_id": "support-discord"},
+                    "outputs": {
+                        "communication_target_id": {"type": "string"},
+                        "message": {
+                            "properties": {
+                                "communication_target_id": {"type": "string"},
+                            },
+                            "type": "object",
+                        },
+                    },
+                }
+            ]
+        },
+        known_target_ids={"support-discord"},
+    )
 
 
 def test_discord_conversation_scope_is_explicit_and_provider_scoped() -> None:

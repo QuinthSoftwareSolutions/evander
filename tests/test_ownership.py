@@ -64,36 +64,10 @@ def test_directory_ownership_queries_list_direct_entities_only_by_default(tmp_pa
         encoding="utf-8",
     )
 
-    processed_path = runtime_dir / "ado-processed-work-items.json"
-    processed_path.write_text(
-        json.dumps(
-            {
-                "root/team::azure_devops::https://dev.azure.com/example::example::101": {
-                    "session_id": "session-team",
-                    "directory_path": team.path,
-                    "yaml_path": str(runtime_dir / "work-item-101.yaml"),
-                    "script_exit_code": 0,
-                    "remote_work_item_id": "101",
-                },
-                "root/team/child::azure_devops::https://dev.azure.com/example::example::102": {
-                    "session_id": "session-child",
-                    "directory_path": child.path,
-                    "yaml_path": str(runtime_dir / "work-item-102.yaml"),
-                    "script_exit_code": 0,
-                    "remote_work_item_id": "102",
-                },
-            },
-            indent=2,
-            sort_keys=True,
-        ),
-        encoding="utf-8",
-    )
-
     queries = DirectoryOwnershipQueries(
         directories=directory_service,
         sessions=sessions,
         pr_map_path=pr_map_path,
-        ado_processed_store_path=processed_path,
     )
 
     snapshot = queries.list_entities(team.path)
@@ -104,11 +78,7 @@ def test_directory_ownership_queries_list_direct_entities_only_by_default(tmp_pa
         ("vm", "vm-team"),
         ("issue", "101"),
         ("pr_mapping", "github:org/repo:1"),
-        ("ado_work_item", "root/team::azure_devops::https://dev.azure.com/example::example::101"),
     }
-    ado_entity = next(entity for entity in snapshot.entities if entity.kind == "ado_work_item")
-    assert ado_entity.label == "101"
-    assert ado_entity.payload["remote_work_item_id"] == "101"
 
 
 def test_directory_ownership_queries_can_include_descendants_and_fallback_to_session_path(

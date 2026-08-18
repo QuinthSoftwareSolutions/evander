@@ -31,7 +31,6 @@ export type AdminUiState = {
   directoryScopedConfigEnabled: boolean;
   currentUserId: string;
   currentUserLabel: string;
-  currentUserRole: "admin" | "regular" | null;
   currentUserPermissions: string[];
   currentUserEffectivePermissions: string[];
   canReadWorkflows: boolean;
@@ -65,7 +64,6 @@ const DEFAULT_ADMIN_UI_STATE: AdminUiState = {
   directoryScopedConfigEnabled: false,
   currentUserId: "anonymous",
   currentUserLabel: "anonymous",
-  currentUserRole: null,
   currentUserPermissions: [],
   currentUserEffectivePermissions: [],
   canReadWorkflows: false,

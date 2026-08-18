@@ -563,19 +563,11 @@ source "${AGENT_RUNNER_TMP_DIR}/agent_runner.sh"
 source "${AGENT_RUNNER_TMP_DIR}/agent_state.sh"
 
 LOG_DIR="${HOME}/.evander"
-STATE_LOG_DIR="${LOG_DIR}"
-LEGACY_LOG_DIR="${HOME}/.agent-sandbox"
 RESOLVED_REPO_NAME="$(resolve_primary_agent_paths "${LOG_DIR}" || true)"
-if [[ -z "${RESOLVED_REPO_NAME}" && -d "${LEGACY_LOG_DIR}" ]]; then
-  RESOLVED_REPO_NAME="$(resolve_primary_agent_paths "${LEGACY_LOG_DIR}" || true)"
-  if [[ -n "${RESOLVED_REPO_NAME}" ]]; then
-    STATE_LOG_DIR="${LEGACY_LOG_DIR}"
-  fi
-fi
 if [[ -n "${RESOLVED_REPO_NAME}" ]]; then
   RUN_LOG_FILE="${RUN_LOG_DIR}/agent-${RESOLVED_REPO_NAME}.log"
-  PID_FILE="${STATE_LOG_DIR}/agent-${RESOLVED_REPO_NAME}.pid"
-  STATE_PATH="${STATE_LOG_DIR}/agent-${RESOLVED_REPO_NAME}.state"
+  PID_FILE="${LOG_DIR}/agent-${RESOLVED_REPO_NAME}.pid"
+  STATE_PATH="${LOG_DIR}/agent-${RESOLVED_REPO_NAME}.state"
   AGENT_STATE_REPO_NAME="${RESOLVED_REPO_NAME}"
 else
   RUN_LOG_FILE="${RUN_LOG_DIR}/codex-heartbeat-run.log"
@@ -807,18 +799,10 @@ source "${AGENT_RUNNER_TMP_DIR}/agent_runner.sh"
 source "${AGENT_RUNNER_TMP_DIR}/agent_state.sh"
 
 LOG_DIR="${HOME}/.evander"
-STATE_LOG_DIR="${LOG_DIR}"
-LEGACY_LOG_DIR="${HOME}/.agent-sandbox"
 RESOLVED_REPO_NAME="$(resolve_primary_agent_paths "${LOG_DIR}" || true)"
-if [[ -z "${RESOLVED_REPO_NAME}" && -d "${LEGACY_LOG_DIR}" ]]; then
-  RESOLVED_REPO_NAME="$(resolve_primary_agent_paths "${LEGACY_LOG_DIR}" || true)"
-  if [[ -n "${RESOLVED_REPO_NAME}" ]]; then
-    STATE_LOG_DIR="${LEGACY_LOG_DIR}"
-  fi
-fi
 if [[ -n "${RESOLVED_REPO_NAME}" ]]; then
   RUN_LOG_FILE="${RUN_LOG_DIR}/agent-${RESOLVED_REPO_NAME}.log"
-  STATE_PATH="${STATE_LOG_DIR}/agent-${RESOLVED_REPO_NAME}.state"
+  STATE_PATH="${LOG_DIR}/agent-${RESOLVED_REPO_NAME}.state"
   AGENT_STATE_REPO_NAME="${RESOLVED_REPO_NAME}"
 else
   RUN_LOG_FILE="${RUN_LOG_DIR}/codex-heartbeat-run.log"
@@ -1021,19 +1005,11 @@ source "${AGENT_RUNNER_TMP_DIR}/agent_runner.sh"
 source "${AGENT_RUNNER_TMP_DIR}/agent_state.sh"
 
 LOG_DIR="${HOME}/.evander"
-STATE_LOG_DIR="${LOG_DIR}"
-LEGACY_LOG_DIR="${HOME}/.agent-sandbox"
 RESOLVED_REPO_NAME="$(resolve_primary_agent_paths "${LOG_DIR}" || true)"
-if [[ -z "${RESOLVED_REPO_NAME}" && -d "${LEGACY_LOG_DIR}" ]]; then
-  RESOLVED_REPO_NAME="$(resolve_primary_agent_paths "${LEGACY_LOG_DIR}" || true)"
-  if [[ -n "${RESOLVED_REPO_NAME}" ]]; then
-    STATE_LOG_DIR="${LEGACY_LOG_DIR}"
-  fi
-fi
 if [[ -n "${RESOLVED_REPO_NAME}" ]]; then
   RUN_LOG_FILE="${RUN_LOG_DIR}/agent-${RESOLVED_REPO_NAME}.log"
-  PID_FILE="${STATE_LOG_DIR}/agent-${RESOLVED_REPO_NAME}.pid"
-  STATE_PATH="${STATE_LOG_DIR}/agent-${RESOLVED_REPO_NAME}.state"
+  PID_FILE="${LOG_DIR}/agent-${RESOLVED_REPO_NAME}.pid"
+  STATE_PATH="${LOG_DIR}/agent-${RESOLVED_REPO_NAME}.state"
   AGENT_STATE_REPO_NAME="${RESOLVED_REPO_NAME}"
 else
   RUN_LOG_FILE="${RUN_LOG_DIR}/codex-heartbeat-run.log"
@@ -1231,7 +1207,6 @@ if [[ -z "${AGENT_HOME}" ]]; then
   exit 1
 fi
 LOG_DIR="${AGENT_HOME}/.evander"
-LEGACY_LOG_DIR="${AGENT_HOME}/.agent-sandbox"
 RUN_LOG_DIR="${AGENT_RUN_LOG_DIR:-/var/log/evander/agent-runs}"
 
 resolve_primary_agent_paths() {
@@ -1265,9 +1240,6 @@ resolve_primary_agent_paths() {
 }
 
 RESOLVED_REPO_NAME="$(resolve_primary_agent_paths "${LOG_DIR}" || true)"
-if [[ -z "${RESOLVED_REPO_NAME}" && -d "${LEGACY_LOG_DIR}" ]]; then
-  RESOLVED_REPO_NAME="$(resolve_primary_agent_paths "${LEGACY_LOG_DIR}" || true)"
-fi
 if [[ -n "${RESOLVED_REPO_NAME}" ]]; then
   LOG_PATH="${RUN_LOG_DIR}/agent-${RESOLVED_REPO_NAME}.log"
 else

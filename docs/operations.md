@@ -2695,10 +2695,9 @@ curl -fsS -X POST http://127.0.0.1:11881/-/npm/v1/security/audits/quick \
   Admin GUI's Workers tab when the `ado` worker is selected.
 - The ADO worker `directories` list is exact-match. Add each child directory that should be
   polled; a parent directory no longer implicitly observes sessions in its descendants.
-- `ADO_*` env vars continue to work as compatibility fallbacks for one release and log deprecation
-  warnings.
-- Materialize `root/ado-worker.json` with `evander-cli migrate-ado-worker-env-to-root` when you
-  still use directory-scoped PR automation settings.
+- ADO worker cadence and directory selection are accepted only from
+  `config/ado-worker/config.json`; provider credentials and project settings come from canonical
+  host/directory configuration.
 
 Foreground runbook:
 
@@ -2770,7 +2769,6 @@ GitHub issue intake example:
 
 Failure recovery:
 
-- `--forget` remains available only for removing legacy processed-store entries during migration.
 - To backfill ADO proxy issues, run `query:remote-issues` with `provider=azure_devops`
   or the compatibility `query:ado:work-items`, then feed its `items` array into
   `effect:issue:upsert-ado-proxy.items`.

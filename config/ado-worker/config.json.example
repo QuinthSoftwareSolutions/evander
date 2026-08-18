@@ -1,13 +1,5 @@
 {
   "runtime_dir": "runtime",
   "poll_interval_seconds": 5,
-  "directories": [],
-  "yaml_output_dir": null,
-  "processed_store_path": null,
-  "ado_work_items_azure_devops_pat_env": "ADO_WORK_ITEMS_AZURE_DEVOPS_PAT",
-  "fetch_retry_count": 2,
-  "fetch_retry_backoff_seconds": 2.0,
-  "include_comments": true,
-  "comments_max_count": 20,
-  "comment_text_max_chars": 4000
+  "directories": []
 }

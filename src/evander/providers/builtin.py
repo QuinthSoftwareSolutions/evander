@@ -139,6 +139,7 @@ from evander.queries.providers.session_context import SessionContextQueryProvide
 from evander.queries.providers.session_list import SessionListQueryProvider
 from evander.queries.providers.vm_run_state import VmRunStateQueryProvider
 from evander.triggers.providers.agent_prompt_new import AgentPromptNewTriggerProvider
+from evander.triggers.providers.agent_artifact_staged import AgentArtifactStagedTriggerProvider
 from evander.triggers.providers.agent_run_completed import AgentRunCompletedTriggerProvider
 from evander.triggers.providers.ado_work_item_matching import (
     AdoWorkItemMatchingTriggerProvider,
@@ -192,6 +193,7 @@ def register_providers() -> dict[str, dict[str, type]]:
     return dict(
         trigger_providers={
             "trigger:event": EventTriggerProvider,
+            "trigger:agent:artifact-staged": AgentArtifactStagedTriggerProvider,
             "trigger:cron": CronTriggerProvider,
             "trigger:ticket:created": TicketCreatedTriggerProvider,
             "trigger:ticket:changed": TicketChangedTriggerProvider,

@@ -8382,10 +8382,6 @@ def test_admin_service_reads_and_writes_ado_worker_global_config(tmp_path: Path)
     read_result = service.workflow_config_admin.read_worker_global_config("ado")
     assert read_result.exists is False
     assert read_result.path == str(tmp_path / "config" / "ado-worker" / "config.json")
-    assert (
-        read_result.config["ado_work_items_azure_devops_pat_env"]
-        == "ADO_WORK_ITEMS_AZURE_DEVOPS_PAT"
-    )
     assert read_result.config["directories"] == []
 
     write_result = service.workflow_config_admin.write_worker_global_config(
@@ -8394,28 +8390,16 @@ def test_admin_service_reads_and_writes_ado_worker_global_config(tmp_path: Path)
             "runtime_dir": str(tmp_path / "runtime"),
             "poll_interval_seconds": 12.5,
             "directories": ["root/team-a", "root/team-b"],
-            "ado_work_items_azure_devops_pat_env": "ADO_WORK_ITEMS_AZURE_DEVOPS_PAT",
-            "include_comments": False,
-            "comments_max_count": 7,
         },
     )
     assert write_result.config["poll_interval_seconds"] == 12.5
     assert write_result.config["directories"] == ["root/team-a", "root/team-b"]
-    assert (
-        write_result.config["ado_work_items_azure_devops_pat_env"]
-        == "ADO_WORK_ITEMS_AZURE_DEVOPS_PAT"
-    )
 
     config_path = tmp_path / "config" / "ado-worker" / "config.json"
     payload = json.loads(config_path.read_text(encoding="utf-8"))
     assert payload["poll_interval_seconds"] == 12.5
     assert payload["directories"] == ["root/team-a", "root/team-b"]
-    assert payload["ado_work_items_azure_devops_pat_env"] == "ADO_WORK_ITEMS_AZURE_DEVOPS_PAT"
-    assert payload["include_comments"] is False
-    assert payload["comments_max_count"] == 7
-
-    reread = service.workflow_config_admin.read_worker_global_config("ado")
-    assert reread.config["include_comments"] is False
+    assert set(payload) == {"runtime_dir", "poll_interval_seconds", "directories"}
 
 
 def test_admin_service_reads_and_writes_discord_wake_worker_global_config(tmp_path: Path) -> None:

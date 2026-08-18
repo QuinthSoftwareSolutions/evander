@@ -91,6 +91,7 @@ from evander.queries.providers.schemas import (
 from evander.triggers.providers.schemas import (
     AdoWorkItemCommentCreatedTriggerDefinition,
     AdoWorkItemMatchingTriggerDefinition,
+    AgentArtifactStagedTriggerDefinition,
     AgentPromptNewTriggerDefinition,
     AgentRunCompletedTriggerDefinition,
     ApprovalPendingCreatedTriggerDefinition,
@@ -131,6 +132,7 @@ __all__ = [
     "AdoWorkItemMatchingTriggerDefinition",
     "AdoWorkItemsQueryDefinition",
     "AgentArtifactTextQueryDefinition",
+    "AgentArtifactStagedTriggerDefinition",
     "AgentBootstrapFrontendEffectDefinition",
     "AgentCloneRepoEffectDefinition",
     "AgentPrepareReferenceRepositoriesEffectDefinition",

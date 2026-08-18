@@ -1,25 +1,4 @@
 ---
-- name: Stop legacy Nexus package cache service from retired operational name
-  ansible.builtin.systemd:
-    name: agent-sandbox-nexus.service
-    enabled: false
-    state: stopped
-  failed_when: false
-
-- name: Remove legacy Nexus package cache unit files
-  ansible.builtin.file:
-    path: "{{ item }}"
-    state: absent
-  loop:
-    - /etc/systemd/system/agent-sandbox-nexus.service
-    - /etc/systemd/system/agent-sandbox-nexus.service.d
-  register: evander_legacy_nexus_unit_remove
-
-- name: Reload systemd after removing legacy Nexus unit files
-  ansible.builtin.systemd:
-    daemon_reload: true
-  when: evander_legacy_nexus_unit_remove.changed
-
 - name: Stop Nexus package cache when disabled
   ansible.builtin.systemd:
     name: evander-nexus.service

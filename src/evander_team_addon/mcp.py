@@ -448,7 +448,10 @@ def register_mcp_tools(server: FastMCP, context: AddonContext) -> tuple[str, ...
         ),
     )
     git_release_commands = TeamGitReleaseCommandService(repo)
-    ephemeral_commands = TeamEphemeralCommandService(repo)
+    ephemeral_commands = TeamEphemeralCommandService(
+        repo,
+        session_lookup=getattr(context.service, "session_repository", None),
+    )
     resolver = TeamMcpContextResolver(repo=repo, context=context)
     attachment_storage = TeamChatAttachmentStorage(context.runtime_dir)
     attachment_policy_service = TeamChatAttachmentPolicyService(repo)

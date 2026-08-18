@@ -47,7 +47,6 @@ AUDITOR_GROUP_ID = "auditor"
 VIEWER_GROUP_ID = "viewer"
 
 REQUIRED_GROUP_IDS = frozenset({OWNER_GROUP_ID, OPERATOR_GROUP_ID})
-LEGACY_ROLE_GROUP_IDS = {"admin": OWNER_GROUP_ID, "regular": OPERATOR_GROUP_ID}
 
 BUILTIN_GROUP_DEFINITIONS: dict[str, dict[str, object]] = {
     OWNER_GROUP_ID: {
@@ -190,11 +189,6 @@ def can(
         direct_workflow_grants=direct_workflow_grants,
         directory_path=directory_path,
     )
-
-
-def legacy_role_group_id(role: object) -> str | None:
-    normalized_role = str(role or "").strip().lower()
-    return LEGACY_ROLE_GROUP_IDS.get(normalized_role)
 
 
 def is_effective_owner(

@@ -3278,7 +3278,6 @@ def test_admin_web_skills_mutations_require_owner_and_privileged_unlock(
     app = create_app(build_admin_runtime(write_config(tmp_path)))
     app.state.admin_user_store.upsert_user(
         login="operator@example.com",
-        role="regular",
         display_name="Operator",
     )
     app.state.admin_user_store.set_local_password(
@@ -3784,8 +3783,8 @@ def test_admin_web_workflow_editor_document_filters_unreadable_graphs(
         ],
     )
     store = _admin_web_user_store(tmp_path)
-    store.upsert_user(login="owner@example.com", role="admin", display_name="Owner")
-    store.upsert_user(login="viewer@example.com", role="regular", display_name="Viewer")
+    store.upsert_user(login="owner@example.com", display_name="Owner")
+    store.upsert_user(login="viewer@example.com", display_name="Viewer")
     store.remove_user_group_assignment(
         login="viewer@example.com", group_id="operator", directory_path="root"
     )
@@ -3922,8 +3921,8 @@ def test_admin_web_workflow_editor_routes_enforce_directory_permissions(
         ],
     )
     store = _admin_web_user_store(tmp_path)
-    store.upsert_user(login="owner@example.com", role="admin", display_name="Owner")
-    store.upsert_user(login="viewer@example.com", role="regular", display_name="Viewer")
+    store.upsert_user(login="owner@example.com", display_name="Owner")
+    store.upsert_user(login="viewer@example.com", display_name="Viewer")
     store.remove_user_group_assignment(
         login="viewer@example.com", group_id="operator", directory_path="root"
     )
@@ -4078,8 +4077,8 @@ def test_admin_web_workflow_target_catalog_uses_workflow_permission(
         service.vm_agent_admin, "list_vms", MethodType(list_vms, service.vm_agent_admin)
     )
     store = _admin_web_user_store(tmp_path)
-    store.upsert_user(login="owner@example.com", role="admin", display_name="Owner")
-    store.upsert_user(login="maintainer@example.com", role="regular", display_name="Maintainer")
+    store.upsert_user(login="owner@example.com", display_name="Owner")
+    store.upsert_user(login="maintainer@example.com", display_name="Maintainer")
     store.remove_user_group_assignment(
         login="maintainer@example.com", group_id="operator", directory_path="root"
     )
@@ -4335,12 +4334,10 @@ def test_admin_web_workflow_run_routes_enforce_directory_permissions(
     _set_azure_sso_env(monkeypatch, allowed_users="operator@example.com,viewer@example.com")
     app = create_app(service)
     store = app.state.admin_user_store
-    store.update_user(login="viewer@example.com", role="regular", display_name="Viewer")
-    store.remove_user_group_assignment(
-        login="viewer@example.com", group_id="operator", directory_path="root"
-    )
-    store.assign_user_group(
-        login="viewer@example.com", group_id="workflow-viewer", directory_path="root/ops"
+    store.update_user(login="viewer@example.com", display_name="Viewer")
+    store.set_user_group_assignments(
+        login="viewer@example.com",
+        assignments=[{"group_id": "workflow-viewer", "directory_path": "root/ops"}],
     )
     client = TestClient(app)
     _complete_azure_login(app, client, login="viewer@example.com", display_name="Viewer")
@@ -4465,7 +4462,7 @@ def test_admin_web_workflow_failure_clusters_requires_workflow_runs_read_for_roo
     _set_azure_sso_env(monkeypatch, allowed_users="backup@example.com")
     app = create_app(service)
     store = app.state.admin_user_store
-    store.upsert_user(login="viewer@example.com", role="regular", display_name="Viewer")
+    store.upsert_user(login="viewer@example.com", display_name="Viewer")
     store.remove_user_group_assignment(
         login="viewer@example.com", group_id="operator", directory_path="root"
     )
@@ -4608,7 +4605,7 @@ def test_admin_web_workflow_failure_clusters_filters_to_readable_graphs_and_expo
     _set_azure_sso_env(monkeypatch, allowed_users="backup@example.com")
     app = create_app(service)
     store = app.state.admin_user_store
-    store.upsert_user(login="viewer@example.com", role="regular", display_name="Viewer")
+    store.upsert_user(login="viewer@example.com", display_name="Viewer")
     store.remove_user_group_assignment(
         login="viewer@example.com", group_id="operator", directory_path="root"
     )
@@ -4708,7 +4705,7 @@ def test_admin_web_workflow_failure_clusters_keeps_unassigned_root_cluster_for_r
     _set_azure_sso_env(monkeypatch, allowed_users="backup@example.com")
     app = create_app(service)
     store = app.state.admin_user_store
-    store.upsert_user(login="viewer@example.com", role="regular", display_name="Viewer")
+    store.upsert_user(login="viewer@example.com", display_name="Viewer")
     store.remove_user_group_assignment(
         login="viewer@example.com", group_id="operator", directory_path="root"
     )
@@ -4828,12 +4825,10 @@ def test_admin_web_workflow_run_controls_require_workflow_runs_control(
     _set_azure_sso_env(monkeypatch, allowed_users="operator@example.com,viewer@example.com")
     app = create_app(service)
     store = app.state.admin_user_store
-    store.update_user(login="viewer@example.com", role="regular", display_name="Viewer")
-    store.remove_user_group_assignment(
-        login="viewer@example.com", group_id="operator", directory_path="root"
-    )
-    store.assign_user_group(
-        login="viewer@example.com", group_id="auditor", directory_path="root/ops"
+    store.update_user(login="viewer@example.com", display_name="Viewer")
+    store.set_user_group_assignments(
+        login="viewer@example.com",
+        assignments=[{"group_id": "auditor", "directory_path": "root/ops"}],
     )
     client = TestClient(app)
     _complete_azure_login(app, client, login="viewer@example.com", display_name="Viewer")
@@ -5225,8 +5220,8 @@ def test_admin_web_workflow_pack_mutations_require_root_pack_management_permissi
         encoding="utf-8",
     )
     store = _admin_web_user_store(tmp_path)
-    store.upsert_user(login="owner@example.com", role="admin")
-    store.upsert_user(login="scoped-writer@example.com", role="regular")
+    store.upsert_user(login="owner@example.com")
+    store.upsert_user(login="scoped-writer@example.com")
     store.remove_user_group_assignment(
         login="scoped-writer@example.com", group_id="operator", directory_path="root"
     )
@@ -5235,7 +5230,7 @@ def test_admin_web_workflow_pack_mutations_require_root_pack_management_permissi
         permission=WORKFLOWS_WRITE_PERMISSION,
         directory_path="root/ops",
     )
-    store.upsert_user(login="pack-manager@example.com", role="regular")
+    store.upsert_user(login="pack-manager@example.com")
     store.remove_user_group_assignment(
         login="pack-manager@example.com", group_id="operator", directory_path="root"
     )
@@ -8450,7 +8445,7 @@ def test_admin_web_session_endpoint_reports_auth_disabled_by_default(tmp_path: P
     assert response.json()["auth_mode"] == "none"
     assert response.json()["auth_required"] is False
     assert response.json()["authenticated"] is True
-    assert response.json()["role"] == "admin"
+    assert "role" not in response.json()
     assert response.json()["can_manage_users"] is True
     assert ADMIN_OWNER_PERMISSION in response.json()["permissions"]
     assert response.json()["permissions"] == response.json()["effective_permissions"]
@@ -8657,7 +8652,7 @@ def test_admin_web_requires_login_when_password_configured(tmp_path: Path, monke
     assert login.status_code == 200
     assert login.json()["auth_mode"] == "local_password"
     assert login.json()["authenticated"] is True
-    assert login.json()["role"] == "admin"
+    assert "role" not in login.json()
     assert login.json()["can_manage_users"] is True
     assert ADMIN_OWNER_PERMISSION in login.json()["permissions"]
     assert login.json()["permissions"] == login.json()["effective_permissions"]
@@ -8678,10 +8673,10 @@ def test_admin_web_local_password_username_permissions_are_case_insensitive(
 
     assert login.status_code == 200
     assert login.json()["username"] == "Jonathan"
-    assert login.json()["role"] == "admin"
+    assert "role" not in login.json()
     assert ADMIN_OWNER_PERMISSION in login.json()["permissions"]
     assert session.status_code == 200
-    assert session.json()["role"] == "admin"
+    assert "role" not in session.json()
     assert WORKFLOWS_READ_PERMISSION in session.json()["effective_permissions"]
     assert authorized.status_code == 200
 
@@ -8696,7 +8691,7 @@ def test_admin_web_bootstraps_local_password_user_from_env(tmp_path: Path, monke
     credential = app.state.admin_user_store.get_local_password_credential("operator")
 
     assert [user.login for user in users] == ["operator"]
-    assert users[0].role == "admin"
+    assert app.state.admin_user_store.can(users[0].login, ADMIN_OWNER_PERMISSION)
     assert users[0].display_name == "Operator"
     assert credential is not None
     assert credential.login == "operator"
@@ -8718,7 +8713,7 @@ def test_admin_web_local_password_supports_multiple_users(tmp_path: Path, monkey
         "/api/admin/users",
         json={
             "login": "Operator@Example.com",
-            "role": "regular",
+            "group_assignments": [{"group_id": "operator", "directory_path": "root"}],
             "display_name": "Operator",
             "password": "operator-pass",
         },
@@ -8737,7 +8732,7 @@ def test_admin_web_local_password_supports_multiple_users(tmp_path: Path, monkey
     assert login.status_code == 200
     assert login.json()["username"] == "operator@example.com"
     assert login.json()["display_name"] == "Operator"
-    assert login.json()["role"] == "regular"
+    assert "role" not in login.json()
     assert login.json()["can_manage_users"] is False
     assert session.json()["authenticated"] is True
     assert session.json()["username"] == "operator@example.com"
@@ -8754,7 +8749,7 @@ def test_admin_web_local_password_user_create_requires_password(
 
     created = client.post(
         "/api/admin/users",
-        json={"login": "operator@example.com", "role": "regular"},
+        json={"login": "operator@example.com"},
     )
 
     assert created.status_code == 400
@@ -8777,7 +8772,7 @@ def test_admin_web_local_password_reset_changes_user_password(tmp_path: Path, mo
         "/api/admin/users",
         json={
             "login": "operator@example.com",
-            "role": "regular",
+            "group_assignments": [{"group_id": "operator", "directory_path": "root"}],
             "password": "old-pass",
         },
     )
@@ -8818,7 +8813,7 @@ def test_admin_web_deleted_local_password_user_loses_existing_session(
         "/api/admin/users",
         json={
             "login": "operator@example.com",
-            "role": "regular",
+            "group_assignments": [{"group_id": "operator", "directory_path": "root"}],
             "password": "operator-pass",
         },
     )
@@ -8988,7 +8983,7 @@ def test_workflow_event_api_accepts_configured_machine_tokens_with_source_names(
     assert "github-secret" not in json.dumps(github_published.json())
 
 
-def test_workflow_event_api_accepts_legacy_machine_tokens(tmp_path: Path, monkeypatch) -> None:
+def test_workflow_event_api_ignores_retired_machine_tokens(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.delenv("EVANDER_WORKFLOW_EVENT_MACHINE_TOKENS", raising=False)
     monkeypatch.setenv(
         "AGENT_SANDBOX_WORKFLOW_EVENT_MACHINE_TOKENS",
@@ -9002,8 +8997,7 @@ def test_workflow_event_api_accepts_legacy_machine_tokens(tmp_path: Path, monkey
         json={"event_type": "legacy-published", "payload": {}},
     )
 
-    assert published.status_code == 202
-    assert published.json()["source"]["source_name"] == "legacy-publisher"
+    assert published.status_code == 401
 
 
 @pytest.mark.parametrize(
@@ -9537,7 +9531,7 @@ def test_admin_web_config_maps_password_only_deployments_to_local_password(monke
     assert config.auth_required is True
 
 
-def test_admin_web_config_preserves_legacy_local_password_env(monkeypatch) -> None:
+def test_admin_web_config_rejects_retired_local_password_env(monkeypatch) -> None:
     monkeypatch.delenv("EVANDER_ADMIN_WEB_AUTH_MODE", raising=False)
     monkeypatch.delenv("EVANDER_ADMIN_WEB_USERNAME", raising=False)
     monkeypatch.delenv("EVANDER_ADMIN_WEB_PASSWORD", raising=False)
@@ -9545,15 +9539,11 @@ def test_admin_web_config_preserves_legacy_local_password_env(monkeypatch) -> No
     monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_USERNAME", "legacy-operator")
     monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_PASSWORD", "legacy-secret")
 
-    config = AdminWebConfig.from_env()
-
-    assert config.auth_mode == "local_password"
-    assert config.username == "legacy-operator"
-    assert config.password == "legacy-secret"
-    assert config.auth_required is True
+    with pytest.raises(ValueError, match="AGENT_SANDBOX_ADMIN_WEB_AUTH_MODE"):
+        AdminWebConfig.from_env()
 
 
-def test_admin_web_config_preserves_legacy_session_settings(monkeypatch) -> None:
+def test_admin_web_config_rejects_retired_session_settings(monkeypatch) -> None:
     for name in (
         "EVANDER_ADMIN_WEB_SESSION_SECRET",
         "EVANDER_ADMIN_WEB_SESSION_TTL_SECONDS",
@@ -9564,14 +9554,11 @@ def test_admin_web_config_preserves_legacy_session_settings(monkeypatch) -> None
     monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_SESSION_TTL_SECONDS", "7200")
     monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_COOKIE_SECURE", "true")
 
-    config = AdminWebConfig.from_env()
-
-    assert config.session_secret == "legacy-session-secret"
-    assert config.session_ttl_seconds == 7200
-    assert config.cookie_secure is True
+    with pytest.raises(ValueError, match="AGENT_SANDBOX_ADMIN_WEB_SESSION_SECRET"):
+        AdminWebConfig.from_env()
 
 
-def test_admin_web_config_preserves_legacy_azure_sso_env(monkeypatch) -> None:
+def test_admin_web_config_rejects_retired_azure_sso_env(monkeypatch) -> None:
     for name in (
         "EVANDER_ADMIN_WEB_AUTH_MODE",
         "EVANDER_ADMIN_WEB_AZURE_TENANT_ID",
@@ -9595,20 +9582,8 @@ def test_admin_web_config_preserves_legacy_azure_sso_env(monkeypatch) -> None:
         "Operator@Example.Test,viewer@example.test",
     )
 
-    config = AdminWebConfig.from_env()
-
-    assert config.auth_mode == "azure_sso"
-    assert config.azure_sso is not None
-    assert config.azure_sso.tenant_id == "legacy-tenant"
-    assert config.azure_sso.client_id == "legacy-client"
-    assert config.azure_sso.client_secret == "legacy-secret"
-    assert config.azure_sso.redirect_uri == (
-        "https://admin.example.test/api/auth/azure-sso/callback"
-    )
-    assert config.azure_sso.post_login_redirect == "/workflow"
-    assert config.azure_sso.bootstrap_users == frozenset(
-        {"operator@example.test", "viewer@example.test"}
-    )
+    with pytest.raises(ValueError, match="AGENT_SANDBOX_ADMIN_WEB_AUTH_MODE"):
+        AdminWebConfig.from_env()
 
 
 def test_admin_web_config_rejects_incomplete_azure_sso(monkeypatch) -> None:
@@ -9644,7 +9619,7 @@ def test_admin_web_session_payload_reports_local_password_mode(tmp_path: Path, m
     assert response.status_code == 200
     assert response.json()["auth_mode"] == "local_password"
     assert response.json()["authenticated"] is False
-    assert response.json()["role"] is None
+    assert "role" not in response.json()
     assert response.json()["can_manage_users"] is False
     assert response.json()["permissions"] == []
     assert response.json()["effective_permissions"] == []
@@ -9669,7 +9644,7 @@ def test_admin_web_session_payload_reports_azure_sso_mode(tmp_path: Path, monkey
     assert response.status_code == 200
     assert response.json()["auth_mode"] == "azure_sso"
     assert response.json()["authenticated"] is False
-    assert response.json()["role"] is None
+    assert "role" not in response.json()
     assert response.json()["can_manage_users"] is False
     assert response.json()["permissions"] == []
     assert response.json()["effective_permissions"] == []
@@ -9689,7 +9664,7 @@ def test_admin_web_bootstraps_azure_users_from_env_on_first_startup(
 
     users = app.state.admin_user_store.list_users()
     assert [user.login for user in users] == ["operator@example.com", "second@example.com"]
-    assert {user.role for user in users} == {"admin"}
+    assert all(app.state.admin_user_store.can(user.login, ADMIN_OWNER_PERMISSION) for user in users)
 
 
 def test_admin_web_does_not_rebootstrap_nonempty_azure_user_store(
@@ -9697,7 +9672,7 @@ def test_admin_web_does_not_rebootstrap_nonempty_azure_user_store(
 ) -> None:
     config_path = write_config(tmp_path)
     store = _admin_web_user_store(tmp_path)
-    store.upsert_user(login="existing@example.com", role="admin")
+    store.upsert_user(login="existing@example.com")
     _set_azure_sso_env(monkeypatch, allowed_users="new@example.com")
 
     app = create_app(build_admin_runtime(config_path))
@@ -9712,7 +9687,7 @@ def test_admin_web_azure_login_uses_runtime_user_store_without_env_allowlist(
 ) -> None:
     config_path = write_config(tmp_path)
     _admin_web_user_store(tmp_path).upsert_user(
-        login="operator@example.com", role="admin", display_name="Runtime Operator"
+        login="operator@example.com", display_name="Runtime Operator"
     )
     _set_azure_sso_env(monkeypatch, allowed_users=None)
     app = create_app(build_admin_runtime(config_path))
@@ -9724,12 +9699,12 @@ def test_admin_web_azure_login_uses_runtime_user_store_without_env_allowlist(
 
     assert callback.status_code == 303
     assert session.json()["authenticated"] is True
-    assert session.json()["role"] == "admin"
+    assert "role" not in session.json()
     assert session.json()["can_manage_users"] is True
     assert ADMIN_OWNER_PERMISSION in session.json()["permissions"]
     assert session.json()["permissions"] == session.json()["effective_permissions"]
     assert session.json()["display_name"] == "Runtime Operator"
-    assert admin_state.json()["role"] == "admin"
+    assert "role" not in admin_state.json()
     assert admin_state.json()["can_manage_users"] is True
     assert ADMIN_OWNER_PERMISSION in admin_state.json()["permissions"]
     assert admin_state.json()["permissions"] == admin_state.json()["effective_permissions"]
@@ -9741,8 +9716,8 @@ def test_admin_web_azure_login_uses_effective_permissions_for_regular_user(
 ) -> None:
     config_path = write_config(tmp_path)
     store = _admin_web_user_store(tmp_path)
-    store.upsert_user(login="admin@example.com", role="admin")
-    store.upsert_user(login="regular@example.com", role="regular")
+    store.upsert_user(login="admin@example.com")
+    store.upsert_user(login="regular@example.com")
     _set_azure_sso_env(monkeypatch, allowed_users=None)
     app = create_app(build_admin_runtime(config_path))
     client = TestClient(app)
@@ -9756,7 +9731,7 @@ def test_admin_web_azure_login_uses_effective_permissions_for_regular_user(
     assert callback.status_code == 303
     assert session.status_code == 200
     assert session.json()["authenticated"] is True
-    assert session.json()["role"] == "regular"
+    assert "role" not in session.json()
     assert session.json()["can_manage_users"] is False
     assert set(session.json()["permissions"]) == {
         WORKFLOWS_READ_PERMISSION,
@@ -9769,7 +9744,7 @@ def test_admin_web_azure_login_uses_effective_permissions_for_regular_user(
     }
     assert session.json()["permissions"] == session.json()["effective_permissions"]
     assert admin_state.status_code == 200
-    assert admin_state.json()["role"] == "regular"
+    assert "role" not in admin_state.json()
     assert admin_state.json()["can_manage_users"] is False
     assert set(admin_state.json()["permissions"]) == {
         WORKFLOWS_READ_PERMISSION,
@@ -10018,7 +9993,7 @@ def test_admin_web_azure_callback_accepts_allowlisted_user_and_sets_local_sessio
     assert session.json()["auth_mode"] == "azure_sso"
     assert session.json()["username"] == "operator@example.com"
     assert session.json()["display_name"] == "Operator"
-    assert session.json()["role"] == "admin"
+    assert "role" not in session.json()
     assert session.json()["can_manage_users"] is True
     assert ADMIN_OWNER_PERMISSION in session.json()["permissions"]
     assert session.json()["permissions"] == session.json()["effective_permissions"]
@@ -10080,7 +10055,7 @@ def test_admin_web_removed_azure_user_loses_existing_session(tmp_path: Path, mon
     assert before_removal.status_code == 200
     assert session.status_code == 200
     assert session.json()["authenticated"] is False
-    assert session.json()["role"] is None
+    assert "role" not in session.json()
     assert session.json()["permissions"] == []
     assert session.json()["effective_permissions"] == []
     assert after_removal.status_code == 401
@@ -10091,40 +10066,67 @@ def test_admin_web_user_api_manages_users_as_builtin_admin(tmp_path: Path) -> No
 
     created = client.post(
         "/api/admin/users",
-        json={"login": "Operator@Example.com", "role": "admin", "display_name": "Operator"},
+        json={
+            "login": "Operator@Example.com",
+            "group_assignments": [{"group_id": "owner", "directory_path": "root"}],
+            "display_name": "Operator",
+        },
     )
     updated = client.patch(
         "/api/admin/users/operator@example.com",
-        json={"role": "regular", "display_name": "Ops User"},
+        json={
+            "group_assignments": [{"group_id": "operator", "directory_path": "root"}],
+            "display_name": "Ops User",
+        },
     )
     listed = client.get("/api/admin/users")
 
     assert created.status_code == 200
     assert created.json()["user"]["login"] == "operator@example.com"
-    assert created.json()["user"]["role"] == "admin"
+    assert created.json()["user"]["group_assignments"][0]["group_id"] == "owner"
     assert updated.status_code == 400
-    assert updated.json()["error"] == "Cannot demote the last admin user"
+    assert updated.json()["error"] == "Cannot leave the system without an effective owner"
     assert listed.status_code == 200
     assert listed.json()["users"] == [created.json()["user"]]
 
 
-def test_admin_web_user_api_prevents_last_admin_delete_and_demotion(tmp_path: Path) -> None:
+def test_admin_web_user_api_rejects_retired_role_payload(tmp_path: Path) -> None:
     client = TestClient(create_app(build_admin_runtime(write_config(tmp_path))))
-    client.post("/api/admin/users", json={"login": "admin@example.com", "role": "admin"})
 
-    demote = client.patch("/api/admin/users/admin@example.com", json={"role": "regular"})
-    delete = client.delete("/api/admin/users/admin@example.com")
-    create_second = client.post(
-        "/api/admin/users", json={"login": "regular@example.com", "role": "regular"}
+    created = client.post(
+        "/api/admin/users",
+        json={"login": "operator@example.com", "role": "admin"},
     )
+
+    assert created.status_code == 400
+    assert created.json()["error"] == "role is no longer supported; use group_assignments"
+    assert client.get("/api/admin/users").json()["users"] == []
+
+
+def test_admin_web_user_api_prevents_removing_the_last_effective_owner(tmp_path: Path) -> None:
+    client = TestClient(create_app(build_admin_runtime(write_config(tmp_path))))
+    client.post(
+        "/api/admin/users",
+        json={
+            "login": "admin@example.com",
+            "group_assignments": [{"group_id": "owner", "directory_path": "root"}],
+        },
+    )
+
+    demote = client.patch(
+        "/api/admin/users/admin@example.com",
+        json={"group_assignments": [{"group_id": "operator", "directory_path": "root"}]},
+    )
+    delete = client.delete("/api/admin/users/admin@example.com")
+    create_second = client.post("/api/admin/users", json={"login": "regular@example.com"})
     delete_second = client.delete("/api/admin/users/regular@example.com")
 
     assert demote.status_code == 400
-    assert demote.json()["error"] == "Cannot demote the last admin user"
+    assert demote.json()["error"] == "Cannot leave the system without an effective owner"
     assert delete.status_code == 400
-    assert delete.json()["error"] == "Cannot remove the last admin user"
+    assert delete.json()["error"] == "Cannot leave the system without an effective owner"
     assert create_second.status_code == 200
-    assert create_second.json()["user"]["role"] == "regular"
+    assert create_second.json()["user"]["group_assignments"][0]["group_id"] == "operator"
     assert delete_second.status_code == 200
 
 
@@ -10149,7 +10151,11 @@ def test_admin_web_user_api_attaches_directory_contact(tmp_path: Path) -> None:
 
     created = client.post(
         "/api/admin/users?directory_path=root",
-        json={"login": "operator@example.com", "role": "admin", "contact_id": "ops"},
+        json={
+            "login": "operator@example.com",
+            "group_assignments": [{"group_id": "owner", "directory_path": "root"}],
+            "contact_id": "ops",
+        },
     )
     listed = client.get("/api/admin/users?directory_path=root")
     cleared = client.patch(
@@ -10187,7 +10193,10 @@ def test_admin_web_user_api_clears_inherited_directory_contact(tmp_path: Path) -
     client = TestClient(create_app(service))
     client.post(
         "/api/admin/users?directory_path=root",
-        json={"login": "operator@example.com", "role": "admin"},
+        json={
+            "login": "operator@example.com",
+            "group_assignments": [{"group_id": "owner", "directory_path": "root"}],
+        },
     )
 
     inherited = client.get("/api/admin/users?directory_path=root/team")
@@ -10212,7 +10221,11 @@ def test_admin_web_user_api_manages_groups_assignments_and_direct_workflow_grant
 
     owner = client.post(
         "/api/admin/users",
-        json={"login": "owner@example.com", "role": "admin", "display_name": "Owner"},
+        json={
+            "login": "owner@example.com",
+            "group_assignments": [{"group_id": "owner", "directory_path": "root"}],
+            "display_name": "Owner",
+        },
     )
     group = client.post(
         "/api/admin/groups",
@@ -10227,7 +10240,6 @@ def test_admin_web_user_api_manages_groups_assignments_and_direct_workflow_grant
         "/api/admin/users?directory_path=root/ops",
         json={
             "login": "member@example.com",
-            "role": "regular",
             "display_name": "Member",
             "group_assignments": [{"group_id": "ops-reviewers", "directory_path": "root/ops"}],
             "workflow_grants": [
@@ -10282,8 +10294,8 @@ def test_admin_web_group_manager_cannot_mutate_users_or_assignments(
 ) -> None:
     config_path = write_config(tmp_path)
     store = _admin_web_user_store(tmp_path)
-    store.upsert_user(login="owner@example.com", role="admin")
-    store.upsert_user(login="group-manager@example.com", role="regular")
+    store.upsert_user(login="owner@example.com")
+    store.upsert_user(login="group-manager@example.com")
     store.upsert_group(
         group_id="group-managers",
         display_name="Group Managers",
@@ -10309,7 +10321,6 @@ def test_admin_web_group_manager_cannot_mutate_users_or_assignments(
         "/api/admin/users",
         json={
             "login": "other@example.com",
-            "role": "regular",
             "group_assignments": [{"group_id": "owner", "directory_path": "root"}],
         },
     )
@@ -10335,8 +10346,8 @@ def test_admin_web_group_manager_cannot_mutate_users_or_assignments(
 def test_admin_web_user_api_rejects_regular_azure_user(tmp_path: Path, monkeypatch) -> None:
     config_path = write_config(tmp_path)
     store = _admin_web_user_store(tmp_path)
-    store.upsert_user(login="admin@example.com", role="admin")
-    store.upsert_user(login="regular@example.com", role="regular")
+    store.upsert_user(login="admin@example.com")
+    store.upsert_user(login="regular@example.com")
     _set_azure_sso_env(monkeypatch, allowed_users=None)
     app = create_app(build_admin_runtime(config_path))
     client = TestClient(app)
@@ -10346,9 +10357,7 @@ def test_admin_web_user_api_rejects_regular_azure_user(tmp_path: Path, monkeypat
     )
     allowed_api = client.get("/api/workflow-editor/document")
     list_users = client.get("/api/admin/users")
-    create_user = client.post(
-        "/api/admin/users", json={"login": "other@example.com", "role": "regular"}
-    )
+    create_user = client.post("/api/admin/users", json={"login": "other@example.com"})
 
     assert callback.status_code == 303
     assert allowed_api.status_code == 200
@@ -10552,7 +10561,7 @@ def test_admin_web_approval_decisions_use_approval_directory_permission(
     )
     app = create_app(service)
     store = app.state.admin_user_store
-    store.upsert_user(login="ops-owner@example.com", role="regular", display_name="Ops Owner")
+    store.upsert_user(login="ops-owner@example.com", display_name="Ops Owner")
     store.remove_user_group_assignment(
         login="ops-owner@example.com", group_id="operator", directory_path="root"
     )
@@ -10623,7 +10632,7 @@ def test_admin_web_session_reads_use_directory_owner_permission(
     )
     app = create_app(service)
     store = app.state.admin_user_store
-    store.upsert_user(login="ops-owner@example.com", role="regular", display_name="Ops Owner")
+    store.upsert_user(login="ops-owner@example.com", display_name="Ops Owner")
     store.remove_user_group_assignment(
         login="ops-owner@example.com", group_id="operator", directory_path="root"
     )
@@ -10811,7 +10820,7 @@ def test_admin_web_approval_reads_use_directory_owner_permission(
     )
     app = create_app(service)
     store = app.state.admin_user_store
-    store.upsert_user(login="ops-owner@example.com", role="regular", display_name="Ops Owner")
+    store.upsert_user(login="ops-owner@example.com", display_name="Ops Owner")
     store.remove_user_group_assignment(
         login="ops-owner@example.com", group_id="operator", directory_path="root"
     )
@@ -13044,7 +13053,7 @@ def test_admin_web_global_policy_writes_require_admin_owner(
         "/api/admin/users",
         json={
             "login": "operator@example.com",
-            "role": "regular",
+            "group_assignments": [{"group_id": "operator", "directory_path": "root"}],
             "password": "operator-pass",
         },
     )
@@ -13214,8 +13223,8 @@ def _regular_admin_web_client(
     service: AdminRuntimeComponents,
 ) -> TestClient:
     store = _admin_web_user_store(tmp_path)
-    store.upsert_user(login="owner@example.com", role="admin")
-    store.upsert_user(login="regular@example.com", role="regular")
+    store.upsert_user(login="owner@example.com")
+    store.upsert_user(login="regular@example.com")
     _set_azure_sso_env(monkeypatch, allowed_users=None)
     app = create_app(service)
     client = TestClient(app)
@@ -13238,7 +13247,7 @@ def _scoped_owner_admin_web_client(
     monkeypatch.setenv("EVANDER_ADMIN_WEB_SESSION_SECRET", "test-secret")
     app = create_app(service)
     store = app.state.admin_user_store
-    store.upsert_user(login="ops-owner@example.com", role="regular", display_name="Ops Owner")
+    store.upsert_user(login="ops-owner@example.com", display_name="Ops Owner")
     store.remove_user_group_assignment(
         login="ops-owner@example.com", group_id="operator", directory_path="root"
     )

@@ -86,11 +86,13 @@ class TeamCommandExecutor:
         self,
         repository: TeamStateRepository,
         *,
+        session_lookup: Any | None = None,
         git_candidate_commit_resolver: GitCandidateCommitResolver | None = None,
         git_default_branch_resolver: Callable[..., object] | None = None,
         dependency_recovery_commit_verifier: (DependencyRecoveryCommitVerifier | None) = None,
     ) -> None:
         self._repository = repository
+        self._session_lookup = session_lookup
         self._git_candidate_commit_resolver = git_candidate_commit_resolver
         self._git_default_branch_resolver = git_default_branch_resolver
         self._dependency_recovery_commit_verifier = dependency_recovery_commit_verifier

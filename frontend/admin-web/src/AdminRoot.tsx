@@ -128,7 +128,6 @@ type AdminSession = {
   authenticated: boolean;
   username: string | null;
   display_name: string | null;
-  role: "admin" | "regular" | null;
   can_manage_users: boolean;
   permissions?: string[];
   effective_permissions?: string[];
@@ -145,7 +144,6 @@ type AdminState = {
   selected_directory_path: string;
   directory_scoped_config_enabled: boolean;
   execution_backend: AdminExecutionBackend;
-  role: "admin" | "regular" | null;
   can_manage_users: boolean;
   permissions?: string[];
   effective_permissions?: string[];
@@ -1985,7 +1983,6 @@ export default function AdminRoot() {
     window.location.assign(targetUrl);
   }
 
-  const currentUserRole = adminState?.role ?? session?.role ?? null;
   const currentUserRootPermissions = normalizePermissionList(session?.effective_permissions, session?.permissions);
   const currentUserPermissions = normalizePermissionList(session?.permissions, adminState?.permissions);
   const currentUserEffectivePermissions = normalizePermissionList(
@@ -1995,7 +1992,7 @@ export default function AdminRoot() {
   );
   const currentUserPermissionSet = new Set(currentUserEffectivePermissions);
   const currentUserRootPermissionSet = new Set(currentUserRootPermissions);
-  const isOwner = currentUserRole === "admin" || currentUserPermissionSet.has("admin.owner");
+  const isOwner = currentUserPermissionSet.has("admin.owner");
   const hasPermission = (permission: string) => isOwner || currentUserPermissionSet.has(permission);
   const hasRootPermission = (permission: string) =>
     currentUserRootPermissionSet.has("admin.owner") || currentUserRootPermissionSet.has(permission);
@@ -2064,7 +2061,6 @@ export default function AdminRoot() {
     directoryScopedConfigEnabled: adminState?.directory_scoped_config_enabled ?? false,
     currentUserId,
     currentUserLabel,
-    currentUserRole,
     currentUserPermissions,
     currentUserEffectivePermissions,
     canReadWorkflows,

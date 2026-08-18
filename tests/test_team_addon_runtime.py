@@ -250,7 +250,7 @@ def test_project_git_identity_defaults_to_evander_bot() -> None:
 
 
 def _command_service(repo: TeamStateRepository) -> TeamEphemeralCommandService:
-    return TeamEphemeralCommandService(repo)
+    return TeamEphemeralCommandService(repo, session_lookup=_root_session_lookup)
 
 
 def _team_admin_service(repo: TeamStateRepository) -> TeamAdminService:
@@ -278,11 +278,15 @@ def _team_runtime_service(repo: TeamStateRepository) -> TeamRuntimeService:
 
 
 def _team_agent_action_service(repo: TeamStateRepository) -> TeamAgentActionService:
-    return TeamAgentActionService(repo)
+    return TeamAgentActionService(repo, session_lookup=_root_session_lookup)
 
 
 def _team_ephemeral_service(repo: TeamStateRepository) -> TeamEphemeralService:
-    return TeamEphemeralService(repo)
+    return TeamEphemeralService(repo, session_lookup=_root_session_lookup)
+
+
+def _root_session_lookup(_session_id: str) -> dict[str, str]:
+    return {"directory_path": "root"}
 
 
 def test_team_project_managed_repository_bindings_follow_state_and_rollback(
@@ -11141,6 +11145,48 @@ def test_ephemeral_lifecycle_collects_action_routes_parent_and_cleans_up(
     assert acceptance["assignment_id"] == assignment.id
     final = TeamStateRepository(tmp_path).read()
     assert final.deliverables["deliverable-ephemeral"].producer_agent_id == "backend"
+
+
+def test_ephemeral_worker_directory_is_derived_from_the_parent_backing_session(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_team(tmp_path, max_ephemeral=1)
+
+    def session_lookup(session_id: str) -> dict[str, str] | None:
+        if session_id == "session-backend":
+            return {"directory_path": "root/teams/alpha"}
+        return None
+
+    service = TeamEphemeralService(repo, session_lookup=session_lookup)
+    with pytest.raises(ValueError, match="must match the parent agent backing session directory"):
+        service.request_ephemeral_assignments(
+            parent_agent_id="backend",
+            requests=[
+                {
+                    "id": "ephemeral-wrong-directory",
+                    "task_id": "task",
+                    "title": "Wrong directory",
+                    "prompt": "Do not escape the parent directory.",
+                    "directory_path": "root/other-team",
+                }
+            ],
+        )
+
+    state, result = service.request_ephemeral_assignments(
+        parent_agent_id="backend",
+        requests=[
+            {
+                "id": "ephemeral-inherited-directory",
+                "task_id": "task",
+                "title": "Inherited directory",
+                "prompt": "Use the parent configuration scope.",
+            }
+        ],
+    )
+
+    assignment = state.ephemeral_assignments["ephemeral-inherited-directory"]
+    assert assignment.directory_path == "root/teams/alpha"
+    assert result["events"][0]["payload"]["directory_path"] == "root/teams/alpha"
 
 
 def test_mark_ephemeral_spawned_records_create_failure(tmp_path: Path) -> None:

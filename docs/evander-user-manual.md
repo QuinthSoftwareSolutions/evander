@@ -1292,7 +1292,7 @@ that job.
 
 | What you see | What it usually means | Useful next step |
 |---|---|---|
-| You can sign in, but a page or edit is unavailable | Authentication succeeded, but your role does not grant that action in the selected directory | Confirm the directory and ask an owner to review your assignment |
+| You can sign in, but a page or edit is unavailable | Authentication succeeded, but your effective group assignments do not grant that action in the selected directory | Confirm the directory and ask an owner to review your assignment |
 | You can work in one project but not its sibling | Directory assignments flow downward to descendants, not sideways to siblings | Check that the correct project is selected |
 | A sensitive edit says privileged operations are locked | Your current browser session is authorized but its temporary safety lock is still engaged | Review the action, then use the supported unlock control if appropriate |
 | An agent has no visible tools | The session may be expired, unproved, incorrectly bound, or intentionally granted no tools | Record the session ID, directory, expiry, and visible status |
@@ -1333,7 +1333,7 @@ action.
 
 ## The privileged-operations lock is a safety catch
 
-Some sensitive Admin Web changes require both the necessary role and an unlocked browser session.
+Some sensitive Admin Web changes require both the necessary effective permission and an unlocked browser session.
 Login begins locked. Unlocking marks only the current authenticated Admin Web session; locking,
 logging out, cookie expiry, or an Admin Web restart removes that mark.
 
@@ -2792,7 +2792,7 @@ MCP is therefore a central capability boundary, but not the only reachable host 
 
 Cloud-init writes `/etc/evander/session.env`, and the shell profile loads it for the `agent` user. The file contains routing data such as session identity, MCP URL/token, model relay URL, HTTP-target relay prefix, and package locations. It also sets a placeholder `OPENAI_API_KEY` so tools that insist on an API-key variable can start. That placeholder is not the upstream provider secret.
 
-Current bootstrap scripts still read `/etc/agent-sandbox/session.env` as an upgrade compatibility fallback, but `/etc/evander/session.env` is the current path. A shell that was already open before a bootstrap repair may need:
+A shell that was already open before a bootstrap repair may need to reload the canonical environment:
 
 ```bash
 source ~/.profile

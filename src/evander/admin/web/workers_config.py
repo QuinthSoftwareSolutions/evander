@@ -563,13 +563,6 @@ _WORKER_GLOBAL_CONFIG_TOOLTIPS: dict[str, str] = {
         "Exact canonical directory paths the worker should process on each cycle. "
         "Child directories must be listed separately."
     ),
-    "yaml_output_dir": "Directory where fetched work items are rendered as YAML.",
-    "processed_store_path": "JSON state file used to remember handled work items.",
-    "fetch_retry_count": "How many times the worker retries Azure DevOps fetch calls.",
-    "fetch_retry_backoff_seconds": "Backoff in seconds between Azure DevOps fetch retries.",
-    "include_comments": "Whether fetched work item comments are attached to YAML payloads.",
-    "comments_max_count": "Maximum number of comments fetched per work item.",
-    "comment_text_max_chars": "Maximum number of comment characters kept per comment.",
     "freshness_window_seconds": "How recently a proxy issue can have synced before the worker skips it.",
     "host_busy_check_script_path": "Host script used to determine whether a session VM is busy before resuming it.",
     "host_resume_script_path": "Host script invoked to resume a session VM when feedback is waiting.",

@@ -419,7 +419,6 @@ def _build_admin_runtime_components(
         directories=directory_admin._directories,
         sessions=runtime.session_repository,
         pr_map_path=config.pr_map_path,
-        ado_processed_store_path=config.runtime_dir / "ado-processed-work-items.json",
     )
     issue_service = IssueService(
         ProviderConfigResolver(

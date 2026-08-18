@@ -281,7 +281,6 @@ def test_help_groups_commands_by_panel_then_alphabetically() -> None:
     )
     assert output.index("seed-discord-channel") < output.index("seed-email")
     assert "init-state" in output and "Create runtime state files." in output
-    assert "migrate-ado-worker-env-to-root" in output
     assert "migrate-issue-setup-env-to-root" in output
     assert "migrate-pr-template-to-root" in output
     assert "migrate-directory-ownership" in output
@@ -302,7 +301,7 @@ def test_poll_ado_backlog_help_exposes_only_current_worker_options() -> None:
     result = CliRunner().invoke(app, ["poll-ado-backlog", "--help"])
 
     assert result.exit_code == 0
-    assert "--forget" in result.output
+    assert "--forget" not in result.output
     assert "--reprocess" not in result.output
     assert "--list-unprocessed" not in result.output
 
@@ -1021,21 +1020,11 @@ def test_migrate_directory_ownership_backfills_missing_fields_only(tmp_path: Pat
         ),
         encoding="utf-8",
     )
-    (runtime_dir / "ado-processed-work-items.json").write_text(
-        json.dumps(
-            {
-                "10": {"id": 10, "yaml_path": "/tmp/10.yaml"},
-                "11": {"id": 11, "yaml_path": "/tmp/11.yaml", "directory_path": "root/team"},
-            }
-        ),
-        encoding="utf-8",
-    )
-
     runner = CliRunner()
     result = runner.invoke(app, ["migrate-directory-ownership", "--config", str(config_path)])
 
     assert result.exit_code == 0
-    assert "Backfilled 4 record(s) across 4 file(s)" in result.output
+    assert "Backfilled 3 record(s) across 3 file(s)" in result.output
 
     sessions = json.loads((runtime_dir / "sessions.json").read_text(encoding="utf-8"))
     assert sessions["session-a"]["directory_path"] == "root"
@@ -1048,13 +1037,6 @@ def test_migrate_directory_ownership_backfills_missing_fields_only(tmp_path: Pat
     pr_map = json.loads((runtime_dir / "pr-map.json").read_text(encoding="utf-8"))
     assert pr_map["entries"]["github:org/repo:1"]["directory_path"] == "root"
     assert pr_map["entries"]["github:org/repo:2"]["directory_path"] == "root/team"
-
-    ado_processed = json.loads(
-        (runtime_dir / "ado-processed-work-items.json").read_text(encoding="utf-8")
-    )
-    assert ado_processed["10"]["directory_path"] == "root"
-    assert ado_processed["11"]["directory_path"] == "root/team"
-
 
 def test_list_approvals_outputs_queue_health_and_redacted_payload(tmp_path: Path) -> None:
     config_path = write_config(tmp_path)
@@ -1145,50 +1127,6 @@ def test_show_approval_and_approve_record_reason(tmp_path: Path) -> None:
     assert approvals["approval-1"]["decision_history"][0]["reason"] == "looks safe"
 
 
-def test_migrate_ado_worker_env_to_root_materializes_root_domain_file(tmp_path: Path) -> None:
-    config_path = write_config(tmp_path, enable_directory_scoped_config=True)
-    runner = CliRunner()
-
-    assert runner.invoke(app, ["init-state", "--config", str(config_path)]).exit_code == 0
-    env_file = tmp_path / "config" / "ado-worker.env"
-    env_file.parent.mkdir(parents=True, exist_ok=True)
-    env_file.write_text(
-        "\n".join(
-            [
-                "ADO_PROJECT_OR_SOLUTION=/tmp/Example.slnx",
-                "ADO_PREWARM_TARGET=/tmp/Prewarm.slnx",
-                "ADO_REPO_PATH=/tmp/repo",
-                "ADO_BOOTSTRAP_MSSQL=true",
-                "ADO_MSSQL_SA_PASSWORD=SecretPassw0rd!",
-                "ADO_FRONTEND_INSTALL_ROOTS=/tmp/repo/Src/Clients,/tmp/repo/Src/Admin",
-            ]
-        ),
-        encoding="utf-8",
-    )
-
-    result = runner.invoke(
-        app,
-        [
-            "migrate-ado-worker-env-to-root",
-            "--config",
-            str(config_path),
-        ],
-    )
-
-    assert result.exit_code == 0
-    assert "ADO worker env migration complete: written ado_worker" in result.output
-    runtime_dir = tmp_path / "runtime"
-    payload = json.loads(
-        (runtime_dir / "directory-config" / "root" / "ado-worker.json").read_text(encoding="utf-8")
-    )
-    assert payload == {
-        "ado_area_filters": [],
-        "ado_repo_source": "/tmp/repo",
-        "ado_team_filters": [],
-    }
-    directories = DirectoryStore(runtime_dir / "directories.json").read_all()
-    assert "ado_worker" in directories["root"].metadata["directory_config"]["domains"]
-
 
 def test_migrate_issue_setup_env_to_root_materializes_root_domain_file(
     tmp_path: Path,
@@ -1277,49 +1215,6 @@ def test_migrate_pr_template_to_root_materializes_root_domain_file(tmp_path: Pat
     directories = DirectoryStore(runtime_dir / "directories.json").read_all()
     assert "pr_template" in directories["root"].metadata["directory_config"]["domains"]
 
-
-def test_migrate_ado_worker_env_to_root_imports_env_file(tmp_path: Path) -> None:
-    config_path = write_config(tmp_path, enable_directory_scoped_config=True)
-    env_file = tmp_path / "ado-worker.env"
-    env_file.write_text(
-        "\n".join(
-            [
-                'ADO_PROJECT_OR_SOLUTION="/tmp/Example.slnx"',
-                'ADO_REPO_PATH="/tmp/repo"',
-                'ADO_AREA_FILTERS="Root\\Area,Root\\Other"',
-                'ADO_BOOTSTRAP_MSSQL="true"',
-                'ADO_MSSQL_SA_PASSWORD="TopSecret!"',
-            ]
-        )
-        + "\n",
-        encoding="utf-8",
-    )
-    runner = CliRunner()
-
-    assert runner.invoke(app, ["init-state", "--config", str(config_path)]).exit_code == 0
-    result = runner.invoke(
-        app,
-        [
-            "migrate-ado-worker-env-to-root",
-            "--config",
-            str(config_path),
-            "--env-file",
-            str(env_file),
-        ],
-    )
-
-    assert result.exit_code == 0
-    assert "written ado_worker" in result.output
-    payload = json.loads(
-        (tmp_path / "runtime" / "directory-config" / "root" / "ado-worker.json").read_text("utf-8")
-    )
-    assert payload["ado_repo_source"] == "/tmp/repo"
-    assert payload["ado_area_filters"] == ["Root\\Area", "Root\\Other"]
-    assert "ado_project_or_solution" not in payload
-    assert "ado_bootstrap_mssql" not in payload
-    assert "ado_mssql_sa_password_env" not in payload
-    directories = DirectoryStore(tmp_path / "runtime" / "directories.json").read_all()
-    assert "ado_worker" in directories["root"].metadata["directory_config"]["domains"]
 
 
 def test_migrate_issue_setup_env_to_root_imports_env_file_and_env_overrides(

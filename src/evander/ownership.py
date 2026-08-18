@@ -36,12 +36,10 @@ class DirectoryOwnershipQueries:
         directories: DirectoryService,
         sessions: SessionManifestRepository,
         pr_map_path: Path | None = None,
-        ado_processed_store_path: Path | None = None,
     ) -> None:
         self._directories = directories
         self._sessions = as_session_manifest_repository(sessions)
         self._pr_map_path = pr_map_path
-        self._ado_processed_store_path = ado_processed_store_path
 
     def list_descendants(self, reference: str) -> list[DirectoryInfo]:
         return self._directories.list_descendants(reference)
@@ -62,7 +60,6 @@ class DirectoryOwnershipQueries:
         entities: list[OwnedEntity] = []
         entities.extend(self._session_entities(sessions, allowed_paths=allowed_paths))
         entities.extend(self._pr_map_entities(sessions, allowed_paths=allowed_paths))
-        entities.extend(self._ado_processed_entities(sessions, allowed_paths=allowed_paths))
         entities.sort(key=lambda item: (item.directory_path, item.kind, item.entity_id))
         return DirectoryOwnershipSnapshot(
             directory=directory,
@@ -158,43 +155,6 @@ class DirectoryOwnershipQueries:
                         "repo": raw_entry.get("repo"),
                         "pr_id": raw_entry.get("pr_id"),
                         "session_id": session_id or None,
-                    },
-                )
-            )
-        return entities
-
-    def _ado_processed_entities(
-        self,
-        sessions: dict[str, SessionManifest],
-        *,
-        allowed_paths: set[str],
-    ) -> list[OwnedEntity]:
-        if self._ado_processed_store_path is None or not self._ado_processed_store_path.exists():
-            return []
-        payload = self._read_json_file(self._ado_processed_store_path)
-        entities: list[OwnedEntity] = []
-        for entry_key, raw_entry in sorted(payload.items()):
-            if not isinstance(raw_entry, dict):
-                continue
-            session_id = str(raw_entry.get("session_id", "")).strip()
-            directory_path = self._owned_directory_path(
-                raw_entry, sessions=sessions, session_id=session_id
-            )
-            if directory_path is None or directory_path not in allowed_paths:
-                continue
-            work_item_id = str(raw_entry.get("remote_work_item_id") or "").strip() or entry_key
-            entities.append(
-                OwnedEntity(
-                    kind="ado_work_item",
-                    entity_id=entry_key,
-                    directory_path=directory_path,
-                    label=work_item_id,
-                    source="ado_processed_store",
-                    payload={
-                        "session_id": session_id or None,
-                        "remote_work_item_id": work_item_id,
-                        "yaml_path": raw_entry.get("yaml_path"),
-                        "script_exit_code": raw_entry.get("script_exit_code"),
                     },
                 )
             )

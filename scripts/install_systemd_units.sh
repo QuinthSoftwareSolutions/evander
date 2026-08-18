@@ -58,7 +58,6 @@ GIT_SERVICE_GROUP="$(id -gn "${GIT_SERVICE_USER}")"
 PROJECT_DIR="${ROOT_DIR}"
 SYSTEMD_DIR="/etc/systemd/system"
 SECRETS_FILE="${ROOT_DIR}/secrets.env"
-LEGACY_LOCAL_SECRETS_FILE="/etc/agent-sandbox/local-secrets.env"
 LOCAL_SECRETS_FILE="/etc/evander/local-secrets.env"
 
 EVANDER_UNITS=(
@@ -80,28 +79,6 @@ EVANDER_UNITS=(
   evander-teams-meeting-ingest.service
   evander-effect-orchestrator.service
   evander-trigger-orchestrator.service
-)
-
-LEGACY_AGENT_SANDBOX_UNITS=(
-  agent-sandbox-gateway.service
-  agent-sandbox-admin-web.service
-  agent-sandbox-openai-relay.service
-  agent-sandbox-didww-sip-bridge.service
-  agent-sandbox-firewall.service
-  agent-sandbox-nuget-relay.service
-  agent-sandbox-npm-audit-facade.service
-  agent-sandbox-http-target-relay.service
-  agent-sandbox-ado-worker.service
-  agent-sandbox-proxy-issue-sync.service
-  agent-sandbox-discord-ingest.service
-  agent-sandbox-discord-wake.service
-  agent-sandbox-scheduled-wake.service
-  agent-sandbox-teams-ingest.service
-  agent-sandbox-teams-meeting-ingest.service
-  agent-sandbox-effect-orchestrator.service
-  agent-sandbox-trigger-orchestrator.service
-  agent-sandbox-issue-orchestrator.service
-  agent-sandbox-host-heartbeat.service
 )
 
 PASS_COUNT=0
@@ -465,13 +442,7 @@ grant_local_secrets_git_access() {
   chmod 0640 "${secrets_file}"
 }
 
-migrate_legacy_local_secrets() {
-  if [[ -f "${LEGACY_LOCAL_SECRETS_FILE}" && ! -f "${LOCAL_SECRETS_FILE}" ]]; then
-    install -d -m 0750 "$(dirname "${LOCAL_SECRETS_FILE}")"
-    install -m 0600 "${LEGACY_LOCAL_SECRETS_FILE}" "${LOCAL_SECRETS_FILE}"
-    echo "Copied legacy local secrets to ${LOCAL_SECRETS_FILE}."
-  fi
-
+configure_local_secrets() {
   if [[ ! -f "${LOCAL_SECRETS_FILE}" ]]; then
     return
   fi
@@ -489,25 +460,7 @@ migrate_legacy_local_secrets() {
   done
 }
 
-retire_legacy_agent_sandbox_units() {
-  local unit removed=0
-  for unit in "${LEGACY_AGENT_SANDBOX_UNITS[@]}"; do
-    if [[ -e "${SYSTEMD_DIR}/${unit}" || -d "${SYSTEMD_DIR}/${unit}.d" ]]; then
-      echo "Retiring legacy unit ${unit}."
-      systemctl disable --now "${unit}" >/dev/null 2>&1 || true
-      rm -f "${SYSTEMD_DIR}/${unit}"
-      rm -rf "${SYSTEMD_DIR:?}/${unit}.d"
-      removed=1
-    fi
-  done
-
-  if [[ "${removed}" -ne 0 ]]; then
-    systemctl daemon-reload
-  fi
-}
-
-migrate_legacy_local_secrets
-retire_legacy_agent_sandbox_units
+configure_local_secrets
 
 render_unit \
   "${ROOT_DIR}/systemd/evander-gateway.service.template" \

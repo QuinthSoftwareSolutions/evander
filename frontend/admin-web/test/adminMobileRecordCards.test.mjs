@@ -190,7 +190,7 @@ test("users keep the desktop records table and add mobile user cards", () => {
     "userLabel(user)",
     "user.login",
     "user.display_name || \"None\"",
-    "user.role",
+    "user.group_assignments",
     "user.contact ? user.contact.name : \"None\"",
     "user.local_password_enabled ? \"Set\" : \"None\"",
     "formatTimestamp(user.last_login_at)",

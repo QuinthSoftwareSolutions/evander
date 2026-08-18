@@ -36,7 +36,6 @@ type DashboardAdminState = {
   selected_directory_path: string;
   directory_scoped_config_enabled: boolean;
   execution_backend: AgentBackend;
-  role: "admin" | "regular" | null;
   can_manage_users: boolean;
   privileged_operations: {
     unlocked: boolean;

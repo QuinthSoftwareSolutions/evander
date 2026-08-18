@@ -99,9 +99,8 @@ the checked-in example.
 
 ## `config/ado-worker.env.example`
 
-| Parameter | Found in | Consumed by |
-|---|---|---|
-| `ADO_WORK_ITEMS_AZURE_DEVOPS_PAT` | `config/ado-worker.env.example` | Legacy work-item helper commands only. Workflow ADO work-item queries use the normal Azure DevOps provider config/PAT path. |
+The ADO worker has no service-specific environment parameters. Azure DevOps PR credentials use
+the canonical provider configuration.
 
 ## `config/ado-worker/config.json`
 
@@ -114,17 +113,9 @@ polling only; work-item intake should be modeled with workflow nodes.
 | `runtime_dir` | `config/ado-worker/config.json` | `src/evander/daemons/ado_issue_worker.py` and runtime path defaults. |
 | `poll_interval_seconds` | `config/ado-worker/config.json` | `src/evander/daemons/ado_issue_worker.py`. |
 | `directories` | `config/ado-worker/config.json` | `src/evander/daemons/ado_issue_worker.py` (exact canonical directories to inspect for PR feedback/completion streams; child directories must be listed separately; empty list means process nothing). |
-| `yaml_output_dir` | `config/ado-worker/config.json` | Legacy work-item helper path; workflow `effect:issue:upsert-ado-proxy` defaults to `runtime/ado-work-items`. |
-| `processed_store_path` | `config/ado-worker/config.json` | Legacy processed-store cleanup path for `poll-ado-backlog --forget`. |
-| `ado_work_items_azure_devops_pat_env` | `config/ado-worker/config.json` | Legacy work-item helper env-var name. The running ADO worker does not require it. |
-| `fetch_retry_count` | `config/ado-worker/config.json` | Legacy work-item helper retry setting. |
-| `fetch_retry_backoff_seconds` | `config/ado-worker/config.json` | Legacy work-item helper retry setting. |
-| `include_comments` | `config/ado-worker/config.json` | Legacy work-item helper comment setting. |
-| `comments_max_count` | `config/ado-worker/config.json` | Legacy work-item helper comment setting. |
-| `comment_text_max_chars` | `config/ado-worker/config.json` | Legacy work-item helper comment setting. |
 
-`ADO_*` environment variables for worker runtime settings still work as compatibility fallbacks
-for one release, but the new persisted source of truth is `config/ado-worker/config.json`.
+Unknown fields are rejected. The retired work-item helper settings and `ADO_*` runtime overrides
+are no longer accepted.
 
 ## `config/trigger-orchestrator/config.json`
 
@@ -163,7 +154,7 @@ For orchestration-only deployments, use `config/trigger-orchestrator/orchestrati
 | `scheduled_internal_event_store_path` | `config/trigger-orchestrator/config.json` | Durable one-shot scheduled internal event store path used by `effect:event:schedule`. Defaults to `runtime/scheduled-internal-events.json`. |
 | `workflow_packs` | `config/trigger-orchestrator/config.json` | Ordered workflow-pack filenames under `config/workflow-packs/` to compose into executable IR. |
 | `workflow_ir` | `config/trigger-orchestrator/config.json` | Optional inline IR overlay (`version`, `nodes`, `edges`) merged after pack composition. |
-| `workflow_graphs` | `config/trigger-orchestrator/config.json` | Optional editor metadata for connected graphs when using inline/non-pack workflows (`id`, `name`, `description`, `directory_path`, `user_ids`, `node_ids`). Each graph has exactly one canonical directory. `user_ids` are ownership/audit metadata, not a visibility boundary; Admin Web group assignments and direct workflow grants control graph visibility. Pack-backed workflows store the same metadata as `graphs` inside the pack file; the pack loader read-normalizes a legacy one-item `directory_paths` value for operator-owned ignored packs, but new writes and model output use only `directory_path`. |
+| `workflow_graphs` | `config/trigger-orchestrator/config.json` | Optional editor metadata for connected graphs when using inline/non-pack workflows (`id`, `name`, `description`, `directory_path`, `user_ids`, `node_ids`). Each graph has exactly one canonical directory. `user_ids` are ownership/audit metadata, not a visibility boundary; Admin Web group assignments and direct workflow grants control graph visibility. Pack-backed workflows store the same metadata as `graphs` inside the pack file. The retired plural `directory_paths` field is rejected. |
 | `workflow_transforms` | `config/trigger-orchestrator/config.json` | Optional ordered transform plugin names (for example `await_agent_completion`) applied after structural compile/validation. |
 | `triggers` | `config/trigger-orchestrator/config.json` | Trigger orchestrator definition list; event envelopes live in `src/evander/events/models.py`, while trigger-specific schemas and implementations live under `src/evander/triggers/`. |
 | `gate_cursor_store_path` | `config/trigger-orchestrator/config.json` | Gate orchestrator cursor/checkpoint path. |
@@ -303,6 +294,7 @@ Type-specific keys:
 | `type` | Required keys | Optional keys |
 |---|---|---|
 | `trigger:event` | `event_type` | `correlation_key` |
+| `trigger:agent:artifact-staged` | — | `artifact_path`, `path_prefix` |
 | `trigger:http:webhook` | `slug`, `secret_env` | `event_type` |
 | `trigger:cron` | `expression` | — |
 | `trigger:ticket:created` | `directories` | — |
@@ -401,6 +393,13 @@ cursors in `runtime/trigger-cursors-remote-issues.json`; the comment trigger sto
 `trigger:event` consumes durable internal workflow events. The Admin Web HTTP ingress publishes
 caller-supplied event names under the reserved `external.` prefix, so a POST with
 `event_type=deploy_requested` should be matched with `event_type=external.deploy_requested`.
+
+`trigger:agent:artifact-staged` consumes only the durable event written by a successful agent
+`stage_artifact` gateway call. It can filter on one exact relative `artifact_path` or a
+`path_prefix`; the two filters are mutually exclusive. Its payload includes the originating
+`session_id`, normalized artifact path, stage counts, VM/backend, and configuration directory.
+The trigger does not interpret the artifact content: use `query:agent:artifact-text`, then validate
+the content and the originating session metadata in the workflow before taking an external action.
 The HTTP ingress requires either a bearer token minted by a signed-in Admin Web user or a
 configured machine token from `EVANDER_WORKFLOW_EVENT_MACHINE_TOKENS`. Machine tokens are
 configured as comma-separated `source-name:token` entries; the matching source name is recorded on

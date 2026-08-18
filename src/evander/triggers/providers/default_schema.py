@@ -7,6 +7,7 @@ from pydantic import BaseModel
 from evander.triggers.providers.schemas import (
     AdoWorkItemCommentCreatedTriggerDefinition,
     AdoWorkItemMatchingTriggerDefinition,
+    AgentArtifactStagedTriggerDefinition,
     AgentPromptNewTriggerDefinition,
     AgentRunCompletedTriggerDefinition,
     ApprovalPendingCreatedTriggerDefinition,
@@ -37,6 +38,7 @@ from evander.workflow.contracts import WorkflowNodeEnvelope, register_node_outpu
 
 _TRIGGER_MODEL_BY_TYPE = {
     "trigger:event": EventTriggerDefinition,
+    "trigger:agent:artifact-staged": AgentArtifactStagedTriggerDefinition,
     "trigger:cron": CronTriggerDefinition,
     "trigger:ticket:created": TicketCreatedTriggerDefinition,
     "trigger:ticket:changed": TicketChangedTriggerDefinition,

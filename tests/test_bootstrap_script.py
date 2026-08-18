@@ -42,7 +42,8 @@ def test_bootstrap_script_enforces_codex_config_and_placeholder_key() -> None:
     assert 'chown -R "${VM_USER}:${agent_group}" "${agent_home}"' in script
     assert "prepare_guest_home" in script
     assert 'export CODEX_HOME="${CODEX_HOME:-$HOME/.config/evander/codex}"' in script
-    assert 'export CODEX_HOME="${CODEX_HOME:-$HOME/.config/agent-sandbox/codex}"' in script
+    assert "agent-sandbox" not in script
+    assert "AGENT_SANDBOX_" not in script
     assert (
         'for CODEX_CONFIG_PATH in "${CODEX_HOME}/config.toml" "${HOME}/.codex/config.toml"; do'
         in script
@@ -76,31 +77,30 @@ def test_bootstrap_script_enforces_codex_config_and_placeholder_key() -> None:
     assert "enabled = true" in script
     assert "required = true" in script
     assert "if [ -f ~/.agent/config.env ]; then" in script
-    assert "if [ -f /etc/agent-sandbox/session.env ]; then" in script
     assert "if [ -f /etc/evander/session.env ]; then" in script
     assert (
-        'export OPENAI_API_KEY="${OPENAI_API_KEY:-${EVANDER_MCP_SESSION_TOKEN:-${AGENT_SANDBOX_MCP_SESSION_TOKEN:-relay-placeholder}}}"'
+        'export OPENAI_API_KEY="${OPENAI_API_KEY:-${EVANDER_MCP_SESSION_TOKEN:-relay-placeholder}}"'
         in script
     )
     assert (
-        'CODEX_LLM_BASE_URL="${LLM_BASE_URL:-${EVANDER_LLM_BASE_URL:-${AGENT_SANDBOX_LLM_BASE_URL:-http://192.168.250.1:11434/v1}}}"'
+        'CODEX_LLM_BASE_URL="${LLM_BASE_URL:-${EVANDER_LLM_BASE_URL:-http://192.168.250.1:11434/v1}}"'
         in script
     )
     assert (
-        'CODEX_GATEWAY_URL="${EVANDER_GATEWAY_URL:-${AGENT_SANDBOX_GATEWAY_URL:-http://192.168.250.1:8000/mcp}}"'
+        'CODEX_GATEWAY_URL="${EVANDER_GATEWAY_URL:-http://192.168.250.1:8000/mcp}"'
         in script
     )
-    assert 'CODEX_SESSION_ID="${EVANDER_SESSION_ID:-${AGENT_SANDBOX_SESSION_ID:-}}"' in script
+    assert 'CODEX_SESSION_ID="${EVANDER_SESSION_ID:-}"' in script
     assert 'if [ -n "${CODEX_SESSION_ID:-}" ]; then' in script
     assert 'CODEX_LLM_BASE_URL="${CODEX_LLM_BASE_URL%/}/session/${CODEX_SESSION_ID}"' in script
     assert "append_evander_mcp_query() {" in script
     assert (
-        'CODEX_MCP_SESSION_TOKEN="${EVANDER_MCP_SESSION_TOKEN:-${AGENT_SANDBOX_MCP_SESSION_TOKEN:-}}"'
+        'CODEX_MCP_SESSION_TOKEN="${EVANDER_MCP_SESSION_TOKEN:-}"'
         in script
     )
     assert 'query["mcp_session_token"] = token' in script
     assert (
-        'export OPENAI_API_KEY="\\${OPENAI_API_KEY:-\\${EVANDER_MCP_SESSION_TOKEN:-\\${AGENT_SANDBOX_MCP_SESSION_TOKEN:-relay-placeholder}}}"'
+        'export OPENAI_API_KEY="\\${OPENAI_API_KEY:-\\${EVANDER_MCP_SESSION_TOKEN:-relay-placeholder}}"'
         in script
     )
     assert 'line.strip().startswith("export OPENAI_API_KEY=")' in script
@@ -141,14 +141,14 @@ def test_bootstrap_copilot_script_writes_mcp_config_and_auth_guidance() -> None:
         'python3 - "${COPILOT_HOST_AUTH_URL}" "\\${session_id}" "\\${mcp_session_token}" <<\'PY\''
         in script
     )
-    assert "if [ -f /etc/agent-sandbox/session.env ]; then" in script
     assert "if [ -f /etc/evander/session.env ]; then" in script
+    assert "agent-sandbox" not in script
+    assert "AGENT_SANDBOX_" not in script
     assert '"\\${COPILOT_HOST_AUTH_URL}"' not in script
-    assert 'session_id="\\${AGENT_SANDBOX_SESSION_ID:-}"' in script
     assert 'session_id="${COPILOT_SESSION_ID}"' in script
     assert '"X-Evander-Session-Id": session_id' in script
     assert (
-        'local mcp_session_token="\\${EVANDER_MCP_SESSION_TOKEN:-\\${AGENT_SANDBOX_MCP_SESSION_TOKEN:-}}"'
+        'local mcp_session_token="\\${EVANDER_MCP_SESSION_TOKEN:-}"'
         in script
     )
     assert 'headers["X-Evander-MCP-Session-Token"] = mcp_session_token' in script
@@ -157,10 +157,10 @@ def test_bootstrap_copilot_script_writes_mcp_config_and_auth_guidance() -> None:
     assert '"evander": {' in script
     assert '"type": "http"' in script
     assert (
-        'COPILOT_GATEWAY_URL="${EVANDER_GATEWAY_URL:-${AGENT_SANDBOX_GATEWAY_URL:-http://192.168.250.1:8000/mcp}}"'
+        'COPILOT_GATEWAY_URL="${EVANDER_GATEWAY_URL:-http://192.168.250.1:8000/mcp}"'
         in script
     )
-    assert 'COPILOT_SESSION_ID="${EVANDER_SESSION_ID:-${AGENT_SANDBOX_SESSION_ID:-}}"' in script
+    assert 'COPILOT_SESSION_ID="${EVANDER_SESSION_ID:-}"' in script
     assert 'if [ -n "${COPILOT_SESSION_ID:-}" ]; then' in script
     assert 'COPILOT_GATEWAY_URL="${COPILOT_GATEWAY_URL}?session_id=${COPILOT_SESSION_ID}"' in script
     assert 'export COPILOT_HOME="${COPILOT_HOME:-$HOME/.copilot}"' in script
@@ -224,20 +224,21 @@ def test_claude_bootstrap_script_writes_relay_and_mcp_config() -> None:
     assert 'chown -R "${VM_USER}:${agent_group}" "${agent_home}"' in script
     assert "prepare_guest_home" in script
     assert 'guest_ssh_options "${VM_NAME}" "${VM_IP}" "${SSH_PRIVATE_KEY_PATH}"' in script
-    assert "if [ -f /etc/agent-sandbox/session.env ]; then" in script
     assert "if [ -f /etc/evander/session.env ]; then" in script
+    assert "agent-sandbox" not in script
+    assert "AGENT_SANDBOX_" not in script
     assert (
-        'CLAUDE_ANTHROPIC_BASE_URL="${ANTHROPIC_BASE_URL:-${EVANDER_ANTHROPIC_BASE_URL:-${AGENT_SANDBOX_ANTHROPIC_BASE_URL:-http://192.168.250.1:11434}}}"'
+        'CLAUDE_ANTHROPIC_BASE_URL="${ANTHROPIC_BASE_URL:-${EVANDER_ANTHROPIC_BASE_URL:-http://192.168.250.1:11434}}"'
         in script
     )
     assert (
-        'CLAUDE_GATEWAY_URL="${GATEWAY_URL:-${EVANDER_GATEWAY_URL:-${AGENT_SANDBOX_GATEWAY_URL:-http://192.168.250.1:8000/mcp}}}"'
+        'CLAUDE_GATEWAY_URL="${GATEWAY_URL:-${EVANDER_GATEWAY_URL:-http://192.168.250.1:8000/mcp}}"'
         in script
     )
-    assert 'CLAUDE_SESSION_ID="${EVANDER_SESSION_ID:-${AGENT_SANDBOX_SESSION_ID:-}}"' in script
+    assert 'CLAUDE_SESSION_ID="${EVANDER_SESSION_ID:-}"' in script
     assert "append_evander_mcp_query() {" in script
     assert (
-        'CLAUDE_MCP_SESSION_TOKEN="${EVANDER_MCP_SESSION_TOKEN:-${AGENT_SANDBOX_MCP_SESSION_TOKEN:-}}"'
+        'CLAUDE_MCP_SESSION_TOKEN="${EVANDER_MCP_SESSION_TOKEN:-}"'
         in script
     )
     assert 'query["mcp_session_token"] = token' in script

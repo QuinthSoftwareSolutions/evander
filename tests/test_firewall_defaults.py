@@ -16,7 +16,7 @@ def test_firewall_default_ports_include_ssh_mcp_and_relay() -> None:
     assert "`3142` for the host-side apt-cacher-ng relay" in ops
 
 
-def test_firewall_script_deletes_legacy_table_before_applying_current_policy(
+def test_firewall_script_replaces_current_table_before_applying_policy(
     tmp_path: Path,
 ) -> None:
     fake_bin = tmp_path / "bin"
@@ -27,9 +27,6 @@ def test_firewall_script_deletes_legacy_table_before_applying_current_policy(
             [
                 "#!/usr/bin/env bash",
                 'printf "%s\\n" "$*" >> "${NFT_LOG}"',
-                'if [[ "$1 $2 $3 $4" == "list table inet agent_sandbox" ]]; then',
-                "  exit 0",
-                "fi",
                 'if [[ "$1 $2 $3 $4" == "list table inet evander" ]]; then',
                 "  exit 0",
                 "fi",
@@ -57,9 +54,6 @@ def test_firewall_script_deletes_legacy_table_before_applying_current_policy(
 
     commands = log_path.read_text(encoding="utf-8").splitlines()
     assert "Applied Evander forward policy for host ports: 22" in result.stdout
-    assert "list table inet agent_sandbox" in commands
-    assert "delete table inet agent_sandbox" in commands
+    assert not any("agent_sandbox" in command for command in commands)
     assert "delete table inet evander" in commands
-    assert commands.index("delete table inet agent_sandbox") < commands.index(
-        "add table inet evander"
-    )
+    assert commands.index("delete table inet evander") < commands.index("add table inet evander")
