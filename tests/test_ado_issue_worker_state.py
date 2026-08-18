@@ -35,7 +35,7 @@ def _canonicalize_workflow_pack(path: Path) -> None:
     path.write_text(json.dumps(canonical_workflow_payload(payload)), encoding="utf-8")
 
 
-def test_ado_worker_runtime_config_load_tolerates_retired_fields(tmp_path: Path) -> None:
+def test_ado_worker_runtime_config_load_rejects_retired_fields(tmp_path: Path) -> None:
     config_dir = tmp_path / "config" / "ado-worker"
     config_dir.mkdir(parents=True)
     (config_dir / "config.json").write_text(
@@ -44,24 +44,14 @@ def test_ado_worker_runtime_config_load_tolerates_retired_fields(tmp_path: Path)
                 "runtime_dir": "runtime",
                 "poll_interval_seconds": 5,
                 "directories": ["root/team-a"],
-                "yaml_output_dir": None,
-                "processed_store_path": None,
-                "ado_work_items_azure_devops_pat_env": "ADO_WORK_ITEMS_AZURE_DEVOPS_PAT",
-                "fetch_retry_count": 2,
-                "fetch_retry_backoff_seconds": 2.0,
                 "include_comments": True,
-                "comments_max_count": 20,
-                "comment_text_max_chars": 4000,
             }
         ),
         encoding="utf-8",
     )
 
-    config = AdoWorkerRuntimeConfig.load(workspace_root=tmp_path)
-
-    assert config.runtime_dir == tmp_path / "runtime"
-    assert config.poll_interval_seconds == 5
-    assert config.directories == ("root/team-a",)
+    with pytest.raises(ValueError, match="Extra inputs are not permitted"):
+        AdoWorkerRuntimeConfig.load(workspace_root=tmp_path)
 
 
 @pytest.fixture

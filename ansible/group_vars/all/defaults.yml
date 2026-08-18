@@ -17,8 +17,6 @@ evander_repo_managed_workflow_untracked_config_paths:
   - config/workflow-packs/agent-container-worker.v1.json
   - "{{ evander_workflow_layout_path }}"
 evander_repo_managed_generated_tracked_paths:
-  # Retain the legacy path while deployed checkouts cross the Admin Web directory rename.
-  - frontend/workflow-editor/dist/index.html
   - frontend/admin-web/dist/index.html
 evander_repo_managed_tracked_config_paths: >-
   {{

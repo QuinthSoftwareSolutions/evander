@@ -375,9 +375,8 @@ orchestrator’s durable execution stores.
 Each pack can also carry optional `graphs` metadata. A graph entry names one connected node set
 inside the pack (`id`, `name`, `description`, `directory_path`, `user_ids`, `node_ids`) so the
 editor can select, filter, and label that workflow without treating the whole pack as one graph.
-Operator-owned ignored packs may still be read with a legacy one-item `directory_paths` value,
-which the loader normalizes to `directory_path` without re-emitting the legacy field. New and
-updated graph configuration is canonical, and multi-directory graph ownership is unsupported.
+The loader rejects the retired plural `directory_paths` field; graph configuration uses the
+canonical singular `directory_path`, and multi-directory graph ownership is unsupported.
 `user_ids` identify associated users for ownership and audit reporting; Admin Web group assignments
 and direct workflow grants control graph visibility.
 
