@@ -32,6 +32,11 @@
 - Removed JSON-backend worker, Admin, wake, Teams, ADO, and managed-Git hook branches together with
   their obsolete configuration settings and operator documentation.
 
+## 2026-08-18 - Direct Communication Workflow Validation
+
+- Prevented workflow communication-target validation from treating generated node output schemas
+  as literal target references, allowing direct communication-message triggers to reload safely.
+
 ## 2026-08-18 - Migration And Test Maintenance
 
 - Restored the directory-config filename dependency used by the supported root configuration

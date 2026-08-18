@@ -537,6 +537,10 @@ def _collect_refs_from_mapping(
         for key, nested in value.items():
             key_text = str(key)
             next_path = f"{path}.{key_text}" if path else key_text
+            # Node outputs describe result schemas; they are not workflow configuration
+            # and an output field named ``communication_target_id`` is not a target ref.
+            if key_text == "outputs":
+                continue
             if key_text == "communication_target_id":
                 ref = str(nested or "").strip().lower()
                 if ref and not _is_dynamic_communication_target_ref(ref):
