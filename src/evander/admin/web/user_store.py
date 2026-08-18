@@ -29,7 +29,6 @@ from evander.admin.web.rbac import (
 
 _UNSET = object()
 SQLITE_BUSY_TIMEOUT_MS = 30_000
-LEGACY_ROLE_ASSIGNMENT_MIGRATION_KEY = "legacy_role_assignments_v1"
 LOCAL_PASSWORD_ALGORITHM = "pbkdf2_sha256"
 LOCAL_PASSWORD_HASH_NAME = "sha256"
 LOCAL_PASSWORD_ITERATIONS = 200_000
@@ -1060,83 +1059,6 @@ class AdminWebUserStore:
                     ON admin_web_user_workflow_grants(login, directory_path);
                 """
             )
-            connection.execute("BEGIN IMMEDIATE")
-            self._migrate_users_role_column(connection)
-            connection.execute("DROP TABLE IF EXISTS admin_web_rbac_migrations")
-
-    def _migrate_users_role_column(self, connection: sqlite3.Connection) -> None:
-        columns = {
-            str(row["name"])
-            for row in connection.execute("PRAGMA table_info(admin_web_users)").fetchall()
-        }
-        if "role" not in columns:
-            return
-
-        migration_table = connection.execute(
-            """
-            SELECT 1
-            FROM sqlite_master
-            WHERE type = 'table' AND name = 'admin_web_rbac_migrations'
-            """
-        ).fetchone()
-        migration_completed = (
-            migration_table is not None
-            and connection.execute(
-                """
-                SELECT 1
-                FROM admin_web_rbac_migrations
-                WHERE migration_key = ?
-                """,
-                (LEGACY_ROLE_ASSIGNMENT_MIGRATION_KEY,),
-            ).fetchone()
-            is not None
-        )
-        if not migration_completed:
-            now = _datetime_to_storage(utc_now())
-            rows = connection.execute(
-                "SELECT login, role FROM admin_web_users ORDER BY login"
-            ).fetchall()
-            for row in rows:
-                group_id = OWNER_GROUP_ID if str(row["role"]) == "admin" else OPERATOR_GROUP_ID
-                connection.execute(
-                    """
-                    INSERT OR IGNORE INTO admin_web_user_group_assignments(
-                        login,
-                        group_id,
-                        directory_path,
-                        created_at
-                    )
-                    VALUES (?, ?, 'root', ?)
-                    """,
-                    (str(row["login"]), group_id, now),
-                )
-
-        connection.execute(
-            """
-            CREATE TABLE admin_web_users_without_role (
-                login TEXT PRIMARY KEY,
-                display_name TEXT,
-                created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL,
-                last_login_at TEXT
-            )
-            """
-        )
-        connection.execute(
-            """
-            INSERT INTO admin_web_users_without_role(
-                login,
-                display_name,
-                created_at,
-                updated_at,
-                last_login_at
-            )
-            SELECT login, display_name, created_at, updated_at, last_login_at
-            FROM admin_web_users
-            """
-        )
-        connection.execute("DROP TABLE admin_web_users")
-        connection.execute("ALTER TABLE admin_web_users_without_role RENAME TO admin_web_users")
 
     def _ensure_ready(self) -> None:
         with self._lock:

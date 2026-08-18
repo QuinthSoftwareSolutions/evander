@@ -452,9 +452,8 @@ Legacy relay delivery is intentionally best-effort and non-interrupting:
 - A pack can contain multiple connected graphs. Optional `graphs` entries name those connected
   node sets with `id`, `name`, `description`, canonical `directory_path`, `user_ids`, and
   `node_ids`; the runtime still executes from the IR, while the editor uses this metadata for
-  directory-scoped graph selection and labels. The pack loader read-normalizes a legacy one-item
-  `directory_paths` value retained in an operator-owned ignored pack, but Admin Web saves and model
-  output use only `directory_path`; multi-directory graph ownership is rejected. `user_ids` are
+  directory-scoped graph selection and labels. The pack loader rejects the retired plural
+  `directory_paths` field; Admin Web and model output use only `directory_path`. `user_ids` are
   owner/audit metadata only; workflow graph visibility is controlled by Admin Web group assignments
   and direct workflow grants. Saving from a filtered view keeps unchanged graph metadata entries
   intact, so graphs outside the selected directory are not rewritten by the presentation filter.

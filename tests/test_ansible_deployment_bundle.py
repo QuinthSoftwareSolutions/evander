@@ -737,7 +737,7 @@ def test_ansible_repo_checkout_supports_private_deploy_key() -> None:
     assert "accept_newhostkey:" in text
 
 
-def test_ansible_repo_checkout_resets_legacy_and_current_admin_web_entrypoints() -> None:
+def test_ansible_repo_checkout_resets_only_current_admin_web_entrypoint() -> None:
     repo = Path(__file__).resolve().parents[1]
     defaults = (repo / "ansible" / "group_vars" / "all" / "defaults.yml").read_text(
         encoding="utf-8"
@@ -746,7 +746,7 @@ def test_ansible_repo_checkout_resets_legacy_and_current_admin_web_entrypoints()
         "evander_repo_managed_tracked_config_paths:", 1
     )[0]
 
-    assert "- frontend/workflow-editor/dist/index.html" in generated_paths
+    assert "- frontend/workflow-editor/dist/index.html" not in generated_paths
     assert "- frontend/admin-web/dist/index.html" in generated_paths
 
 

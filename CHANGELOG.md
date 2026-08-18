@@ -3,16 +3,12 @@
 ## 2026-08-18 - Compatibility Surface Retirement
 
 - Removed the retired Azure DevOps work-item helper and environment/configuration fallback surface;
-  the ADO worker now handles pull-request feedback and completion from canonical configuration only,
-  while safely ignoring the known retired global keys in persisted upgrade-era worker files.
+  the ADO worker now handles pull-request feedback and completion from canonical configuration only.
 - Rejected the retired workflow `directory_paths` field now that live packs use `directory_path`.
 - Made Admin Web group assignments the sole authorization source and removed stored/API/UI user
-  roles; existing SQLite stores preserve assignments from completed role migrations, or translate
-  unmigrated legacy roles into root assignments, before rebuilding the user table.
+  roles after both supported deployment databases were rebuilt and verified.
 - Removed the remaining `agent-sandbox` rename readers and cleanup paths after normalizing guest,
   worker, host-network, SSH-key, service, and configuration state on both supported deployments.
-- Made retired Admin Web auth, session, and Azure SSO environment variables fail startup explicitly
-  instead of silently selecting unauthenticated mode.
 
 ## 2026-08-18 - Agent Artifact-Staged Workflow Trigger
 

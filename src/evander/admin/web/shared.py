@@ -53,22 +53,6 @@ DEFAULT_ADMIN_WEB_PRODUCT_LOGO_ALT = "Evander Logo"
 DEFAULT_ADMIN_WEB_COMPANY_LOGO_LIGHT_URL = "qss-light.png"
 DEFAULT_ADMIN_WEB_COMPANY_LOGO_DARK_URL = "qss-dark.png"
 DEFAULT_ADMIN_WEB_COMPANY_LOGO_ALT = "Quinth Software Solutions"
-RETIRED_ADMIN_WEB_ENV_NAMES = (
-    "AGENT_SANDBOX_ADMIN_WEB_AUTH_MODE",
-    "AGENT_SANDBOX_ADMIN_WEB_AZURE_ALLOWED_USERS",
-    "AGENT_SANDBOX_ADMIN_WEB_AZURE_AUTHORITY_BASE_URL",
-    "AGENT_SANDBOX_ADMIN_WEB_AZURE_CLIENT_ID",
-    "AGENT_SANDBOX_ADMIN_WEB_AZURE_CLIENT_SECRET",
-    "AGENT_SANDBOX_ADMIN_WEB_AZURE_POST_LOGIN_REDIRECT",
-    "AGENT_SANDBOX_ADMIN_WEB_AZURE_REDIRECT_URI",
-    "AGENT_SANDBOX_ADMIN_WEB_AZURE_TENANT_ID",
-    "AGENT_SANDBOX_ADMIN_WEB_COOKIE_SECURE",
-    "AGENT_SANDBOX_ADMIN_WEB_PASSWORD",
-    "AGENT_SANDBOX_ADMIN_WEB_PUBLIC_BASE_URL",
-    "AGENT_SANDBOX_ADMIN_WEB_SESSION_SECRET",
-    "AGENT_SANDBOX_ADMIN_WEB_SESSION_TTL_SECONDS",
-    "AGENT_SANDBOX_ADMIN_WEB_USERNAME",
-)
 
 
 def _env_flag(name: str, default: bool = False) -> bool:
@@ -97,17 +81,6 @@ def _env_optional_text(name: str) -> str | None:
         return None
     normalized = raw.strip()
     return normalized or None
-
-
-def _reject_retired_admin_web_env() -> None:
-    configured = [name for name in RETIRED_ADMIN_WEB_ENV_NAMES if name in os.environ]
-    if not configured:
-        return
-    raise ValueError(
-        "Retired Admin Web environment variables are configured: "
-        f"{', '.join(configured)}. Replace AGENT_SANDBOX_ADMIN_WEB_* variables with "
-        "their EVANDER_ADMIN_WEB_* equivalents."
-    )
 
 
 def _branding_asset_reference(value: str | None) -> str | None:
@@ -326,7 +299,6 @@ class AdminWebConfig:
 
     @classmethod
     def from_env(cls) -> "AdminWebConfig":
-        _reject_retired_admin_web_env()
         username = _env_text("EVANDER_ADMIN_WEB_USERNAME", "admin")
         password = _env_optional_text("EVANDER_ADMIN_WEB_PASSWORD")
         raw_mode = (_env_optional_text("EVANDER_ADMIN_WEB_AUTH_MODE") or "").lower()
