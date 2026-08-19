@@ -210,6 +210,13 @@ def _effect_error_outbound_edge_exists(*, graph: ExecutionGraph, effect_id: str)
     )
 
 
+def _gate_error_outbound_edge_exists(*, graph: ExecutionGraph, gate_id: str) -> bool:
+    return any(
+        _edge_source_port(edge) == AGENT_PROMPT_ERROR_PORT
+        for edge in graph.outbound_index.get(gate_id, ())
+    )
+
+
 class EffectExecutionRecord(BaseModel):
     model_config = ConfigDict(extra="allow")
 
@@ -2052,6 +2059,24 @@ class EffectOrchestratorWorker:
                 error=f"no_gate_provider_registered:{gate.type}",
             )
         except (BindingResolutionError, GateRuntimeError) as exc:
+            if _gate_error_outbound_edge_exists(graph=graph, gate_id=gate.id):
+                self._write_gate_record(
+                    queue_record=queue_record,
+                    gate=gate,
+                    status="error_routed",
+                    started_at=started_at,
+                    resolved_config={},
+                    outputs=_effect_failure_outputs(exc),
+                    inputs_by_source=inputs_by_source,
+                    input_event_ids_by_source=input_event_ids_by_source,
+                    input_occurred_at_by_source=input_occurred_at_by_source,
+                    config_revision=config_revision,
+                    error=str(exc),
+                    binding_error=str(exc),
+                    publish_completion_event=True,
+                    branch_port=AGENT_PROMPT_ERROR_PORT,
+                )
+                return
             self._write_gate_record(
                 queue_record=queue_record,
                 gate=gate,

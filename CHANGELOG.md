@@ -12,6 +12,12 @@
   corrected without rewriting the unchanged pinned candidate; the original rejection remains
   immutable and the replacement reviewer must still evaluate every non-excepted criterion.
 
+## 2026-08-19 - Workflow Gate Error Routing
+
+- Allowed gate runtime and binding failures to publish a structured `error` branch when one is
+  configured, so operator workflows can recover malformed or otherwise correctable inputs without
+  leaving the source task silently stalled.
+
 ## 2026-08-19 - Admin Web Workflow Pack Deep Links
 
 - Preserve the selected workflow pack in the workflow page URL so refreshing the page restores

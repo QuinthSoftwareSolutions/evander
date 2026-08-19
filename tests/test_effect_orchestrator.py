@@ -11148,6 +11148,77 @@ def test_deserialize_gate_records_failed_status_when_content_is_not_object(
     assert record["error"] == "gate:deserialize content must decode to an object"
 
 
+def test_deserialize_gate_routes_parse_failure_to_error_branch(tmp_path: Path) -> None:
+    runtime_dir = tmp_path / "runtime"
+    config = GatewayConfig(runtime_dir=runtime_dir)
+    worker_config = canonical_worker_config(
+        {
+            "runtime_dir": runtime_dir,
+            "triggers": [
+                {
+                    "id": "trigger-1",
+                    "display_name": "Tick",
+                    "type": "trigger:cron",
+                    "expression": "* * * * *",
+                }
+            ],
+            "gates": [
+                {
+                    "id": "gate-deserialize",
+                    "display_name": "Deserialize",
+                    "type": "gate:deserialize",
+                    "content": "{not-json",
+                    "format": "json",
+                }
+            ],
+            "effects": [
+                {
+                    "id": "effect-recover",
+                    "display_name": "Recover",
+                    "type": "effect:agent:prompt",
+                    "prompt": "Repair the invalid document",
+                }
+            ],
+            "edges": [
+                _edge("trigger-1", "gate-deserialize"),
+                _edge("gate-deserialize", "effect-recover", source_port="error"),
+            ],
+        }
+    )
+    worker = EffectOrchestratorWorker(  # type: ignore[arg-type]
+        config=config,
+        worker_config=worker_config,
+        runtime=None,
+    )
+    worker.provider_factory = _Factory({"effect-recover": {"ok": True}})
+    worker.event_queue.publish(
+        TriggerEvent(
+            event_id="event-deserialize-error-route",
+            trigger_id="trigger-1",
+            trigger_type="trigger:cron",
+            occurred_at=datetime(2026, 4, 4, 12, 0, tzinfo=timezone.utc),
+            payload={},
+        )
+    )
+
+    for _ in range(4):
+        worker.run_once()
+
+    gate_record = next(iter(gate_execution_payload(worker_config).values()))
+    assert gate_record["status"] == "error_routed"
+    assert gate_record["completion_event_branch_port"] == "error"
+    assert gate_record["outputs"] == {
+        "success": False,
+        "error_message": "gate:deserialize failed to parse JSON: Expecting property name enclosed in double quotes",
+        "error_class": "GateRuntimeError",
+    }
+    assert gate_record["error"] == gate_record["outputs"]["error_message"]
+
+    effect_record = next(iter(effect_execution_payload(worker_config).values()))
+    assert effect_record["effect_id"] == "effect-recover"
+    assert effect_record["status"] == "succeeded"
+
+
 def test_serialize_gate_emits_json_content_for_downstream_bindings(tmp_path: Path) -> None:
     runtime_dir = tmp_path / "runtime"
     config = GatewayConfig(runtime_dir=runtime_dir)
