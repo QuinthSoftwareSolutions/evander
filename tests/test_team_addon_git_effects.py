@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import subprocess
+import time
 from datetime import timedelta
 from pathlib import Path
+from threading import Event, Thread
 from types import SimpleNamespace
 
 import pytest
@@ -71,6 +73,9 @@ from evander_team_addon.services.release_verification_runner import (
     ReleaseVerificationTimeoutError,
     TeamReleaseVerificationRunner,
     _bounded_verification_log_excerpt,
+)
+from evander_team_addon.services.release_verification_singleflight import (
+    TEAM_RELEASE_VERIFICATION_SINGLE_FLIGHT,
 )
 
 
@@ -1243,6 +1248,185 @@ def test_release_verifier_persists_live_command_state_and_worker_job(
     run = repo.read().release_verification_runs["verification-1"]
     assert run.state == "passed"
     assert run.command_results[0].job_id == "live-worker-job"
+
+
+def test_release_verifier_effect_coalesces_overlapping_same_run(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    repo = _seed_team(tmp_path)
+    _seed_release_verification(repo)
+    executed_commands, create_directories, _create_metadata = _stub_release_verifier_setup(
+        monkeypatch,
+        destroy_result={"success": True},
+    )
+    command_started = Event()
+    allow_command_to_finish = Event()
+    results: dict[str, dict[str, object]] = {}
+
+    def _execute(self, **kwargs):
+        del kwargs
+        command = list(self.effect_definition.command)
+        executed_commands.append(command)
+        if command == ["python", "-m", "frozen_check"]:
+            command_started.set()
+            assert allow_command_to_finish.wait(timeout=2)
+        return {
+            "success": True,
+            "execution_id": f"execution-{len(executed_commands)}",
+            "exit_code": 0,
+            "stdout": "ok",
+        }
+
+    monkeypatch.setattr(AgentExecEffectProvider, "execute", _execute)
+
+    def _run(name: str) -> None:
+        results[name] = _verify_release_provider(tmp_path)
+
+    leader = Thread(target=_run, args=("leader",))
+    follower = Thread(target=_run, args=("follower",))
+    leader.start()
+    assert command_started.wait(timeout=2)
+    follower.start()
+    _wait_for_release_verification_waiter(
+        repo,
+        verification_run_id="verification-1",
+    )
+
+    allow_command_to_finish.set()
+    leader.join(timeout=2)
+    follower.join(timeout=2)
+
+    assert not leader.is_alive()
+    assert not follower.is_alive()
+    assert create_directories == ["root/team-a"]
+    assert executed_commands.count(["git", "clean", "-ffdx"]) == 1
+    assert executed_commands.count(["python", "-m", "frozen_check"]) == 1
+    assert results["leader"]["success"] is True
+    assert results["follower"]["success"] is True
+    assert results["follower"]["coalesced"] is True
+
+
+def test_release_verifier_rejects_conflicting_followers_before_coalescing(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    repo = _seed_team(tmp_path)
+    _seed_release_verification(repo)
+
+    def _add_different_release(state):
+        state.release_packages["different-release"] = ReleasePackage(
+            id="different-release",
+            project_id="project",
+            candidate_commit_sha="candidate-sha",
+        )
+        return state
+
+    repo.update(_add_different_release)
+    _executed_commands, _create_directories, _create_metadata = _stub_release_verifier_setup(
+        monkeypatch,
+        destroy_result={"success": True},
+    )
+    command_started = Event()
+    allow_command_to_finish = Event()
+    leader_result: dict[str, dict[str, object]] = {}
+    errors: dict[str, Exception] = {}
+    follower_finished = {
+        "candidate": Event(),
+        "release": Event(),
+    }
+
+    def _execute(self, **kwargs):
+        del kwargs
+        command = list(self.effect_definition.command)
+        if command == ["python", "-m", "frozen_check"]:
+            command_started.set()
+            assert allow_command_to_finish.wait(timeout=3)
+        return {
+            "success": True,
+            "execution_id": "execution-1",
+            "exit_code": 0,
+            "stdout": "ok",
+        }
+
+    monkeypatch.setattr(AgentExecEffectProvider, "execute", _execute)
+
+    def _run_leader() -> None:
+        leader_result["result"] = _verify_release_provider(tmp_path)
+
+    def _run_conflicting_follower(
+        name: str,
+        *,
+        release_package_id: str,
+        candidate_commit_sha: str,
+    ) -> None:
+        try:
+            TeamReleaseVerificationRunner(repo, SimpleNamespace()).run(
+                release_package_id=release_package_id,
+                verification_run_id="verification-1",
+                candidate_commit_sha=candidate_commit_sha,
+            )
+        except Exception as exc:
+            errors[name] = exc
+        finally:
+            follower_finished[name].set()
+
+    leader = Thread(target=_run_leader)
+    candidate_follower = Thread(
+        target=_run_conflicting_follower,
+        kwargs={
+            "name": "candidate",
+            "release_package_id": "release-1",
+            "candidate_commit_sha": "different-candidate",
+        },
+    )
+    release_follower = Thread(
+        target=_run_conflicting_follower,
+        kwargs={
+            "name": "release",
+            "release_package_id": "different-release",
+            "candidate_commit_sha": "candidate-sha",
+        },
+    )
+    leader.start()
+    assert command_started.wait(timeout=2)
+    candidate_follower.start()
+    release_follower.start()
+    try:
+        assert follower_finished["candidate"].wait(timeout=1)
+        assert follower_finished["release"].wait(timeout=1)
+    finally:
+        allow_command_to_finish.set()
+        leader.join(timeout=3)
+        candidate_follower.join(timeout=3)
+        release_follower.join(timeout=3)
+
+    assert not leader.is_alive()
+    assert not candidate_follower.is_alive()
+    assert not release_follower.is_alive()
+    assert leader_result["result"]["success"] is True
+    assert str(errors["candidate"]) == (
+        "release verification request does not match the pinned candidate"
+    )
+    assert str(errors["release"]) == (
+        "verification run verification-1 belongs to release release-1, not different-release"
+    )
+
+
+def _wait_for_release_verification_waiter(
+    repo: TeamStateRepository,
+    *,
+    verification_run_id: str,
+) -> None:
+    deadline = time.monotonic() + 2
+    database_state = TEAM_RELEASE_VERIFICATION_SINGLE_FLIGHT._database_state(repo.store.path)
+    while time.monotonic() < deadline:
+        with database_state.lock:
+            flight = database_state.flights.get(verification_run_id)
+            if flight is not None and flight.coalesced_waiter_count >= 1:
+                return
+        time.sleep(0.001)
+    raise AssertionError("release verifier did not reach the expected single-flight wait state")
 
 
 @pytest.mark.parametrize(

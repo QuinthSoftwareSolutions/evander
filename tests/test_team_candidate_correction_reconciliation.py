@@ -416,11 +416,16 @@ def test_downstream_candidate_blocker_does_not_unresolve_correction_and_retries(
     assert next(iter(state.blockers.values())).state == TeamBlockerState.RESOLVED
 
 
+@pytest.mark.parametrize("gate_kind", ["verification", "review"])
 def test_operator_can_create_exact_pinned_replacement_for_owned_blocker(
     tmp_path: Path,
+    gate_kind: str,
 ) -> None:
     repository = TeamStateRepository(tmp_path)
-    seeded = _candidate_correction_state(gate_kind="verification", reviewed=False)
+    seeded = _candidate_correction_state(gate_kind=gate_kind)
+    seeded.deliverables["correction-deliverable"].verification = DeliverableVerification(
+        status="partial", summary="The full verifier is unavailable."
+    )
     repository.update(lambda _state: seeded, expected_revision=0)
     CandidateCorrectionReconciliationService(repository).reconcile()
     state = repository.read()
@@ -501,11 +506,13 @@ def test_operator_can_create_exact_pinned_replacement_for_owned_blocker(
     assert state.git_work_contexts[context_id].base_commit == CORRECTION_COMMIT
 
 
+@pytest.mark.parametrize("gate_kind", ["verification", "review"])
 def test_passed_downstream_recovery_deliverable_creates_successor_without_waiver(
     tmp_path: Path,
+    gate_kind: str,
 ) -> None:
     repository = TeamStateRepository(tmp_path)
-    seeded = _candidate_correction_state(gate_kind="verification")
+    seeded = _candidate_correction_state(gate_kind=gate_kind)
     seeded.deliverables["correction-deliverable"].verification = DeliverableVerification(
         status="partial", summary="Needs downstream repair."
     )
@@ -661,11 +668,13 @@ def test_passed_dependency_backed_recovery_deliverable_creates_successor(
     assert state.blockers[blocker.id].state == TeamBlockerState.RESOLVED
 
 
+@pytest.mark.parametrize("gate_kind", ["verification", "review"])
 def test_operator_waiver_action_records_reason_and_creates_successor(
     tmp_path: Path,
+    gate_kind: str,
 ) -> None:
     repository = TeamStateRepository(tmp_path)
-    seeded = _candidate_correction_state(gate_kind="verification")
+    seeded = _candidate_correction_state(gate_kind=gate_kind)
     seeded.deliverables["correction-deliverable"].verification = DeliverableVerification(
         status="partial", summary="Environment unavailable."
     )
@@ -690,6 +699,33 @@ def test_operator_waiver_action_records_reason_and_creates_successor(
     assert waiver.actor_id == "jonathan"
     assert waiver.reason == ("Focused verifier passed; the full environment is unavailable.")
     assert state.blockers[blocker.id].state == TeamBlockerState.RESOLVED
+
+
+@pytest.mark.parametrize("gate_kind", ["verification", "review"])
+def test_operator_waiver_refuses_failed_current_correction_evidence(
+    tmp_path: Path,
+    gate_kind: str,
+) -> None:
+    repository = TeamStateRepository(tmp_path)
+    seeded = _candidate_correction_state(gate_kind=gate_kind)
+    seeded.deliverables["correction-deliverable"].verification = DeliverableVerification(
+        status="failed", summary="The focused verifier found a regression."
+    )
+    repository.update(lambda _state: seeded, expected_revision=0)
+    CandidateCorrectionReconciliationService(repository).reconcile()
+    state = repository.read()
+    blocker = next(iter(state.blockers.values()))
+
+    with pytest.raises(ValueError, match="failed verification and cannot be waived"):
+        TeamAdminService(repository).recover_candidate_correction_successor_as_operator(
+            blocker_id=blocker.id,
+            action="authorize_verification_waiver",
+            reason="This must not override a failed test.",
+            operator_actor_id="jonathan",
+            expected_revision=state.revision,
+        )
+
+    assert repository.read().blockers[blocker.id].state == TeamBlockerState.OPEN
 
 
 def test_generic_operator_resolution_rejects_typed_candidate_recovery(

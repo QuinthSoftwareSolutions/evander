@@ -1,5 +1,34 @@
 # Changelog
 
+## 2026-08-19 - Admin Web Workflow Pack Deep Links
+
+- Preserve the selected workflow pack in the workflow page URL so refreshing the page restores
+  that pack.
+
+## 2026-08-19 - Team Release-Verification Single Flight
+
+- Coalesced overlapping execution of one Team release-verification run within an effect worker and
+  serialized the run across separate effect-worker processes, so duplicate delivery cannot reset
+  and clean the same mutable checkout concurrently. Conflicting followers now validate their
+  immutable release, run, and candidate identity before joining. Independent verification runs
+  still execute in parallel.
+
+## 2026-08-19 - Admin Web Add-on Caddy Routing
+
+- Proxied `/addons/*` through managed Admin Web Caddy deployments so add-on iframes reach their
+  server-owned UI routes instead of the static-file 404 handler.
+
+## 2026-08-19 - Team Review-Correction Recovery
+
+- Made typed candidate-correction recovery actions work consistently for review- and
+  verification-origin releases. Operators can now create a pinned verified replacement or authorize
+  an audited waiver from the current correction evidence, while failed verification remains
+  ineligible for waiver.
+- Recognized accepted, lineage-pinned downstream replacements when creating successors for rejected
+  release reviews, so a verified follow-up is promoted instead of retrying the incomplete correction.
+- Treated recovery-created correction tasks as automatic candidate corrections, preventing their
+  accepted resolution notice from asking the project lead to request a duplicate release package.
+
 ## 2026-08-18 - Compatibility Surface Retirement
 
 - Removed the retired Azure DevOps work-item helper and environment/configuration fallback surface;

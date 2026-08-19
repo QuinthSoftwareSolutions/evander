@@ -5531,16 +5531,17 @@ class TeamVerifyReleaseCandidateEffectProvider(EffectProviderBase):
             verification_run_id=run_id,
             candidate_commit_sha=candidate_sha,
         )
-        published_event_ids = _publish_team_events(
-            self.runtime_context,
-            [
-                event
-                for event in (result.get("events") or [])
-                if event.get("event_type") != HUMAN_REVIEW_REQUESTED_EVENT_TYPE
-            ],
-        )
-        if published_event_ids:
-            result["published_event_ids"] = published_event_ids
+        if not result.get("coalesced"):
+            published_event_ids = _publish_team_events(
+                self.runtime_context,
+                [
+                    event
+                    for event in (result.get("events") or [])
+                    if event.get("event_type") != HUMAN_REVIEW_REQUESTED_EVENT_TYPE
+                ],
+            )
+            if published_event_ids:
+                result["published_event_ids"] = published_event_ids
         return result
 
 

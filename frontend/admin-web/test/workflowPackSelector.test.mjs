@@ -15,6 +15,13 @@ test("workflow editor exposes workflow pack selection and sends it on save", () 
   assert.match(source, /workflow_pack: selectedWorkflowPackReference \|\| undefined/);
 });
 
+test("workflow editor restores the selected workflow pack from and into the URL", () => {
+  assert.match(source, /hashQueryParam\(\s*typeof window === "undefined" \? "" : window\.location\.hash,[\s\S]*"workflow_pack"/);
+  assert.match(source, /workflowEditorDocumentPath\(initialWorkflowPack\)/);
+  assert.match(source, /updateHashQueryParam\(\s*window\.location\.hash,[\s\S]*"workflow_pack"/);
+  assert.match(source, /window\.location\.hash = nextHash/);
+});
+
 test("workflow editor exposes workflow pack management actions", () => {
   assert.match(source, /function openCreateWorkflowPackModal/);
   assert.match(source, /function openEditWorkflowPackModal/);

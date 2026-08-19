@@ -6,10 +6,19 @@ from typing import Any, Protocol
 
 from evander.worker.models import WorkerResourceLimits
 
-from ..models import ReleaseVerificationCommand
+from ..models import (
+    ReleasePackage,
+    ReleaseVerificationCommand,
+    ReleaseVerificationRun,
+    TeamState,
+)
 from ..repository import TeamStateRepository
 from .domain.common import _optional_text
 from .release_gate_service import TeamReleaseGateService
+from .release_verification_singleflight import (
+    TEAM_RELEASE_VERIFICATION_SINGLE_FLIGHT,
+    TeamReleaseVerificationSingleFlight,
+)
 
 
 _VERIFICATION_LOG_EXCERPT_LIMIT = 8000
@@ -76,10 +85,12 @@ class TeamReleaseVerificationRunner:
         executor: ReleaseVerificationExecutor,
         *,
         release_gate_service: TeamReleaseGateService | None = None,
+        single_flight: TeamReleaseVerificationSingleFlight | None = None,
     ) -> None:
         self._repo = repo
         self._executor = executor
         self._release_gate_service = release_gate_service or TeamReleaseGateService(repo)
+        self._single_flight = single_flight or TEAM_RELEASE_VERIFICATION_SINGLE_FLIGHT
 
     def run(
         self,
@@ -88,16 +99,36 @@ class TeamReleaseVerificationRunner:
         verification_run_id: str,
         candidate_commit_sha: str,
     ) -> dict[str, Any]:
+        _validate_verification_request_identity(
+            self._repo.read(),
+            release_package_id=release_package_id,
+            verification_run_id=verification_run_id,
+            candidate_commit_sha=candidate_commit_sha,
+        )
+        return self._single_flight.run(
+            state_db_path=self._repo.store.path,
+            verification_run_id=verification_run_id,
+            execute=lambda: self._run_once(
+                release_package_id=release_package_id,
+                verification_run_id=verification_run_id,
+                candidate_commit_sha=candidate_commit_sha,
+            ),
+        )
+
+    def _run_once(
+        self,
+        *,
+        release_package_id: str,
+        verification_run_id: str,
+        candidate_commit_sha: str,
+    ) -> dict[str, Any]:
         state = self._repo.read()
-        release = state.release_packages.get(release_package_id)
-        run = state.release_verification_runs.get(verification_run_id)
-        if release is None or run is None:
-            raise ValueError("release package or verification run does not exist")
-        if (
-            release.candidate_commit_sha != candidate_commit_sha
-            or run.candidate_commit_sha != candidate_commit_sha
-        ):
-            raise ValueError("release verification request does not match the pinned candidate")
+        release, run = _validate_verification_request_identity(
+            state,
+            release_package_id=release_package_id,
+            verification_run_id=verification_run_id,
+            candidate_commit_sha=candidate_commit_sha,
+        )
         if run.state in {"passed", "failed", "timed_out"}:
             return {
                 "success": True,
@@ -351,6 +382,32 @@ class TeamReleaseVerificationRunner:
             error=terminal_error,
         )
         return result
+
+
+def _validate_verification_request_identity(
+    state: TeamState,
+    *,
+    release_package_id: str,
+    verification_run_id: str,
+    candidate_commit_sha: str,
+) -> tuple[ReleasePackage, ReleaseVerificationRun]:
+    """Validate the immutable run identity before an invocation can coalesce."""
+
+    release = state.release_packages.get(release_package_id)
+    run = state.release_verification_runs.get(verification_run_id)
+    if release is None or run is None:
+        raise ValueError("release package or verification run does not exist")
+    if run.release_package_id != release_package_id:
+        raise ValueError(
+            f"verification run {run.id} belongs to release {run.release_package_id}, "
+            f"not {release_package_id}"
+        )
+    if (
+        release.candidate_commit_sha != candidate_commit_sha
+        or run.candidate_commit_sha != candidate_commit_sha
+    ):
+        raise ValueError("release verification request does not match the pinned candidate")
+    return release, run
 
 
 def _persisted_terminal_outcome(

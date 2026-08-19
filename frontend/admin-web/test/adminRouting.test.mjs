@@ -12,6 +12,7 @@ import {
   nextPathFromHash,
   tabFromHash,
   tabsForExecutionBackend,
+  updateHashQueryParam,
   usersModeFromHash,
   usersModeHash,
 } from "../src/adminRouting.ts";
@@ -85,6 +86,17 @@ test("admin hashes carry non-empty query parameters", () => {
   assert.equal(adminHash("sessions", { session_id: "session 1" }), "#sessions?session_id=session+1");
   assert.equal(hashQueryParam("#workflow?trace_id=trace-1", "trace_id"), "trace-1");
   assert.equal(hashQueryParam("#workflow", "trace_id"), null);
+});
+
+test("hash query updates preserve other deep-link parameters", () => {
+  assert.equal(
+    updateHashQueryParam("#workflow?trace_id=trace-1", "workflow_pack", "packs/team support.v1.json"),
+    "#workflow?trace_id=trace-1&workflow_pack=packs%2Fteam+support.v1.json",
+  );
+  assert.equal(
+    updateHashQueryParam("#workflow?trace_id=trace-1&workflow_pack=old", "workflow_pack", ""),
+    "#workflow?trace_id=trace-1",
+  );
 });
 
 test("add-on iframe hash query forwards only bounded deep-link fields", () => {

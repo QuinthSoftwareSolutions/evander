@@ -25,6 +25,7 @@ _PARENT_TRANSITION_SUMMARIES = {
     "integration_ready": "Every direct child is resolved; integration is ready.",
 }
 _AUTOMATIC_CANDIDATE_CORRECTION_ACTORS = {
+    "system:candidate-correction-recovery",
     "system:release-review-correction",
     "system:release-verification-correction",
 }

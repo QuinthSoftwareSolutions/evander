@@ -34,9 +34,9 @@ from .domain.blockers import (
 from .domain.project_status import _recalculate_project_status
 from .domain.release_packages import (
     _build_release_package,
+    _candidate_correction_downstream_recovery_base,
     _reviewed_commit_for_release,
     _successor_release_request_error,
-    _verification_downstream_recovery_base,
 )
 from .domain.task_assessment import TaskAssessmentBoundaryError, require_task_resolved
 from .domain.work_due import _mark_agent_work_due
@@ -127,24 +127,22 @@ def _current_successor_deliverable_ids(
     predecessor: ReleasePackage,
     correction_task: AgentTask,
 ) -> list[str]:
-    failure = predecessor.gate_failure
-    if failure is not None and failure.stage == "verification" and failure.kind == "candidate":
-        recovery_ids = sorted(
-            deliverable.id
-            for deliverable in state.deliverables.values()
-            if deliverable.state == TeamRecordState.ACCEPTED
-            and deliverable.superseded_by_deliverable_id is None
-            and deliverable.verification is not None
-            and deliverable.verification.status == "passed"
-            and _verification_downstream_recovery_base(
-                state,
-                predecessor=predecessor,
-                deliverable=deliverable,
-            )
-            is not None
+    recovery_ids = sorted(
+        deliverable.id
+        for deliverable in state.deliverables.values()
+        if deliverable.state == TeamRecordState.ACCEPTED
+        and deliverable.superseded_by_deliverable_id is None
+        and deliverable.verification is not None
+        and deliverable.verification.status == "passed"
+        and _candidate_correction_downstream_recovery_base(
+            state,
+            predecessor=predecessor,
+            deliverable=deliverable,
         )
-        if recovery_ids:
-            return recovery_ids
+        is not None
+    )
+    if recovery_ids:
+        return recovery_ids
     return _current_accepted_deliverable_ids(state, correction_task)
 
 
@@ -671,15 +669,6 @@ def recover_candidate_correction_successor(
     correction_task = _correction_task(state, predecessor)
     if correction_task is None:
         raise ValueError(f"release {predecessor.id} has no automatic correction task")
-    failure = predecessor.gate_failure
-    if action in {
-        "create_verified_replacement",
-        "authorize_verification_waiver",
-    } and (failure is None or failure.stage != "verification" or failure.kind != "candidate"):
-        raise ValueError(
-            f"{action} is available only for candidate verification correction recovery"
-        )
-
     if action == "create_verified_replacement":
         sources = sorted(
             (
@@ -738,7 +727,7 @@ def recover_candidate_correction_successor(
                     f"Recover the failed successor packaging for {predecessor.id}. "
                     f"Start from accepted correction branch {source_branch} at exact "
                     f"commit {source_commit}. Make only the downstream correction, run "
-                    "the previously failing verification plus the focused checks, and "
+                    "the relevant release verification plus focused checks, and "
                     "submit an accepted Git deliverable with verification passed. Do "
                     "not merge or rebase another base branch and do not request a release."
                     f"{operator_instruction}"

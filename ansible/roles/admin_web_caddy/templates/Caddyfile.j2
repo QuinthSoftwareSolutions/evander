@@ -7,6 +7,10 @@
 		reverse_proxy {{ evander_admin_web_caddy_upstream_host }}:{{ evander_admin_web_caddy_upstream_port }}
 	}
 
+	handle /addons/* {
+		reverse_proxy {{ evander_admin_web_caddy_upstream_host }}:{{ evander_admin_web_caddy_upstream_port }}
+	}
+
 	handle /healthz {
 		reverse_proxy {{ evander_admin_web_caddy_upstream_host }}:{{ evander_admin_web_caddy_upstream_port }}
 	}

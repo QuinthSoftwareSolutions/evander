@@ -527,6 +527,39 @@ def test_reaccepted_root_deliverable_creates_a_new_pending_release_notice() -> N
     assert second_result["created_inbox_item_ids"] == [second.id]
 
 
+def test_candidate_recovery_root_does_not_request_a_second_release() -> None:
+    state = _state_with_hierarchy()
+    root = state.tasks["child-1"]
+    root.parent_task_id = None
+    root.created_by_actor = "system:candidate-correction-recovery"
+    deliverable = Deliverable(
+        id="deliverable-candidate-recovery",
+        task_id=root.id,
+        producer_agent_id="child-owner",
+        summary="Verified correction",
+        state=TeamRecordState.ACCEPTED,
+    )
+    state.deliverables[deliverable.id] = deliverable
+    root.deliverable_ids = [deliverable.id]
+    result: dict[str, object] = {"events": [], "created_inbox_item_ids": []}
+
+    notice = queue_root_task_resolution(
+        state,
+        task_id=root.id,
+        deliverable_id=deliverable.id,
+        sender_agent_id="child-owner",
+        result=result,
+        now=utc_now(),
+    )
+
+    assert notice is not None
+    assert notice.payload["kind"] == "candidate_correction_resolution"
+    assert notice.state == TeamInboxItemState.HANDLED
+    assert notice.response_requested is False
+    assert "no release request is required" in notice.payload["next_action"]
+    assert result["events"] == []
+
+
 def test_execution_stall_notifies_every_distinct_parent_owner_and_coalesces() -> None:
     state = _state_with_hierarchy(child_count=4)
     state.tasks["parent-2"] = AgentTask(
