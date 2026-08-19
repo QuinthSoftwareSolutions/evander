@@ -140,8 +140,8 @@ Admin Web public access:
 
 - `evander_admin_web_caddy_enabled: false` by default. Set it to `true` on deployments that
   expose Admin Web through Caddy.
-- The managed Caddy config proxies `/`, `/index.html`, `/api/*`, `/public/*`, and `/healthz` to
-  the local Admin Web Python service, while serving hashed frontend assets from
+- The managed Caddy config proxies `/`, `/index.html`, `/api/*`, `/public/*`, `/addons/*`, and
+  `/healthz` to the local Admin Web Python service, while serving hashed frontend assets from
   `frontend/admin-web/dist` directly. The proxied document entrypoints let Admin Web inject
   the configured title and branding payload before the React app starts.
 - Admin Web defaults to the bundled Evander and Quinth Software Solutions branding under

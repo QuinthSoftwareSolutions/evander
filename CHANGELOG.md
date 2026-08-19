@@ -1,5 +1,16 @@
 # Changelog
 
+## 2026-08-19 - Team Release-Verification Single Flight
+
+- Coalesced overlapping execution of one Team release-verification run, so duplicate effect
+  delivery shares the active verifier instead of resetting and cleaning its mutable checkout.
+  Independent verification runs still execute in parallel.
+
+## 2026-08-19 - Admin Web Add-on Caddy Routing
+
+- Proxied `/addons/*` through managed Admin Web Caddy deployments so add-on iframes reach their
+  server-owned UI routes instead of the static-file 404 handler.
+
 ## 2026-08-19 - Team Review-Correction Recovery
 
 - Made typed candidate-correction recovery actions work consistently for review- and

@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import subprocess
+import time
 from datetime import timedelta
 from pathlib import Path
+from threading import Event, Thread
 from types import SimpleNamespace
 
 import pytest
@@ -71,6 +73,9 @@ from evander_team_addon.services.release_verification_runner import (
     ReleaseVerificationTimeoutError,
     TeamReleaseVerificationRunner,
     _bounded_verification_log_excerpt,
+)
+from evander_team_addon.services.release_verification_singleflight import (
+    TEAM_RELEASE_VERIFICATION_SINGLE_FLIGHT,
 )
 
 
@@ -1243,6 +1248,79 @@ def test_release_verifier_persists_live_command_state_and_worker_job(
     run = repo.read().release_verification_runs["verification-1"]
     assert run.state == "passed"
     assert run.command_results[0].job_id == "live-worker-job"
+
+
+def test_release_verifier_effect_coalesces_overlapping_same_run(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    repo = _seed_team(tmp_path)
+    _seed_release_verification(repo)
+    executed_commands, create_directories, _create_metadata = _stub_release_verifier_setup(
+        monkeypatch,
+        destroy_result={"success": True},
+    )
+    command_started = Event()
+    allow_command_to_finish = Event()
+    results: dict[str, dict[str, object]] = {}
+
+    def _execute(self, **kwargs):
+        del kwargs
+        command = list(self.effect_definition.command)
+        executed_commands.append(command)
+        if command == ["python", "-m", "frozen_check"]:
+            command_started.set()
+            assert allow_command_to_finish.wait(timeout=2)
+        return {
+            "success": True,
+            "execution_id": f"execution-{len(executed_commands)}",
+            "exit_code": 0,
+            "stdout": "ok",
+        }
+
+    monkeypatch.setattr(AgentExecEffectProvider, "execute", _execute)
+
+    def _run(name: str) -> None:
+        results[name] = _verify_release_provider(tmp_path)
+
+    leader = Thread(target=_run, args=("leader",))
+    follower = Thread(target=_run, args=("follower",))
+    leader.start()
+    assert command_started.wait(timeout=2)
+    follower.start()
+    _wait_for_release_verification_waiter(
+        repo,
+        verification_run_id="verification-1",
+    )
+
+    allow_command_to_finish.set()
+    leader.join(timeout=2)
+    follower.join(timeout=2)
+
+    assert not leader.is_alive()
+    assert not follower.is_alive()
+    assert create_directories == ["root/team-a"]
+    assert executed_commands.count(["git", "clean", "-ffdx"]) == 1
+    assert executed_commands.count(["python", "-m", "frozen_check"]) == 1
+    assert results["leader"]["success"] is True
+    assert results["follower"]["success"] is True
+    assert results["follower"]["coalesced"] is True
+
+
+def _wait_for_release_verification_waiter(
+    repo: TeamStateRepository,
+    *,
+    verification_run_id: str,
+) -> None:
+    deadline = time.monotonic() + 2
+    database_state = TEAM_RELEASE_VERIFICATION_SINGLE_FLIGHT._database_state(repo.store.path)
+    while time.monotonic() < deadline:
+        with database_state.lock:
+            flight = database_state.flights.get(verification_run_id)
+            if flight is not None and flight.coalesced_waiter_count >= 1:
+                return
+        time.sleep(0.001)
+    raise AssertionError("release verifier did not reach the expected single-flight wait state")
 
 
 @pytest.mark.parametrize(
