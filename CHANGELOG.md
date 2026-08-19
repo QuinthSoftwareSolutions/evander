@@ -17,6 +17,8 @@
 - Allowed gate runtime and binding failures to publish a structured `error` branch when one is
   configured, so operator workflows can recover malformed or otherwise correctable inputs without
   leaving the source task silently stalled.
+- Routed Factory Support handoff contracts with missing fields into the same bounded agent-repair
+  loop as present-but-invalid fields.
 
 ## 2026-08-19 - Admin Web Workflow Pack Deep Links
 

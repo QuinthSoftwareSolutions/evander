@@ -11,6 +11,7 @@ from evander.workflow.binding import (
     binding_trace_to_payload,
     resolve_workflow_bindings,
 )
+from evander.workflow.lifecycle_ports import AGENT_PROMPT_ERROR_PORT
 from evander.workflow.validation import NodeCapability, WorkflowValidationDiagnostic
 
 _BRANCH_PORT_PAYLOAD_KEY = "__branch_port"
@@ -257,7 +258,7 @@ def _coerce_non_empty_string(value: Any, *, field_name: str) -> str:
 
 
 def _switch_valid_source_ports(node: Any) -> set[str]:
-    ports: set[str] = set()
+    ports: set[str] = {AGENT_PROMPT_ERROR_PORT}
     cases = getattr(node, "cases", None)
     if cases is None and isinstance(node, dict):
         cases = node.get("cases")

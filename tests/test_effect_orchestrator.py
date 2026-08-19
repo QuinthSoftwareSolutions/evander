@@ -11005,6 +11005,79 @@ def test_map_gate_records_failed_status_on_unresolved_reference(tmp_path: Path) 
     assert effect_execution_payload(worker_config) == {}
 
 
+def test_gate_binding_failure_routes_to_error_branch(tmp_path: Path) -> None:
+    runtime_dir = tmp_path / "runtime"
+    config = GatewayConfig(runtime_dir=runtime_dir)
+    worker_config = canonical_worker_config(
+        {
+            "runtime_dir": runtime_dir,
+            "triggers": [
+                {
+                    "id": "trigger-1",
+                    "display_name": "Tick",
+                    "type": "trigger:cron",
+                    "expression": "* * * * *",
+                }
+            ],
+            "gates": [
+                {
+                    "id": "gate-map",
+                    "display_name": "Map",
+                    "type": "gate:map",
+                    "template": {"session_id": "${{trigger-1.session_id}}"},
+                    "outputs": {
+                        "session_id": {"type": "string"},
+                        "success": {"type": "boolean"},
+                        "error_message": {"type": "string"},
+                        "error_class": {"type": "string"},
+                    },
+                }
+            ],
+            "effects": [
+                {
+                    "id": "effect-recover",
+                    "display_name": "Recover",
+                    "type": "effect:agent:prompt",
+                    "prompt": "Repair the missing field",
+                }
+            ],
+            "edges": [
+                _edge("trigger-1", "gate-map"),
+                _edge("gate-map", "effect-recover", source_port="error"),
+            ],
+        }
+    )
+    worker = EffectOrchestratorWorker(  # type: ignore[arg-type]
+        config=config,
+        worker_config=worker_config,
+        runtime=None,
+    )
+    worker.provider_factory = _Factory({"effect-recover": {"ok": True}})
+    worker.event_queue.publish(
+        TriggerEvent(
+            event_id="event-map-error-route",
+            trigger_id="trigger-1",
+            trigger_type="trigger:cron",
+            occurred_at=datetime(2026, 4, 4, 12, 0, tzinfo=timezone.utc),
+            payload={},
+        )
+    )
+
+    for _ in range(4):
+        worker.run_once()
+
+    gate_record = next(iter(gate_execution_payload(worker_config).values()))
+    assert gate_record["status"] == "error_routed"
+    assert gate_record["completion_event_branch_port"] == "error"
+    assert gate_record["outputs"]["success"] is False
+    assert gate_record["outputs"]["error_class"] == "BindingResolutionError"
+    assert "session_id" in gate_record["outputs"]["error_message"]
+
+    effect_record = next(iter(effect_execution_payload(worker_config).values()))
+    assert effect_record["effect_id"] == "effect-recover"
+    assert effect_record["status"] == "succeeded"
+
+
 def test_deserialize_gate_emits_parsed_object_outputs(tmp_path: Path) -> None:
     runtime_dir = tmp_path / "runtime"
     config = GatewayConfig(runtime_dir=runtime_dir)
