@@ -1,5 +1,16 @@
 # Changelog
 
+## 2026-08-19 - Team Review-Correction Recovery
+
+- Made typed candidate-correction recovery actions work consistently for review- and
+  verification-origin releases. Operators can now create a pinned verified replacement or authorize
+  an audited waiver from the current correction evidence, while failed verification remains
+  ineligible for waiver.
+- Recognized accepted, lineage-pinned downstream replacements when creating successors for rejected
+  release reviews, so a verified follow-up is promoted instead of retrying the incomplete correction.
+- Treated recovery-created correction tasks as automatic candidate corrections, preventing their
+  accepted resolution notice from asking the project lead to request a duplicate release package.
+
 ## 2026-08-18 - Compatibility Surface Retirement
 
 - Removed the retired Azure DevOps work-item helper and environment/configuration fallback surface;

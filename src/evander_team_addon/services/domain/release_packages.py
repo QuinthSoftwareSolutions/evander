@@ -548,7 +548,7 @@ def _build_release_package(
         )
         if predecessor is None:
             return branch, commit
-        downstream_recovery_base = _verification_downstream_recovery_base(
+        downstream_recovery_base = _candidate_correction_downstream_recovery_base(
             state,
             predecessor=predecessor,
             deliverable=deliverable,
@@ -1442,7 +1442,7 @@ def _successor_release_request_error(
     return None
 
 
-def _verification_downstream_recovery_base(
+def _candidate_correction_downstream_recovery_base(
     state: TeamState,
     *,
     predecessor: ReleasePackage,
@@ -1451,16 +1451,18 @@ def _verification_downstream_recovery_base(
     """Return the immutable accepted-correction base for a safe recovery task."""
 
     gate_failure = predecessor.gate_failure
-    if (
-        gate_failure is None
-        or gate_failure.stage != "verification"
-        or gate_failure.kind != "candidate"
-    ):
+    if gate_failure is None:
         return None
-    verification_run = state.release_verification_runs.get(gate_failure.source_id or "")
-    if verification_run is None or verification_run.correction_task_id is None:
+    correction_task_id: str | None = None
+    if gate_failure.stage == "verification" and gate_failure.kind == "candidate":
+        verification_run = state.release_verification_runs.get(gate_failure.source_id or "")
+        if verification_run is not None and verification_run.release_package_id == predecessor.id:
+            correction_task_id = verification_run.correction_task_id
+    elif gate_failure.stage == "review" and gate_failure.kind == "rejected":
+        correction_task_id = predecessor.review_correction_task_id
+    if correction_task_id is None:
         return None
-    correction_task = state.tasks.get(verification_run.correction_task_id)
+    correction_task = state.tasks.get(correction_task_id)
     recovery_task = state.tasks.get(deliverable.task_id)
     if (
         correction_task is None
@@ -1594,7 +1596,7 @@ def _verification_correction_successor_request_error(
         if deliverable.task_id == correction_task.id:
             continue
         if (
-            _verification_downstream_recovery_base(
+            _candidate_correction_downstream_recovery_base(
                 state,
                 predecessor=predecessor,
                 deliverable=deliverable,
@@ -1664,15 +1666,22 @@ def _release_review_correction_successor_request_error(
     invalid_ids = sorted(
         deliverable_id
         for deliverable_id in correction_deliverable_ids
-        if (
-            (deliverable := state.deliverables.get(deliverable_id)) is None
-            or deliverable.task_id != correction_task.id
+        if (deliverable := state.deliverables.get(deliverable_id)) is None
+        or (
+            deliverable.task_id != correction_task.id
+            and _candidate_correction_downstream_recovery_base(
+                state,
+                predecessor=predecessor,
+                deliverable=deliverable,
+            )
+            is None
         )
     )
     if invalid_ids:
         return (
             f"release review correction task {correction_task.id} did not produce "
-            "correction deliverables: " + ", ".join(invalid_ids)
+            "correction deliverables or lineage-verified downstream recovery "
+            "deliverables: " + ", ".join(invalid_ids)
         )
     return None
 
