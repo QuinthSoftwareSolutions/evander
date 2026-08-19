@@ -23,23 +23,22 @@ export function normalizeWorkflowEdgeSourcePort(
 
 export function workflowConnectionRouteOptions(
   outputPorts: ReadonlyArray<WorkflowEditorNodePortDefinition>,
+  includeImplicitDefault = false,
 ): WorkflowConnectionRouteOption[] {
-  if (outputPorts.length === 0) {
-    return [
-      {
-        sourcePort: null,
-        label: "Default",
-        description: "Standard downstream path.",
-        routeClass: workflowRouteClass(null),
-      },
-    ];
-  }
-  return outputPorts.map((port) => ({
+  const defaultRoute = {
+    sourcePort: null,
+    label: "Default",
+    description: "Standard downstream path.",
+    routeClass: workflowRouteClass(null),
+  };
+  if (outputPorts.length === 0) return [defaultRoute];
+  const namedRoutes = outputPorts.map((port) => ({
     sourcePort: port.key,
     label: port.label,
     description: port.description,
     routeClass: workflowRouteClass(port.key),
   }));
+  return includeImplicitDefault ? [defaultRoute, ...namedRoutes] : namedRoutes;
 }
 
 export function workflowOutputPortsForNode(
@@ -73,6 +72,12 @@ export function workflowOutputPortsForNode(
       label: "Default",
       description: "Standard downstream path.",
     });
+  }
+
+  for (const port of catalogEntryOutputPorts) {
+    if (seenPorts.has(port.key)) continue;
+    seenPorts.add(port.key);
+    outputPorts.push({ ...port });
   }
 
   return outputPorts;

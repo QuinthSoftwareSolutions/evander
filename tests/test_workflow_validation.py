@@ -7,6 +7,13 @@ from evander.workflow.validation import (
 )
 
 
+_GATE_FAILURE_OUTPUTS = {
+    "success": {"type": "boolean"},
+    "error_message": {"type": "string"},
+    "error_class": {"type": "string"},
+}
+
+
 def test_counter_output_schema_preserves_upstream_outputs_and_adds_count() -> None:
     config = {
         "triggers": [
@@ -52,6 +59,7 @@ def test_counter_output_schema_preserves_upstream_outputs_and_adds_count() -> No
         "sender_name": {"type": "string"},
         "body": {"type": "string"},
         "count": {"type": "integer"},
+        **_GATE_FAILURE_OUTPUTS,
     }
     assert diagnostics == []
 
@@ -98,6 +106,7 @@ def test_counter_output_schema_does_not_add_count_to_upstream_trigger() -> None:
     assert output_schemas["gate-counter"] == {
         "body": {"type": "string"},
         "count": {"type": "integer"},
+        **_GATE_FAILURE_OUTPUTS,
     }
     assert [diagnostic.model_dump() for diagnostic in diagnostics] == [
         {
@@ -635,6 +644,7 @@ def test_binding_diagnostics_accept_merge_derived_outputs() -> None:
     assert output_schemas["gate-merge-1"] == {
         "ticket": {"type": "object"},
         "route": {"type": "string"},
+        **_GATE_FAILURE_OUTPUTS,
     }
     assert diagnostics == []
 
@@ -878,6 +888,7 @@ def test_output_schema_derivation_handles_nested_node_config() -> None:
     assert output_schemas["gate-map-1"] == {
         "ticket": {"type": "object"},
         "route": {"type": "string"},
+        **_GATE_FAILURE_OUTPUTS,
     }
     assert output_schemas["gate-filter-1"] == output_schemas["gate-map-1"]
     assert diagnostics == []
@@ -927,6 +938,7 @@ def test_output_schema_derivation_infers_deserialize_outputs_from_literal_yaml()
         "metadata": {"type": "object"},
         "count": {"type": "integer"},
         "active": {"type": "boolean"},
+        **_GATE_FAILURE_OUTPUTS,
     }
     assert diagnostics == []
 
@@ -956,7 +968,11 @@ def test_output_schema_derivation_respects_explicit_deserialize_json_format() ->
                 "display_name": "Prompt agent",
                 "type": "effect:agent:prompt",
                 "session_id": "session-1",
-                "prompt": "Review ${{gate-deserialize-1.title}}",
+                "prompt": (
+                    "Review ${{gate-deserialize-1.title}}; failure "
+                    "${{gate-deserialize-1.error_message}} "
+                    "${{gate-deserialize-1.error_class}}"
+                ),
             }
         ],
         "edges": [
@@ -968,7 +984,7 @@ def test_output_schema_derivation_respects_explicit_deserialize_json_format() ->
     output_schemas = derive_workflow_output_schemas(config)
     diagnostics = validate_workflow_binding_diagnostics(config)
 
-    assert output_schemas["gate-deserialize-1"] == {}
+    assert output_schemas["gate-deserialize-1"] == _GATE_FAILURE_OUTPUTS
     assert [diagnostic.model_dump() for diagnostic in diagnostics] == [
         {
             "code": "missing_binding_output",
@@ -1023,6 +1039,7 @@ def test_output_schema_derivation_uses_declared_deserialize_outputs_for_bound_co
     assert output_schemas["gate-deserialize-1"] == {
         "title": {"type": "string"},
         "metadata": {"type": "object"},
+        **_GATE_FAILURE_OUTPUTS,
     }
     assert diagnostics == []
 
@@ -1068,6 +1085,7 @@ def test_output_schema_derivation_exposes_static_serialize_outputs() -> None:
     assert output_schemas["gate-serialize-1"] == {
         "content": {"type": "string"},
         "format": {"type": "string"},
+        **_GATE_FAILURE_OUTPUTS,
     }
     assert diagnostics == []
 

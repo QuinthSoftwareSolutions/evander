@@ -3999,6 +3999,67 @@ test("team add-on UI retries only a typed retryable release gate with an audited
     reason: "Worker host was repaired by release-admin.",
     expected_revision: 4,
   });
+
+});
+
+test("team add-on UI submits an explicit rejected-review exception", async (t) => {
+  const initialState = seededGitState();
+  initialState.release_packages = {
+    "release-review-exception": {
+      id: "release-review-exception",
+      project_id: "alpha-project",
+      deliverable_ids: ["deliverable-accepted"],
+      artifact_refs: [],
+      feature_branches: ["team/alpha/features/accepted"],
+      release_branch: "team/alpha/releases/review-exception",
+      canonical_branch: "releases/alpha/review-exception",
+      candidate_commit_sha: "candidate-sha",
+      state: "rejected",
+      error: "sealed candidate metadata cannot be rewritten",
+      gate_failure: {
+        stage: "review",
+        kind: "rejected",
+        source_id: "review-rejected-1",
+        message: "sealed candidate metadata cannot be rewritten",
+      },
+      created_at: "2026-06-09T16:20:00Z",
+      updated_at: "2026-06-09T16:20:00Z",
+    },
+  };
+  const { port, requests } = await createTeamAddonServer(t, { initialState });
+  const page = await openBrowserPage(t, port);
+
+  await waitForRevision(page, 4);
+  await page.getByRole("tab", { name: "Delivery" }).click();
+  await page
+    .locator("#team-delivery-page")
+    .getByRole("heading", { name: "Release history" })
+    .waitFor({ state: "visible" });
+  const releaseHistory = page.locator("#team-delivery-page [data-releases-view]");
+  const reviewException = releaseHistory.locator(
+    'li.release-card[data-release-id="release-review-exception"]',
+  );
+  await reviewException.locator("summary.compact-record-summary").click();
+  const exceptionRetry = reviewException.getByRole("button", {
+    name: "Retry rejected review by exception",
+  });
+  await exceptionRetry.waitFor({ state: "visible" });
+  page.once("dialog", (dialog) => dialog.accept("The immutable inherited metadata is accepted."));
+  await exceptionRetry.click();
+  await waitForRevision(page, 5);
+
+  const exceptionRequest = requests.find(
+    (item) => item.method === "POST" &&
+      item.pathname === "/api/addons/team-addon/release-packages/release-review-exception/retry-gate",
+  );
+  assert.ok(exceptionRequest, "expected a rejected release-review exception request");
+  assert.deepEqual(exceptionRequest.payload, {
+    gate_kind: "review",
+    gate_id: "review-rejected-1",
+    reason: "The immutable inherited metadata is accepted.",
+    allow_rejected_review_exception: true,
+    expected_revision: 4,
+  });
 });
 
 test("team add-on focused tabs submit retained create forms with revisions", async (t) => {

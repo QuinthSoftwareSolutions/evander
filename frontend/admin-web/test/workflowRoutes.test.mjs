@@ -79,7 +79,7 @@ test("switch route ports are derived from cases and default branches", () => {
     }
   };
 
-  assert.deepEqual(workflowOutputPortsForNode(node, []), [
+  assert.deepEqual(workflowOutputPortsForNode(node, [{ key: "error", label: "Error" }]), [
     { key: "ready", label: "Ready" },
     { key: "blocked", label: "Blocked" },
     {
@@ -87,6 +87,7 @@ test("switch route ports are derived from cases and default branches", () => {
       label: "Default",
       description: "Standard downstream path.",
     },
+    { key: "error", label: "Error" },
   ]);
 });
 
@@ -107,6 +108,23 @@ test("route options use named ports when present and default otherwise", () => {
       routeClass: "loop",
     },
   ]);
+  assert.deepEqual(
+    workflowConnectionRouteOptions([{ key: "error", label: "Error" }], true),
+    [
+      {
+        sourcePort: null,
+        label: "Default",
+        description: "Standard downstream path.",
+        routeClass: "default",
+      },
+      {
+        sourcePort: "error",
+        label: "Error",
+        description: undefined,
+        routeClass: "error",
+      },
+    ],
+  );
 });
 
 test("error route options render with the error route class", () => {

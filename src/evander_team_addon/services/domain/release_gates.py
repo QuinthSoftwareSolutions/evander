@@ -23,9 +23,11 @@ from ...models import (
     HumanReviewRequirementSnapshot,
     HumanReviewFindingSnapshot,
     TeamBlockerSourceKind,
+    TeamInboxItemState,
     TeamInboxPriority,
     TeamRecordState,
     TeamState,
+    TaskCancellation,
     TaskDeliverableContract,
     TeamTaskKind,
     TeamTaskState,
@@ -37,6 +39,7 @@ from .common import _append_unique, _required_text, _set_task_state, utc_now
 from .blockers import (
     open_or_get_blocker,
     open_release_blocker,
+    reconcile_task_blockers_after_cancellation,
     resolve_active_blockers_for_source,
 )
 from .review_handoff import queue_actionable_inbox_item
@@ -1484,6 +1487,66 @@ def _release_promotion(
     return matches[0] if matches else None
 
 
+def _retire_release_review_correction_work_for_exception(
+    state: TeamState,
+    *,
+    release: ReleasePackage,
+    review: ReviewRequest,
+    requested_by: str,
+    reason: str,
+    result: dict[str, Any],
+    now: datetime,
+) -> None:
+    task_id = release.review_correction_task_id
+    if task_id is None:
+        return
+
+    task = state.tasks.get(task_id)
+    if task is not None and task.state not in {
+        TeamTaskState.ACCEPTED,
+        TeamTaskState.CANCELLED,
+    }:
+        task.cancellation = TaskCancellation(
+            reason_code="release_review_exception",
+            reason=(
+                f"Operator-authorized retry of rejected release review {review.id} "
+                f"superseded its generated correction work: {reason}"
+            ),
+            actor_kind="operator",
+            actor_id=requested_by,
+            cancelled_at=now,
+        )
+        _set_task_state(task, TeamTaskState.CANCELLED, now=now)
+        task.updated_at = now
+        result.setdefault("cancelled_task_ids", []).append(task.id)
+        reconcile_task_blockers_after_cancellation(
+            state,
+            task_id=task.id,
+            actor_agent_id=None,
+            dispatch_id=None,
+            result=result,
+            now=now,
+        )
+
+    handled_inbox_item_ids: list[str] = []
+    for item in state.inbox.values():
+        if (
+            item.state == TeamInboxItemState.PENDING
+            and item.task_id == task_id
+            and item.payload.get("kind") == "release_review_rejection_correction_work"
+        ):
+            item.state = TeamInboxItemState.HANDLED
+            item.updated_at = now
+            handled_inbox_item_ids.append(item.id)
+    if handled_inbox_item_ids:
+        result.setdefault("handled_correction_inbox_item_ids", []).extend(
+            sorted(handled_inbox_item_ids)
+        )
+
+    release.review_correction_task_id = None
+    result.setdefault("retired_release_review_correction_task_ids", []).append(task_id)
+
+
 def retry_release_gate(
     state: TeamState,
     *,
@@ -1616,6 +1679,16 @@ def retry_release_gate(
         if current.state == TeamRecordState.REJECTED
         else "blocked review"
     )
+    if current.state == TeamRecordState.REJECTED:
+        _retire_release_review_correction_work_for_exception(
+            state,
+            release=release,
+            review=current,
+            requested_by=normalized_requested_by,
+            reason=normalized_reason,
+            result=result,
+            now=now,
+        )
     review = _create_release_review(
         state,
         release=release,
@@ -1950,10 +2023,32 @@ def _recompute_release_state_after_gate_retry(
     state: TeamState,
     release: ReleasePackage,
 ) -> None:
+    current_reviews = _current_release_reviews(state, release)
+    rejected_reviews = [
+        review for review in current_reviews if review.state == TeamRecordState.REJECTED
+    ]
+    if rejected_reviews:
+        existing_source_id = (
+            release.gate_failure.source_id if release.gate_failure is not None else None
+        )
+        rejected = next(
+            (review for review in rejected_reviews if review.id == existing_source_id),
+            rejected_reviews[0],
+        )
+        message = "; ".join(rejected.findings) or f"release review {rejected.id} rejected"
+        release.state = TeamRecordState.REJECTED
+        release.gate_failure = ReleaseGateFailure(
+            stage="review",
+            kind="rejected",
+            source_id=rejected.id,
+            message=message,
+        )
+        release.error = message
+        release.updated_at = utc_now()
+        return
+
     blocked_reviews = [
-        review
-        for review in _current_release_reviews(state, release)
-        if review.state == TeamRecordState.BLOCKED
+        review for review in current_reviews if review.state == TeamRecordState.BLOCKED
     ]
     if blocked_reviews:
         existing_source_id = (

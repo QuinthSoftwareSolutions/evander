@@ -82,6 +82,11 @@ class EdgeDefinition(BaseModel):
 
 _NODE_OUTPUT_SCHEMA_REGISTRY: dict[str, dict[str, dict[str, Any]]] = {}
 _OUTPUT_SCHEMA_BOOTSTRAP_ATTEMPTED = False
+GATE_FAILURE_OUTPUT_SCHEMA: dict[str, dict[str, Any]] = {
+    "success": {"type": "boolean"},
+    "error_message": {"type": "string"},
+    "error_class": {"type": "string"},
+}
 
 
 def register_node_output_schema(
@@ -124,11 +129,11 @@ def effective_node_output_schema(node: Any) -> dict[str, dict[str, Any]]:
             if not name:
                 continue
             schema[name] = _infer_schema_from_template_value(value)
-        return schema
+        return _with_gate_failure_output_schema(node_type, schema)
 
     if node_type == "gate:aggregate" and isinstance(metrics, Mapping):
         schema.update(_aggregate_metric_output_schema(metrics))
-        return schema
+        return _with_gate_failure_output_schema(node_type, schema)
 
     if node_type == "gate:deserialize":
         literal_schema = _infer_schema_from_deserialized_content(
@@ -136,7 +141,8 @@ def effective_node_output_schema(node: Any) -> dict[str, dict[str, Any]]:
             format_name=content_format,
         )
         if literal_schema is not None:
-            return literal_schema
+            schema.update(literal_schema)
+            return _with_gate_failure_output_schema(node_type, schema)
 
     if isinstance(raw_outputs, Mapping):
         schema.update(
@@ -146,7 +152,17 @@ def effective_node_output_schema(node: Any) -> dict[str, dict[str, Any]]:
                 if isinstance(value, Mapping)
             }
         )
-    return schema
+    return _with_gate_failure_output_schema(node_type, schema)
+
+
+def _with_gate_failure_output_schema(
+    node_type: str,
+    schema: Mapping[str, Mapping[str, Any]],
+) -> dict[str, dict[str, Any]]:
+    normalized = {str(key): dict(value) for key, value in schema.items()}
+    if node_type.startswith("gate:"):
+        normalized.update({key: dict(value) for key, value in GATE_FAILURE_OUTPUT_SCHEMA.items()})
+    return normalized
 
 
 def _aggregate_metric_output_schema(metrics: Mapping[str, Any]) -> dict[str, dict[str, Any]]:

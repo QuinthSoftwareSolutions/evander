@@ -66,6 +66,7 @@ from evander.admin.workflow_catalog import (
     _looks_like_declared_output_schema,
     _strip_default_edge_fields,
     _tool_field_options,
+    _with_standard_gate_error_ports,
     _workflow_agent_create_diagnostics,
     _workflow_binding_diagnostics_for_graphs,
 )
@@ -2119,6 +2120,7 @@ class WorkflowConfigAdminService:
                     )
                 },
             )
+            node = _with_standard_gate_error_ports(node)
             node.fields = [
                 field.model_copy(update={"options": tool_options})
                 if field.key in {"allowed_tools", "tool_argument_policies", "tools"}
@@ -2192,6 +2194,7 @@ class WorkflowConfigAdminService:
             nodes.append(node)
         for entry in provider_catalog.workflow_editor_catalog_entries:
             node = entry.model_copy(deep=True)
+            node = _with_standard_gate_error_ports(node)
             if node.type == "effect:team:enqueue-operator-chat-message":
                 node.fields = [
                     field.model_copy(update={"options": team_chat_bridge_target_options})

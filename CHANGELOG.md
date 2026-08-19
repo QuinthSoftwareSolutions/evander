@@ -11,12 +11,19 @@
 - Added an explicit operator-only retry for a rejected release review whose finding cannot be
   corrected without rewriting the unchanged pinned candidate; the original rejection remains
   immutable and the replacement reviewer must still evaluate every non-excepted criterion.
+- Routed that exception through the release-retry API and Team UI, kept multi-review cohorts
+  rejected until every rejected slot is replaced, and retired the obsolete correction task and
+  inbox work when the exception is accepted.
+- Preserved failed correction successors as actionable blockers when aggregate rebuild validation
+  rejects replacement sources instead of crashing and rolling back reconciliation.
 
 ## 2026-08-19 - Workflow Gate Error Routing
 
 - Allowed gate runtime and binding failures to publish a structured `error` branch when one is
   configured, so operator workflows can recover malformed or otherwise correctable inputs without
   leaving the source task silently stalled.
+- Exposed the standard gate `error` route and its `success`, `error_message`, and `error_class`
+  outputs through the workflow catalog and graph-aware binding schemas.
 - Routed Factory Support handoff contracts with missing fields into the same bounded agent-repair
   loop as present-but-invalid fields.
 

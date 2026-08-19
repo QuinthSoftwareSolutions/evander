@@ -357,6 +357,24 @@ def _port(
     return WorkflowEditorNodePortDefinition(key=key, label=label, description=description)
 
 
+def _with_standard_gate_error_ports(
+    node: WorkflowEditorNodeCatalogEntry,
+) -> WorkflowEditorNodeCatalogEntry:
+    if node.kind != "gate":
+        return node
+    ports = list(node.output_ports)
+    if not any(port.key == AGENT_PROMPT_ERROR_PORT for port in ports):
+        ports.append(
+            _port(
+                AGENT_PROMPT_ERROR_PORT,
+                "Error",
+                description="Gate validation or runtime failure handled by an error route.",
+            )
+        )
+    node.output_ports = ports
+    return node
+
+
 def _field(
     key: str,
     label: str,

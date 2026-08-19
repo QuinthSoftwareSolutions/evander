@@ -28,6 +28,7 @@ from evander_team_addon.models import (
     TeamRecordState,
     TeamState,
     Team,
+    TeamInboxItemState,
     TeamRole,
     TeamTaskState,
     release_package_payload_with_derived,
@@ -275,6 +276,84 @@ def test_release_review_cohort_waits_then_materializes_one_consolidated_correcti
         reviews["reviewer-a"].id,
         reviews["reviewer-b"].id,
     ]
+
+
+def test_rejected_review_exception_preserves_cohort_and_retires_correction_work() -> None:
+    state, release, _promotion, reviews = _release_review_cohort_fixture()
+    decision_result = _result()
+    for reviewer_id, finding in (
+        ("reviewer-a", "First rejected criterion."),
+        ("reviewer-b", "Second rejected criterion."),
+    ):
+        decision_result = _result()
+        _cascade_review_decision(
+            state,
+            review=reviews[reviewer_id],
+            decision_state=TeamRecordState.REJECTED,
+            findings=[finding],
+            projects_to_recalc=set(),
+            result=decision_result,
+        )
+
+    correction_task_id = release.review_correction_task_id
+    assert correction_task_id is not None
+    correction_inbox_ids = [
+        item_id
+        for item_id in decision_result["created_inbox_item_ids"]
+        if state.inbox[item_id].payload.get("kind") == "release_review_rejection_correction_work"
+    ]
+    assert len(correction_inbox_ids) == 1
+    first_rejected_review_id = release.gate_failure.source_id
+    assert first_rejected_review_id is not None
+
+    first_retry = _result()
+    retry_release_gate(
+        state,
+        release=release,
+        gate_kind="review",
+        gate_id=first_rejected_review_id,
+        reason="The inherited candidate metadata is explicitly excepted.",
+        requested_by="operator:release-admin",
+        result=first_retry,
+        allow_rejected_review_exception=True,
+    )
+
+    remaining_rejected_ids = [
+        review.id
+        for review in state.review_requests.values()
+        if review.release_package_id == release.id
+        and review.state == TeamRecordState.REJECTED
+        and review.superseded_by_review_request_id is None
+    ]
+    assert len(remaining_rejected_ids) == 1
+    assert release.state == TeamRecordState.REJECTED
+    assert release.gate_failure is not None
+    assert release.gate_failure.source_id == remaining_rejected_ids[0]
+    assert release.review_correction_task_id is None
+    correction_task = state.tasks[correction_task_id]
+    assert correction_task.state == TeamTaskState.CANCELLED
+    assert correction_task.cancellation is not None
+    assert correction_task.cancellation.reason_code == "release_review_exception"
+    assert first_retry["cancelled_task_ids"] == [correction_task_id]
+    assert first_retry["retired_release_review_correction_task_ids"] == [correction_task_id]
+    assert first_retry["handled_correction_inbox_item_ids"] == correction_inbox_ids
+    assert state.inbox[correction_inbox_ids[0]].state == TeamInboxItemState.HANDLED
+
+    second_retry = _result()
+    retry_release_gate(
+        state,
+        release=release,
+        gate_kind="review",
+        gate_id=remaining_rejected_ids[0],
+        reason="The second inherited criterion is also explicitly excepted.",
+        requested_by="operator:release-admin",
+        result=second_retry,
+        allow_rejected_review_exception=True,
+    )
+
+    assert release.state == TeamRecordState.PENDING
+    assert release.gate_failure is None
+    assert all(review.superseded_by_review_request_id is not None for review in reviews.values())
 
 
 def test_release_review_cohort_all_acceptance_advances_release_once_complete() -> None:

@@ -329,6 +329,90 @@ def test_reviewed_rework_rebuilds_failed_pre_candidate_successor(
     assert recovered["git_promotion_event_ids"] == [active_promotions[0].id]
 
 
+def test_reviewed_rework_records_aggregate_validation_failure_as_actionable_blocker(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repository = TeamStateRepository(tmp_path)
+    repository.update(
+        lambda _state: _candidate_correction_state(gate_kind="review"),
+        expected_revision=0,
+    )
+    created = CandidateCorrectionReconciliationService(repository).reconcile()
+    successor_id = created["created_successor_release_package_ids"][0]
+    successor = repository.read().release_packages[successor_id]
+    failed_promotion_id = successor.git_promotion_record_ids[0]
+    TeamGitReleaseService(repository).record_git_promotion_result(
+        promotion_id=failed_promotion_id,
+        success=False,
+        error="The original correction aggregate failed validation.",
+        outputs={"error_code": "scope_mismatch"},
+    )
+
+    def _submit_reviewed_replacement(state: TeamState) -> TeamState:
+        original = state.deliverables["correction-deliverable"]
+        original.rework_requested_at = datetime.now(UTC)
+        original.rework_requested_by_agent_id = "lead"
+        original.rework_reason = "Replace the invalid correction aggregate source."
+        original.superseded_by_deliverable_id = "replacement-deliverable"
+        replacement = Deliverable(
+            id="replacement-deliverable",
+            task_id="correction-task",
+            producer_agent_id="coder",
+            summary="Reviewed replacement correction.",
+            supersedes_deliverable_id=original.id,
+            git_refs=DeliverableGitRefs(
+                agent_branch="agents/session-coder/replacement",
+                commit_sha=RECOVERY_COMMIT,
+                submitted_commit_sha=RECOVERY_COMMIT,
+            ),
+            verification=DeliverableVerification(status="passed"),
+            state=TeamRecordState.ACCEPTED,
+            review_request_ids=["replacement-review"],
+        )
+        state.deliverables[replacement.id] = replacement
+        state.review_requests["replacement-review"] = ReviewRequest(
+            id="replacement-review",
+            deliverable_id=replacement.id,
+            reviewer_agent_id="reviewer",
+            state=TeamRecordState.ACCEPTED,
+            reviewed_commit_sha=RECOVERY_COMMIT,
+        )
+        state.tasks["correction-task"].deliverable_ids.append(replacement.id)
+        return state
+
+    repository.update(_submit_reviewed_replacement)
+
+    def _reject_aggregate(*_args, result: dict[str, object], **_kwargs) -> None:
+        errors = result["errors"]
+        assert isinstance(errors, list)
+        errors.append("correction source branch is reused by multiple deliverables")
+        return None
+
+    monkeypatch.setattr(
+        reconciliation_module,
+        "_create_correction_aggregate_promotion",
+        _reject_aggregate,
+    )
+
+    blocked = CandidateCorrectionReconciliationService(repository).reconcile()
+    state = repository.read()
+    successor = state.release_packages[successor_id]
+
+    assert blocked["candidate_correction_errors"]["release-predecessor"] == (
+        "correction source branch is reused by multiple deliverables"
+    )
+    assert successor.state == TeamRecordState.BLOCKED
+    assert state.git_promotions[failed_promotion_id].state == "failed"
+    blocker = next(
+        blocker
+        for blocker in state.blockers.values()
+        if blocker.source_kind == TeamBlockerSourceKind.CANDIDATE_CORRECTION_SUCCESSOR
+    )
+    assert blocker.state == TeamBlockerState.OPEN
+    assert "reused by multiple deliverables" in blocker.details
+
+
 def test_release_review_correction_waits_for_every_current_review(
     tmp_path: Path,
 ) -> None:

@@ -195,14 +195,14 @@ def _refresh_blocked_successor_from_reviewed_rework(
     successor: ReleasePackage,
     result: dict[str, Any],
     now: datetime,
-) -> bool:
+) -> tuple[bool, bool]:
     if not _blocked_successor_has_reviewed_rework(
         state,
         predecessor=predecessor,
         correction_task=correction_task,
         successor=successor,
     ):
-        return False
+        return False, False
     correction_deliverable_ids = _current_successor_deliverable_ids(
         state,
         predecessor=predecessor,
@@ -226,10 +226,43 @@ def _refresh_blocked_successor_from_reviewed_rework(
     )
     if validation_error is not None:
         result.setdefault("candidate_correction_errors", {})[predecessor.id] = validation_error
-        return False
+        changed = _open_reconciliation_blocker(
+            state,
+            predecessor=predecessor,
+            correction_task=correction_task,
+            details=validation_error,
+            result=result,
+            now=now,
+        )
+        return True, changed
 
     failed_aggregate = _failed_correction_aggregate(state, successor)
     assert failed_aggregate is not None
+    package_result = _package_result()
+    aggregate = _create_correction_aggregate_promotion(
+        state,
+        release=successor,
+        predecessor=predecessor,
+        correction_deliverable_ids=correction_deliverable_ids,
+        actor_agent_id=(predecessor.owner_agent_id or correction_task.owner_agent_id),
+        result=package_result,
+    )
+    if aggregate is None:
+        details = (
+            "; ".join(str(error) for error in package_result["errors"])
+            or f"failed to rebuild correction aggregate for successor {successor.id}"
+        )
+        changed = _open_reconciliation_blocker(
+            state,
+            predecessor=predecessor,
+            correction_task=correction_task,
+            details=details,
+            result=result,
+            now=now,
+        )
+        result.setdefault("candidate_correction_errors", {})[predecessor.id] = details
+        return True, changed
+
     failed_aggregate.state = "retired"
     failed_aggregate.updated_at = now
     successor.deliverable_ids = list(
@@ -246,18 +279,7 @@ def _refresh_blocked_successor_from_reviewed_rework(
         ),
     )
     successor.updated_at = now
-    aggregate = _create_correction_aggregate_promotion(
-        state,
-        release=successor,
-        predecessor=predecessor,
-        correction_deliverable_ids=correction_deliverable_ids,
-        actor_agent_id=(predecessor.owner_agent_id or correction_task.owner_agent_id),
-        result=result,
-    )
-    if aggregate is None:  # pragma: no cover - guarded by validation above
-        raise RuntimeError(
-            f"failed to rebuild correction aggregate for successor {successor.id}"
-        )
+    result.setdefault("events", []).extend(package_result["events"])
     result.setdefault("recovered_successor_release_package_ids", []).append(successor.id)
     result.setdefault("git_promotion_event_ids", []).append(aggregate.id)
     resolve_active_blockers_for_source(
@@ -272,7 +294,7 @@ def _refresh_blocked_successor_from_reviewed_rework(
         now=now,
     )
     _recalculate_project_status(state, predecessor.project_id)
-    return True
+    return True, True
 
 
 def _current_accepted_deliverable_ids(
@@ -615,18 +637,22 @@ def reconcile_candidate_correction_successors(
         existing_successors = _direct_successors(state, predecessor.id)
         if existing_successors:
             successor = existing_successors[0]
-            if correction_task is not None and _refresh_blocked_successor_from_reviewed_rework(
-                state,
-                predecessor=predecessor,
-                correction_task=correction_task,
-                successor=successor,
-                result=result,
-                now=effective_now,
-            ):
-                result.setdefault("existing_successor_release_package_ids", []).append(
-                    successor.id
+            refresh_attempted = False
+            refresh_changed = False
+            if correction_task is not None:
+                refresh_attempted, refresh_changed = (
+                    _refresh_blocked_successor_from_reviewed_rework(
+                        state,
+                        predecessor=predecessor,
+                        correction_task=correction_task,
+                        successor=successor,
+                        result=result,
+                        now=effective_now,
+                    )
                 )
-                changed = True
+            if refresh_attempted:
+                result.setdefault("existing_successor_release_package_ids", []).append(successor.id)
+                changed = refresh_changed or changed
                 continue
             resolved_ids = resolve_active_blockers_for_source(
                 state,
