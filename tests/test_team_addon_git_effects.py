@@ -1307,6 +1307,112 @@ def test_release_verifier_effect_coalesces_overlapping_same_run(
     assert results["follower"]["coalesced"] is True
 
 
+def test_release_verifier_rejects_conflicting_followers_before_coalescing(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    repo = _seed_team(tmp_path)
+    _seed_release_verification(repo)
+
+    def _add_different_release(state):
+        state.release_packages["different-release"] = ReleasePackage(
+            id="different-release",
+            project_id="project",
+            candidate_commit_sha="candidate-sha",
+        )
+        return state
+
+    repo.update(_add_different_release)
+    _executed_commands, _create_directories, _create_metadata = _stub_release_verifier_setup(
+        monkeypatch,
+        destroy_result={"success": True},
+    )
+    command_started = Event()
+    allow_command_to_finish = Event()
+    leader_result: dict[str, dict[str, object]] = {}
+    errors: dict[str, Exception] = {}
+    follower_finished = {
+        "candidate": Event(),
+        "release": Event(),
+    }
+
+    def _execute(self, **kwargs):
+        del kwargs
+        command = list(self.effect_definition.command)
+        if command == ["python", "-m", "frozen_check"]:
+            command_started.set()
+            assert allow_command_to_finish.wait(timeout=3)
+        return {
+            "success": True,
+            "execution_id": "execution-1",
+            "exit_code": 0,
+            "stdout": "ok",
+        }
+
+    monkeypatch.setattr(AgentExecEffectProvider, "execute", _execute)
+
+    def _run_leader() -> None:
+        leader_result["result"] = _verify_release_provider(tmp_path)
+
+    def _run_conflicting_follower(
+        name: str,
+        *,
+        release_package_id: str,
+        candidate_commit_sha: str,
+    ) -> None:
+        try:
+            TeamReleaseVerificationRunner(repo, SimpleNamespace()).run(
+                release_package_id=release_package_id,
+                verification_run_id="verification-1",
+                candidate_commit_sha=candidate_commit_sha,
+            )
+        except Exception as exc:
+            errors[name] = exc
+        finally:
+            follower_finished[name].set()
+
+    leader = Thread(target=_run_leader)
+    candidate_follower = Thread(
+        target=_run_conflicting_follower,
+        kwargs={
+            "name": "candidate",
+            "release_package_id": "release-1",
+            "candidate_commit_sha": "different-candidate",
+        },
+    )
+    release_follower = Thread(
+        target=_run_conflicting_follower,
+        kwargs={
+            "name": "release",
+            "release_package_id": "different-release",
+            "candidate_commit_sha": "candidate-sha",
+        },
+    )
+    leader.start()
+    assert command_started.wait(timeout=2)
+    candidate_follower.start()
+    release_follower.start()
+    try:
+        assert follower_finished["candidate"].wait(timeout=1)
+        assert follower_finished["release"].wait(timeout=1)
+    finally:
+        allow_command_to_finish.set()
+        leader.join(timeout=3)
+        candidate_follower.join(timeout=3)
+        release_follower.join(timeout=3)
+
+    assert not leader.is_alive()
+    assert not candidate_follower.is_alive()
+    assert not release_follower.is_alive()
+    assert leader_result["result"]["success"] is True
+    assert str(errors["candidate"]) == (
+        "release verification request does not match the pinned candidate"
+    )
+    assert str(errors["release"]) == (
+        "verification run verification-1 belongs to release release-1, not different-release"
+    )
+
+
 def _wait_for_release_verification_waiter(
     repo: TeamStateRepository,
     *,

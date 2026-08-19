@@ -2,9 +2,11 @@
 
 ## 2026-08-19 - Team Release-Verification Single Flight
 
-- Coalesced overlapping execution of one Team release-verification run, so duplicate effect
-  delivery shares the active verifier instead of resetting and cleaning its mutable checkout.
-  Independent verification runs still execute in parallel.
+- Coalesced overlapping execution of one Team release-verification run within an effect worker and
+  serialized the run across separate effect-worker processes, so duplicate delivery cannot reset
+  and clean the same mutable checkout concurrently. Conflicting followers now validate their
+  immutable release, run, and candidate identity before joining. Independent verification runs
+  still execute in parallel.
 
 ## 2026-08-19 - Admin Web Add-on Caddy Routing
 
