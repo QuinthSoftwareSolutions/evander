@@ -824,6 +824,9 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
             team_id=request.path_params["team_id"],
             reason=_required(payload, "reason"),
             operator_actor_id=_operator_actor_from_request(context.auth, request),
+            allow_rejected_review_exception=(
+                _optional_bool(payload, "allow_rejected_review_exception") or False
+            ),
             expected_revision=_expected_revision(payload),
         )
         return _state_response(request, state)

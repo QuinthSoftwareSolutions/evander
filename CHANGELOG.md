@@ -1,5 +1,17 @@
 # Changelog
 
+## 2026-08-19 - Immutable Candidate Correction Guidance
+
+- Preserved precise Git ancestry errors for failed correction aggregates and made generated
+  correction work explicitly forbid rewriting the pinned release candidate while requiring new
+  correction commit metadata to be checked before it is frozen by promotion.
+- Rebuilt a pre-candidate blocked correction successor when its failed source is formally
+  superseded by a newly reviewed correction deliverable, while retaining the failed promotion
+  as retired audit history.
+- Added an explicit operator-only retry for a rejected release review whose finding cannot be
+  corrected without rewriting the unchanged pinned candidate; the original rejection remains
+  immutable and the replacement reviewer must still evaluate every non-excepted criterion.
+
 ## 2026-08-19 - Admin Web Workflow Pack Deep Links
 
 - Preserve the selected workflow pack in the workflow page URL so refreshing the page restores

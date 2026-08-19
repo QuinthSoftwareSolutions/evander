@@ -531,6 +531,10 @@ def test_candidate_verification_failure_creates_candidate_rooted_correction_task
     assert task.deliverable_contract.require_git_provenance is True
     assert "Candidate commit: candidate-sha" in task.description
     assert "Do not merge or rebase the current project base branch" in task.description
+    assert "Do not amend, reset, rebase, or otherwise rewrite" in task.description
+    assert "must have the candidate commit as an ancestor" in task.description
+    assert "rewriting pinned commit metadata or history" in task.description
+    assert "promotion freezes that metadata into the next candidate" in task.description
     assert "submit the changed Git work as the correction deliverable" in task.description
     assert "Team automatically creates the successor release" in task.description
     assert "create a replacement release" not in task.description
@@ -727,6 +731,10 @@ def test_rejected_release_review_creates_candidate_rooted_correction_task() -> N
     assert task.deliverable_contract.require_git_provenance is True
     assert "Release reviews: release-review" in task.description
     assert "PLC device mappings persist opcTagId 0." in task.description
+    assert "Do not amend, reset, rebase, or otherwise rewrite" in task.description
+    assert "must have the candidate commit as an ancestor" in task.description
+    assert "rewriting pinned commit metadata or history" in task.description
+    assert "promotion freezes that metadata into the next candidate" in task.description
     assert "Team automatically creates the successor release" in task.description
     assert "create a replacement release" not in task.description
     assert result["created_task_ids"] == [task.id]
@@ -739,6 +747,9 @@ def test_rejected_release_review_creates_candidate_rooted_correction_task() -> N
     assert inbox.priority.value == "high"
     assert inbox.payload["kind"] == "release_review_rejection_correction_work"
     assert inbox.payload["review_request_id"] == review.id
+    assert "Do not amend, reset, rebase, or otherwise rewrite" in inbox.payload["next_action"]
+    assert "must have candidate_commit_sha as an ancestor" in inbox.payload["next_action"]
+    assert "promotion freezes it into the next candidate" in inbox.payload["next_action"]
     assert "Team automatically creates the successor release" in inbox.payload["next_action"]
     assert "create a replacement release" not in inbox.payload["next_action"]
     wake = next(

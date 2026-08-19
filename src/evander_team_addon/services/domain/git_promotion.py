@@ -1202,9 +1202,16 @@ def _attach_promotion_failure(
             result=result,
         )
         if manifest_error is not None:
-            promotion.error = manifest_error
+            # A failed consolidation can reject a moved or non-descendant source
+            # before it can construct manifests. Preserve that precise Git error
+            # instead of replacing it with a secondary manifest-shape diagnostic.
+            raw_manifests = promotion.outputs.get("source_manifests")
+            if not promotion.error or (
+                isinstance(raw_manifests, dict) and bool(raw_manifests)
+            ):
+                promotion.error = manifest_error
             promotion.outputs["error_code"] = "scope_mismatch"
-            result["error"] = manifest_error
+            result["error"] = promotion.error
     if release_was_recoverable and release is not None:
         _repair_release_review_manifests_from_promotion_evidence(
             state,

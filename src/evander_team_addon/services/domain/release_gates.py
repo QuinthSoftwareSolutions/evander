@@ -852,7 +852,13 @@ def _candidate_verification_correction_description(
         f"Failed command evidence:\n{command_evidence}\n\n"
         "The task worktree must be created from the exact candidate commit and tree "
         "above. Do not merge or rebase the current project base branch into this "
-        "correction. Make only the correction required by the verifier evidence and "
+        "correction. Do not amend, reset, rebase, or otherwise rewrite the pinned "
+        "candidate; every submitted correction commit must have the candidate commit "
+        "as an ancestor. If a finding requires rewriting pinned commit metadata or "
+        "history, escalate it as incompatible with this immutable correction boundary. "
+        "Before submission, verify every new correction commit's metadata against the "
+        "repository guidance; promotion freezes that metadata into the next candidate. "
+        "Make only the correction required by the verifier evidence and "
         "submit the changed Git work as the correction deliverable. After acceptance and "
         "review, Team automatically creates the successor release. Do not request a "
         "release, retry or resubmit the unchanged candidate, or finish this task directly; "
@@ -1061,7 +1067,15 @@ def materialize_release_review_rejection_correction(
                 "next_action": (
                     "Work only in the task worktree rooted at candidate_commit_sha and "
                     "candidate_tree_hash. Do not merge or rebase the current project base "
-                    "branch into this correction. Fix the release-review finding and submit "
+                    "branch into this correction. Do not amend, reset, rebase, or otherwise "
+                    "rewrite the pinned candidate; the submitted correction commit must "
+                    "have candidate_commit_sha as an ancestor. If the finding requires "
+                    "rewriting pinned commit metadata or history, escalate it as "
+                    "incompatible with this immutable correction boundary. Before "
+                    "submission, verify every new correction commit's metadata against "
+                    "the repository guidance because promotion freezes it into the next "
+                    "candidate. Fix the "
+                    "release-review finding and submit "
                     "the changed Git work as the correction deliverable"
                     + (
                         ", superseding " + ", ".join(late_rework_deliverable_ids)
@@ -1154,7 +1168,13 @@ def _release_review_correction_description(
         f"Review findings:\n{review_evidence}\n\n"
         "The task worktree must be created from the exact candidate commit and tree "
         "above. Do not merge or rebase the current project base branch into this "
-        "correction. Make only the correction required by the review evidence and submit "
+        "correction. Do not amend, reset, rebase, or otherwise rewrite the pinned "
+        "candidate; every submitted correction commit must have the candidate commit "
+        "as an ancestor. If a finding requires rewriting pinned commit metadata or "
+        "history, escalate it as incompatible with this immutable correction boundary. "
+        "Before submission, verify every new correction commit's metadata against the "
+        "repository guidance; promotion freezes that metadata into the next candidate. "
+        "Make only the correction required by the review evidence and submit "
         "the changed Git work as the correction deliverable. After acceptance and review, "
         "Team automatically creates the successor release. Do not request a release, retry "
         "or resubmit the unchanged candidate."
@@ -1473,8 +1493,14 @@ def retry_release_gate(
     reason: str,
     requested_by: str,
     result: dict[str, Any],
+    allow_rejected_review_exception: bool = False,
 ) -> None:
-    if release.state != TeamRecordState.BLOCKED:
+    rejected_review_exception = (
+        allow_rejected_review_exception
+        and gate_kind == "review"
+        and release.state == TeamRecordState.REJECTED
+    )
+    if release.state != TeamRecordState.BLOCKED and not rejected_review_exception:
         raise ValueError(f"release {release.id} is not blocked")
     candidate = release.candidate_commit_sha
     if candidate is None:
@@ -1555,7 +1581,17 @@ def retry_release_gate(
     if current is None:
         raise ValueError("review retry must target a current release review")
     if current.state != TeamRecordState.BLOCKED:
-        raise ValueError("only a blocked release review may be retried")
+        if not (
+            rejected_review_exception
+            and current.state == TeamRecordState.REJECTED
+            and normalized_requested_by.startswith("operator:")
+            and release.gate_failure is not None
+            and release.gate_failure.stage == "review"
+            and release.gate_failure.kind == "rejected"
+            and release.gate_failure.source_id == current.id
+            and current.candidate_commit_sha == candidate
+        ):
+            raise ValueError("only a blocked release review may be retried")
     project = state.projects.get(release.project_id)
     profile = (
         state.review_profiles.get(current.review_profile_id)
@@ -1575,6 +1611,11 @@ def retry_release_gate(
     if scope_error is not None:
         raise ValueError(scope_error)
     now = utc_now()
+    retry_kind = (
+        "operator-authorized rejected-review exception"
+        if current.state == TeamRecordState.REJECTED
+        else "blocked review"
+    )
     review = _create_release_review(
         state,
         release=release,
@@ -1586,8 +1627,15 @@ def retry_release_gate(
         retry_requested_by=normalized_requested_by,
         review_cohort_id=current.review_cohort_id,
         instructions=(
-            f"Retry blocked review {current.id} for unchanged release candidate {candidate}. "
-            f"Retry reason: {normalized_reason}"
+            f"Retry {retry_kind} {current.id} for unchanged release candidate {candidate}. "
+            f"Retry reason: {normalized_reason} "
+            + (
+                "The operator exception applies only to the prior rejected finding; "
+                "treat that finding as explicitly excepted, independently re-evaluate "
+                "every other required criterion, and report any new defect."
+                if current.state == TeamRecordState.REJECTED
+                else ""
+            )
         ),
         result=result,
         now=now,
@@ -1627,6 +1675,8 @@ def retry_release_gate(
     result["replacement_gate_id"] = review.id
     result["retry_reason"] = normalized_reason
     result["retry_requested_by"] = normalized_requested_by
+    if current.state == TeamRecordState.REJECTED:
+        result["rejected_review_exception"] = True
 
 
 def _candidate_manifest(

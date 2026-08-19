@@ -21704,6 +21704,106 @@ def test_rejected_release_review_requires_changed_candidate_content(
     assert "unchanged from failed release release-rejected-review" in (unchanged.error or "")
 
 
+def test_operator_can_retry_rejected_review_for_explicit_immutable_candidate_exception(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _set_project_git(repo)
+    _seed_review_profile(repo, applicable_role_ids=["project__worker"])
+    _seed_accepted_feature_deliverable(
+        repo,
+        deliverable_id="deliverable",
+        task_id="task",
+        feature="team/team/features/task-backend",
+    )
+
+    def _configure_policy(state):
+        state.projects["project"].release_policy = ProjectReleasePolicy(
+            review_requirements=[
+                ReleaseReviewRequirement(
+                    reviewer_agent_id="worker",
+                    review_profile_id="profile",
+                )
+            ]
+        )
+        return state
+
+    repo.update(_configure_policy)
+    state, requested = _team_agent_action_service(repo).apply_agent_action(
+        action={
+            "agent_id": "lead",
+            "git_release_requests": [
+                {
+                    "id": "release-rejected-review-exception",
+                    "project_id": "project",
+                    "deliverable_ids": ["deliverable"],
+                }
+            ],
+        },
+    )
+    state, _ = _team_git_release_service(repo).record_git_promotion_result(
+        promotion_id=requested["git_promotion_event_ids"][0],
+        success=True,
+        commit_sha="candidate-rejected",
+        outputs={"tree_hash": "review-rejected-tree"},
+    )
+    review_id = state.release_packages[
+        "release-rejected-review-exception"
+    ].review_request_ids[0]
+    state, _ = _team_agent_action_service(repo).apply_agent_action(
+        action={
+            "agent_id": "worker",
+            "review_decisions": [
+                {
+                    "review_request_id": review_id,
+                    "state": "rejected",
+                    "findings": [
+                        "The sealed ancestor has noncompliant commit metadata."
+                    ],
+                }
+            ],
+        },
+    )
+    release = state.release_packages["release-rejected-review-exception"]
+    assert release.state == TeamRecordState.REJECTED
+
+    with pytest.raises(ValueError, match="only a blocked release review"):
+        _team_admin_service(repo).retry_release_gate_with_result(
+            release_package_id=release.id,
+            gate_kind="review",
+            gate_id=review_id,
+            reason="An agent cannot waive a rejected release-review finding.",
+            operator_actor_id="agent:lead",
+            allow_rejected_review_exception=True,
+        )
+
+    state, retried = _team_admin_service(repo).retry_release_gate_with_result(
+        release_package_id=release.id,
+        gate_kind="review",
+        gate_id=review_id,
+        reason=(
+            "The finding concerns inherited commit metadata that cannot change without "
+            "rewriting the immutable candidate; the candidate tree and all gates passed."
+        ),
+        operator_actor_id="operator:release-admin",
+        allow_rejected_review_exception=True,
+    )
+
+    replacement_id = retried["replacement_gate_id"]
+    replacement = state.review_requests[replacement_id]
+    release = state.release_packages[release.id]
+    assert retried["rejected_review_exception"] is True
+    assert release.state == TeamRecordState.PENDING
+    assert release.candidate_commit_sha == "candidate-rejected"
+    assert state.review_requests[review_id].state == TeamRecordState.REJECTED
+    assert state.review_requests[review_id].superseded_by_review_request_id == replacement_id
+    assert replacement.state == TeamRecordState.PENDING
+    assert replacement.supersedes_review_request_id == review_id
+    assert replacement.retry_requested_by == "operator:release-admin"
+    assert "operator exception applies only" in replacement.instructions
+    assert "independently re-evaluate every other required criterion" in replacement.instructions
+
+
 def test_git_release_request_fails_closed_without_project_release_policy(
     tmp_path: Path,
 ) -> None:

@@ -9,7 +9,9 @@ from ..models import (
     AgentInboxItem,
     AgentStatus,
     AgentTask,
+    GitPromotionRecord,
     ReleasePackage,
+    ReleaseScopeValidation,
     TeamBlockerEventType,
     TeamBlockerResolutionScope,
     TeamBlockerSourceKind,
@@ -35,6 +37,7 @@ from .domain.project_status import _recalculate_project_status
 from .domain.release_packages import (
     _build_release_package,
     _candidate_correction_downstream_recovery_base,
+    _create_correction_aggregate_promotion,
     _reviewed_commit_for_release,
     _successor_release_request_error,
 )
@@ -106,6 +109,170 @@ def _direct_successors(
         ),
         key=lambda release: (release.created_at, release.id),
     )
+
+
+def _failed_correction_aggregate(
+    state: TeamState,
+    successor: ReleasePackage,
+) -> GitPromotionRecord | None:
+    candidates = [
+        promotion
+        for promotion_id in successor.git_promotion_record_ids
+        if (promotion := state.git_promotions.get(promotion_id)) is not None
+        and promotion.promotion_kind == "correction_aggregate"
+        and promotion.state == "failed"
+    ]
+    if not candidates:
+        return None
+    candidates.sort(
+        key=lambda promotion: (promotion.updated_at, promotion.created_at, promotion.id)
+    )
+    return candidates[-1]
+
+
+def _deliverable_supersession_reaches(
+    state: TeamState,
+    *,
+    deliverable_id: str,
+    current_ids: set[str],
+) -> bool:
+    seen: set[str] = set()
+    cursor_id = deliverable_id
+    while cursor_id not in seen:
+        seen.add(cursor_id)
+        deliverable = state.deliverables.get(cursor_id)
+        if deliverable is None or deliverable.superseded_by_deliverable_id is None:
+            return False
+        cursor_id = deliverable.superseded_by_deliverable_id
+        if cursor_id in current_ids:
+            return True
+    return False
+
+
+def _blocked_successor_has_reviewed_rework(
+    state: TeamState,
+    *,
+    predecessor: ReleasePackage,
+    correction_task: AgentTask | None,
+    successor: ReleasePackage,
+) -> bool:
+    if (
+        correction_task is None
+        or successor.state != TeamRecordState.BLOCKED
+        or successor.candidate_commit_sha is not None
+        or successor.approved_commit_sha is not None
+        or successor.verification_run_ids
+        or successor.review_request_ids
+        or _failed_correction_aggregate(state, successor) is None
+        or not _task_is_resolved(state, correction_task)
+        or not _release_review_correction_is_ready(state, predecessor, correction_task)
+    ):
+        return False
+    current_ids = set(
+        _current_successor_deliverable_ids(
+            state,
+            predecessor=predecessor,
+            correction_task=correction_task,
+        )
+    )
+    previous_ids = set(successor.deliverable_ids) - set(predecessor.deliverable_ids)
+    return bool(current_ids) and current_ids != previous_ids and all(
+        deliverable_id in current_ids
+        or _deliverable_supersession_reaches(
+            state,
+            deliverable_id=deliverable_id,
+            current_ids=current_ids,
+        )
+        for deliverable_id in previous_ids
+    )
+
+
+def _refresh_blocked_successor_from_reviewed_rework(
+    state: TeamState,
+    *,
+    predecessor: ReleasePackage,
+    correction_task: AgentTask,
+    successor: ReleasePackage,
+    result: dict[str, Any],
+    now: datetime,
+) -> bool:
+    if not _blocked_successor_has_reviewed_rework(
+        state,
+        predecessor=predecessor,
+        correction_task=correction_task,
+        successor=successor,
+    ):
+        return False
+    correction_deliverable_ids = _current_successor_deliverable_ids(
+        state,
+        predecessor=predecessor,
+        correction_task=correction_task,
+    )
+    reviewed_rows = [
+        _reviewed_commit_for_release(state, state.deliverables[deliverable_id])
+        for deliverable_id in correction_deliverable_ids
+    ]
+    reviewed_errors = [error for _commit, error in reviewed_rows if error is not None]
+    validation_error = (
+        "; ".join(reviewed_errors)
+        if reviewed_errors
+        else _successor_release_request_error(
+            state,
+            project_id=predecessor.project_id,
+            predecessor=predecessor,
+            correction_deliverable_ids=correction_deliverable_ids,
+            ignore_successor_release_package_id=successor.id,
+        )
+    )
+    if validation_error is not None:
+        result.setdefault("candidate_correction_errors", {})[predecessor.id] = validation_error
+        return False
+
+    failed_aggregate = _failed_correction_aggregate(state, successor)
+    assert failed_aggregate is not None
+    failed_aggregate.state = "retired"
+    failed_aggregate.updated_at = now
+    successor.deliverable_ids = list(
+        dict.fromkeys([*predecessor.deliverable_ids, *correction_deliverable_ids])
+    )
+    successor.state = TeamRecordState.PENDING
+    successor.error = None
+    successor.gate_failure = None
+    successor.feature_branches = []
+    successor.scope_validation = ReleaseScopeValidation(
+        state="pending",
+        reviewed_commit_shas=sorted(
+            commit for commit, error in reviewed_rows if error is None and commit is not None
+        ),
+    )
+    successor.updated_at = now
+    aggregate = _create_correction_aggregate_promotion(
+        state,
+        release=successor,
+        predecessor=predecessor,
+        correction_deliverable_ids=correction_deliverable_ids,
+        actor_agent_id=(predecessor.owner_agent_id or correction_task.owner_agent_id),
+        result=result,
+    )
+    if aggregate is None:  # pragma: no cover - guarded by validation above
+        raise RuntimeError(
+            f"failed to rebuild correction aggregate for successor {successor.id}"
+        )
+    result.setdefault("recovered_successor_release_package_ids", []).append(successor.id)
+    result.setdefault("git_promotion_event_ids", []).append(aggregate.id)
+    resolve_active_blockers_for_source(
+        state,
+        source_kind=TeamBlockerSourceKind.RELEASE_PACKAGE,
+        source_id=successor.id,
+        actor_agent_id=None,
+        dispatch_id=None,
+        note=f"Reviewed replacement correction rebuilt failed aggregate {aggregate.id}.",
+        reference_ids=[aggregate.id, *correction_deliverable_ids],
+        result=result,
+        now=now,
+    )
+    _recalculate_project_status(state, predecessor.project_id)
+    return True
 
 
 def _current_accepted_deliverable_ids(
@@ -262,7 +429,13 @@ def _candidate_release_ids_for_reconciliation(state: TeamState) -> list[str]:
         successors = _direct_successors(state, predecessor.id)
         has_blocker = _has_reconciliation_blocker(state, predecessor.id)
         if successors:
-            if has_blocker:
+            correction_task = _correction_task(state, predecessor)
+            if has_blocker or _blocked_successor_has_reviewed_rework(
+                state,
+                predecessor=predecessor,
+                correction_task=correction_task,
+                successor=successors[0],
+            ):
                 release_ids.append(predecessor.id)
             continue
         task = _correction_task(state, predecessor)
@@ -442,6 +615,19 @@ def reconcile_candidate_correction_successors(
         existing_successors = _direct_successors(state, predecessor.id)
         if existing_successors:
             successor = existing_successors[0]
+            if correction_task is not None and _refresh_blocked_successor_from_reviewed_rework(
+                state,
+                predecessor=predecessor,
+                correction_task=correction_task,
+                successor=successor,
+                result=result,
+                now=effective_now,
+            ):
+                result.setdefault("existing_successor_release_package_ids", []).append(
+                    successor.id
+                )
+                changed = True
+                continue
             resolved_ids = resolve_active_blockers_for_source(
                 state,
                 source_kind=TeamBlockerSourceKind.CANDIDATE_CORRECTION_SUCCESSOR,
