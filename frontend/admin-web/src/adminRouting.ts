@@ -226,6 +226,24 @@ export function hashQueryParam(hash: string, name: string): string | null {
   return normalized || null;
 }
 
+export function updateHashQueryParam(
+  hash: string,
+  name: string,
+  value: AdminHashParamValue,
+): string {
+  const raw = hash.replace(/^#/, "").trim();
+  const path = raw.split("?")[0]?.trim() || "dashboard";
+  const query = hashQuery(hash);
+  const text = typeof value === "string" ? value.trim() : value == null ? "" : String(value);
+  if (text) {
+    query.set(name, text);
+  } else {
+    query.delete(name);
+  }
+  const queryText = query.toString();
+  return `#${path}${queryText ? `?${queryText}` : ""}`;
+}
+
 export function addonIframeHashQuery(
   hash: string,
   addonTab: AdminTab,

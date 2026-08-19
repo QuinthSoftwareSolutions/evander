@@ -69,7 +69,7 @@ import { ApiError } from "./features/admin/api";
 import { useAdminUi, type DirectoryTreeNode } from "./features/admin/AdminContext";
 import { CopyIcon, EditIcon, GenerateWorkflowIcon, HistoryIcon, PlusIcon } from "./features/admin/PageActionIcons";
 import { Tooltip } from "./features/admin/Tooltip";
-import { hashQueryParam } from "./adminRouting";
+import { hashQueryParam, updateHashQueryParam } from "./adminRouting";
 import { graphVisibleInDirectory } from "./workflowGraphDirectory";
 import {
   EMPTY_WORKFLOW_TARGET_INVENTORY,
@@ -3971,6 +3971,10 @@ export default function App() {
     canControlWorkflowRuns,
   } = useAdminUi();
   const initialWorkflowRunLookup = workflowRunLookupFromHash();
+  const initialWorkflowPack = hashQueryParam(
+    typeof window === "undefined" ? "" : window.location.hash,
+    "workflow_pack",
+  );
   const appShellRef = useRef<HTMLDivElement | null>(null);
   const canvasShellRef = useRef<HTMLElement | null>(null);
   const tutorialBubbleRef = useRef<HTMLDivElement | null>(null);
@@ -4736,7 +4740,7 @@ export default function App() {
 
   useEffect(() => {
     let cancelled = false;
-    fetchJson<WorkflowEditorDocument>(workflowEditorDocumentPath())
+    fetchJson<WorkflowEditorDocument>(workflowEditorDocumentPath(initialWorkflowPack))
       .then((payload) => {
         if (cancelled) return;
         applyLoadedWorkflowDocument(payload, initialGraphDirectoryPathRef.current);
@@ -4749,6 +4753,18 @@ export default function App() {
       cancelled = true;
     };
   }, []);
+
+  useEffect(() => {
+    if (!document || typeof window === "undefined") return;
+    const nextHash = updateHashQueryParam(
+      window.location.hash,
+      "workflow_pack",
+      selectedWorkflowPackReference,
+    );
+    if (window.location.hash !== nextHash) {
+      window.location.hash = nextHash;
+    }
+  }, [document, selectedWorkflowPackReference]);
 
   useEffect(() => {
     setWorkflowPackHistoryOpen(false);

@@ -1,5 +1,10 @@
 # Changelog
 
+## 2026-08-19 - Admin Web Workflow Pack Deep Links
+
+- Preserve the selected workflow pack in the workflow page URL so refreshing the page restores
+  that pack.
+
 ## 2026-08-19 - Team Release-Verification Single Flight
 
 - Coalesced overlapping execution of one Team release-verification run within an effect worker and
