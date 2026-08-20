@@ -42,6 +42,7 @@ from .common import (
     _require_present,
     _required_text,
     _string_list,
+    task_state_can_wake_owner,
     utc_now,
 )
 from .work_due import _mark_agent_work_due
@@ -1015,7 +1016,7 @@ def _apply_task_creation_plan(
     )
     if plan.case_id is not None:
         _link_task_to_case(state, task_id=plan.task_id, case_id=plan.case_id, now=now)
-    if plan.task_state in _NON_TERMINAL_TASK_STATES:
+    if task_state_can_wake_owner(plan.task_state):
         _mark_agent_work_due(state, agent_id=plan.owner_id, now=now)
     return plan.task_id
 

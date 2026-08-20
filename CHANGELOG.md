@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-08-20 - Workflow-Paused Team Tasks
+
+- Added the non-terminal Team task state `waiting_for_input` and the narrowly
+  scoped `effect:team:set-task-work-state` workflow node. Paused tasks do not
+  generate ordinary owner wakes or manager fallback; a workflow can resume one
+  to `in_progress` and immediately wake its owner without embedding timer
+  policy in Team runtime.
+
 ## 2026-08-20 - Reference Repository Workflow Editor
 
 - Replaced the reference-repository effect's raw JSON editor with repeatable managed-repository

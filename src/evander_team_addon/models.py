@@ -89,6 +89,7 @@ class TeamTaskState(str, Enum):
     PENDING = "pending"
     IN_PROGRESS = "in_progress"
     BLOCKED = "blocked"
+    WAITING_FOR_INPUT = "waiting_for_input"
     WAITING_FOR_REVIEW = "waiting_for_review"
     FINISHED = "finished"
     ACCEPTED = "accepted"
@@ -144,6 +145,7 @@ class TaskAssessmentReadiness(str, Enum):
     ACTIONABLE = "actionable"
     WAITING_ON_CHILDREN = "waiting_on_children"
     WAITING_ON_DEPENDENCIES = "waiting_on_dependencies"
+    WAITING_FOR_INPUT = "waiting_for_input"
     WAITING_FOR_ACCEPTANCE = "waiting_for_acceptance"
     WAITING_FOR_REVIEW = "waiting_for_review"
     BLOCKED = "blocked"
@@ -4943,6 +4945,7 @@ class TeamState(TeamModel):
             elif child.state in {
                 TeamTaskState.PENDING,
                 TeamTaskState.IN_PROGRESS,
+                TeamTaskState.WAITING_FOR_INPUT,
                 TeamTaskState.WAITING_FOR_REVIEW,
             }:
                 counts["open"] += 1
@@ -6371,6 +6374,8 @@ def deliverable_requires_formal_review(
 
 
 def _task_waiting_reason(state: TeamState, task: AgentTask) -> str | None:
+    if task.state == TeamTaskState.WAITING_FOR_INPUT:
+        return "input"
     if task.state != TeamTaskState.WAITING_FOR_REVIEW:
         return None
     active_deliverable_states = {
@@ -6808,7 +6813,10 @@ def _activity_task_blocked(state: TeamState, task: AgentTask) -> bool:
 
 def _activity_task_waiting(state: TeamState, task: AgentTask) -> bool:
     return (
-        task.state == TeamTaskState.WAITING_FOR_REVIEW
+        task.state in {
+            TeamTaskState.WAITING_FOR_INPUT,
+            TeamTaskState.WAITING_FOR_REVIEW,
+        }
         or state.dependency_status(task.id) == "waiting"
         or bool(state.blocked_by_task_ids(task.id))
     )
@@ -6817,6 +6825,8 @@ def _activity_task_waiting(state: TeamState, task: AgentTask) -> bool:
 def _activity_waiting_for_task(state: TeamState, task: AgentTask) -> str:
     blocked_by = state.blocked_by_task_ids(task.id)
     dependency_status = state.dependency_status(task.id)
+    if task.state == TeamTaskState.WAITING_FOR_INPUT:
+        return "Input"
     if task.state == TeamTaskState.WAITING_FOR_REVIEW:
         return "Review"
     if blocked_by:
@@ -7971,7 +7981,10 @@ def _active_tasks_for_runtime_agent(state: TeamState, agent_id: str) -> list[Age
 
 def _runtime_task_can_wake_owner_for_work(state: TeamState, task: AgentTask) -> bool:
     return (
-        task.state != TeamTaskState.BLOCKED
+        task.state not in {
+            TeamTaskState.BLOCKED,
+            TeamTaskState.WAITING_FOR_INPUT,
+        }
         and not _runtime_task_waits_on_active_deliverable_review(state, task)
     )
 

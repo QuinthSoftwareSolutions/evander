@@ -56,8 +56,13 @@ def _manager_fallback_task_visible_for_work(
     task: AgentTask,
     project_ids: set[str],
 ) -> bool:
-    return task.project_id in project_ids and (
-        task.state in _NON_TERMINAL_TASK_STATES or _task_has_active_deliverable_work(state, task.id)
+    return (
+        task.state != TeamTaskState.WAITING_FOR_INPUT
+        and task.project_id in project_ids
+        and (
+            task.state in _NON_TERMINAL_TASK_STATES
+            or _task_has_active_deliverable_work(state, task.id)
+        )
     )
 
 

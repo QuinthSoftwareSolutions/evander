@@ -5387,6 +5387,7 @@ button.people-agent-select:focus-visible,
 
 .state-pill.pending,
 .state-pill.in_progress,
+.state-pill.waiting_for_input,
 .state-pill.waiting_for_acceptance,
 .state-pill.waiting_for_review,
 .state-pill.waiting,

@@ -60,6 +60,7 @@ from ..domain.common import (
     _optional_text,
     _required_text,
     _set_task_state,
+    task_state_can_wake_owner,
 )
 from ..domain.context_rotation import _maybe_mark_idle_context_rotation_due
 from ..domain.dependency_composition_recovery import (
@@ -714,7 +715,8 @@ class TeamTaskUpdateCommandService(TeamCommandExecutor):
                         code="invalid_task_state",
                         message=(
                             "team_update_task.state must be pending, in_progress, "
-                            "waiting_for_review, or finished"
+                            "waiting_for_review, or finished; workflows set "
+                            "waiting_for_input for externally paused work"
                         ),
                         correction_context={
                             "state": next_state.value,
@@ -973,7 +975,7 @@ class TeamTaskUpdateCommandService(TeamCommandExecutor):
                     now=now,
                     result=reconciliation_result,
                 )
-                if task.state in _NON_TERMINAL_TASK_STATES:
+                if task_state_can_wake_owner(task.state):
                     _mark_agent_work_due(state_model, agent_id=new_owner_id, now=now)
                 changed = True
             if new_dependency_ids is not None and task.dependency_task_ids != new_dependency_ids:
@@ -981,7 +983,7 @@ class TeamTaskUpdateCommandService(TeamCommandExecutor):
                 changed = True
             if changed:
                 task.updated_at = now
-                if task.state in _NON_TERMINAL_TASK_STATES:
+                if task_state_can_wake_owner(task.state):
                     _mark_agent_work_due(
                         state_model,
                         agent_id=task.owner_agent_id,
@@ -1071,7 +1073,7 @@ class TeamTaskUpdateCommandService(TeamCommandExecutor):
                     response_payload["automatically_handled_inbox_item_ids"].extend(
                         pending_blocker_inbox_ids
                     )
-            if changed and task.state in _NON_TERMINAL_TASK_STATES:
+            if changed and task_state_can_wake_owner(task.state):
                 _append_agent_wake_requested_event(
                     state_model,
                     agent_id=task.owner_agent_id,

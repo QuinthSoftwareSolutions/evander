@@ -76,6 +76,7 @@ from .domain.common import (
     _required_text,
     _set_task_state,
     _string_list,
+    task_state_can_wake_owner,
     utc_now,
 )
 from .domain.context_rotation import _maybe_mark_idle_context_rotation_due
@@ -435,6 +436,11 @@ class TeamAgentActionService:
                     now = utc_now()
                     previous_task_state = task.state
                     if raw_state is not None:
+                        if raw_state == TeamTaskState.WAITING_FOR_INPUT.value:
+                            result["errors"].append(
+                                "waiting_for_input is reserved for operator-owned workflows"
+                            )
+                            continue
                         if raw_state == TeamTaskState.FINISHED.value:
                             require_task_can_finish(
                                 state_model,
@@ -484,7 +490,7 @@ class TeamAgentActionService:
                             now=now,
                             result=result,
                         )
-                        if task.state in _NON_TERMINAL_TASK_STATES:
+                        if task_state_can_wake_owner(task.state):
                             _mark_agent_work_due(
                                 state_model,
                                 agent_id=new_owner_id,
@@ -525,7 +531,7 @@ class TeamAgentActionService:
                                 result=result,
                                 now=now,
                             )
-                        if task.state in _NON_TERMINAL_TASK_STATES:
+                        if task_state_can_wake_owner(task.state):
                             _append_agent_wake_requested_event(
                                 state_model,
                                 agent_id=task.owner_agent_id,

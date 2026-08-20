@@ -232,7 +232,10 @@ def _task_has_active_deliverable_work(state: TeamState, task_id: str) -> bool:
 def _team_ids_with_open_work(state: TeamState) -> set[str]:
     team_ids: set[str] = set()
     for task in state.tasks.values():
-        if task.state not in _NON_TERMINAL_TASK_STATES:
+        if (
+            task.state not in _NON_TERMINAL_TASK_STATES
+            or task.state == TeamTaskState.WAITING_FOR_INPUT
+        ):
             continue
         owner = state.agents.get(task.owner_agent_id)
         if owner is not None and owner.team_id is not None:

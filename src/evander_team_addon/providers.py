@@ -200,6 +200,7 @@ from .provider_schemas import (
     TeamRequestEphemeralAgentsEffectDefinition,
     TeamStateQueryDefinition,
     TeamSessionRoutingQueryDefinition,
+    TeamSetTaskWorkStateEffectDefinition,
     TeamRetireAgentEffectDefinition,
     TeamUpdateCaseEffectDefinition,
     TeamVerifyReleaseCandidateEffectDefinition,
@@ -1273,6 +1274,37 @@ _TEAM_WORKFLOW_EDITOR_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
                 "string",
                 description="Operator or workflow actor recorded as the task creator.",
                 placeholder="workflow",
+            ),
+            _revision_field(),
+        ],
+    ),
+    _catalog_entry(
+        "effect",
+        "effect:team:set-task-work-state",
+        "Set Team task work state",
+        (
+            "Set a task to pending, in progress, or waiting for external input. "
+            "waiting_for_input is non-terminal and suppresses ordinary owner wakes "
+            "and manager fallback until a workflow resumes the task."
+        ),
+        [
+            _catalog_field(
+                "task_id",
+                "Task ID",
+                "string",
+                required=True,
+                description="Existing Team task whose work lifecycle should change.",
+            ),
+            _catalog_field(
+                "state",
+                "Work state",
+                "string",
+                required=True,
+                description=(
+                    "pending or in_progress makes owner work due; "
+                    "waiting_for_input pauses ordinary wake and fallback activity."
+                ),
+                placeholder="waiting_for_input",
             ),
             _revision_field(),
         ],
@@ -4458,6 +4490,70 @@ class TeamCreateTaskEffectProvider(EffectProviderBase):
         )
 
 
+class TeamSetTaskWorkStateEffectProvider(EffectProviderBase):
+    @classmethod
+    def validate_definition(cls, effect_definition):
+        if isinstance(effect_definition, WorkflowNodeEnvelope):
+            return _materialize(TeamSetTaskWorkStateEffectDefinition, effect_definition)
+        return effect_definition
+
+    def execute(self, *, resolved_config: Mapping[str, Any] | None = None) -> dict[str, Any]:
+        payload = _definition_payload(
+            self.effect_definition,
+            "task_id",
+            "state",
+            "expected_revision",
+        )
+        if resolved_config:
+            payload.update(dict(resolved_config))
+        repo = TeamStateRepository(_runtime_dir(self.runtime_context))
+        task_id = _optional_text(payload.get("task_id"))
+        current_state: TeamState | None = None
+        try:
+            current_state = repo.read()
+            task = current_state.tasks.get(_required_text(task_id, "task_id"))
+            if task is None:
+                raise ValueError(f"task {task_id} does not exist")
+            requested_state = TeamTaskState(_required_text(payload.get("state"), "state"))
+            if requested_state not in {
+                TeamTaskState.PENDING,
+                TeamTaskState.IN_PROGRESS,
+                TeamTaskState.WAITING_FOR_INPUT,
+            }:
+                raise ValueError(
+                    "effect:team:set-task-work-state state must be pending, "
+                    "in_progress, or waiting_for_input"
+                )
+            state = TeamAdminService(repo).update_task(
+                task_id=task.id,
+                state=requested_state,
+                expected_revision=_optional_int(payload.get("expected_revision"), default=None),
+            )
+        except TeamStateConflictError as exc:
+            return _task_effect_error_result(
+                revision=exc.current_revision,
+                task_id=task_id,
+                team_id=None,
+                project_id=None,
+                owner_agent_id=None,
+                error=str(exc),
+                expected_revision=exc.expected_revision,
+                current_revision=exc.current_revision,
+            )
+        except (TypeError, ValueError) as exc:
+            task = current_state.tasks.get(task_id or "") if current_state is not None else None
+            project = current_state.projects.get(task.project_id) if task is not None else None
+            return _task_effect_error_result(
+                revision=current_state.revision if current_state is not None else repo.read().revision,
+                task_id=task_id,
+                team_id=project.team_id if project is not None else None,
+                project_id=task.project_id if task is not None else None,
+                owner_agent_id=task.owner_agent_id if task is not None else None,
+                error=str(exc),
+            )
+        return _task_effect_success_result(state, task_id=task_id, created=False)
+
+
 class TeamCreateCaseEffectProvider(EffectProviderBase):
     @classmethod
     def validate_definition(cls, effect_definition):
@@ -6896,6 +6992,7 @@ def register_providers() -> ProviderPluginRegistration:
             "effect:team:create-review-request": TeamCreateReviewRequestEffectProvider,
             "effect:team:create-review-cohort": TeamCreateReviewCohortEffectProvider,
             "effect:team:create-task": TeamCreateTaskEffectProvider,
+            "effect:team:set-task-work-state": TeamSetTaskWorkStateEffectProvider,
             "effect:team:create-case": TeamCreateCaseEffectProvider,
             "effect:team:update-case": TeamUpdateCaseEffectProvider,
             "effect:team:register-agent": TeamRegisterAgentEffectProvider,
@@ -6976,6 +7073,9 @@ def register_providers() -> ProviderPluginRegistration:
             ),
             "effect:team:create-task": (
                 lambda node: _materialize(TeamCreateTaskEffectDefinition, node)
+            ),
+            "effect:team:set-task-work-state": (
+                lambda node: _materialize(TeamSetTaskWorkStateEffectDefinition, node)
             ),
             "effect:team:create-case": (
                 lambda node: _materialize(TeamCreateCaseEffectDefinition, node)

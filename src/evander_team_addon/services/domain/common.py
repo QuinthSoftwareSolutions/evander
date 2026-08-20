@@ -39,9 +39,25 @@ _NON_TERMINAL_TASK_STATES = frozenset(
         TeamTaskState.PENDING,
         TeamTaskState.IN_PROGRESS,
         TeamTaskState.BLOCKED,
+        TeamTaskState.WAITING_FOR_INPUT,
         TeamTaskState.WAITING_FOR_REVIEW,
     }
 )
+
+_AUTOMATIC_WAKE_TASK_STATES = frozenset(
+    {
+        TeamTaskState.PENDING,
+        TeamTaskState.IN_PROGRESS,
+        TeamTaskState.BLOCKED,
+        TeamTaskState.WAITING_FOR_REVIEW,
+    }
+)
+
+
+def task_state_can_wake_owner(state: TeamTaskState) -> bool:
+    """Return whether entering ``state`` creates ordinary owner work."""
+
+    return state in _AUTOMATIC_WAKE_TASK_STATES
 
 _MANAGER_FALLBACK_PENDING_REVIEW_STATES = frozenset(
     {
@@ -442,6 +458,7 @@ __all__ = [
     "DEFAULT_MAX_NO_PROGRESS_COUNT",
     "utc_now",
     "_NON_TERMINAL_TASK_STATES",
+    "task_state_can_wake_owner",
     "_MANAGER_FALLBACK_PENDING_REVIEW_STATES",
     "_ACTIVE_DELIVERABLE_WORK_STATES",
     "_UNSET",

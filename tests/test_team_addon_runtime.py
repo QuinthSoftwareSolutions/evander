@@ -112,6 +112,7 @@ from evander_team_addon.provider_schemas import (
     TeamMarkEphemeralSpawnedEffectDefinition,
     TeamPublishOutboxEventsEffectDefinition,
     TeamSessionRoutingQueryDefinition,
+    TeamSetTaskWorkStateEffectDefinition,
     TeamStateQueryDefinition,
     TeamUpdateCaseEffectDefinition,
     TeamWakeDueAgentsEffectDefinition,
@@ -135,6 +136,7 @@ from evander_team_addon.providers import (
     TeamMarkEphemeralSpawnedEffectProvider,
     TeamPublishOutboxEventsEffectProvider,
     TeamSessionRoutingQueryProvider,
+    TeamSetTaskWorkStateEffectProvider,
     TeamStateQueryProvider,
     TeamUpdateCaseEffectProvider,
     TeamWakeDueAgentsEffectProvider,
@@ -1832,6 +1834,29 @@ def test_repository_leases_due_agents_and_applies_action(tmp_path: Path) -> None
     assert next(iter(state.inbox.values())).recipient_agent_id == "lead"
 
 
+def test_agent_action_cannot_pause_task_waiting_for_external_input(tmp_path: Path) -> None:
+    repo = _seed_team(tmp_path)
+    state, leases = _team_runtime_service(repo).lease_due_agents(
+        now=datetime(2026, 1, 1, tzinfo=UTC)
+    )
+    [lease] = leases
+
+    state, result = _team_agent_action_service(repo).apply_agent_action(
+        session_id="session-backend",
+        dispatch_id=lease["dispatch_id"],
+        action={
+            "agent_id": "backend",
+            "task_updates": [{"task_id": "task", "state": "waiting_for_input"}],
+        },
+    )
+
+    assert result["success"] is False
+    assert result["errors"] == [
+        "waiting_for_input is reserved for operator-owned workflows"
+    ]
+    assert state.tasks["task"].state == TeamTaskState.PENDING
+
+
 def test_agent_lease_and_wake_context_include_effective_outcome_catalog(
     tmp_path: Path,
 ) -> None:
@@ -1965,6 +1990,25 @@ def test_manager_fallback_not_leased_while_team_member_is_awake(
     manager_runtime = scoped_state.agent_runtimes.get("manager")
     assert manager_runtime is None or manager_runtime.active_dispatch_id is None
     assert manager_runtime is None or manager_runtime.wake_reason is None
+
+
+def test_due_team_member_is_leased_before_manager_fallback(tmp_path: Path) -> None:
+    repo = _seed_team(tmp_path)
+    now = datetime(2026, 1, 1, tzinfo=UTC)
+
+    def _make_backend_due(state: TeamState) -> TeamState:
+        runtime = state.agent_runtimes.setdefault("backend", AgentRuntime(agent_id="backend"))
+        runtime.next_wake_at = now
+        return state
+
+    repo.update(_make_backend_due)
+
+    state, leases = _team_runtime_service(repo).lease_due_agents(now=now)
+
+    assert [lease["agent"]["id"] for lease in leases] == ["backend"]
+    assert all(lease["reason"] != "manager_fallback" for lease in leases)
+    manager_runtime = state.agent_runtimes.get("manager")
+    assert manager_runtime is None or manager_runtime.active_dispatch_id is None
 
 
 def test_dependency_waiting_owner_not_leased(tmp_path: Path) -> None:
@@ -10630,6 +10674,83 @@ def test_create_task_effect_updates_existing_task(tmp_path: Path) -> None:
     assert task.description == "Updated workflow instructions."
     assert task.owner_agent_id == "backend"
     assert task.project_id == "project"
+
+
+def test_set_task_work_state_effect_pauses_and_resumes_owner_work(tmp_path: Path) -> None:
+    repo = _seed_team(tmp_path)
+    context = EffectRuntimeContext(resolved_config={"runtime_dir": str(tmp_path)})
+    pause = TeamSetTaskWorkStateEffectProvider()
+    pause.initialize(
+        TeamSetTaskWorkStateEffectDefinition(
+            id="pause-task",
+            display_name="Pause task",
+            type="effect:team:set-task-work-state",
+            task_id="task",
+            state="waiting_for_input",
+            expected_revision=repo.read().revision,
+        ),
+        context,
+    )
+
+    paused = pause.execute()
+
+    assert paused["success"] is True
+    assert paused["created"] is False
+    assert paused["task"]["state"] == "waiting_for_input"
+    assert paused["task"]["readiness"] == "waiting_for_input"
+    assert paused["task"]["assessment"]["resolution_reason"] == "awaiting_external_input"
+    state, leases = _team_runtime_service(repo).lease_due_agents(
+        now=datetime(2026, 1, 1, tzinfo=UTC)
+    )
+    assert leases == []
+    assert state.agent_runtimes["backend"].active_dispatch_id is None
+    manager_runtime = state.agent_runtimes.get("manager")
+    assert manager_runtime is None or manager_runtime.active_dispatch_id is None
+
+    resume = TeamSetTaskWorkStateEffectProvider()
+    resume.initialize(
+        TeamSetTaskWorkStateEffectDefinition(
+            id="resume-task",
+            display_name="Resume task",
+            type="effect:team:set-task-work-state",
+            task_id="task",
+            state="in_progress",
+            expected_revision=state.revision,
+        ),
+        context,
+    )
+
+    resumed = resume.execute()
+
+    assert resumed["success"] is True
+    assert resumed["task"]["state"] == "in_progress"
+    state, leases = _team_runtime_service(repo).lease_due_agents(
+        now=datetime(2026, 1, 1, tzinfo=UTC)
+    )
+    assert [lease["agent"]["id"] for lease in leases] == ["backend"]
+    assert state.agent_runtimes["backend"].next_wake_at is not None
+
+
+def test_set_task_work_state_effect_rejects_non_work_lifecycle_state(tmp_path: Path) -> None:
+    repo = _seed_team(tmp_path)
+    provider = TeamSetTaskWorkStateEffectProvider()
+    provider.initialize(
+        TeamSetTaskWorkStateEffectDefinition(
+            id="invalid-task-state",
+            display_name="Invalid state",
+            type="effect:team:set-task-work-state",
+            task_id="task",
+            state="waiting_for_review",
+            expected_revision=repo.read().revision,
+        ),
+        EffectRuntimeContext(resolved_config={"runtime_dir": str(tmp_path)}),
+    )
+
+    result = provider.execute()
+
+    assert result["success"] is False
+    assert "must be pending, in_progress, or waiting_for_input" in result["error"]
+    assert repo.read().tasks["task"].state == TeamTaskState.PENDING
 
 
 def test_create_task_effect_rejects_project_team_mismatch(tmp_path: Path) -> None:

@@ -185,6 +185,13 @@ class TeamCreateTaskEffectDefinition(EffectDefinition):
         raise ValueError("effect:team:create-task dependency_task_ids must be a JSON array")
 
 
+class TeamSetTaskWorkStateEffectDefinition(EffectDefinition):
+    type: Literal["effect:team:set-task-work-state"]
+    task_id: ConfigValue
+    state: ConfigValue
+    expected_revision: ConfigValue | None = None
+
+
 class TeamCreateCaseEffectDefinition(EffectDefinition):
     type: Literal["effect:team:create-case"]
     case_id: ConfigValue | None = None
@@ -648,6 +655,17 @@ TEAM_OUTPUT_SCHEMAS: dict[str, dict[str, dict[str, Any]]] = {
         "error": {"type": ["string", "null"]},
     },
     "effect:team:create-task": {
+        "success": {"type": "boolean"},
+        "revision": {"type": "integer"},
+        "task_id": {"type": ["string", "null"]},
+        "team_id": {"type": ["string", "null"]},
+        "project_id": {"type": ["string", "null"]},
+        "owner_agent_id": {"type": ["string", "null"]},
+        "created": {"type": "boolean"},
+        "task": {"type": ["object", "null"]},
+        "error": {"type": ["string", "null"]},
+    },
+    "effect:team:set-task-work-state": {
         "success": {"type": "boolean"},
         "revision": {"type": "integer"},
         "task_id": {"type": ["string", "null"]},
