@@ -1,5 +1,6 @@
 import type { WorkflowConfig, WorkflowNodeConfig } from "./types";
 
+const BINDING_EXACT_RE = /^\$\{\{([A-Za-z0-9][A-Za-z0-9_-]*)\.([A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*)\}\}$/;
 const BINDING_REFERENCE_RE = /^[A-Za-z0-9][A-Za-z0-9_-]*\.[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*$/;
 
 export type ParsedBindingReference = {
@@ -20,6 +21,18 @@ export class BindingParseError extends Error {
     super(message);
     this.code = code;
   }
+}
+
+export function isExactWorkflowBindingValue(value: unknown): value is string {
+  return typeof value === "string" && BINDING_EXACT_RE.test(value);
+}
+
+export function workflowObjectListItemsForEdit(
+  value: unknown,
+  bindable: boolean,
+): unknown[] | null {
+  if (bindable && isExactWorkflowBindingValue(value)) return null;
+  return Array.isArray(value) ? [...value] : [];
 }
 
 export function parseBindingExpression(expression: string, sourceText: string): ParsedBindingExpression {

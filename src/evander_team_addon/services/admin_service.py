@@ -143,6 +143,7 @@ from .domain.common import (
     _required_text,
     _set_task_state,
     _unique_id_from_base,
+    task_state_can_wake_owner,
 )
 from .domain.context_rotation import (
     _context_clearing_idle_grace_seconds_from_value,
@@ -3153,7 +3154,7 @@ class TeamAdminService:
                         git_default_branch_resolver=(self._resolve_managed_git_default_branch),
                     )
                 task.updated_at = now
-                if task.state in _NON_TERMINAL_TASK_STATES:
+                if task_state_can_wake_owner(task.state):
                     _mark_agent_work_due(
                         state_model,
                         agent_id=task.owner_agent_id,
@@ -3275,7 +3276,7 @@ class TeamAdminService:
                     case_id=normalized_case_id,
                     now=now,
                 )
-            if state in _NON_TERMINAL_TASK_STATES:
+            if task_state_can_wake_owner(state):
                 _mark_agent_work_due(state_model, agent_id=normalized_owner_agent_id, now=now)
             else:
                 _maybe_mark_idle_context_rotation_due(
@@ -3571,7 +3572,7 @@ class TeamAdminService:
                         },
                         now=now,
                     )
-            if task.state in _NON_TERMINAL_TASK_STATES:
+            if task_state_can_wake_owner(task.state):
                 _mark_agent_work_due(
                     state_model,
                     agent_id=task.owner_agent_id,

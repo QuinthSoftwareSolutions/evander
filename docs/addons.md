@@ -1320,6 +1320,15 @@ agent with no direct superior must use formal review for a deliverable, or use
 `team_update_task state=finished` for support/coordination work that produces no
 reviewable result.
 
+For an operator-owned workflow that must await a customer or another external
+system, use `effect:team:set-task-work-state` with `state: waiting_for_input`.
+This non-terminal state is intentionally not ordinary dispatch work: it does
+not wake the owner and it does not create manager-fallback work. The workflow,
+not Team runtime policy, decides how long to wait and which message to send.
+When its external-input trigger arrives, set the state back to `in_progress`
+and follow it with `effect:team:wake-due-agents` scoped to the owner for an
+immediate wake.
+
 For ordinary task, status-request, question, or progress-report handoffs, the
 recipient can pass an `artifact-space:` ref to `team_import_artifact`. The tool
 checks that artifact space's read grant for the calling `team-agent:<id>`, selects

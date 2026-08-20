@@ -2,9 +2,11 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  isExactWorkflowBindingValue,
   rewriteWorkflowConfigBindingReferences,
   rewriteWorkflowBindingReferences,
   rewriteWorkflowNodeConfigBindings,
+  workflowObjectListItemsForEdit,
 } from "../src/workflowBindings.ts";
 
 const idMap = new Map([
@@ -13,6 +15,18 @@ const idMap = new Map([
   ["fallback-old", "fallback-new"],
   ["node.with.dots", "node-copy.with.dots"],
 ]);
+
+test("preserves an exact outer object-list binding during structured edits", () => {
+  const binding = "${{query.repositories}}";
+
+  assert.equal(isExactWorkflowBindingValue(binding), true);
+  assert.equal(workflowObjectListItemsForEdit(binding, true), null);
+  assert.deepEqual(workflowObjectListItemsForEdit(binding, false), []);
+  assert.deepEqual(
+    workflowObjectListItemsForEdit([{ managed_repo_id: "mr-project" }], true),
+    [{ managed_repo_id: "mr-project" }],
+  );
+});
 
 test("rewrites exact copied-node bindings", () => {
   assert.equal(

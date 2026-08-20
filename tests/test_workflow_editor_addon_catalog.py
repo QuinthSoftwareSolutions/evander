@@ -113,6 +113,7 @@ def test_workflow_editor_catalog_includes_team_addon_nodes_when_enabled(
     wake = nodes["effect:team:wake-due-agents"]
     finalize_dispatch = nodes["effect:team:finalize-agent-dispatch"]
     create_task = nodes["effect:team:create-task"]
+    set_task_work_state = nodes["effect:team:set-task-work-state"]
     create_case = nodes["effect:team:create-case"]
     update_case = nodes["effect:team:update-case"]
     register_agent = nodes["effect:team:register-agent"]
@@ -186,6 +187,12 @@ def test_workflow_editor_catalog_includes_team_addon_nodes_when_enabled(
     assert create_task_fields["git_base_branch"]["kind"] == "string"
     assert create_task_fields["git_base_branch"]["required"] is False
     assert create_task_fields["dependency_task_ids"]["json_value_type"] == "array"
+    set_task_work_state_fields = {
+        field["key"]: field for field in set_task_work_state["fields"]
+    }
+    assert set_task_work_state["label"] == "Set Team task work state"
+    assert set_task_work_state_fields["task_id"]["required"] is True
+    assert set_task_work_state_fields["state"]["required"] is True
     create_case_fields = {field["key"]: field for field in create_case["fields"]}
     assert create_case["kind"] == "effect"
     assert create_case["label"] == "Create Team case"

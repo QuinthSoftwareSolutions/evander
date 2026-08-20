@@ -2084,6 +2084,56 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
     }
 
 
+def test_admin_web_workflow_catalog_lists_managed_reference_repositories(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = build_admin_runtime(write_config(tmp_path))
+    list_calls: list[dict[str, object]] = []
+
+    def list_repositories(**kwargs: object) -> list[dict[str, object]]:
+        list_calls.append(kwargs)
+        return [
+            {
+                "managed_repo_id": "mr-project",
+                "directory_path": "root",
+                "display_name": "Project",
+                "default_branch": "main",
+            }
+        ]
+
+    monkeypatch.setattr(service.managed_git_admin, "list_repositories", list_repositories)
+    client = TestClient(create_app(service))
+
+    response = client.get("/api/workflow-editor/catalog?directory_path=root")
+
+    assert response.status_code == 200
+    prepare = next(
+        node
+        for node in response.json()["nodes"]
+        if node["type"] == "effect:agent:prepare-reference-repositories"
+    )
+    repositories = next(field for field in prepare["fields"] if field["key"] == "repositories")
+    item_fields = {field["key"]: field for field in repositories["item_fields"]}
+    assert repositories["kind"] == "object_list"
+    assert repositories["bindable"] is True
+    assert [field["key"] for field in repositories["item_fields"]] == [
+        "managed_repo_id",
+        "branch",
+    ]
+    assert item_fields["managed_repo_id"]["kind"] == "enum"
+    assert item_fields["managed_repo_id"]["options"] == [
+        {
+            "value": "mr-project",
+            "label": "Project",
+            "description": "Directory: root · Default branch: main · mr-project",
+        }
+    ]
+    assert item_fields["branch"]["kind"] == "string"
+    assert item_fields["branch"]["label"] == "Main branch"
+    assert list_calls == [{"directory_path": "root", "include_descendants": True}]
+
+
 def test_admin_web_workflow_catalog_lists_directory_communication_send_targets(
     tmp_path: Path,
 ) -> None:

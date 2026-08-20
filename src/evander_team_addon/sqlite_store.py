@@ -6136,13 +6136,19 @@ def _migrate_task_git_base_snapshots(connection: sqlite3.Connection) -> None:
         )
 
     correction_release_ids = _legacy_correction_release_ids_by_task(connection)
-    active_task_states = ("pending", "in_progress", "waiting_for_review", "blocked")
+    active_task_states = (
+        "pending",
+        "in_progress",
+        "waiting_for_input",
+        "waiting_for_review",
+        "blocked",
+    )
     task_rows = connection.execute(
         """
         SELECT id, project_id, owner_agent_id, state, title, git_base_branch,
                state_entered_at, created_at, updated_at
         FROM team_tasks
-        WHERE state IN (?, ?, ?, ?)
+        WHERE state IN (?, ?, ?, ?, ?)
         ORDER BY id
         """,
         active_task_states,

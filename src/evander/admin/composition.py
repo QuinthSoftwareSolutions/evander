@@ -498,6 +498,7 @@ def _build_admin_runtime_components(
             admin_config_mutation_lock=lambda: host.admin_config_mutation_lock(),
             normalize_directory_reference=normalize_directory_reference,
             addon_catalog=addon_catalog,
+            managed_git_admin=managed_git_admin,
         )
     )
     addon_admin = AddonAdminService(

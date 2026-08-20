@@ -1520,6 +1520,8 @@ def _unresolved_readiness(
         )
     if task.state == TeamTaskState.REJECTED:
         return TaskAssessmentReadiness.BLOCKED, "rejected_requires_recovery"
+    if task.state == TeamTaskState.WAITING_FOR_INPUT:
+        return TaskAssessmentReadiness.WAITING_FOR_INPUT, "awaiting_external_input"
     if task.state == TeamTaskState.BLOCKED or local_blocker_ids:
         return TaskAssessmentReadiness.BLOCKED, "intrinsic_blocker_open"
     if unresolved_descendant_ids:

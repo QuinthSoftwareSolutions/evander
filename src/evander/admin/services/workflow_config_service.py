@@ -134,6 +134,7 @@ class WorkflowConfigAdminDependencies:
     normalize_directory_reference: Callable[[str | None], str]
     workflow_reports_admin: Any | None = None
     addon_catalog: LoadedAddonCatalog | None = None
+    managed_git_admin: Any | None = None
 
 
 @dataclass(slots=True)
@@ -154,6 +155,7 @@ class WorkflowConfigAdminService:
         self._normalize_directory_reference = dependencies.normalize_directory_reference
         self._workflow_reports_admin = dependencies.workflow_reports_admin
         self._addon_catalog = dependencies.addon_catalog
+        self._managed_git_admin = dependencies.managed_git_admin
         history_runtime_dir = _resolve_path_setting(
             base_dir=self.project_dir,
             value=self.config.runtime_dir,
@@ -2097,6 +2099,9 @@ class WorkflowConfigAdminService:
         agent_communication_target_options = self._agent_communication_target_options(
             directory_path
         )
+        managed_git_repository_options = self._managed_git_reference_repository_options(
+            directory_path
+        )
         host_directory_trigger_options = self._directory_resource_trigger_options(directory_path)
         provider_catalog = self._load_workflow_provider_catalog(
             self._read_worker_provider_loader_config("trigger-orchestrator")
@@ -2188,6 +2193,24 @@ class WorkflowConfigAdminService:
                     else field
                     for field in node.fields
                 ]
+            if node.type == "effect:agent:prepare-reference-repositories":
+                node.fields = [
+                    field.model_copy(
+                        update={
+                            "item_fields": [
+                                item_field.model_copy(
+                                    update={"options": managed_git_repository_options}
+                                )
+                                if item_field.key == "managed_repo_id"
+                                else item_field
+                                for item_field in field.item_fields
+                            ]
+                        }
+                    )
+                    if field.key == "repositories"
+                    else field
+                    for field in node.fields
+                ]
             if node.type in seen_node_types:
                 raise ValueError(f"Duplicate workflow editor catalog entry: {node.type}")
             seen_node_types.add(node.type)
@@ -2212,6 +2235,48 @@ class WorkflowConfigAdminService:
             nodes=nodes,
             internal_events=internal_event_catalog_entries,
         )
+
+    def _managed_git_reference_repository_options(
+        self,
+        directory_path: str | None,
+    ) -> list[WorkflowEditorFieldOption]:
+        managed_git = self._managed_git_admin
+        list_repositories = getattr(managed_git, "list_repositories", None)
+        if not callable(list_repositories):
+            return []
+        normalized_directory = self._normalize_directory_reference(directory_path or "root")
+        repositories = list_repositories(
+            directory_path=normalized_directory,
+            include_descendants=True,
+        )
+        options: list[WorkflowEditorFieldOption] = []
+        for repository in repositories:
+            if not isinstance(repository, Mapping):
+                model_dump = getattr(repository, "model_dump", None)
+                repository = model_dump(mode="python") if callable(model_dump) else {}
+            managed_repo_id = str(repository.get("managed_repo_id") or "").strip()
+            if not managed_repo_id:
+                continue
+            display_name = str(repository.get("display_name") or managed_repo_id).strip()
+            repository_directory = str(repository.get("directory_path") or "").strip()
+            default_branch = str(repository.get("default_branch") or "").strip()
+            description_parts = [
+                part
+                for part in (
+                    f"Directory: {repository_directory}" if repository_directory else None,
+                    f"Default branch: {default_branch}" if default_branch else None,
+                    managed_repo_id,
+                )
+                if part
+            ]
+            options.append(
+                _field_option(
+                    managed_repo_id,
+                    display_name,
+                    description=" · ".join(description_parts) or None,
+                )
+            )
+        return options
 
     def _validate_workflow_editor_document(
         self,

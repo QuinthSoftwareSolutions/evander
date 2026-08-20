@@ -2634,14 +2634,35 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
             ),
             _field(
                 "repositories",
-                "Repositories",
-                "json",
+                "Reference repositories",
+                "object_list",
                 required=True,
                 bindable=True,
-                json_value_type="array",
                 description=(
-                    "Array of objects with repo_source and an optional branch override."
+                    "Managed repositories to prepare for the assistant. Each row uses its own "
+                    "main branch setting, or bind the complete array from an upstream output."
                 ),
+                item_fields=[
+                    _field(
+                        "managed_repo_id",
+                        "Managed repository",
+                        "enum",
+                        required=True,
+                        description=(
+                            "Registered managed repository to prepare. Existing workflows that "
+                            "use repo_source remain supported."
+                        ),
+                    ),
+                    _field(
+                        "branch",
+                        "Main branch",
+                        "string",
+                        description=(
+                            "Branch to prepare for this repository. Leave blank to use the "
+                            "managed repository's configured default branch."
+                        ),
+                    ),
+                ],
             ),
             _field(
                 "refresh_upstream",

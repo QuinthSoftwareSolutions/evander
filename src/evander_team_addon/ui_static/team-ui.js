@@ -7,6 +7,7 @@ const taskStates = [
   "pending",
   "in_progress",
   "blocked",
+  "waiting_for_input",
   "waiting_for_review",
   "finished",
   "accepted",
@@ -17,6 +18,7 @@ const directlyCancellableTaskStates = new Set([
   "pending",
   "in_progress",
   "blocked",
+  "waiting_for_input",
   "waiting_for_review",
   "rejected",
 ]);
@@ -37,6 +39,7 @@ const casePageSize = 20;
 const taskBoardLanes = [
   { id: "planned", label: "Planned", states: ["pending"] },
   { id: "in-progress", label: "In Progress", states: ["in_progress", "blocked"] },
+  { id: "waiting-input", label: "Waiting for Input", states: ["waiting_for_input"] },
   { id: "reviewing", label: "Acceptance / Review", states: ["waiting_for_review"] },
   { id: "done", label: "Done", states: ["finished", "accepted", "rejected", "cancelled"] },
 ];
@@ -47,6 +50,7 @@ const taskBoardReadinessValues = [
   "actionable",
   "waiting_on_children",
   "waiting_on_dependencies",
+  "waiting_for_input",
   "waiting_for_acceptance",
   "waiting_for_review",
   "blocked",
@@ -60,6 +64,7 @@ const taskAssessmentResolutionReasonMessages = Object.freeze({
   cancelled_by_authorized_disposition:
     "The task was cancelled by an authorized decision.",
   intrinsic_blocker_open: "An active blocker is preventing this task from progressing.",
+  awaiting_external_input: "The task is paused until its workflow receives external input.",
   outcome_deliverable_accepted: "The outcome deliverable was accepted.",
   outcome_evidenced_noop_accepted: "The evidenced no-op outcome was accepted.",
   rejected_requires_recovery: "The rejected task needs recovery work.",
@@ -11313,6 +11318,7 @@ function agentWorkSnapshot(agentData) {
 function isTaskWaitingOrBlocked(task) {
   return (
     task.state === "blocked" ||
+    task.state === "waiting_for_input" ||
     task.state === "waiting_for_review" ||
     task.dependency_status === "waiting" ||
     task.dependency_status === "blocked" ||
@@ -14188,13 +14194,14 @@ function comparePlanningTasks(left, right) {
 function planningTaskStatusRank(status) {
   const order = {
     blocked: 0,
-    waiting_for_review: 1,
-    in_progress: 2,
-    pending: 3,
-    finished: 4,
-    accepted: 5,
-    rejected: 6,
-    cancelled: 7,
+    waiting_for_input: 1,
+    waiting_for_review: 2,
+    in_progress: 3,
+    pending: 4,
+    finished: 5,
+    accepted: 6,
+    rejected: 7,
+    cancelled: 8,
   };
   return order[status] ?? 99;
 }
@@ -14212,6 +14219,9 @@ function comparePlanningProjectCards(left, right) {
 function renderPlanningProjectBlock(project, projectTasks, visibleTasks, projectDeliverables) {
   const openTasks = visibleTasks.filter((task) => !terminalTaskStates.has(task.state));
   const blockedTasks = visibleTasks.filter((task) => task.state === "blocked");
+  const waitingForInputTasks = visibleTasks.filter(
+    (task) => task.state === "waiting_for_input",
+  );
   const waitingTasks = visibleTasks.filter((task) => task.state === "waiting_for_review");
   const goals = project.goals || [];
   const hiddenCount = projectTasks.length - visibleTasks.length;
@@ -14222,6 +14232,9 @@ function renderPlanningProjectBlock(project, projectTasks, visibleTasks, project
   ];
   if (blockedTasks.length) {
     detailBits.push(`${blockedTasks.length} blocked`);
+  }
+  if (waitingForInputTasks.length) {
+    detailBits.push(`${waitingForInputTasks.length} waiting input`);
   }
   if (waitingTasks.length) {
     const acceptanceCount = waitingTasks.filter(

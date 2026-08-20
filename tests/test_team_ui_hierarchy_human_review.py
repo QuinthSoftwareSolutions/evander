@@ -78,6 +78,23 @@ def test_workspace_attention_has_pagination_controls() -> None:
     assert ".workspace-attention-pagination" in stylesheet
 
 
+def test_task_board_desktop_grid_has_one_column_per_lane() -> None:
+    source = (ROOT / "src" / "evander_team_addon" / "ui_static" / "team-ui.js").read_text(
+        encoding="utf-8"
+    )
+    stylesheet = (ROOT / "src" / "evander_team_addon" / "ui_static" / "team-ui.css").read_text(
+        encoding="utf-8"
+    )
+
+    lane_catalog = source[
+        source.index("const taskBoardLanes = [") : source.index(
+            "const taskBoardStateToLane"
+        )
+    ]
+    assert lane_catalog.count("{ id:") == 5
+    assert "grid-template-columns: repeat(5, minmax(0, 1fr));" in stylesheet
+
+
 def test_workspace_places_delivery_under_current_workload_without_tab_shortcuts() -> None:
     source = (ROOT / "src" / "evander_team_addon" / "ui_static" / "team-ui.js").read_text(
         encoding="utf-8"

@@ -367,6 +367,7 @@ class AgentPrepareReferenceRepositoriesEffectProvider(EffectProviderBase):
     ) -> _ResolvedReferenceRepository:
         admin_service = self._context().admin_service
         ensure = getattr(admin_service, "ensure_managed_git_repository", None)
+        get_repository = getattr(admin_service, "get_managed_git_repository", None)
         refresh_branch = getattr(
             admin_service,
             "refresh_managed_git_repository_if_branch_changed",
@@ -374,23 +375,45 @@ class AgentPrepareReferenceRepositoriesEffectProvider(EffectProviderBase):
         )
         resolve_branch = getattr(admin_service, "resolve_managed_git_branch_commit", None)
         clone_resolver = getattr(admin_service, "resolve_managed_git_clone", None)
-        required_operations = (ensure, resolve_branch, clone_resolver)
+        managed_repo_id = str(repository.get("managed_repo_id") or "").strip()
+        repo_source = str(repository.get("repo_source") or "").strip()
+        required_operations = (
+            (get_repository, resolve_branch, clone_resolver)
+            if managed_repo_id
+            else (ensure, resolve_branch, clone_resolver)
+        )
         if not all(callable(method) for method in required_operations) or (
             refresh_upstream and not callable(refresh_branch)
         ):
             raise RuntimeError("managed Git reference-repository operations are unavailable")
-        repo_source = required_string(repository.get("repo_source"), "repo_source is required")
-        registered = _mapping_result(
-            ensure(
-                directory_path=directory_path,
-                repo_source=repo_source,
-                refresh=False,
+        if managed_repo_id:
+            registered = _mapping_result(
+                get_repository(managed_repo_id, directory_path=directory_path)
             )
-        )
-        managed_repo_id = required_string(
-            registered.get("managed_repo_id"),
-            "managed Git registration did not return managed_repo_id",
-        )
+            managed_repo_id = required_string(
+                registered.get("managed_repo_id"),
+                "managed Git lookup did not return managed_repo_id",
+            )
+            repo_source = required_string(
+                registered.get("canonical_repository_url"),
+                "managed Git repository does not have a canonical repository URL",
+            )
+        else:
+            repo_source = required_string(
+                repo_source,
+                "repo_source or managed_repo_id is required",
+            )
+            registered = _mapping_result(
+                ensure(
+                    directory_path=directory_path,
+                    repo_source=repo_source,
+                    refresh=False,
+                )
+            )
+            managed_repo_id = required_string(
+                registered.get("managed_repo_id"),
+                "managed Git registration did not return managed_repo_id",
+            )
         verification: dict[str, Any] = {}
         if refresh_upstream:
             verification = _mapping_result(
@@ -476,14 +499,28 @@ def _normalize_repository_inputs(value: object) -> list[dict[str, str | None]]:
     for index, item in enumerate(value):
         if not isinstance(item, Mapping):
             raise ValueError(f"repositories[{index}] must be an object")
-        repo_source = str(item.get("repo_source") or "").strip()
-        if not repo_source:
-            raise ValueError(f"repositories[{index}].repo_source is required")
-        if repo_source in seen:
-            raise ValueError(f"repositories contains duplicate repo_source: {repo_source}")
-        seen.add(repo_source)
+        managed_repo_id = str(item.get("managed_repo_id") or "").strip() or None
+        repo_source = str(item.get("repo_source") or "").strip() or None
+        identity = (
+            f"managed_repo_id:{managed_repo_id}"
+            if managed_repo_id
+            else f"repo_source:{repo_source}"
+        )
+        if not managed_repo_id and not repo_source:
+            raise ValueError(
+                f"repositories[{index}].managed_repo_id or repositories[{index}].repo_source is required"
+            )
+        if identity in seen:
+            raise ValueError(f"repositories contains duplicate repository: {identity}")
+        seen.add(identity)
         branch = str(item.get("branch") or "").strip() or None
-        result.append({"repo_source": repo_source, "branch": branch})
+        result.append(
+            {
+                "managed_repo_id": managed_repo_id,
+                "repo_source": repo_source,
+                "branch": branch,
+            }
+        )
     return result
 
 
