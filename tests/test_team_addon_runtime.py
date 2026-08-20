@@ -930,6 +930,36 @@ def test_operator_stand_down_revocation_immediately_wakes_newly_eligible_agents(
     assert len(repo.list_outbox_records(intent_type=AGENT_WAKE_REQUESTED_EVENT_TYPE)) == 2
 
 
+def test_operator_stand_down_revocation_does_not_wake_workflow_paused_task(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_team(tmp_path)
+    runtime = _team_runtime_service(repo)
+    stood_down = runtime.stand_down_agent(
+        agent_id="backend",
+        reason="Pause backend work.",
+        set_by="operator:test",
+        scope="agent",
+        expected_revision=repo.read().revision,
+    )
+    paused = _team_admin_service(repo).update_task(
+        task_id="task",
+        state=TeamTaskState.WAITING_FOR_INPUT,
+        expected_revision=stood_down.revision,
+    )
+
+    resumed = runtime.revoke_operator_stand_downs(
+        agent_id="backend",
+        revoked_by="operator:test",
+        expected_revision=paused.revision,
+    )
+
+    assert resumed.tasks["task"].state == TeamTaskState.WAITING_FOR_INPUT
+    assert resumed.agent_runtimes["backend"].next_wake_at is None
+    assert repo.list_outbox_records(intent_type=AGENT_WAKE_REQUESTED_EVENT_TYPE) == []
+    assert InternalEventBus(internal_event_store_path(tmp_path)).list_events() == []
+
+
 def test_operator_stand_down_revocation_rolls_back_when_wake_outbox_fails(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

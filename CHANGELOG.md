@@ -10,6 +10,8 @@
 - Limited workflow work-state transitions to tasks already in that lifecycle,
   prevented stale agent dispatches from resuming paused tasks, and kept agents
   from creating tasks in the workflow-only paused state.
+- Prevented stand-down revocation and other immediate-wake paths from treating
+  workflow-paused tasks as newly actionable owner work.
 - Kept all five task-board lifecycle lanes on one desktop grid row.
 
 ## 2026-08-20 - Reference Repository Workflow Editor
