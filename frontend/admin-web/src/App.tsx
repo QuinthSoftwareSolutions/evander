@@ -2289,7 +2289,14 @@ function validateConnection(
     return `Node ${sourceId} does not have any configured output ports.`;
   }
   const selectedPort = sourcePort ?? (sourceNode.type === "gate:throttle" ? "default" : null);
-  if ((sourceNode.type === "gate:switch" || allowedPorts.length > 0) && !allowedPorts.some((port) => port.key === selectedPort)) {
+  const allowsImplicitDefault = sourceNode.type.startsWith("gate:") &&
+    sourceNode.type !== "gate:switch" &&
+    allowedPorts.every((port) => port.key === "error");
+  if (
+    (sourceNode.type === "gate:switch" || allowedPorts.length > 0) &&
+    !(allowsImplicitDefault && selectedPort === null) &&
+    !allowedPorts.some((port) => port.key === selectedPort)
+  ) {
     return `Node ${sourceId} requires selecting one of its named output ports.`;
   }
   const limit = inboundLimit(targetNode);
@@ -6490,9 +6497,12 @@ export default function App() {
   function startCompactConnectionFromNode(node: Node<GraphNodeData>) {
     if (workflowMutationLocked) return;
     const sourcePoint = nodeCenterCanvasPoint(node);
+    const implicitGateDefault = node.data.type.startsWith("gate:") &&
+      node.data.type !== "gate:switch" &&
+      node.data.outputPorts.every((port) => port.key === "error");
     const routes = node.data.type === "gate:switch" && node.data.outputPorts.length === 0
       ? []
-      : workflowConnectionRouteOptions(node.data.outputPorts);
+      : workflowConnectionRouteOptions(node.data.outputPorts, implicitGateDefault);
     setProgrammaticSelection([node.id], node.id);
     setSelectedEdgeId(null);
     setSnapGuides([]);
@@ -6651,7 +6661,12 @@ export default function App() {
       sourcePoint: nodeCenterCanvasPoint(node),
       routes: node.data.type === "gate:switch" && node.data.outputPorts.length === 0
         ? []
-        : workflowConnectionRouteOptions(node.data.outputPorts),
+        : workflowConnectionRouteOptions(
+            node.data.outputPorts,
+            node.data.type.startsWith("gate:") &&
+              node.data.type !== "gate:switch" &&
+              node.data.outputPorts.every((port) => port.key === "error"),
+          ),
       failedCount: node.data.statusBadges.find((badge) => badge.status === "failed")?.count ?? 0,
     });
     setPendingConnection(null);

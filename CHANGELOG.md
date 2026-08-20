@@ -1,5 +1,50 @@
 # Changelog
 
+## 2026-08-20 - Release Exception And Gate Error Recovery
+
+- Prevented rejected-review exceptions from reopening a predecessor after a successor exists,
+  retained consolidated correction work while other cohort rejections remain, and safely retired
+  active correction review/acceptance handoffs and Git contexts before cancellation.
+- Cancelled obsolete merge-recovery tasks when reviewed correction rework replaces their failed
+  aggregate promotion.
+- Reapplied normal release-package intake and verification-waiver policy before replacing a failed
+  correction aggregate with newly reviewed evidence.
+- Removed operator-excepted review findings from retained consolidated correction tasks and their
+  pending inbox handoffs, and hid rejected-review exception actions after a successor exists.
+- Allowed `error` edges on branch-gate capabilities and routed failures recorded directly by gate
+  providers through the configured error branch.
+- Reserved the switch gate's `error` port for lifecycle failures so business cases and defaults
+  cannot intercept structured gate-error routing.
+- Reactivated deterministic correction and merge-recovery tasks when later failures require fresh
+  work, and persisted recorded gate-error completion intent so daemon replay cannot skip recovery.
+
+## 2026-08-19 - Immutable Candidate Correction Guidance
+
+- Preserved precise Git ancestry errors for failed correction aggregates and made generated
+  correction work explicitly forbid rewriting the pinned release candidate while requiring new
+  correction commit metadata to be checked before it is frozen by promotion.
+- Rebuilt a pre-candidate blocked correction successor when its failed source is formally
+  superseded by a newly reviewed correction deliverable, while retaining the failed promotion
+  as retired audit history.
+- Added an explicit operator-only retry for a rejected release review whose finding cannot be
+  corrected without rewriting the unchanged pinned candidate; the original rejection remains
+  immutable and the replacement reviewer must still evaluate every non-excepted criterion.
+- Routed that exception through the release-retry API and Team UI, kept multi-review cohorts
+  rejected until every rejected slot is replaced, and retired the obsolete correction task and
+  inbox work when the exception is accepted.
+- Preserved failed correction successors as actionable blockers when aggregate rebuild validation
+  rejects replacement sources instead of crashing and rolling back reconciliation.
+
+## 2026-08-19 - Workflow Gate Error Routing
+
+- Allowed gate runtime and binding failures to publish a structured `error` branch when one is
+  configured, so operator workflows can recover malformed or otherwise correctable inputs without
+  leaving the source task silently stalled.
+- Exposed the standard gate `error` route and its `success`, `error_message`, and `error_class`
+  outputs through the workflow catalog and graph-aware binding schemas.
+- Routed Factory Support handoff contracts with missing fields into the same bounded agent-repair
+  loop as present-but-invalid fields.
+
 ## 2026-08-19 - Admin Web Workflow Pack Deep Links
 
 - Preserve the selected workflow pack in the workflow page URL so refreshing the page restores

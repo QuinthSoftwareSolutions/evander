@@ -668,6 +668,51 @@ def test_selected_agent_runtime_shows_reset_bounded_input_usage() -> None:
     assert 'contextClearingPolicy !== "every_wake"' in runtime_source
 
 
+def test_rejected_review_exception_action_is_hidden_after_successor_exists() -> None:
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("node is unavailable")
+    source = (ROOT / "src" / "evander_team_addon" / "ui_static" / "team-ui.js").read_text(
+        encoding="utf-8"
+    )
+    action_source = source[
+        source.index("function releaseHasSuccessor(releaseId)") : source.index(
+            "async function retryReleaseGate"
+        )
+    ]
+    script = f"""
+      const assert = require("node:assert/strict");
+      const state = {{ release_packages: {{}} }};
+      const text = (value) => value == null ? "" : String(value);
+      const values = (record) => Object.values(record || {{}});
+      const escapeAttr = text;
+      const escapeHtml = text;
+      {action_source}
+
+      const predecessor = {{
+        id: "release-predecessor",
+        state: "rejected",
+        gate_failure: {{ stage: "review", kind: "rejected", source_id: "review-1" }},
+      }};
+      assert.match(renderReleaseGateAction(predecessor), /Retry rejected review by exception/);
+      state.release_packages.successor = {{
+        id: "release-successor",
+        supersedes_release_package_id: predecessor.id,
+      }};
+      assert.equal(renderReleaseGateAction(predecessor), "");
+    """
+
+    result = subprocess.run(
+        [node, "--input-type=commonjs"],
+        input=script,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+
+
 def test_agent_editor_round_trips_idle_context_grace_minutes() -> None:
     source = (ROOT / "src" / "evander_team_addon" / "ui_static" / "team-ui.js").read_text(
         encoding="utf-8"

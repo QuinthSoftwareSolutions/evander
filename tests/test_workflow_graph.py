@@ -13,6 +13,7 @@ from evander.workflow.graph import (
     reachable_downstream_nodes,
     would_form_cycle,
 )
+from evander.workflow.contracts import GATE_FAILURE_OUTPUT_SCHEMA
 
 
 def test_build_indices_and_cycle_helpers_handle_canonical_edge_shape() -> None:
@@ -85,6 +86,10 @@ def test_declared_output_index_includes_intrinsic_and_derived_outputs() -> None:
 
     assert indexed["trigger-1"]["ticket"]["type"] == "object"
     assert indexed["trigger-1"]["ticket"]["properties"]["issue_number"] == {"type": "string"}
-    assert indexed["gate-1"] == {"vm_name": {"type": "string"}, "count": {"type": "integer"}}
+    assert indexed["gate-1"] == {
+        "vm_name": {"type": "string"},
+        "count": {"type": "integer"},
+        **GATE_FAILURE_OUTPUT_SCHEMA,
+    }
     assert indexed["effect-1"]["session_id"] == {"type": "string"}
     assert indexed["query-1"]["state_code"] == {"type": "string"}

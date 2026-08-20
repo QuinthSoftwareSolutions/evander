@@ -537,6 +537,34 @@ def test_correction_aggregate_success_keeps_rejected_candidate_workstream(
     assert canonical_event["payload"]["base_commit_sha"] == CANONICAL_BASE_COMMIT
 
 
+def test_correction_aggregate_preserves_non_descendant_source_error(
+    tmp_path: Path,
+) -> None:
+    repo = _repo(tmp_path)
+    first = HumanCorrectionReconciliationService(repo).reconcile()
+    successor_id = first["created_successor_release_package_ids"][0]
+    state = repo.read()
+    aggregate_id = state.release_packages[successor_id].git_promotion_record_ids[0]
+    ancestry_error = (
+        "One or more correction sources do not descend from the required rejected candidate"
+    )
+
+    state, result = TeamGitReleaseService(repo).record_git_promotion_result(
+        promotion_id=aggregate_id,
+        success=False,
+        error=ancestry_error,
+        outputs={
+            "error_code": "scope_mismatch",
+            "unexpected_commit_shas": [CORRECTION_COMMIT],
+            "source_manifests": {},
+        },
+    )
+
+    assert state.git_promotions[aggregate_id].error == ancestry_error
+    assert state.release_packages[successor_id].error == ancestry_error
+    assert result["error"] == ancestry_error
+
+
 def test_reconciliation_migrates_candidate_less_legacy_leaf_promotions_once(
     tmp_path: Path,
 ) -> None:

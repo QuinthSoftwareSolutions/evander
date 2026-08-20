@@ -1264,6 +1264,7 @@ def _successor_release_request_error(
     predecessor: ReleasePackage | None,
     correction_deliverable_ids: list[str],
     post_release_feedback_case_id: str | None = None,
+    ignore_successor_release_package_id: str | None = None,
 ) -> str | None:
     if predecessor is None:
         return "superseded release package does not exist"
@@ -1278,7 +1279,8 @@ def _successor_release_request_error(
         key=lambda item: (item.created_at, item.id),
     ):
         if (
-            successor.supersedes_release_package_id != predecessor.id
+            successor.id == ignore_successor_release_package_id
+            or successor.supersedes_release_package_id != predecessor.id
             or successor.state in _TERMINAL_RELEASE_STATES
         ):
             continue

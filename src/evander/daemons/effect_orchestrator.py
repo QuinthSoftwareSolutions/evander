@@ -210,6 +210,13 @@ def _effect_error_outbound_edge_exists(*, graph: ExecutionGraph, effect_id: str)
     )
 
 
+def _gate_error_outbound_edge_exists(*, graph: ExecutionGraph, gate_id: str) -> bool:
+    return any(
+        _edge_source_port(edge) == AGENT_PROMPT_ERROR_PORT
+        for edge in graph.outbound_index.get(gate_id, ())
+    )
+
+
 class EffectExecutionRecord(BaseModel):
     model_config = ConfigDict(extra="allow")
 
@@ -2008,7 +2015,14 @@ class EffectOrchestratorWorker:
         config_revision: str,
     ) -> None:
         idempotency_key = _execution_idempotency_key(queue_record.event_id, gate.id)
-        if self.gate_execution_store.find_execution_by_idempotency_key(idempotency_key) is not None:
+        existing = self.gate_execution_store.find_execution_by_idempotency_key(idempotency_key)
+        if existing is not None:
+            if existing.status == "failed":
+                self._route_recorded_gate_failure_to_error_branch(
+                    queue_record=queue_record,
+                    gate=gate,
+                    graph=graph,
+                )
             return
 
         started_at = datetime.now(UTC)
@@ -2036,6 +2050,11 @@ class EffectOrchestratorWorker:
                 input_event_ids_by_source=input_event_ids_by_source,
                 input_occurred_at_by_source=input_occurred_at_by_source,
             ):
+                self._route_recorded_gate_failure_to_error_branch(
+                    queue_record=queue_record,
+                    gate=gate,
+                    graph=graph,
+                )
                 return
 
             self._write_gate_record(
@@ -2052,6 +2071,24 @@ class EffectOrchestratorWorker:
                 error=f"no_gate_provider_registered:{gate.type}",
             )
         except (BindingResolutionError, GateRuntimeError) as exc:
+            if _gate_error_outbound_edge_exists(graph=graph, gate_id=gate.id):
+                self._write_gate_record(
+                    queue_record=queue_record,
+                    gate=gate,
+                    status="error_routed",
+                    started_at=started_at,
+                    resolved_config={},
+                    outputs=_effect_failure_outputs(exc),
+                    inputs_by_source=inputs_by_source,
+                    input_event_ids_by_source=input_event_ids_by_source,
+                    input_occurred_at_by_source=input_occurred_at_by_source,
+                    config_revision=config_revision,
+                    error=str(exc),
+                    binding_error=str(exc),
+                    publish_completion_event=True,
+                    branch_port=AGENT_PROMPT_ERROR_PORT,
+                )
+                return
             self._write_gate_record(
                 queue_record=queue_record,
                 gate=gate,
@@ -2066,6 +2103,60 @@ class EffectOrchestratorWorker:
                 error=str(exc),
                 binding_error=str(exc),
             )
+
+    def _route_recorded_gate_failure_to_error_branch(
+        self,
+        *,
+        queue_record: TriggerQueueRecord,
+        gate: GateDefinitionDiscriminated,
+        graph: ExecutionGraph,
+    ) -> bool:
+        if not _gate_error_outbound_edge_exists(graph=graph, gate_id=gate.id):
+            return False
+        idempotency_key = _execution_idempotency_key(queue_record.event_id, gate.id)
+        record = self.gate_execution_store.find_execution_by_idempotency_key(idempotency_key)
+        if record is None or record.status != "failed":
+            return False
+
+        error_message = record.error or f"{gate.type} provider recorded a failure"
+        failure = GateRuntimeError(error_message)
+        outputs = {
+            **dict(record.outputs),
+            **_effect_failure_outputs(failure),
+        }
+        finished_at = datetime.now(UTC)
+        record.status = COMPLETION_PENDING_STATUS
+        record.completion_pending_status = "error_routed"
+        record.completion_event_branch_port = AGENT_PROMPT_ERROR_PORT
+        record.outputs = outputs
+        record.finished_at = finished_at
+        record.error = error_message
+        self.gate_execution_store.record_execution(record)
+        self._update_event_delivery_state(record.event_id)
+        published_event_id = self._publish_gate_completion_event_or_mark_pending(
+            record=record,
+            outputs=outputs,
+            branch_port=AGENT_PROMPT_ERROR_PORT,
+            preserved_context_node_ids=_gate_completion_preserved_context_node_ids(
+                graph=graph,
+                gate_id=gate.id,
+                gate_type=gate.type,
+            ),
+            pending_status="error_routed",
+            finished_at=finished_at,
+        )
+        if published_event_id is None:
+            return True
+        record.status = "error_routed"
+        record.outputs = outputs
+        record.published_event_id = published_event_id
+        record.completion_event_branch_port = AGENT_PROMPT_ERROR_PORT
+        record.completion_event_enqueued_at = finished_at
+        record.finished_at = finished_at
+        record.error = error_message
+        self.gate_execution_store.record_execution(record)
+        self._update_event_delivery_state(record.event_id)
+        return True
 
     def _execute_provider(
         self,

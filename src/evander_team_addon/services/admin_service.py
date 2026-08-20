@@ -5571,6 +5571,7 @@ class TeamAdminService:
         gate_id: str,
         reason: str,
         operator_actor_id: str,
+        allow_rejected_review_exception: bool = False,
         expected_revision: int | None = None,
     ) -> tuple[TeamState, dict[str, Any]]:
         normalized_release_id = _required_text(
@@ -5602,6 +5603,7 @@ class TeamAdminService:
                 reason=reason,
                 requested_by=normalized_actor_id,
                 result=result,
+                allow_rejected_review_exception=allow_rejected_review_exception,
             )
             _recalculate_project_status(state_model, release.project_id)
             result["success"] = True

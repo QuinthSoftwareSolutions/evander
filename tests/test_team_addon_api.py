@@ -91,6 +91,7 @@ from evander_team_addon.models import (
     TeamOutboxRecord,
     TeamOutboxStatus,
     TeamRecordState,
+    TeamState,
     TeamTaskState,
 )
 from evander_team_addon.repository import TeamStateRepository
@@ -442,6 +443,43 @@ def test_team_addon_registers_release_gate_retry_api_route(tmp_path: Path) -> No
         frozenset({"GET", "HEAD"}),
         frozenset({"PATCH"}),
     }
+
+
+def test_team_addon_retry_gate_api_routes_rejected_review_exception_flag(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    def _retry_release_gate_with_result(
+        _self: TeamAdminService,
+        **kwargs: object,
+    ) -> tuple[TeamState, dict[str, object]]:
+        captured.update(kwargs)
+        return TeamState.empty(), {"success": True, "events": []}
+
+    monkeypatch.setattr(
+        TeamAdminService,
+        "retry_release_gate_with_result",
+        _retry_release_gate_with_result,
+    )
+    client = _client(tmp_path)
+
+    response = client.post(
+        "/api/addons/team-addon/release-packages/release-rejected/retry-gate",
+        json={
+            "gate_kind": "review",
+            "gate_id": "review-rejected",
+            "reason": "The immutable inherited metadata is excepted.",
+            "allow_rejected_review_exception": True,
+            "expected_revision": 0,
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    assert captured["release_package_id"] == "release-rejected"
+    assert captured["gate_id"] == "review-rejected"
+    assert captured["allow_rejected_review_exception"] is True
 
 
 @pytest.fixture(autouse=True)

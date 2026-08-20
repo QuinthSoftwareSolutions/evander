@@ -459,6 +459,13 @@ def test_collect_domain_validation_diagnostics_reports_switch_port_issues(
                     "session_id": "session-1",
                     "prompt": "invalid",
                 },
+                {
+                    "id": "effect-error",
+                    "display_name": "Error recovery",
+                    "type": "effect:agent:prompt",
+                    "session_id": "session-1",
+                    "prompt": "recover",
+                },
             ],
             "edges": [
                 {"source_id": "cron-1", "target_id": "gate-switch-1"},
@@ -473,6 +480,11 @@ def test_collect_domain_validation_diagnostics_reports_switch_port_issues(
                     "target_id": "effect-invalid",
                     "source_port": "other",
                 },
+                {
+                    "source_id": "gate-switch-1",
+                    "target_id": "effect-error",
+                    "source_port": "error",
+                },
             ],
         }
     )
@@ -486,13 +498,15 @@ def test_collect_domain_validation_diagnostics_reports_switch_port_issues(
         and "outbound edges require source_port" in item.message
         for item in diagnostics
     )
-    assert any(
-        item.code == "node_capability"
+    invalid_port_diagnostic = next(
+        item
+        for item in diagnostics
+        if item.code == "node_capability"
         and item.node_id == "gate-switch-1"
         and item.node_type == "gate:switch"
         and "uses invalid source_port value(s): other" in item.message
-        for item in diagnostics
     )
+    assert "error" not in invalid_port_diagnostic.message
 
 
 def test_collect_domain_validation_diagnostics_reports_switch_bad_inbound_count(

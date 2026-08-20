@@ -1343,6 +1343,13 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
         "json",
         "yaml",
     ]
+    assert deserialize_gate["output_ports"] == [
+        {
+            "key": "error",
+            "label": "Error",
+            "description": "Gate validation or runtime failure handled by an error route.",
+        },
+    ]
     serialize_gate = next(
         node for node in catalog_payload["nodes"] if node["type"] == "gate:serialize"
     )
@@ -1414,6 +1421,11 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
     assert for_gate["output_ports"] == [
         {"key": "body", "label": "Body", "description": "Loop body path while items remain."},
         {"key": "done", "label": "Done", "description": "Exit path after the final item."},
+        {
+            "key": "error",
+            "label": "Error",
+            "description": "Gate validation or runtime failure handled by an error route.",
+        },
     ]
     while_gate = next(node for node in catalog_payload["nodes"] if node["type"] == "gate:while")
     while_gate_fields = {field["key"]: field for field in while_gate["fields"]}
@@ -1436,9 +1448,20 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
             "label": "Exhausted",
             "description": "Exit path when Max iterations is reached while the predicate is still true.",
         },
+        {
+            "key": "error",
+            "label": "Error",
+            "description": "Gate validation or runtime failure handled by an error route.",
+        },
     ]
     switch_gate = next(node for node in catalog_payload["nodes"] if node["type"] == "gate:switch")
-    assert switch_gate["output_ports"] == []
+    assert switch_gate["output_ports"] == [
+        {
+            "key": "error",
+            "label": "Error",
+            "description": "Gate validation or runtime failure handled by an error route.",
+        }
+    ]
     assert [field["key"] for field in switch_gate["fields"]] == [
         "cases",
         "default_port",
@@ -16444,6 +16467,11 @@ def test_admin_web_workflow_catalog_exposes_throttle_gate(tmp_path: Path) -> Non
             "key": "dropped",
             "label": "Dropped",
             "description": "Activations after the window limit is reached.",
+        },
+        {
+            "key": "error",
+            "label": "Error",
+            "description": "Gate validation or runtime failure handled by an error route.",
         },
     ]
 

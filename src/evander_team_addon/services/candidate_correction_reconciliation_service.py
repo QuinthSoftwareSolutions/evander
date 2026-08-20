@@ -9,7 +9,9 @@ from ..models import (
     AgentInboxItem,
     AgentStatus,
     AgentTask,
+    GitPromotionRecord,
     ReleasePackage,
+    ReleaseScopeValidation,
     TeamBlockerEventType,
     TeamBlockerResolutionScope,
     TeamBlockerSourceKind,
@@ -19,6 +21,7 @@ from ..models import (
     TeamRecordState,
     TeamState,
     TeamTaskState,
+    TaskCancellation,
     TaskDeliverableContract,
     project_lead_agent_id,
     utc_now,
@@ -29,12 +32,15 @@ from .domain.blockers import (
     active_blockers_for_source,
     append_blocker_event,
     open_or_get_blocker,
+    reconcile_task_blockers_after_cancellation,
     resolve_active_blockers_for_source,
 )
+from .domain.git_work_contexts import finalize_active_git_work_contexts_for_task
 from .domain.project_status import _recalculate_project_status
 from .domain.release_packages import (
     _build_release_package,
     _candidate_correction_downstream_recovery_base,
+    _create_correction_aggregate_promotion,
     _reviewed_commit_for_release,
     _successor_release_request_error,
 )
@@ -106,6 +112,282 @@ def _direct_successors(
         ),
         key=lambda release: (release.created_at, release.id),
     )
+
+
+def _failed_correction_aggregate(
+    state: TeamState,
+    successor: ReleasePackage,
+) -> GitPromotionRecord | None:
+    candidates = [
+        promotion
+        for promotion_id in successor.git_promotion_record_ids
+        if (promotion := state.git_promotions.get(promotion_id)) is not None
+        and promotion.promotion_kind == "correction_aggregate"
+        and promotion.state == "failed"
+    ]
+    if not candidates:
+        return None
+    candidates.sort(
+        key=lambda promotion: (promotion.updated_at, promotion.created_at, promotion.id)
+    )
+    return candidates[-1]
+
+
+def _cancel_obsolete_merge_recovery_tasks(
+    state: TeamState,
+    *,
+    successor: ReleasePackage,
+    failed_aggregate: GitPromotionRecord,
+    replacement_aggregate: GitPromotionRecord,
+    result: dict[str, Any],
+    now: datetime,
+) -> None:
+    linked_task_ids = {
+        task_id
+        for blocker in state.blockers.values()
+        if blocker.source_kind == TeamBlockerSourceKind.RELEASE_PACKAGE
+        and blocker.source_id == successor.id
+        for task_id in blocker.affected_task_ids
+    }
+    terminal_states = {
+        TeamTaskState.FINISHED,
+        TeamTaskState.ACCEPTED,
+        TeamTaskState.REJECTED,
+        TeamTaskState.CANCELLED,
+    }
+    for task_id in sorted(linked_task_ids):
+        task = state.tasks.get(task_id)
+        if (
+            task is None
+            or task.created_by_actor != "system:git-merge-recovery"
+            or task.state in terminal_states
+        ):
+            continue
+        finalize_active_git_work_contexts_for_task(
+            state,
+            task_id=task.id,
+            now=now,
+        )
+        task.cancellation = TaskCancellation(
+            reason_code="promotion_boundary_superseded",
+            reason=(
+                f"Failed correction aggregate {failed_aggregate.id} was retired and "
+                f"replaced by aggregate {replacement_aggregate.id}."
+            ),
+            actor_kind="system",
+            actor_id="system:candidate-correction-reconciliation",
+            cancelled_at=now,
+        )
+        task.state = TeamTaskState.CANCELLED
+        task.state_entered_at = now
+        task.updated_at = now
+        result.setdefault("cancelled_merge_recovery_task_ids", []).append(task.id)
+        reconcile_task_blockers_after_cancellation(
+            state,
+            task_id=task.id,
+            actor_agent_id=None,
+            dispatch_id=None,
+            result=result,
+            now=now,
+        )
+
+
+def _deliverable_supersession_reaches(
+    state: TeamState,
+    *,
+    deliverable_id: str,
+    current_ids: set[str],
+) -> bool:
+    seen: set[str] = set()
+    cursor_id = deliverable_id
+    while cursor_id not in seen:
+        seen.add(cursor_id)
+        deliverable = state.deliverables.get(cursor_id)
+        if deliverable is None or deliverable.superseded_by_deliverable_id is None:
+            return False
+        cursor_id = deliverable.superseded_by_deliverable_id
+        if cursor_id in current_ids:
+            return True
+    return False
+
+
+def _blocked_successor_has_reviewed_rework(
+    state: TeamState,
+    *,
+    predecessor: ReleasePackage,
+    correction_task: AgentTask | None,
+    successor: ReleasePackage,
+) -> bool:
+    if (
+        correction_task is None
+        or successor.state != TeamRecordState.BLOCKED
+        or successor.candidate_commit_sha is not None
+        or successor.approved_commit_sha is not None
+        or successor.verification_run_ids
+        or successor.review_request_ids
+        or _failed_correction_aggregate(state, successor) is None
+        or not _task_is_resolved(state, correction_task)
+        or not _release_review_correction_is_ready(state, predecessor, correction_task)
+    ):
+        return False
+    current_ids = set(
+        _current_successor_deliverable_ids(
+            state,
+            predecessor=predecessor,
+            correction_task=correction_task,
+        )
+    )
+    previous_ids = set(successor.deliverable_ids) - set(predecessor.deliverable_ids)
+    return bool(current_ids) and current_ids != previous_ids and all(
+        deliverable_id in current_ids
+        or _deliverable_supersession_reaches(
+            state,
+            deliverable_id=deliverable_id,
+            current_ids=current_ids,
+        )
+        for deliverable_id in previous_ids
+    )
+
+
+def _refresh_blocked_successor_from_reviewed_rework(
+    state: TeamState,
+    *,
+    predecessor: ReleasePackage,
+    correction_task: AgentTask,
+    successor: ReleasePackage,
+    result: dict[str, Any],
+    now: datetime,
+) -> tuple[bool, bool]:
+    if not _blocked_successor_has_reviewed_rework(
+        state,
+        predecessor=predecessor,
+        correction_task=correction_task,
+        successor=successor,
+    ):
+        return False, False
+    correction_deliverable_ids = _current_successor_deliverable_ids(
+        state,
+        predecessor=predecessor,
+        correction_task=correction_task,
+    )
+    preview_state = state.model_copy(deep=True)
+    preview_state.release_packages.pop(successor.id, None)
+    preview_result = _package_result()
+    try:
+        preview_id = _build_release_package(
+            preview_state,
+            project=preview_state.projects[predecessor.project_id],
+            request={
+                "id": successor.id,
+                "project_id": predecessor.project_id,
+                "deliverable_ids": correction_deliverable_ids,
+                "supersedes_release_package_id": predecessor.id,
+                "summary": successor.summary,
+                "release_branch": successor.release_branch,
+                "canonical_branch": successor.canonical_branch,
+                "verification_waivers": [],
+            },
+            result=preview_result,
+            projects_to_recalc=set(),
+            actor_agent_id=(predecessor.owner_agent_id or correction_task.owner_agent_id),
+            team_id=preview_state.projects[predecessor.project_id].team_id,
+        )
+    except Exception as exc:  # pragma: no cover - defensive durable recovery
+        preview_id = None
+        preview_result["errors"].append(
+            f"{exc.__class__.__name__}: {str(exc) or 'unexpected packaging failure'}"
+        )
+    if preview_id is None or preview_result["errors"]:
+        validation_error = (
+            "; ".join(str(error) for error in preview_result["errors"])
+            or f"failed to validate replacement intake for successor {successor.id}"
+        )
+        result.setdefault("candidate_correction_errors", {})[predecessor.id] = validation_error
+        changed = _open_reconciliation_blocker(
+            state,
+            predecessor=predecessor,
+            correction_task=correction_task,
+            details=validation_error,
+            result=result,
+            now=now,
+        )
+        return True, changed
+    preview_release = preview_state.release_packages[preview_id]
+
+    failed_aggregate = _failed_correction_aggregate(state, successor)
+    assert failed_aggregate is not None
+    package_result = _package_result()
+    aggregate = _create_correction_aggregate_promotion(
+        state,
+        release=successor,
+        predecessor=predecessor,
+        correction_deliverable_ids=correction_deliverable_ids,
+        actor_agent_id=(predecessor.owner_agent_id or correction_task.owner_agent_id),
+        result=package_result,
+    )
+    if aggregate is None:
+        details = (
+            "; ".join(str(error) for error in package_result["errors"])
+            or f"failed to rebuild correction aggregate for successor {successor.id}"
+        )
+        changed = _open_reconciliation_blocker(
+            state,
+            predecessor=predecessor,
+            correction_task=correction_task,
+            details=details,
+            result=result,
+            now=now,
+        )
+        result.setdefault("candidate_correction_errors", {})[predecessor.id] = details
+        return True, changed
+
+    failed_aggregate.state = "retired"
+    failed_aggregate.updated_at = now
+    _cancel_obsolete_merge_recovery_tasks(
+        state,
+        successor=successor,
+        failed_aggregate=failed_aggregate,
+        replacement_aggregate=aggregate,
+        result=result,
+        now=now,
+    )
+    successor.deliverable_ids = list(preview_release.deliverable_ids)
+    successor.artifact_refs = list(preview_release.artifact_refs)
+    successor.feature_branches = list(preview_release.feature_branches)
+    successor.release_branch = preview_release.release_branch
+    successor.canonical_branch = preview_release.canonical_branch
+    successor.git_base_branch = preview_release.git_base_branch
+    successor.base_commit_sha = preview_release.base_commit_sha
+    successor.canonical_base_commit_sha = preview_release.canonical_base_commit_sha
+    successor.policy_version = preview_release.policy_version
+    successor.verification_waivers = [
+        waiver.model_copy(deep=True) for waiver in preview_release.verification_waivers
+    ]
+    successor.state = TeamRecordState.PENDING
+    successor.error = None
+    successor.gate_failure = None
+    successor.scope_validation = (
+        preview_release.scope_validation.model_copy(deep=True)
+        if preview_release.scope_validation is not None
+        else ReleaseScopeValidation(state="pending")
+    )
+    successor.updated_at = now
+    result.setdefault("events", []).extend(package_result["events"])
+    result.setdefault("recovered_successor_release_package_ids", []).append(successor.id)
+    result.setdefault("git_promotion_event_ids", []).append(aggregate.id)
+    resolve_active_blockers_for_source(
+        state,
+        source_kind=TeamBlockerSourceKind.RELEASE_PACKAGE,
+        source_id=successor.id,
+        actor_agent_id=None,
+        dispatch_id=None,
+        note=f"Reviewed replacement correction rebuilt failed aggregate {aggregate.id}.",
+        reference_ids=[aggregate.id, *correction_deliverable_ids],
+        result=result,
+        now=now,
+    )
+    _recalculate_project_status(state, predecessor.project_id)
+    return True, True
 
 
 def _current_accepted_deliverable_ids(
@@ -262,7 +544,13 @@ def _candidate_release_ids_for_reconciliation(state: TeamState) -> list[str]:
         successors = _direct_successors(state, predecessor.id)
         has_blocker = _has_reconciliation_blocker(state, predecessor.id)
         if successors:
-            if has_blocker:
+            correction_task = _correction_task(state, predecessor)
+            if has_blocker or _blocked_successor_has_reviewed_rework(
+                state,
+                predecessor=predecessor,
+                correction_task=correction_task,
+                successor=successors[0],
+            ):
                 release_ids.append(predecessor.id)
             continue
         task = _correction_task(state, predecessor)
@@ -442,6 +730,23 @@ def reconcile_candidate_correction_successors(
         existing_successors = _direct_successors(state, predecessor.id)
         if existing_successors:
             successor = existing_successors[0]
+            refresh_attempted = False
+            refresh_changed = False
+            if correction_task is not None:
+                refresh_attempted, refresh_changed = (
+                    _refresh_blocked_successor_from_reviewed_rework(
+                        state,
+                        predecessor=predecessor,
+                        correction_task=correction_task,
+                        successor=successor,
+                        result=result,
+                        now=effective_now,
+                    )
+                )
+            if refresh_attempted:
+                result.setdefault("existing_successor_release_package_ids", []).append(successor.id)
+                changed = refresh_changed or changed
+                continue
             resolved_ids = resolve_active_blockers_for_source(
                 state,
                 source_kind=TeamBlockerSourceKind.CANDIDATE_CORRECTION_SUCCESSOR,

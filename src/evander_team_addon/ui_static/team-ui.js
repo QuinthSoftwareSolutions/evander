@@ -1787,8 +1787,11 @@ function bindForms() {
     if (!guardTeamMutation("retry release gates")) {
       return;
     }
+    const rejectedReviewException = button.dataset.rejectedReviewException === "true";
     const reason = window.prompt(
-      "What concrete recovery occurred since this gate failed? Cancel and escalate if none.",
+      rejectedReviewException
+        ? "Why is an operator exception justified for this rejected review on the unchanged candidate?"
+        : "What concrete recovery occurred since this gate failed? Cancel and escalate if none.",
       "",
     );
     if (!text(reason)) {
@@ -18339,6 +18342,13 @@ function renderReleasePolicyDetails(release) {
   return `${waiverMarkup}${scopeMarkup}${humanMarkup}`;
 }
 
+function releaseHasSuccessor(releaseId) {
+  const normalizedReleaseId = text(releaseId);
+  return Boolean(normalizedReleaseId) && values(state.release_packages).some(
+    (candidate) => text(candidate?.supersedes_release_package_id) === normalizedReleaseId,
+  );
+}
+
 function renderReleaseGateAction(release) {
   const failure = release.gate_failure || null;
   const gateId = text(failure?.source_id);
@@ -18350,10 +18360,18 @@ function renderReleaseGateAction(release) {
     release.state === "blocked" &&
     failure?.stage === "review" &&
     failure?.kind === "blocked";
-  if (!gateId || (!retryableVerification && !retryableReview)) {
+  const rejectedReviewException =
+    release.state === "rejected" &&
+    failure?.stage === "review" &&
+    failure?.kind === "rejected" &&
+    !releaseHasSuccessor(release.id);
+  if (!gateId || (!retryableVerification && !retryableReview && !rejectedReviewException)) {
     return "";
   }
   const gateKind = retryableVerification ? "verification" : "review";
+  const label = rejectedReviewException
+    ? "Retry rejected review by exception"
+    : `Retry ${gateKind} gate`;
   return `
     <div class="record-actions">
       <button
@@ -18363,7 +18381,8 @@ function renderReleaseGateAction(release) {
         data-release-id="${escapeAttr(release.id)}"
         data-gate-kind="${escapeAttr(gateKind)}"
         data-gate-id="${escapeAttr(gateId)}"
-      >Retry ${escapeHtml(gateKind)} gate</button>
+        data-rejected-review-exception="${rejectedReviewException ? "true" : "false"}"
+      >${escapeHtml(label)}</button>
     </div>
   `;
 }
@@ -18372,6 +18391,7 @@ async function retryReleaseGate(button, reason) {
   const releaseId = text(button?.dataset?.releaseId);
   const gateKind = text(button?.dataset?.gateKind);
   const gateId = text(button?.dataset?.gateId);
+  const rejectedReviewException = button?.dataset?.rejectedReviewException === "true";
   if (!releaseId || !gateKind || !gateId) {
     setStatus("Release gate retry context is incomplete.", "error");
     return;
@@ -18392,6 +18412,7 @@ async function retryReleaseGate(button, reason) {
           gate_kind: gateKind,
           gate_id: gateId,
           reason,
+          ...(rejectedReviewException ? { allow_rejected_review_exception: true } : {}),
           expected_revision: state.revision,
         }),
       },

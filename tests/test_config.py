@@ -1413,6 +1413,27 @@ def test_trigger_orchestrator_switch_gate_accepts_cases_and_duplicate_ports() ->
                         "type": "gate:switch",
                         "cases": [
                             {
+                                "port": "error",
+                                "when": {
+                                    "all": [{"left": "${{trigger-1.state}}", "equals": "ready"}]
+                                },
+                            }
+                        ],
+                    }
+                ],
+            },
+            "gate:switch case port 'error' is reserved for lifecycle failures",
+        ),
+        (
+            {
+                "runtime_dir": "/tmp/evander-runtime",
+                "gates": [
+                    {
+                        "id": "gate-switch",
+                        "display_name": "Route by state",
+                        "type": "gate:switch",
+                        "cases": [
+                            {
                                 "port": None,
                                 "when": {
                                     "all": [{"left": "${{trigger-1.state}}", "equals": "ready"}]
@@ -1466,6 +1487,28 @@ def test_trigger_orchestrator_switch_gate_accepts_cases_and_duplicate_ports() ->
                 ],
             },
             "gate:switch default_port must be a non-empty string",
+        ),
+        (
+            {
+                "runtime_dir": "/tmp/evander-runtime",
+                "gates": [
+                    {
+                        "id": "gate-switch",
+                        "display_name": "Route by state",
+                        "type": "gate:switch",
+                        "default_port": "error",
+                        "cases": [
+                            {
+                                "port": "ready",
+                                "when": {
+                                    "all": [{"left": "${{trigger-1.state}}", "equals": "ready"}]
+                                },
+                            }
+                        ],
+                    }
+                ],
+            },
+            "gate:switch default_port 'error' is reserved for lifecycle failures",
         ),
         (
             {

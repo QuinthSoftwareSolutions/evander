@@ -23,9 +23,11 @@ from ...models import (
     HumanReviewRequirementSnapshot,
     HumanReviewFindingSnapshot,
     TeamBlockerSourceKind,
+    TeamInboxItemState,
     TeamInboxPriority,
     TeamRecordState,
     TeamState,
+    TaskCancellation,
     TaskDeliverableContract,
     TeamTaskKind,
     TeamTaskState,
@@ -37,6 +39,7 @@ from .common import _append_unique, _required_text, _set_task_state, utc_now
 from .blockers import (
     open_or_get_blocker,
     open_release_blocker,
+    reconcile_task_blockers_after_cancellation,
     resolve_active_blockers_for_source,
 )
 from .review_handoff import queue_actionable_inbox_item
@@ -46,6 +49,7 @@ from .human_reviews import (
     ensure_human_review_request,
     human_review_request_for_release,
 )
+from .git_work_contexts import finalize_active_git_work_contexts_for_task
 from .release_packages import allowed_release_parent_task_ids
 from .task_assessment import deliverable_source_lineage, require_release_scope
 
@@ -852,7 +856,13 @@ def _candidate_verification_correction_description(
         f"Failed command evidence:\n{command_evidence}\n\n"
         "The task worktree must be created from the exact candidate commit and tree "
         "above. Do not merge or rebase the current project base branch into this "
-        "correction. Make only the correction required by the verifier evidence and "
+        "correction. Do not amend, reset, rebase, or otherwise rewrite the pinned "
+        "candidate; every submitted correction commit must have the candidate commit "
+        "as an ancestor. If a finding requires rewriting pinned commit metadata or "
+        "history, escalate it as incompatible with this immutable correction boundary. "
+        "Before submission, verify every new correction commit's metadata against the "
+        "repository guidance; promotion freezes that metadata into the next candidate. "
+        "Make only the correction required by the verifier evidence and "
         "submit the changed Git work as the correction deliverable. After acceptance and "
         "review, Team automatically creates the successor release. Do not request a "
         "release, retry or resubmit the unchanged candidate, or finish this task directly; "
@@ -970,6 +980,12 @@ def materialize_release_review_rejection_correction(
     ):
         raise ValueError(f"reserved release review correction task id {task_id} is already in use")
     else:
+        if task.state == TeamTaskState.CANCELLED:
+            task.cancellation = None
+            task.completion = None
+            task.owner_agent_id = owner_agent_id
+            _set_task_state(task, TeamTaskState.PENDING, now=now)
+            result.setdefault("reactivated_task_ids", []).append(task.id)
         if task.state not in _TERMINAL_CANDIDATE_CORRECTION_TASK_STATES:
             _reconcile_candidate_correction_task_git_base(
                 state,
@@ -1061,7 +1077,15 @@ def materialize_release_review_rejection_correction(
                 "next_action": (
                     "Work only in the task worktree rooted at candidate_commit_sha and "
                     "candidate_tree_hash. Do not merge or rebase the current project base "
-                    "branch into this correction. Fix the release-review finding and submit "
+                    "branch into this correction. Do not amend, reset, rebase, or otherwise "
+                    "rewrite the pinned candidate; the submitted correction commit must "
+                    "have candidate_commit_sha as an ancestor. If the finding requires "
+                    "rewriting pinned commit metadata or history, escalate it as "
+                    "incompatible with this immutable correction boundary. Before "
+                    "submission, verify every new correction commit's metadata against "
+                    "the repository guidance because promotion freezes it into the next "
+                    "candidate. Fix the "
+                    "release-review finding and submit "
                     "the changed Git work as the correction deliverable"
                     + (
                         ", superseding " + ", ".join(late_rework_deliverable_ids)
@@ -1154,7 +1178,13 @@ def _release_review_correction_description(
         f"Review findings:\n{review_evidence}\n\n"
         "The task worktree must be created from the exact candidate commit and tree "
         "above. Do not merge or rebase the current project base branch into this "
-        "correction. Make only the correction required by the review evidence and submit "
+        "correction. Do not amend, reset, rebase, or otherwise rewrite the pinned "
+        "candidate; every submitted correction commit must have the candidate commit "
+        "as an ancestor. If a finding requires rewriting pinned commit metadata or "
+        "history, escalate it as incompatible with this immutable correction boundary. "
+        "Before submission, verify every new correction commit's metadata against the "
+        "repository guidance; promotion freezes that metadata into the next candidate. "
+        "Make only the correction required by the review evidence and submit "
         "the changed Git work as the correction deliverable. After acceptance and review, "
         "Team automatically creates the successor release. Do not request a release, retry "
         "or resubmit the unchanged candidate."
@@ -1464,6 +1494,201 @@ def _release_promotion(
     return matches[0] if matches else None
 
 
+def _retire_release_review_correction_work_for_exception(
+    state: TeamState,
+    *,
+    release: ReleasePackage,
+    review: ReviewRequest,
+    requested_by: str,
+    reason: str,
+    result: dict[str, Any],
+    now: datetime,
+) -> None:
+    task_id = release.review_correction_task_id
+    if task_id is None:
+        return
+
+    task = state.tasks.get(task_id)
+    if task is not None and task.state not in {
+        TeamTaskState.ACCEPTED,
+        TeamTaskState.CANCELLED,
+    }:
+        retired_review_request_ids: set[str] = set()
+        handled_handoff_inbox_item_ids: set[str] = set()
+        for deliverable in state.deliverables.values():
+            if (
+                deliverable.task_id != task.id
+                or deliverable.superseded_by_deliverable_id is not None
+            ):
+                continue
+            active_acceptance = (
+                deliverable.acceptance_recipient_agent_id is not None
+                and deliverable.acceptance_decision is None
+            )
+            if active_acceptance:
+                deliverable.acceptance_recipient_agent_id = None
+            deliverable_retired_review_ids: set[str] = set()
+            for review_id in deliverable.review_request_ids:
+                correction_review = state.review_requests.get(review_id)
+                if (
+                    correction_review is None
+                    or correction_review.superseded_by_review_request_id is not None
+                    or correction_review.retired_at is not None
+                    or correction_review.state
+                    not in {
+                        TeamRecordState.PENDING,
+                        TeamRecordState.IN_PROGRESS,
+                        TeamRecordState.BLOCKED,
+                    }
+                ):
+                    continue
+                correction_review.retired_at = now
+                correction_review.retired_by = requested_by
+                correction_review.retirement_reason = (
+                    f"Generated correction task {task.id} was superseded by an "
+                    f"operator exception for release review {review.id}."
+                )
+                retired_review_request_ids.add(correction_review.id)
+                deliverable_retired_review_ids.add(correction_review.id)
+            if active_acceptance or deliverable_retired_review_ids:
+                for item in state.inbox.values():
+                    if item.state != TeamInboxItemState.PENDING:
+                        continue
+                    item_review_id = item.payload.get("review_request_id")
+                    item_deliverable_id = item.payload.get("deliverable_id")
+                    if item_review_id in deliverable_retired_review_ids or (
+                        active_acceptance
+                        and item_deliverable_id == deliverable.id
+                        and item.payload.get("kind") == "superior_acceptance_requested"
+                    ):
+                        item.state = TeamInboxItemState.HANDLED
+                        item.updated_at = now
+                        handled_handoff_inbox_item_ids.add(item.id)
+            if deliverable.state in {
+                TeamRecordState.PENDING,
+                TeamRecordState.IN_PROGRESS,
+                TeamRecordState.BLOCKED,
+            }:
+                deliverable.state = TeamRecordState.REJECTED
+
+        git_context_finalization = finalize_active_git_work_contexts_for_task(
+            state,
+            task_id=task.id,
+            now=now,
+        )
+        task.cancellation = TaskCancellation(
+            reason_code="release_review_exception",
+            reason=(
+                f"Operator-authorized retry of rejected release review {review.id} "
+                f"superseded its generated correction work: {reason}"
+            ),
+            actor_kind="operator",
+            actor_id=requested_by,
+            cancelled_at=now,
+        )
+        _set_task_state(task, TeamTaskState.CANCELLED, now=now)
+        task.updated_at = now
+        result.setdefault("cancelled_task_ids", []).append(task.id)
+        if retired_review_request_ids:
+            result.setdefault("retired_correction_review_request_ids", []).extend(
+                sorted(retired_review_request_ids)
+            )
+        if handled_handoff_inbox_item_ids:
+            result.setdefault("handled_correction_handoff_inbox_item_ids", []).extend(
+                sorted(handled_handoff_inbox_item_ids)
+            )
+        result.setdefault("git_context_finalization", {})[task.id] = git_context_finalization
+        reconcile_task_blockers_after_cancellation(
+            state,
+            task_id=task.id,
+            actor_agent_id=None,
+            dispatch_id=None,
+            result=result,
+            now=now,
+        )
+
+    handled_inbox_item_ids: list[str] = []
+    for item in state.inbox.values():
+        if (
+            item.state == TeamInboxItemState.PENDING
+            and item.task_id == task_id
+            and item.payload.get("kind") == "release_review_rejection_correction_work"
+        ):
+            item.state = TeamInboxItemState.HANDLED
+            item.updated_at = now
+            handled_inbox_item_ids.append(item.id)
+    if handled_inbox_item_ids:
+        result.setdefault("handled_correction_inbox_item_ids", []).extend(
+            sorted(handled_inbox_item_ids)
+        )
+
+    release.review_correction_task_id = None
+    result.setdefault("retired_release_review_correction_task_ids", []).append(task_id)
+
+
+def _retain_release_review_correction_work_for_remaining_rejections(
+    state: TeamState,
+    *,
+    release: ReleasePackage,
+    reviews: list[ReviewRequest],
+    result: dict[str, Any],
+    now: datetime,
+) -> None:
+    task_id = release.review_correction_task_id
+    task = state.tasks.get(task_id or "")
+    if task is None or not reviews:
+        return
+
+    _owner_agent_id, assignment_reason = _release_review_correction_owner(
+        state,
+        release=release,
+    )
+    findings_by_review_id = {review.id: list(review.findings) for review in reviews}
+    task.description = _release_review_correction_description(
+        release=release,
+        reviews=reviews,
+        findings_by_review_id=findings_by_review_id,
+        assignment_reason=assignment_reason,
+    )
+    task.updated_at = now
+    result.setdefault("updated_task_ids", []).append(task.id)
+
+    rejected_review_ids = [review.id for review in reviews]
+    rejected_reviews = [
+        {
+            "review_request_id": review.id,
+            "reviewer_agent_id": review.reviewer_agent_id,
+            "findings": findings_by_review_id[review.id],
+        }
+        for review in reviews
+    ]
+    findings = [
+        finding for review in reviews for finding in findings_by_review_id[review.id]
+    ]
+    updated_inbox_item_ids: list[str] = []
+    for item in state.inbox.values():
+        if (
+            item.state != TeamInboxItemState.PENDING
+            or item.task_id != task.id
+            or item.payload.get("kind") != "release_review_rejection_correction_work"
+        ):
+            continue
+        item.sender_agent_id = reviews[0].reviewer_agent_id
+        item.payload = {
+            **item.payload,
+            "review_request_id": reviews[0].id,
+            "review_request_ids": rejected_review_ids,
+            "rejected_reviews": rejected_reviews,
+            "findings": findings,
+        }
+        item.updated_at = now
+        updated_inbox_item_ids.append(item.id)
+    if updated_inbox_item_ids:
+        result.setdefault("updated_correction_inbox_item_ids", []).extend(
+            sorted(updated_inbox_item_ids)
+        )
+
+
 def retry_release_gate(
     state: TeamState,
     *,
@@ -1473,9 +1698,26 @@ def retry_release_gate(
     reason: str,
     requested_by: str,
     result: dict[str, Any],
+    allow_rejected_review_exception: bool = False,
 ) -> None:
-    if release.state != TeamRecordState.BLOCKED:
+    rejected_review_exception = (
+        allow_rejected_review_exception
+        and gate_kind == "review"
+        and release.state == TeamRecordState.REJECTED
+    )
+    if release.state != TeamRecordState.BLOCKED and not rejected_review_exception:
         raise ValueError(f"release {release.id} is not blocked")
+    if rejected_review_exception:
+        successor_ids = sorted(
+            candidate.id
+            for candidate in state.release_packages.values()
+            if candidate.supersedes_release_package_id == release.id
+        )
+        if successor_ids:
+            raise ValueError(
+                f"release {release.id} already has successor release package(s): "
+                + ", ".join(successor_ids)
+            )
     candidate = release.candidate_commit_sha
     if candidate is None:
         raise ValueError(f"release {release.id} has no pinned candidate")
@@ -1555,7 +1797,17 @@ def retry_release_gate(
     if current is None:
         raise ValueError("review retry must target a current release review")
     if current.state != TeamRecordState.BLOCKED:
-        raise ValueError("only a blocked release review may be retried")
+        if not (
+            rejected_review_exception
+            and current.state == TeamRecordState.REJECTED
+            and normalized_requested_by.startswith("operator:")
+            and release.gate_failure is not None
+            and release.gate_failure.stage == "review"
+            and release.gate_failure.kind == "rejected"
+            and release.gate_failure.source_id == current.id
+            and current.candidate_commit_sha == candidate
+        ):
+            raise ValueError("only a blocked release review may be retried")
     project = state.projects.get(release.project_id)
     profile = (
         state.review_profiles.get(current.review_profile_id)
@@ -1575,6 +1827,39 @@ def retry_release_gate(
     if scope_error is not None:
         raise ValueError(scope_error)
     now = utc_now()
+    retry_kind = (
+        "operator-authorized rejected-review exception"
+        if current.state == TeamRecordState.REJECTED
+        else "blocked review"
+    )
+    if current.state == TeamRecordState.REJECTED:
+        remaining_rejected_reviews = [
+            review
+            for review in current_reviews
+            if review.id != current.id and review.state == TeamRecordState.REJECTED
+        ]
+        if remaining_rejected_reviews:
+            if release.review_correction_task_id is not None:
+                result.setdefault("retained_release_review_correction_task_ids", []).append(
+                    release.review_correction_task_id
+                )
+                _retain_release_review_correction_work_for_remaining_rejections(
+                    state,
+                    release=release,
+                    reviews=remaining_rejected_reviews,
+                    result=result,
+                    now=now,
+                )
+        else:
+            _retire_release_review_correction_work_for_exception(
+                state,
+                release=release,
+                review=current,
+                requested_by=normalized_requested_by,
+                reason=normalized_reason,
+                result=result,
+                now=now,
+            )
     review = _create_release_review(
         state,
         release=release,
@@ -1586,8 +1871,15 @@ def retry_release_gate(
         retry_requested_by=normalized_requested_by,
         review_cohort_id=current.review_cohort_id,
         instructions=(
-            f"Retry blocked review {current.id} for unchanged release candidate {candidate}. "
-            f"Retry reason: {normalized_reason}"
+            f"Retry {retry_kind} {current.id} for unchanged release candidate {candidate}. "
+            f"Retry reason: {normalized_reason} "
+            + (
+                "The operator exception applies only to the prior rejected finding; "
+                "treat that finding as explicitly excepted, independently re-evaluate "
+                "every other required criterion, and report any new defect."
+                if current.state == TeamRecordState.REJECTED
+                else ""
+            )
         ),
         result=result,
         now=now,
@@ -1627,6 +1919,8 @@ def retry_release_gate(
     result["replacement_gate_id"] = review.id
     result["retry_reason"] = normalized_reason
     result["retry_requested_by"] = normalized_requested_by
+    if current.state == TeamRecordState.REJECTED:
+        result["rejected_review_exception"] = True
 
 
 def _candidate_manifest(
@@ -1900,10 +2194,32 @@ def _recompute_release_state_after_gate_retry(
     state: TeamState,
     release: ReleasePackage,
 ) -> None:
+    current_reviews = _current_release_reviews(state, release)
+    rejected_reviews = [
+        review for review in current_reviews if review.state == TeamRecordState.REJECTED
+    ]
+    if rejected_reviews:
+        existing_source_id = (
+            release.gate_failure.source_id if release.gate_failure is not None else None
+        )
+        rejected = next(
+            (review for review in rejected_reviews if review.id == existing_source_id),
+            rejected_reviews[0],
+        )
+        message = "; ".join(rejected.findings) or f"release review {rejected.id} rejected"
+        release.state = TeamRecordState.REJECTED
+        release.gate_failure = ReleaseGateFailure(
+            stage="review",
+            kind="rejected",
+            source_id=rejected.id,
+            message=message,
+        )
+        release.error = message
+        release.updated_at = utc_now()
+        return
+
     blocked_reviews = [
-        review
-        for review in _current_release_reviews(state, release)
-        if review.state == TeamRecordState.BLOCKED
+        review for review in current_reviews if review.state == TeamRecordState.BLOCKED
     ]
     if blocked_reviews:
         existing_source_id = (

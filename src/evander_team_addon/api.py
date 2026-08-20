@@ -3545,6 +3545,9 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
             gate_id=_required(payload, "gate_id"),
             reason=_required(payload, "reason"),
             operator_actor_id=_operator_actor_from_request(context.auth, request),
+            allow_rejected_review_exception=(
+                _optional_bool(payload, "allow_rejected_review_exception") or False
+            ),
             expected_revision=_expected_revision(payload),
         )
         published_event_ids = _publish_team_events(context, result.get("events"))

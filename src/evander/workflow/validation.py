@@ -8,7 +8,7 @@ from typing import Any
 from pydantic import BaseModel
 
 from evander.workflow.binding import BindingResolutionError, _parse_binding_expression
-from evander.workflow.contracts import effective_node_output_schema
+from evander.workflow.contracts import GATE_FAILURE_OUTPUT_SCHEMA, effective_node_output_schema
 from evander.workflow.graph import (
     build_inbound_edge_index,
     merge_output_schema_intersection,
@@ -298,6 +298,8 @@ def _derive_workflow_node_output_schema(
     visiting.remove(node_id)
 
     normalized = _copy_output_schema(schema)
+    if node_type.startswith("gate:"):
+        normalized.update(_copy_output_schema(GATE_FAILURE_OUTPUT_SCHEMA))
     cache[node_id] = normalized
     return normalized
 
