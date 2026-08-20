@@ -2116,6 +2116,7 @@ def test_admin_web_workflow_catalog_lists_managed_reference_repositories(
     repositories = next(field for field in prepare["fields"] if field["key"] == "repositories")
     item_fields = {field["key"]: field for field in repositories["item_fields"]}
     assert repositories["kind"] == "object_list"
+    assert repositories["bindable"] is True
     assert [field["key"] for field in repositories["item_fields"]] == [
         "managed_repo_id",
         "branch",

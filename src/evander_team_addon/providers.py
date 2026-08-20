@@ -4514,20 +4514,32 @@ class TeamSetTaskWorkStateEffectProvider(EffectProviderBase):
             task = current_state.tasks.get(_required_text(task_id, "task_id"))
             if task is None:
                 raise ValueError(f"task {task_id} does not exist")
-            requested_state = TeamTaskState(_required_text(payload.get("state"), "state"))
-            if requested_state not in {
+            work_states = {
                 TeamTaskState.PENDING,
                 TeamTaskState.IN_PROGRESS,
                 TeamTaskState.WAITING_FOR_INPUT,
-            }:
+            }
+            if task.state not in work_states:
+                raise ValueError(
+                    f"effect:team:set-task-work-state cannot change task {task.id} "
+                    f"from {task.state.value}; current state must be pending, "
+                    "in_progress, or waiting_for_input"
+                )
+            requested_state = TeamTaskState(_required_text(payload.get("state"), "state"))
+            if requested_state not in work_states:
                 raise ValueError(
                     "effect:team:set-task-work-state state must be pending, "
                     "in_progress, or waiting_for_input"
                 )
+            expected_revision = _optional_int(payload.get("expected_revision"), default=None)
             state = TeamAdminService(repo).update_task(
                 task_id=task.id,
                 state=requested_state,
-                expected_revision=_optional_int(payload.get("expected_revision"), default=None),
+                expected_revision=(
+                    expected_revision
+                    if expected_revision is not None
+                    else current_state.revision
+                ),
             )
         except TeamStateConflictError as exc:
             return _task_effect_error_result(

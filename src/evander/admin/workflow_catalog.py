@@ -2637,9 +2637,10 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
                 "Reference repositories",
                 "object_list",
                 required=True,
+                bindable=True,
                 description=(
                     "Managed repositories to prepare for the assistant. Each row uses its own "
-                    "main branch setting."
+                    "main branch setting, or bind the complete array from an upstream output."
                 ),
                 item_fields=[
                     _field(

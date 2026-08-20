@@ -7,12 +7,18 @@
   generate ordinary owner wakes or manager fallback; a workflow can resume one
   to `in_progress` and immediately wake its owner without embedding timer
   policy in Team runtime.
+- Limited workflow work-state transitions to tasks already in that lifecycle,
+  prevented stale agent dispatches from resuming paused tasks, and kept agents
+  from creating tasks in the workflow-only paused state.
+- Kept all five task-board lifecycle lanes on one desktop grid row.
 
 ## 2026-08-20 - Reference Repository Workflow Editor
 
 - Replaced the reference-repository effect's raw JSON editor with repeatable managed-repository
   selection rows and a separate per-repository main-branch field. Existing `repo_source` workflow
   configuration remains compatible while new rows store the exact managed repository ID.
+- Preserved exact upstream-array bindings through structured repository inspector edits and exposed
+  an outer literal/binding mode for the repository list.
 
 ## 2026-08-20 - Release Exception And Gate Error Recovery
 

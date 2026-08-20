@@ -1857,6 +1857,48 @@ def test_agent_action_cannot_pause_task_waiting_for_external_input(tmp_path: Pat
     assert state.tasks["task"].state == TeamTaskState.PENDING
 
 
+def test_agent_action_cannot_resume_workflow_paused_task_from_stale_dispatch(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_team(tmp_path)
+    state, leases = _team_runtime_service(repo).lease_due_agents(
+        now=datetime(2026, 1, 1, tzinfo=UTC)
+    )
+    [lease] = leases
+    pause = TeamSetTaskWorkStateEffectProvider()
+    pause.initialize(
+        TeamSetTaskWorkStateEffectDefinition(
+            id="pause-task",
+            display_name="Pause task",
+            type="effect:team:set-task-work-state",
+            task_id="task",
+            state="waiting_for_input",
+            expected_revision=state.revision,
+        ),
+        EffectRuntimeContext(resolved_config={"runtime_dir": str(tmp_path)}),
+    )
+
+    paused = pause.execute()
+
+    assert paused["success"] is True
+    assert repo.read().agent_runtimes["backend"].active_dispatch_id == lease["dispatch_id"]
+    state, result = _team_agent_action_service(repo).apply_agent_action(
+        session_id="session-backend",
+        dispatch_id=lease["dispatch_id"],
+        action={
+            "agent_id": "backend",
+            "task_updates": [{"task_id": "task", "state": "in_progress"}],
+        },
+    )
+
+    assert result["success"] is False
+    assert result["errors"] == [
+        "task task is waiting_for_input and can only be resumed by an "
+        "operator-owned workflow"
+    ]
+    assert state.tasks["task"].state == TeamTaskState.WAITING_FOR_INPUT
+
+
 def test_agent_lease_and_wake_context_include_effective_outcome_catalog(
     tmp_path: Path,
 ) -> None:
@@ -10729,6 +10771,55 @@ def test_set_task_work_state_effect_pauses_and_resumes_owner_work(tmp_path: Path
     )
     assert [lease["agent"]["id"] for lease in leases] == ["backend"]
     assert state.agent_runtimes["backend"].next_wake_at is not None
+
+
+@pytest.mark.parametrize(
+    "source_state",
+    [
+        TeamTaskState.BLOCKED,
+        TeamTaskState.WAITING_FOR_REVIEW,
+        TeamTaskState.FINISHED,
+        TeamTaskState.ACCEPTED,
+        TeamTaskState.REJECTED,
+        TeamTaskState.CANCELLED,
+    ],
+)
+def test_set_task_work_state_effect_does_not_reopen_other_lifecycles(
+    tmp_path: Path,
+    source_state: TeamTaskState,
+) -> None:
+    repo = _seed_team(tmp_path)
+
+    def _advance_task(state: TeamState) -> TeamState:
+        state.tasks["task"].state = source_state
+        if source_state == TeamTaskState.CANCELLED:
+            state.tasks["task"].cancellation = TaskCancellation(
+                reason_code="superseded",
+                reason="A successor owns the work.",
+                actor_kind="system",
+                actor_id="test",
+            )
+        return state
+
+    advanced = repo.update(_advance_task)
+    provider = TeamSetTaskWorkStateEffectProvider()
+    provider.initialize(
+        TeamSetTaskWorkStateEffectDefinition(
+            id="invalid-source-state",
+            display_name="Do not reopen task",
+            type="effect:team:set-task-work-state",
+            task_id="task",
+            state="in_progress",
+            expected_revision=advanced.revision,
+        ),
+        EffectRuntimeContext(resolved_config={"runtime_dir": str(tmp_path)}),
+    )
+
+    result = provider.execute()
+
+    assert result["success"] is False
+    assert f"from {source_state.value}" in result["error"]
+    assert repo.read().tasks["task"].state == source_state
 
 
 def test_set_task_work_state_effect_rejects_non_work_lifecycle_state(tmp_path: Path) -> None:

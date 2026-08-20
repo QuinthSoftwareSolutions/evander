@@ -441,6 +441,12 @@ class TeamAgentActionService:
                                 "waiting_for_input is reserved for operator-owned workflows"
                             )
                             continue
+                        if task.state == TeamTaskState.WAITING_FOR_INPUT:
+                            result["errors"].append(
+                                f"task {task.id} is waiting_for_input and can only be "
+                                "resumed by an operator-owned workflow"
+                            )
+                            continue
                         if raw_state == TeamTaskState.FINISHED.value:
                             require_task_can_finish(
                                 state_model,

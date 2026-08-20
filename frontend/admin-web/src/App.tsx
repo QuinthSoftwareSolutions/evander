@@ -79,11 +79,13 @@ import {
 } from "./workflowTargetInventory";
 import {
   BindingParseError,
+  isExactWorkflowBindingValue,
   isParsedBindingExpression,
   isParsedBindingReference,
   parseBindingExpression,
   rewriteWorkflowConfigBindingReferences,
   rewriteWorkflowNodeConfigBindings,
+  workflowObjectListItemsForEdit,
   type ParsedBindingExpression,
   type ParsedBindingReference,
 } from "./workflowBindings";
@@ -377,7 +379,6 @@ const API_BASE = import.meta.env.VITE_API_BASE_URL ?? "";
 const EMPTY_OUTPUT_SCHEMAS: WorkflowOutputSchemas = {};
 const RUNTIME_NODE_PULSE_DURATION_MS = 1400;
 const RUNTIME_NODE_PULSE_SEEN_KEY_CAP = 1000;
-const BINDING_EXACT_RE = /^\$\{\{([A-Za-z0-9][A-Za-z0-9_-]*)\.([A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*)\}\}$/;
 const EFFECT_TARGET_KEYS = ["target", "session_id", "vm_name"] as const;
 const TARGET_SELECTOR_NODE_TYPES = new Set([
   "effect:vm:clone-repo",
@@ -2591,7 +2592,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 function isExactBindingValue(value: unknown): value is string {
-  return typeof value === "string" && BINDING_EXACT_RE.test(value);
+  return isExactWorkflowBindingValue(value);
 }
 
 function hasBindingToken(value: unknown): boolean {
@@ -7303,7 +7304,11 @@ export default function App() {
     }
     for (const field of selectedCatalogEntry?.fields ?? []) {
       if (field.kind !== "object_list") continue;
-      const currentItems = Array.isArray(nextKnownValues[field.key]) ? [...(nextKnownValues[field.key] as unknown[])] : [];
+      const currentItems = workflowObjectListItemsForEdit(
+        nextKnownValues[field.key],
+        field.bindable,
+      );
+      if (currentItems === null) continue;
       field.item_fields.forEach((itemField) => {
         if (itemField.kind !== "json") return;
         currentItems.forEach((item, index) => {
@@ -9627,11 +9632,38 @@ export default function App() {
     }
 
     if (field.kind === "object_list") {
+      const modeSelect = field.bindable
+        ? renderModeSelect(field, mode, (nextMode) => {
+          updateFieldMode(field.key, nextMode);
+          if (nextMode === "bind") {
+            updateKnownField(field.key, selectedNodeBindingOptions[0]?.value ?? "");
+          } else {
+            updateKnownField(field.key, Array.isArray(value) ? value : []);
+          }
+        }, isDisabled)
+        : null;
+      if (mode === "bind") {
+        return (
+          <div key={field.key} className="inspector-field">
+            <div className="field-toolbar">
+              {renderFieldHeader(field)}
+              {modeSelect}
+            </div>
+            {renderBindingSelect(
+              field,
+              selectedNodeBindingOptions,
+              value,
+              (nextValue) => updateKnownField(field.key, nextValue),
+            )}
+          </div>
+        );
+      }
       const items = Array.isArray(value) ? value : [];
       return (
         <div key={field.key} className="inspector-field">
           <div className="field-toolbar">
             {renderFieldHeader(field)}
+            {modeSelect}
           </div>
           {items.map((item, index) => {
             const itemValue = isRecord(item) ? item : {};

@@ -6219,6 +6219,46 @@ def test_repository_create_tasks_command_allows_sibling_dependencies(
     assert replay_state.revision == state.revision
 
 
+@pytest.mark.parametrize("batched", [False, True], ids=["team_create_task", "team_create_tasks"])
+def test_repository_task_creation_commands_reject_workflow_paused_state(
+    tmp_path: Path,
+    batched: bool,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _lease_agent_dispatch(repo, agent_id="lead")
+    task = {
+        "task_id": "workflow-paused-task",
+        "owner_agent_id": "backend",
+        "project_id": "project",
+        "priority": 1,
+        "title": "Workflow-paused task",
+        "description": "Agents cannot create externally paused work.",
+        "state": "waiting_for_input",
+    }
+
+    if batched:
+        state, result = _command_service(repo).create_tasks_command(
+            session_id="session-lead",
+            request_id="request-create-workflow-paused-batch",
+            tasks=[task],
+        )
+    else:
+        state, result = _command_service(repo).create_task_command(
+            session_id="session-lead",
+            request_id="request-create-workflow-paused",
+            **task,
+        )
+
+    assert result["success"] is False
+    assert result["errors"][0]["code"] == "task_creation_failed"
+    assert (
+        result["errors"][0]["message"]
+        == "waiting_for_input is reserved for operator-owned workflows"
+    )
+    assert "workflow-paused-task" not in state.tasks
+    assert repo.list_outbox_records(intent_type=AGENT_WAKE_REQUESTED_EVENT_TYPE) == []
+
+
 def test_task_git_base_snapshots_default_parent_explicit_and_batch_parent(
     tmp_path: Path,
 ) -> None:
@@ -12244,6 +12284,38 @@ def test_apply_agent_action_rejects_terminal_task_creation_state(tmp_path: Path)
     assert result["success"] is False
     assert any("terminal" in error for error in result["errors"])
     assert state.tasks == {}
+
+
+def test_apply_agent_action_rejects_workflow_paused_task_creation_state(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+
+    state, result = _team_agent_action_service(repo).apply_agent_action(
+        action={
+            "agent_id": "lead",
+            "task_creations": [
+                {
+                    "owner_agent_id": "backend",
+                    "project_id": "project",
+                    "priority": 1,
+                    "title": "Externally paused",
+                    "description": "Only workflows can create paused work.",
+                    "state": "waiting_for_input",
+                }
+            ],
+        },
+    )
+
+    assert result["success"] is False
+    assert result["errors"] == [
+        "waiting_for_input is reserved for operator-owned workflows"
+    ]
+    assert state.tasks == {}
+    assert not any(
+        event["event_type"] == AGENT_WAKE_REQUESTED_EVENT_TYPE
+        for event in result["events"]
+    )
 
 
 def test_apply_agent_action_accepts_explicit_non_terminal_state(tmp_path: Path) -> None:

@@ -841,6 +841,11 @@ def _plan_task_creation(
         except ValueError:
             result["errors"].append(f"task creation has invalid state {raw_state}")
             return None
+        if task_state == TeamTaskState.WAITING_FOR_INPUT:
+            result["errors"].append(
+                "waiting_for_input is reserved for operator-owned workflows"
+            )
+            return None
         if task_state not in _NON_TERMINAL_TASK_STATES:
             result["errors"].append(f"task creation cannot start in terminal state {raw_state}")
             return None
