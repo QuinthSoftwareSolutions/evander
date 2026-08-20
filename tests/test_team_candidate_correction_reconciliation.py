@@ -8,6 +8,7 @@ import pytest
 
 import evander_team_addon.services.candidate_correction_reconciliation_service as reconciliation_module
 from evander_team_addon.models import (
+    AgentProjectAssignment,
     AgentTask,
     AgentRuntime,
     DependencyGitSource,
@@ -202,6 +203,39 @@ def _candidate_correction_state(
     state.release_packages[predecessor.id] = predecessor
     state.tasks[task.id] = task
     state.deliverables[deliverable.id] = deliverable
+    return state
+
+
+def _submit_reviewed_replacement(state: TeamState) -> TeamState:
+    original = state.deliverables["correction-deliverable"]
+    original.rework_requested_at = datetime.now(UTC)
+    original.rework_requested_by_agent_id = "lead"
+    original.rework_reason = "Replace the failed correction aggregate source."
+    original.superseded_by_deliverable_id = "replacement-deliverable"
+    replacement = Deliverable(
+        id="replacement-deliverable",
+        task_id="correction-task",
+        producer_agent_id="coder",
+        summary="Reviewed replacement correction.",
+        supersedes_deliverable_id=original.id,
+        git_refs=DeliverableGitRefs(
+            agent_branch="agents/session-coder/replacement",
+            commit_sha=RECOVERY_COMMIT,
+            submitted_commit_sha=RECOVERY_COMMIT,
+        ),
+        verification=DeliverableVerification(status="passed"),
+        state=TeamRecordState.ACCEPTED,
+        review_request_ids=["replacement-review"],
+    )
+    state.deliverables[replacement.id] = replacement
+    state.review_requests["replacement-review"] = ReviewRequest(
+        id="replacement-review",
+        deliverable_id=replacement.id,
+        reviewer_agent_id="reviewer",
+        state=TeamRecordState.ACCEPTED,
+        reviewed_commit_sha=RECOVERY_COMMIT,
+    )
+    state.tasks["correction-task"].deliverable_ids.append(replacement.id)
     return state
 
 
@@ -411,6 +445,78 @@ def test_reviewed_rework_records_aggregate_validation_failure_as_actionable_bloc
     )
     assert blocker.state == TeamBlockerState.OPEN
     assert "reused by multiple deliverables" in blocker.details
+
+
+def test_reviewed_rework_cancels_obsolete_merge_recovery_task(
+    tmp_path: Path,
+) -> None:
+    repository = TeamStateRepository(tmp_path)
+    seeded = _candidate_correction_state(gate_kind="review")
+    seeded.project_assignments["coder-project"] = AgentProjectAssignment(
+        id="coder-project",
+        team_id="team",
+        project_id="project",
+        agent_id="coder",
+    )
+    repository.update(
+        lambda _state: seeded,
+        expected_revision=0,
+    )
+    created = CandidateCorrectionReconciliationService(repository).reconcile()
+    successor_id = created["created_successor_release_package_ids"][0]
+    successor = repository.read().release_packages[successor_id]
+    failed_promotion_id = successor.git_promotion_record_ids[0]
+    failed_promotion = repository.read().git_promotions[failed_promotion_id]
+    TeamGitReleaseService(repository).record_git_promotion_result(
+        promotion_id=failed_promotion_id,
+        success=False,
+        error="Correction aggregate has a merge conflict.",
+        outputs={
+            "error_code": "merge_conflict",
+            "base_commit_sha": CANDIDATE_COMMIT,
+            "conflict_branch": failed_promotion.source_branch,
+            "source_manifests": {
+                failed_promotion.source_branch: {
+                    "base_commit_sha": CANDIDATE_COMMIT,
+                    "reviewed_commit_sha": CORRECTION_COMMIT,
+                    "tree_hash": "f" * 40,
+                    "commit_shas": [CORRECTION_COMMIT],
+                    "changed_paths": ["M\tsrc/Correction.cs"],
+                }
+            },
+        },
+    )
+    blocked = repository.read()
+    recovery_task = next(
+        task
+        for task in blocked.tasks.values()
+        if task.created_by_actor == "system:git-merge-recovery"
+    )
+    assert recovery_task.state == TeamTaskState.PENDING
+    assert any(
+        blocker.state == TeamBlockerState.OPEN
+        and blocker.source_kind == TeamBlockerSourceKind.RELEASE_PACKAGE
+        and blocker.source_id == successor_id
+        and recovery_task.id in blocker.affected_task_ids
+        for blocker in blocked.blockers.values()
+    )
+    repository.update(_submit_reviewed_replacement, expected_revision=blocked.revision)
+
+    recovered = CandidateCorrectionReconciliationService(repository).reconcile()
+    state = repository.read()
+    recovery_task = state.tasks[recovery_task.id]
+
+    assert recovered["cancelled_merge_recovery_task_ids"] == [recovery_task.id]
+    assert recovery_task.state == TeamTaskState.CANCELLED
+    assert recovery_task.cancellation is not None
+    assert recovery_task.cancellation.reason_code == "promotion_boundary_superseded"
+    assert all(
+        blocker.state != TeamBlockerState.OPEN
+        for blocker in state.blockers.values()
+        if blocker.source_kind == TeamBlockerSourceKind.RELEASE_PACKAGE
+        and blocker.source_id == successor_id
+    )
+    TeamState.model_validate(state.model_dump(mode="python"))
 
 
 def test_release_review_correction_waits_for_every_current_review(

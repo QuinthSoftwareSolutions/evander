@@ -9436,6 +9436,81 @@ def test_await_agent_gate_releases_follow_up_on_matching_completion(tmp_path: Pa
     )
 
 
+def test_await_agent_recorded_failure_routes_to_error_branch(tmp_path: Path) -> None:
+    runtime_dir = tmp_path / "runtime"
+    config = GatewayConfig(runtime_dir=runtime_dir)
+    worker_config = canonical_worker_config(
+        {
+            "runtime_dir": runtime_dir,
+            "triggers": [],
+            "gates": [
+                {
+                    "id": "await-agent-1",
+                    "display_name": "Await agent",
+                    "type": "gate:await-agent",
+                    "session_id": "session-42",
+                    "outputs": {},
+                }
+            ],
+            "effects": [
+                {
+                    "id": "effect-prompt",
+                    "display_name": "Prompt",
+                    "type": "effect:agent:prompt",
+                    "session_id": "session-42",
+                    "prompt": "Continue main task",
+                },
+                {
+                    "id": "effect-recover",
+                    "display_name": "Record await failure",
+                    "type": "effect:session:update-metadata",
+                    "target": "session-42",
+                    "metadata": {"await_failure_handled": True},
+                },
+            ],
+            "edges": [
+                _edge("effect-prompt", "await-agent-1", source_port="started"),
+                _edge("await-agent-1", "effect-recover", source_port="error"),
+            ],
+        }
+    )
+    worker = EffectOrchestratorWorker(  # type: ignore[arg-type]
+        config=config,
+        worker_config=worker_config,
+        runtime=None,
+    )
+    worker._executor = _ImmediateExecutor()  # type: ignore[assignment]
+    worker.provider_factory = _Factory({"effect-recover": {"success": True}})
+    worker.event_queue.publish(
+        TriggerEvent(
+            event_id="event-await-missing-dispatch",
+            trigger_id="effect-prompt",
+            trigger_type="effect:agent:prompt",
+            occurred_at=datetime(2026, 4, 4, 12, 0, tzinfo=timezone.utc),
+            payload={"__branch_port": "started"},
+            trace_id="trace-await-missing-dispatch",
+        )
+    )
+
+    for _ in range(3):
+        worker.run_once()
+
+    gate_record = next(iter(gate_execution_payload(worker_config).values()))
+    assert gate_record["status"] == "error_routed"
+    assert gate_record["completion_event_branch_port"] == "error"
+    assert gate_record["error"] == (
+        "gate:await-agent requires upstream effect output dispatch_id"
+    )
+    assert gate_record["outputs"] == {
+        "success": False,
+        "error_message": "gate:await-agent requires upstream effect output dispatch_id",
+        "error_class": "GateRuntimeError",
+    }
+    recovery_record = next(iter(effect_execution_payload(worker_config).values()))
+    assert recovery_record["effect_id"] == "effect-recover"
+    assert recovery_record["status"] == "succeeded"
+
+
 def test_await_agent_gate_releases_follow_up_from_in_process_vm_poll(
     tmp_path: Path, monkeypatch
 ) -> None:

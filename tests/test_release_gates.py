@@ -3,6 +3,7 @@ from __future__ import annotations
 import pytest
 
 from evander_team_addon.models import (
+    AgentInboxItem,
     AgentProjectAssignment,
     AgentStatus,
     AgentTask,
@@ -11,6 +12,8 @@ from evander_team_addon.models import (
     DeliverableReviewManifest,
     DeliverableVerification,
     GitPromotionRecord,
+    GitWorkContext,
+    GitWorkContextState,
     PersistentAgent,
     Project,
     ProjectGitConfig,
@@ -29,6 +32,8 @@ from evander_team_addon.models import (
     TeamState,
     Team,
     TeamInboxItemState,
+    TeamInboxItemType,
+    TeamInboxPriority,
     TeamRole,
     TeamTaskState,
     release_package_payload_with_derived,
@@ -136,6 +141,18 @@ def _release_review_cohort_fixture() -> tuple[
         name="Team",
         manager_agent_id="lead",
         project_ids=["project"],
+    )
+    state.roles["lead-role"] = TeamRole(
+        id="lead-role",
+        team_id="team",
+        project_id="project",
+        name="Lead",
+    )
+    state.roles["reviewer-role"] = TeamRole(
+        id="reviewer-role",
+        team_id="team",
+        project_id="project",
+        name="Reviewer",
     )
     state.projects["project"] = _project(
         release_policy=ProjectReleasePolicy(review_requirements=requirements)
@@ -278,7 +295,7 @@ def test_release_review_cohort_waits_then_materializes_one_consolidated_correcti
     ]
 
 
-def test_rejected_review_exception_preserves_cohort_and_retires_correction_work() -> None:
+def test_rejected_review_exception_preserves_remaining_cohort_correction_work() -> None:
     state, release, _promotion, reviews = _release_review_cohort_fixture()
     decision_result = _result()
     for reviewer_id, finding in (
@@ -329,15 +346,27 @@ def test_rejected_review_exception_preserves_cohort_and_retires_correction_work(
     assert release.state == TeamRecordState.REJECTED
     assert release.gate_failure is not None
     assert release.gate_failure.source_id == remaining_rejected_ids[0]
-    assert release.review_correction_task_id is None
+    assert release.review_correction_task_id == correction_task_id
     correction_task = state.tasks[correction_task_id]
-    assert correction_task.state == TeamTaskState.CANCELLED
-    assert correction_task.cancellation is not None
-    assert correction_task.cancellation.reason_code == "release_review_exception"
-    assert first_retry["cancelled_task_ids"] == [correction_task_id]
-    assert first_retry["retired_release_review_correction_task_ids"] == [correction_task_id]
-    assert first_retry["handled_correction_inbox_item_ids"] == correction_inbox_ids
-    assert state.inbox[correction_inbox_ids[0]].state == TeamInboxItemState.HANDLED
+    assert correction_task.state == TeamTaskState.PENDING
+    assert correction_task.cancellation is None
+    assert first_retry["retained_release_review_correction_task_ids"] == [correction_task_id]
+    assert state.inbox[correction_inbox_ids[0]].state == TeamInboxItemState.PENDING
+
+    first_replacement = state.review_requests[str(first_retry["replacement_gate_id"])]
+    _cascade_review_decision(
+        state,
+        review=first_replacement,
+        decision_state=TeamRecordState.ACCEPTED,
+        findings=[],
+        projects_to_recalc=set(),
+        result=_result(),
+    )
+
+    assert release.state == TeamRecordState.REJECTED
+    assert release.review_correction_task_id == correction_task_id
+    assert correction_task.state == TeamTaskState.PENDING
+    assert state.inbox[correction_inbox_ids[0]].state == TeamInboxItemState.PENDING
 
     second_retry = _result()
     retry_release_gate(
@@ -354,6 +383,167 @@ def test_rejected_review_exception_preserves_cohort_and_retires_correction_work(
     assert release.state == TeamRecordState.PENDING
     assert release.gate_failure is None
     assert all(review.superseded_by_review_request_id is not None for review in reviews.values())
+    assert release.review_correction_task_id is None
+    assert correction_task.state == TeamTaskState.CANCELLED
+    assert correction_task.cancellation is not None
+    assert correction_task.cancellation.reason_code == "release_review_exception"
+    assert second_retry["cancelled_task_ids"] == [correction_task_id]
+    assert second_retry["retired_release_review_correction_task_ids"] == [correction_task_id]
+    assert second_retry["handled_correction_inbox_item_ids"] == correction_inbox_ids
+    assert state.inbox[correction_inbox_ids[0]].state == TeamInboxItemState.HANDLED
+
+
+def test_rejected_review_exception_refuses_predecessor_with_successor() -> None:
+    state, release, _promotion, reviews = _release_review_cohort_fixture()
+    _cascade_review_decision(
+        state,
+        review=reviews["reviewer-a"],
+        decision_state=TeamRecordState.ACCEPTED,
+        findings=[],
+        projects_to_recalc=set(),
+        result=_result(),
+    )
+    _cascade_review_decision(
+        state,
+        review=reviews["reviewer-b"],
+        decision_state=TeamRecordState.REJECTED,
+        findings=["Correct the candidate."],
+        projects_to_recalc=set(),
+        result=_result(),
+    )
+    rejected_review_id = release.gate_failure.source_id
+    assert rejected_review_id is not None
+    state.release_packages["successor"] = ReleasePackage(
+        id="successor",
+        project_id=release.project_id,
+        supersedes_release_package_id=release.id,
+    )
+
+    with pytest.raises(ValueError, match="already has successor release package.*successor"):
+        retry_release_gate(
+            state,
+            release=release,
+            gate_kind="review",
+            gate_id=rejected_review_id,
+            reason="Except the rejected criterion.",
+            requested_by="operator:release-admin",
+            result=_result(),
+            allow_rejected_review_exception=True,
+        )
+
+    assert state.review_requests[rejected_review_id].superseded_by_review_request_id is None
+    assert release.state == TeamRecordState.REJECTED
+
+
+@pytest.mark.parametrize("handoff_kind", ["review", "acceptance"])
+def test_rejected_review_exception_retires_active_correction_handoffs(
+    handoff_kind: str,
+) -> None:
+    state, release, _promotion, reviews = _release_review_cohort_fixture()
+    _cascade_review_decision(
+        state,
+        review=reviews["reviewer-a"],
+        decision_state=TeamRecordState.ACCEPTED,
+        findings=[],
+        projects_to_recalc=set(),
+        result=_result(),
+    )
+    _cascade_review_decision(
+        state,
+        review=reviews["reviewer-b"],
+        decision_state=TeamRecordState.REJECTED,
+        findings=["Correct the candidate."],
+        projects_to_recalc=set(),
+        result=_result(),
+    )
+    rejected_review_id = release.gate_failure.source_id
+    correction_task_id = release.review_correction_task_id
+    assert rejected_review_id is not None
+    assert correction_task_id is not None
+    correction_task = state.tasks[correction_task_id]
+    correction_task.state = TeamTaskState.WAITING_FOR_REVIEW
+    correction_task.deliverable_ids = ["active-correction-deliverable"]
+    context = GitWorkContext(
+        id="active-correction-context",
+        agent_id=correction_task.owner_agent_id,
+        task_id=correction_task.id,
+        agent_branch="agents/release-correction/active",
+        base_branch=release.release_branch or "main",
+        base_commit=release.candidate_commit_sha,
+    )
+    state.git_work_contexts[context.id] = context
+    deliverable = Deliverable(
+        id="active-correction-deliverable",
+        task_id=correction_task.id,
+        producer_agent_id=correction_task.owner_agent_id,
+        summary="Correction awaiting a handoff decision.",
+        state=TeamRecordState.PENDING,
+        git_refs=DeliverableGitRefs(
+            branch_context_id=context.id,
+            agent_branch=context.agent_branch,
+            commit_sha="f" * 40,
+            submitted_commit_sha="f" * 40,
+        ),
+    )
+    state.deliverables[deliverable.id] = deliverable
+    handoff_review: ReviewRequest | None = None
+    if handoff_kind == "review":
+        handoff_review = ReviewRequest(
+            id="active-correction-review",
+            deliverable_id=deliverable.id,
+            reviewer_agent_id="reviewer-a",
+            state=TeamRecordState.IN_PROGRESS,
+        )
+        deliverable.review_request_ids = [handoff_review.id]
+        state.review_requests[handoff_review.id] = handoff_review
+        recipient_agent_id = handoff_review.reviewer_agent_id
+        payload = {
+            "kind": "review_request",
+            "review_request_id": handoff_review.id,
+            "deliverable_id": deliverable.id,
+        }
+    else:
+        recipient_agent_id = "reviewer-a"
+        deliverable.acceptance_recipient_agent_id = recipient_agent_id
+        payload = {
+            "kind": "superior_acceptance_requested",
+            "deliverable_id": deliverable.id,
+        }
+    state.inbox["active-correction-handoff"] = AgentInboxItem(
+        id="active-correction-handoff",
+        recipient_agent_id=recipient_agent_id,
+        sender_agent_id=correction_task.owner_agent_id,
+        task_id=correction_task.id,
+        item_type=TeamInboxItemType.DELIVERABLE_NOTICE,
+        priority=TeamInboxPriority.HIGH,
+        payload=payload,
+    )
+
+    result = _result()
+    retry_release_gate(
+        state,
+        release=release,
+        gate_kind="review",
+        gate_id=rejected_review_id,
+        reason="Except the only rejected criterion.",
+        requested_by="operator:release-admin",
+        result=result,
+        allow_rejected_review_exception=True,
+    )
+
+    assert correction_task.state == TeamTaskState.CANCELLED
+    assert deliverable.state == TeamRecordState.REJECTED
+    assert deliverable.acceptance_recipient_agent_id is None
+    if handoff_review is not None:
+        assert handoff_review.retired_at is not None
+        assert handoff_review.retired_by == "operator:release-admin"
+    assert state.inbox["active-correction-handoff"].state == TeamInboxItemState.HANDLED
+    assert context.state != GitWorkContextState.ACTIVE
+    assert result["git_context_finalization"][correction_task.id] == {
+        "submitted": 1,
+        "abandoned": 0,
+    }
+    TeamState.model_validate(state.model_dump(mode="python"))
 
 
 def test_release_review_cohort_all_acceptance_advances_release_once_complete() -> None:

@@ -49,6 +49,7 @@ from .human_reviews import (
     ensure_human_review_request,
     human_review_request_for_release,
 )
+from .git_work_contexts import finalize_active_git_work_contexts_for_task
 from .release_packages import allowed_release_parent_task_ids
 from .task_assessment import deliverable_source_lineage, require_release_scope
 
@@ -1506,6 +1507,69 @@ def _retire_release_review_correction_work_for_exception(
         TeamTaskState.ACCEPTED,
         TeamTaskState.CANCELLED,
     }:
+        retired_review_request_ids: set[str] = set()
+        handled_handoff_inbox_item_ids: set[str] = set()
+        for deliverable in state.deliverables.values():
+            if (
+                deliverable.task_id != task.id
+                or deliverable.superseded_by_deliverable_id is not None
+            ):
+                continue
+            active_acceptance = (
+                deliverable.acceptance_recipient_agent_id is not None
+                and deliverable.acceptance_decision is None
+            )
+            if active_acceptance:
+                deliverable.acceptance_recipient_agent_id = None
+            deliverable_retired_review_ids: set[str] = set()
+            for review_id in deliverable.review_request_ids:
+                correction_review = state.review_requests.get(review_id)
+                if (
+                    correction_review is None
+                    or correction_review.superseded_by_review_request_id is not None
+                    or correction_review.retired_at is not None
+                    or correction_review.state
+                    not in {
+                        TeamRecordState.PENDING,
+                        TeamRecordState.IN_PROGRESS,
+                        TeamRecordState.BLOCKED,
+                    }
+                ):
+                    continue
+                correction_review.retired_at = now
+                correction_review.retired_by = requested_by
+                correction_review.retirement_reason = (
+                    f"Generated correction task {task.id} was superseded by an "
+                    f"operator exception for release review {review.id}."
+                )
+                retired_review_request_ids.add(correction_review.id)
+                deliverable_retired_review_ids.add(correction_review.id)
+            if active_acceptance or deliverable_retired_review_ids:
+                for item in state.inbox.values():
+                    if item.state != TeamInboxItemState.PENDING:
+                        continue
+                    item_review_id = item.payload.get("review_request_id")
+                    item_deliverable_id = item.payload.get("deliverable_id")
+                    if item_review_id in deliverable_retired_review_ids or (
+                        active_acceptance
+                        and item_deliverable_id == deliverable.id
+                        and item.payload.get("kind") == "superior_acceptance_requested"
+                    ):
+                        item.state = TeamInboxItemState.HANDLED
+                        item.updated_at = now
+                        handled_handoff_inbox_item_ids.add(item.id)
+            if deliverable.state in {
+                TeamRecordState.PENDING,
+                TeamRecordState.IN_PROGRESS,
+                TeamRecordState.BLOCKED,
+            }:
+                deliverable.state = TeamRecordState.REJECTED
+
+        git_context_finalization = finalize_active_git_work_contexts_for_task(
+            state,
+            task_id=task.id,
+            now=now,
+        )
         task.cancellation = TaskCancellation(
             reason_code="release_review_exception",
             reason=(
@@ -1519,6 +1583,15 @@ def _retire_release_review_correction_work_for_exception(
         _set_task_state(task, TeamTaskState.CANCELLED, now=now)
         task.updated_at = now
         result.setdefault("cancelled_task_ids", []).append(task.id)
+        if retired_review_request_ids:
+            result.setdefault("retired_correction_review_request_ids", []).extend(
+                sorted(retired_review_request_ids)
+            )
+        if handled_handoff_inbox_item_ids:
+            result.setdefault("handled_correction_handoff_inbox_item_ids", []).extend(
+                sorted(handled_handoff_inbox_item_ids)
+            )
+        result.setdefault("git_context_finalization", {})[task.id] = git_context_finalization
         reconcile_task_blockers_after_cancellation(
             state,
             task_id=task.id,
@@ -1565,6 +1638,17 @@ def retry_release_gate(
     )
     if release.state != TeamRecordState.BLOCKED and not rejected_review_exception:
         raise ValueError(f"release {release.id} is not blocked")
+    if rejected_review_exception:
+        successor_ids = sorted(
+            candidate.id
+            for candidate in state.release_packages.values()
+            if candidate.supersedes_release_package_id == release.id
+        )
+        if successor_ids:
+            raise ValueError(
+                f"release {release.id} already has successor release package(s): "
+                + ", ".join(successor_ids)
+            )
     candidate = release.candidate_commit_sha
     if candidate is None:
         raise ValueError(f"release {release.id} has no pinned candidate")
@@ -1680,15 +1764,26 @@ def retry_release_gate(
         else "blocked review"
     )
     if current.state == TeamRecordState.REJECTED:
-        _retire_release_review_correction_work_for_exception(
-            state,
-            release=release,
-            review=current,
-            requested_by=normalized_requested_by,
-            reason=normalized_reason,
-            result=result,
-            now=now,
-        )
+        remaining_rejected_reviews = [
+            review
+            for review in current_reviews
+            if review.id != current.id and review.state == TeamRecordState.REJECTED
+        ]
+        if remaining_rejected_reviews:
+            if release.review_correction_task_id is not None:
+                result.setdefault("retained_release_review_correction_task_ids", []).append(
+                    release.review_correction_task_id
+                )
+        else:
+            _retire_release_review_correction_work_for_exception(
+                state,
+                release=release,
+                review=current,
+                requested_by=normalized_requested_by,
+                reason=normalized_reason,
+                result=result,
+                now=now,
+            )
     review = _create_release_review(
         state,
         release=release,

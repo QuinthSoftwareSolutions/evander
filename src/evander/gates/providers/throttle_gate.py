@@ -7,6 +7,7 @@ from evander.events.models import NODE_OUTPUTS_CONTEXT_KEY
 from evander.gate_runtime import GateRuntimeError, parse_iso8601_duration
 from evander.gates.providers.base import GateProviderBase
 from evander.workflow.binding import binding_trace_to_payload, resolve_workflow_bindings
+from evander.workflow.lifecycle_ports import AGENT_PROMPT_ERROR_PORT
 from evander.workflow.validation import NodeCapability
 
 logger = logging.getLogger(__name__)
@@ -24,7 +25,7 @@ class ThrottleGateProvider(GateProviderBase):
         min_inbound=1,
         max_inbound=1,
         allowed_source_ports=frozenset(
-            {None, _DEFAULT_BRANCH_PORT, _DROPPED_BRANCH_PORT}
+            {None, _DEFAULT_BRANCH_PORT, _DROPPED_BRANCH_PORT, AGENT_PROMPT_ERROR_PORT}
         ),
     )
 

@@ -13,6 +13,7 @@ from evander.workflow.binding import (
     binding_trace_to_payload,
     resolve_workflow_bindings,
 )
+from evander.workflow.lifecycle_ports import AGENT_PROMPT_ERROR_PORT
 from evander.workflow.validation import NodeCapability, WorkflowValidationDiagnostic
 
 
@@ -70,7 +71,7 @@ class ForGateProvider(GateProviderBase):
     capability = NodeCapability(
         min_inbound=1,
         non_cyclic_inbound_exact=1,
-        allowed_source_ports=frozenset({"body", "done"}),
+        allowed_source_ports=frozenset({"body", "done", AGENT_PROMPT_ERROR_PORT}),
         completion_semantics="loop",
     )
 

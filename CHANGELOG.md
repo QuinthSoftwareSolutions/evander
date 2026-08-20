@@ -1,5 +1,15 @@
 # Changelog
 
+## 2026-08-20 - Release Exception And Gate Error Recovery
+
+- Prevented rejected-review exceptions from reopening a predecessor after a successor exists,
+  retained consolidated correction work while other cohort rejections remain, and safely retired
+  active correction review/acceptance handoffs and Git contexts before cancellation.
+- Cancelled obsolete merge-recovery tasks when reviewed correction rework replaces their failed
+  aggregate promotion.
+- Allowed `error` edges on branch-gate capabilities and routed failures recorded directly by gate
+  providers through the configured error branch.
+
 ## 2026-08-19 - Immutable Candidate Correction Guidance
 
 - Preserved precise Git ancestry errors for failed correction aggregates and made generated

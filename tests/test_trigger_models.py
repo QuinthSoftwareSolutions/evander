@@ -47,7 +47,7 @@ from evander.events.provider_models import (
     SessionUpdateMetadataEffectDefinition,
     WebhookTriggerDefinition,
 )
-from evander.workflow.contracts import effective_node_output_schema
+from evander.workflow.contracts import GATE_FAILURE_OUTPUT_SCHEMA, effective_node_output_schema
 
 
 def _validate_node(adapter: TypeAdapter, payload: dict[str, object]) -> object:
@@ -1116,6 +1116,7 @@ def test_aggregate_gate_derives_metric_outputs() -> None:
         "count": {"type": "integer"},
         "total_tokens": {"type": "number"},
         "average_tokens": {"type": ["number", "null"]},
+        **GATE_FAILURE_OUTPUT_SCHEMA,
     }
 
 
@@ -1140,6 +1141,7 @@ def test_buffer_gate_defaults_fixed_outputs_and_validates_required_fields() -> N
         "items": {"type": "array"},
         "count": {"type": "integer"},
         "release_reason": {"type": "string"},
+        **GATE_FAILURE_OUTPUT_SCHEMA,
     }
     empty_timeout_gate = materialize_node_definition(
         _validate_node(

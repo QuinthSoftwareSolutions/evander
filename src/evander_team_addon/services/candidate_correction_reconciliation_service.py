@@ -21,6 +21,7 @@ from ..models import (
     TeamRecordState,
     TeamState,
     TeamTaskState,
+    TaskCancellation,
     TaskDeliverableContract,
     project_lead_agent_id,
     utc_now,
@@ -31,8 +32,10 @@ from .domain.blockers import (
     active_blockers_for_source,
     append_blocker_event,
     open_or_get_blocker,
+    reconcile_task_blockers_after_cancellation,
     resolve_active_blockers_for_source,
 )
+from .domain.git_work_contexts import finalize_active_git_work_contexts_for_task
 from .domain.project_status import _recalculate_project_status
 from .domain.release_packages import (
     _build_release_package,
@@ -128,6 +131,65 @@ def _failed_correction_aggregate(
         key=lambda promotion: (promotion.updated_at, promotion.created_at, promotion.id)
     )
     return candidates[-1]
+
+
+def _cancel_obsolete_merge_recovery_tasks(
+    state: TeamState,
+    *,
+    successor: ReleasePackage,
+    failed_aggregate: GitPromotionRecord,
+    replacement_aggregate: GitPromotionRecord,
+    result: dict[str, Any],
+    now: datetime,
+) -> None:
+    linked_task_ids = {
+        task_id
+        for blocker in state.blockers.values()
+        if blocker.source_kind == TeamBlockerSourceKind.RELEASE_PACKAGE
+        and blocker.source_id == successor.id
+        for task_id in blocker.affected_task_ids
+    }
+    terminal_states = {
+        TeamTaskState.FINISHED,
+        TeamTaskState.ACCEPTED,
+        TeamTaskState.REJECTED,
+        TeamTaskState.CANCELLED,
+    }
+    for task_id in sorted(linked_task_ids):
+        task = state.tasks.get(task_id)
+        if (
+            task is None
+            or task.created_by_actor != "system:git-merge-recovery"
+            or task.state in terminal_states
+        ):
+            continue
+        finalize_active_git_work_contexts_for_task(
+            state,
+            task_id=task.id,
+            now=now,
+        )
+        task.cancellation = TaskCancellation(
+            reason_code="promotion_boundary_superseded",
+            reason=(
+                f"Failed correction aggregate {failed_aggregate.id} was retired and "
+                f"replaced by aggregate {replacement_aggregate.id}."
+            ),
+            actor_kind="system",
+            actor_id="system:candidate-correction-reconciliation",
+            cancelled_at=now,
+        )
+        task.state = TeamTaskState.CANCELLED
+        task.state_entered_at = now
+        task.updated_at = now
+        result.setdefault("cancelled_merge_recovery_task_ids", []).append(task.id)
+        reconcile_task_blockers_after_cancellation(
+            state,
+            task_id=task.id,
+            actor_agent_id=None,
+            dispatch_id=None,
+            result=result,
+            now=now,
+        )
 
 
 def _deliverable_supersession_reaches(
@@ -265,6 +327,14 @@ def _refresh_blocked_successor_from_reviewed_rework(
 
     failed_aggregate.state = "retired"
     failed_aggregate.updated_at = now
+    _cancel_obsolete_merge_recovery_tasks(
+        state,
+        successor=successor,
+        failed_aggregate=failed_aggregate,
+        replacement_aggregate=aggregate,
+        result=result,
+        now=now,
+    )
     successor.deliverable_ids = list(
         dict.fromkeys([*predecessor.deliverable_ids, *correction_deliverable_ids])
     )

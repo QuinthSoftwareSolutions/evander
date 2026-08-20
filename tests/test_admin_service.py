@@ -91,6 +91,7 @@ from evander.worker.models import (
     WorkerSessionRecord,
     WorkerTelemetryPayload,
 )
+from evander.workflow.contracts import GATE_FAILURE_OUTPUT_SCHEMA
 from config_helpers import (
     canonical_workflow_payload,
     canonicalize_workflow_files,
@@ -12221,6 +12222,7 @@ def test_workflow_editor_validation_derives_filter_outputs_server_side(tmp_path:
         "success": {"type": "boolean"},
         "message": {"type": "string"},
         "vm_name": {"type": "string"},
+        **GATE_FAILURE_OUTPUT_SCHEMA,
     }
 
 
@@ -12272,6 +12274,7 @@ def test_workflow_editor_validation_derives_deserialize_outputs_server_side(
     assert gate["outputs"] == {
         "title": {"type": "string"},
         "metadata": {"type": "object"},
+        **GATE_FAILURE_OUTPUT_SCHEMA,
     }
     assert result.validation_diagnostics == []
 
@@ -12330,6 +12333,7 @@ def test_workflow_editor_save_and_reload_preserve_deserialize_declared_outputs(
     expected_outputs = {
         "title": {"type": "string"},
         "metadata": {"type": "object"},
+        **GATE_FAILURE_OUTPUT_SCHEMA,
     }
 
     gate = next(item for item in save_result.config["gates"] if item["id"] == "gate-deserialize-1")
@@ -12394,6 +12398,7 @@ def test_workflow_editor_validation_derives_serialize_outputs_server_side(
     assert gate["outputs"] == {
         "content": {"type": "string"},
         "format": {"type": "string"},
+        **GATE_FAILURE_OUTPUT_SCHEMA,
     }
     assert result.validation_diagnostics == []
 

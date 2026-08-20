@@ -84,3 +84,11 @@ def test_default_registry_includes_all_known_gate_types() -> None:
         "gate:throttle",
         "gate:while",
     }
+
+
+def test_branch_gate_capabilities_allow_catalog_error_port() -> None:
+    for gate_type in ("gate:for", "gate:while", "gate:throttle"):
+        capability = DEFAULT_GATE_PROVIDER_REGISTRY[gate_type].node_capability()
+
+        assert capability.allowed_source_ports is not None
+        assert "error" in capability.allowed_source_ports
