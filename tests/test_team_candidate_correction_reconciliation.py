@@ -363,6 +363,48 @@ def test_reviewed_rework_rebuilds_failed_pre_candidate_successor(
     assert recovered["git_promotion_event_ids"] == [active_promotions[0].id]
 
 
+@pytest.mark.parametrize("verification_status", ["partial", "not_run", "unknown"])
+def test_reviewed_rework_reapplies_verification_waiver_intake_policy(
+    tmp_path: Path,
+    verification_status: str,
+) -> None:
+    repository = TeamStateRepository(tmp_path)
+    seeded = _candidate_correction_state(gate_kind="review")
+    repository.update(lambda _state: seeded, expected_revision=0)
+    created = CandidateCorrectionReconciliationService(repository).reconcile()
+    successor_id = created["created_successor_release_package_ids"][0]
+    successor = repository.read().release_packages[successor_id]
+    failed_promotion_id = successor.git_promotion_record_ids[0]
+    TeamGitReleaseService(repository).record_git_promotion_result(
+        promotion_id=failed_promotion_id,
+        success=False,
+        error="The original correction aggregate failed validation.",
+        outputs={"error_code": "scope_mismatch"},
+    )
+
+    def _submit_incomplete_replacement(state: TeamState) -> TeamState:
+        state = _submit_reviewed_replacement(state)
+        state.deliverables["replacement-deliverable"].verification = DeliverableVerification(
+            status=verification_status
+        )
+        return state
+
+    repository.update(_submit_incomplete_replacement)
+    blocked = CandidateCorrectionReconciliationService(repository).reconcile()
+    state = repository.read()
+    successor = state.release_packages[successor_id]
+
+    assert blocked["candidate_correction_errors"]["release-predecessor"] == (
+        f"deliverable replacement-deliverable has {verification_status} verification; "
+        "an authorized verification waiver with a reason is required"
+    )
+    assert blocked.get("recovered_successor_release_package_ids") is None
+    assert successor.state == TeamRecordState.BLOCKED
+    assert successor.deliverable_ids == ["correction-deliverable"]
+    assert successor.verification_waivers == []
+    assert state.git_promotions[failed_promotion_id].state == "failed"
+
+
 def test_reviewed_rework_records_aggregate_validation_failure_as_actionable_blocker(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

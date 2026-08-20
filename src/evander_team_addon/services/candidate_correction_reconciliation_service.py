@@ -270,23 +270,38 @@ def _refresh_blocked_successor_from_reviewed_rework(
         predecessor=predecessor,
         correction_task=correction_task,
     )
-    reviewed_rows = [
-        _reviewed_commit_for_release(state, state.deliverables[deliverable_id])
-        for deliverable_id in correction_deliverable_ids
-    ]
-    reviewed_errors = [error for _commit, error in reviewed_rows if error is not None]
-    validation_error = (
-        "; ".join(reviewed_errors)
-        if reviewed_errors
-        else _successor_release_request_error(
-            state,
-            project_id=predecessor.project_id,
-            predecessor=predecessor,
-            correction_deliverable_ids=correction_deliverable_ids,
-            ignore_successor_release_package_id=successor.id,
+    preview_state = state.model_copy(deep=True)
+    preview_state.release_packages.pop(successor.id, None)
+    preview_result = _package_result()
+    try:
+        preview_id = _build_release_package(
+            preview_state,
+            project=preview_state.projects[predecessor.project_id],
+            request={
+                "id": successor.id,
+                "project_id": predecessor.project_id,
+                "deliverable_ids": correction_deliverable_ids,
+                "supersedes_release_package_id": predecessor.id,
+                "summary": successor.summary,
+                "release_branch": successor.release_branch,
+                "canonical_branch": successor.canonical_branch,
+                "verification_waivers": [],
+            },
+            result=preview_result,
+            projects_to_recalc=set(),
+            actor_agent_id=(predecessor.owner_agent_id or correction_task.owner_agent_id),
+            team_id=preview_state.projects[predecessor.project_id].team_id,
         )
-    )
-    if validation_error is not None:
+    except Exception as exc:  # pragma: no cover - defensive durable recovery
+        preview_id = None
+        preview_result["errors"].append(
+            f"{exc.__class__.__name__}: {str(exc) or 'unexpected packaging failure'}"
+        )
+    if preview_id is None or preview_result["errors"]:
+        validation_error = (
+            "; ".join(str(error) for error in preview_result["errors"])
+            or f"failed to validate replacement intake for successor {successor.id}"
+        )
         result.setdefault("candidate_correction_errors", {})[predecessor.id] = validation_error
         changed = _open_reconciliation_blocker(
             state,
@@ -297,6 +312,7 @@ def _refresh_blocked_successor_from_reviewed_rework(
             now=now,
         )
         return True, changed
+    preview_release = preview_state.release_packages[preview_id]
 
     failed_aggregate = _failed_correction_aggregate(state, successor)
     assert failed_aggregate is not None
@@ -335,18 +351,25 @@ def _refresh_blocked_successor_from_reviewed_rework(
         result=result,
         now=now,
     )
-    successor.deliverable_ids = list(
-        dict.fromkeys([*predecessor.deliverable_ids, *correction_deliverable_ids])
-    )
+    successor.deliverable_ids = list(preview_release.deliverable_ids)
+    successor.artifact_refs = list(preview_release.artifact_refs)
+    successor.feature_branches = list(preview_release.feature_branches)
+    successor.release_branch = preview_release.release_branch
+    successor.canonical_branch = preview_release.canonical_branch
+    successor.git_base_branch = preview_release.git_base_branch
+    successor.base_commit_sha = preview_release.base_commit_sha
+    successor.canonical_base_commit_sha = preview_release.canonical_base_commit_sha
+    successor.policy_version = preview_release.policy_version
+    successor.verification_waivers = [
+        waiver.model_copy(deep=True) for waiver in preview_release.verification_waivers
+    ]
     successor.state = TeamRecordState.PENDING
     successor.error = None
     successor.gate_failure = None
-    successor.feature_branches = []
-    successor.scope_validation = ReleaseScopeValidation(
-        state="pending",
-        reviewed_commit_shas=sorted(
-            commit for commit, error in reviewed_rows if error is None and commit is not None
-        ),
+    successor.scope_validation = (
+        preview_release.scope_validation.model_copy(deep=True)
+        if preview_release.scope_validation is not None
+        else ReleaseScopeValidation(state="pending")
     )
     successor.updated_at = now
     result.setdefault("events", []).extend(package_result["events"])

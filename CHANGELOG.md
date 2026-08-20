@@ -7,8 +7,14 @@
   active correction review/acceptance handoffs and Git contexts before cancellation.
 - Cancelled obsolete merge-recovery tasks when reviewed correction rework replaces their failed
   aggregate promotion.
+- Reapplied normal release-package intake and verification-waiver policy before replacing a failed
+  correction aggregate with newly reviewed evidence.
+- Removed operator-excepted review findings from retained consolidated correction tasks and their
+  pending inbox handoffs, and hid rejected-review exception actions after a successor exists.
 - Allowed `error` edges on branch-gate capabilities and routed failures recorded directly by gate
   providers through the configured error branch.
+- Reserved the switch gate's `error` port for lifecycle failures so business cases and defaults
+  cannot intercept structured gate-error routing.
 - Reactivated deterministic correction and merge-recovery tasks when later failures require fresh
   work, and persisted recorded gate-error completion intent so daemon replay cannot skip recovery.
 

@@ -254,6 +254,10 @@ def _coerce_non_empty_string(value: Any, *, field_name: str) -> str:
     text = str(value).strip()
     if not text:
         raise GateRuntimeError(f"gate:switch {field_name} must be a non-empty string")
+    if text == AGENT_PROMPT_ERROR_PORT:
+        raise GateRuntimeError(
+            f"gate:switch {field_name} 'error' is reserved for lifecycle failures"
+        )
     return text
 
 

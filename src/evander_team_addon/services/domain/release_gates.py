@@ -1626,6 +1626,69 @@ def _retire_release_review_correction_work_for_exception(
     result.setdefault("retired_release_review_correction_task_ids", []).append(task_id)
 
 
+def _retain_release_review_correction_work_for_remaining_rejections(
+    state: TeamState,
+    *,
+    release: ReleasePackage,
+    reviews: list[ReviewRequest],
+    result: dict[str, Any],
+    now: datetime,
+) -> None:
+    task_id = release.review_correction_task_id
+    task = state.tasks.get(task_id or "")
+    if task is None or not reviews:
+        return
+
+    _owner_agent_id, assignment_reason = _release_review_correction_owner(
+        state,
+        release=release,
+    )
+    findings_by_review_id = {review.id: list(review.findings) for review in reviews}
+    task.description = _release_review_correction_description(
+        release=release,
+        reviews=reviews,
+        findings_by_review_id=findings_by_review_id,
+        assignment_reason=assignment_reason,
+    )
+    task.updated_at = now
+    result.setdefault("updated_task_ids", []).append(task.id)
+
+    rejected_review_ids = [review.id for review in reviews]
+    rejected_reviews = [
+        {
+            "review_request_id": review.id,
+            "reviewer_agent_id": review.reviewer_agent_id,
+            "findings": findings_by_review_id[review.id],
+        }
+        for review in reviews
+    ]
+    findings = [
+        finding for review in reviews for finding in findings_by_review_id[review.id]
+    ]
+    updated_inbox_item_ids: list[str] = []
+    for item in state.inbox.values():
+        if (
+            item.state != TeamInboxItemState.PENDING
+            or item.task_id != task.id
+            or item.payload.get("kind") != "release_review_rejection_correction_work"
+        ):
+            continue
+        item.sender_agent_id = reviews[0].reviewer_agent_id
+        item.payload = {
+            **item.payload,
+            "review_request_id": reviews[0].id,
+            "review_request_ids": rejected_review_ids,
+            "rejected_reviews": rejected_reviews,
+            "findings": findings,
+        }
+        item.updated_at = now
+        updated_inbox_item_ids.append(item.id)
+    if updated_inbox_item_ids:
+        result.setdefault("updated_correction_inbox_item_ids", []).extend(
+            sorted(updated_inbox_item_ids)
+        )
+
+
 def retry_release_gate(
     state: TeamState,
     *,
@@ -1779,6 +1842,13 @@ def retry_release_gate(
             if release.review_correction_task_id is not None:
                 result.setdefault("retained_release_review_correction_task_ids", []).append(
                     release.review_correction_task_id
+                )
+                _retain_release_review_correction_work_for_remaining_rejections(
+                    state,
+                    release=release,
+                    reviews=remaining_rejected_reviews,
+                    result=result,
+                    now=now,
                 )
         else:
             _retire_release_review_correction_work_for_exception(

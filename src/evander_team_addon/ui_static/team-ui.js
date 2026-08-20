@@ -18342,6 +18342,13 @@ function renderReleasePolicyDetails(release) {
   return `${waiverMarkup}${scopeMarkup}${humanMarkup}`;
 }
 
+function releaseHasSuccessor(releaseId) {
+  const normalizedReleaseId = text(releaseId);
+  return Boolean(normalizedReleaseId) && values(state.release_packages).some(
+    (candidate) => text(candidate?.supersedes_release_package_id) === normalizedReleaseId,
+  );
+}
+
 function renderReleaseGateAction(release) {
   const failure = release.gate_failure || null;
   const gateId = text(failure?.source_id);
@@ -18356,7 +18363,8 @@ function renderReleaseGateAction(release) {
   const rejectedReviewException =
     release.state === "rejected" &&
     failure?.stage === "review" &&
-    failure?.kind === "rejected";
+    failure?.kind === "rejected" &&
+    !releaseHasSuccessor(release.id);
   if (!gateId || (!retryableVerification && !retryableReview && !rejectedReviewException)) {
     return "";
   }

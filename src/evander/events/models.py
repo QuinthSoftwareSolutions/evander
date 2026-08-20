@@ -26,6 +26,7 @@ from evander.workflow.contracts import (
     validate_filter_when_expression,
     validate_output_mapping_keys as validate_output_mapping_keys,
 )
+from evander.workflow.lifecycle_ports import AGENT_PROMPT_ERROR_PORT
 
 TriggerType: TypeAlias = str
 GateType: TypeAlias = str
@@ -126,6 +127,10 @@ class GateSwitchCaseDefinition(BaseModel):
         text = str(value).strip()
         if not text:
             raise ValueError("gate:switch case port must be a non-empty string")
+        if text == AGENT_PROMPT_ERROR_PORT:
+            raise ValueError(
+                "gate:switch case port 'error' is reserved for lifecycle failures"
+            )
         return text
 
     @field_validator("label", mode="before")
@@ -177,6 +182,10 @@ class GateSwitchDefinition(GateDefinition):
         text = str(value).strip()
         if not text:
             raise ValueError("gate:switch default_port must be a non-empty string")
+        if text == AGENT_PROMPT_ERROR_PORT:
+            raise ValueError(
+                "gate:switch default_port 'error' is reserved for lifecycle failures"
+            )
         return text
 
     @model_validator(mode="after")

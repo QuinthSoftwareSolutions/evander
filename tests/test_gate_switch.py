@@ -225,6 +225,48 @@ def test_switch_gate_first_match_wins_and_preserves_outputs(tmp_path: Path) -> N
     assert effect_record["resolved_config"]["prompt"] == "branch ready"
 
 
+def test_switch_gate_bound_business_port_cannot_resolve_to_error(tmp_path: Path) -> None:
+    worker, executed_effect_ids = _worker(
+        tmp_path,
+        switch_gate={
+            "id": "gate-switch",
+            "display_name": "Route by state",
+            "type": "gate:switch",
+            "cases": [
+                {
+                    "port": "${{trigger-1.route}}",
+                    "when": {
+                        "left": "${{trigger-1.state}}",
+                        "equals": "ready",
+                    },
+                }
+            ],
+        },
+        effects=[
+            {
+                "id": "effect-error",
+                "display_name": "Lifecycle error handler",
+                "type": "effect:agent:prompt",
+                "prompt": "repair ${{gate-switch.error_message}}",
+            }
+        ],
+        edges=[_edge("gate-switch", "effect-error", source_port="error")],
+    )
+    _publish(
+        worker,
+        event_id="event-reserved-port",
+        payload={"route": "error", "state": "ready", "ticket_id": 7},
+    )
+
+    _run_cycles(worker)
+
+    gate_record = _gate_records(worker)[0]
+    assert gate_record["status"] == "error_routed"
+    assert gate_record["completion_event_branch_port"] == "error"
+    assert "reserved for lifecycle failures" in str(gate_record["error"])
+    assert executed_effect_ids == ["effect-error"]
+
+
 def test_switch_gate_does_not_resolve_later_cases_or_default_after_match(
     tmp_path: Path,
 ) -> None:

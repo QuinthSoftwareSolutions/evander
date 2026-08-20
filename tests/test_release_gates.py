@@ -351,7 +351,24 @@ def test_rejected_review_exception_preserves_remaining_cohort_correction_work() 
     assert correction_task.state == TeamTaskState.PENDING
     assert correction_task.cancellation is None
     assert first_retry["retained_release_review_correction_task_ids"] == [correction_task_id]
-    assert state.inbox[correction_inbox_ids[0]].state == TeamInboxItemState.PENDING
+    assert first_retry["updated_task_ids"] == [correction_task_id]
+    assert first_retry["updated_correction_inbox_item_ids"] == correction_inbox_ids
+    remaining_review = state.review_requests[remaining_rejected_ids[0]]
+    excepted_review = state.review_requests[first_rejected_review_id]
+    assert all(finding in correction_task.description for finding in remaining_review.findings)
+    assert all(finding not in correction_task.description for finding in excepted_review.findings)
+    correction_inbox = state.inbox[correction_inbox_ids[0]]
+    assert correction_inbox.state == TeamInboxItemState.PENDING
+    assert correction_inbox.payload["review_request_id"] == remaining_review.id
+    assert correction_inbox.payload["review_request_ids"] == [remaining_review.id]
+    assert correction_inbox.payload["rejected_reviews"] == [
+        {
+            "review_request_id": remaining_review.id,
+            "reviewer_agent_id": remaining_review.reviewer_agent_id,
+            "findings": remaining_review.findings,
+        }
+    ]
+    assert correction_inbox.payload["findings"] == remaining_review.findings
 
     first_replacement = state.review_requests[str(first_retry["replacement_gate_id"])]
     _cascade_review_decision(
