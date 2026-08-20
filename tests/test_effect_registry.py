@@ -849,6 +849,62 @@ def test_prepare_reference_repositories_reuses_cached_checkout_by_default(
     assert backend.prepared_reference_repos[-1]["commit_sha"] is None
 
 
+def test_prepare_reference_repositories_resolves_selected_managed_repository_id(
+    tmp_path: Path,
+) -> None:
+    config = GatewayConfig(
+        runtime_dir=tmp_path,
+        execution_backend="container_worker_vm",
+        container_worker_base_url="http://worker.test",
+    )
+    lookup_calls: list[tuple[str, dict[str, object]]] = []
+    admin_service = SimpleNamespace(
+        get_managed_git_repository=lambda managed_repo_id, **kwargs: (
+            lookup_calls.append((managed_repo_id, kwargs))
+            or {
+                "managed_repo_id": managed_repo_id,
+                "canonical_repository_url": "https://example.invalid/selected.git",
+                "default_branch": "main",
+            }
+        ),
+        resolve_managed_git_branch_commit=lambda managed_repo_id, **kwargs: "a" * 40,
+        resolve_managed_git_clone=lambda managed_repo_id, **kwargs: {
+            "managed_repo_id": managed_repo_id,
+            "clone_url": f"https://example.invalid/{managed_repo_id}.git",
+            "repo_name": "selected",
+        },
+    )
+    provider = AgentPrepareReferenceRepositoriesEffectProvider()
+    provider.initialize(
+        AgentPrepareReferenceRepositoriesEffectDefinition(
+            id="prepare-repositories",
+            display_name="Prepare repositories",
+            type="effect:agent:prepare-reference-repositories",
+            session_id="assistant-1",
+            directory_path="root/personal",
+            repositories=[{"managed_repo_id": "mr-selected", "branch": "trunk"}],
+        ),
+        EffectRuntimeContext(
+            resolved_config=config,
+            metadata={"directory_path": "root/personal"},
+            admin_service=admin_service,
+        ),
+    )
+
+    resolved = provider._resolve_repositories(
+        [{"managed_repo_id": "mr-selected", "repo_source": None, "branch": "trunk"}],
+        directory_path="root/personal",
+        session_id="assistant-1",
+        requested_at=datetime.now(UTC),
+        refresh_upstream=False,
+    )
+
+    assert lookup_calls == [("mr-selected", {"directory_path": "root/personal"})]
+    assert resolved[0].managed_repo_id == "mr-selected"
+    assert resolved[0].repo_source == "https://example.invalid/selected.git"
+    assert resolved[0].source_ref == "refs/heads/trunk"
+
+
 def test_prepare_reference_repositories_reconciles_forward_trust_transitions_in_parallel(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

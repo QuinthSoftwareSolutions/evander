@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-08-20 - Reference Repository Workflow Editor
+
+- Replaced the reference-repository effect's raw JSON editor with repeatable managed-repository
+  selection rows and a separate per-repository main-branch field. Existing `repo_source` workflow
+  configuration remains compatible while new rows store the exact managed repository ID.
+
 ## 2026-08-20 - Release Exception And Gate Error Recovery
 
 - Prevented rejected-review exceptions from reopening a predecessor after a successor exists,

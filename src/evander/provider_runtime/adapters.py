@@ -167,6 +167,14 @@ class AdminRuntimeProviderAdapter:
             **kwargs,
         )
 
+    def get_managed_git_repository(self, *args: Any, **kwargs: Any) -> Any:
+        return self._call_required(
+            self._managed_git_method("get_repository"),
+            "get_managed_git_repository",
+            *args,
+            **kwargs,
+        )
+
     def resolve_managed_git_clone(self, **kwargs: Any) -> Any:
         return self._call_required(
             self._managed_git_method("clone_info"),
