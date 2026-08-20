@@ -980,6 +980,12 @@ def materialize_release_review_rejection_correction(
     ):
         raise ValueError(f"reserved release review correction task id {task_id} is already in use")
     else:
+        if task.state == TeamTaskState.CANCELLED:
+            task.cancellation = None
+            task.completion = None
+            task.owner_agent_id = owner_agent_id
+            _set_task_state(task, TeamTaskState.PENDING, now=now)
+            result.setdefault("reactivated_task_ids", []).append(task.id)
         if task.state not in _TERMINAL_CANDIDATE_CORRECTION_TASK_STATES:
             _reconcile_candidate_correction_task_git_base(
                 state,

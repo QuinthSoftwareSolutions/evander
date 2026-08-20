@@ -393,6 +393,79 @@ def test_rejected_review_exception_preserves_remaining_cohort_correction_work() 
     assert state.inbox[correction_inbox_ids[0]].state == TeamInboxItemState.HANDLED
 
 
+def test_rejected_review_exception_reactivates_correction_for_replacement_rejection() -> None:
+    state, release, _promotion, reviews = _release_review_cohort_fixture()
+    _cascade_review_decision(
+        state,
+        review=reviews["reviewer-a"],
+        decision_state=TeamRecordState.ACCEPTED,
+        findings=[],
+        projects_to_recalc=set(),
+        result=_result(),
+    )
+    initial_rejection = _result()
+    _cascade_review_decision(
+        state,
+        review=reviews["reviewer-b"],
+        decision_state=TeamRecordState.REJECTED,
+        findings=["Correct the original defect."],
+        projects_to_recalc=set(),
+        result=initial_rejection,
+    )
+    correction_task_id = release.review_correction_task_id
+    assert correction_task_id is not None
+    original_inbox_id = next(
+        item_id
+        for item_id in initial_rejection["created_inbox_item_ids"]
+        if state.inbox[item_id].payload.get("kind")
+        == "release_review_rejection_correction_work"
+    )
+
+    retry_result = _result()
+    retry_release_gate(
+        state,
+        release=release,
+        gate_kind="review",
+        gate_id=reviews["reviewer-b"].id,
+        reason="The original finding is explicitly excepted.",
+        requested_by="operator:release-admin",
+        result=retry_result,
+        allow_rejected_review_exception=True,
+    )
+
+    correction_task = state.tasks[correction_task_id]
+    assert correction_task.state == TeamTaskState.CANCELLED
+    assert correction_task.cancellation is not None
+    assert state.inbox[original_inbox_id].state == TeamInboxItemState.HANDLED
+    replacement = state.review_requests[str(retry_result["replacement_gate_id"])]
+
+    replacement_rejection = _result()
+    _cascade_review_decision(
+        state,
+        review=replacement,
+        decision_state=TeamRecordState.REJECTED,
+        findings=["The replacement review found a different defect."],
+        projects_to_recalc=set(),
+        result=replacement_rejection,
+    )
+
+    assert release.state == TeamRecordState.REJECTED
+    assert release.review_correction_task_id == correction_task_id
+    assert correction_task.state == TeamTaskState.PENDING
+    assert correction_task.cancellation is None
+    assert replacement_rejection["reactivated_task_ids"] == [correction_task_id]
+    replacement_inbox = next(
+        state.inbox[item_id]
+        for item_id in replacement_rejection["created_inbox_item_ids"]
+        if state.inbox[item_id].payload.get("kind")
+        == "release_review_rejection_correction_work"
+    )
+    assert replacement_inbox.state == TeamInboxItemState.PENDING
+    assert replacement_inbox.task_id == correction_task_id
+    assert replacement_inbox.payload["review_request_id"] == replacement.id
+    TeamState.model_validate(state.model_dump(mode="python"))
+
+
 def test_rejected_review_exception_refuses_predecessor_with_successor() -> None:
     state, release, _promotion, reviews = _release_review_cohort_fixture()
     _cascade_review_decision(

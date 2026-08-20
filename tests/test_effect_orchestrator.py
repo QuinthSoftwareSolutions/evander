@@ -9511,6 +9511,122 @@ def test_await_agent_recorded_failure_routes_to_error_branch(tmp_path: Path) -> 
     assert recovery_record["status"] == "succeeded"
 
 
+def test_await_agent_recorded_failure_routes_to_error_branch_on_replay(tmp_path: Path) -> None:
+    runtime_dir = tmp_path / "runtime"
+    config = GatewayConfig(runtime_dir=runtime_dir)
+    worker_config = canonical_worker_config(
+        {
+            "runtime_dir": runtime_dir,
+            "triggers": [],
+            "gates": [
+                {
+                    "id": "await-agent-1",
+                    "display_name": "Await agent",
+                    "type": "gate:await-agent",
+                    "session_id": "session-42",
+                    "outputs": {},
+                }
+            ],
+            "effects": [
+                {
+                    "id": "effect-prompt",
+                    "display_name": "Prompt",
+                    "type": "effect:agent:prompt",
+                    "session_id": "session-42",
+                    "prompt": "Continue main task",
+                },
+                {
+                    "id": "effect-recover",
+                    "display_name": "Record await failure",
+                    "type": "effect:session:update-metadata",
+                    "target": "session-42",
+                    "metadata": {"await_failure_handled": True},
+                },
+            ],
+            "edges": [
+                _edge("effect-prompt", "await-agent-1", source_port="started"),
+                _edge("await-agent-1", "effect-recover", source_port="error"),
+            ],
+        }
+    )
+    worker = EffectOrchestratorWorker(  # type: ignore[arg-type]
+        config=config,
+        worker_config=worker_config,
+        runtime=None,
+    )
+    worker._executor = _ImmediateExecutor()  # type: ignore[assignment]
+    worker.provider_factory = _Factory({"effect-recover": {"success": True}})
+    occurred_at = datetime(2026, 4, 4, 12, 0, tzinfo=timezone.utc)
+    worker.event_queue.publish(
+        TriggerEvent(
+            event_id="event-await-failed-before-route",
+            trigger_id="effect-prompt",
+            trigger_type="effect:agent:prompt",
+            occurred_at=occurred_at,
+            payload={"__branch_port": "started"},
+            trace_id="trace-await-failed-before-route",
+        )
+    )
+    idempotency_key = "event-await-failed-before-route::await-agent-1"
+    worker.gate_execution_store.record_execution(
+        GateExecutionRecord(
+            execution_id="gate-await-failed-before-route",
+            idempotency_key=idempotency_key,
+            event_id="event-await-failed-before-route",
+            trace_id="trace-await-failed-before-route",
+            source_node_id="effect-prompt",
+            source_trigger_type="effect:agent:prompt",
+            gate_id="await-agent-1",
+            gate_type="gate:await-agent",
+            status="failed",
+            started_at=occurred_at,
+            finished_at=occurred_at,
+            resolved_config_hash="failed-await-config",
+            resolved_config={"session_id": "session-42"},
+            input_payload={"__branch_port": "started"},
+            outputs={},
+            inputs_by_source={"effect-prompt": {"__branch_port": "started"}},
+            input_event_ids_by_source={
+                "effect-prompt": "event-await-failed-before-route"
+            },
+            input_occurred_at_by_source={"effect-prompt": occurred_at},
+            error="gate:await-agent requires upstream effect output dispatch_id",
+        )
+    )
+    original_publish = worker.event_queue.publish
+    persisted_statuses: list[str] = []
+
+    def publish(event: TriggerEvent, *, idempotency_key: str | None = None):
+        if event.trigger_id == "await-agent-1":
+            persisted = worker.gate_execution_store.find_execution_by_idempotency_key(
+                "event-await-failed-before-route::await-agent-1"
+            )
+            assert persisted is not None
+            persisted_statuses.append(persisted.status)
+        return original_publish(event, idempotency_key=idempotency_key)
+
+    worker.event_queue.publish = publish  # type: ignore[assignment]
+
+    for _ in range(3):
+        worker.run_once()
+
+    assert persisted_statuses == ["completion_pending"]
+    gate_record = worker.gate_execution_store.find_execution_by_idempotency_key(
+        idempotency_key
+    )
+    assert gate_record is not None
+    assert gate_record.status == "error_routed"
+    assert gate_record.completion_event_branch_port == "error"
+    assert gate_record.outputs == {
+        "success": False,
+        "error_message": "gate:await-agent requires upstream effect output dispatch_id",
+        "error_class": "GateRuntimeError",
+    }
+    recovery_record = next(iter(effect_execution_payload(worker_config).values()))
+    assert recovery_record["effect_id"] == "effect-recover"
+    assert recovery_record["status"] == "succeeded"
+
+
 def test_await_agent_gate_releases_follow_up_from_in_process_vm_poll(
     tmp_path: Path, monkeypatch
 ) -> None:

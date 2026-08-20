@@ -2015,7 +2015,14 @@ class EffectOrchestratorWorker:
         config_revision: str,
     ) -> None:
         idempotency_key = _execution_idempotency_key(queue_record.event_id, gate.id)
-        if self.gate_execution_store.find_execution_by_idempotency_key(idempotency_key) is not None:
+        existing = self.gate_execution_store.find_execution_by_idempotency_key(idempotency_key)
+        if existing is not None:
+            if existing.status == "failed":
+                self._route_recorded_gate_failure_to_error_branch(
+                    queue_record=queue_record,
+                    gate=gate,
+                    graph=graph,
+                )
             return
 
         started_at = datetime.now(UTC)
@@ -2118,6 +2125,14 @@ class EffectOrchestratorWorker:
             **_effect_failure_outputs(failure),
         }
         finished_at = datetime.now(UTC)
+        record.status = COMPLETION_PENDING_STATUS
+        record.completion_pending_status = "error_routed"
+        record.completion_event_branch_port = AGENT_PROMPT_ERROR_PORT
+        record.outputs = outputs
+        record.finished_at = finished_at
+        record.error = error_message
+        self.gate_execution_store.record_execution(record)
+        self._update_event_delivery_state(record.event_id)
         published_event_id = self._publish_gate_completion_event_or_mark_pending(
             record=record,
             outputs=outputs,

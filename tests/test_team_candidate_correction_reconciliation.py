@@ -518,6 +518,51 @@ def test_reviewed_rework_cancels_obsolete_merge_recovery_task(
     )
     TeamState.model_validate(state.model_dump(mode="python"))
 
+    replacement_aggregate = next(
+        promotion
+        for promotion in state.git_promotions.values()
+        if promotion.release_package_id == successor_id
+        and promotion.promotion_kind == "correction_aggregate"
+        and promotion.id != failed_promotion_id
+        and promotion.state != "retired"
+    )
+    _failed_state, repeated_failure = TeamGitReleaseService(
+        repository
+    ).record_git_promotion_result(
+        promotion_id=replacement_aggregate.id,
+        success=False,
+        error="Replacement correction aggregate also has a merge conflict.",
+        outputs={
+            "error_code": "merge_conflict",
+            "base_commit_sha": CANDIDATE_COMMIT,
+            "conflict_branch": replacement_aggregate.source_branch,
+            "source_manifests": {
+                replacement_aggregate.source_branch: {
+                    "base_commit_sha": CANDIDATE_COMMIT,
+                    "reviewed_commit_sha": RECOVERY_COMMIT,
+                    "tree_hash": "b" * 40,
+                    "commit_shas": [RECOVERY_COMMIT],
+                    "changed_paths": ["M\tsrc/Correction.cs"],
+                }
+            },
+        },
+    )
+    state = repository.read()
+    recovery_task = state.tasks[recovery_task.id]
+
+    assert repeated_failure["merge_recovery_task_id"] == recovery_task.id
+    assert repeated_failure["reactivated_task_ids"] == [recovery_task.id]
+    assert recovery_task.state == TeamTaskState.PENDING
+    assert recovery_task.cancellation is None
+    assert any(
+        blocker.state == TeamBlockerState.OPEN
+        and blocker.source_kind == TeamBlockerSourceKind.RELEASE_PACKAGE
+        and blocker.source_id == successor_id
+        and recovery_task.id in blocker.affected_task_ids
+        for blocker in state.blockers.values()
+    )
+    TeamState.model_validate(state.model_dump(mode="python"))
+
 
 def test_release_review_correction_waits_for_every_current_review(
     tmp_path: Path,

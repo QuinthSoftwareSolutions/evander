@@ -1353,6 +1353,13 @@ def _materialize_merge_recovery_task(
         state.tasks[task.id] = task
         result.setdefault("created_task_ids", []).append(task.id)
     else:
+        if task.state == TeamTaskState.CANCELLED:
+            task.cancellation = None
+            task.completion = None
+            task.owner_agent_id = owner_agent_id
+            task.state = TeamTaskState.PENDING
+            task.state_entered_at = now
+            result.setdefault("reactivated_task_ids", []).append(task.id)
         if task.state == TeamTaskState.PENDING and task.owner_agent_id != owner_agent_id:
             task.owner_agent_id = owner_agent_id
         if task.description != description:

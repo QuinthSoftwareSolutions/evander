@@ -9,6 +9,8 @@
   aggregate promotion.
 - Allowed `error` edges on branch-gate capabilities and routed failures recorded directly by gate
   providers through the configured error branch.
+- Reactivated deterministic correction and merge-recovery tasks when later failures require fresh
+  work, and persisted recorded gate-error completion intent so daemon replay cannot skip recovery.
 
 ## 2026-08-19 - Immutable Candidate Correction Guidance
 
