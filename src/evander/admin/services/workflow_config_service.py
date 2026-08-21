@@ -373,6 +373,20 @@ class WorkflowConfigAdminService:
             raise RuntimeError("workflow reports service is not configured")
         return self._workflow_reports_admin.read_workflow_node_execution_detail(execution_key)
 
+    def read_workflow_node_execution_authorization_paths(self, **kwargs: Any):
+        if self._workflow_reports_admin is None:
+            raise RuntimeError("workflow reports service is not configured")
+        return self._workflow_reports_admin.read_workflow_node_execution_authorization_paths(
+            **kwargs
+        )
+
+    def read_workflow_node_execution_authorization_path(self, execution_key: str):
+        if self._workflow_reports_admin is None:
+            raise RuntimeError("workflow reports service is not configured")
+        return self._workflow_reports_admin.read_workflow_node_execution_authorization_path(
+            execution_key
+        )
+
     def clear_workflow_run(self, event_id: str) -> WorkflowRunClearPayload:
         return self._clear_workflow_run(event_id)
 
@@ -3009,9 +3023,13 @@ class WorkflowConfigAdminService:
     def _workflow_event_journal(self) -> SqliteWorkflowEventJournal:
         stores = self._workflow_run_store_paths()
         raw_retention_days = stores.get("orchestration_retention_days")
+        raw_compact_retention_days = stores.get("orchestration_compact_history_retention_days")
         return SqliteWorkflowEventJournal(
             stores["orchestration_store_path"],
             retention_days=int(raw_retention_days if raw_retention_days is not None else 30),
+            compact_history_retention_days=int(
+                raw_compact_retention_days if raw_compact_retention_days is not None else 365
+            ),
         )
 
     def _collect_workflow_node_ids(self, config: dict[str, object]) -> set[str]:

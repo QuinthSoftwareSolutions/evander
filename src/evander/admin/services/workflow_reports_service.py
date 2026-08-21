@@ -87,7 +87,9 @@ from evander.repositories.orchestration_db import (
     json_loads_object,
 )
 from evander.repositories.execution_history import (
+    list_node_execution_authorization_paths,
     list_node_execution_fields,
+    read_node_execution_authorization_path,
     read_node_execution_detail,
     search_node_executions,
 )
@@ -161,6 +163,12 @@ class WorkflowReportsAdminService:
 
     def read_workflow_node_execution_detail(self, execution_key: str):
         return self._read_workflow_node_execution_detail(execution_key)
+
+    def read_workflow_node_execution_authorization_paths(self, **kwargs: Any):
+        return self._read_workflow_node_execution_authorization_paths(**kwargs)
+
+    def read_workflow_node_execution_authorization_path(self, execution_key: str):
+        return self._read_workflow_node_execution_authorization_path(execution_key)
 
     def run_conformance_report(self, kind: str) -> "ConformanceReportRunPayload":
         return self._run_conformance_report(kind)
@@ -648,6 +656,27 @@ class WorkflowReportsAdminService:
             read_node_execution_detail(
                 stores["orchestration_store_path"], execution_key=execution_key
             )
+        )
+
+    def _read_workflow_node_execution_authorization_paths(
+        self,
+        *,
+        node_id: str,
+        started_from: datetime,
+        started_to: datetime,
+    ) -> tuple[str, ...]:
+        stores = self._workflow_run_store_paths()
+        return list_node_execution_authorization_paths(
+            stores["orchestration_store_path"],
+            node_id=node_id,
+            started_from=started_from,
+            started_to=started_to,
+        )
+
+    def _read_workflow_node_execution_authorization_path(self, execution_key: str) -> str:
+        stores = self._workflow_run_store_paths()
+        return read_node_execution_authorization_path(
+            stores["orchestration_store_path"], execution_key=execution_key
         )
 
     def _read_workflow_run_search(

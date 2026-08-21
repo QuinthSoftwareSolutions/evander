@@ -706,7 +706,21 @@ def workflow_routes(
             return json_error(str(exc), status_code=403)
         return JSONResponse(payload.model_dump(mode="json"))
 
-    def require_node_execution_read(request: Request, *, node_id: str) -> None:
+    def require_node_execution_read(
+        request: Request,
+        *,
+        node_id: str,
+        execution_directory_paths: Iterable[str] = (),
+    ) -> None:
+        stored_directory_paths = tuple(dict.fromkeys(execution_directory_paths))
+        if stored_directory_paths:
+            for directory_path in stored_directory_paths:
+                auth.require_permission(
+                    request,
+                    WORKFLOW_RUNS_READ_PERMISSION,
+                    directory_path=directory_path,
+                )
+            return
         document = service.workflow_config_admin.read_composed_workflow_editor_document()
         if not document.graphs:
             auth.require_permission(request, WORKFLOW_RUNS_READ_PERMISSION, directory_path="root")
@@ -724,7 +738,18 @@ def workflow_routes(
             search = WorkflowNodeExecutionSearchRequestPayload.model_validate(
                 await json_body(request)
             )
-            require_node_execution_read(request, node_id=search.node_id)
+            execution_directory_paths = (
+                service.workflow_config_admin.read_workflow_node_execution_authorization_paths(
+                    node_id=search.node_id,
+                    started_from=search.started_from,
+                    started_to=search.started_to,
+                )
+            )
+            require_node_execution_read(
+                request,
+                node_id=search.node_id,
+                execution_directory_paths=execution_directory_paths,
+            )
             payload = service.workflow_config_admin.read_workflow_node_execution_search(
                 node_id=search.node_id,
                 started_from=search.started_from,
@@ -733,6 +758,17 @@ def workflow_routes(
                 filters=[item.model_dump(mode="json") for item in search.filters],
                 limit=search.limit,
                 cursor=search.cursor,
+            )
+            require_node_execution_read(
+                request,
+                node_id=search.node_id,
+                execution_directory_paths=(
+                    service.workflow_config_admin.read_workflow_node_execution_authorization_paths(
+                        node_id=search.node_id,
+                        started_from=search.started_from,
+                        started_to=search.started_to,
+                    )
+                ),
             )
         except ValueError as exc:
             return json_error(str(exc), status_code=400)
@@ -745,11 +781,33 @@ def workflow_routes(
             search = WorkflowNodeExecutionFieldsRequestPayload.model_validate(
                 await json_body(request)
             )
-            require_node_execution_read(request, node_id=search.node_id)
+            execution_directory_paths = (
+                service.workflow_config_admin.read_workflow_node_execution_authorization_paths(
+                    node_id=search.node_id,
+                    started_from=search.started_from,
+                    started_to=search.started_to,
+                )
+            )
+            require_node_execution_read(
+                request,
+                node_id=search.node_id,
+                execution_directory_paths=execution_directory_paths,
+            )
             payload = service.workflow_config_admin.read_workflow_node_execution_fields(
                 node_id=search.node_id,
                 started_from=search.started_from,
                 started_to=search.started_to,
+            )
+            require_node_execution_read(
+                request,
+                node_id=search.node_id,
+                execution_directory_paths=(
+                    service.workflow_config_admin.read_workflow_node_execution_authorization_paths(
+                        node_id=search.node_id,
+                        started_from=search.started_from,
+                        started_to=search.started_to,
+                    )
+                ),
             )
         except ValueError as exc:
             return json_error(str(exc), status_code=400)
@@ -762,10 +820,28 @@ def workflow_routes(
         try:
             if not execution_key:
                 raise ValueError("execution_key is required")
+            execution_directory_path = (
+                service.workflow_config_admin.read_workflow_node_execution_authorization_path(
+                    execution_key
+                )
+            )
+            auth.require_permission(
+                request,
+                WORKFLOW_RUNS_READ_PERMISSION,
+                directory_path=execution_directory_path,
+            )
             payload = service.workflow_config_admin.read_workflow_node_execution_detail(
                 execution_key
             )
-            require_node_execution_read(request, node_id=payload.node_id)
+            auth.require_permission(
+                request,
+                WORKFLOW_RUNS_READ_PERMISSION,
+                directory_path=(
+                    service.workflow_config_admin.read_workflow_node_execution_authorization_path(
+                        execution_key
+                    )
+                ),
+            )
         except ValueError as exc:
             status_code = 404 if "not found" in str(exc) else 400
             return json_error(str(exc), status_code=status_code)

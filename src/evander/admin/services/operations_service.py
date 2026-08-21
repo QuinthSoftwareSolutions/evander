@@ -460,7 +460,11 @@ class OperationsAdminService:
                 "assistant_capability_mode": normalized_capability_mode,
             },
         )
-        publish_result = queue.publish_result(event, idempotency_key=event_id)
+        publish_result = queue.publish_result(
+            event,
+            idempotency_key=event_id,
+            directory_path="root",
+        )
         record = publish_result.record
         if publish_result.created and record.event_id == event_id:
             notify_wake_socket_for_lock(worker_config.effect_lock_path)

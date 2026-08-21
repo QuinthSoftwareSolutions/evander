@@ -38,6 +38,8 @@ class TriggerQueueRecord(BaseModel):
     idempotency_key: str | None = None
     clear_reason: str | None = None
     error: str | None = None
+    config_revision: str | None = None
+    directory_path: str | None = None
 
 
 @dataclass(frozen=True)
@@ -69,7 +71,7 @@ class SqliteTriggerEventQueue:
         *,
         journal: SqliteWorkflowEventJournal | None = None,
         retention_days: int | None = None,
-        compact_history_retention_days: int = 365,
+        compact_history_retention_days: int | None = None,
     ) -> None:
         self.path = Path(path)
         ensure_orchestration_schema(self.path)
@@ -79,17 +81,34 @@ class SqliteTriggerEventQueue:
             compact_history_retention_days=compact_history_retention_days,
         )
         self._journal = journal or SqliteWorkflowEventJournal(
-            self.path, retention_days=retention_days
+            self.path,
+            retention_days=retention_days,
+            compact_history_retention_days=compact_history_retention_days,
         )
         self._lock = RLock()
 
     def publish(
-        self, event: TriggerEvent, *, idempotency_key: str | None = None
+        self,
+        event: TriggerEvent,
+        *,
+        idempotency_key: str | None = None,
+        config_revision: str | None = None,
+        directory_path: str | None = None,
     ) -> TriggerQueueRecord:
-        return self.publish_result(event, idempotency_key=idempotency_key).record
+        return self.publish_result(
+            event,
+            idempotency_key=idempotency_key,
+            config_revision=config_revision,
+            directory_path=directory_path,
+        ).record
 
     def publish_result(
-        self, event: TriggerEvent, *, idempotency_key: str | None = None
+        self,
+        event: TriggerEvent,
+        *,
+        idempotency_key: str | None = None,
+        config_revision: str | None = None,
+        directory_path: str | None = None,
     ) -> TriggerQueuePublishResult:
         normalized_key = _normalize_idempotency_key(idempotency_key)
         trace_id = _normalize_trace_id(event.trace_id)
@@ -114,6 +133,8 @@ class SqliteTriggerEventQueue:
                     delivery_state="pending",
                     delivered_at=None,
                     idempotency_key=normalized_key,
+                    config_revision=str(config_revision or "").strip() or None,
+                    directory_path=str(directory_path or "").strip() or None,
                 )
                 try:
                     self._insert_record(connection, created)

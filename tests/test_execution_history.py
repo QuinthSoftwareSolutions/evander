@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 
+import pytest
+
 from evander.daemons.effect_orchestrator import (
     EffectExecutionRecord,
     GateExecutionRecord,
@@ -10,7 +12,9 @@ from evander.daemons.effect_orchestrator import (
 )
 from evander.events.models import TriggerEvent
 from evander.repositories.execution_history import (
+    list_node_execution_authorization_paths,
     read_node_execution_detail,
+    read_node_execution_authorization_path,
     run_execution_history_backfill,
     search_node_executions,
 )
@@ -22,6 +26,7 @@ from evander.repositories.orchestration_db import (
     run_orchestration_retention,
 )
 from evander.triggers.queue import SqliteTriggerEventQueue
+from evander.workflow.events import SqliteWorkflowEventJournal
 
 
 def _effect_record(
@@ -131,7 +136,7 @@ def test_execution_history_schema_upgrade_does_not_rewrite_v1_records(tmp_path) 
             for row in connection.execute("SELECT version FROM schema_migrations ORDER BY version")
         ]
     assert upgraded == original
-    assert migration_versions == [1, 2]
+    assert migration_versions == [1, 2, 3]
 
 
 def test_execution_write_archives_sanitized_queryable_payload(tmp_path) -> None:
@@ -141,7 +146,14 @@ def test_execution_write_archives_sanitized_queryable_payload(tmp_path) -> None:
         _effect_record(
             input_payload={
                 "__node_outputs": {"large": "not-retained"},
-                "user": {"name": "Jonathan", "password": "secret"},
+                "user": {
+                    "name": "Jonathan",
+                    "password": "password-value",
+                    "pat": "pat-value",
+                    "pwd": "pwd-value",
+                    "ssh_key": "ssh-key-value",
+                    "path": "/safe/path",
+                },
                 "items": [{"hidden": "array-element"}],
             },
             outputs={"user": {"name": "Mikael"}, "score": 7, "optional": None},
@@ -169,6 +181,10 @@ def test_execution_write_archives_sanitized_queryable_payload(tmp_path) -> None:
     detail = read_node_execution_detail(path, execution_key="effect:execution-1")
     assert "__node_outputs" not in detail["input"]
     assert detail["input"]["user"]["password"] == "[REDACTED]"
+    assert detail["input"]["user"]["pat"] == "[REDACTED]"
+    assert detail["input"]["user"]["pwd"] == "[REDACTED]"
+    assert detail["input"]["user"]["ssh_key"] == "[REDACTED]"
+    assert detail["input"]["user"]["path"] == "/safe/path"
     assert detail["input"]["items"] == [{"hidden": "array-element"}]
     assert detail["record_tier"] == "full"
     assert detail["full_record"]["resolved_config"]["token"] == "[REDACTED]"
@@ -216,6 +232,181 @@ def test_execution_write_archives_sanitized_queryable_payload(tmp_path) -> None:
     )
     assert null_and_missing["matched"] == 1
     assert wrong_case["matched"] == 0
+
+    with connect_orchestration_db(path) as connection:
+        indexed_secrets = connection.execute(
+            """
+            SELECT COUNT(*)
+            FROM workflow_node_execution_history_values
+            WHERE text_value IN ('password-value', 'pat-value', 'pwd-value', 'ssh-key-value')
+            """
+        ).fetchone()[0]
+    assert indexed_secrets == 0
+
+
+def test_execution_history_numeric_equality_is_exact_and_huge_values_do_not_fail(
+    tmp_path,
+) -> None:
+    path = tmp_path / "orchestration.db"
+    store = SqliteExecutionStore(path, retention_days=None)
+    started_at = datetime(2026, 8, 20, 10, tzinfo=UTC)
+    lower = 9_007_199_254_740_992
+    upper = 9_007_199_254_740_993
+    enormous = 10**400
+    store.put(
+        _effect_record(
+            execution_id="exact-lower",
+            started_at=started_at,
+            outputs={"number": lower},
+        )
+    )
+    store.put(
+        _effect_record(
+            execution_id="exact-upper",
+            started_at=started_at + timedelta(seconds=1),
+            outputs={"number": upper},
+        )
+    )
+    store.put(
+        _effect_record(
+            execution_id="exact-enormous",
+            started_at=started_at + timedelta(seconds=2),
+            outputs={"number": enormous},
+        )
+    )
+    store.put(
+        _effect_record(
+            execution_id="safe-float",
+            started_at=started_at + timedelta(seconds=3),
+            outputs={"number": 7.0},
+        )
+    )
+
+    def matching(value: int) -> list[str]:
+        result = search_node_executions(
+            path,
+            node_id="effect-1",
+            started_from=started_at - timedelta(seconds=1),
+            started_to=started_at + timedelta(minutes=1),
+            statuses=[],
+            filters=[{"location": "output", "path": "/number", "operator": "eq", "value": value}],
+            limit=50,
+            cursor=None,
+            full_retention_days=30,
+            compact_retention_days=365,
+        )
+        return [item["execution_id"] for item in result["executions"]]
+
+    assert matching(lower) == ["exact-lower"]
+    assert matching(upper) == ["exact-upper"]
+    assert matching(enormous) == ["exact-enormous"]
+    assert matching(7) == ["safe-float"]
+    with connect_orchestration_db(path) as connection:
+        numeric_value = connection.execute(
+            """
+            SELECT numeric_value
+            FROM workflow_node_execution_history_values
+            WHERE execution_key = 'effect:exact-enormous' AND json_pointer = '/number'
+            """
+        ).fetchone()[0]
+    assert numeric_value is None
+
+
+def test_execution_history_timestamp_windows_are_chronological_at_exact_seconds(
+    tmp_path,
+) -> None:
+    path = tmp_path / "orchestration.db"
+    store = SqliteExecutionStore(path, retention_days=None)
+    exact_second = datetime(2026, 8, 20, 10, tzinfo=UTC)
+    store.put(
+        _effect_record(
+            execution_id="fractional",
+            started_at=exact_second + timedelta(microseconds=500_000),
+        )
+    )
+
+    included = search_node_executions(
+        path,
+        node_id="effect-1",
+        started_from=exact_second,
+        started_to=exact_second + timedelta(seconds=1),
+        statuses=[],
+        filters=[],
+        limit=50,
+        cursor=None,
+        full_retention_days=30,
+        compact_retention_days=365,
+    )
+    excluded = search_node_executions(
+        path,
+        node_id="effect-1",
+        started_from=exact_second - timedelta(seconds=1),
+        started_to=exact_second,
+        statuses=[],
+        filters=[],
+        limit=50,
+        cursor=None,
+        full_retention_days=30,
+        compact_retention_days=365,
+    )
+
+    assert [item["execution_id"] for item in included["executions"]] == ["fractional"]
+    assert excluded["matched"] == 0
+
+
+def test_execution_history_records_snapshot_directory_and_legacy_scope_is_root(tmp_path) -> None:
+    path = tmp_path / "orchestration.db"
+    ensure_orchestration_schema(path)
+    with connect_orchestration_db(path) as connection:
+        connection.execute(
+            """
+            INSERT INTO workflow_config_snapshots(revision, captured_at, payload_json)
+            VALUES (?, ?, ?)
+            """,
+            (
+                "revision-1",
+                "2026-08-20T09:59:00Z",
+                json_dumps(
+                    {
+                        "revision": "revision-1",
+                        "captured_at": "2026-08-20T09:59:00Z",
+                        "workflow_graphs": [
+                            {
+                                "id": "graph-old",
+                                "directory_path": "root/old",
+                                "node_ids": ["effect-1"],
+                            }
+                        ],
+                    }
+                ),
+            ),
+        )
+    started_at = datetime(2026, 8, 20, 10, tzinfo=UTC)
+    SqliteExecutionStore(path, retention_days=None).put(
+        _effect_record(execution_id="scoped", started_at=started_at)
+    )
+    SqliteExecutionStore(path, retention_days=None).put(
+        _effect_record(execution_id="legacy-root", started_at=started_at).model_copy(
+            update={"config_revision": None}
+        )
+    )
+
+    paths = list_node_execution_authorization_paths(
+        path,
+        node_id="effect-1",
+        started_from=started_at - timedelta(seconds=1),
+        started_to=started_at + timedelta(minutes=1),
+    )
+    assert paths == ("root", "root/old")
+    assert read_node_execution_authorization_path(path, execution_key="effect:scoped") == "root/old"
+    assert (
+        read_node_execution_authorization_path(path, execution_key="effect:legacy-root") == "root"
+    )
+
+
+def test_retention_configuration_requires_compact_retention_when_enabled(tmp_path) -> None:
+    with pytest.raises(ValueError, match="compact_history_retention_days is required"):
+        SqliteWorkflowEventJournal(tmp_path / "orchestration.db", retention_days=30)
 
 
 def test_internal_completion_transport_is_not_a_duplicate_node_execution(tmp_path) -> None:

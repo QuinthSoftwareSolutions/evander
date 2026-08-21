@@ -277,7 +277,7 @@ class SqliteExecutionRepository(Generic[TRecord]):
         journal: Any | None = None,
         source: str | None = None,
         retention_days: int | None = None,
-        compact_history_retention_days: int = 365,
+        compact_history_retention_days: int | None = None,
     ) -> None:
         self.path = Path(path)
         self.model = model

@@ -11,6 +11,8 @@
 - Kept existing orchestration rows unchanged: the effect worker copies them oldest-first in bounded
   idle batches, live writes update compact history transactionally, and retention guarantees a
   compact copy before full-record deletion. No automatic database vacuum is performed.
+- Bound archived payload access to each execution's recorded directory, expanded credential
+  redaction, preserved exact numeric equality, and kept pagination and timestamp windows stable.
 
 ## 2026-08-20 - Workflow-Paused Team Tasks
 

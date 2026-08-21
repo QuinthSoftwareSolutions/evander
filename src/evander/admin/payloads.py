@@ -328,8 +328,15 @@ class WorkflowNodeExecutionFilterPayload(BaseModel):
             isinstance(self.value, bool) or not isinstance(self.value, (int, float))
         ):
             raise ValueError(f"operator {self.operator} requires a numeric value")
-        if self.operator in {"gt", "gte", "lt", "lte"} and not math.isfinite(float(self.value)):
-            raise ValueError(f"operator {self.operator} requires a finite numeric value")
+        if self.operator in {"gt", "gte", "lt", "lte"}:
+            try:
+                range_value = float(self.value)
+            except (OverflowError, ValueError) as exc:
+                raise ValueError(
+                    f"operator {self.operator} requires a finite numeric value"
+                ) from exc
+            if not math.isfinite(range_value):
+                raise ValueError(f"operator {self.operator} requires a finite numeric value")
         if self.operator in {"exists", "not_exists"}:
             self.value = None
         return self

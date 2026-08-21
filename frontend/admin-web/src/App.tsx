@@ -229,6 +229,15 @@ type WorkflowNodeExecutionFilterDraft = {
   value: string;
 };
 
+type WorkflowNodeExecutionQuery = {
+  node_id: string;
+  started_from: string;
+  started_to: string;
+  statuses: string[];
+  filters: WorkflowNodeExecutionFilter[];
+  limit: number;
+};
+
 type BindingOption = {
   value: string;
   label: string;
@@ -2873,16 +2882,21 @@ function workflowNodeExecutionFilterValue(draft: WorkflowNodeExecutionFilterDraf
 function workflowNodeExecutionFilters(
   drafts: WorkflowNodeExecutionFilterDraft[],
 ): WorkflowNodeExecutionFilter[] {
-  return drafts
-    .filter((draft) => draft.path.trim().startsWith("/"))
-    .map((draft) => ({
+  return drafts.flatMap((draft) => {
+    const path = draft.path.trim();
+    if (!path) return [];
+    if (!path.startsWith("/")) {
+      throw new Error("Execution filter paths must be JSON Pointers beginning with '/'.");
+    }
+    return [{
       location: draft.location,
-      path: draft.path.trim(),
+      path,
       operator: draft.operator,
       ...(!["exists", "not_exists"].includes(draft.operator)
         ? { value: workflowNodeExecutionFilterValue(draft) }
         : {}),
-    }));
+    }];
+  });
 }
 
 function summarizeRunSearchStatuses(counts: Record<string, number>): string {
@@ -4055,6 +4069,7 @@ export default function App() {
   const runtimePulseTimeoutsRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
   const workflowTargetInventoryCacheRef = useRef<Map<string, WorkflowTargetInventory>>(new Map());
   const selectedNodeIdRef = useRef<string | null>(null);
+  const nodeExecutionQueryRef = useRef<WorkflowNodeExecutionQuery | null>(null);
   const previousSelectedDirectoryPathRef = useRef(selectedDirectoryPath);
   const selectedWorkflowPackReferenceRef = useRef("");
   const [document, setDocument] = useState<WorkflowEditorDocument | null>(null);
@@ -4573,6 +4588,7 @@ export default function App() {
     setCopiedBindingExpression(null);
     setOutputCopyError(null);
     setNodeExecutionSearch(null);
+    nodeExecutionQueryRef.current = null;
     setNodeExecutionFields(null);
     setNodeExecutionDetail(null);
     setNodeExecutionError(null);
@@ -5326,28 +5342,45 @@ export default function App() {
   async function loadNodeExecutionHistory(cursor: string | null = null, append = false) {
     if (!selectedNode || nodeExecutionLoading || workflowRunReadLocked) return;
     const nodeId = selectedNode.id;
-    const startedFrom = new Date(nodeExecutionStartedFrom);
-    const startedTo = new Date(nodeExecutionStartedTo);
-    if (
-      Number.isNaN(startedFrom.getTime())
-      || Number.isNaN(startedTo.getTime())
-      || startedFrom >= startedTo
-    ) {
-      setNodeExecutionError("Choose a valid start before the end date.");
-      return;
+    let query: WorkflowNodeExecutionQuery;
+    if (append) {
+      const originalQuery = nodeExecutionQueryRef.current;
+      if (!cursor || !originalQuery || originalQuery.node_id !== nodeId) {
+        setNodeExecutionError("Run the history query again before loading more results.");
+        return;
+      }
+      query = originalQuery;
+    } else {
+      const startedFrom = new Date(nodeExecutionStartedFrom);
+      const startedTo = new Date(nodeExecutionStartedTo);
+      if (
+        Number.isNaN(startedFrom.getTime())
+        || Number.isNaN(startedTo.getTime())
+        || startedFrom >= startedTo
+      ) {
+        setNodeExecutionError("Choose a valid start before the end date.");
+        return;
+      }
+      let filters: WorkflowNodeExecutionFilter[];
+      try {
+        filters = workflowNodeExecutionFilters(nodeExecutionFilters);
+      } catch (reason: unknown) {
+        setNodeExecutionError(reason instanceof Error ? reason.message : String(reason));
+        return;
+      }
+      query = {
+        node_id: nodeId,
+        started_from: startedFrom.toISOString(),
+        started_to: startedTo.toISOString(),
+        statuses: nodeExecutionStatuses
+          .split(",")
+          .map((value) => value.trim())
+          .filter(Boolean),
+        filters,
+        limit: 50,
+      };
     }
-    const body = {
-      node_id: nodeId,
-      started_from: startedFrom.toISOString(),
-      started_to: startedTo.toISOString(),
-      statuses: nodeExecutionStatuses
-        .split(",")
-        .map((value) => value.trim())
-        .filter(Boolean),
-      filters: workflowNodeExecutionFilters(nodeExecutionFilters),
-      limit: 50,
-      cursor,
-    };
+    const body = { ...query, cursor };
     setNodeExecutionLoading(true);
     setNodeExecutionError(null);
     try {
@@ -5356,6 +5389,7 @@ export default function App() {
         { method: "POST", body: JSON.stringify(body) },
       );
       if (selectedNodeIdRef.current !== nodeId) return;
+      if (!append) nodeExecutionQueryRef.current = query;
       setNodeExecutionSearch((current) => append && current
         ? {
             ...payload,
@@ -5370,8 +5404,8 @@ export default function App() {
             method: "POST",
             body: JSON.stringify({
               node_id: nodeId,
-              started_from: startedFrom.toISOString(),
-              started_to: startedTo.toISOString(),
+              started_from: query.started_from,
+              started_to: query.started_to,
             }),
           },
         );
@@ -11732,6 +11766,10 @@ export default function App() {
                   <button
                     type="button"
                     className="subtle-button"
+                    title={execution.full_record_available
+                      ? "Inspect the surrounding workflow run"
+                      : "Run inspection is unavailable after full run retention expires"}
+                    disabled={!execution.full_record_available}
                     onClick={() => inspectWorkflowRun(execution.event_id)}
                   >
                     Inspect run

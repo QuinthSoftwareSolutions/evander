@@ -2694,7 +2694,7 @@ class SqliteExecutionStore(SqliteExecutionRepository[EffectExecutionRecord]):
         *,
         journal: Any | None = None,
         retention_days: int | None = None,
-        compact_history_retention_days: int = 365,
+        compact_history_retention_days: int | None = None,
     ) -> None:
         super().__init__(
             path,
@@ -2716,7 +2716,7 @@ class SqliteGateExecutionStore(SqliteGateExecutionRepository[GateExecutionRecord
         *,
         journal: Any | None = None,
         retention_days: int | None = None,
-        compact_history_retention_days: int = 365,
+        compact_history_retention_days: int | None = None,
     ) -> None:
         super().__init__(
             path,

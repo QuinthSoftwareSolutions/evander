@@ -265,11 +265,25 @@ class VmAgentResumeMixin:
             fallback=workflow_runtime_dir / "orchestration.db",
         )
         orchestration_retention_days = trigger_worker_config.get("orchestration_retention_days")
+        orchestration_compact_history_retention_days = trigger_worker_config.get(
+            "orchestration_compact_history_retention_days"
+        )
         watcher_cmd.extend(["--effect-lock-path", str(effect_lock_path)])
         watcher_cmd.extend(["--orchestration-store-path", str(orchestration_store_path)])
         if orchestration_retention_days is not None:
             watcher_cmd.extend(
                 ["--orchestration-retention-days", str(orchestration_retention_days)]
+            )
+            if orchestration_compact_history_retention_days is None:
+                raise ValueError(
+                    "orchestration_compact_history_retention_days is required when "
+                    "orchestration_retention_days is configured"
+                )
+            watcher_cmd.extend(
+                [
+                    "--orchestration-compact-history-retention-days",
+                    str(orchestration_compact_history_retention_days),
+                ]
             )
         if session_id:
             watcher_cmd.extend(["--session-id", session_id])

@@ -13,6 +13,9 @@ test("selected workflow nodes expose generic execution-history queries", () => {
   assert.match(app, /placeholder="\/user\/name"/);
   assert.match(app, /Inspect run/);
   assert.match(app, /Existing-record backfill is in progress/);
+  assert.match(app, /Execution filter paths must be JSON Pointers beginning with '\/'/);
+  assert.match(app, /nodeExecutionQueryRef\.current/);
+  assert.match(app, /disabled=\{!execution\.full_record_available\}/);
 });
 
 test("execution-history types distinguish full and compact records", () => {

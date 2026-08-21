@@ -3,12 +3,16 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import math
 import sqlite3
 import zlib
 from datetime import UTC, datetime, timedelta
+from decimal import Decimal
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 
+from evander.approval_diagnostics import DEFAULT_SENSITIVE_PAYLOAD_MARKERS
+from evander.models import DirectoryPath
 from evander.repositories.orchestration_db import (
     connect_orchestration_db,
     datetime_to_storage,
@@ -19,21 +23,24 @@ from evander.repositories.orchestration_db import (
 
 EXECUTION_HISTORY_BACKFILL_BATCH_SIZE = 250
 _REDACTED = "[REDACTED]"
-_SENSITIVE_KEY_MARKERS = (
-    "authorization",
-    "token",
-    "api_key",
-    "apikey",
-    "access_token",
-    "refresh_token",
-    "password",
-    "passwd",
-    "secret",
-    "credential",
-    "private_key",
-    "cookie",
+_SENSITIVE_KEY_MARKERS = tuple(
+    dict.fromkeys(
+        (
+            *(marker for marker in DEFAULT_SENSITIVE_PAYLOAD_MARKERS if marker != "pat"),
+            "api_key",
+            "apikey",
+            "access_token",
+            "refresh_token",
+            "passwd",
+            "pwd",
+            "secret",
+            "credential",
+        )
+    )
 )
+_SENSITIVE_KEY_SEGMENTS = frozenset({"pat", "pwd"})
 _NUMERIC_OPERATORS = {"gt", "gte", "lt", "lte"}
+_MAX_EXACT_FLOAT_INTEGER = (1 << 53) - 1
 
 
 def _execution_key(kind: str, execution_id: str) -> str:
@@ -42,7 +49,10 @@ def _execution_key(kind: str, execution_id: str) -> str:
 
 def _is_sensitive_key(key: str) -> bool:
     normalized = key.strip().casefold().replace("-", "_")
-    return any(marker in normalized for marker in _SENSITIVE_KEY_MARKERS)
+    segments = frozenset(segment for segment in normalized.split("_") if segment)
+    return any(marker in normalized for marker in _SENSITIVE_KEY_MARKERS) or bool(
+        segments & _SENSITIVE_KEY_SEGMENTS
+    )
 
 
 def sanitize_execution_payload(value: Any) -> Any:
@@ -147,11 +157,17 @@ def _scalar_columns(value: Any) -> tuple[str, str | None, str | None, float | No
             int(value),
         )
     if isinstance(value, (int, float)):
+        try:
+            numeric_value = float(value)
+        except (OverflowError, ValueError):
+            numeric_value = None
+        if numeric_value is not None and not math.isfinite(numeric_value):
+            numeric_value = None
         return (
             "number",
             hashlib.sha256(json_dumps(value).encode()).hexdigest(),
-            None,
-            float(value),
+            _canonical_number_text(value),
+            numeric_value,
             None,
         )
     text = str(value)
@@ -162,6 +178,25 @@ def _scalar_columns(value: Any) -> tuple[str, str | None, str | None, float | No
         None,
         None,
     )
+
+
+def _canonical_number_text(value: int | float) -> str:
+    if isinstance(value, int):
+        return str(value)
+    if isinstance(value, float) and not math.isfinite(value):
+        return json_dumps(value)
+    decimal_value = Decimal(str(value))
+    if decimal_value.is_zero():
+        return "0"
+    return format(decimal_value.normalize(), "f")
+
+
+def _numeric_fallback_is_exact(value: Any) -> bool:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return False
+    if isinstance(value, int):
+        return abs(value) <= _MAX_EXACT_FLOAT_INTEGER
+    return math.isfinite(value) and abs(value) <= _MAX_EXACT_FLOAT_INTEGER
 
 
 def _replace_scalar_index(
@@ -251,6 +286,12 @@ def archive_execution_record(
     execution_key = _execution_key(kind, execution_id)
     started_text = _storage_timestamp(started_at)
     finished_text = _storage_timestamp(finished_at) or started_text
+    directory_path = _execution_directory_path(
+        connection,
+        node_id=node_id,
+        config_revision=_optional_text(config_revision),
+        record=record,
+    )
     input_digest = _store_payload_blob(connection, input_payload)
     output_digest = _store_payload_blob(connection, output_payload)
     connection.execute(
@@ -259,8 +300,9 @@ def archive_execution_record(
             execution_key, execution_kind, execution_id, event_id, trace_id,
             node_id, node_type, source_node_id, source_trigger_type, status,
             started_at, finished_at, config_revision, config_hash,
-            published_event_id, error, input_blob_sha256, output_blob_sha256, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            directory_path, published_event_id, error, input_blob_sha256,
+            output_blob_sha256, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(execution_key) DO UPDATE SET
             event_id = excluded.event_id,
             trace_id = excluded.trace_id,
@@ -273,6 +315,7 @@ def archive_execution_record(
             finished_at = excluded.finished_at,
             config_revision = excluded.config_revision,
             config_hash = excluded.config_hash,
+            directory_path = excluded.directory_path,
             published_event_id = excluded.published_event_id,
             error = excluded.error,
             input_blob_sha256 = excluded.input_blob_sha256,
@@ -294,6 +337,7 @@ def archive_execution_record(
             finished_text,
             _optional_text(config_revision),
             _optional_text(config_hash),
+            directory_path,
             _optional_text(published_event_id),
             _optional_text(record.get("error")),
             input_digest,
@@ -374,16 +418,78 @@ def _optional_text(value: Any) -> str | None:
     return text or None
 
 
+def _normalize_directory_path(value: Any) -> str | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        return DirectoryPath(segments=text).as_posix()
+    except ValueError:
+        return None
+
+
+def _snapshot_directory_path(
+    connection: sqlite3.Connection,
+    *,
+    config_revision: str | None,
+    node_id: str,
+) -> str | None:
+    if not config_revision:
+        return None
+    row = connection.execute(
+        "SELECT payload_json FROM workflow_config_snapshots WHERE revision = ?",
+        (config_revision,),
+    ).fetchone()
+    if row is None:
+        return None
+    snapshot = json_loads_object(row["payload_json"])
+    graphs = snapshot.get("workflow_graphs")
+    if not isinstance(graphs, list):
+        return None
+    paths: set[str] = set()
+    for graph in graphs:
+        if not isinstance(graph, dict):
+            continue
+        node_ids = graph.get("node_ids")
+        if not isinstance(node_ids, list) or node_id not in {
+            str(item or "").strip() for item in node_ids
+        }:
+            continue
+        directory_path = _normalize_directory_path(graph.get("directory_path"))
+        if directory_path:
+            paths.add(directory_path)
+    return next(iter(paths)) if len(paths) == 1 else None
+
+
+def _execution_directory_path(
+    connection: sqlite3.Connection,
+    *,
+    node_id: str,
+    config_revision: str | None,
+    record: Mapping[str, Any],
+) -> str | None:
+    return _normalize_directory_path(record.get("directory_path")) or _snapshot_directory_path(
+        connection,
+        config_revision=config_revision,
+        node_id=node_id,
+    )
+
+
 def _storage_timestamp(value: Any) -> str | None:
     if isinstance(value, datetime):
-        return datetime_to_storage(value)
+        parsed = value
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=UTC)
+        return parsed.astimezone(UTC).isoformat(timespec="microseconds").replace("+00:00", "Z")
     if isinstance(value, str) and value.strip():
         text = value.strip()
         try:
             parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
         except ValueError:
             return text
-        return datetime_to_storage(parsed)
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=UTC)
+        return parsed.astimezone(UTC).isoformat(timespec="microseconds").replace("+00:00", "Z")
     return None
 
 
@@ -518,19 +624,13 @@ def search_node_executions(
     compact_retention_days: int,
 ) -> dict[str, Any]:
     ensure_orchestration_schema(path)
-    where = ["h.node_id = ?", "h.started_at >= ?", "h.started_at < ?"]
-    params: list[Any] = [
-        node_id,
-        datetime_to_storage(started_from),
-        datetime_to_storage(started_to),
-    ]
-    if statuses:
-        where.append(f"h.status IN ({', '.join('?' for _ in statuses)})")
-        params.extend(statuses)
-    for index, item in enumerate(filters):
-        clause, clause_params = _filter_clause(item, alias=f"v{index}")
-        where.append(clause)
-        params.extend(clause_params)
+    where, params = _history_search_predicates(
+        node_id=node_id,
+        started_from=started_from,
+        started_to=started_to,
+        statuses=statuses,
+        filters=filters,
+    )
     cursor_value = _decode_cursor(cursor) if cursor else None
     page_where = list(where)
     page_params = list(params)
@@ -577,6 +677,8 @@ def search_node_executions(
         availability = _history_availability(
             connection,
             node_id=node_id,
+            started_from=started_from,
+            started_to=started_to,
             full_retention_days=full_retention_days,
             compact_retention_days=compact_retention_days,
         )
@@ -593,6 +695,83 @@ def search_node_executions(
         "executions": items,
         "availability": availability,
     }
+
+
+def list_node_execution_authorization_paths(
+    path: Path | str,
+    *,
+    node_id: str,
+    started_from: datetime,
+    started_to: datetime,
+) -> tuple[str, ...]:
+    """Return every execution-time scope represented in a history query window.
+
+    Rows created before directory provenance was recorded deliberately fall back
+    to root so a directory-local grant cannot inherit access to legacy payloads.
+    """
+    ensure_orchestration_schema(path)
+    where, params = _history_search_predicates(
+        node_id=node_id,
+        started_from=started_from,
+        started_to=started_to,
+        statuses=[],
+        filters=[],
+    )
+    with connect_orchestration_db(path) as connection:
+        rows = connection.execute(
+            f"""
+            SELECT DISTINCT COALESCE(NULLIF(h.directory_path, ''), 'root') AS directory_path
+            FROM workflow_node_execution_history h
+            WHERE {" AND ".join(where)}
+            ORDER BY directory_path
+            """,
+            params,
+        ).fetchall()
+    return tuple(str(row["directory_path"]) for row in rows)
+
+
+def read_node_execution_authorization_path(
+    path: Path | str,
+    *,
+    execution_key: str,
+) -> str:
+    ensure_orchestration_schema(path)
+    with connect_orchestration_db(path) as connection:
+        row = connection.execute(
+            """
+            SELECT COALESCE(NULLIF(directory_path, ''), 'root') AS directory_path
+            FROM workflow_node_execution_history
+            WHERE execution_key = ?
+            """,
+            (execution_key,),
+        ).fetchone()
+    if row is None:
+        raise ValueError(f"Workflow node execution not found: {execution_key}")
+    return str(row["directory_path"])
+
+
+def _history_search_predicates(
+    *,
+    node_id: str,
+    started_from: datetime,
+    started_to: datetime,
+    statuses: list[str],
+    filters: list[Mapping[str, Any]],
+) -> tuple[list[str], list[Any]]:
+    where = ["h.node_id = ?", "h.started_at >= ?", "h.started_at < ?"]
+    params: list[Any] = [
+        node_id,
+        _storage_timestamp(started_from),
+        _storage_timestamp(started_to),
+    ]
+    if statuses:
+        where.append(f"h.status IN ({', '.join('?' for _ in statuses)})")
+        params.extend(statuses)
+    for index, item in enumerate(filters):
+        clause, clause_params = _filter_clause(item, alias=f"v{index}")
+        where.append(clause)
+        params.extend(clause_params)
+    return where, params
 
 
 def list_node_execution_fields(
@@ -617,8 +796,8 @@ def list_node_execution_fields(
             """,
             (
                 node_id,
-                datetime_to_storage(started_from),
-                datetime_to_storage(started_to),
+                _storage_timestamp(started_from),
+                _storage_timestamp(started_to),
             ),
         ).fetchall()
     return {
@@ -693,8 +872,15 @@ def _filter_clause(item: Mapping[str, Any], *, alias: str) -> tuple[str, list[An
             comparison += f" AND {alias}.boolean_value = ?"
             params.append(boolean_value)
         elif value_type == "number":
-            comparison += f" AND {alias}.numeric_value = ?"
-            params.append(numeric_value)
+            comparison += (
+                f" AND ({alias}.text_value = ? OR "
+                f"({alias}.text_value IS NULL AND {alias}.value_hash = ?)"
+            )
+            params.extend([_canonical_number_text(value), value_hash])
+            if _numeric_fallback_is_exact(value):
+                comparison += f" OR ({alias}.text_value IS NULL AND {alias}.numeric_value = ?)"
+                params.append(numeric_value)
+            comparison += ")"
         else:
             comparison += f" AND {alias}.value_hash = ?"
             params.append(value_hash)
@@ -760,6 +946,11 @@ def _indexed_value(row: sqlite3.Row) -> Any:
     if row["value_type"] == "boolean":
         return bool(row["boolean_value"])
     if row["value_type"] == "number":
+        if row["text_value"] is not None:
+            try:
+                return json.loads(str(row["text_value"]))
+            except json.JSONDecodeError:
+                pass
         return row["numeric_value"]
     return row["text_value"]
 
@@ -788,6 +979,8 @@ def _history_availability(
     connection: sqlite3.Connection,
     *,
     node_id: str,
+    started_from: datetime,
+    started_to: datetime,
     full_retention_days: int,
     compact_retention_days: int,
 ) -> dict[str, Any]:
@@ -795,9 +988,13 @@ def _history_availability(
         """
         SELECT MIN(started_at) AS earliest, MAX(started_at) AS latest
         FROM workflow_node_execution_history
-        WHERE node_id = ?
+        WHERE node_id = ? AND started_at >= ? AND started_at < ?
         """,
-        (node_id,),
+        (
+            node_id,
+            _storage_timestamp(started_from),
+            _storage_timestamp(started_to),
+        ),
     ).fetchone()
     state_row = connection.execute(
         "SELECT value_json FROM orchestration_metadata WHERE key = ?",
@@ -827,7 +1024,7 @@ def _decode_cursor(cursor: str) -> tuple[str, str]:
     try:
         padded = cursor + "=" * (-len(cursor) % 4)
         payload = json.loads(base64.urlsafe_b64decode(padded.encode()).decode())
-        started_at = str(payload["started_at"])
+        started_at = _storage_timestamp(str(payload["started_at"]))
         execution_key = str(payload["execution_key"])
     except (ValueError, KeyError, TypeError, UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise ValueError("cursor is invalid") from exc

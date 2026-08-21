@@ -6464,7 +6464,11 @@ def test_agent_enqueue_prompt_restart_repairs_claimed_row_then_respects_retentio
         started_event_id,
         delivered_at=datetime.now(timezone.utc) - timedelta(days=1),
     )
-    restarted_event_queue = SqliteTriggerEventQueue(database_path, retention_days=0)
+    restarted_event_queue = SqliteTriggerEventQueue(
+        database_path,
+        retention_days=0,
+        compact_history_retention_days=365,
+    )
     assert not restarted_event_queue.contains(started_event_id)
 
     restarted_worker = SimpleNamespace(
@@ -9498,9 +9502,7 @@ def test_await_agent_recorded_failure_routes_to_error_branch(tmp_path: Path) -> 
     gate_record = next(iter(gate_execution_payload(worker_config).values()))
     assert gate_record["status"] == "error_routed"
     assert gate_record["completion_event_branch_port"] == "error"
-    assert gate_record["error"] == (
-        "gate:await-agent requires upstream effect output dispatch_id"
-    )
+    assert gate_record["error"] == ("gate:await-agent requires upstream effect output dispatch_id")
     assert gate_record["outputs"] == {
         "success": False,
         "error_message": "gate:await-agent requires upstream effect output dispatch_id",
@@ -9586,9 +9588,7 @@ def test_await_agent_recorded_failure_routes_to_error_branch_on_replay(tmp_path:
             input_payload={"__branch_port": "started"},
             outputs={},
             inputs_by_source={"effect-prompt": {"__branch_port": "started"}},
-            input_event_ids_by_source={
-                "effect-prompt": "event-await-failed-before-route"
-            },
+            input_event_ids_by_source={"effect-prompt": "event-await-failed-before-route"},
             input_occurred_at_by_source={"effect-prompt": occurred_at},
             error="gate:await-agent requires upstream effect output dispatch_id",
         )
@@ -9611,9 +9611,7 @@ def test_await_agent_recorded_failure_routes_to_error_branch_on_replay(tmp_path:
         worker.run_once()
 
     assert persisted_statuses == ["completion_pending"]
-    gate_record = worker.gate_execution_store.find_execution_by_idempotency_key(
-        idempotency_key
-    )
+    gate_record = worker.gate_execution_store.find_execution_by_idempotency_key(idempotency_key)
     assert gate_record is not None
     assert gate_record.status == "error_routed"
     assert gate_record.completion_event_branch_port == "error"

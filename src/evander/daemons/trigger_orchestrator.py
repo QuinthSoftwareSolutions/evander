@@ -203,6 +203,8 @@ class TriggerOrchestratorWorker:
         self._publish_due_scheduled_internal_events(active_config)
         configured_triggers = self._configured_triggers(active_config)
         providers = self._load_configured_providers(active_config, configured_triggers)
+        node_graph_metadata_by_id = _resolve_node_graph_metadata(active_config)
+        config_revision = _config_revision_hash(active_config)
         events_discovered = 0
         events_published = 0
         published_event_ids_by_trigger_id: dict[str, list[str]] = {}
@@ -224,7 +226,14 @@ class TriggerOrchestratorWorker:
                     trace_id,
                 )
                 return None
-            publish_result = self.event_queue.publish_result(event)
+            publish_result = self.event_queue.publish_result(
+                event,
+                config_revision=config_revision,
+                directory_path=_effective_trigger_directory_path(
+                    trigger,
+                    node_graph_metadata_by_id,
+                ),
+            )
             record = publish_result.record
             if record.event_id == event.event_id:
                 _acknowledge_provider_event_published(providers.get(trigger.id), event)

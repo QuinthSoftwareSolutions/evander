@@ -4378,6 +4378,7 @@ def test_admin_web_workflow_run_routes_enforce_directory_permissions(
                 "started_at": "2026-05-24T10:01:00Z",
                 "finished_at": "2026-05-24T10:01:01Z",
                 "resolved_config_hash": "hash-root",
+                "directory_path": "root",
                 "resolved_config": {},
                 "input_payload": {},
                 "outputs": {},
@@ -4395,6 +4396,7 @@ def test_admin_web_workflow_run_routes_enforce_directory_permissions(
                 "started_at": "2026-05-24T11:01:00Z",
                 "finished_at": "2026-05-24T11:01:01Z",
                 "resolved_config_hash": "hash-ops",
+                "directory_path": "root/ops",
                 "resolved_config": {},
                 "input_payload": {"issue_number": "77"},
                 "outputs": {},
@@ -4452,6 +4454,27 @@ def test_admin_web_workflow_run_routes_enforce_directory_permissions(
         "/api/workflow-editor/node-executions/search",
         json={**history_request, "node_id": "root-effect"},
     )
+    with connect_orchestration_db(runtime_dir / "orchestration.db") as connection:
+        connection.execute(
+            """
+            UPDATE workflow_node_execution_history
+            SET directory_path = 'root/previous-ops'
+            WHERE execution_key = 'effect:exec-ops'
+            """
+        )
+    moved_history_denied = client.post(
+        "/api/workflow-editor/node-executions/search",
+        json={**history_request, "node_id": "ops-effect"},
+    )
+    moved_fields_denied = client.post(
+        "/api/workflow-editor/node-executions/fields",
+        json={
+            "node_id": "ops-effect",
+            "started_from": history_request["started_from"],
+            "started_to": history_request["started_to"],
+        },
+    )
+    moved_detail_denied = client.get("/api/workflow-editor/node-executions/effect:exec-ops")
 
     assert definition_allowed.status_code == 200
     assert [graph["id"] for graph in definition_allowed.json()["graphs"]] == ["graph-ops"]
@@ -4482,6 +4505,12 @@ def test_admin_web_workflow_run_routes_enforce_directory_permissions(
     assert detail_denied.json()["error"] == "Permission required: workflow_runs.read"
     assert history_denied.status_code == 403
     assert history_denied.json()["error"] == "Permission required: workflow_runs.read"
+    assert moved_history_denied.status_code == 403
+    assert moved_history_denied.json()["error"] == "Permission required: workflow_runs.read"
+    assert moved_fields_denied.status_code == 403
+    assert moved_fields_denied.json()["error"] == "Permission required: workflow_runs.read"
+    assert moved_detail_denied.status_code == 403
+    assert moved_detail_denied.json()["error"] == "Permission required: workflow_runs.read"
 
 
 @pytest.mark.parametrize(
@@ -8242,9 +8271,7 @@ def test_admin_web_node_execution_history_search_fields_and_detail(tmp_path: Pat
         "/api/workflow-editor/node-executions/search",
         json={
             **search_body,
-            "filters": [
-                {"location": "output", "path": "user/name", "operator": "exists"}
-            ],
+            "filters": [{"location": "output", "path": "user/name", "operator": "exists"}],
         },
     )
 

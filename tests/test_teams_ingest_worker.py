@@ -2161,6 +2161,8 @@ def test_teams_ingest_worker_directly_publishes_all_matching_teams_trigger_types
         "teams-dm:chat:dm-chat/msg-1",
         (f"communication-teams:teams:teams-chat:msg-1:{created_at_text}"),
     }
+    assert {record.directory_path for record in queued.values()} == {"root"}
+    assert all(record.config_revision for record in queued.values())
 
     second = worker.run_once()
 
@@ -2536,7 +2538,7 @@ def test_teams_ingest_worker_keeps_message_durable_when_direct_queue_publish_fai
         )
 
     class FailingQueue:
-        def publish_result(self, _event):
+        def publish_result(self, _event, **_kwargs):
             raise RuntimeError("simulated queue failure")
 
     patch_worker_httpx_client(monkeypatch, httpx.MockTransport(handler))

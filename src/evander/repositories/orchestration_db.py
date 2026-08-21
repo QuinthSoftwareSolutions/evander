@@ -7,7 +7,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 SQLITE_BUSY_TIMEOUT_MS = 30_000
 SQLITE_WAL_CHECKPOINT_BUSY_TIMEOUT_MS = 1_000
 SQLITE_WAL_CHECKPOINT_MIN_BYTES = 64 * 1024 * 1024
@@ -219,6 +219,7 @@ def ensure_orchestration_schema(path: Path | str) -> None:
                 finished_at TEXT NOT NULL,
                 config_revision TEXT,
                 config_hash TEXT,
+                directory_path TEXT,
                 published_event_id TEXT,
                 error TEXT,
                 input_blob_sha256 TEXT,
@@ -278,12 +279,54 @@ def ensure_orchestration_schema(path: Path | str) -> None:
                 );
             """
         )
+        history_columns = {
+            str(row["name"])
+            for row in connection.execute("PRAGMA table_info(workflow_node_execution_history)")
+        }
+        if "directory_path" not in history_columns:
+            connection.execute(
+                "ALTER TABLE workflow_node_execution_history ADD COLUMN directory_path TEXT"
+            )
         connection.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_workflow_node_history_directory_started
+            ON workflow_node_execution_history(
+                directory_path, node_id, started_at DESC, execution_key DESC
+            )
+            """
+        )
+        connection.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_workflow_node_history_values_exact
+            ON workflow_node_execution_history_values(
+                location, json_pointer, value_type, text_value, execution_key
+            )
+            """
+        )
+        # Execution-history comparisons require a fixed-width UTC representation.
+        # Rows written by schema v2 at an exact second used the shorter ``...00Z``
+        # spelling, which is not lexicographically ordered with fractional seconds.
+        connection.execute(
+            """
+            UPDATE workflow_node_execution_history
+            SET started_at = substr(started_at, 1, 19) || '.000000Z'
+            WHERE length(started_at) = 20 AND substr(started_at, -1) = 'Z'
+            """
+        )
+        connection.execute(
+            """
+            UPDATE workflow_node_execution_history
+            SET finished_at = substr(finished_at, 1, 19) || '.000000Z'
+            WHERE length(finished_at) = 20 AND substr(finished_at, -1) = 'Z'
+            """
+        )
+        applied_at = datetime_to_storage(datetime.now(UTC))
+        connection.executemany(
             """
             INSERT OR IGNORE INTO schema_migrations(version, applied_at)
             VALUES (?, ?)
             """,
-            (SCHEMA_VERSION, datetime_to_storage(datetime.now(UTC))),
+            [(version, applied_at) for version in range(1, SCHEMA_VERSION + 1)],
         )
 
 
@@ -313,10 +356,14 @@ def maybe_run_orchestration_retention(
     path: Path | str,
     *,
     retention_days: int | None,
-    compact_history_retention_days: int = 365,
+    compact_history_retention_days: int | None = None,
 ) -> OrchestrationRetentionResult:
     if retention_days is None:
         return OrchestrationRetentionResult()
+    if compact_history_retention_days is None:
+        raise ValueError(
+            "compact_history_retention_days is required when retention_days is configured"
+        )
     ensure_orchestration_schema(path)
     today = datetime.now(UTC).date().isoformat()
     with connect_orchestration_db(path) as connection:
@@ -453,7 +500,7 @@ def run_orchestration_retention(
     path: Path | str,
     *,
     retention_days: int,
-    compact_history_retention_days: int = 365,
+    compact_history_retention_days: int,
 ) -> OrchestrationRetentionResult:
     if retention_days < 0:
         raise ValueError("retention_days must be non-negative")

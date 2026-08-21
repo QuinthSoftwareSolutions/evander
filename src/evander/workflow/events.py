@@ -34,7 +34,7 @@ class SqliteWorkflowEventJournal:
         path: Path | str,
         *,
         retention_days: int | None = None,
-        compact_history_retention_days: int = 365,
+        compact_history_retention_days: int | None = None,
     ) -> None:
         self.path = Path(path)
         ensure_orchestration_schema(self.path)

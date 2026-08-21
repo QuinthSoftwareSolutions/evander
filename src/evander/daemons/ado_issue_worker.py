@@ -689,7 +689,10 @@ def _publish_directory_pr_feedback_events(
                     else {}
                 ),
             )
-            publish_result = event_queue.publish_result(event)
+            publish_result = event_queue.publish_result(
+                event,
+                directory_path=directory_path,
+            )
             record = publish_result.record
             if publish_result.created and record.event_id == event.event_id:
                 published_count += 1
@@ -841,7 +844,10 @@ def _publish_directory_pr_completion_events(
                 occurred_at=_pr_completion_occurred_at(event_entry),
                 payload=completion_event_payload(event_entry),
             )
-            publish_result = event_queue.publish_result(event)
+            publish_result = event_queue.publish_result(
+                event,
+                directory_path=directory_path,
+            )
             record = publish_result.record
             if record.event_id == event.event_id:
                 if mark_published:
