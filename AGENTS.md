@@ -386,7 +386,11 @@ Do not leave stalled test processes running while continuing work.
   `scripts/install_systemd_units.sh`, config examples, firewall impact, docs, and tests.
 - If adding a workflow node/provider, update provider schema/implementation, registry wiring,
   schema bootstrap/catalog metadata, docs, and focused validation/conformance tests.
-- All new features and bugfixes in this repo must also be recorded in `CHANGELOG.md`.
+- Every feature or bugfix branch must include exactly one version bump and a matching
+  `CHANGELOG.md` entry. Use a patch bump for fixes and internal maintenance, and a minor bump
+  for new user-visible capability. Never make a major bump unless Jonathan explicitly directs
+  it. Keep `pyproject.toml` and `src/evander/__init__.py` synchronized. Before merge, rebase and
+  rerun the version bump if the target branch has already advanced the version.
 - If touching workflow packs over SSH or Admin Web, assume other users may be editing them at the
   same time. Use existing API, revision, and lock mechanisms to avoid version mismatches and
   unintended overwrites.
