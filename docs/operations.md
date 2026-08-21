@@ -133,8 +133,11 @@ The workflow orchestrators share runtime state under `runtime/` (or your configu
 `runtime_dir`):
 
 - `orchestration.db`: authoritative trigger queue, workflow-event journal, gate/effect execution
-  history, and workflow configuration snapshots. JSON orchestration stores are no longer
-  supported.
+  history, compact node-execution query history, and workflow configuration snapshots. JSON
+  orchestration stores are no longer supported. Completed full records default to 30 days;
+  sanitized compact inputs/outputs, typed scalar indexes, and source provenance default to 365
+  days. Existing retained rows are copied in bounded idle-worker batches and the originals expire
+  normally. Retention reuses freed SQLite pages and does not run `VACUUM` automatically.
 - `trigger-orchestrator-cursors.json`: trigger-worker cursors/checkpoints.
 - `trigger-cursors-host-directories.json`: per-trigger Host Directory baseline, settle candidate,
   pending-event, and acknowledgement state.

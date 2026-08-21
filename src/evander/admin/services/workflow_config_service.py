@@ -358,6 +358,21 @@ class WorkflowConfigAdminService:
             raise RuntimeError("workflow reports service is not configured")
         return self._workflow_reports_admin._read_workflow_run_search(**kwargs)
 
+    def read_workflow_node_execution_search(self, **kwargs: Any):
+        if self._workflow_reports_admin is None:
+            raise RuntimeError("workflow reports service is not configured")
+        return self._workflow_reports_admin.read_workflow_node_execution_search(**kwargs)
+
+    def read_workflow_node_execution_fields(self, **kwargs: Any):
+        if self._workflow_reports_admin is None:
+            raise RuntimeError("workflow reports service is not configured")
+        return self._workflow_reports_admin.read_workflow_node_execution_fields(**kwargs)
+
+    def read_workflow_node_execution_detail(self, execution_key: str):
+        if self._workflow_reports_admin is None:
+            raise RuntimeError("workflow reports service is not configured")
+        return self._workflow_reports_admin.read_workflow_node_execution_detail(execution_key)
+
     def clear_workflow_run(self, event_id: str) -> WorkflowRunClearPayload:
         return self._clear_workflow_run(event_id)
 
@@ -2862,6 +2877,11 @@ class WorkflowConfigAdminService:
                 if worker_config.get("orchestration_retention_days") is not None
                 else 30
             ),
+            "orchestration_compact_history_retention_days": int(
+                worker_config.get("orchestration_compact_history_retention_days")
+                if worker_config.get("orchestration_compact_history_retention_days") is not None
+                else 365
+            ),
             "effect_lock_path": effect_lock_path,
             "await_agent_store_path": runtime_dir
             / "providers"
@@ -2880,11 +2900,34 @@ class WorkflowConfigAdminService:
         db_path = Path(stores["orchestration_store_path"])
         raw_retention_days = stores.get("orchestration_retention_days")
         retention_days = int(raw_retention_days if raw_retention_days is not None else 30)
-        journal = SqliteWorkflowEventJournal(db_path, retention_days=retention_days)
+        raw_compact_retention_days = stores.get("orchestration_compact_history_retention_days")
+        compact_retention_days = int(
+            raw_compact_retention_days if raw_compact_retention_days is not None else 365
+        )
+        journal = SqliteWorkflowEventJournal(
+            db_path,
+            retention_days=retention_days,
+            compact_history_retention_days=compact_retention_days,
+        )
         return (
-            SqliteTriggerEventQueue(db_path, journal=journal, retention_days=retention_days),
-            SqliteExecutionStore(db_path, journal=journal, retention_days=retention_days),
-            SqliteGateExecutionStore(db_path, journal=journal, retention_days=retention_days),
+            SqliteTriggerEventQueue(
+                db_path,
+                journal=journal,
+                retention_days=retention_days,
+                compact_history_retention_days=compact_retention_days,
+            ),
+            SqliteExecutionStore(
+                db_path,
+                journal=journal,
+                retention_days=retention_days,
+                compact_history_retention_days=compact_retention_days,
+            ),
+            SqliteGateExecutionStore(
+                db_path,
+                journal=journal,
+                retention_days=retention_days,
+                compact_history_retention_days=compact_retention_days,
+            ),
         )
 
     def _latest_resumable_failed_workflow_record(

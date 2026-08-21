@@ -146,6 +146,7 @@ For orchestration-only deployments, use `config/trigger-orchestrator/orchestrati
 | `lock_path` | `config/trigger-orchestrator/config.json` | Trigger orchestrator single-instance lock file path. |
 | `orchestration_store_path` | `config/trigger-orchestrator/config.json` | Authoritative SQLite database path for trigger events, effect executions, gate executions, workflow events, and workflow configuration snapshots. Defaults to `runtime/orchestration.db`. |
 | `orchestration_retention_days` | `config/trigger-orchestrator/config.json` | Completed orchestration history retention window. Defaults to `30`. |
+| `orchestration_compact_history_retention_days` | `config/trigger-orchestrator/config.json` | Queryable compact node-execution history retention window. Defaults to `365`. Compact history stores sanitized canonical inputs and outputs, typed scalar indexes, and source provenance after full execution records expire. |
 | `orchestration_wal_checkpoint_mode` | `config/trigger-orchestrator/config.json` | SQLite WAL checkpoint mode for bounded orchestration-store maintenance. Defaults to `truncate`; set to `disabled` to skip explicit checkpoints. |
 | `orchestration_wal_checkpoint_min_bytes` | `config/trigger-orchestrator/config.json` | Minimum `orchestration.db-wal` size before explicit checkpointing. Defaults to `67108864` bytes. |
 | `orchestration_wal_checkpoint_interval_seconds` | `config/trigger-orchestrator/config.json` | Minimum interval between explicit WAL checkpoint attempts. Defaults to `300`. |

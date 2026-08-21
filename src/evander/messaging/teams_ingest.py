@@ -609,6 +609,7 @@ class TeamsIngestWorker:
         cache_key: tuple[object, ...] = (
             str(trigger_config.orchestration_store_path),
             trigger_config.orchestration_retention_days,
+            trigger_config.orchestration_compact_history_retention_days,
         )
         if self._event_queue_cache is None or self._event_queue_cache[0] != cache_key:
             self._event_queue_cache = (
@@ -616,6 +617,9 @@ class TeamsIngestWorker:
                 SqliteTriggerEventQueue(
                     trigger_config.orchestration_store_path,
                     retention_days=trigger_config.orchestration_retention_days,
+                    compact_history_retention_days=(
+                        trigger_config.orchestration_compact_history_retention_days
+                    ),
                 ),
             )
         assert self._event_queue_cache is not None

@@ -318,6 +318,86 @@ export type WorkflowRunSearch = {
   has_more: boolean;
 };
 
+export type WorkflowNodeExecutionFilter = {
+  location: "input" | "output";
+  path: string;
+  operator: "eq" | "exists" | "not_exists" | "gt" | "gte" | "lt" | "lte";
+  value?: unknown;
+};
+
+export type WorkflowNodeExecutionSearchItem = {
+  execution_key: string;
+  execution_kind: "trigger" | "gate" | "effect";
+  execution_id: string;
+  event_id: string;
+  trace_id?: string | null;
+  node_id: string;
+  node_type: string;
+  source_node_id?: string | null;
+  source_trigger_type?: string | null;
+  status: string;
+  started_at: string;
+  finished_at: string;
+  config_revision?: string | null;
+  published_event_id?: string | null;
+  error?: string | null;
+  full_record_available: boolean;
+  matched_values: Record<string, unknown>;
+};
+
+export type WorkflowNodeExecutionAvailability = {
+  full_retention_days: number;
+  compact_retention_days: number;
+  full_retention_boundary?: string | null;
+  compact_retention_boundary?: string | null;
+  earliest_compact_execution?: string | null;
+  latest_compact_execution?: string | null;
+  backfill?: {
+    completed?: boolean;
+    archived?: number;
+    last_batch_size?: number;
+    updated_at?: string;
+  };
+};
+
+export type WorkflowNodeExecutionSearch = {
+  generated_at: string;
+  node_id: string;
+  started_from: string;
+  started_to: string;
+  matched: number;
+  returned: number;
+  limit: number;
+  has_more: boolean;
+  next_cursor?: string | null;
+  executions: WorkflowNodeExecutionSearchItem[];
+  availability: WorkflowNodeExecutionAvailability;
+};
+
+export type WorkflowNodeExecutionField = {
+  location: "input" | "output";
+  json_pointer: string;
+  value_type: "null" | "boolean" | "number" | "string";
+  observed_count: number;
+};
+
+export type WorkflowNodeExecutionFields = {
+  node_id: string;
+  fields: WorkflowNodeExecutionField[];
+};
+
+export type WorkflowNodeExecutionDetail = WorkflowNodeExecutionSearchItem & {
+  input: Record<string, unknown>;
+  output: Record<string, unknown>;
+  sources: Array<{
+    source_node_id: string;
+    source_event_id?: string | null;
+    occurred_at?: string | null;
+  }>;
+  record_tier: "full" | "compact";
+  full_record?: Record<string, unknown> | null;
+};
+
 export type WorkflowRunDataAvailability = {
   graph_snapshot: string;
   binding_trace: string;

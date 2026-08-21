@@ -70,6 +70,15 @@ For one run, an operator usually needs only a small set of landmarks:
 The editor is the authoring view. Runtime events and executions remain separate durable records
 underneath it, which is why opening or closing the browser does not start or stop the workflow.
 
+For a cross-run question, select the relevant node and expand **Execution history** in its
+inspector. Choose a local-time date window (the default is the previous seven days), optionally
+limit statuses, and add exact JSON Pointer filters over input or output fields. Up to eight filters
+are combined with AND. Equality is type-aware and case-sensitive; numeric comparisons and
+presence/absence checks are also available. Array contents are visible in detail but array-element
+predicates are not supported. Results show whether the full record is still retained or the
+sanitized compact record is being used, along with the retention boundary and backfill status.
+The compact tier defaults to 365 days while full execution payloads default to 30 days.
+
 <p class="figure-caption">Figure 8.2 — The editor is the authoring projection over a revisioned graph; runtime events and executions remain durable records underneath. Sanitized Northstar fixture.</p>
 
 ## What an operator may notice

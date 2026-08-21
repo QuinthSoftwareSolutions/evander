@@ -69,10 +69,15 @@ class SqliteTriggerEventQueue:
         *,
         journal: SqliteWorkflowEventJournal | None = None,
         retention_days: int | None = None,
+        compact_history_retention_days: int = 365,
     ) -> None:
         self.path = Path(path)
         ensure_orchestration_schema(self.path)
-        maybe_run_orchestration_retention(self.path, retention_days=retention_days)
+        maybe_run_orchestration_retention(
+            self.path,
+            retention_days=retention_days,
+            compact_history_retention_days=compact_history_retention_days,
+        )
         self._journal = journal or SqliteWorkflowEventJournal(
             self.path, retention_days=retention_days
         )
@@ -376,6 +381,7 @@ class SqliteTriggerEventQueue:
             """,
             cls._record_columns(record),
         )
+        cls._archive_record(connection, record)
 
     @classmethod
     def _upsert_record(cls, connection: Any, record: TriggerQueueRecord) -> None:
@@ -410,6 +416,17 @@ class SqliteTriggerEventQueue:
                 payload_json = excluded.payload_json
             """,
             cls._record_columns(record),
+        )
+        cls._archive_record(connection, record)
+
+    @staticmethod
+    def _archive_record(connection: Any, record: TriggerQueueRecord) -> None:
+        from evander.repositories.execution_history import archive_execution_record
+
+        archive_execution_record(
+            connection,
+            kind="trigger",
+            record=record.model_dump(mode="json"),
         )
 
     @classmethod

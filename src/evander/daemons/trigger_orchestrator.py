@@ -466,6 +466,7 @@ def _build_trigger_event_queue(
     return SqliteTriggerEventQueue(
         worker_config.orchestration_store_path,
         retention_days=worker_config.orchestration_retention_days,
+        compact_history_retention_days=(worker_config.orchestration_compact_history_retention_days),
     )
 
 

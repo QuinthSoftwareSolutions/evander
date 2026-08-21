@@ -1144,6 +1144,7 @@ def test_trigger_orchestrator_worker_global_config_defaults_follow_runtime_dir()
     assert str(config.lock_path) == "/tmp/evander-runtime/trigger-orchestrator.lock"
     assert str(config.orchestration_store_path) == "/tmp/evander-runtime/orchestration.db"
     assert config.orchestration_retention_days == 30
+    assert config.orchestration_compact_history_retention_days == 365
     assert config.orchestration_wal_checkpoint_mode == "truncate"
     assert config.orchestration_wal_checkpoint_min_bytes == 64 * 1024 * 1024
     assert config.orchestration_wal_checkpoint_interval_seconds == 5 * 60
