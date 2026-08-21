@@ -140,8 +140,13 @@ def _inbox_item_can_wake(item: AgentInboxItem) -> bool:
 
 
 def _task_can_wake_owner_for_work(state: TeamState, task: AgentTask) -> bool:
-    return task.state != TeamTaskState.BLOCKED and not _task_waits_on_active_deliverable_review(
-        state, task
+    return (
+        task.state
+        not in {
+            TeamTaskState.BLOCKED,
+            TeamTaskState.WAITING_FOR_INPUT,
+        }
+        and not _task_waits_on_active_deliverable_review(state, task)
     )
 
 

@@ -34,10 +34,15 @@ class SqliteWorkflowEventJournal:
         path: Path | str,
         *,
         retention_days: int | None = None,
+        compact_history_retention_days: int = 365,
     ) -> None:
         self.path = Path(path)
         ensure_orchestration_schema(self.path)
-        maybe_run_orchestration_retention(self.path, retention_days=retention_days)
+        maybe_run_orchestration_retention(
+            self.path,
+            retention_days=retention_days,
+            compact_history_retention_days=compact_history_retention_days,
+        )
 
     def append(
         self,

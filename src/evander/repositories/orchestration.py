@@ -277,6 +277,7 @@ class SqliteExecutionRepository(Generic[TRecord]):
         journal: Any | None = None,
         source: str | None = None,
         retention_days: int | None = None,
+        compact_history_retention_days: int = 365,
     ) -> None:
         self.path = Path(path)
         self.model = model
@@ -287,7 +288,11 @@ class SqliteExecutionRepository(Generic[TRecord]):
         self._journal_source = source
         self._lock = RLock()
         ensure_orchestration_schema(self.path)
-        maybe_run_orchestration_retention(self.path, retention_days=retention_days)
+        maybe_run_orchestration_retention(
+            self.path,
+            retention_days=retention_days,
+            compact_history_retention_days=compact_history_retention_days,
+        )
 
     def read_all(self) -> dict[str, TRecord]:
         with self._lock, connect_orchestration_db(self.path) as connection:
@@ -611,6 +616,13 @@ class SqliteExecutionRepository(Generic[TRecord]):
                 payload_json = excluded.payload_json
             """,
             self._record_columns(record),
+        )
+        from evander.repositories.execution_history import archive_execution_record
+
+        archive_execution_record(
+            connection,
+            kind="gate" if self.table_name == "gate_executions" else "effect",
+            record=record.model_dump(mode="json"),
         )
 
 

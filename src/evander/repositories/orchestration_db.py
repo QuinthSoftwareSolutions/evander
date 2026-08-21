@@ -7,7 +7,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 SQLITE_BUSY_TIMEOUT_MS = 30_000
 SQLITE_WAL_CHECKPOINT_BUSY_TIMEOUT_MS = 1_000
 SQLITE_WAL_CHECKPOINT_MIN_BYTES = 64 * 1024 * 1024
@@ -26,6 +26,8 @@ class OrchestrationRetentionResult:
     effect_executions_deleted: int = 0
     gate_executions_deleted: int = 0
     workflow_events_deleted: int = 0
+    compact_executions_deleted: int = 0
+    compact_payload_blobs_deleted: int = 0
 
 
 @dataclass(frozen=True)
@@ -192,6 +194,88 @@ def ensure_orchestration_schema(path: Path | str) -> None:
 
             CREATE INDEX IF NOT EXISTS idx_workflow_config_snapshots_captured
                 ON workflow_config_snapshots(captured_at, revision);
+
+            CREATE TABLE IF NOT EXISTS workflow_execution_payload_blobs (
+                sha256 TEXT PRIMARY KEY,
+                codec TEXT NOT NULL,
+                original_bytes INTEGER NOT NULL,
+                compressed_bytes INTEGER NOT NULL,
+                payload_blob BLOB NOT NULL,
+                created_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS workflow_node_execution_history (
+                execution_key TEXT PRIMARY KEY,
+                execution_kind TEXT NOT NULL,
+                execution_id TEXT NOT NULL,
+                event_id TEXT NOT NULL,
+                trace_id TEXT,
+                node_id TEXT NOT NULL,
+                node_type TEXT NOT NULL,
+                source_node_id TEXT,
+                source_trigger_type TEXT,
+                status TEXT NOT NULL,
+                started_at TEXT NOT NULL,
+                finished_at TEXT NOT NULL,
+                config_revision TEXT,
+                config_hash TEXT,
+                published_event_id TEXT,
+                error TEXT,
+                input_blob_sha256 TEXT,
+                output_blob_sha256 TEXT,
+                updated_at TEXT NOT NULL,
+                UNIQUE(execution_kind, execution_id),
+                FOREIGN KEY(input_blob_sha256)
+                    REFERENCES workflow_execution_payload_blobs(sha256),
+                FOREIGN KEY(output_blob_sha256)
+                    REFERENCES workflow_execution_payload_blobs(sha256)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_workflow_node_history_node_started
+                ON workflow_node_execution_history(node_id, started_at DESC, execution_key DESC);
+            CREATE INDEX IF NOT EXISTS idx_workflow_node_history_node_status_started
+                ON workflow_node_execution_history(
+                    node_id, status, started_at DESC, execution_key DESC
+                );
+            CREATE INDEX IF NOT EXISTS idx_workflow_node_history_event
+                ON workflow_node_execution_history(event_id, execution_key);
+            CREATE INDEX IF NOT EXISTS idx_workflow_node_history_finished
+                ON workflow_node_execution_history(finished_at, execution_key);
+
+            CREATE TABLE IF NOT EXISTS workflow_node_execution_history_sources (
+                execution_key TEXT NOT NULL,
+                source_node_id TEXT NOT NULL,
+                source_event_id TEXT,
+                occurred_at TEXT,
+                PRIMARY KEY(execution_key, source_node_id),
+                FOREIGN KEY(execution_key)
+                    REFERENCES workflow_node_execution_history(execution_key)
+                    ON DELETE CASCADE
+            );
+
+            CREATE TABLE IF NOT EXISTS workflow_node_execution_history_values (
+                execution_key TEXT NOT NULL,
+                location TEXT NOT NULL,
+                json_pointer TEXT NOT NULL,
+                value_type TEXT NOT NULL,
+                value_hash TEXT,
+                text_value TEXT,
+                numeric_value REAL,
+                boolean_value INTEGER,
+                PRIMARY KEY(execution_key, location, json_pointer),
+                FOREIGN KEY(execution_key)
+                    REFERENCES workflow_node_execution_history(execution_key)
+                    ON DELETE CASCADE
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_workflow_node_history_values_lookup
+                ON workflow_node_execution_history_values(
+                    location, json_pointer, value_type, value_hash, execution_key
+                );
+            CREATE INDEX IF NOT EXISTS idx_workflow_node_history_values_numeric
+                ON workflow_node_execution_history_values(
+                    location, json_pointer, value_type, numeric_value, execution_key
+                );
             """
         )
         connection.execute(
@@ -226,7 +310,10 @@ def datetime_to_storage(value: datetime | None) -> str | None:
 
 
 def maybe_run_orchestration_retention(
-    path: Path | str, *, retention_days: int | None
+    path: Path | str,
+    *,
+    retention_days: int | None,
+    compact_history_retention_days: int = 365,
 ) -> OrchestrationRetentionResult:
     if retention_days is None:
         return OrchestrationRetentionResult()
@@ -241,7 +328,11 @@ def maybe_run_orchestration_retention(
             payload = json_loads_object(row["value_json"])
             if payload.get("date") == today:
                 return OrchestrationRetentionResult()
-    return run_orchestration_retention(path, retention_days=retention_days)
+    return run_orchestration_retention(
+        path,
+        retention_days=retention_days,
+        compact_history_retention_days=compact_history_retention_days,
+    )
 
 
 def maybe_checkpoint_orchestration_wal(
@@ -359,17 +450,30 @@ def maybe_checkpoint_orchestration_wal(
 
 
 def run_orchestration_retention(
-    path: Path | str, *, retention_days: int
+    path: Path | str,
+    *,
+    retention_days: int,
+    compact_history_retention_days: int = 365,
 ) -> OrchestrationRetentionResult:
     if retention_days < 0:
         raise ValueError("retention_days must be non-negative")
+    if compact_history_retention_days < 0:
+        raise ValueError("compact_history_retention_days must be non-negative")
     ensure_orchestration_schema(path)
     now = datetime.now(UTC)
     cutoff = datetime_to_storage(now - timedelta(days=retention_days))
     assert cutoff is not None
+    compact_cutoff = datetime_to_storage(now - timedelta(days=compact_history_retention_days))
+    assert compact_cutoff is not None
     today = now.date().isoformat()
 
     with connect_orchestration_db(path) as connection:
+        # Preserve a compact, queryable snapshot before full execution payloads
+        # are allowed to expire. The helper uses this transaction, so a delete
+        # cannot commit without its history copy.
+        from evander.repositories.execution_history import archive_records_for_retention
+
+        archive_records_for_retention(connection, cutoff=cutoff)
         trigger_deleted = connection.execute(
             """
             DELETE FROM trigger_events
@@ -412,6 +516,27 @@ def run_orchestration_retention(
             "DELETE FROM workflow_events WHERE occurred_at < ?",
             (cutoff,),
         ).rowcount
+        compact_deleted = connection.execute(
+            """
+            DELETE FROM workflow_node_execution_history
+            WHERE finished_at < ?
+            """,
+            (compact_cutoff,),
+        ).rowcount
+        blob_deleted = connection.execute(
+            """
+            DELETE FROM workflow_execution_payload_blobs
+            WHERE sha256 NOT IN (
+                SELECT input_blob_sha256
+                FROM workflow_node_execution_history
+                WHERE input_blob_sha256 IS NOT NULL
+                UNION
+                SELECT output_blob_sha256
+                FROM workflow_node_execution_history
+                WHERE output_blob_sha256 IS NOT NULL
+            )
+            """
+        ).rowcount
         connection.execute(
             """
             INSERT INTO orchestration_metadata(key, value_json)
@@ -425,6 +550,8 @@ def run_orchestration_retention(
         effect_executions_deleted=max(0, effect_deleted),
         gate_executions_deleted=max(0, gate_deleted),
         workflow_events_deleted=max(0, workflow_deleted),
+        compact_executions_deleted=max(0, compact_deleted),
+        compact_payload_blobs_deleted=max(0, blob_deleted),
     )
 
 

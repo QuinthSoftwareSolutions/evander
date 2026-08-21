@@ -1350,6 +1350,7 @@ class OrchestrationCoreConfig(BaseModel):
     jitter_seconds: float = Field(default=5.0, ge=0)
     orchestration_store_path: Path | None = None
     orchestration_retention_days: int = Field(default=30, ge=0)
+    orchestration_compact_history_retention_days: int = Field(default=365, ge=0)
     orchestration_wal_checkpoint_mode: Literal[
         "disabled", "passive", "full", "restart", "truncate"
     ] = "truncate"

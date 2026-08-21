@@ -872,9 +872,16 @@ Common runtime inspection tasks:
    binding trace, and raw records.
 6. Use **Latest runs** search to find recent runs by graph or node scope, including runs without
    session links and completed runs when those toggles are enabled.
-7. Use resume, clear/delete, or failure-dismiss controls only when you understand the runtime
+7. Select a workflow node and expand **Execution history** in its inspector to query individual
+   executions. The default window is the previous seven days. Filters use exact, case-sensitive
+   RFC 6901 JSON Pointer paths over input or output objects; combine up to eight equality,
+   presence, or numeric comparisons. The end timestamp is exclusive. Results identify whether
+   the full record is still available or only the compact record remains, and show compact
+   retention and existing-record backfill status. Use **Inspect run** to open the surrounding run.
+   Arrays remain visible in execution detail but cannot be filtered by element in this version.
+8. Use resume, clear/delete, or failure-dismiss controls only when you understand the runtime
    effect and have privileges unlocked.
-8. Exit inspect mode to return to graph editing.
+9. Exit inspect mode to return to graph editing.
 
 Workflow edits are staged in the browser until **Save workflow** succeeds. Leaving the workflow
 view or changing directory while there are unsaved workflow changes prompts for confirmation.

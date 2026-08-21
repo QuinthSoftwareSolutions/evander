@@ -7,6 +7,7 @@
   "lock_path": "runtime/trigger-orchestrator.lock",
   "max_events_per_cycle": 200,
   "max_graph_depth": 32,
+  "orchestration_compact_history_retention_days": 365,
   "orchestration_retention_days": 30,
   "orchestration_store_path": "runtime/orchestration.db",
   "orchestration_wal_checkpoint_busy_timeout_ms": 1000,

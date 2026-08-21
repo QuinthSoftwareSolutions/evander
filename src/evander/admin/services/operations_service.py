@@ -437,6 +437,9 @@ class OperationsAdminService:
         queue = SqliteTriggerEventQueue(
             worker_config.orchestration_store_path,
             retention_days=worker_config.orchestration_retention_days,
+            compact_history_retention_days=(
+                worker_config.orchestration_compact_history_retention_days
+            ),
         )
         normalized_backend = str(backend or self._config.execution_backend).strip() or "libvirt_vm"
         normalized_capability_mode = str(assistant_capability_mode or "").strip() or "read-only"

@@ -4420,6 +4420,15 @@ def test_admin_web_workflow_run_routes_enforce_directory_permissions(
     detail_without_run_read = client.get(
         "/api/workflow-editor/run-detail", params={"event_id": "evt-ops"}
     )
+    history_request = {
+        "started_from": "2026-05-24T00:00:00Z",
+        "started_to": "2026-05-25T00:00:00Z",
+        "filters": [],
+    }
+    history_without_run_read = client.post(
+        "/api/workflow-editor/node-executions/search",
+        json={**history_request, "node_id": "ops-effect"},
+    )
     store.assign_user_group(
         login="viewer@example.com", group_id="auditor", directory_path="root/ops"
     )
@@ -4431,10 +4440,18 @@ def test_admin_web_workflow_run_routes_enforce_directory_permissions(
         "/api/workflow-editor/run-search", params={"node_id": "ops-effect", "limit": "5"}
     )
     detail_allowed = client.get("/api/workflow-editor/run-detail", params={"event_id": "evt-ops"})
+    history_allowed = client.post(
+        "/api/workflow-editor/node-executions/search",
+        json={**history_request, "node_id": "ops-effect"},
+    )
     graph_denied = client.get(
         "/api/workflow-editor/run-search", params={"graph_id": "graph-root", "limit": "5"}
     )
     detail_denied = client.get("/api/workflow-editor/run-detail", params={"event_id": "evt-root"})
+    history_denied = client.post(
+        "/api/workflow-editor/node-executions/search",
+        json={**history_request, "node_id": "root-effect"},
+    )
 
     assert definition_allowed.status_code == 200
     assert [graph["id"] for graph in definition_allowed.json()["graphs"]] == ["graph-ops"]
@@ -4442,6 +4459,8 @@ def test_admin_web_workflow_run_routes_enforce_directory_permissions(
     assert runs_without_run_read.json()["error"] == "Permission required: workflow_runs.read"
     assert detail_without_run_read.status_code == 403
     assert detail_without_run_read.json()["error"] == "Permission required: workflow_runs.read"
+    assert history_without_run_read.status_code == 403
+    assert history_without_run_read.json()["error"] == "Permission required: workflow_runs.read"
     assert runs_response.status_code == 200
     runs_payload = runs_response.json()
     assert [run["event_id"] for run in runs_payload["runs"]] == ["evt-ops"]
@@ -4455,10 +4474,14 @@ def test_admin_web_workflow_run_routes_enforce_directory_permissions(
     assert detail_allowed.status_code == 200
     assert detail_allowed.json()["event_id"] == "evt-ops"
     assert detail_allowed.json()["nodes"][0]["node_id"] in {"ops-effect", "ops-trigger"}
+    assert history_allowed.status_code == 200
+    assert history_allowed.json()["executions"][0]["execution_id"] == "exec-ops"
     assert graph_denied.status_code == 403
     assert graph_denied.json()["error"] == "Permission required: workflow_runs.read"
     assert detail_denied.status_code == 403
     assert detail_denied.json()["error"] == "Permission required: workflow_runs.read"
+    assert history_denied.status_code == 403
+    assert history_denied.json()["error"] == "Permission required: workflow_runs.read"
 
 
 @pytest.mark.parametrize(
@@ -8138,6 +8161,111 @@ def test_admin_web_run_search_finds_latest_graph_and_node_runs_without_sessions(
     ]
     assert graph_payload["runs"][0]["has_agent_session"] is True
     assert graph_payload["runs"][0]["session_ids"] == ["session-agent"]
+
+
+def test_admin_web_node_execution_history_search_fields_and_detail(tmp_path: Path) -> None:
+    runtime_dir = tmp_path / "runtime"
+    runtime_dir.mkdir(parents=True, exist_ok=True)
+    config_root = tmp_path / "config" / "trigger-orchestrator"
+    config_root.mkdir(parents=True, exist_ok=True)
+    _write_json_payload(
+        config_root / "config.json",
+        {
+            "runtime_dir": str(runtime_dir),
+            "orchestration_retention_days": 30,
+            "orchestration_compact_history_retention_days": 365,
+            "effects": [
+                {
+                    "id": "effect-history",
+                    "display_name": "History effect",
+                    "type": "effect:event:emit",
+                    "event_type": "history.completed",
+                    "payload": {},
+                }
+            ],
+            "workflow_graphs": [
+                {
+                    "id": "graph-history",
+                    "name": "History graph",
+                    "directory_path": "root",
+                    "user_ids": [],
+                    "node_ids": ["effect-history"],
+                }
+            ],
+        },
+    )
+    _write_orchestration_payload(
+        runtime_dir,
+        "effect_executions",
+        {
+            "exec-history": {
+                "execution_id": "exec-history",
+                "event_id": "evt-history",
+                "trace_id": "trace-history",
+                "effect_id": "effect-history",
+                "status": "succeeded",
+                "started_at": "2026-05-01T12:00:00Z",
+                "finished_at": "2026-05-01T12:00:02Z",
+                "resolved_config": {},
+                "input_payload": {"request": {"owner": "Mikael"}},
+                "outputs": {"user": {"name": "Mikael Högberg"}, "count": 3},
+            }
+        },
+    )
+    client = TestClient(create_app(build_admin_runtime(write_config(tmp_path))))
+    search_body = {
+        "node_id": "effect-history",
+        "started_from": "2026-05-01T00:00:00Z",
+        "started_to": "2026-05-02T00:00:00Z",
+        "filters": [
+            {
+                "location": "output",
+                "path": "/user/name",
+                "operator": "eq",
+                "value": "Mikael Högberg",
+            }
+        ],
+        "limit": 50,
+    }
+
+    search = client.post("/api/workflow-editor/node-executions/search", json=search_body)
+    fields = client.post(
+        "/api/workflow-editor/node-executions/fields",
+        json={
+            "node_id": "effect-history",
+            "started_from": "2026-05-01T00:00:00Z",
+            "started_to": "2026-05-02T00:00:00Z",
+        },
+    )
+    detail = client.get("/api/workflow-editor/node-executions/effect:exec-history")
+    invalid = client.post(
+        "/api/workflow-editor/node-executions/search",
+        json={
+            **search_body,
+            "filters": [
+                {"location": "output", "path": "user/name", "operator": "exists"}
+            ],
+        },
+    )
+
+    assert search.status_code == 200
+    search_payload = search.json()
+    assert search_payload["matched"] == 1
+    assert search_payload["executions"][0]["execution_id"] == "exec-history"
+    assert search_payload["executions"][0]["matched_values"] == {
+        "output:/user/name": "Mikael Högberg"
+    }
+    assert search_payload["availability"]["full_retention_days"] == 30
+    assert search_payload["availability"]["compact_retention_days"] == 365
+    assert fields.status_code == 200
+    assert any(
+        item["location"] == "output" and item["json_pointer"] == "/user/name"
+        for item in fields.json()["fields"]
+    )
+    assert detail.status_code == 200
+    assert detail.json()["record_tier"] == "full"
+    assert detail.json()["output"]["user"]["name"] == "Mikael Högberg"
+    assert invalid.status_code == 400
 
 
 def test_admin_web_workflow_runs_resolve_relative_paths_independent_of_cwd(

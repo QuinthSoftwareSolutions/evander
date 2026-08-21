@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from datetime import UTC, datetime
 from typing import Any, Literal
 
@@ -86,6 +87,7 @@ class WorkflowEditorGraphMetadata(BaseModel):
             raise ValueError(
                 f"Workflow graph has invalid directory path: {directory_path}"
             ) from exc
+
 
 class WorkflowEditorWorkflowPackDescriptor(BaseModel):
     reference: str
@@ -296,6 +298,159 @@ class WorkflowRunSearchPayload(BaseModel):
     returned: int = 0
     limit: int = 25
     has_more: bool = False
+
+
+class WorkflowNodeExecutionFilterPayload(BaseModel):
+    location: Literal["input", "output"]
+    path: str = Field(min_length=1, max_length=1024)
+    operator: Literal["eq", "exists", "not_exists", "gt", "gte", "lt", "lte"]
+    value: Any | None = None
+
+    @field_validator("path")
+    @classmethod
+    def validate_json_pointer(cls, value: str) -> str:
+        if not value.startswith("/"):
+            raise ValueError("path must be an RFC 6901 JSON Pointer beginning with '/'")
+        index = 0
+        while index < len(value):
+            if value[index] == "~" and (
+                index + 1 >= len(value) or value[index + 1] not in {"0", "1"}
+            ):
+                raise ValueError("path contains an invalid RFC 6901 escape")
+            index += 1
+        return value
+
+    @model_validator(mode="after")
+    def validate_value(self) -> "WorkflowNodeExecutionFilterPayload":
+        if self.operator == "eq" and isinstance(self.value, (dict, list)):
+            raise ValueError("operator eq requires a scalar value")
+        if self.operator in {"gt", "gte", "lt", "lte"} and (
+            isinstance(self.value, bool) or not isinstance(self.value, (int, float))
+        ):
+            raise ValueError(f"operator {self.operator} requires a numeric value")
+        if self.operator in {"gt", "gte", "lt", "lte"} and not math.isfinite(float(self.value)):
+            raise ValueError(f"operator {self.operator} requires a finite numeric value")
+        if self.operator in {"exists", "not_exists"}:
+            self.value = None
+        return self
+
+
+class WorkflowNodeExecutionSearchRequestPayload(BaseModel):
+    node_id: str = Field(min_length=1)
+    started_from: datetime
+    started_to: datetime
+    statuses: list[str] = Field(default_factory=list, max_length=32)
+    filters: list[WorkflowNodeExecutionFilterPayload] = Field(default_factory=list, max_length=8)
+    limit: int = Field(default=50, ge=1, le=100)
+    cursor: str | None = Field(default=None, max_length=4096)
+
+    @field_validator("node_id")
+    @classmethod
+    def normalize_node_id(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("node_id must not be blank")
+        return normalized
+
+    @field_validator("statuses")
+    @classmethod
+    def normalize_statuses(cls, values: list[str]) -> list[str]:
+        return list(dict.fromkeys(value.strip() for value in values if value.strip()))
+
+    @field_validator("started_from", "started_to")
+    @classmethod
+    def require_timezone(cls, value: datetime) -> datetime:
+        if value.tzinfo is None:
+            raise ValueError("timestamps must include a timezone offset")
+        return value.astimezone(UTC)
+
+    @model_validator(mode="after")
+    def validate_window(self) -> "WorkflowNodeExecutionSearchRequestPayload":
+        if self.started_from >= self.started_to:
+            raise ValueError("started_from must be earlier than started_to")
+        return self
+
+
+class WorkflowNodeExecutionSearchItemPayload(BaseModel):
+    execution_key: str
+    execution_kind: Literal["trigger", "gate", "effect"]
+    execution_id: str
+    event_id: str
+    trace_id: str | None = None
+    node_id: str
+    node_type: str
+    source_node_id: str | None = None
+    source_trigger_type: str | None = None
+    status: str
+    started_at: datetime
+    finished_at: datetime
+    config_revision: str | None = None
+    published_event_id: str | None = None
+    error: str | None = None
+    full_record_available: bool = False
+    matched_values: dict[str, Any] = Field(default_factory=dict)
+
+
+class WorkflowNodeExecutionSearchPayload(BaseModel):
+    generated_at: datetime
+    node_id: str
+    started_from: datetime
+    started_to: datetime
+    matched: int
+    returned: int
+    limit: int
+    has_more: bool
+    next_cursor: str | None = None
+    executions: list[WorkflowNodeExecutionSearchItemPayload] = Field(default_factory=list)
+    availability: dict[str, Any] = Field(default_factory=dict)
+
+
+class WorkflowNodeExecutionFieldsRequestPayload(BaseModel):
+    node_id: str = Field(min_length=1)
+    started_from: datetime
+    started_to: datetime
+
+    @field_validator("started_from", "started_to")
+    @classmethod
+    def require_timezone(cls, value: datetime) -> datetime:
+        if value.tzinfo is None:
+            raise ValueError("timestamps must include a timezone offset")
+        return value.astimezone(UTC)
+
+    @model_validator(mode="after")
+    def validate_window(self) -> "WorkflowNodeExecutionFieldsRequestPayload":
+        self.node_id = self.node_id.strip()
+        if not self.node_id:
+            raise ValueError("node_id must not be blank")
+        if self.started_from >= self.started_to:
+            raise ValueError("started_from must be earlier than started_to")
+        return self
+
+
+class WorkflowNodeExecutionFieldPayload(BaseModel):
+    location: Literal["input", "output"]
+    json_pointer: str
+    value_type: Literal["null", "boolean", "number", "string"]
+    observed_count: int
+
+
+class WorkflowNodeExecutionFieldsPayload(BaseModel):
+    node_id: str
+    fields: list[WorkflowNodeExecutionFieldPayload] = Field(default_factory=list)
+
+
+class WorkflowNodeExecutionSourcePayload(BaseModel):
+    source_node_id: str
+    source_event_id: str | None = None
+    occurred_at: datetime | None = None
+
+
+class WorkflowNodeExecutionDetailPayload(WorkflowNodeExecutionSearchItemPayload):
+    input: dict[str, Any] = Field(default_factory=dict)
+    output: dict[str, Any] = Field(default_factory=dict)
+    sources: list[WorkflowNodeExecutionSourcePayload] = Field(default_factory=list)
+    record_tier: Literal["full", "compact"]
+    full_record: dict[str, Any] | None = None
 
 
 class WorkflowRunLookupPayload(BaseModel):

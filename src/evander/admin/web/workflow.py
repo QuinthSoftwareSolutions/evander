@@ -12,7 +12,11 @@ from starlette.responses import JSONResponse, StreamingResponse
 from starlette.routing import Route
 
 from evander.admin.composition import AdminRuntimeComponents
-from evander.admin.payloads import AdminRevisionConflict
+from evander.admin.payloads import (
+    AdminRevisionConflict,
+    WorkflowNodeExecutionFieldsRequestPayload,
+    WorkflowNodeExecutionSearchRequestPayload,
+)
 from evander.admin.services.workflow_pack_history_service import WorkflowPackChangeActor
 from evander.admin.web.cache import AdminWebJsonResponseCache
 from evander.admin.web.rbac import (
@@ -702,6 +706,73 @@ def workflow_routes(
             return json_error(str(exc), status_code=403)
         return JSONResponse(payload.model_dump(mode="json"))
 
+    def require_node_execution_read(request: Request, *, node_id: str) -> None:
+        document = service.workflow_config_admin.read_composed_workflow_editor_document()
+        if not document.graphs:
+            auth.require_permission(request, WORKFLOW_RUNS_READ_PERMISSION, directory_path="root")
+            return
+        directory_paths = _graph_directory_paths_for_node_ids(document.graphs, [node_id])
+        if not directory_paths:
+            raise PermissionError("Permission required: workflow_runs.read")
+        for directory_path in directory_paths:
+            auth.require_permission(
+                request, WORKFLOW_RUNS_READ_PERMISSION, directory_path=directory_path
+            )
+
+    async def post_node_execution_search(request: Request) -> JSONResponse:
+        try:
+            search = WorkflowNodeExecutionSearchRequestPayload.model_validate(
+                await json_body(request)
+            )
+            require_node_execution_read(request, node_id=search.node_id)
+            payload = service.workflow_config_admin.read_workflow_node_execution_search(
+                node_id=search.node_id,
+                started_from=search.started_from,
+                started_to=search.started_to,
+                statuses=search.statuses,
+                filters=[item.model_dump(mode="json") for item in search.filters],
+                limit=search.limit,
+                cursor=search.cursor,
+            )
+        except ValueError as exc:
+            return json_error(str(exc), status_code=400)
+        except PermissionError as exc:
+            return json_error(str(exc), status_code=403)
+        return JSONResponse(payload.model_dump(mode="json"))
+
+    async def post_node_execution_fields(request: Request) -> JSONResponse:
+        try:
+            search = WorkflowNodeExecutionFieldsRequestPayload.model_validate(
+                await json_body(request)
+            )
+            require_node_execution_read(request, node_id=search.node_id)
+            payload = service.workflow_config_admin.read_workflow_node_execution_fields(
+                node_id=search.node_id,
+                started_from=search.started_from,
+                started_to=search.started_to,
+            )
+        except ValueError as exc:
+            return json_error(str(exc), status_code=400)
+        except PermissionError as exc:
+            return json_error(str(exc), status_code=403)
+        return JSONResponse(payload.model_dump(mode="json"))
+
+    async def get_node_execution_detail(request: Request) -> JSONResponse:
+        execution_key = str(request.path_params.get("execution_key") or "").strip()
+        try:
+            if not execution_key:
+                raise ValueError("execution_key is required")
+            payload = service.workflow_config_admin.read_workflow_node_execution_detail(
+                execution_key
+            )
+            require_node_execution_read(request, node_id=payload.node_id)
+        except ValueError as exc:
+            status_code = 404 if "not found" in str(exc) else 400
+            return json_error(str(exc), status_code=status_code)
+        except PermissionError as exc:
+            return json_error(str(exc), status_code=403)
+        return JSONResponse(payload.model_dump(mode="json"))
+
     async def get_run_detail(request: Request) -> JSONResponse:
         query = request.query_params
         try:
@@ -1056,6 +1127,21 @@ def workflow_routes(
             methods=["GET"],
         ),
         Route("/api/workflow-editor/run-search", get_run_search, methods=["GET"]),
+        Route(
+            "/api/workflow-editor/node-executions/search",
+            post_node_execution_search,
+            methods=["POST"],
+        ),
+        Route(
+            "/api/workflow-editor/node-executions/fields",
+            post_node_execution_fields,
+            methods=["POST"],
+        ),
+        Route(
+            "/api/workflow-editor/node-executions/{execution_key:path}",
+            get_node_execution_detail,
+            methods=["GET"],
+        ),
         Route("/api/workflow-editor/run-detail", get_run_detail, methods=["GET"]),
         Route(
             "/api/workflow-editor/node-failures/{node_id:path}",
