@@ -78,6 +78,38 @@ def test_persistence_registry_covers_every_collection_and_table_once() -> None:
     assert set(tables) == set(_STATE_TABLES)
 
 
+def test_review_criterion_evidence_column_migrates_from_legacy_table(
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "addons" / "team-addon" / "state.db"
+    database_path.parent.mkdir(parents=True)
+    with sqlite3.connect(database_path) as connection:
+        connection.execute(
+            """
+            CREATE TABLE team_review_request_criteria (
+                review_request_id TEXT NOT NULL,
+                position INTEGER NOT NULL,
+                criterion_id TEXT NOT NULL,
+                state TEXT NOT NULL,
+                finding TEXT NOT NULL,
+                PRIMARY KEY(review_request_id, position)
+            )
+            """
+        )
+
+    repository = TeamStateRepository(tmp_path)
+
+    with repository.store._connect() as connection:
+        columns = {
+            row["name"]: row
+            for row in connection.execute(
+                "PRAGMA table_info(team_review_request_criteria)"
+            )
+        }
+    assert columns["evidence_refs_json"]["notnull"] == 1
+    assert columns["evidence_refs_json"]["dflt_value"] == "'[]'"
+
+
 def test_dependency_composition_recovery_round_trips_exact_git_evidence(
     tmp_path: Path,
 ) -> None:

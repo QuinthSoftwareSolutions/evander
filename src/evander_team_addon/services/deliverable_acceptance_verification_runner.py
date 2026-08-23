@@ -189,8 +189,6 @@ class TeamDeliverableAcceptanceVerificationRunner:
                 candidate_commit_sha=candidate_commit_sha,
             )
             for index, command in enumerate(verification.verification_commands):
-                if command_results[index].get("state") == "passed":
-                    continue
                 running = {"name": command.name, "state": "running"}
                 self._record_command_result(
                     deliverable_id=deliverable_id,

@@ -1511,6 +1511,9 @@ def test_worker_composes_exact_dependency_git_source_before_task_work(
     assert reused.created is False
     assert reused.base_commit_sha == prepared.base_commit_sha
     assert reused.commit_sha == successor_commit
+    assert reused.composition_root_commit_sha == prepared.composition_root_commit_sha
+    assert reused.composed_commit_sha == prepared.composed_commit_sha
+    assert reused.composed_tree_hash == prepared.composed_tree_hash
 
     without_provenance = WorkerTaskWorktreeRequest(
         repo_name=request.repo_name,

@@ -10,6 +10,9 @@ from evander_team_addon.models import (
     Deliverable,
     DeliverableGitRefs,
     DeliverableOutcome,
+    DeliverableVerification,
+    DependencyCompositionManifest,
+    DependencyGitSource,
     EphemeralAssignment,
     EphemeralAssignmentState,
     GitPromotionRecord,
@@ -1066,6 +1069,172 @@ def test_integration_boundary_requires_authoritative_pinned_git_provenance() -> 
     assert task.state == TeamTaskState.FINISHED
     assert assessment.resolution_status == TaskResolutionStatus.RESOLVED
     assert assessment.resolution_reason == "integration_deliverable_accepted"
+
+
+def test_policy_v2_git_candidate_does_not_require_manifest_for_artifact_dependency() -> None:
+    state = _state()
+    dependency = _support_task("artifact-dependency", state=TeamTaskState.FINISHED)
+    integration = AgentTask(
+        **{
+            **_support_task(
+                "integration",
+                state=TeamTaskState.WAITING_FOR_REVIEW,
+                dependency_task_ids=[dependency.id],
+            ).model_dump(),
+            "integration_boundary": True,
+            "deliverable_contract": TaskDeliverableContract(
+                require_git_provenance=True,
+            ),
+        }
+    )
+    state.tasks = {dependency.id: dependency, integration.id: integration}
+    _delivered(
+        state,
+        deliverable_id="artifact-dependency-deliverable",
+        task_id=dependency.id,
+    )
+    commit_sha = "a" * 40
+    state.git_work_contexts = {
+        "context-integration": GitWorkContext(
+            id="context-integration",
+            agent_id=integration.owner_agent_id,
+            task_id=integration.id,
+            agent_branch="agents/integration/task",
+            commit_sha=commit_sha,
+            state=GitWorkContextState.SUBMITTED,
+        )
+    }
+    candidate = Deliverable(
+        id="integration-candidate",
+        task_id=integration.id,
+        producer_agent_id=integration.owner_agent_id,
+        summary="Git candidate with an artifact-only lifecycle dependency.",
+        state=TeamRecordState.PENDING,
+        acceptance_policy_version=2,
+        git_refs=DeliverableGitRefs(
+            branch_context_id="context-integration",
+            agent_branch="agents/integration/task",
+            commit_sha=commit_sha,
+            submitted_commit_sha=commit_sha,
+        ),
+        verification=DeliverableVerification(
+            status="passed",
+            provenance="server_release_equivalent",
+            run_id="verification-artifact-dependency",
+            candidate_commit_sha=commit_sha,
+            evidence_refs=["test://artifact-dependency"],
+        ),
+    )
+    state.deliverables[candidate.id] = candidate
+    integration.deliverable_ids = [candidate.id]
+
+    require_deliverable_acceptance(state, candidate.id)
+
+
+def test_policy_v2_composition_scope_ignores_artifact_only_contribution() -> None:
+    state = _state()
+    git_contribution = _support_task("git-contribution", state=TeamTaskState.FINISHED)
+    artifact_contribution = _support_task(
+        "artifact-contribution",
+        state=TeamTaskState.FINISHED,
+    )
+    integration = AgentTask(
+        **{
+            **_support_task(
+                "integration",
+                state=TeamTaskState.WAITING_FOR_REVIEW,
+                dependency_task_ids=[git_contribution.id, artifact_contribution.id],
+            ).model_dump(),
+            "integration_boundary": True,
+            "deliverable_contract": TaskDeliverableContract(
+                require_git_provenance=True,
+                required_contribution_task_ids=[
+                    git_contribution.id,
+                    artifact_contribution.id,
+                ],
+            ),
+        }
+    )
+    state.tasks = {
+        git_contribution.id: git_contribution,
+        artifact_contribution.id: artifact_contribution,
+        integration.id: integration,
+    }
+    source_commit = "b" * 40
+    git_source = _delivered(
+        state,
+        deliverable_id="git-source",
+        task_id=git_contribution.id,
+    )
+    git_source.git_refs = DeliverableGitRefs(
+        agent_branch="agents/source/git-contribution",
+        commit_sha=source_commit,
+        submitted_commit_sha=source_commit,
+    )
+    artifact_source = _delivered(
+        state,
+        deliverable_id="artifact-source",
+        task_id=artifact_contribution.id,
+    )
+    candidate_commit = "c" * 40
+    dependency_source = DependencyGitSource(
+        dependency_task_id=git_contribution.id,
+        deliverable_id=git_source.id,
+        branch="agents/source/git-contribution",
+        commit_sha=source_commit,
+        relationship_kind="required_contribution",
+    )
+    manifest = DependencyCompositionManifest(
+        target_task_id=integration.id,
+        managed_repo_id="mr_0123456789abcdefabcd",
+        base_branch="main",
+        base_commit_sha="a" * 40,
+        base_tree_hash="d" * 40,
+        dependency_git_sources=[dependency_source],
+        source_fingerprint="e" * 64,
+        frontier_commit_shas=[source_commit],
+        composed_commit_sha=candidate_commit,
+        composed_tree_hash="f" * 40,
+    )
+    state.git_work_contexts = {
+        "context-integration": GitWorkContext(
+            id="context-integration",
+            agent_id=integration.owner_agent_id,
+            task_id=integration.id,
+            agent_branch="agents/integration/task",
+            commit_sha=candidate_commit,
+            state=GitWorkContextState.SUBMITTED,
+            dependency_git_sources=[dependency_source],
+            dependency_composition_manifest=manifest,
+        )
+    }
+    candidate = Deliverable(
+        id="mixed-source-candidate",
+        task_id=integration.id,
+        producer_agent_id=integration.owner_agent_id,
+        summary="Candidate composed from Git and artifact contributions.",
+        state=TeamRecordState.PENDING,
+        source_deliverable_ids=[git_source.id, artifact_source.id],
+        acceptance_policy_version=2,
+        dependency_composition_manifest=manifest,
+        git_refs=DeliverableGitRefs(
+            branch_context_id="context-integration",
+            agent_branch="agents/integration/task",
+            commit_sha=candidate_commit,
+            submitted_commit_sha=candidate_commit,
+        ),
+        verification=DeliverableVerification(
+            status="passed",
+            provenance="server_release_equivalent",
+            run_id="verification-mixed-sources",
+            candidate_commit_sha=candidate_commit,
+            evidence_refs=["test://mixed-sources"],
+        ),
+    )
+    state.deliverables[candidate.id] = candidate
+    integration.deliverable_ids = [candidate.id]
+
+    require_deliverable_acceptance(state, candidate.id)
 
 
 def test_integration_boundary_rejects_artifact_only_submission_before_side_effects() -> None:

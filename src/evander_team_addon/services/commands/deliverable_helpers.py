@@ -205,6 +205,10 @@ def _normalize_review_decision_mapping(
                 "criterion_id": _optional_text(criterion.get("criterion_id")),
                 "state": _optional_text(criterion.get("state")),
                 "finding": _optional_text(criterion.get("finding")),
+                "evidence_refs": _string_list(
+                    criterion.get("evidence_refs"),
+                    f"{field_name}.criteria.evidence_refs",
+                ),
             }
             for criterion in criteria
         ],

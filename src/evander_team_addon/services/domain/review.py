@@ -56,7 +56,10 @@ from .git_work_contexts import (
     require_authoritative_git_review_retry_candidate,
 )
 from .review_repository_snapshots import deliverable_review_repository_snapshot
-from .acceptance_verification import deliverable_acceptance_verification_error
+from .acceptance_verification import (
+    apply_formal_review_acceptance_policy,
+    deliverable_acceptance_verification_error,
+)
 from .manager_fallback import _manager_fallback_review_decision_guard_error
 from .outcome_catalog import snapshot_review_profile_outcomes
 from .review_handoff import queue_actionable_inbox_item
@@ -337,6 +340,11 @@ def _apply_review_request(
             now=now,
             projects_to_recalc=projects_to_recalc,
         )
+        apply_formal_review_acceptance_policy(
+            state,
+            deliverable=deliverable,
+            result=result,
+        )
         result.setdefault("existing_review_request_ids", []).append(existing_review.id)
         return existing_review.id
     requested_cohort_id = _optional_text(request.get("review_cohort_id"))
@@ -373,6 +381,11 @@ def _apply_review_request(
     if review_id in state.review_requests:
         result["errors"].append(f"review request {review_id} already exists")
         return None
+    apply_formal_review_acceptance_policy(
+        state,
+        deliverable=deliverable,
+        result=result,
+    )
     review = ReviewRequest(
         id=review_id,
         deliverable_id=deliverable_id,

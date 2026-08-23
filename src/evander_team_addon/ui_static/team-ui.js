@@ -598,7 +598,7 @@ const fieldTooltips = {
   "decide-review-form:review_request_id": "Review request to decide.",
   "decide-review-form:state": "Decision to apply to the review, deliverable, and related task state.",
   "decide-review-form:findings": "Decision findings, one per line or comma-separated.",
-  "decide-review-form:criteria": "Criterion result rows in criterion_id | state | finding format.",
+  "decide-review-form:criteria": "Criterion result rows in criterion_id | state | finding | evidence refs format. Separate evidence refs with commas.",
 
   "edit:team:name": "Rename the team without changing its immutable ID.",
   "edit:team:operator_communication_target_id": "Set or clear the external target used for operator escalations.",
@@ -15723,6 +15723,9 @@ function renderReviewCriterionInputs(criteria) {
           <label>Finding
             <input name="criterion_finding__${escapeAttr(criterion.id)}" type="text" />
           </label>
+          <label>Evidence references
+            <textarea name="criterion_evidence_refs__${escapeAttr(criterion.id)}" rows="2" placeholder="One durable reference per line or comma-separated"></textarea>
+          </label>
         </div>
       `).join("")}
     </fieldset>
@@ -15762,12 +15765,12 @@ function renderReviewCriteriaHelp(criteria) {
 
 function renderReviewCriteriaPlaceholder(criteria) {
   if (!criteria.length) {
-    return "criterion_id | passed | finding";
+    return "criterion_id | passed | finding | evidence-ref";
   }
   return criteria
     .map((criterion) => {
       const finding = criterion.description || criterion.label || "finding";
-      return `${criterion.id} | passed | ${finding}`;
+      return `${criterion.id} | passed | ${finding} | evidence-ref`;
     })
     .join("\n");
 }
@@ -15781,7 +15784,10 @@ function renderCriterionResults(criteria) {
       ${criteria
         .map((criterion) => {
           const finding = criterion.finding ? ` - ${escapeHtml(criterion.finding)}` : "";
-          return `<li>${escapeHtml(criterion.criterion_id)}: ${escapeHtml(criterion.state)}${finding}</li>`;
+          const evidence = (criterion.evidence_refs || []).length
+            ? ` · evidence: ${(criterion.evidence_refs || []).map((ref) => escapeHtml(ref)).join(", ")}`
+            : "";
+          return `<li>${escapeHtml(criterion.criterion_id)}: ${escapeHtml(criterion.state)}${finding}${evidence}</li>`;
         })
         .join("")}
     </ul>
@@ -23219,6 +23225,9 @@ function reviewCriterionResultsFromForm(form) {
         criterion_id: criterionId,
         state: stateValue,
         finding: text(row.querySelector('input[type="text"]')?.value),
+        evidence_refs: splitList(
+          row.querySelector('[name^="criterion_evidence_refs__"]')?.value,
+        ),
       };
     })
     .filter(Boolean);
@@ -24743,13 +24752,14 @@ function parseCriterionResults(value) {
     .map((line) => line.trim())
     .filter(Boolean)
     .map((line) => {
-      const [criterion_id, stateValue = "passed", finding = ""] = line
+      const [criterion_id, stateValue = "passed", finding = "", evidenceRefs = ""] = line
         .split("|")
         .map((part) => part.trim());
       return {
         criterion_id,
         state: stateValue || "passed",
         finding,
+        evidence_refs: splitList(evidenceRefs),
       };
     });
 }

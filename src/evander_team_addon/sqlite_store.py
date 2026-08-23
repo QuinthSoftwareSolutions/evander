@@ -27,7 +27,7 @@ from .models import (
 
 ADDON_ID = "team-addon"
 STATE_DB_FILE = "state.db"
-SQLITE_SCHEMA_VERSION = 59
+SQLITE_SCHEMA_VERSION = 60
 _SQLITE_WAL_ENABLE_TIMEOUT_SECONDS = 5.0
 
 T = TypeVar("T")
@@ -1422,6 +1422,12 @@ class TeamStateSqliteStore:
                         column_name=column_name,
                         definition="TEXT",
                     )
+                _ensure_column(
+                    connection,
+                    table_name="team_review_request_criteria",
+                    column_name="evidence_refs_json",
+                    definition="TEXT NOT NULL DEFAULT '[]'",
+                )
                 _ensure_column(
                     connection,
                     table_name="team_deliverables",
@@ -3251,7 +3257,8 @@ class TeamStateSqliteStore:
         criteria = _grouped_rows(
             connection,
             """
-            SELECT review_request_id AS owner_id, criterion_id, state, finding
+            SELECT review_request_id AS owner_id, criterion_id, state, finding,
+                   evidence_refs_json
             FROM team_review_request_criteria
             ORDER BY review_request_id, position
             """,
@@ -3259,6 +3266,7 @@ class TeamStateSqliteStore:
                 "criterion_id": row["criterion_id"],
                 "state": row["state"],
                 "finding": row["finding"],
+                "evidence_refs": _json_loads(row["evidence_refs_json"]),
             },
         )
         for row in connection.execute("SELECT * FROM team_review_requests ORDER BY id"):
@@ -3368,9 +3376,10 @@ class TeamStateSqliteStore:
                 connection.execute(
                     """
                     INSERT INTO team_review_request_criteria(
-                        review_request_id, position, criterion_id, state, finding
+                        review_request_id, position, criterion_id, state, finding,
+                        evidence_refs_json
                     )
-                    VALUES (?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?)
                     """,
                     (
                         request["id"],
@@ -3378,6 +3387,7 @@ class TeamStateSqliteStore:
                         criterion["criterion_id"],
                         criterion["state"],
                         criterion.get("finding", ""),
+                        _json_dumps(criterion.get("evidence_refs", [])),
                     ),
                 )
 
@@ -7891,6 +7901,7 @@ CREATE TABLE IF NOT EXISTS team_review_request_criteria (
     criterion_id TEXT NOT NULL,
     state TEXT NOT NULL,
     finding TEXT NOT NULL,
+    evidence_refs_json TEXT NOT NULL DEFAULT '[]',
     PRIMARY KEY(review_request_id, position)
 );
 

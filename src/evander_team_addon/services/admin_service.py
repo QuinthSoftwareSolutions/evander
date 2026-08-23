@@ -158,6 +158,7 @@ from .domain.deliverables import (
     _validate_deliverable_outcomes_against_task_contract,
 )
 from .domain.acceptance_verification import (
+    apply_formal_review_acceptance_policy,
     authorize_deliverable_acceptance_verification_waiver,
 )
 from .domain.git_work_contexts import finalize_active_git_work_contexts_for_task
@@ -2035,6 +2036,7 @@ class TeamAdminService:
         dependency_composition_manifest: Mapping[str, object]
         | DependencyCompositionManifest
         | None = None,
+        resource_provenance_validator: Callable[[TeamState], None] | None = None,
         expected_revision: int | None = None,
     ) -> tuple[TeamState, str]:
         normalized_context_id = _optional_text(context_id)
@@ -2091,6 +2093,8 @@ class TeamAdminService:
                     f"task {task.id} project {project.id} does not belong to "
                     f"agent team {agent.team_id}"
                 )
+            if resource_provenance_validator is not None:
+                resource_provenance_validator(state)
             effective_base_branch = normalized_base_branch
             if task.git_base_branch is None:
                 task.git_base_branch = _resolve_new_task_git_base_branch(
@@ -4805,6 +4809,11 @@ class TeamAdminService:
                 state_model.review_requests,
                 effective_review_request_id,
                 "review request",
+            )
+            apply_formal_review_acceptance_policy(
+                state_model,
+                deliverable=deliverable,
+                result=blocker_result,
             )
             now = utc_now()
             review = ReviewRequest(

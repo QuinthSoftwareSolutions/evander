@@ -9003,23 +9003,18 @@ def _create_project_repo_git_work_contexts(
                 task_id=task_id,
                 dispatch_id=dispatch_id,
             )
-            last_conflict: TeamStateConflictError | None = None
-            for _attempt in range(TEAM_WAKE_STATE_CONFLICT_MAX_ATTEMPTS):
-                state_commit_attempt_count += 1
-                state = repo.read()
-                runtime = state.agent_runtimes.get(agent_id)
-                if runtime is None or runtime.active_dispatch_id != dispatch_id:
-                    raise RuntimeError(
-                        f"dispatch {dispatch_id} no longer owns the wake lease for agent {agent_id}"
-                    )
+
+            def _validate_prepared_dependency_provenance(
+                current_state: Any,
+            ) -> None:
                 current_correction_source = _verified_rejected_candidate_git_source(
                     context,
-                    state=state,
+                    state=current_state,
                     task_id=task_id,
                     managed_repo_id=managed_repo_id,
                 )
                 current_dependency_recovery = recovery_for_task(
-                    state,
+                    current_state,
                     recovery_task_id=task_id,
                 )
                 current_dependency_git_sources = (
@@ -9028,15 +9023,14 @@ def _create_project_repo_git_work_contexts(
                         for source in current_dependency_recovery.dependency_git_sources
                     ]
                     if current_dependency_recovery is not None
-                    else
-                    [
+                    else [
                         source.model_dump(mode="json")
                         for source in current_correction_source.dependency_git_sources
                     ]
                     if current_correction_source is not None
                     else _project_repo_task_dependency_git_sources(
                         context,
-                        state=state,
+                        state=current_state,
                         task_id=task_id,
                         managed_repo_id=managed_repo_id,
                     )
@@ -9065,6 +9059,17 @@ def _create_project_repo_git_work_contexts(
                             "worktree preparation; no lease was granted"
                         ),
                     )
+
+            last_conflict: TeamStateConflictError | None = None
+            for _attempt in range(TEAM_WAKE_STATE_CONFLICT_MAX_ATTEMPTS):
+                state_commit_attempt_count += 1
+                state = repo.read()
+                runtime = state.agent_runtimes.get(agent_id)
+                if runtime is None or runtime.active_dispatch_id != dispatch_id:
+                    raise RuntimeError(
+                        f"dispatch {dispatch_id} no longer owns the wake lease for agent {agent_id}"
+                    )
+                _validate_prepared_dependency_provenance(state)
                 existing = state.git_work_contexts.get(context_id)
                 if existing is not None:
                     _validate_project_repo_git_work_context(
@@ -9096,6 +9101,9 @@ def _create_project_repo_git_work_contexts(
                         dependency_composition_recovery_id=(dependency_composition_recovery_id),
                         manual_dependency_git_sources=manual_dependency_git_sources,
                         dependency_composition_manifest=(dependency_composition_manifest),
+                        resource_provenance_validator=(
+                            _validate_prepared_dependency_provenance
+                        ),
                         expected_revision=None,
                     )
                     break
@@ -9508,6 +9516,7 @@ def _project_repo_task_dependency_git_sources_unchecked(
                     f"accepted Git deliverable {deliverable.id} records an invalid commit ID"
                 )
             pinned_ref = _accepted_deliverable_pinned_ref(
+                context,
                 state,
                 deliverable_id=deliverable.id,
                 managed_repo_id=managed_repo_id,
@@ -9537,9 +9546,14 @@ def _project_repo_task_dependency_git_sources_unchecked(
                     f"accepted Git deliverable {deliverable.id} records ambiguous "
                     "agent branch provenance"
                 )
-            if pinned_ref is None and branch_context is None:
+            if (
+                pinned_ref is None
+                and branch_context is None
+                and deliverable.acceptance_policy_version >= 2
+            ):
                 raise RuntimeError(
-                    f"legacy accepted Git deliverable {deliverable.id} has no branch context"
+                    f"policy-v{deliverable.acceptance_policy_version} accepted Git "
+                    f"deliverable {deliverable.id} has no retained ref or branch context"
                 )
             try:
                 authoritative_commit = (
@@ -9598,6 +9612,7 @@ def _project_repo_task_dependency_git_sources_unchecked(
 
 
 def _accepted_deliverable_pinned_ref(
+    context: Any,
     state: Any,
     *,
     deliverable_id: str,
@@ -9609,9 +9624,9 @@ def _accepted_deliverable_pinned_ref(
     if deliverable is None:
         return None
     recorded = _optional_text(getattr(deliverable.git_refs, "accepted_pinned_ref", None))
-    snapshots = sorted(
+    snapshot_rows = sorted(
         (
-            review.repository_snapshot
+            (review.id, review.repository_snapshot)
             for review in state.review_requests.values()
             if review.deliverable_id == deliverable_id
             and review.state == TeamRecordState.ACCEPTED
@@ -9620,16 +9635,95 @@ def _accepted_deliverable_pinned_ref(
             and review.repository_snapshot.directory_path == directory_path
             and review.repository_snapshot.commit_sha.casefold() == commit_sha.casefold()
         ),
-        key=lambda snapshot: snapshot.pinned_ref,
+        key=lambda row: row[1].pinned_ref,
     )
+    snapshots = [snapshot for _review_id, snapshot in snapshot_rows]
     if recorded is not None:
         if snapshots and all(snapshot.pinned_ref != recorded for snapshot in snapshots):
             raise RuntimeError(
                 f"accepted Git deliverable {deliverable_id} records pinned ref {recorded!r} "
                 "outside its accepted review evidence"
             )
-        return recorded
-    return snapshots[0].pinned_ref if snapshots else None
+        selected_ref = recorded
+    else:
+        selected_ref = snapshots[0].pinned_ref if snapshots else None
+    if selected_ref is None:
+        return None
+
+    selected_row = next(
+        (row for row in snapshot_rows if row[1].pinned_ref == selected_ref),
+        None,
+    )
+    review_id = (
+        selected_row[0]
+        if selected_row is not None
+        else selected_ref.rsplit("/", 1)[-1]
+    )
+    source_ref = selected_row[1].source_ref if selected_row is not None else None
+    managed_git = getattr(getattr(context, "admin_service", None), "managed_git_admin", None)
+    resolve_review_commit = getattr(managed_git, "resolve_team_review_commit", None)
+    pin_snapshot = getattr(managed_git, "pin_team_review_snapshot", None)
+    try:
+        resolved_before = (
+            resolve_review_commit(
+                managed_repo_id,
+                directory_path=directory_path,
+                pinned_ref=selected_ref,
+            )
+            if callable(resolve_review_commit)
+            else None
+        )
+        if _optional_text(resolved_before) is not None:
+            if str(resolved_before).casefold() != commit_sha.casefold():
+                raise RuntimeError(
+                    f"immutable dependency ref {selected_ref!r} points to "
+                    f"{resolved_before}, not accepted commit {commit_sha}"
+                )
+            return selected_ref
+        if not callable(pin_snapshot):
+            raise RuntimeError("managed Git Team review snapshot pinning is unavailable")
+        pinned = pin_snapshot(
+            managed_repo_id,
+            directory_path,
+            review_id=review_id,
+            commit_sha=commit_sha,
+            source_ref=source_ref,
+            pinned_ref=selected_ref,
+        )
+        if not isinstance(pinned, Mapping):
+            raise RuntimeError("managed Git Team review snapshot pinning returned invalid data")
+        actual_ref = _required_text(pinned.get("pin_ref"), "pinned snapshot pin_ref")
+        actual_commit = _required_text(
+            pinned.get("commit_sha"),
+            "pinned snapshot commit_sha",
+        )
+        if actual_ref != selected_ref or actual_commit.casefold() != commit_sha.casefold():
+            raise RuntimeError(
+                f"managed Git pinned {actual_ref}@{actual_commit}, not "
+                f"{selected_ref}@{commit_sha}"
+            )
+        if callable(resolve_review_commit):
+            resolved_after = resolve_review_commit(
+                managed_repo_id,
+                directory_path=directory_path,
+                pinned_ref=selected_ref,
+            )
+            if _optional_text(resolved_after) is None or str(resolved_after).casefold() != (
+                commit_sha.casefold()
+            ):
+                raise RuntimeError(
+                    f"managed Git did not retain {selected_ref!r} at accepted "
+                    f"commit {commit_sha}"
+                )
+        return selected_ref
+    except Exception as exc:
+        if deliverable.acceptance_policy_version < 2:
+            return None
+        raise RuntimeError(
+            f"could not materialize immutable dependency ref {selected_ref!r} for "
+            f"policy-v{deliverable.acceptance_policy_version} deliverable "
+            f"{deliverable_id}: {exc}"
+        ) from exc
 
 
 def _deliverable_has_git_state(deliverable: Any) -> bool:
@@ -10121,8 +10215,15 @@ def _prepare_project_repo_task_worktree(
             'configured_base="$(git -C "$target" config --worktree --get '
             'evander.baseCommit || true)"'
         ),
+        (
+            'configured_composition_root="$(git -C "$target" config --worktree --get '
+            'evander.dependencyCompositionRootCommit || true)"'
+        ),
+        (
+            'configured_composed_commit="$(git -C "$target" config --worktree --get '
+            'evander.dependencyComposedCommit || true)"'
+        ),
         'head_before="$(git -C "$target" rev-parse HEAD)"',
-        'echo "EVANDER_COMPOSITION_ROOT_COMMIT=$head_before"',
         'if [ -n "$pinned_base_commit" ]; then',
         ('  git -C "$target" merge-base --is-ancestor "$pinned_base_commit" "$head_before"'),
         "fi",
@@ -10256,13 +10357,60 @@ def _prepare_project_repo_task_worktree(
             'evander.baseCommit || git -C "$target" rev-parse HEAD)"'
         ),
         'head_commit="$(git -C "$target" rev-parse HEAD)"',
+        'composition_root_commit=""',
+        'composed_commit="$head_commit"',
+        'if [ "$expected_dependency_provenance" != "[]" ]; then',
+        '  if [ -z "$configured_composition_root" ]; then',
+        '    configured_composition_root="$head_before"',
+        (
+            '    git -C "$target" config --worktree '
+            'evander.dependencyCompositionRootCommit "$configured_composition_root"'
+        ),
+        '  fi',
+        '  if [ -z "$configured_composed_commit" ]; then',
+        '    candidate_composed="$base_commit"',
+        '    candidate_contains_dependencies=1',
+        *[
+            (
+                f'    if ! git -C "$target" merge-base --is-ancestor '
+                f'"$dependency_commit_{index}" "$candidate_composed"; then '
+                'candidate_contains_dependencies=0; fi'
+            )
+            for index, _source in enumerate(dependency_git_sources)
+        ],
+        (
+            '    if [ "$candidate_contains_dependencies" != 1 ] '
+            '|| ! git -C "$target" merge-base --is-ancestor '
+            '"$configured_composition_root" "$candidate_composed" '
+            '|| ! git -C "$target" merge-base --is-ancestor '
+            '"$candidate_composed" "$head_commit"; then '
+            'candidate_composed="$head_commit"; fi'
+        ),
+        '    configured_composed_commit="$candidate_composed"',
+        (
+            '    git -C "$target" config --worktree '
+            'evander.dependencyComposedCommit "$configured_composed_commit"'
+        ),
+        '  fi',
+        (
+            '  git -C "$target" merge-base --is-ancestor '
+            '"$configured_composition_root" "$configured_composed_commit"'
+        ),
+        (
+            '  git -C "$target" merge-base --is-ancestor '
+            '"$configured_composed_commit" "$head_commit"'
+        ),
+        '  composition_root_commit="$configured_composition_root"',
+        '  composed_commit="$configured_composed_commit"',
+        'fi',
         'if [ "$head_commit" = "$base_commit" ] && ! git -C "$target" ls-remote '
         '--exit-code --heads origin "refs/heads/$branch" >/dev/null 2>&1; then',
         '  git -C "$target" push origin "HEAD:refs/heads/$branch"',
         "fi",
         'echo "EVANDER_BASE_COMMIT=$base_commit"',
-        'echo "EVANDER_COMPOSED_COMMIT=$head_commit"',
-        'echo "EVANDER_COMPOSED_TREE=$(git -C "$target" rev-parse HEAD^{tree})"',
+        'echo "EVANDER_COMPOSITION_ROOT_COMMIT=$composition_root_commit"',
+        'echo "EVANDER_COMPOSED_COMMIT=$composed_commit"',
+        'echo "EVANDER_COMPOSED_TREE=$(git -C "$target" rev-parse "$composed_commit^{tree}")"',
         'printf "%s\\n" "$head_commit"',
     ]
     command = "\n".join(command_lines)

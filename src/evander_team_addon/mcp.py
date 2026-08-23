@@ -2349,6 +2349,8 @@ def _register_slice7_tools(
             "decisions, block_kind may identify dependency, input_unavailable, policy, "
             "system, or unspecified. An accepted review must use finding_resolutions "
             "for every open carried finding owned by its profile or reviewer role; "
+            "criterion entries accept evidence_refs, and required criteria on new "
+            "formal-review deliverables require at least one durable evidence reference; "
             "acceptance cascades only when all current reviews are accepted and no "
             "finding remains open. Requires review_request_id, state, and request_id."
         ),

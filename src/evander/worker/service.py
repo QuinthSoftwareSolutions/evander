@@ -1736,6 +1736,7 @@ class WorkerDaemon:
                 env=env,
             )
         composition_root_commit_sha: str | None = None
+        configured_composed_commit_sha: str | None = None
         if request.dependency_git_sources:
             configured_composition_root = subprocess.run(
                 [
@@ -1762,6 +1763,26 @@ class WorkerDaemon:
                     target_dir,
                     paths.agent_home,
                 ).casefold()
+            configured_composed_commit = subprocess.run(
+                [
+                    "git",
+                    "config",
+                    "--worktree",
+                    "--get",
+                    "evander.dependencyComposedCommit",
+                ],
+                cwd=target_dir,
+                env=env,
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            candidate_composed = configured_composed_commit.stdout.strip().casefold()
+            if configured_composed_commit.returncode == 0 and re.fullmatch(
+                r"(?:[0-9a-f]{40}|[0-9a-f]{64})",
+                candidate_composed,
+            ):
+                configured_composed_commit_sha = candidate_composed
         base_commit_sha = self._compose_task_dependency_git_sources(
             repo_dir=repo_dir,
             target_dir=target_dir,
@@ -1788,27 +1809,66 @@ class WorkerDaemon:
         composed_commit_sha: str | None = None
         composed_tree_hash: str | None = None
         if composition_root_commit_sha is not None:
-            subprocess.run(
-                [
-                    "git",
-                    "config",
-                    "--worktree",
-                    "evander.dependencyCompositionRootCommit",
-                    composition_root_commit_sha,
-                ],
-                cwd=target_dir,
-                env=env,
-                check=True,
-                capture_output=True,
-                text=True,
-            )
-            composed_commit_sha = self._git_commit_sha(
+            current_head = self._git_commit_sha(
                 target_dir,
                 paths.agent_home,
             ).casefold()
+            composed_commit_sha = configured_composed_commit_sha
+            if composed_commit_sha is None:
+                candidate_composed = (base_commit_sha or current_head).casefold()
+                candidate_is_retained = all(
+                    subprocess.run(
+                        ["git", "merge-base", "--is-ancestor", ancestor, descendant],
+                        cwd=target_dir,
+                        env=env,
+                        check=False,
+                        capture_output=True,
+                        text=True,
+                    ).returncode
+                    == 0
+                    for ancestor, descendant in (
+                        (composition_root_commit_sha, candidate_composed),
+                        (candidate_composed, current_head),
+                    )
+                )
+                composed_commit_sha = candidate_composed if candidate_is_retained else current_head
+            for ancestor, descendant, label in (
+                (
+                    composition_root_commit_sha,
+                    composed_commit_sha,
+                    "composition root",
+                ),
+                (composed_commit_sha, current_head, "composed dependency base"),
+            ):
+                if (
+                    subprocess.run(
+                        ["git", "merge-base", "--is-ancestor", ancestor, descendant],
+                        cwd=target_dir,
+                        env=env,
+                        check=False,
+                        capture_output=True,
+                        text=True,
+                    ).returncode
+                    != 0
+                ):
+                    raise ValueError(
+                        f"retained {label} {ancestor} is not an ancestor of {descendant}"
+                    )
+            for key, value in (
+                ("evander.dependencyCompositionRootCommit", composition_root_commit_sha),
+                ("evander.dependencyComposedCommit", composed_commit_sha),
+            ):
+                subprocess.run(
+                    ["git", "config", "--worktree", key, value],
+                    cwd=target_dir,
+                    env=env,
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                )
             composed_tree_hash = (
                 subprocess.run(
-                    ["git", "rev-parse", "HEAD^{tree}"],
+                    ["git", "rev-parse", f"{composed_commit_sha}^{{tree}}"],
                     cwd=target_dir,
                     env=env,
                     check=True,

@@ -20,6 +20,16 @@ from evander_team_addon.providers import (
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def test_review_decision_ui_submits_criterion_evidence_references() -> None:
+    source = (ROOT / "src" / "evander_team_addon" / "ui_static" / "team-ui.js").read_text(
+        encoding="utf-8"
+    )
+
+    assert "criterion_evidence_refs__" in source
+    assert 'evidence_refs: splitList(' in source
+    assert "evidence refs format" in source
+
+
 def test_task_surfaces_receive_dispatch_and_worktree_identity_collections() -> None:
     required = {
         "dispatches",

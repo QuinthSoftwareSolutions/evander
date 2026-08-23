@@ -14,6 +14,13 @@
   force a reclone, and expanded stable preparation generations to cover contribution provenance.
 - Exposed acceptance verification, immutable refs, and composition evidence in Team Admin UI and
   documented the prospective policy-version boundary for historical accepted records.
+- Closed review-attachment and artifact-only verification gaps, retained criterion evidence across
+  command, Admin UI, and SQLite boundaries, and made acceptance waivers immutable.
+- Scoped composition evidence to Git-backed inputs, retained its original root across dispatches,
+  revalidated dependency generations transactionally, and materialized immutable review refs before
+  dependency checkout with legacy branch fallback.
+- Replayed the complete verification command chain after interrupted verifier cleanup and reused
+  pre-acceptance waivers without duplicating release-package audit records.
 
 ## 2026-08-23 - Single-Review Team Dispatches
 

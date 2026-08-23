@@ -8607,7 +8607,12 @@ def test_team_addon_admin_api_review_profile_flow(tmp_path: Path) -> None:
             "state": "accepted",
             "findings": ["looks good"],
             "criteria": [
-                {"criterion_id": "authz", "state": "passed", "finding": "scoped"},
+                {
+                    "criterion_id": "authz",
+                    "state": "passed",
+                    "finding": "scoped",
+                    "evidence_refs": ["artifact-space:/reviews/authz-check"],
+                },
                 {"criterion_id": "logging", "state": "skipped"},
             ],
             "expected_revision": 11,
@@ -8619,6 +8624,9 @@ def test_team_addon_admin_api_review_profile_flow(tmp_path: Path) -> None:
     assert [result["criterion_id"] for result in review["criteria"]] == ["authz", "logging"]
     assert review["criteria"][0]["state"] == "passed"
     assert review["criteria"][0]["finding"] == "scoped"
+    assert review["criteria"][0]["evidence_refs"] == [
+        "artifact-space:/reviews/authz-check"
+    ]
 
 
 def test_team_addon_admin_api_review_request_without_profile_still_works(

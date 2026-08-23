@@ -3913,6 +3913,217 @@ def test_operator_can_waive_not_run_integration_acceptance_verification(
     assert waiver is not None
     assert waiver.actor_id == "operator:jonathan"
     assert state.deliverables["deliverable-waived"].verification.waiver == waiver
+    with pytest.raises(ValueError, match="already has an acceptance verification waiver"):
+        _team_admin_service(repo).authorize_deliverable_acceptance_verification_waiver_as_operator(
+            deliverable_id="deliverable-waived",
+            reason="Attempt to replace the immutable audit record.",
+            operator_actor_id="operator:someone-else",
+        )
+    assert (
+        repo.read().deliverables["deliverable-waived"].verification.waiver
+        == waiver
+    )
+
+
+def test_later_formal_review_upgrades_direct_git_submission_to_policy_v2(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _set_project_git(repo)
+    _seed_task(repo, task_id="task")
+    authoritative_commit = "127450960be30a2b7c7966883a09252b70769748"
+
+    def _configure(state: TeamState) -> TeamState:
+        state.tasks["task"].integration_boundary = True
+        state.tasks["task"].deliverable_contract = TaskDeliverableContract(
+            require_git_provenance=True
+        )
+        return state
+
+    repo.update(_configure)
+    _lease_agent_dispatch(repo, agent_id="backend", dispatch_id="dispatch-direct-git")
+    _seed_git_work_context(
+        repo,
+        commit_sha=None,
+        dispatch_id="dispatch-direct-git",
+    )
+    state, submitted = TeamDeliverableSubmissionCommandService(
+        repo,
+        git_candidate_commit_resolver=lambda **_kwargs: authoritative_commit,
+    ).submit_deliverable_command(
+        session_id="session-backend",
+        id="deliverable-later-formal-review",
+        task_id="task",
+        summary="Integration candidate awaiting the lead's routing decision.",
+        branch_context_id="ctx-task",
+        git_refs={
+            "agent_branch": "agents/session-backend/task",
+            "commit_sha": authoritative_commit,
+        },
+        request_id="request-direct-git-submission",
+    )
+    assert submitted["success"] is True, submitted
+    assert state.deliverables["deliverable-later-formal-review"].acceptance_policy_version == 1
+    assert state.deliverables["deliverable-later-formal-review"].verification is None
+
+    _lease_review_handoff_dispatch(
+        repo,
+        deliverable_id="deliverable-later-formal-review",
+        dispatch_id="dispatch-attach-formal-review",
+    )
+    state, requested = _command_service(repo).request_review_command(
+        session_id="session-lead",
+        id="review-later-formal",
+        deliverable_id="deliverable-later-formal-review",
+        reviewer_agent_id="worker",
+        request_id="request-attach-formal-review",
+    )
+
+    assert requested["success"] is True
+    deliverable = state.deliverables["deliverable-later-formal-review"]
+    assert deliverable.acceptance_policy_version == 2
+    assert deliverable.verification is not None
+    assert deliverable.verification.provenance == "server_release_equivalent"
+    assert deliverable.verification.status == "not_run"
+
+
+def test_artifact_only_integration_formal_review_skips_git_verifier(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _seed_task(repo, task_id="task")
+
+    def _configure(state: TeamState) -> TeamState:
+        state.tasks["task"].integration_boundary = True
+        state.tasks["task"].deliverable_contract = TaskDeliverableContract(
+            require_git_provenance=False
+        )
+        return state
+
+    repo.update(_configure)
+    _lease_agent_dispatch(repo, agent_id="backend", dispatch_id="dispatch-artifact-only")
+    _state, submitted = _command_service(repo).submit_deliverable_command(
+        session_id="session-backend",
+        id="deliverable-artifact-only-review",
+        task_id="task",
+        summary="Artifact-only integration report.",
+        artifact_refs=["artifact-space:/integration/report"],
+        request_id="request-artifact-only-submission",
+    )
+    assert submitted["success"] is True
+    _lease_review_handoff_dispatch(
+        repo,
+        deliverable_id="deliverable-artifact-only-review",
+        dispatch_id="dispatch-artifact-only-review",
+    )
+
+    state, requested = _command_service(repo).request_review_command(
+        session_id="session-lead",
+        id="review-artifact-only",
+        deliverable_id="deliverable-artifact-only-review",
+        reviewer_agent_id="worker",
+        request_id="request-artifact-only-review",
+    )
+
+    assert requested["success"] is True
+    deliverable = state.deliverables["deliverable-artifact-only-review"]
+    assert deliverable.acceptance_policy_version == 2
+    assert deliverable.verification is None
+    assert not any(
+        event["event_type"] == DELIVERABLE_ACCEPTANCE_VERIFICATION_REQUESTED_EVENT_TYPE
+        for event in requested.get("events", [])
+    )
+
+
+def test_resumed_acceptance_verifier_reruns_passed_prerequisites(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _set_project_git(repo)
+    _seed_task(repo, task_id="task")
+    authoritative_commit = "127450960be30a2b7c7966883a09252b70769748"
+
+    def _configure(state: TeamState) -> TeamState:
+        state.tasks["task"].integration_boundary = True
+        state.tasks["task"].deliverable_contract = TaskDeliverableContract(
+            require_git_provenance=True
+        )
+        state.projects["project"].release_policy = ProjectReleasePolicy(
+            verification_commands=[
+                ReleaseVerificationCommand(name="restore", argv=["tool", "restore"]),
+                ReleaseVerificationCommand(name="test", argv=["tool", "test"]),
+            ]
+        )
+        return state
+
+    repo.update(_configure)
+    _lease_agent_dispatch(repo, agent_id="backend", dispatch_id="dispatch-resumed-verifier")
+    _seed_git_work_context(
+        repo,
+        commit_sha=None,
+        dispatch_id="dispatch-resumed-verifier",
+    )
+    state, submitted = TeamDeliverableSubmissionCommandService(
+        repo,
+        git_candidate_commit_resolver=lambda **_kwargs: authoritative_commit,
+    ).submit_deliverable_for_review_command(
+        session_id="session-backend",
+        deliverable={
+            "id": "deliverable-resumed-verifier",
+            "task_id": "task",
+            "summary": "Candidate with a resumable verifier.",
+            "branch_context_id": "ctx-task",
+            "git_refs": {
+                "agent_branch": "agents/session-backend/task",
+                "commit_sha": authoritative_commit,
+            },
+        },
+        reviews=[{"id": "review-resumed-verifier", "reviewer_agent_id": "worker"}],
+        request_id="request-resumed-verifier",
+    )
+    assert submitted["success"] is True, submitted
+    verification = state.deliverables["deliverable-resumed-verifier"].verification
+    assert verification is not None
+
+    def _record_interrupted_run(current: TeamState) -> TeamState:
+        current_verification = current.deliverables[
+            "deliverable-resumed-verifier"
+        ].verification
+        assert current_verification is not None
+        current_verification.status = "running"
+        current_verification.command_results[0].state = "passed"
+        current_verification.command_results[0].job_id = "job-restore-before-crash"
+        return current
+
+    repo.update(_record_interrupted_run)
+    executed: list[str] = []
+
+    class _Executor:
+        def create_verifier(self, **_kwargs: object) -> None:
+            return None
+
+        def clone_candidate(self, **_kwargs: object) -> str:
+            return "/work/checkout"
+
+        def pin_candidate(self, **_kwargs: object) -> None:
+            return None
+
+        def execute_command(self, **kwargs: object) -> dict[str, object]:
+            command = kwargs["command"]
+            executed.append(command.name)
+            return {"success": True, "execution_id": f"job-{command.name}", "exit_code": 0}
+
+        def destroy_verifier(self, **_kwargs: object) -> None:
+            return None
+
+    result = TeamDeliverableAcceptanceVerificationRunner(repo, _Executor()).run(
+        deliverable_id="deliverable-resumed-verifier",
+        verification_run_id=verification.run_id or "",
+        candidate_commit_sha=authoritative_commit,
+    )
+
+    assert result["verification_state"] == "passed"
+    assert executed == ["restore", "test"]
 
 
 def test_submit_deliverable_for_review_rejects_agent_sha_that_is_not_branch_tip(
@@ -17120,6 +17331,7 @@ def test_review_decision_uses_snapshotted_outcome_requirements_after_profile_edi
             ReviewCriterionResult(
                 criterion_id="tests",
                 state="passed",
+                evidence_refs=["test://snapshotted-outcome-requirements"],
             )
         ],
         expected_revision=state.revision,
@@ -21134,20 +21346,31 @@ def test_preacceptance_operator_waiver_is_reused_at_release_intake(
                     "id": "release-preacceptance-waived",
                     "project_id": "project",
                     "deliverable_ids": ["deliverable"],
+                    "verification_waivers": [
+                        {
+                            "deliverable_id": "deliverable",
+                            "reason": "Redundant request copy of the existing waiver.",
+                        }
+                    ],
                 }
             ],
         },
     )
 
     assert result["success"] is True
-    waiver = state.release_packages[
+    waivers = state.release_packages[
         "release-preacceptance-waived"
-    ].verification_waivers[0]
+    ].verification_waivers
+    assert len(waivers) == 1
+    waiver = waivers[0]
     assert waiver.deliverable_id == "deliverable"
     assert waiver.verification_status == "not_run"
     assert waiver.actor_kind == "operator"
     assert waiver.actor_id == "operator:release-admin"
     assert waiver.created_at == waived_at
+    assert waiver.reason == (
+        "Equivalent protected CI passed while the disposable verifier was down."
+    )
 
 
 def test_ordinary_release_role_cannot_authorize_verification_waiver(
@@ -24163,7 +24386,12 @@ def test_apply_agent_action_review_decision_records_criteria(tmp_path: Path) -> 
                     "state": "accepted",
                     "findings": ["Looks good."],
                     "criteria": [
-                        {"criterion_id": "tests", "state": "passed", "finding": "All green."},
+                        {
+                            "criterion_id": "tests",
+                            "state": "passed",
+                            "finding": "All green.",
+                            "evidence_refs": ["test://all-green"],
+                        },
                         {"criterion_id": "docs", "state": "skipped"},
                     ],
                 }
@@ -24181,9 +24409,44 @@ def test_apply_agent_action_review_decision_records_criteria(tmp_path: Path) -> 
     }
     tests_result = next(c for c in review.criteria if c.criterion_id == "tests")
     assert tests_result.finding == "All green."
+    assert tests_result.evidence_refs == ["test://all-green"]
     # Criterion results never alter acceptance cascade.
     assert state.deliverables["deliverable"].state == TeamRecordState.ACCEPTED
     assert state.tasks["task"].state == TeamTaskState.FINISHED
+
+
+def test_team_decide_review_preserves_required_criterion_evidence(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _seed_task(repo, task_id="task")
+    _seed_deliverable(repo, deliverable_id="deliverable", task_id="task")
+    _seed_review_profile(repo)
+    _request_review_with_profile(repo)
+    _lease_agent_dispatch(repo, agent_id="worker", dispatch_id="dispatch-criterion-evidence")
+
+    state, result = _command_service(repo).decide_review_command(
+        session_id="session-worker",
+        review_request_id="review-1",
+        state="accepted",
+        criteria=[
+            {
+                "criterion_id": "tests",
+                "state": "passed",
+                "finding": "Focused checks passed.",
+                "evidence_refs": ["artifact-space:/review/focused-checks"],
+            }
+        ],
+        request_id="request-criterion-evidence",
+    )
+
+    assert result["success"] is True
+    assert state.review_requests["review-1"].criteria[0].evidence_refs == [
+        "artifact-space:/review/focused-checks"
+    ]
+    assert repo.read().review_requests["review-1"].criteria[0].evidence_refs == [
+        "artifact-space:/review/focused-checks"
+    ]
 
 
 def test_apply_agent_action_review_decision_unknown_criterion_errors(tmp_path: Path) -> None:
@@ -24370,7 +24633,13 @@ def test_review_findings_survive_rework_and_require_matching_profile_resolution(
                 {
                     "review_request_id": "wrong-review",
                     "state": "accepted",
-                    "criteria": [{"criterion_id": "tests", "state": "passed"}],
+                    "criteria": [
+                        {
+                            "criterion_id": "tests",
+                            "state": "passed",
+                            "evidence_refs": ["test://wrong-profile-check"],
+                        }
+                    ],
                     "finding_resolutions": [
                         {
                             "finding_id": carried_ids[0],
@@ -24393,7 +24662,13 @@ def test_review_findings_survive_rework_and_require_matching_profile_resolution(
                 {
                     "review_request_id": "wrong-review",
                     "state": "accepted",
-                    "criteria": [{"criterion_id": "tests", "state": "passed"}],
+                    "criteria": [
+                        {
+                            "criterion_id": "tests",
+                            "state": "passed",
+                            "evidence_refs": ["test://wrong-profile-acceptance"],
+                        }
+                    ],
                 }
             ],
         },
@@ -24421,7 +24696,13 @@ def test_review_findings_survive_rework_and_require_matching_profile_resolution(
                 {
                     "review_request_id": "review-2",
                     "state": "accepted",
-                    "criteria": [{"criterion_id": "tests", "state": "passed"}],
+                    "criteria": [
+                        {
+                            "criterion_id": "tests",
+                            "state": "passed",
+                            "evidence_refs": ["test://matching-profile-check"],
+                        }
+                    ],
                     "finding_resolutions": [
                         {
                             "finding_id": finding_id,
@@ -24462,7 +24743,13 @@ def test_record_review_decision_repository_stores_criteria(tmp_path: Path) -> No
         review_request_id="review-1",
         state=TeamRecordState.ACCEPTED,
         findings=["ok"],
-        criteria=[ReviewCriterionResult(criterion_id="tests", state="passed")],
+        criteria=[
+            ReviewCriterionResult(
+                criterion_id="tests",
+                state="passed",
+                evidence_refs=["test://repository-round-trip"],
+            )
+        ],
     )
 
     review = state.review_requests["review-1"]
@@ -24470,6 +24757,10 @@ def test_record_review_decision_repository_stores_criteria(tmp_path: Path) -> No
     assert review.instructions == "Operator instructions."
     assert review.state == TeamRecordState.ACCEPTED
     assert [c.criterion_id for c in review.criteria] == ["tests"]
+    assert review.criteria[0].evidence_refs == ["test://repository-round-trip"]
+    assert TeamStateRepository(tmp_path).read().review_requests[
+        "review-1"
+    ].criteria[0].evidence_refs == ["test://repository-round-trip"]
 
 
 def test_register_teamless_agent(tmp_path: Path) -> None:

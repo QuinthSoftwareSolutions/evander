@@ -30,13 +30,42 @@ def deliverable_requires_server_acceptance_verification(
 ) -> bool:
     """Return whether prospective policy v2 requires a server-owned preflight."""
 
+    candidate_commit_sha = (
+        deliverable.git_refs.reviewed_commit_sha
+        or deliverable.git_refs.submitted_commit_sha
+        or deliverable.git_refs.commit_sha
+    )
     return bool(
         deliverable.acceptance_policy_version >= 2
+        and candidate_commit_sha is not None
         and (
             task.integration_boundary
             or is_rejected_candidate_correction_task(state, task_id=task.id)
         )
     )
+
+
+def apply_formal_review_acceptance_policy(
+    state: TeamState,
+    *,
+    deliverable: Deliverable,
+    result: dict[str, Any],
+) -> DeliverableVerification | None:
+    """Upgrade a legacy direct-handoff deliverable at its first formal review."""
+
+    if deliverable.acceptance_policy_version >= 2:
+        return deliverable.verification
+    previous_policy_version = deliverable.acceptance_policy_version
+    deliverable.acceptance_policy_version = 2
+    try:
+        return initialize_deliverable_acceptance_verification(
+            state,
+            deliverable=deliverable,
+            result=result,
+        )
+    except Exception:
+        deliverable.acceptance_policy_version = previous_policy_version
+        raise
 
 
 def initialize_deliverable_acceptance_verification(
@@ -188,6 +217,10 @@ def authorize_deliverable_acceptance_verification_waiver(
         raise ValueError(
             "acceptance verification waiver requires a server-owned partial or not_run result"
         )
+    if verification.waiver is not None:
+        raise ValueError(
+            f"deliverable {deliverable.id} already has an acceptance verification waiver"
+        )
     verification.waiver = DeliverableAcceptanceVerificationWaiver(
         actor_id=_required_text(operator_actor_id, "operator_actor_id"),
         reason=_required_text(reason, "reason"),
@@ -198,6 +231,7 @@ def authorize_deliverable_acceptance_verification_waiver(
 
 __all__ = [
     "DELIVERABLE_ACCEPTANCE_VERIFICATION_REQUESTED_EVENT_TYPE",
+    "apply_formal_review_acceptance_policy",
     "authorize_deliverable_acceptance_verification_waiver",
     "deliverable_acceptance_verification_error",
     "deliverable_requires_server_acceptance_verification",

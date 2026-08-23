@@ -766,7 +766,7 @@ def _build_release_package(
                 )
                 valid = False
                 continue
-            if waiver_request is not None:
+            if waiver_request is not None and inherited_waiver is None:
                 actor_kind = _optional_text(request.get("waiver_actor_kind"))
                 actor_id = _optional_text(request.get("waiver_actor_id"))
                 if actor_kind not in {"agent", "operator"} or actor_id is None:

@@ -7636,6 +7636,126 @@ def test_integration_context_derives_required_contribution_from_immutable_review
     ]
 
 
+def test_dependency_lookup_materializes_policy_v2_review_ref_and_falls_back_for_v1(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_team(tmp_path)
+    accepted_commit = "a" * 40
+    pinned_ref = "refs/evander/team-reviews/review-contribution"
+
+    def _seed_contribution(state: TeamState) -> TeamState:
+        state.projects["project"].git = ProjectGitConfig(
+            managed_repo_id="mr_0123456789abcdefabcd",
+            base_branch="main",
+        )
+        state.tasks["contribution"] = AgentTask(
+            id="contribution",
+            owner_agent_id="backend",
+            project_id="project",
+            priority=1,
+            title="Contribution",
+            description="Accepted contribution task.",
+            created_by_agent_id="lead",
+            deliverable_ids=["deliverable-contribution"],
+            state=TeamTaskState.FINISHED,
+        )
+        state.deliverables["deliverable-contribution"] = Deliverable(
+            id="deliverable-contribution",
+            task_id="contribution",
+            producer_agent_id="backend",
+            summary="Accepted contribution",
+            state=TeamRecordState.ACCEPTED,
+            acceptance_policy_version=2,
+            review_request_ids=["review-contribution"],
+            git_refs=DeliverableGitRefs(
+                agent_branch="agents/session-backend/tasks/contribution",
+                commit_sha=accepted_commit,
+                submitted_commit_sha=accepted_commit,
+                reviewed_commit_sha=accepted_commit,
+                accepted_pinned_ref=pinned_ref,
+            ),
+        )
+        state.review_requests["review-contribution"] = ReviewRequest(
+            id="review-contribution",
+            deliverable_id="deliverable-contribution",
+            reviewer_agent_id="lead",
+            state=TeamRecordState.ACCEPTED,
+            reviewed_commit_sha=accepted_commit,
+            repository_snapshot=ReviewRepositorySnapshot(
+                managed_repo_id="mr_0123456789abcdefabcd",
+                directory_path="root",
+                commit_sha=accepted_commit,
+                pinned_ref=pinned_ref,
+                source_kind="deliverable_candidate",
+                source_ref="agents/session-backend/tasks/contribution",
+            ),
+        )
+        target = state.tasks["task"]
+        target.integration_boundary = True
+        target.deliverable_contract = TaskDeliverableContract(
+            required_contribution_task_ids=["contribution"],
+        )
+        return state
+
+    repo.update(_seed_contribution)
+
+    class _MaterializingManagedGit:
+        def __init__(self) -> None:
+            self.retained_commit: str | None = None
+            self.pin_calls: list[dict[str, object]] = []
+
+        def resolve_team_review_commit(self, *_args: object, **_kwargs: object) -> str | None:
+            return self.retained_commit
+
+        def pin_team_review_snapshot(self, *args: object, **kwargs: object) -> dict[str, str]:
+            self.pin_calls.append({"args": args, "kwargs": kwargs})
+            self.retained_commit = accepted_commit
+            return {"pin_ref": pinned_ref, "commit_sha": accepted_commit}
+
+        def resolve_branch_commit(self, *_args: object, **_kwargs: object) -> str:
+            raise AssertionError("policy v2 must use the retained review ref")
+
+    materializing = _MaterializingManagedGit()
+    sources = _project_repo_task_dependency_git_sources(
+        EffectRuntimeContext(
+            resolved_config={"runtime_dir": str(tmp_path)},
+            admin_service=SimpleNamespace(managed_git_admin=materializing),
+        ),
+        state=repo.read(),
+        task_id="task",
+        managed_repo_id="mr_0123456789abcdefabcd",
+    )
+    assert sources[0]["pinned_ref"] == pinned_ref
+    assert len(materializing.pin_calls) == 1
+
+    def _make_legacy(state: TeamState) -> TeamState:
+        state.deliverables["deliverable-contribution"].acceptance_policy_version = 1
+        return state
+
+    repo.update(_make_legacy)
+
+    class _LegacyManagedGit:
+        def resolve_team_review_commit(self, *_args: object, **_kwargs: object) -> None:
+            return None
+
+        def resolve_branch_commit(self, *args: object, **kwargs: object) -> str:
+            assert args == ("mr_0123456789abcdefabcd",)
+            assert kwargs["branch"] == "agents/session-backend/tasks/contribution"
+            return accepted_commit
+
+    legacy_sources = _project_repo_task_dependency_git_sources(
+        EffectRuntimeContext(
+            resolved_config={"runtime_dir": str(tmp_path)},
+            admin_service=SimpleNamespace(managed_git_admin=_LegacyManagedGit()),
+        ),
+        state=repo.read(),
+        task_id="task",
+        managed_repo_id="mr_0123456789abcdefabcd",
+    )
+    assert "pinned_ref" not in legacy_sources[0]
+    assert legacy_sources[0]["commit_sha"] == accepted_commit
+
+
 def test_libvirt_dependency_git_composition_command_is_valid_shell() -> None:
     executor = FakeVmExecutor()
     context = EffectRuntimeContext(
@@ -7691,6 +7811,9 @@ def test_libvirt_dependency_git_composition_command_is_valid_shell() -> None:
     assert 'push origin "HEAD:refs/heads/$branch"' in command
     assert "export GIT_COMMITTER_NAME='Evander Team Dependency Composer'" in command
     assert "export GIT_COMMITTER_EMAIL=team-dependencies@evander.invalid" in command
+    assert "evander.dependencyCompositionRootCommit" in command
+    assert "evander.dependencyComposedCommit" in command
+    assert 'EVANDER_COMPOSITION_ROOT_COMMIT=$composition_root_commit' in command
     assert command.index("dependency_branch_0") < command.index("dependency_branch_1")
     assert command.index("dependency_commit_0=") < command.index(
         'if [ -n "$current_dependency_provenance" ]'
@@ -8312,6 +8435,137 @@ def test_wake_due_agents_ignores_unrelated_state_revision_when_committing_git_co
     assert len(repo_cloner.calls) == 1
     assert len(repo.read().git_work_contexts) == 1
     assert result["transient_conflicts"] == []
+
+
+def test_git_context_transaction_revalidates_exact_dependency_generation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = _seed_team(tmp_path)
+    original_commit = "a" * 40
+    replacement_commit = "b" * 40
+
+    def _seed_dependency(state: TeamState) -> TeamState:
+        state.projects["project"].git = ProjectGitConfig(
+            managed_repo_id="mr_0123456789abcdefabcd",
+            base_branch="main",
+        )
+        state.tasks["dependency"] = AgentTask(
+            id="dependency",
+            owner_agent_id="backend",
+            project_id="project",
+            priority=1,
+            title="Dependency",
+            description="Accepted dependency generation.",
+            created_by_agent_id="lead",
+            state=TeamTaskState.FINISHED,
+            deliverable_ids=["dependency-deliverable"],
+        )
+        state.tasks["task"].dependency_task_ids = ["dependency"]
+        state.deliverables["dependency-deliverable"] = Deliverable(
+            id="dependency-deliverable",
+            task_id="dependency",
+            producer_agent_id="backend",
+            summary="Accepted dependency generation",
+            state=TeamRecordState.ACCEPTED,
+            git_refs=DeliverableGitRefs(
+                agent_branch="agents/backend/dependency",
+                commit_sha=original_commit,
+                submitted_commit_sha=original_commit,
+                reviewed_commit_sha=original_commit,
+            ),
+        )
+        state.agent_runtimes["backend"].active_dispatch_id = "dispatch-provenance"
+        return state
+
+    state = repo.update(_seed_dependency)
+
+    def _dependency_sources(*_args: object, **kwargs: object) -> list[dict[str, str]]:
+        current_state = kwargs["state"]
+        deliverable = current_state.deliverables["dependency-deliverable"]
+        commit_sha = deliverable.git_refs.reviewed_commit_sha or ""
+        return [
+            {
+                "dependency_task_id": "dependency",
+                "deliverable_id": deliverable.id,
+                "branch": "agents/backend/dependency",
+                "commit_sha": commit_sha,
+                "relationship_kind": "task_dependency",
+            }
+        ]
+
+    def _prepare(*_args: object, **kwargs: object) -> tuple[str, str]:
+        kwargs["composition_result"].update(
+            {
+                "root_commit_sha": "c" * 40,
+                "composed_commit_sha": "d" * 40,
+                "composed_tree_hash": "e" * 40,
+            }
+        )
+        return "/home/agent/worktrees/repo/task", "c" * 40
+
+    monkeypatch.setattr(
+        "evander_team_addon.providers._project_repo_task_dependency_git_sources",
+        _dependency_sources,
+    )
+    monkeypatch.setattr(
+        "evander_team_addon.providers._prepare_project_repo_task_worktree",
+        _prepare,
+    )
+    original_create = TeamAdminService.create_git_work_context_with_id
+
+    def _replace_dependency_before_transaction(
+        self: TeamAdminService,
+        **kwargs: object,
+    ):
+        def _replace(current: TeamState) -> TeamState:
+            refs = current.deliverables["dependency-deliverable"].git_refs
+            refs.commit_sha = replacement_commit
+            refs.submitted_commit_sha = replacement_commit
+            refs.reviewed_commit_sha = replacement_commit
+            return current
+
+        repo.update(_replace)
+        return original_create(self, **kwargs)
+
+    monkeypatch.setattr(
+        TeamAdminService,
+        "create_git_work_context_with_id",
+        _replace_dependency_before_transaction,
+    )
+
+    with pytest.raises(
+        DependencyGitPreparationError,
+        match="dependency Git state changed during worktree preparation",
+    ):
+        _create_project_repo_git_work_contexts(
+            EffectRuntimeContext(
+                resolved_config={"runtime_dir": str(tmp_path)},
+                admin_service=SimpleNamespace(managed_git_admin=None),
+            ),
+            repo,
+            state=state,
+            agent_id="backend",
+            session_id="session-backend",
+            project_id="project",
+            project_repo={
+                "managed_repo_id": "mr_0123456789abcdefabcd",
+                "guest_repo_name": "repo",
+                "target_dir": "/home/agent/repo",
+                "execution_backend": "libvirt_vm",
+            },
+            dispatch_id="dispatch-provenance",
+            tasks=[
+                {
+                    "id": "task",
+                    "project_id": "project",
+                    "owner_agent_id": "backend",
+                }
+            ],
+            base_branch="main",
+        )
+
+    assert repo.read().git_work_contexts == {}
 
 
 def test_wake_due_agents_reschedules_exhausted_state_conflict_without_agent_failure(

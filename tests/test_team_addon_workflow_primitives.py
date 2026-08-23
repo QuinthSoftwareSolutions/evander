@@ -323,6 +323,7 @@ def test_create_review_request_effect_uses_team_review_handoff(tmp_path: Path) -
     assert result["published_event_ids"]
     reread = repo.read()
     review = reread.review_requests[result["review_request_id"]]
+    assert reread.deliverables["deliverable"].acceptance_policy_version == 2
     assert review.deliverable_id == "deliverable"
     assert review.reviewer_agent_id == "reviewer"
     assert review.review_profile_id == "code-review"

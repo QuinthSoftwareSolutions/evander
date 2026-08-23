@@ -1048,15 +1048,26 @@ def require_deliverable_acceptance(
             },
         )
     task = state.tasks[deliverable.task_id]
+    submitted_git_source_ids = sorted(
+        source_deliverable_id
+        for source_deliverable_id in deliverable.source_deliverable_ids
+        if (
+            (source_deliverable := state.deliverables.get(source_deliverable_id))
+            is not None
+            and _deliverable_has_git_provenance(source_deliverable)
+        )
+    )
+    dependency_git_source_ids = sorted(
+        candidate.id
+        for candidate in state.deliverables.values()
+        if candidate.task_id in task.dependency_task_ids
+        and candidate.state == TeamRecordState.ACCEPTED
+        and candidate.superseded_by_deliverable_id is None
+        and _deliverable_has_git_provenance(candidate)
+    )
     requires_composition_manifest = bool(
         task.integration_boundary
-        and (
-            task.dependency_task_ids
-            or (
-                task.deliverable_contract is not None
-                and task.deliverable_contract.required_contribution_task_ids
-            )
-        )
+        and (dependency_git_source_ids or submitted_git_source_ids)
     )
     if deliverable.acceptance_policy_version >= 2 and requires_composition_manifest:
         manifest = deliverable.dependency_composition_manifest
@@ -1077,8 +1088,7 @@ def require_deliverable_acceptance(
             for source in manifest.dependency_git_sources
             if source.relationship_kind == "required_contribution"
         )
-        submitted_source_ids = sorted(deliverable.source_deliverable_ids)
-        if manifest_source_ids != submitted_source_ids:
+        if manifest_source_ids != submitted_git_source_ids:
             raise TaskAssessmentBoundaryError(
                 code="dependency_composition_manifest_scope_mismatch",
                 message=(
@@ -1089,10 +1099,28 @@ def require_deliverable_acceptance(
                     "deliverable_id": deliverable.id,
                     "task_id": deliverable.task_id,
                     "manifest_source_deliverable_ids": manifest_source_ids,
-                    "submitted_source_deliverable_ids": submitted_source_ids,
+                    "submitted_git_source_deliverable_ids": submitted_git_source_ids,
                 },
             )
     return assessment
+
+
+def _deliverable_has_git_provenance(deliverable: Deliverable) -> bool:
+    git_refs = deliverable.git_refs
+    return any(
+        (
+            git_refs.branch_context_id,
+            git_refs.agent_branch,
+            git_refs.review_branch,
+            git_refs.feature_branch,
+            git_refs.release_branch,
+            git_refs.commit_sha,
+            git_refs.submitted_commit_sha,
+            git_refs.reviewed_commit_sha,
+            git_refs.feature_commit_sha,
+            git_refs.release_commit_sha,
+        )
+    )
 
 
 def require_release_scope(
