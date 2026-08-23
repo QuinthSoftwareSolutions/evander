@@ -1102,6 +1102,67 @@ def require_deliverable_acceptance(
                     "submitted_git_source_deliverable_ids": submitted_git_source_ids,
                 },
             )
+        manifest_dependency_source_ids = sorted(
+            source.deliverable_id
+            for source in manifest.dependency_git_sources
+            if source.relationship_kind == "task_dependency"
+        )
+        expected_dependency_source_ids = sorted(
+            set(dependency_git_source_ids) - set(submitted_git_source_ids)
+        )
+        if manifest_dependency_source_ids != expected_dependency_source_ids:
+            raise TaskAssessmentBoundaryError(
+                code="dependency_composition_manifest_dependency_scope_mismatch",
+                message=(
+                    f"deliverable {deliverable.id} dependency composition manifest "
+                    "does not match the task's current Git-backed dependencies"
+                ),
+                correction_context={
+                    "deliverable_id": deliverable.id,
+                    "task_id": deliverable.task_id,
+                    "manifest_dependency_source_deliverable_ids": (
+                        manifest_dependency_source_ids
+                    ),
+                    "current_dependency_source_deliverable_ids": (
+                        expected_dependency_source_ids
+                    ),
+                },
+            )
+        candidate_commit_sha = (
+            deliverable.git_refs.reviewed_commit_sha
+            or deliverable.git_refs.submitted_commit_sha
+            or deliverable.git_refs.commit_sha
+        )
+        if (
+            candidate_commit_sha is None
+            or manifest.verified_candidate_commit_sha != candidate_commit_sha.casefold()
+        ):
+            raise TaskAssessmentBoundaryError(
+                code="dependency_composition_candidate_ancestry_unverified",
+                message=(
+                    f"deliverable {deliverable.id} does not carry server-verified "
+                    "proof that its candidate contains the dependency composition"
+                ),
+                correction_context={
+                    "deliverable_id": deliverable.id,
+                    "task_id": deliverable.task_id,
+                    "candidate_commit_sha": candidate_commit_sha,
+                    "verified_candidate_commit_sha": (
+                        manifest.verified_candidate_commit_sha
+                    ),
+                    "required_ancestor_shas": list(
+                        dict.fromkeys(
+                            [
+                                manifest.composed_commit_sha,
+                                *[
+                                    source.commit_sha
+                                    for source in manifest.dependency_git_sources
+                                ],
+                            ]
+                        )
+                    ),
+                },
+            )
     return assessment
 
 

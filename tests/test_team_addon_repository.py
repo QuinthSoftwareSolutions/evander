@@ -28,6 +28,8 @@ from evander_team_addon.models import (
     DeliverableInitialReleaseDisposition,
     DeliverableReviewManifest,
     DeliverableVerification,
+    DependencyCompositionManifest,
+    DependencyGitSource,
     DependencyCompositionRecoveryState,
     EphemeralAgentPolicy,
     EphemeralAssignmentState,
@@ -4124,6 +4126,113 @@ def test_resumed_acceptance_verifier_reruns_passed_prerequisites(
 
     assert result["verification_state"] == "passed"
     assert executed == ["restore", "test"]
+
+
+def test_composed_submission_persists_server_verified_candidate_ancestry(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _set_project_git(repo)
+    _seed_task(repo, task_id="dependency")
+    _seed_task(repo, task_id="task")
+    source_commit = "b" * 40
+    composed_commit = "a" * 40
+    candidate_commit = "c" * 40
+    source = DependencyGitSource(
+        dependency_task_id="dependency",
+        deliverable_id="dependency-deliverable",
+        branch="agents/session-backend/dependency",
+        commit_sha=source_commit,
+        relationship_kind="task_dependency",
+    )
+
+    def _configure(state: TeamState) -> TeamState:
+        dependency = state.tasks["dependency"]
+        dependency.state = TeamTaskState.FINISHED
+        dependency.deliverable_ids = ["dependency-deliverable"]
+        state.deliverables["dependency-deliverable"] = Deliverable(
+            id="dependency-deliverable",
+            task_id=dependency.id,
+            producer_agent_id="backend",
+            summary="Accepted Git dependency.",
+            state=TeamRecordState.ACCEPTED,
+            git_refs=DeliverableGitRefs(
+                agent_branch=source.branch,
+                commit_sha=source_commit,
+                submitted_commit_sha=source_commit,
+            ),
+        )
+        task = state.tasks["task"]
+        task.integration_boundary = True
+        task.dependency_task_ids = [dependency.id]
+        task.deliverable_contract = TaskDeliverableContract(
+            require_git_provenance=True,
+        )
+        return state
+
+    repo.update(_configure)
+    _lease_agent_dispatch(repo, agent_id="backend", dispatch_id="dispatch-composed-submit")
+    _seed_git_work_context(
+        repo,
+        commit_sha=None,
+        dispatch_id="dispatch-composed-submit",
+    )
+
+    def _attach_manifest(state: TeamState) -> TeamState:
+        context = state.git_work_contexts["ctx-task"]
+        context.dependency_git_sources = [source]
+        context.dependency_composition_manifest = DependencyCompositionManifest(
+            target_task_id="task",
+            managed_repo_id=MANAGED_REPO_ID,
+            base_branch="main",
+            base_commit_sha="d" * 40,
+            base_tree_hash="e" * 40,
+            dependency_git_sources=[source],
+            source_fingerprint="f" * 64,
+            frontier_commit_shas=[source_commit],
+            composed_commit_sha=composed_commit,
+            composed_tree_hash="1" * 40,
+        )
+        return state
+
+    repo.update(_attach_manifest)
+    resolver_calls: list[dict[str, object]] = []
+
+    def _resolve(**kwargs: object) -> str:
+        resolver_calls.append(kwargs)
+        return candidate_commit
+
+    state, submitted = TeamDeliverableSubmissionCommandService(
+        repo,
+        git_candidate_commit_resolver=_resolve,
+    ).submit_deliverable_for_review_command(
+        session_id="session-backend",
+        deliverable={
+            "id": "composed-deliverable",
+            "task_id": "task",
+            "summary": "Candidate retaining the prepared dependency composition.",
+            "branch_context_id": "ctx-task",
+            "git_refs": {
+                "agent_branch": "agents/session-backend/task",
+                "commit_sha": candidate_commit,
+            },
+        },
+        reviews=[{"id": "review-composed", "reviewer_agent_id": "worker"}],
+        request_id="request-composed-submit",
+    )
+
+    assert submitted["success"] is True, submitted
+    manifest = state.deliverables["composed-deliverable"].dependency_composition_manifest
+    assert manifest is not None
+    assert manifest.verified_candidate_commit_sha == candidate_commit
+    assert resolver_calls == [
+        {
+            "managed_repo_id": MANAGED_REPO_ID,
+            "directory_path": "root",
+            "agent_branch": "agents/session-backend/task",
+            "required_ancestor_shas": [composed_commit, source_commit],
+        }
+    ]
 
 
 def test_submit_deliverable_for_review_rejects_agent_sha_that_is_not_branch_tip(

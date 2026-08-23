@@ -1997,6 +1997,7 @@ class DependencyCompositionManifest(TeamModel):
     reduced_source_deliverable_ids: list[str] = Field(default_factory=list)
     composed_commit_sha: str
     composed_tree_hash: str
+    verified_candidate_commit_sha: str | None = None
 
     @field_validator(
         "target_task_id",
@@ -2022,6 +2023,17 @@ class DependencyCompositionManifest(TeamModel):
         normalized = _required_text(value, info.field_name).casefold()
         if re.fullmatch(r"(?:[0-9a-f]{40}|[0-9a-f]{64})", normalized) is None:
             raise ValueError(f"{info.field_name} must be a full Git object ID")
+        return normalized
+
+    @field_validator("verified_candidate_commit_sha", mode="before")
+    @classmethod
+    def _optional_verified_candidate_commit_sha(cls, value: object) -> str | None:
+        normalized = _optional_text(value)
+        if normalized is None:
+            return None
+        normalized = normalized.casefold()
+        if re.fullmatch(r"(?:[0-9a-f]{40}|[0-9a-f]{64})", normalized) is None:
+            raise ValueError("verified_candidate_commit_sha must be a full Git object ID")
         return normalized
 
     @field_validator("frontier_commit_shas", mode="before")

@@ -507,6 +507,7 @@ def test_team_git_candidate_resolver_builds_admin_authority_for_gateway_context(
     expected_commit = "d9b05522b48d4515c40537f6c6e6701f688f1575"
     build_calls: list[Path] = []
     resolve_calls: list[tuple[str, str, str]] = []
+    ancestry_calls: list[dict[str, object]] = []
 
     class _ManagedGit:
         def resolve_branch_commit(
@@ -518,6 +519,13 @@ def test_team_git_candidate_resolver_builds_admin_authority_for_gateway_context(
         ) -> str:
             resolve_calls.append((managed_repo_id, directory_path, branch))
             return expected_commit
+
+        def verify_branch_commit_ancestry(
+            self,
+            managed_repo_id: str,
+            **kwargs: object,
+        ) -> None:
+            ancestry_calls.append({"managed_repo_id": managed_repo_id, **kwargs})
 
     def _build_admin_runtime(runtime_dir: Path):
         build_calls.append(runtime_dir)
@@ -539,6 +547,7 @@ def test_team_git_candidate_resolver_builds_admin_authority_for_gateway_context(
             managed_repo_id="mr_0123456789abcdefabcd",
             directory_path="root",
             agent_branch="agents/local-coder-2/tasks/task",
+            required_ancestor_shas=["a" * 40, "b" * 40],
         )
         == expected_commit
     )
@@ -561,6 +570,15 @@ def test_team_git_candidate_resolver_builds_admin_authority_for_gateway_context(
             "root",
             "agents/local-coder-2/tasks/task",
         ),
+    ]
+    assert ancestry_calls == [
+        {
+            "managed_repo_id": "mr_0123456789abcdefabcd",
+            "directory_path": "root",
+            "branch": "agents/local-coder-2/tasks/task",
+            "commit_sha": expected_commit,
+            "required_ancestor_shas": ["a" * 40, "b" * 40],
+        }
     ]
 
 

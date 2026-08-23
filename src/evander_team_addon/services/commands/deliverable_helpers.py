@@ -60,6 +60,7 @@ from ..domain.deliverables import (
 from ..domain.git_work_contexts import (
     GitCandidateCommitResolver,
     GitWorkContextValidationError,
+    _SERVER_VERIFIED_COMPOSITION_CANDIDATE_FIELD,
     bind_deliverable_git_refs_to_work_context,
     mark_git_work_context_submitted,
 )
@@ -754,7 +755,14 @@ def _apply_command_deliverable_submission(
         else None
     )
     dependency_composition_manifest = (
-        branch_context.dependency_composition_manifest.model_copy(deep=True)
+        branch_context.dependency_composition_manifest.model_copy(
+            update={
+                "verified_candidate_commit_sha": _optional_text(
+                    deliverable.get(_SERVER_VERIFIED_COMPOSITION_CANDIDATE_FIELD)
+                )
+            },
+            deep=True,
+        )
         if branch_context is not None
         and branch_context.dependency_composition_manifest is not None
         else None

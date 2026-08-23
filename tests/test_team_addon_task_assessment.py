@@ -20,6 +20,7 @@ from evander_team_addon.models import (
     GitWorkContextState,
     PersistentAgent,
     Project,
+    ProjectGitConfig,
     ReviewRequest,
     TaskAssessmentReadiness,
     TaskCancellation,
@@ -61,6 +62,9 @@ from evander_team_addon.services.domain.ephemeral import (
 )
 from evander_team_addon.services.domain.git_promotion import (
     _attach_promotion_success,
+)
+from evander_team_addon.services.domain.git_work_contexts import (
+    bind_deliverable_git_refs_to_work_context,
 )
 from evander_team_addon.services.domain.release_packages import (
     _build_release_package,
@@ -1131,7 +1135,7 @@ def test_policy_v2_git_candidate_does_not_require_manifest_for_artifact_dependen
     require_deliverable_acceptance(state, candidate.id)
 
 
-def test_policy_v2_composition_scope_ignores_artifact_only_contribution() -> None:
+def _policy_v2_mixed_source_candidate() -> tuple[TeamState, AgentTask, Deliverable]:
     state = _state()
     git_contribution = _support_task("git-contribution", state=TeamTaskState.FINISHED)
     artifact_contribution = _support_task(
@@ -1195,6 +1199,7 @@ def test_policy_v2_composition_scope_ignores_artifact_only_contribution() -> Non
         frontier_commit_shas=[source_commit],
         composed_commit_sha=candidate_commit,
         composed_tree_hash="f" * 40,
+        verified_candidate_commit_sha=candidate_commit,
     )
     state.git_work_contexts = {
         "context-integration": GitWorkContext(
@@ -1234,7 +1239,113 @@ def test_policy_v2_composition_scope_ignores_artifact_only_contribution() -> Non
     state.deliverables[candidate.id] = candidate
     integration.deliverable_ids = [candidate.id]
 
+    return state, integration, candidate
+
+
+def test_policy_v2_composition_scope_ignores_artifact_only_contribution() -> None:
+    state, _integration, candidate = _policy_v2_mixed_source_candidate()
+
     require_deliverable_acceptance(state, candidate.id)
+
+
+def test_policy_v2_composition_requires_server_verified_candidate_ancestry() -> None:
+    state, _integration, candidate = _policy_v2_mixed_source_candidate()
+    manifest = candidate.dependency_composition_manifest
+    assert manifest is not None
+    manifest.verified_candidate_commit_sha = "9" * 40
+
+    with pytest.raises(TaskAssessmentBoundaryError) as raised:
+        require_deliverable_acceptance(state, candidate.id)
+
+    assert raised.value.code == "dependency_composition_candidate_ancestry_unverified"
+    assert raised.value.correction_context["candidate_commit_sha"] == "c" * 40
+    assert raised.value.correction_context["required_ancestor_shas"] == [
+        "c" * 40,
+        "b" * 40,
+    ]
+
+
+def test_git_submission_verifies_and_records_composition_candidate_ancestry() -> None:
+    state, integration, candidate = _policy_v2_mixed_source_candidate()
+    state.projects["project"] = Project(
+        id="project",
+        team_id="team",
+        name="Project",
+        lead_agent_id="lead",
+        git=ProjectGitConfig(
+            managed_repo_id="mr_0123456789abcdefabcd",
+            directory_path="root",
+        ),
+    )
+    context = state.git_work_contexts["context-integration"]
+    context.state = GitWorkContextState.ACTIVE
+    context.commit_sha = None
+    manifest = context.dependency_composition_manifest
+    assert manifest is not None
+    manifest.verified_candidate_commit_sha = None
+    resolver_calls: list[dict[str, object]] = []
+
+    def _resolve(**kwargs: object) -> str:
+        resolver_calls.append(kwargs)
+        return candidate.git_refs.commit_sha or ""
+
+    payload: dict[str, object] = {
+        "branch_context_id": context.id,
+        "git_refs": {
+            "branch_context_id": context.id,
+            "agent_branch": context.agent_branch,
+            "commit_sha": candidate.git_refs.commit_sha,
+        },
+    }
+    bind_deliverable_git_refs_to_work_context(
+        state,
+        agent_id=integration.owner_agent_id,
+        task_id=integration.id,
+        deliverable=payload,
+        candidate_commit_resolver=_resolve,
+    )
+
+    assert resolver_calls == [
+        {
+            "managed_repo_id": "mr_0123456789abcdefabcd",
+            "directory_path": "root",
+            "agent_branch": "agents/integration/task",
+            "required_ancestor_shas": ["c" * 40, "b" * 40],
+        }
+    ]
+    assert manifest.verified_candidate_commit_sha is None
+    assert payload["_server_verified_composition_candidate_sha"] == "c" * 40
+
+
+def test_policy_v2_composition_manifest_must_match_new_git_dependency() -> None:
+    state, integration, candidate = _policy_v2_mixed_source_candidate()
+    added_dependency = _support_task(
+        "added-git-dependency",
+        state=TeamTaskState.FINISHED,
+    )
+    state.tasks[added_dependency.id] = added_dependency
+    added_source = _delivered(
+        state,
+        deliverable_id="added-git-source",
+        task_id=added_dependency.id,
+    )
+    added_source.git_refs = DeliverableGitRefs(
+        agent_branch="agents/source/added-git-dependency",
+        commit_sha="8" * 40,
+        submitted_commit_sha="8" * 40,
+    )
+    integration.dependency_task_ids.append(added_dependency.id)
+
+    with pytest.raises(TaskAssessmentBoundaryError) as raised:
+        require_deliverable_acceptance(state, candidate.id)
+
+    assert raised.value.code == "dependency_composition_manifest_dependency_scope_mismatch"
+    assert raised.value.correction_context[
+        "manifest_dependency_source_deliverable_ids"
+    ] == []
+    assert raised.value.correction_context[
+        "current_dependency_source_deliverable_ids"
+    ] == [added_source.id]
 
 
 def test_integration_boundary_rejects_artifact_only_submission_before_side_effects() -> None:

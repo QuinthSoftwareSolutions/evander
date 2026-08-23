@@ -9205,6 +9205,19 @@ def _validate_project_repo_git_work_context(
     manual_dependency_git_sources: Sequence[Mapping[str, str]] = (),
     dependency_composition_manifest: Mapping[str, Any] | None = None,
 ) -> None:
+    def _normalized_comparison_value(value: Any) -> Any:
+        if hasattr(value, "model_dump"):
+            value = value.model_dump(mode="json", exclude_none=True)
+        if isinstance(value, Mapping):
+            return {
+                key: _normalized_comparison_value(item)
+                for key, item in value.items()
+                if item is not None
+            }
+        if isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
+            return [_normalized_comparison_value(item) for item in value]
+        return value
+
     expected = {
         "agent_id": agent_id,
         "task_id": task_id,
@@ -9225,9 +9238,9 @@ def _validate_project_repo_git_work_context(
     mismatches = [
         field_name
         for field_name, expected_value in expected.items()
-        if (
+        if _normalized_comparison_value(
             [
-                item.model_dump(mode="json") if hasattr(item, "model_dump") else dict(item)
+                item
                 for item in getattr(context_model, field_name, [])
             ]
             if field_name
@@ -9236,13 +9249,13 @@ def _validate_project_repo_git_work_context(
                 "manual_dependency_git_sources",
             }
             else (
-                getattr(context_model, field_name, None).model_dump(mode="json")
+                getattr(context_model, field_name, None)
                 if field_name == "dependency_composition_manifest"
                 and getattr(context_model, field_name, None) is not None
                 else getattr(context_model, field_name, None)
             )
         )
-        != expected_value
+        != _normalized_comparison_value(expected_value)
     ]
     if mismatches:
         raise RuntimeError(

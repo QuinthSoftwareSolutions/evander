@@ -156,6 +156,7 @@ from evander_team_addon.providers import (
     _resolved_project_git_identity,
     _record_dependency_git_preparation_blocker,
     _record_wake_failure,
+    _validate_project_repo_git_work_context,
     _validate_review_repository_dispatch_compatibility,
 )
 from evander_team_addon.repository import TeamStateConflictError, TeamStateRepository
@@ -7555,6 +7556,56 @@ def test_successor_context_records_verified_direct_dependency_git(
             task_id="task",
             managed_repo_id="mr_0123456789abcdefabcd",
         )
+
+
+def test_git_context_replay_normalizes_optional_dependency_provenance() -> None:
+    source = {
+        "dependency_task_id": "dependency",
+        "deliverable_id": "dependency-deliverable",
+        "branch": "agents/session-backend/tasks/dependency",
+        "commit_sha": "d" * 40,
+        "relationship_kind": "task_dependency",
+    }
+    manifest = {
+        "policy_version": 1,
+        "target_task_id": "task",
+        "managed_repo_id": "mr_0123456789abcdefabcd",
+        "directory_path": "root",
+        "base_branch": "main",
+        "base_commit_sha": "a" * 40,
+        "base_tree_hash": "b" * 40,
+        "dependency_git_sources": [source],
+        "source_fingerprint": "e" * 64,
+        "frontier_commit_shas": ["d" * 40],
+        "reduced_source_deliverable_ids": [],
+        "composed_commit_sha": "c" * 40,
+        "composed_tree_hash": "f" * 40,
+    }
+    context = GitWorkContext(
+        id="context-replay",
+        agent_id="backend",
+        task_id="task",
+        dispatch_id="dispatch-replay",
+        agent_branch="agents/session-backend/tasks/task",
+        base_branch="main",
+        base_commit="c" * 40,
+        worktree_path="/home/agent/worktrees/repo/task",
+        dependency_git_sources=[source],
+        dependency_composition_manifest=manifest,
+    )
+
+    _validate_project_repo_git_work_context(
+        context,
+        agent_id="backend",
+        task_id="task",
+        dispatch_id="dispatch-replay",
+        agent_branch="agents/session-backend/tasks/task",
+        base_branch="main",
+        base_commit="c" * 40,
+        worktree_path="/home/agent/worktrees/repo/task",
+        dependency_git_sources=[source],
+        dependency_composition_manifest=manifest,
+    )
 
 
 def test_integration_context_derives_required_contribution_from_immutable_review_pin(

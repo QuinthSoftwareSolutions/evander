@@ -21,6 +21,8 @@
   dependency checkout with legacy branch fallback.
 - Replayed the complete verification command chain after interrupted verifier cleanup and reused
   pre-acceptance waivers without duplicating release-package audit records.
+- Verified composed Git ancestry against the submitted candidate, rechecked manifest dependency
+  scope against the current task graph, and normalized optional provenance during context replay.
 
 ## 2026-08-23 - Single-Review Team Dispatches
 

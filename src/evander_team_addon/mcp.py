@@ -3,7 +3,7 @@ from __future__ import annotations
 import base64
 import json
 import logging
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime, timedelta
 from pathlib import PurePosixPath
 from typing import Any, Literal
@@ -2796,15 +2796,28 @@ def _team_mcp_git_candidate_commit_resolver(
         managed_repo_id: str,
         directory_path: str,
         agent_branch: str,
+        required_ancestor_shas: Sequence[str] | None = None,
     ) -> str | None:
         resolve_branch_commit = getattr(managed_git, "resolve_branch_commit", None)
         if not callable(resolve_branch_commit):
             raise RuntimeError("managed Git branch resolution is unavailable")
-        return resolve_branch_commit(
+        commit_sha = resolve_branch_commit(
             managed_repo_id,
             directory_path=directory_path,
             branch=agent_branch,
         )
+        if required_ancestor_shas and commit_sha is not None:
+            verify_ancestry = getattr(managed_git, "verify_branch_commit_ancestry", None)
+            if not callable(verify_ancestry):
+                raise RuntimeError("managed Git ancestry verification is unavailable")
+            verify_ancestry(
+                managed_repo_id,
+                directory_path=directory_path,
+                branch=agent_branch,
+                commit_sha=commit_sha,
+                required_ancestor_shas=required_ancestor_shas,
+            )
+        return commit_sha
 
     return _resolve
 
