@@ -10105,6 +10105,112 @@ def test_workflow_editor_validate_selected_pack_checks_sibling_pack_ids(
         )
 
 
+def test_workflow_editor_validates_stateful_selected_pack_with_graph_metadata(
+    tmp_path: Path,
+) -> None:
+    packs_dir = tmp_path / "config" / "workflow-packs"
+    packs_dir.mkdir(parents=True, exist_ok=True)
+    (packs_dir / "pack-a.v1.json").write_text(
+        json.dumps(
+            {
+                "pack_id": "pack-a",
+                "pack_version": "v1",
+                "graphs": [
+                    {
+                        "id": "graph-a",
+                        "name": "Graph A",
+                        "directory_path": "root",
+                        "node_ids": ["trigger-a"],
+                    }
+                ],
+                "ir": {
+                    "version": "v1",
+                    "nodes": [
+                        {
+                            "id": "trigger-a",
+                            "display_name": "Every minute",
+                            "type": "trigger:cron",
+                            "expression": "* * * * *",
+                        }
+                    ],
+                    "edges": [],
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    (packs_dir / "pack-state.v1.json").write_text(
+        json.dumps(
+            {
+                "pack_id": "pack-state",
+                "pack_version": "v1",
+                "graphs": [
+                    {
+                        "id": "graph-state",
+                        "name": "State graph",
+                        "directory_path": "root/example",
+                        "node_ids": ["trigger-state", "effect-state-update"],
+                    }
+                ],
+                "ir": {
+                    "version": "v1",
+                    "nodes": [
+                        {
+                            "id": "trigger-state",
+                            "display_name": "Every hour",
+                            "type": "trigger:cron",
+                            "expression": "0 * * * *",
+                        },
+                        {
+                            "id": "effect-state-update",
+                            "display_name": "Update state",
+                            "type": "effect:state:update",
+                            "namespace": "workflow",
+                            "key": "cursor",
+                            "operation": "set",
+                            "value": {"complete": True},
+                        },
+                    ],
+                    "edges": [
+                        {
+                            "source_id": "trigger-state",
+                            "target_id": "effect-state-update",
+                        }
+                    ],
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    config_root = tmp_path / "config" / "trigger-orchestrator"
+    config_root.mkdir(parents=True, exist_ok=True)
+    (config_root / "config.json").write_text(
+        json.dumps(
+            {
+                "runtime_dir": str(tmp_path / "runtime"),
+                "workflow_packs": ["pack-a.v1.json", "pack-state.v1.json"],
+            }
+        ),
+        encoding="utf-8",
+    )
+    service = build_admin_runtime(write_config(tmp_path)).workflow_config_admin
+    document = service.read_workflow_editor_document(workflow_pack="pack-state.v1.json")
+
+    validation = service.validate_workflow_editor_document(
+        config=canonical_workflow_payload(document.config),
+        layout=document.layout,
+        graphs=[graph.model_dump(mode="json") for graph in document.graphs],
+        workflow_pack="pack-state.v1.json",
+    )
+
+    assert [graph.id for graph in validation.graphs] == ["graph-state"]
+    assert not [
+        diagnostic
+        for diagnostic in validation.validation_diagnostics
+        if diagnostic["severity"] == "error"
+    ]
+
+
 def test_workflow_editor_reads_and_saves_named_graphs_inside_single_pack(
     tmp_path: Path,
 ) -> None:

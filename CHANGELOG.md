@@ -1,5 +1,9 @@
 # Changelog
 
+## 2026-08-23 - Stateful Workflow Pack Validation
+
+- Preserved named graph metadata while reading and validating individual workflow packs, so graph-scoped state query and update nodes work correctly in multi-pack configurations.
+
 ## 2026-08-23 - Workflow History Desktop Inspector
 
 - Restored the selected-node **Execution history** control in the desktop Workflow inspector,
