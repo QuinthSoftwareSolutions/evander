@@ -327,6 +327,12 @@ def _agent_immediate_wake_request(
             "inbox",
             max(0.0, DEFAULT_AGENT_WAKE_REQUEST_DEBOUNCE_SECONDS - age_seconds),
         )
+    _pending_inbox, _wake_inbox, pending_reviews = _ordinary_wake_work_for_agent(
+        state,
+        agent.id,
+    )
+    if pending_reviews:
+        return "review", DEFAULT_AGENT_WAKE_REQUEST_DEBOUNCE_SECONDS
     if runtime.context_rotation_pending:
         return "context_rotation", DEFAULT_AGENT_WAKE_REQUEST_DEBOUNCE_SECONDS
     if _latest_action_feedback_for_agent(state, agent.id):

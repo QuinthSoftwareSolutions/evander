@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-08-23 - Single-Review Team Dispatches
+
+- Limited ordinary Team reviewer dispatches to the oldest actionable review and excluded inbox
+  notices for later reviews, so divergent immutable candidates cannot be batched into one checkout.
+- Added a durable one-second follow-up wake after a successful review when another review remains,
+  bypassing the periodic Team heartbeat even when the next review has no wakeable inbox notice.
+
 ## 2026-08-23 - Responsive MCP Gateway Tool Execution
 
 - Kept synchronous MCP tools off the gateway transport event loop so slow Team commands no

@@ -12,14 +12,18 @@ from evander_team_addon.models import (
     ProjectGoal,
     ReleasePackage,
     ReviewBlockKind,
+    ReviewRepositorySnapshot,
     ReviewRequest,
     RolePermission,
     TeamBlockerEventType,
     TeamBlockerSourceKind,
     TeamBlockerState,
     TeamDispatch,
+    TeamDispatchActivity,
+    TeamDispatchActivityStatus,
     TeamDispatchStatus,
     TeamInboxItemType,
+    TeamInboxItemState,
     TeamRecordState,
     TeamTaskState,
     runtime_operations_payload,
@@ -47,6 +51,7 @@ from evander_team_addon.services.domain.blockers import (
     task_cancellation_blocking_handoff_ids,
 )
 from evander_team_addon.services.domain.task_assessment import assess_task
+from evander_team_addon.services.domain.wake import AGENT_WAKE_REQUESTED_EVENT_TYPE
 from evander_team_addon.services.domain.work_due import _mark_agent_work_due
 from evander_team_addon.services.runtime_service import TeamRuntimeService
 
@@ -332,6 +337,146 @@ def test_immediate_inbox_cause_does_not_narrow_agent_wide_task_scope(
         "second-task",
         "task",
     ]
+
+
+def test_review_dispatch_leases_one_snapshot_and_immediately_wakes_for_next(
+    tmp_path: Path,
+) -> None:
+    repository = _seed_agent_with_task(tmp_path)
+    TeamAdminService(repository).create_or_reprioritize_task(
+        task_id="second-task",
+        owner_agent_id="worker",
+        project_id="project",
+        priority=2,
+        title="Second review task",
+        description="Keep the second immutable review out of the first dispatch.",
+        created_by_agent_id="lead",
+        expected_revision=repository.read().revision,
+    )
+
+    def _seed_reviews(state):
+        review_rows = (
+            ("first", "task", "a" * 40, LEASE_NOW - timedelta(minutes=2)),
+            ("second", "second-task", "b" * 40, LEASE_NOW - timedelta(minutes=1)),
+        )
+        for suffix, task_id, commit_sha, created_at in review_rows:
+            deliverable_id = f"deliverable-{suffix}"
+            review_id = f"review-{suffix}"
+            state.tasks[task_id].state = TeamTaskState.WAITING_FOR_REVIEW
+            state.tasks[task_id].state_entered_at = created_at
+            state.deliverables[deliverable_id] = Deliverable(
+                id=deliverable_id,
+                task_id=task_id,
+                producer_agent_id="lead",
+                summary=f"{suffix.title()} immutable review candidate.",
+                review_request_ids=[review_id],
+                created_at=created_at,
+            )
+            state.tasks[task_id].deliverable_ids = [deliverable_id]
+            state.review_requests[review_id] = ReviewRequest(
+                id=review_id,
+                deliverable_id=deliverable_id,
+                reviewer_agent_id="worker",
+                requested_by_agent_id="lead",
+                created_at=created_at,
+                repository_snapshot=ReviewRepositorySnapshot(
+                    managed_repo_id=MANAGED_REPO_ID,
+                    directory_path="root",
+                    commit_sha=commit_sha,
+                    pinned_ref=f"refs/evander/team-reviews/{review_id}",
+                    source_kind="deliverable_candidate",
+                ),
+            )
+        state.inbox["inbox-first-review"] = AgentInboxItem(
+            id="inbox-first-review",
+            recipient_agent_id="worker",
+            sender_agent_id="lead",
+            item_type=TeamInboxItemType.STATUS_REQUEST,
+            task_id="task",
+            payload={"review_request_id": "review-first"},
+            created_at=LEASE_NOW - timedelta(minutes=2),
+            updated_at=LEASE_NOW - timedelta(minutes=2),
+        )
+        state.inbox["inbox-second-review"] = AgentInboxItem(
+            id="inbox-second-review",
+            recipient_agent_id="worker",
+            sender_agent_id="lead",
+            item_type=TeamInboxItemType.STATUS_REQUEST,
+            task_id="second-task",
+            payload={"review_request_id": "review-second"},
+            response_requested=False,
+            priority="low",
+            created_at=LEASE_NOW - timedelta(minutes=1),
+            updated_at=LEASE_NOW - timedelta(minutes=1),
+        )
+        return state
+
+    repository.update(_seed_reviews)
+    runtime = TeamRuntimeService(repository)
+    _state, leases = runtime.lease_due_agents(
+        agent_id="worker",
+        now=LEASE_NOW,
+        respect_wake_interval=False,
+    )
+
+    assert len(leases) == 1
+    first_lease = leases[0]
+    assert first_lease["dispatch"]["review_request_ids"] == ["review-first"]
+    assert first_lease["dispatch"]["inbox_item_ids"] == ["inbox-first-review"]
+    assert [review["id"] for review in first_lease["reviews"]] == ["review-first"]
+    first_dispatch_id = first_lease["dispatch_id"]
+
+    def _complete_first_review(state):
+        state.review_requests["review-first"].state = TeamRecordState.ACCEPTED
+        state.review_requests["review-first"].decision_at = LEASE_NOW + timedelta(seconds=1)
+        state.inbox["inbox-first-review"].state = TeamInboxItemState.HANDLED
+        state.inbox["inbox-first-review"].updated_at = LEASE_NOW + timedelta(seconds=1)
+        return state
+
+    repository.update(_complete_first_review)
+    repository.append_dispatch_activity(
+        TeamDispatchActivity(
+            id="activity-first-review-decision",
+            tool_name="team_decide_review",
+            caller_session_id="session-worker",
+            caller_identity="agent:worker",
+            agent_id="worker",
+            dispatch_id=first_dispatch_id,
+            status=TeamDispatchActivityStatus.SUCCESS,
+            progress_classification="review_decision",
+            created_at=LEASE_NOW + timedelta(seconds=1),
+            updated_at=LEASE_NOW + timedelta(seconds=1),
+        )
+    )
+    _state, finalized = runtime.finalize_agent_dispatch_from_activity(
+        session_id="session-worker",
+        dispatch_id=first_dispatch_id,
+    )
+
+    review_wakes = [
+        event
+        for event in finalized["events"]
+        if event["event_type"] == AGENT_WAKE_REQUESTED_EVENT_TYPE
+    ]
+    assert len(review_wakes) == 1
+    assert review_wakes[0]["payload"]["reason"] == "review"
+    assert review_wakes[0]["delay_seconds"] == 1.0
+    wake_outbox = repository.list_outbox_records(
+        intent_type=AGENT_WAKE_REQUESTED_EVENT_TYPE,
+    )
+    assert len(wake_outbox) == 1
+    assert wake_outbox[0].payload["payload"]["reason"] == "review"
+
+    _state, next_leases = runtime.lease_due_agents(
+        agent_id="worker",
+        now=LEASE_NOW + timedelta(seconds=2),
+        respect_wake_interval=False,
+    )
+    assert len(next_leases) == 1
+    assert next_leases[0]["reason"] == "review"
+    assert next_leases[0]["dispatch"]["review_request_ids"] == ["review-second"]
+    assert next_leases[0]["dispatch"]["inbox_item_ids"] == ["inbox-second-review"]
+    assert [review["id"] for review in next_leases[0]["reviews"]] == ["review-second"]
 
 
 def test_assigned_blocker_recovery_task_is_in_lease_task_payload(

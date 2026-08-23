@@ -685,6 +685,20 @@ class TeamRuntimeService:
                     state_model,
                     agent.id,
                 )
+                if pending_reviews:
+                    selected_review = pending_reviews[0]
+                    unselected_review_ids = {review.id for review in pending_reviews[1:]}
+                    pending_reviews = [selected_review]
+                    if unselected_review_ids:
+                        pending_inbox = [
+                            item
+                            for item in pending_inbox
+                            if not inbox_references_review_ids(
+                                item,
+                                unselected_review_ids,
+                            )
+                        ]
+                        wake_inbox = _wakeable_inbox_items(pending_inbox)
                 due_blockers = blockers_due_for_agent(
                     state_model,
                     agent_id=agent.id,
