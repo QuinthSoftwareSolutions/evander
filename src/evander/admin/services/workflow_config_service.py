@@ -1326,6 +1326,7 @@ class WorkflowConfigAdminService:
             composition=composition,
         )
         graphs = [graph.model_dump(mode="json") for graph in composition.graphs]
+        config["workflow_graphs"] = graphs
         return config, graphs
 
     def _workflow_editor_stored_graphs(
@@ -1765,6 +1766,7 @@ class WorkflowConfigAdminService:
                 )
             )
 
+        full_config["workflow_graphs"] = combined_graphs
         self._validate_workflow_editor_document(
             config=full_config,
             layout={},
