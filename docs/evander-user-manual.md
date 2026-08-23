@@ -6442,6 +6442,25 @@ The branch remains internal evidence at this stage. Review does not publish it t
 >
 > The branch is evidence inside the managed bare repository, not a canonical publication. Promotion begins only through the reviewed Git flows in Chapter 24.
 
+### Immutable dependency composition
+
+When a task declares dependencies or required contribution tasks, Team derives the Git inputs
+from the accepted deliverables. A newly accepted reviewed commit is retained under an immutable
+<code>refs/evander/team-reviews/...</code> ref. Later preparation resolves that retained ref, not
+the mutable agent branch, so a subsequent push cannot change an already accepted input.
+
+The prepared context records a dependency-composition manifest containing the pinned task base,
+base tree, every source relationship, deliverable, immutable ref and commit, the ancestry-reduced
+commit frontier, the deterministic source fingerprint, and the resulting composed commit and
+tree. Required contributions are derived from the deliverable contract even when the planner did
+not duplicate them as ordinary task dependencies. Redundant ancestor commits are recorded as
+reduced sources rather than cherry-picked twice. A genuine content conflict still creates the
+typed dependency-composition recovery; it never falls back to an unreviewed history merge.
+
+These rules apply prospectively. Historical accepted deliverables remain readable and use their
+legacy branch/context validation. A new reviewed acceptance records policy version 2 and must
+satisfy the immutable-ref and composition evidence gates that apply to its task.
+
 ## Submitting, superior acceptance, and formal review
 
 The producer submits the evidence, then chooses the handoff the task actually requires:
@@ -6490,6 +6509,22 @@ remainder requires an explicit profile ID. Use profiles for repeatable policy su
 | Scope | Changed paths match the task and reviewed evidence. |
 
 Creating the same active review for one deliverable and reviewer is replay-safe: the service returns the existing review rather than duplicating inbox and wake work.
+
+### Pre-acceptance verification and evidence
+
+New formal-review submissions for integration boundaries and system-created rejected-candidate
+corrections run the project's frozen release verification commands in a disposable
+<code>container_worker_vm</code> against the exact immutable review snapshot. This is a
+server-owned, release-equivalent check; an agent-supplied verification claim cannot satisfy it.
+The review can be inspected while the run is pending, but it cannot be accepted until the run has
+passed and recorded a durable evidence reference.
+
+If no release verification commands are configured, the result is <code>not_run</code> and the
+acceptance remains closed. An operator can authorize a waiver only for <code>partial</code> or
+<code>not_run</code>, must supply a reason, and has their authenticated operator identity and time
+stored on the deliverable. A failed check cannot be waived; corrected reviewed content is
+required. Policy-version-2 reviews also require an evidence reference for every required passed
+criterion.
 
 > <span class="sidebar-kicker">Technical sidebar</span> **Submission and automatic review creation**
 >
@@ -7850,7 +7885,7 @@ The add-on registers its providers only while enabled. The main grouped contract
 | Git/release effects | publish review branch, consolidate, record promotion, verify candidate, mark published |
 | Memory effects | index and reindex |
 
-The registered <code>team-runtime.v1</code> pack composes these with core agent, communication, Git, and event effects. Internal event routes include Chat queued, agent wake requested, ephemeral requested/completed, operator escalation, Git promotion/recovery, and release verification.
+The registered <code>team-runtime.v1</code> pack composes these with core agent, communication, Git, and event effects. Internal event routes include Chat queued, agent wake requested, ephemeral requested/completed, operator escalation, Git promotion/recovery, deliverable pre-acceptance verification, and release verification.
 
 The packaged Python definition is a source definition. Enablement materializes an operator-owned live workflow document under the normal revision and lock contract. Refresh it through the Add-ons surface. Never directly rewrite a live workflow-pack file, even during incident repair.
 

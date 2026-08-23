@@ -12,8 +12,12 @@ from evander_team_addon.models import (
     AgentInboxItem,
     AgentTask,
     Deliverable,
+    DeliverableGitRefs,
+    DeliverableVerification,
+    DependencyCompositionManifest,
     DependencyCompositionRecovery,
     DependencyGitSource,
+    GitWorkContext,
     HumanReviewAssignment,
     HumanReviewChecklistItem,
     HumanReviewDecision,
@@ -123,6 +127,99 @@ def test_dependency_composition_recovery_round_trips_exact_git_evidence(
     assert row["directory_path"] == "root"
     assert json.loads(row["dependency_git_sources_json"])[0]["commit_sha"] == "c" * 40
     assert json.loads(row["conflict_paths_json"]) == ["src/shared.py"]
+
+
+def test_acceptance_provenance_and_composition_manifest_round_trip(
+    tmp_path: Path,
+) -> None:
+    repository = _seed_team_repository(tmp_path)
+    admin = TeamAdminService(repository)
+    admin.create_or_reprioritize_task(
+        task_id="integration",
+        owner_agent_id="lead",
+        project_id="project",
+        priority=1,
+        title="Integrate",
+        description="Compose accepted work.",
+        created_by_agent_id="lead",
+        integration_boundary=True,
+        deliverable_contract=TaskDeliverableContract(
+            require_git_provenance=True,
+        ).model_dump(mode="json"),
+    )
+    source = DependencyGitSource(
+        dependency_task_id="source-task",
+        deliverable_id="source-deliverable",
+        branch="agents/source/task",
+        commit_sha="c" * 40,
+        relationship_kind="required_contribution",
+        pinned_ref="refs/evander/team-reviews/source-review",
+    )
+    manifest = DependencyCompositionManifest(
+        target_task_id="integration",
+        managed_repo_id=MANAGED_REPO_ID,
+        directory_path="root",
+        base_branch="main",
+        base_commit_sha="a" * 40,
+        base_tree_hash="b" * 40,
+        dependency_git_sources=[source],
+        source_fingerprint="f" * 64,
+        frontier_commit_shas=["c" * 40],
+        composed_commit_sha="d" * 40,
+        composed_tree_hash="e" * 40,
+    )
+
+    def _seed(state):
+        state.git_work_contexts["context-integration"] = GitWorkContext(
+            id="context-integration",
+            agent_id="lead",
+            task_id="integration",
+            agent_branch="agents/lead/integration",
+            base_branch="main",
+            base_commit="a" * 40,
+            commit_sha="d" * 40,
+            dependency_git_sources=[source],
+            dependency_composition_manifest=manifest,
+        )
+        state.deliverables["deliverable-integration"] = Deliverable(
+            id="deliverable-integration",
+            task_id="integration",
+            producer_agent_id="lead",
+            summary="Integrated candidate",
+            git_refs=DeliverableGitRefs(
+                branch_context_id="context-integration",
+                agent_branch="agents/lead/integration",
+                commit_sha="d" * 40,
+                submitted_commit_sha="d" * 40,
+                accepted_pinned_ref="refs/evander/team-reviews/integration-review",
+            ),
+            dependency_composition_manifest=manifest,
+            acceptance_policy_version=2,
+            verification=DeliverableVerification(
+                status="not_run",
+                provenance="server_release_equivalent",
+                run_id="acceptance-verification-roundtrip",
+                candidate_commit_sha="d" * 40,
+            ),
+        )
+        state.tasks["integration"].deliverable_ids = ["deliverable-integration"]
+        return state
+
+    repository.update(_seed)
+    reloaded = TeamStateRepository(tmp_path).read()
+
+    assert (
+        reloaded.git_work_contexts["context-integration"].dependency_composition_manifest
+        == manifest
+    )
+    restored = reloaded.deliverables["deliverable-integration"]
+    assert restored.dependency_composition_manifest == manifest
+    assert restored.git_refs.accepted_pinned_ref == (
+        "refs/evander/team-reviews/integration-review"
+    )
+    assert restored.acceptance_policy_version == 2
+    assert restored.verification is not None
+    assert restored.verification.run_id == "acceptance-verification-roundtrip"
 
 
 def test_noop_updates_and_empty_wake_checks_preserve_revision_and_skip_state_dml(

@@ -50,7 +50,7 @@ EXECUTION_PREPARATION_BLOCKER_REASON_CODES = frozenset(
 )
 _TASK_PREPARATION_SOURCE_PREFIX = "execution-preparation:task:"
 _INBOX_PREPARATION_SOURCE_PREFIX = "execution-preparation:inbox:"
-TASK_PREPARATION_CONTRACT_VERSION = 2
+TASK_PREPARATION_CONTRACT_VERSION = 3
 _TASK_PREPARATION_GENERATION_FIELDS = (
     "id",
     "owner_agent_id",
@@ -79,6 +79,8 @@ _DELIVERABLE_PREPARATION_GENERATION_FIELDS = (
     "git_refs",
     "verification",
     "source_deliverable_ids",
+    "dependency_composition_manifest",
+    "acceptance_policy_version",
     "completion",
     "acceptance_recipient_agent_id",
     "acceptance_decision",
@@ -165,7 +167,14 @@ def task_preparation_generation(state: TeamState, task_id: str) -> str:
     task = state.tasks.get(task_id)
     if task is None:
         return "missing"
-    dependency_ids = sorted(set(task.dependency_task_ids))
+    contribution_task_ids = (
+        task.deliverable_contract.required_contribution_task_ids
+        if task.deliverable_contract is not None
+        else []
+    )
+    dependency_ids = sorted(
+        set(task.dependency_task_ids) | set(contribution_task_ids)
+    )
     relevant_task_ids = {task.id, *dependency_ids}
     payload = {
         # Bump this contract version when a durable repository/worktree

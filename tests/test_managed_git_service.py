@@ -3209,3 +3209,65 @@ def test_delete_refuses_repository_with_orphaned_authorized_key(tmp_path: Path) 
 
     with pytest.raises(ManagedGitConflictError, match="authorized SSH keys"):
         service.delete_repository(repo_id)
+
+
+def test_team_review_pin_remains_resolvable_after_source_branch_moves(tmp_path: Path) -> None:
+    source, _, accepted_commit = _source_repository(tmp_path)
+    service = _service(tmp_path)
+    record = service.register_repository("root", str(source))
+    repo_id = str(record["managed_repo_id"])
+    pinned = service.pin_team_review_snapshot(
+        repo_id,
+        "root",
+        review_id="review-accepted",
+        commit_sha=accepted_commit,
+        source_ref="main",
+    )
+
+    moved_commit = _commit(source, "README.md", "moved\n", "move source branch")
+    _run("git", "push", "origin", "main", cwd=source)
+    service.refresh_repository(repo_id)
+
+    assert moved_commit != accepted_commit
+    assert str(pinned["pin_ref"]).startswith("refs/evander/team-reviews/")
+    assert service.resolve_team_review_commit(
+        repo_id,
+        directory_path="root",
+        pinned_ref=pinned["pin_ref"],
+    ) == accepted_commit
+    with pytest.raises(ValueError, match="immutable Team review ref"):
+        service.resolve_team_review_commit(
+            repo_id,
+            directory_path="root",
+            pinned_ref="refs/heads/main",
+        )
+
+
+def test_reduce_commit_frontier_omits_ancestor_and_duplicate_sources(tmp_path: Path) -> None:
+    source, _, base_commit = _source_repository(tmp_path)
+    first_child = _commit(source, "first.txt", "first\n", "first child")
+    second_child = _commit(source, "second.txt", "second\n", "second child")
+    _run("git", "push", "origin", "main", cwd=source)
+    service = _service(tmp_path)
+    record = service.register_repository("root", str(source))
+    repo_id = str(record["managed_repo_id"])
+
+    result = service.reduce_commit_frontier(
+        repo_id,
+        directory_path="root",
+        base_commit_sha=base_commit,
+        sources=[
+            {"deliverable_id": "base", "commit_sha": base_commit},
+            {"deliverable_id": "ancestor", "commit_sha": first_child},
+            {"deliverable_id": "frontier", "commit_sha": second_child},
+            {"deliverable_id": "duplicate", "commit_sha": second_child},
+        ],
+    )
+
+    assert result["frontier_commit_shas"] == [second_child]
+    assert result["reduced_source_deliverable_ids"] == [
+        "base",
+        "ancestor",
+        "duplicate",
+    ]
+    assert len(result["base_tree_hash"]) == 40

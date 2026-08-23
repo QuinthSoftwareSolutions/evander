@@ -2749,6 +2749,31 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
             extra=extra,
         )
 
+    async def authorize_deliverable_acceptance_verification_waiver(
+        request: Request,
+    ) -> JSONResponse:
+        payload = await _read_payload(request)
+        deliverable_id = request.path_params["deliverable_id"]
+        state, deliverable = (
+            admin_service.authorize_deliverable_acceptance_verification_waiver_as_operator(
+                deliverable_id=deliverable_id,
+                reason=_required(payload, "reason"),
+                operator_actor_id=_operator_actor_from_request(context.auth, request),
+                expected_revision=_expected_revision(payload),
+            )
+        )
+        return _state_response(
+            request,
+            state,
+            extra={
+                "deliverable_acceptance_verification": (
+                    deliverable.verification.model_dump(mode="json", exclude_none=True)
+                    if deliverable.verification is not None
+                    else None
+                )
+            },
+        )
+
     async def recover_candidate_correction_successor(
         request: Request,
     ) -> JSONResponse:
@@ -3984,6 +4009,11 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
         ),
         route("/tasks/{task_id}/cancel", cancel_task, methods=["POST"]),
         route("/deliverables", record_deliverable, methods=["POST"]),
+        route(
+            "/deliverables/{deliverable_id}/acceptance-verification-waiver",
+            authorize_deliverable_acceptance_verification_waiver,
+            methods=["POST"],
+        ),
         route("/review-requests", record_review_request, methods=["POST"]),
         route(
             "/review-requests/{review_request_id}/decision",

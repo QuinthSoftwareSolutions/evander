@@ -1850,6 +1850,13 @@ created only by host/runtime setup for tasks that actually involve Git, and they
 bind an agent, task, optional dispatch, worktree path, the task's snapshotted
 base branch/base commit,
 expected agent branch, exact dependency Git sources, and last verified commit.
+For dependency-backed work, the context also stores an immutable composition
+manifest: pinned base commit/tree, source relationship and deliverable IDs,
+accepted Team review refs and commits, ancestry-reduced frontier, deterministic
+source fingerprint, and the composed commit/tree. Required contribution tasks
+come from the deliverable contract even when no duplicate dependency edge was
+recorded. Accepted review refs are resolved instead of mutable agent branch tips;
+legacy accepted rows retain the older branch/context validation.
 Artifact-only deliverables,
 administrative work, customer-service work, operations work, and tasks with no
 deliverable do not need Git contexts. Once a deliverable includes Git metadata,
@@ -1859,6 +1866,19 @@ server-owned branch tip, and reject missing, wrong-task, wrong-agent,
 wrong-dispatch, inactive, or mismatched contexts and commits. When Git metadata
 is omitted, the submission rules above still inspect a unique active context
 and automatically bind an advanced task branch.
+
+Formal reviewed deliverables created under acceptance policy version 2 use an
+additional pre-acceptance gate for integration boundaries and system-created
+rejected-candidate corrections. Team freezes the project's release verification
+commands, pins the exact review snapshot, and emits
+`team.deliverable.acceptance_verification_requested`; the bundled runtime routes
+that event to `effect:team:verify-deliverable-acceptance` in a disposable
+`container_worker_vm`. Acceptance requires a server-owned passed result with a
+durable evidence ref. `partial` and `not_run` may proceed only after an
+authenticated operator records a reason through
+`POST /deliverables/{deliverable_id}/acceptance-verification-waiver`; failed,
+pending, and running checks cannot be waived. Required passed review criteria
+also require evidence refs under policy version 2.
 
 Resolved tasks and task reassignment create durable, checkout-specific
 `WorktreeCleanupCandidate` records. The periodic Team wake reconciler starts in

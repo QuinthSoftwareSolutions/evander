@@ -2420,6 +2420,30 @@ function bindRecordEditing() {
       return;
     }
 
+    const acceptanceVerificationWaiverButton = event.target.closest(
+      "[data-acceptance-verification-waiver-deliverable-id]",
+    );
+    if (acceptanceVerificationWaiverButton) {
+      event.preventDefault();
+      if (!guardTeamMutation("authorize deliverable acceptance verification waivers")) {
+        return;
+      }
+      const reason = window.prompt(
+        "Why is this partial or not-run pre-acceptance verification safe to waive? The reason and your operator identity are recorded.",
+        "",
+      );
+      if (!text(reason)) {
+        setStatus("An acceptance-verification waiver reason is required.", "error");
+        return;
+      }
+      void authorizeDeliverableAcceptanceVerificationWaiver(
+        acceptanceVerificationWaiverButton,
+        acceptanceVerificationWaiverButton.dataset.acceptanceVerificationWaiverDeliverableId,
+        text(reason),
+      );
+      return;
+    }
+
     const dependencyCompositionTaskButton = event.target.closest(
       "[data-dependency-composition-recovery-task-id]",
     );
@@ -2949,6 +2973,7 @@ const lockedMutationControlSelectors = [
   ["[data-dismiss-action-id]", "dismiss failed actions"],
   ["[data-resume-release-recovery-blocker-id]", "resume release recoveries"],
   ["[data-candidate-correction-recovery-id]", "recover candidate correction successors"],
+  ["[data-acceptance-verification-waiver-deliverable-id]", "authorize deliverable acceptance verification waivers"],
   ["[data-start-dependency-composition-recovery-id]", "start dependency composition recoveries"],
   ["[data-resolve-terminal-blocker-id]", "resolve terminal blockers"],
   ["[data-release-gate-retry]", "retry release gates"],
@@ -15446,6 +15471,36 @@ function renderDeliverableEvidence(deliverable) {
   return `<ul class="deliverable-evidence-list">${[...refs].map((ref) => `<li><code>${escapeHtml(ref)}</code></li>`).join("")}</ul>`;
 }
 
+function renderDeliverableAcceptanceVerification(deliverable) {
+  const verification = deliverable.verification;
+  if (!verification) {
+    return "";
+  }
+  const status = text(verification.status || "unknown");
+  const commands = verification.command_results || [];
+  const waiver = verification.waiver;
+  const canWaive =
+    verification.provenance === "server_release_equivalent" &&
+    ["partial", "not_run"].includes(status) &&
+    !waiver;
+  return `
+    <section class="deliverable-detail-group deliverable-acceptance-verification">
+      <h4>Acceptance verification</h4>
+      <div class="delivery-detail-grid">
+        <div><div class="delivery-detail-label">Status</div><div class="delivery-detail-value"><span class="state-pill ${escapeAttr(status)}">${escapeHtml(humanizeToken(status))}</span></div></div>
+        <div><div class="delivery-detail-label">Provenance</div><div class="delivery-detail-value">${escapeHtml(humanizeToken(verification.provenance || "agent_reported"))}</div></div>
+        ${verification.run_id ? `<div><div class="delivery-detail-label">Run</div><div class="delivery-detail-value">${renderIdentifierCopy(verification.run_id, { label: "Copy ID" })}</div></div>` : ""}
+        ${verification.candidate_commit_sha ? `<div><div class="delivery-detail-label">Candidate</div><div class="delivery-detail-value"><code>${escapeHtml(verification.candidate_commit_sha)}</code></div></div>` : ""}
+      </div>
+      ${verification.summary ? `<p class="meta-line">${escapeHtml(verification.summary)}</p>` : ""}
+      ${commands.length ? `<ul>${commands.map((command) => `<li><strong>${escapeHtml(command.name)}</strong> - ${escapeHtml(humanizeToken(command.state || "pending"))}${command.failure_kind ? ` (${escapeHtml(humanizeToken(command.failure_kind))})` : ""}</li>`).join("")}</ul>` : ""}
+      ${(verification.evidence_refs || []).length ? `<p class="meta-line"><strong>Evidence:</strong> ${(verification.evidence_refs || []).map((ref) => `<code>${escapeHtml(ref)}</code>`).join(" ")}</p>` : ""}
+      ${waiver ? `<p class="meta-line"><strong>Waived by ${escapeHtml(waiver.actor_id)}:</strong> ${escapeHtml(waiver.reason)}</p>` : ""}
+      ${canWaive ? `<button type="button" class="secondary" data-acceptance-verification-waiver-deliverable-id="${escapeAttr(deliverable.id)}" ${lockedAttrs("authorize deliverable acceptance verification waivers")}>Authorize waiver</button>` : ""}
+    </section>
+  `;
+}
+
 function renderDeliverableTechnicalDetails(deliverable) {
   const gitRefs = deliverable.git_refs || {};
   const initialRelease = deliverable.initial_release_disposition || {};
@@ -15464,6 +15519,11 @@ function renderDeliverableTechnicalDetails(deliverable) {
     ["Commit", gitRefs.commit_sha],
     ["Submitted commit", gitRefs.submitted_commit_sha],
     ["Reviewed commit", gitRefs.reviewed_commit_sha],
+    ["Accepted immutable ref", gitRefs.accepted_pinned_ref],
+    ["Acceptance policy version", deliverable.acceptance_policy_version],
+    ["Composition source fingerprint", deliverable.dependency_composition_manifest?.source_fingerprint],
+    ["Composition base commit", deliverable.dependency_composition_manifest?.base_commit_sha],
+    ["Composition frontier commits", deliverable.dependency_composition_manifest?.frontier_commit_shas || []],
     ["Promotion IDs", gitRefs.promotion_record_ids || []],
     ["Initial release package ID", initialRelease.release_package_id],
   ], {
@@ -15528,6 +15588,7 @@ function renderDeliverableCard(deliverable, { compact = false } = {}) {
             <h4>Evidence and artifacts</h4>
             ${renderDeliverableEvidence(deliverable)}
           </section>
+          ${renderDeliverableAcceptanceVerification(deliverable)}
           ${renderInitialReleaseDisposition(deliverable)}
           <section class="deliverable-detail-group">
             <h4>Reviews and decision</h4>
@@ -19293,6 +19354,7 @@ function renderDeliveryRowDetailBody(row, { reviewIds, releaseSummaries, gitProm
       <h4>Evidence and artifacts</h4>
       ${renderDeliverableEvidence(deliverable)}
     </section>
+    ${renderDeliverableAcceptanceVerification(deliverable)}
     ${renderInitialReleaseDisposition(deliverable)}
     <section class="deliverable-detail-group delivery-row-reviews">
       <h4>Reviews and decision</h4>
@@ -22155,6 +22217,60 @@ async function startDependencyCompositionRecovery(button, blockerId, resolverAge
   } catch (error) {
     setStatus(
       error instanceof Error ? error.message : "Dependency merge recovery failed.",
+      "error",
+    );
+  } finally {
+    if (button.isConnected) {
+      button.disabled = false;
+    }
+  }
+}
+
+async function authorizeDeliverableAcceptanceVerificationWaiver(
+  button,
+  deliverableId,
+  reason,
+) {
+  const normalizedDeliverableId = text(deliverableId);
+  if (!normalizedDeliverableId || !text(reason)) {
+    setStatus("A deliverable and waiver reason are required.", "error");
+    return;
+  }
+  const drafts = captureFormDrafts();
+  button.disabled = true;
+  setStatus(`Authorizing acceptance-verification waiver for ${normalizedDeliverableId}.`, "loading");
+  const endpoint = `/deliverables/${encodeURIComponent(normalizedDeliverableId)}/acceptance-verification-waiver`;
+  try {
+    const response = await teamFetch(`${API_BASE}${endpoint}`, {
+      method: "POST",
+      headers: {
+        Accept: "application/json",
+        "Content-Type": "application/json",
+        "X-Team-Addon-Response-Scope": "view",
+      },
+      body: JSON.stringify(
+        mutationBodyWithConflictMetadata(endpoint, "POST", { reason: text(reason) }),
+      ),
+    });
+    if (response.status === 409) {
+      const conflict = await response.json().catch(() => ({}));
+      await reloadActiveTeamView({ preserveForms: true });
+      restoreFormDrafts(drafts);
+      setStatus(
+        `Revision conflict. Reloaded revision ${conflict.current_revision ?? state.revision}; verify the deliverable and try again.`,
+        "warning",
+      );
+      return;
+    }
+    if (!response.ok) {
+      throw new Error(await responseText(response));
+    }
+    await applyMutationResultPayload(await response.json());
+    restoreFormDrafts(drafts);
+    setStatus(`Authorized acceptance-verification waiver for ${normalizedDeliverableId}.`, "ok");
+  } catch (error) {
+    setStatus(
+      error instanceof Error ? error.message : "Acceptance-verification waiver failed.",
       "error",
     );
   } finally {

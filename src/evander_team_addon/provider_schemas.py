@@ -376,6 +376,13 @@ class TeamVerifyReleaseCandidateEffectDefinition(EffectDefinition):
     candidate_commit_sha: ConfigValue
 
 
+class TeamVerifyDeliverableAcceptanceEffectDefinition(EffectDefinition):
+    type: Literal["effect:team:verify-deliverable-acceptance"]
+    deliverable_id: ConfigValue
+    verification_run_id: ConfigValue
+    candidate_commit_sha: ConfigValue
+
+
 class TeamPublishReviewBranchEffectDefinition(EffectDefinition):
     type: Literal["effect:team:publish-review-branch"]
     managed_repo_id: ConfigValue
@@ -782,6 +789,14 @@ TEAM_OUTPUT_SCHEMAS: dict[str, dict[str, dict[str, Any]]] = {
         "created_review_request_ids": {"type": "array"},
         "created_inbox_item_ids": {"type": "array"},
         "published_event_ids": {"type": "array"},
+        "error": {"type": ["string", "null"]},
+    },
+    "effect:team:verify-deliverable-acceptance": {
+        "success": {"type": "boolean"},
+        "revision": {"type": "integer"},
+        "deliverable_id": {"type": "string"},
+        "verification_run_id": {"type": "string"},
+        "verification_state": {"type": "string"},
         "error": {"type": ["string", "null"]},
     },
     "effect:team:publish-review-branch": {

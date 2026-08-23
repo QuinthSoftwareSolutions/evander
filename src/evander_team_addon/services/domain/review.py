@@ -56,6 +56,7 @@ from .git_work_contexts import (
     require_authoritative_git_review_retry_candidate,
 )
 from .review_repository_snapshots import deliverable_review_repository_snapshot
+from .acceptance_verification import deliverable_acceptance_verification_error
 from .manager_fallback import _manager_fallback_review_decision_guard_error
 from .outcome_catalog import snapshot_review_profile_outcomes
 from .review_handoff import queue_actionable_inbox_item
@@ -1664,6 +1665,10 @@ def _build_criterion_results(
                 criterion_id=criterion_id,
                 state=raw_state,
                 finding=_optional_text(entry.get("finding")) or "",
+                evidence_refs=_string_list(
+                    entry.get("evidence_refs"),
+                    "evidence_refs",
+                ),
             )
         )
     return results, None
@@ -1732,6 +1737,21 @@ def _review_decision_policy_error(
                 f"accepted review {review.id} has required criteria that did not pass: "
                 + ", ".join(not_passed)
             )
+        if review.deliverable_id is not None:
+            deliverable = state.deliverables.get(review.deliverable_id)
+            missing_evidence = [
+                criterion.id
+                for criterion in criterion_definitions
+                if criterion.required
+                and deliverable is not None
+                and deliverable.acceptance_policy_version >= 2
+                and not by_id[criterion.id].evidence_refs
+            ]
+            if missing_evidence:
+                return (
+                    f"accepted review {review.id} has required criteria without evidence: "
+                    + ", ".join(missing_evidence)
+                )
 
     if review.release_package_id is not None:
         release = _require_present(
@@ -1752,6 +1772,13 @@ def _review_decision_policy_error(
         return None
 
     deliverable = _require_present(state.deliverables, review.deliverable_id, "deliverable")
+    if decision_state == TeamRecordState.ACCEPTED:
+        verification_error = deliverable_acceptance_verification_error(
+            state,
+            deliverable=deliverable,
+        )
+        if verification_error is not None:
+            return verification_error
     if finding_resolutions and decision_state != TeamRecordState.ACCEPTED:
         return "carried findings may only be resolved by an accepted review decision"
     resolution_ids: list[str] = []

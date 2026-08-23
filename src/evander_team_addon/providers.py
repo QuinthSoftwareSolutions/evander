@@ -165,10 +165,12 @@ from .models import (
 )
 from .services.domain.task_assessment import (
     assess_tasks,
+    required_source_deliverable_ids_for_task,
     task_payload_with_assessment,
 )
 from .services.domain.dependency_composition_recovery import (
     accepted_recovery_for_target,
+    dependency_composition_source_fingerprint,
     record_dependency_composition_conflict,
     recovery_for_task,
 )
@@ -203,6 +205,7 @@ from .provider_schemas import (
     TeamSetTaskWorkStateEffectDefinition,
     TeamRetireAgentEffectDefinition,
     TeamUpdateCaseEffectDefinition,
+    TeamVerifyDeliverableAcceptanceEffectDefinition,
     TeamVerifyReleaseCandidateEffectDefinition,
     TeamWakeDueAgentsEffectDefinition,
     TeamWakeGovernanceManagersEffectDefinition,
@@ -265,6 +268,9 @@ from .services.domain.correction_git_source import (
 )
 from .services.domain.release_packages import GIT_RELEASE_RECOVERY_EVENT_TYPE
 from .services.domain.release_gates import RELEASE_VERIFICATION_REQUESTED_EVENT_TYPE
+from .services.domain.acceptance_verification import (
+    DELIVERABLE_ACCEPTANCE_VERIFICATION_REQUESTED_EVENT_TYPE,
+)
 from .services.domain.review import (
     _apply_review_request,
     _review_request_was_created,
@@ -294,7 +300,13 @@ from .services.candidate_correction_reconciliation_service import (
     CandidateCorrectionReconciliationService,
 )
 from .services.release_gate_service import TeamReleaseGateService
-from .services.release_verification_effects import EffectReleaseVerificationExecutor
+from .services.release_verification_effects import (
+    EffectDeliverableAcceptanceVerificationExecutor,
+    EffectReleaseVerificationExecutor,
+)
+from .services.deliverable_acceptance_verification_runner import (
+    TeamDeliverableAcceptanceVerificationRunner,
+)
 from .services.release_verification_runner import (
     ReleaseVerificationExecutor,
     TeamReleaseVerificationRunner,
@@ -2260,6 +2272,11 @@ _TEAM_INTERNAL_EVENT_CATALOG: tuple[WorkflowInternalEventCatalogEntry, ...] = (
         RELEASE_VERIFICATION_REQUESTED_EVENT_TYPE,
         "Team release verification requested",
         "Published after a release candidate commit is pinned and ready for CI verification.",
+    ),
+    _team_internal_event(
+        DELIVERABLE_ACCEPTANCE_VERIFICATION_REQUESTED_EVENT_TYPE,
+        "Team deliverable acceptance verification requested",
+        "Published when a reviewed commit is ready for server-owned pre-acceptance checks.",
     ),
     _team_internal_event(
         HUMAN_REVIEW_REQUESTED_EVENT_TYPE,
@@ -5653,6 +5670,42 @@ class TeamVerifyReleaseCandidateEffectProvider(EffectProviderBase):
         return result
 
 
+class TeamVerifyDeliverableAcceptanceEffectProvider(EffectProviderBase):
+    @classmethod
+    def validate_definition(cls, effect_definition):
+        if isinstance(effect_definition, WorkflowNodeEnvelope):
+            return _materialize(
+                TeamVerifyDeliverableAcceptanceEffectDefinition,
+                effect_definition,
+            )
+        return effect_definition
+
+    def execute(self, *, resolved_config: Mapping[str, Any] | None = None) -> dict[str, Any]:
+        payload = _definition_payload(
+            self.effect_definition,
+            "deliverable_id",
+            "verification_run_id",
+            "candidate_commit_sha",
+        )
+        if resolved_config:
+            payload.update(dict(resolved_config))
+        deliverable_id = _required_text(payload.get("deliverable_id"), "deliverable_id")
+        run_id = _required_text(payload.get("verification_run_id"), "verification_run_id")
+        candidate_sha = _required_text(
+            payload.get("candidate_commit_sha"),
+            "candidate_commit_sha",
+        )
+        repo = TeamStateRepository(_runtime_dir(self.runtime_context))
+        return TeamDeliverableAcceptanceVerificationRunner(
+            repo,
+            EffectDeliverableAcceptanceVerificationExecutor(self.runtime_context),
+        ).run(
+            deliverable_id=deliverable_id,
+            verification_run_id=run_id,
+            candidate_commit_sha=candidate_sha,
+        )
+
+
 class TeamPublishReviewBranchEffectProvider(EffectProviderBase):
     @classmethod
     def validate_definition(cls, effect_definition):
@@ -7020,6 +7073,9 @@ def register_providers() -> ProviderPluginRegistration:
                 TeamRecordHumanReviewPreparationResultEffectProvider
             ),
             "effect:team:verify-release-candidate": TeamVerifyReleaseCandidateEffectProvider,
+            "effect:team:verify-deliverable-acceptance": (
+                TeamVerifyDeliverableAcceptanceEffectProvider
+            ),
             "effect:team:publish-review-branch": TeamPublishReviewBranchEffectProvider,
             "effect:team:mark-release-published": TeamMarkReleasePublishedEffectProvider,
             "effect:team:consolidate-git-branches": (TeamConsolidateGitBranchesEffectProvider),
@@ -7124,6 +7180,12 @@ def register_providers() -> ProviderPluginRegistration:
             ),
             "effect:team:verify-release-candidate": (
                 lambda node: _materialize(TeamVerifyReleaseCandidateEffectDefinition, node)
+            ),
+            "effect:team:verify-deliverable-acceptance": (
+                lambda node: _materialize(
+                    TeamVerifyDeliverableAcceptanceEffectDefinition,
+                    node,
+                )
             ),
             "effect:team:publish-review-branch": (
                 lambda node: _materialize(TeamPublishReviewBranchEffectDefinition, node)
@@ -8881,6 +8943,7 @@ def _create_project_repo_git_work_contexts(
             session_id=session_id,
             repo_name=task_worktree_repo_name,
         ):
+            composition_result: dict[str, Any] = {}
             try:
                 worktree_path, base_commit = _prepare_project_repo_task_worktree(
                     context,
@@ -8898,6 +8961,7 @@ def _create_project_repo_git_work_contexts(
                     resolved_dependency_branch=resolved_dependency_branch,
                     resolved_dependency_commit_sha=resolved_dependency_commit_sha,
                     dependency_merge_author_identity=dependency_merge_author_identity,
+                    composition_result=composition_result,
                 )
             except DependencyGitPreparationError as exc:
                 if exc.conflict is not None:
@@ -8916,6 +8980,24 @@ def _create_project_repo_git_work_contexts(
                         }
                     )
                 raise
+            dependency_composition_manifest = _build_dependency_composition_manifest(
+                context,
+                task_id=task_id,
+                managed_repo_id=managed_repo_id,
+                directory_path=(
+                    _optional_text(
+                        getattr(
+                            getattr(state.projects.get(project_id), "git", None),
+                            "directory_path",
+                            None,
+                        )
+                    )
+                    or "root"
+                ),
+                base_branch=effective_base_branch or "HEAD",
+                dependency_git_sources=dependency_git_sources,
+                composition_result=composition_result,
+            )
             context_id = _project_repo_git_work_context_id(
                 agent_id=agent_id,
                 task_id=task_id,
@@ -8936,7 +9018,17 @@ def _create_project_repo_git_work_contexts(
                     task_id=task_id,
                     managed_repo_id=managed_repo_id,
                 )
+                current_dependency_recovery = recovery_for_task(
+                    state,
+                    recovery_task_id=task_id,
+                )
                 current_dependency_git_sources = (
+                    [
+                        source.model_dump(mode="json")
+                        for source in current_dependency_recovery.dependency_git_sources
+                    ]
+                    if current_dependency_recovery is not None
+                    else
                     [
                         source.model_dump(mode="json")
                         for source in current_correction_source.dependency_git_sources
@@ -8955,6 +9047,14 @@ def _create_project_repo_git_work_contexts(
                         message=(
                             f"task {task_id} rejected-candidate Git source changed "
                             "during worktree preparation; no lease was granted"
+                        ),
+                    )
+                if current_dependency_recovery != dependency_recovery:
+                    raise DependencyGitPreparationError(
+                        task_id=task_id,
+                        message=(
+                            f"task {task_id} dependency recovery changed during "
+                            "worktree preparation; no lease was granted"
                         ),
                     )
                 if current_dependency_git_sources != dependency_git_sources:
@@ -8979,6 +9079,7 @@ def _create_project_repo_git_work_contexts(
                         dependency_git_sources=dependency_git_sources,
                         dependency_composition_recovery_id=(dependency_composition_recovery_id),
                         manual_dependency_git_sources=manual_dependency_git_sources,
+                        dependency_composition_manifest=(dependency_composition_manifest),
                     )
                     break
                 try:
@@ -8994,7 +9095,8 @@ def _create_project_repo_git_work_contexts(
                         dependency_git_sources=dependency_git_sources,
                         dependency_composition_recovery_id=(dependency_composition_recovery_id),
                         manual_dependency_git_sources=manual_dependency_git_sources,
-                        expected_revision=state.revision,
+                        dependency_composition_manifest=(dependency_composition_manifest),
+                        expected_revision=None,
                     )
                     break
                 except TeamStateConflictError as exc:
@@ -9025,6 +9127,61 @@ def _project_repo_git_work_context_id(
     return f"gitctx-wake-{hashlib.sha256(material).hexdigest()[:24]}"
 
 
+def _build_dependency_composition_manifest(
+    context: Any,
+    *,
+    task_id: str,
+    managed_repo_id: str,
+    directory_path: str,
+    base_branch: str,
+    dependency_git_sources: Sequence[Mapping[str, str]],
+    composition_result: Mapping[str, Any],
+) -> dict[str, Any] | None:
+    if not dependency_git_sources:
+        return None
+    root_commit = _optional_text(composition_result.get("root_commit_sha"))
+    composed_commit = _optional_text(composition_result.get("composed_commit_sha"))
+    composed_tree = _optional_text(composition_result.get("composed_tree_hash"))
+    if root_commit is None or composed_commit is None or composed_tree is None:
+        return None
+    managed_git = getattr(getattr(context, "admin_service", None), "managed_git_admin", None)
+    reduce_frontier = getattr(managed_git, "reduce_commit_frontier", None)
+    if not callable(reduce_frontier):
+        return None
+    frontier = reduce_frontier(
+        managed_repo_id,
+        directory_path=directory_path,
+        base_commit_sha=root_commit,
+        sources=dependency_git_sources,
+    )
+    base_tree = _required_text(frontier.get("base_tree_hash"), "base_tree_hash")
+    source_fingerprint = dependency_composition_source_fingerprint(
+        managed_repo_id=managed_repo_id,
+        directory_path=directory_path,
+        base_branch=base_branch,
+        base_commit_sha=root_commit,
+        base_tree_hash=base_tree,
+        dependency_git_sources=dependency_git_sources,
+    )
+    return {
+        "policy_version": 1,
+        "target_task_id": task_id,
+        "managed_repo_id": managed_repo_id,
+        "directory_path": directory_path,
+        "base_branch": base_branch,
+        "base_commit_sha": root_commit,
+        "base_tree_hash": base_tree,
+        "dependency_git_sources": [dict(source) for source in dependency_git_sources],
+        "source_fingerprint": source_fingerprint,
+        "frontier_commit_shas": list(frontier.get("frontier_commit_shas") or []),
+        "reduced_source_deliverable_ids": list(
+            frontier.get("reduced_source_deliverable_ids") or []
+        ),
+        "composed_commit_sha": composed_commit,
+        "composed_tree_hash": composed_tree,
+    }
+
+
 def _validate_project_repo_git_work_context(
     context_model: Any,
     *,
@@ -9038,6 +9195,7 @@ def _validate_project_repo_git_work_context(
     dependency_git_sources: Sequence[Mapping[str, str]],
     dependency_composition_recovery_id: str | None = None,
     manual_dependency_git_sources: Sequence[Mapping[str, str]] = (),
+    dependency_composition_manifest: Mapping[str, Any] | None = None,
 ) -> None:
     expected = {
         "agent_id": agent_id,
@@ -9050,6 +9208,11 @@ def _validate_project_repo_git_work_context(
         "dependency_git_sources": [dict(row) for row in dependency_git_sources],
         "dependency_composition_recovery_id": dependency_composition_recovery_id,
         "manual_dependency_git_sources": [dict(row) for row in manual_dependency_git_sources],
+        "dependency_composition_manifest": (
+            dict(dependency_composition_manifest)
+            if dependency_composition_manifest is not None
+            else None
+        ),
     }
     mismatches = [
         field_name
@@ -9064,7 +9227,12 @@ def _validate_project_repo_git_work_context(
                 "dependency_git_sources",
                 "manual_dependency_git_sources",
             }
-            else getattr(context_model, field_name, None)
+            else (
+                getattr(context_model, field_name, None).model_dump(mode="json")
+                if field_name == "dependency_composition_manifest"
+                and getattr(context_model, field_name, None) is not None
+                else getattr(context_model, field_name, None)
+            )
         )
         != expected_value
     ]
@@ -9250,7 +9418,19 @@ def _project_repo_task_dependency_git_sources_unchecked(
     rows: list[dict[str, str]] = []
     managed_git = getattr(getattr(context, "admin_service", None), "managed_git_admin", None)
     resolve_branch_commit = getattr(managed_git, "resolve_branch_commit", None)
-    for dependency_task_id in task.dependency_task_ids:
+    resolve_team_review_commit = getattr(managed_git, "resolve_team_review_commit", None)
+    required_source_ids = set(
+        required_source_deliverable_ids_for_task(state, task_id=task_id)
+    )
+    required_task_ids = {
+        state.deliverables[deliverable_id].task_id
+        for deliverable_id in required_source_ids
+        if deliverable_id in state.deliverables
+    }
+    dependency_task_ids = list(
+        dict.fromkeys([*task.dependency_task_ids, *sorted(required_task_ids)])
+    )
+    for dependency_task_id in dependency_task_ids:
         dependency = state.tasks.get(dependency_task_id)
         if dependency is None:
             raise RuntimeError(f"task {task_id} dependency {dependency_task_id} no longer exists")
@@ -9269,6 +9449,10 @@ def _project_repo_task_dependency_git_sources_unchecked(
             deliverable
             for deliverable in current_deliverables
             if _deliverable_has_git_state(deliverable)
+            and (
+                dependency_task_id in task.dependency_task_ids
+                or deliverable.id in required_source_ids
+            )
         ]
         if not git_deliverables:
             continue
@@ -9304,23 +9488,6 @@ def _project_repo_task_dependency_git_sources_unchecked(
             )
         for deliverable in git_deliverables:
             git_refs = deliverable.git_refs
-            branch_context_id = git_refs.branch_context_id
-            if branch_context_id is None:
-                raise RuntimeError(
-                    f"accepted Git deliverable {deliverable.id} has no branch context"
-                )
-            branch_context = state.git_work_contexts.get(branch_context_id)
-            if branch_context is None or branch_context.task_id != dependency_task_id:
-                raise RuntimeError(
-                    f"accepted Git deliverable {deliverable.id} has an invalid "
-                    f"branch context {branch_context_id}"
-                )
-            branch = _optional_text(git_refs.agent_branch) or branch_context.agent_branch
-            if branch != branch_context.agent_branch:
-                raise RuntimeError(
-                    f"accepted Git deliverable {deliverable.id} records ambiguous "
-                    "agent branch provenance"
-                )
             commit_candidates = {
                 commit.casefold()
                 for commit in (
@@ -9340,15 +9507,58 @@ def _project_repo_task_dependency_git_sources_unchecked(
                 raise RuntimeError(
                     f"accepted Git deliverable {deliverable.id} records an invalid commit ID"
                 )
+            pinned_ref = _accepted_deliverable_pinned_ref(
+                state,
+                deliverable_id=deliverable.id,
+                managed_repo_id=managed_repo_id,
+                directory_path=dependency_git.directory_path,
+                commit_sha=commit_sha,
+            )
+            branch_context_id = git_refs.branch_context_id
+            branch_context = (
+                state.git_work_contexts.get(branch_context_id)
+                if branch_context_id is not None
+                else None
+            )
+            if branch_context is not None and branch_context.task_id != dependency_task_id:
+                raise RuntimeError(
+                    f"accepted Git deliverable {deliverable.id} has an invalid "
+                    f"branch context {branch_context_id}"
+                )
+            branch = _optional_text(git_refs.agent_branch) or _optional_text(
+                getattr(branch_context, "agent_branch", None)
+            )
+            if branch is None:
+                raise RuntimeError(
+                    f"accepted Git deliverable {deliverable.id} has no source branch label"
+                )
+            if branch_context is not None and branch != branch_context.agent_branch:
+                raise RuntimeError(
+                    f"accepted Git deliverable {deliverable.id} records ambiguous "
+                    "agent branch provenance"
+                )
+            if pinned_ref is None and branch_context is None:
+                raise RuntimeError(
+                    f"legacy accepted Git deliverable {deliverable.id} has no branch context"
+                )
             try:
-                authoritative_commit = resolve_branch_commit(
-                    managed_repo_id,
-                    directory_path=dependency_git.directory_path,
-                    branch=branch,
+                authoritative_commit = (
+                    resolve_team_review_commit(
+                        managed_repo_id,
+                        directory_path=dependency_git.directory_path,
+                        pinned_ref=pinned_ref,
+                    )
+                    if pinned_ref is not None and callable(resolve_team_review_commit)
+                    else resolve_branch_commit(
+                        managed_repo_id,
+                        directory_path=dependency_git.directory_path,
+                        branch=branch,
+                    )
                 )
             except Exception as exc:
+                source_label = pinned_ref or branch
                 raise RuntimeError(
-                    f"could not resolve dependency branch {branch!r} for accepted "
+                    f"could not resolve dependency source {source_label!r} for accepted "
                     f"deliverable {deliverable.id}: {exc}"
                 ) from None
             normalized_authoritative = _optional_text(authoritative_commit)
@@ -9359,6 +9569,12 @@ def _project_repo_task_dependency_git_sources_unchecked(
                 )
             normalized_authoritative = normalized_authoritative.casefold()
             if normalized_authoritative != commit_sha:
+                if pinned_ref is not None:
+                    raise RuntimeError(
+                        f"immutable dependency ref {pinned_ref!r} for accepted deliverable "
+                        f"{deliverable.id} does not match reviewed commit {commit_sha}: found "
+                        f"{normalized_authoritative}"
+                    )
                 raise RuntimeError(
                     f"dependency branch {branch!r} moved after acceptance for "
                     f"deliverable {deliverable.id}: expected {commit_sha}, found "
@@ -9370,9 +9586,50 @@ def _project_repo_task_dependency_git_sources_unchecked(
                     "deliverable_id": deliverable.id,
                     "branch": branch,
                     "commit_sha": commit_sha,
+                    "relationship_kind": (
+                        "required_contribution"
+                        if deliverable.id in required_source_ids
+                        else "task_dependency"
+                    ),
+                    **({"pinned_ref": pinned_ref} if pinned_ref is not None else {}),
                 }
             )
     return rows
+
+
+def _accepted_deliverable_pinned_ref(
+    state: Any,
+    *,
+    deliverable_id: str,
+    managed_repo_id: str,
+    directory_path: str,
+    commit_sha: str,
+) -> str | None:
+    deliverable = state.deliverables.get(deliverable_id)
+    if deliverable is None:
+        return None
+    recorded = _optional_text(getattr(deliverable.git_refs, "accepted_pinned_ref", None))
+    snapshots = sorted(
+        (
+            review.repository_snapshot
+            for review in state.review_requests.values()
+            if review.deliverable_id == deliverable_id
+            and review.state == TeamRecordState.ACCEPTED
+            and review.repository_snapshot is not None
+            and review.repository_snapshot.managed_repo_id == managed_repo_id
+            and review.repository_snapshot.directory_path == directory_path
+            and review.repository_snapshot.commit_sha.casefold() == commit_sha.casefold()
+        ),
+        key=lambda snapshot: snapshot.pinned_ref,
+    )
+    if recorded is not None:
+        if snapshots and all(snapshot.pinned_ref != recorded for snapshot in snapshots):
+            raise RuntimeError(
+                f"accepted Git deliverable {deliverable_id} records pinned ref {recorded!r} "
+                "outside its accepted review evidence"
+            )
+        return recorded
+    return snapshots[0].pinned_ref if snapshots else None
 
 
 def _deliverable_has_git_state(deliverable: Any) -> bool:
@@ -9454,6 +9711,7 @@ def _prepare_project_repo_task_worktree(
     resolved_dependency_branch: str | None = None,
     resolved_dependency_commit_sha: str | None = None,
     dependency_merge_author_identity: GitIdentity = DEFAULT_AGENT_GIT_IDENTITY,
+    composition_result: dict[str, Any] | None = None,
 ) -> tuple[str, str | None]:
     repo_name = _required_text(project_repo.get("guest_repo_name"), "guest_repo_name")
     task_slug = _slug_id_part(task_id, fallback="task")[:40]
@@ -9559,6 +9817,15 @@ def _prepare_project_repo_task_worktree(
                     f"dependency commit {resolved_dependency_commit_sha}"
                 ),
             )
+        if composition_result is not None:
+            for field_name, record_field_name in (
+                ("root_commit_sha", "composition_root_commit_sha"),
+                ("composed_commit_sha", "composed_commit_sha"),
+                ("composed_tree_hash", "composed_tree_hash"),
+            ):
+                value = _optional_text(getattr(record, record_field_name, None))
+                if value is not None:
+                    composition_result[field_name] = value.casefold()
         return record.target_dir, base_commit_sha
     if execution_backend != "libvirt_vm":
         raise RuntimeError(
@@ -9573,8 +9840,33 @@ def _prepare_project_repo_task_worktree(
     quoted_prior_base = shlex.quote(prior_base_commit or "")
     quoted_pinned_base = shlex.quote(pinned_base_commit or "")
     quoted_pinned_tree = shlex.quote(pinned_base_tree or "")
+    worktree_dependency_provenance = [
+        {
+            "dependency_task_id": _required_text(
+                row.get("dependency_task_id"),
+                "dependency_task_id",
+            ),
+            "deliverable_id": _required_text(row.get("deliverable_id"), "deliverable_id"),
+            "branch": _required_text(row.get("branch"), "dependency branch"),
+            "commit_sha": _required_text(
+                row.get("commit_sha"),
+                "dependency commit_sha",
+            ).casefold(),
+            **(
+                {"relationship_kind": row.get("relationship_kind")}
+                if row.get("relationship_kind") not in {None, "task_dependency"}
+                else {}
+            ),
+            **(
+                {"pinned_ref": row.get("pinned_ref")}
+                if _optional_text(row.get("pinned_ref")) is not None
+                else {}
+            ),
+        }
+        for row in dependency_git_sources
+    ]
     dependency_provenance_json = json.dumps(
-        [dict(row) for row in dependency_git_sources],
+        worktree_dependency_provenance,
         sort_keys=True,
         separators=(",", ":"),
     )
@@ -9588,7 +9880,7 @@ def _prepare_project_repo_task_worktree(
     recovery_payload_json = json.dumps(
         {
             "recovery_id": dependency_composition_recovery_id,
-            "dependency_git_sources": [dict(row) for row in dependency_git_sources],
+            "dependency_git_sources": worktree_dependency_provenance,
         },
         sort_keys=True,
         separators=(",", ":"),
@@ -9630,6 +9922,10 @@ def _prepare_project_repo_task_worktree(
         source_commit = shlex.quote(
             _required_text(source.get("commit_sha"), "dependency commit_sha").casefold()
         )
+        pinned_ref = _optional_text(source.get("pinned_ref"))
+        source_ref = shlex.quote(
+            pinned_ref or f"refs/heads/{validate_branch_name(_required_text(source.get('branch'), 'dependency branch'))}"
+        )
         source_task = shlex.quote(
             _required_text(source.get("dependency_task_id"), "dependency_task_id")
         )
@@ -9640,11 +9936,12 @@ def _prepare_project_repo_task_worktree(
             (
                 f"dependency_branch_{index}={source_branch}",
                 f"dependency_commit_{index}={source_commit}",
+                f"dependency_ref_{index}={source_ref}",
             )
         )
         dependency_fetch_lines.extend(
             (
-                (f'git fetch --no-tags origin "refs/heads/$dependency_branch_{index}"'),
+                (f'git fetch --no-tags origin "$dependency_ref_{index}"'),
                 (
                     f'test "$(git rev-parse --verify FETCH_HEAD^{{commit}})" '
                     f'= "$dependency_commit_{index}"'
@@ -9825,6 +10122,7 @@ def _prepare_project_repo_task_worktree(
             'evander.baseCommit || true)"'
         ),
         'head_before="$(git -C "$target" rev-parse HEAD)"',
+        'echo "EVANDER_COMPOSITION_ROOT_COMMIT=$head_before"',
         'if [ -n "$pinned_base_commit" ]; then',
         ('  git -C "$target" merge-base --is-ancestor "$pinned_base_commit" "$head_before"'),
         "fi",
@@ -9963,6 +10261,8 @@ def _prepare_project_repo_task_worktree(
         '  git -C "$target" push origin "HEAD:refs/heads/$branch"',
         "fi",
         'echo "EVANDER_BASE_COMMIT=$base_commit"',
+        'echo "EVANDER_COMPOSED_COMMIT=$head_commit"',
+        'echo "EVANDER_COMPOSED_TREE=$(git -C "$target" rev-parse HEAD^{tree})"',
         'printf "%s\\n" "$head_commit"',
     ]
     command = "\n".join(command_lines)
@@ -10058,6 +10358,25 @@ def _prepare_project_repo_task_worktree(
         ),
         None,
     )
+    if composition_result is not None:
+        for field_name, marker in (
+            ("root_commit_sha", "EVANDER_COMPOSITION_ROOT_COMMIT="),
+            ("composed_commit_sha", "EVANDER_COMPOSED_COMMIT="),
+            ("composed_tree_hash", "EVANDER_COMPOSED_TREE="),
+        ):
+            value = next(
+                (
+                    line[len(marker) :].strip().casefold()
+                    for line in str(result.get("stdout") or "").splitlines()
+                    if line.startswith(marker)
+                ),
+                None,
+            )
+            if value is not None and re.fullmatch(
+                r"(?:[0-9a-f]{40}|[0-9a-f]{64})",
+                value,
+            ):
+                composition_result[field_name] = value
     return worktree_path, commit_sha
 
 
@@ -10106,6 +10425,9 @@ def _git_work_context_prompt_payload(context: Any) -> dict[str, Any]:
     dependency_sources = _mapping_items(payload.get("dependency_git_sources"))
     if dependency_sources:
         row["dependency_git_sources"] = dependency_sources
+    composition_manifest = payload.get("dependency_composition_manifest")
+    if isinstance(composition_manifest, Mapping):
+        row["dependency_composition_manifest"] = dict(composition_manifest)
     return row
 
 

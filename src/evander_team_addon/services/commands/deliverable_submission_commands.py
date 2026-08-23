@@ -48,6 +48,9 @@ from ..domain.common import (
     _set_task_state,
 )
 from ..domain.agent_access import _is_project_lead_for, _is_team_manager
+from ..domain.acceptance_verification import (
+    initialize_deliverable_acceptance_verification,
+)
 from ..domain.blockers import resolve_active_blockers_for_source
 from ..domain.deliverables import (
     _accept_deliverable_and_maybe_task,
@@ -906,6 +909,11 @@ class TeamDeliverableSubmissionCommandService(TeamCommandExecutor):
                 if _review_request_was_created(review_result, created_id):
                     created_review_ids.append(created_id)
             submitted_deliverable.review_cohort_sealed_at = utc_now()
+            initialize_deliverable_acceptance_verification(
+                state,
+                deliverable=submitted_deliverable,
+                result=review_result,
+            )
             for review_id in created_review_ids:
                 review = state.review_requests[review_id]
                 _mark_agent_work_due(
@@ -940,8 +948,17 @@ class TeamDeliverableSubmissionCommandService(TeamCommandExecutor):
                     "task_state": state.tasks[task.id].state.value,
                     "waiting_reason": task_payload_with_assessment(state, task)["waiting_reason"],
                     "intent_recorded": True,
-                    "async_effect_pending": bool(created_inbox_ids),
-                    "verification": normalized_deliverable.get("verification"),
+                    "async_effect_pending": bool(
+                        created_inbox_ids or review_result.get("events")
+                    ),
+                    "verification": (
+                        submitted_deliverable.verification.model_dump(
+                            mode="json",
+                            exclude_none=True,
+                        )
+                        if submitted_deliverable.verification is not None
+                        else None
+                    ),
                     "next_action_hints": _deliverable_submission_next_action_hints(
                         deliverable_id=deliverable_id,
                         deliverable=normalized_deliverable,

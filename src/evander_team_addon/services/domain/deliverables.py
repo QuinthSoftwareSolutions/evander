@@ -94,7 +94,21 @@ def _deliverable_verification_from_payload(
 def _deliverable_verification_payload(deliverable: Deliverable) -> dict[str, Any] | None:
     if deliverable.verification is None:
         return None
-    return deliverable.verification.model_dump(mode="json")
+    verification = deliverable.verification
+    payload: dict[str, Any] = {
+        "status": verification.status,
+        "summary": verification.summary,
+        "evidence_refs": list(verification.evidence_refs),
+    }
+    if verification.provenance == "server_release_equivalent":
+        payload.update(
+            verification.model_dump(
+                mode="json",
+                exclude_none=True,
+                exclude={"status", "summary", "evidence_refs"},
+            )
+        )
+    return payload
 
 
 def _deliverable_submission_next_action_hints(
@@ -325,6 +339,40 @@ def _accept_deliverable_and_maybe_task(
 ) -> bool:
     """Accept one deliverable and close its task when every active product is accepted."""
 
+    if deliverable.acceptance_policy_version >= 2 and any(
+        (
+            deliverable.git_refs.branch_context_id,
+            deliverable.git_refs.agent_branch,
+            deliverable.git_refs.commit_sha,
+            deliverable.git_refs.reviewed_commit_sha,
+        )
+    ):
+        reviewed_commit = (
+            deliverable.git_refs.reviewed_commit_sha
+            or deliverable.git_refs.submitted_commit_sha
+            or deliverable.git_refs.commit_sha
+        )
+        accepted_snapshots = sorted(
+            (
+                review.repository_snapshot
+                for review_id in deliverable.review_request_ids
+                if (review := state.review_requests.get(review_id)) is not None
+                and review.state == TeamRecordState.ACCEPTED
+                and review.superseded_by_review_request_id is None
+                and review.retired_at is None
+                and review.repository_snapshot is not None
+                and reviewed_commit is not None
+                and review.repository_snapshot.commit_sha.casefold()
+                == reviewed_commit.casefold()
+            ),
+            key=lambda snapshot: snapshot.pinned_ref,
+        )
+        if not accepted_snapshots:
+            raise ValueError(
+                f"deliverable {deliverable.id} cannot be accepted without an immutable "
+                "review repository snapshot"
+            )
+        deliverable.git_refs.accepted_pinned_ref = accepted_snapshots[0].pinned_ref
     deliverable.state = TeamRecordState.ACCEPTED
     task_deliverables = _active_task_deliverables(state, task)
     if not task_deliverables or not all(

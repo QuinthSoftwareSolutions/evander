@@ -27,7 +27,7 @@ from .models import (
 
 ADDON_ID = "team-addon"
 STATE_DB_FILE = "state.db"
-SQLITE_SCHEMA_VERSION = 58
+SQLITE_SCHEMA_VERSION = 59
 _SQLITE_WAL_ENABLE_TIMEOUT_SECONDS = 5.0
 
 T = TypeVar("T")
@@ -1674,6 +1674,30 @@ class TeamStateSqliteStore:
                     column_name="manual_dependency_git_sources_json",
                     definition="TEXT NOT NULL DEFAULT '[]'",
                 )
+                _ensure_column(
+                    connection,
+                    table_name="team_git_work_contexts",
+                    column_name="dependency_composition_manifest_json",
+                    definition="TEXT",
+                )
+                _ensure_column(
+                    connection,
+                    table_name="team_deliverables",
+                    column_name="accepted_pinned_ref",
+                    definition="TEXT",
+                )
+                _ensure_column(
+                    connection,
+                    table_name="team_deliverables",
+                    column_name="dependency_composition_manifest_json",
+                    definition="TEXT",
+                )
+                _ensure_column(
+                    connection,
+                    table_name="team_deliverables",
+                    column_name="acceptance_policy_version",
+                    definition="INTEGER NOT NULL DEFAULT 1",
+                )
                 connection.execute(
                     """
                     UPDATE team_tasks
@@ -2912,6 +2936,7 @@ class TeamStateSqliteStore:
                     "reviewed_commit_sha": row["reviewed_commit_sha"],
                     "feature_commit_sha": row["feature_commit_sha"],
                     "release_commit_sha": row["release_commit_sha"],
+                    "accepted_pinned_ref": row["accepted_pinned_ref"],
                     "promotion_record_ids": promotions.get(row["id"], []),
                 },
                 "verification": (
@@ -2932,6 +2957,12 @@ class TeamStateSqliteStore:
                     if row["review_manifest_json"] is not None
                     else None
                 ),
+                "dependency_composition_manifest": (
+                    _json_loads(row["dependency_composition_manifest_json"])
+                    if row["dependency_composition_manifest_json"] is not None
+                    else None
+                ),
+                "acceptance_policy_version": int(row["acceptance_policy_version"] or 1),
                 "acceptance_recipient_agent_id": row["acceptance_recipient_agent_id"],
                 "acceptance_decision": (
                     _json_loads(row["acceptance_decision_json"])
@@ -2966,9 +2997,11 @@ class TeamStateSqliteStore:
                     id, task_id, producer_agent_id, summary, state, branch_context_id,
                     agent_branch, review_branch, feature_branch, release_branch, commit_sha,
                     submitted_commit_sha, reviewed_commit_sha, feature_commit_sha,
-                    release_commit_sha, verification_json, supersedes_deliverable_id,
+                    release_commit_sha, accepted_pinned_ref, verification_json,
+                    supersedes_deliverable_id,
                     superseded_by_deliverable_id, carried_findings_json,
-                    review_manifest_json, acceptance_recipient_agent_id,
+                    review_manifest_json, dependency_composition_manifest_json,
+                    acceptance_policy_version, acceptance_recipient_agent_id,
                     acceptance_decision_json, initial_release_disposition_json,
                     supersession_reason, superseded_at,
                     superseded_by_actor, review_cohort_id,
@@ -2976,7 +3009,7 @@ class TeamStateSqliteStore:
                     rework_requested_by_agent_id, rework_reason, outcomes_json,
                     completion_json, created_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     deliverable["id"],
@@ -2994,6 +3027,7 @@ class TeamStateSqliteStore:
                     git_refs.get("reviewed_commit_sha"),
                     git_refs.get("feature_commit_sha"),
                     git_refs.get("release_commit_sha"),
+                    git_refs.get("accepted_pinned_ref"),
                     (
                         _json_dumps(deliverable.get("verification"))
                         if deliverable.get("verification") is not None
@@ -3007,6 +3041,12 @@ class TeamStateSqliteStore:
                         if deliverable.get("review_manifest") is not None
                         else None
                     ),
+                    (
+                        _json_dumps(deliverable.get("dependency_composition_manifest"))
+                        if deliverable.get("dependency_composition_manifest") is not None
+                        else None
+                    ),
+                    int(deliverable.get("acceptance_policy_version", 1)),
                     deliverable.get("acceptance_recipient_agent_id"),
                     (
                         _json_dumps(deliverable.get("acceptance_decision"))
@@ -4850,6 +4890,11 @@ class TeamStateSqliteStore:
                 "manual_dependency_git_sources": _json_loads(
                     row["manual_dependency_git_sources_json"]
                 ),
+                "dependency_composition_manifest": (
+                    _json_loads(row["dependency_composition_manifest_json"])
+                    if row["dependency_composition_manifest_json"] is not None
+                    else None
+                ),
                 "state": row["state"],
                 "created_at": row["created_at"],
                 "updated_at": row["updated_at"],
@@ -4866,9 +4911,10 @@ class TeamStateSqliteStore:
                     dependency_git_sources_json,
                     dependency_composition_recovery_id,
                     manual_dependency_git_sources_json,
+                    dependency_composition_manifest_json,
                     state, created_at, updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     context["id"],
@@ -4883,6 +4929,11 @@ class TeamStateSqliteStore:
                     _json_dumps(context.get("dependency_git_sources", [])),
                     context.get("dependency_composition_recovery_id"),
                     _json_dumps(context.get("manual_dependency_git_sources", [])),
+                    (
+                        _json_dumps(context.get("dependency_composition_manifest"))
+                        if context.get("dependency_composition_manifest") is not None
+                        else None
+                    ),
                     context.get("state", "active"),
                     context["created_at"],
                     context["updated_at"],
@@ -7686,10 +7737,13 @@ CREATE TABLE IF NOT EXISTS team_deliverables (
     reviewed_commit_sha TEXT,
     feature_commit_sha TEXT,
     release_commit_sha TEXT,
+    accepted_pinned_ref TEXT,
     verification_json TEXT,
     outcomes_json TEXT NOT NULL DEFAULT '[]',
     carried_findings_json TEXT NOT NULL DEFAULT '[]',
     review_manifest_json TEXT,
+    dependency_composition_manifest_json TEXT,
+    acceptance_policy_version INTEGER NOT NULL DEFAULT 1,
     acceptance_recipient_agent_id TEXT,
     acceptance_decision_json TEXT,
     initial_release_disposition_json TEXT,
@@ -8490,6 +8544,7 @@ CREATE TABLE IF NOT EXISTS team_git_work_contexts (
     dependency_git_sources_json TEXT NOT NULL DEFAULT '[]',
     dependency_composition_recovery_id TEXT,
     manual_dependency_git_sources_json TEXT NOT NULL DEFAULT '[]',
+    dependency_composition_manifest_json TEXT,
     state TEXT NOT NULL,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL

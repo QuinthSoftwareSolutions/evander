@@ -33,6 +33,7 @@ from ..models import (
     GovernanceAgendaItemType,
     GovernanceGoal,
     GovernanceGroup,
+    DependencyCompositionManifest,
     DependencyGitSource,
     DependencyCompositionRecoveryState,
     GitWorkContext,
@@ -155,6 +156,9 @@ from .domain.context_rotation import (
 from .domain.deliverables import (
     _superseded_deliverable_for_rework,
     _validate_deliverable_outcomes_against_task_contract,
+)
+from .domain.acceptance_verification import (
+    authorize_deliverable_acceptance_verification_waiver,
 )
 from .domain.git_work_contexts import finalize_active_git_work_contexts_for_task
 from .domain.review_repository_snapshots import deliverable_review_repository_snapshot
@@ -841,6 +845,33 @@ class TeamAdminService:
         result["revision"] = state.revision
         result["blocker"] = state.blockers[normalized_blocker_id].model_dump(mode="json")
         return state, result
+
+    def authorize_deliverable_acceptance_verification_waiver_as_operator(
+        self,
+        *,
+        deliverable_id: str,
+        reason: str,
+        operator_actor_id: str,
+        expected_revision: int | None = None,
+    ) -> tuple[TeamState, Deliverable]:
+        normalized_deliverable_id = _required_text(deliverable_id, "deliverable_id")
+        normalized_reason = _required_text(reason, "reason")
+        normalized_actor_id = _required_text(operator_actor_id, "operator_actor_id")
+
+        def _mutate(state: TeamState) -> TeamState:
+            authorize_deliverable_acceptance_verification_waiver(
+                state,
+                deliverable_id=normalized_deliverable_id,
+                operator_actor_id=normalized_actor_id,
+                reason=normalized_reason,
+            )
+            return state
+
+        state = self._repository.update(
+            _mutate,
+            expected_revision=expected_revision,
+        )
+        return state, state.deliverables[normalized_deliverable_id]
 
     def start_dependency_composition_recovery_as_operator(
         self,
@@ -2001,6 +2032,9 @@ class TeamAdminService:
         dependency_composition_recovery_id: str | None = None,
         manual_dependency_git_sources: Sequence[Mapping[str, object] | DependencyGitSource]
         | None = None,
+        dependency_composition_manifest: Mapping[str, object]
+        | DependencyCompositionManifest
+        | None = None,
         expected_revision: int | None = None,
     ) -> tuple[TeamState, str]:
         normalized_context_id = _optional_text(context_id)
@@ -2029,6 +2063,13 @@ class TeamAdminService:
             else DependencyGitSource.model_validate(source)
             for source in manual_dependency_git_sources or []
         ]
+        normalized_dependency_composition_manifest = (
+            dependency_composition_manifest
+            if isinstance(dependency_composition_manifest, DependencyCompositionManifest)
+            else DependencyCompositionManifest.model_validate(dependency_composition_manifest)
+            if dependency_composition_manifest is not None
+            else None
+        )
         created_context_id: str | None = None
 
         def _mutate(state: TeamState) -> TeamState:
@@ -2083,7 +2124,36 @@ class TeamAdminService:
                 labels=[normalized_agent_id, normalized_task_id, normalized_agent_branch],
                 existing_ids=state.git_work_contexts,
             )
-            _require_absent(state.git_work_contexts, effective_context_id, "git work context")
+            existing_context = state.git_work_contexts.get(effective_context_id)
+            if existing_context is not None:
+                expected_context = GitWorkContext(
+                    id=effective_context_id,
+                    agent_id=agent.id,
+                    task_id=task.id,
+                    dispatch_id=normalized_dispatch_id,
+                    worktree_path=normalized_worktree_path,
+                    dependency_git_sources=normalized_dependency_git_sources,
+                    dependency_composition_recovery_id=(
+                        normalized_dependency_composition_recovery_id
+                    ),
+                    manual_dependency_git_sources=(normalized_manual_dependency_git_sources),
+                    dependency_composition_manifest=(
+                        normalized_dependency_composition_manifest
+                    ),
+                    base_branch=effective_base_branch,
+                    base_commit=normalized_base_commit,
+                    agent_branch=normalized_agent_branch,
+                    commit_sha=normalized_commit_sha,
+                    created_at=existing_context.created_at,
+                    updated_at=existing_context.updated_at,
+                )
+                if existing_context != expected_context:
+                    raise ValueError(
+                        f"Git work context {effective_context_id} already exists with "
+                        "different resource provenance"
+                    )
+                created_context_id = effective_context_id
+                return state
             created_context_id = effective_context_id
             now = utc_now()
             state.git_work_contexts[effective_context_id] = GitWorkContext(
@@ -2095,6 +2165,7 @@ class TeamAdminService:
                 dependency_git_sources=normalized_dependency_git_sources,
                 dependency_composition_recovery_id=(normalized_dependency_composition_recovery_id),
                 manual_dependency_git_sources=(normalized_manual_dependency_git_sources),
+                dependency_composition_manifest=(normalized_dependency_composition_manifest),
                 base_branch=effective_base_branch,
                 base_commit=normalized_base_commit,
                 agent_branch=normalized_agent_branch,

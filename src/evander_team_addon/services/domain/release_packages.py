@@ -696,6 +696,29 @@ def _build_release_package(
             (waiver for waiver in verification_waivers if waiver.deliverable_id == deliverable_id),
             None,
         )
+        acceptance_waiver = (
+            deliverable.verification.waiver
+            if deliverable.verification is not None
+            and deliverable.verification.provenance == "server_release_equivalent"
+            else None
+        )
+        if inherited_waiver is None and acceptance_waiver is not None:
+            inherited_waiver = ReleaseVerificationWaiver(
+                deliverable_id=deliverable_id,
+                verification_status=verification_status,
+                reason=acceptance_waiver.reason,
+                actor_kind="operator",
+                actor_id=acceptance_waiver.actor_id,
+                created_at=acceptance_waiver.created_at,
+            )
+            verification_waivers.append(inherited_waiver)
+        if verification_status in {"pending", "running"}:
+            result["errors"].append(
+                f"deliverable {deliverable_id} acceptance verification is "
+                f"{verification_status} and cannot be released"
+            )
+            valid = False
+            continue
         if verification_status == "failed":
             result["errors"].append(
                 f"deliverable {deliverable_id} has failed verification and cannot be released"

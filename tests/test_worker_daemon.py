@@ -1368,6 +1368,15 @@ def test_worker_composes_exact_dependency_git_source_before_task_work(
         capture_output=True,
         text=True,
     ).stdout.strip()
+    pinned_ref = "refs/evander/team-reviews/review-domain"
+    subprocess.run(
+        ["git", "update-ref", pinned_ref, dependency_commit],
+        cwd=source,
+        check=True,
+    )
+    (source / "later-branch-work.txt").write_text("not accepted\n", encoding="utf-8")
+    subprocess.run(["git", "add", "later-branch-work.txt"], cwd=source, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "later branch work"], cwd=source, check=True)
     subprocess.run(["git", "checkout", "-q", "main"], cwd=source, check=True)
     daemon = WorkerDaemon(
         runtime_dir=tmp_path / "runtime",
@@ -1391,6 +1400,8 @@ def test_worker_composes_exact_dependency_git_source_before_task_work(
                 "deliverable_id": "deliverable-domain",
                 "branch": "agents/predecessor/tasks/domain",
                 "commit_sha": dependency_commit,
+                "relationship_kind": "required_contribution",
+                "pinned_ref": pinned_ref,
             }
         ],
         dependency_merge_author_name="Jonathan Quinth",
@@ -1411,6 +1422,21 @@ def test_worker_composes_exact_dependency_git_source_before_task_work(
 
     assert prepared.created is True
     assert prepared.base_commit_sha == prepared.commit_sha
+    assert prepared.composition_root_commit_sha == subprocess.run(
+        ["git", "rev-parse", "refs/heads/main"],
+        cwd=source,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    assert prepared.composed_commit_sha == prepared.commit_sha
+    assert prepared.composed_tree_hash == subprocess.run(
+        ["git", "rev-parse", "HEAD^{tree}"],
+        cwd=target,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
     assert (
         subprocess.run(
             ["git", "rev-parse", "refs/heads/agents/session-1/tasks/task-ui-1234"],
@@ -1422,6 +1448,7 @@ def test_worker_composes_exact_dependency_git_source_before_task_work(
         == prepared.commit_sha
     )
     assert (target / "domain.txt").read_text(encoding="utf-8") == "accepted dependency\n"
+    assert not (target / "later-branch-work.txt").exists()
     assert (
         subprocess.run(
             ["git", "merge-base", "--is-ancestor", dependency_commit, "HEAD"],
@@ -1446,10 +1473,12 @@ def test_worker_composes_exact_dependency_git_source_before_task_work(
     assert json.loads(provenance) == [
         {
             "branch": "agents/predecessor/tasks/domain",
-            "commit_sha": dependency_commit,
-            "deliverable_id": "deliverable-domain",
-            "dependency_task_id": "task-domain",
-        }
+                "commit_sha": dependency_commit,
+                "deliverable_id": "deliverable-domain",
+                "dependency_task_id": "task-domain",
+                "pinned_ref": pinned_ref,
+                "relationship_kind": "required_contribution",
+            }
     ]
     identity = subprocess.run(
         ["git", "show", "-s", "--format=%an%n%ae%n%cn%n%ce", "HEAD"],
@@ -2003,7 +2032,8 @@ def test_worker_rolls_back_conflicting_dependency_git_composition(
         "base_commit_sha": base_commit,
         "base_tree_hash": base_tree_hash,
         "dependency_git_sources": [
-            source.model_dump(mode="json") for source in request.dependency_git_sources
+            source.model_dump(mode="json", exclude_none=True, exclude_defaults=True)
+            for source in request.dependency_git_sources
         ],
         "failed_dependency_task_id": "task-second",
         "failed_deliverable_id": "deliverable-second",
@@ -2084,7 +2114,8 @@ def test_worker_rolls_back_conflicting_dependency_git_composition(
     )
     assert manual_payload["recovery_id"] == "depcomp-test"
     assert manual_payload["dependency_git_sources"] == [
-        source.model_dump(mode="json") for source in request.dependency_git_sources
+        source.model_dump(mode="json", exclude_none=True, exclude_defaults=True)
+        for source in request.dependency_git_sources
     ]
 
     resolved_branch = "agents/resolver/tasks/dependency-recovery"

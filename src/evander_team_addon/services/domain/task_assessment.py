@@ -1027,6 +1027,71 @@ def require_deliverable_acceptance(
                 "contribution_coverage": coverage,
             },
         )
+    from .acceptance_verification import deliverable_acceptance_verification_error
+
+    verification_error = deliverable_acceptance_verification_error(
+        state,
+        deliverable=deliverable,
+    )
+    if verification_error is not None:
+        raise TaskAssessmentBoundaryError(
+            code="deliverable_acceptance_verification_incomplete",
+            message=verification_error,
+            correction_context={
+                "deliverable_id": deliverable.id,
+                "task_id": deliverable.task_id,
+                "verification": (
+                    deliverable.verification.model_dump(mode="json", exclude_none=True)
+                    if deliverable.verification is not None
+                    else None
+                ),
+            },
+        )
+    task = state.tasks[deliverable.task_id]
+    requires_composition_manifest = bool(
+        task.integration_boundary
+        and (
+            task.dependency_task_ids
+            or (
+                task.deliverable_contract is not None
+                and task.deliverable_contract.required_contribution_task_ids
+            )
+        )
+    )
+    if deliverable.acceptance_policy_version >= 2 and requires_composition_manifest:
+        manifest = deliverable.dependency_composition_manifest
+        if manifest is None:
+            raise TaskAssessmentBoundaryError(
+                code="dependency_composition_manifest_missing",
+                message=(
+                    f"deliverable {deliverable.id} requires immutable dependency "
+                    "composition evidence"
+                ),
+                correction_context={
+                    "deliverable_id": deliverable.id,
+                    "task_id": deliverable.task_id,
+                },
+            )
+        manifest_source_ids = sorted(
+            source.deliverable_id
+            for source in manifest.dependency_git_sources
+            if source.relationship_kind == "required_contribution"
+        )
+        submitted_source_ids = sorted(deliverable.source_deliverable_ids)
+        if manifest_source_ids != submitted_source_ids:
+            raise TaskAssessmentBoundaryError(
+                code="dependency_composition_manifest_scope_mismatch",
+                message=(
+                    f"deliverable {deliverable.id} source list does not match its "
+                    "immutable composition manifest"
+                ),
+                correction_context={
+                    "deliverable_id": deliverable.id,
+                    "task_id": deliverable.task_id,
+                    "manifest_source_deliverable_ids": manifest_source_ids,
+                    "submitted_source_deliverable_ids": submitted_source_ids,
+                },
+            )
     return assessment
 
 
@@ -1832,6 +1897,36 @@ def _required_source_deliverable_ids(
     )
 
 
+def required_source_deliverable_ids_for_task(
+    state: TeamState,
+    *,
+    task_id: str,
+) -> list[str]:
+    """Return the current accepted contribution set for one task.
+
+    This is the canonical preparation-time companion to contribution coverage:
+    callers must not reconstruct integration inputs from parent/child links or
+    mutable branches independently.
+    """
+
+    task = state.tasks.get(task_id)
+    if task is None:
+        raise ValueError(f"task {task_id} does not exist")
+    direct_child_ids = sorted(
+        child.id for child in state.tasks.values() if child.parent_task_id == task.id
+    )
+    required_task_ids = _required_contribution_task_ids(
+        state,
+        task,
+        direct_child_ids=direct_child_ids,
+    )
+    return _required_source_deliverable_ids(
+        state,
+        task=task,
+        required_contribution_task_ids=required_task_ids,
+    )
+
+
 def _missing_contribution_task_ids(
     state: TeamState,
     *,
@@ -1962,6 +2057,7 @@ __all__ = [
     "task_payload_with_assessment",
     "assessment_review_ids_for_deliverable",
     "contribution_coverage_for_sources",
+    "required_source_deliverable_ids_for_task",
     "deliverable_source_lineage",
     "recursive_source_deliverable_ids",
     "require_deliverable_acceptance",

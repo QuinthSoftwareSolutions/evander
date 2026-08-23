@@ -1143,10 +1143,17 @@ contracts prevent report-only completion</a></li>
 result</a></li>
 <li><a href="#artifact-publication-boundary" id="toc-artifact-publication-boundary">Artifact publication
 boundary</a></li>
-<li><a href="#persistent-git-work-contexts" id="toc-persistent-git-work-contexts">Persistent Git work
-contexts</a></li>
+<li><a href="#persistent-git-work-contexts" id="toc-persistent-git-work-contexts">Persistent Git work contexts</a>
+<ul>
+<li><a href="#immutable-dependency-composition" id="toc-immutable-dependency-composition">Immutable dependency
+composition</a></li>
+</ul></li>
 <li><a href="#submitting-superior-acceptance-and-formal-review" id="toc-submitting-superior-acceptance-and-formal-review">Submitting,
-superior acceptance, and formal review</a></li>
+superior acceptance, and formal review</a>
+<ul>
+<li><a href="#pre-acceptance-verification-and-evidence" id="toc-pre-acceptance-verification-and-evidence">Pre-acceptance
+verification and evidence</a></li>
+</ul></li>
 <li><a href="#review-decisions" id="toc-review-decisions">Review
 decisions</a>
 <ul>
@@ -5317,6 +5324,18 @@ step.</li>
 <p>The editor is the authoring view. Runtime events and executions
 remain separate durable records underneath it, which is why opening or
 closing the browser does not start or stop the workflow.</p>
+<p>For a cross-run question, select the relevant node and expand
+<strong>Execution history</strong> in its inspector. Choose a local-time
+date window (the default is the previous seven days), optionally limit
+statuses, and add exact JSON Pointer filters over input or output
+fields. Up to eight filters are combined with AND. Equality is
+type-aware and case-sensitive; numeric comparisons and presence/absence
+checks are also available. Array contents are visible in detail but
+array-element predicates are not supported. Results show whether the
+full record is still retained or the sanitized compact record is being
+used, along with the retention boundary and backfill status. The compact
+tier defaults to 365 days while full execution payloads default to 30
+days.</p>
 <p class="figure-caption">Figure 8.2 — The editor is the authoring projection over a revisioned graph; runtime events and executions remain durable records underneath. Sanitized Northstar fixture.</p>
 
 <h2 id="what-an-operator-may-notice-4">What an operator may notice</h2>
@@ -12955,6 +12974,28 @@ current rules.</p>
 canonical publication. Promotion begins only through the reviewed Git
 flows in Chapter 24.</p>
 </blockquote>
+<h3 id="immutable-dependency-composition">Immutable dependency
+composition</h3>
+<p>When a task declares dependencies or required contribution tasks,
+Team derives the Git inputs from the accepted deliverables. A newly
+accepted reviewed commit is retained under an immutable
+<code>refs/evander/team-reviews/...</code> ref. Later preparation
+resolves that retained ref, not the mutable agent branch, so a
+subsequent push cannot change an already accepted input.</p>
+<p>The prepared context records a dependency-composition manifest
+containing the pinned task base, base tree, every source relationship,
+deliverable, immutable ref and commit, the ancestry-reduced commit
+frontier, the deterministic source fingerprint, and the resulting
+composed commit and tree. Required contributions are derived from the
+deliverable contract even when the planner did not duplicate them as
+ordinary task dependencies. Redundant ancestor commits are recorded as
+reduced sources rather than cherry-picked twice. A genuine content
+conflict still creates the typed dependency-composition recovery; it
+never falls back to an unreviewed history merge.</p>
+<p>These rules apply prospectively. Historical accepted deliverables
+remain readable and use their legacy branch/context validation. A new
+reviewed acceptance records policy version 2 and must satisfy the
+immutable-ref and composition evidence gates that apply to its task.</p>
 <h2 id="submitting-superior-acceptance-and-formal-review">Submitting,
 superior acceptance, and formal review</h2>
 <p>The producer submits the evidence, then chooses the handoff the task
@@ -13033,6 +13074,24 @@ payloads.</td>
 <p>Creating the same active review for one deliverable and reviewer is
 replay-safe: the service returns the existing review rather than
 duplicating inbox and wake work.</p>
+<h3 id="pre-acceptance-verification-and-evidence">Pre-acceptance
+verification and evidence</h3>
+<p>New formal-review submissions for integration boundaries and
+system-created rejected-candidate corrections run the project&#39;s frozen
+release verification commands in a disposable
+<code>container_worker_vm</code> against the exact immutable review
+snapshot. This is a server-owned, release-equivalent check; an
+agent-supplied verification claim cannot satisfy it. The review can be
+inspected while the run is pending, but it cannot be accepted until the
+run has passed and recorded a durable evidence reference.</p>
+<p>If no release verification commands are configured, the result is
+<code>not_run</code> and the acceptance remains closed. An operator can
+authorize a waiver only for <code>partial</code> or
+<code>not_run</code>, must supply a reason, and has their authenticated
+operator identity and time stored on the deliverable. A failed check
+cannot be waived; corrected reviewed content is required.
+Policy-version-2 reviews also require an evidence reference for every
+required passed criterion.</p>
 <blockquote>
 <p><span class="sidebar-kicker">Technical sidebar</span>
 <strong>Submission and automatic review creation</strong></p>
@@ -15169,8 +15228,8 @@ candidate, mark published</td>
 <p>The registered <code>team-runtime.v1</code> pack composes these with
 core agent, communication, Git, and event effects. Internal event routes
 include Chat queued, agent wake requested, ephemeral
-requested/completed, operator escalation, Git promotion/recovery, and
-release verification.</p>
+requested/completed, operator escalation, Git promotion/recovery,
+deliverable pre-acceptance verification, and release verification.</p>
 <p>The packaged Python definition is a source definition. Enablement
 materializes an operator-owned live workflow document under the normal
 revision and lock contract. Refresh it through the Add-ons surface.

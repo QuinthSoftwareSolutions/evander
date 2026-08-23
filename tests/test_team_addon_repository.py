@@ -23,6 +23,7 @@ from evander_team_addon.models import (
     AgentStatus,
     AgentVoiceProfile,
     Deliverable,
+    DeliverableAcceptanceVerificationWaiver,
     DeliverableGitRefs,
     DeliverableInitialReleaseDisposition,
     DeliverableReviewManifest,
@@ -105,6 +106,9 @@ from evander_team_addon.services.domain.ephemeral import (
 from evander_team_addon.services.domain.git_promotion import GIT_PROMOTION_EVENT_TYPE
 from evander_team_addon.services.domain.release_packages import GIT_RELEASE_RECOVERY_EVENT_TYPE
 from evander_team_addon.services.domain.review import _review_decision_policy_error
+from evander_team_addon.services.domain.deliverables import (
+    _deliverable_verification_payload,
+)
 from evander_team_addon.services.domain.task_assessment import (
     TaskAssessmentBoundaryError,
     TaskAssessmentService,
@@ -122,6 +126,12 @@ from evander_team_addon.services.chat_service import (
 from evander_team_addon.services.ephemeral_service import TeamEphemeralService
 from evander_team_addon.services.git_release_service import TeamGitReleaseService
 from evander_team_addon.services.release_gate_service import TeamReleaseGateService
+from evander_team_addon.services.deliverable_acceptance_verification_runner import (
+    TeamDeliverableAcceptanceVerificationRunner,
+)
+from evander_team_addon.services.domain.acceptance_verification import (
+    DELIVERABLE_ACCEPTANCE_VERIFICATION_REQUESTED_EVENT_TYPE,
+)
 from evander_team_addon.services.runtime_service import TeamRuntimeService
 from evander_team_addon.services.commands import (
     TeamAgentControlCommandService,
@@ -3702,6 +3712,207 @@ def test_submit_deliverable_for_review_pins_candidate_on_deliverable_and_review(
     assert refs.submitted_commit_sha == authoritative_commit
     assert state.review_requests["review-pinned"].reviewed_commit_sha == authoritative_commit
     assert state.git_work_contexts["ctx-task"].state == GitWorkContextState.SUBMITTED
+
+
+@pytest.mark.parametrize(
+    ("executor_output", "expected_status"),
+    [
+        (
+            {
+                "success": True,
+                "execution_id": "job-focused-tests",
+                "exit_code": 0,
+                "stdout": "1 passed",
+            },
+            "passed",
+        ),
+        (
+            {
+                "success": False,
+                "execution_id": "job-focused-tests",
+                "status": "failed",
+                "failure_kind": "infrastructure",
+                "stderr": "worker disappeared",
+            },
+            "partial",
+        ),
+    ],
+)
+def test_integration_review_runs_release_equivalent_verification_before_acceptance(
+    tmp_path: Path,
+    executor_output: dict[str, object],
+    expected_status: str,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _set_project_git(repo)
+    _seed_task(repo, task_id="task")
+    authoritative_commit = "127450960be30a2b7c7966883a09252b70769748"
+
+    def _configure(state: TeamState) -> TeamState:
+        task = state.tasks["task"]
+        task.integration_boundary = True
+        task.deliverable_contract = TaskDeliverableContract(require_git_provenance=True)
+        state.projects["project"].release_policy = ProjectReleasePolicy(
+            verification_commands=[
+                ReleaseVerificationCommand(
+                    name="focused tests",
+                    argv=["pytest", "-q"],
+                )
+            ]
+        )
+        return state
+
+    repo.update(_configure)
+    _lease_agent_dispatch(repo, agent_id="backend", dispatch_id="dispatch-slice7")
+    _seed_git_work_context(repo, commit_sha=None)
+    state, submitted = TeamDeliverableSubmissionCommandService(
+        repo,
+        git_candidate_commit_resolver=lambda **_kwargs: authoritative_commit,
+    ).submit_deliverable_for_review_command(
+        session_id="session-backend",
+        deliverable={
+            "id": "deliverable-verified",
+            "task_id": "task",
+            "summary": "Integrated candidate",
+            "branch_context_id": "ctx-task",
+            "git_refs": {
+                "agent_branch": "agents/session-backend/task",
+                "commit_sha": authoritative_commit,
+            },
+        },
+        reviews=[{"id": "review-verified", "reviewer_agent_id": "worker"}],
+        request_id="request-submit-verified",
+    )
+
+    assert submitted["success"] is True
+    verification = state.deliverables["deliverable-verified"].verification
+    assert verification is not None
+    assert verification.status == "pending"
+    assert verification.provenance == "server_release_equivalent"
+    verification_events = [
+        event
+        for event in submitted["events"]
+        if event["event_type"]
+        == DELIVERABLE_ACCEPTANCE_VERIFICATION_REQUESTED_EVENT_TYPE
+    ]
+    assert len(verification_events) == 1
+
+    _lease_agent_dispatch(repo, agent_id="worker", dispatch_id="dispatch-review-pending")
+    _state, premature = _command_service(repo).decide_review_command(
+        session_id="session-worker",
+        review_request_id="review-verified",
+        state="accepted",
+        request_id="request-review-before-verification",
+    )
+    assert premature["success"] is False
+    assert "wait for the server-owned run" in premature["errors"][0]["message"]
+
+    class _Executor:
+        def create_verifier(self, **_kwargs: object) -> None:
+            return None
+
+        def clone_candidate(self, **_kwargs: object) -> str:
+            return "/work/checkout"
+
+        def pin_candidate(self, **_kwargs: object) -> None:
+            return None
+
+        def execute_command(self, **kwargs: object) -> dict[str, object]:
+            on_started = kwargs.get("on_started")
+            if callable(on_started):
+                on_started("job-focused-tests")
+            return dict(executor_output)
+
+        def destroy_verifier(self, **_kwargs: object) -> None:
+            return None
+
+    run_result = TeamDeliverableAcceptanceVerificationRunner(repo, _Executor()).run(
+        deliverable_id="deliverable-verified",
+        verification_run_id=verification.run_id or "",
+        candidate_commit_sha=authoritative_commit,
+    )
+    assert run_result["verification_state"] == expected_status
+    persisted = repo.read().deliverables["deliverable-verified"].verification
+    assert persisted is not None
+    assert persisted.status == expected_status
+    if expected_status == "passed":
+        assert persisted.evidence_refs == [
+            "team://deliverables/deliverable-verified/acceptance-verifications/"
+            f"{persisted.run_id}"
+        ]
+    else:
+        assert persisted.command_results[0].failure_kind == "infrastructure"
+        _team_admin_service(
+            repo
+        ).authorize_deliverable_acceptance_verification_waiver_as_operator(
+            deliverable_id="deliverable-verified",
+            reason="The verifier worker disappeared after protected CI passed.",
+            operator_actor_id="operator:jonathan",
+        )
+
+    accepted_state, accepted = _command_service(repo).decide_review_command(
+        session_id="session-worker",
+        review_request_id="review-verified",
+        state="accepted",
+        request_id=f"request-review-after-verification-{expected_status}",
+    )
+    assert accepted["success"] is True
+    assert accepted_state.deliverables["deliverable-verified"].state == TeamRecordState.ACCEPTED
+    assert (
+        accepted_state.deliverables["deliverable-verified"].git_refs.accepted_pinned_ref
+        == accepted_state.review_requests["review-verified"].repository_snapshot.pinned_ref
+    )
+
+
+def test_operator_can_waive_not_run_integration_acceptance_verification(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _set_project_git(repo)
+    _seed_task(repo, task_id="task")
+    authoritative_commit = "127450960be30a2b7c7966883a09252b70769748"
+
+    def _configure(state: TeamState) -> TeamState:
+        task = state.tasks["task"]
+        task.integration_boundary = True
+        task.deliverable_contract = TaskDeliverableContract(require_git_provenance=True)
+        return state
+
+    repo.update(_configure)
+    _lease_agent_dispatch(repo, agent_id="backend", dispatch_id="dispatch-slice7")
+    _seed_git_work_context(repo, commit_sha=None)
+    _state, submitted = TeamDeliverableSubmissionCommandService(
+        repo,
+        git_candidate_commit_resolver=lambda **_kwargs: authoritative_commit,
+    ).submit_deliverable_for_review_command(
+        session_id="session-backend",
+        deliverable={
+            "id": "deliverable-waived",
+            "task_id": "task",
+            "summary": "Integrated candidate",
+            "branch_context_id": "ctx-task",
+            "git_refs": {
+                "agent_branch": "agents/session-backend/task",
+                "commit_sha": authoritative_commit,
+            },
+        },
+        reviews=[{"id": "review-waived", "reviewer_agent_id": "worker"}],
+        request_id="request-submit-waived",
+    )
+    assert submitted["success"] is True
+    assert repo.read().deliverables["deliverable-waived"].verification.status == "not_run"
+
+    state, deliverable = (
+        _team_admin_service(repo).authorize_deliverable_acceptance_verification_waiver_as_operator(
+            deliverable_id="deliverable-waived",
+            reason="The disposable verifier is unavailable; equivalent protected CI passed.",
+            operator_actor_id="operator:jonathan",
+        )
+    )
+    waiver = deliverable.verification.waiver
+    assert waiver is not None
+    assert waiver.actor_id == "operator:jonathan"
+    assert state.deliverables["deliverable-waived"].verification.waiver == waiver
 
 
 def test_submit_deliverable_for_review_rejects_agent_sha_that_is_not_branch_tip(
@@ -15211,8 +15422,9 @@ def _lease_review_handoff_dispatch(
             "available_decisions": ["accepted", "rejected"],
             "available_alternatives": ["request_review", "report_blocker"],
         }
-        if deliverable.verification is not None:
-            payload["verification"] = deliverable.verification.model_dump(mode="json")
+        verification_payload = _deliverable_verification_payload(deliverable)
+        if verification_payload is not None:
+            payload["verification"] = verification_payload
         state.inbox[notice_id] = AgentInboxItem(
             id=notice_id,
             recipient_agent_id=agent_id,
@@ -20884,6 +21096,58 @@ def test_partial_verification_release_requires_audited_lead_waiver(
     assert waiver.verification_status == "partial"
     assert waiver.actor_kind == "agent"
     assert waiver.actor_id == "lead"
+
+
+def test_preacceptance_operator_waiver_is_reused_at_release_intake(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _set_project_git(repo)
+    _seed_accepted_feature_deliverable(
+        repo,
+        deliverable_id="deliverable",
+        task_id="task",
+        feature="team/team/features/task-backend",
+    )
+    waived_at = datetime.now(UTC)
+
+    def _make_preacceptance_waived(state: TeamState) -> TeamState:
+        state.deliverables["deliverable"].verification = DeliverableVerification(
+            status="not_run",
+            provenance="server_release_equivalent",
+            run_id="acceptance-verification-release-intake",
+            candidate_commit_sha="reviewed-commit",
+            waiver=DeliverableAcceptanceVerificationWaiver(
+                reason="Equivalent protected CI passed while the disposable verifier was down.",
+                actor_id="operator:release-admin",
+                created_at=waived_at,
+            ),
+        )
+        return state
+
+    repo.update(_make_preacceptance_waived)
+    state, result = _team_agent_action_service(repo).apply_agent_action(
+        action={
+            "agent_id": "lead",
+            "git_release_requests": [
+                {
+                    "id": "release-preacceptance-waived",
+                    "project_id": "project",
+                    "deliverable_ids": ["deliverable"],
+                }
+            ],
+        },
+    )
+
+    assert result["success"] is True
+    waiver = state.release_packages[
+        "release-preacceptance-waived"
+    ].verification_waivers[0]
+    assert waiver.deliverable_id == "deliverable"
+    assert waiver.verification_status == "not_run"
+    assert waiver.actor_kind == "operator"
+    assert waiver.actor_id == "operator:release-admin"
+    assert waiver.created_at == waived_at
 
 
 def test_ordinary_release_role_cannot_authorize_verification_waiver(

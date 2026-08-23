@@ -250,6 +250,8 @@ def test_correction_source_is_derived_from_rejected_release_not_main() -> None:
             "deliverable_id": "source-deliverable",
             "branch": FEATURE_BRANCH,
             "commit_sha": FEATURE_COMMIT,
+            "relationship_kind": "task_dependency",
+            "pinned_ref": None,
         }
     ]
 
@@ -272,6 +274,8 @@ def test_verification_correction_source_is_derived_from_failed_candidate() -> No
             "deliverable_id": "source-deliverable",
             "branch": FEATURE_BRANCH,
             "commit_sha": FEATURE_COMMIT,
+            "relationship_kind": "task_dependency",
+            "pinned_ref": None,
         }
     ]
 
@@ -294,6 +298,8 @@ def test_release_review_correction_source_is_derived_from_rejected_candidate() -
             "deliverable_id": "source-deliverable",
             "branch": FEATURE_BRANCH,
             "commit_sha": FEATURE_COMMIT,
+            "relationship_kind": "task_dependency",
+            "pinned_ref": None,
         }
     ]
 
@@ -609,6 +615,8 @@ def test_correction_git_context_records_candidate_base_and_manifest_sources(
             "deliverable_id": "source-deliverable",
             "branch": FEATURE_BRANCH,
             "commit_sha": FEATURE_COMMIT,
+            "relationship_kind": "task_dependency",
+            "pinned_ref": None,
         }
     ]
 

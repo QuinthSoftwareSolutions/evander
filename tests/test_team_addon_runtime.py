@@ -100,6 +100,7 @@ from evander_team_addon.models import (
     TeamState,
     TeamTaskState,
     TaskCancellation,
+    TaskDeliverableContract,
     _runtime_agent_payload,
 )
 from evander_team_addon.provider_schemas import (
@@ -458,6 +459,7 @@ def test_team_runtime_pack_loads_as_current_workflow_pack(tmp_path: Path) -> Non
         "team-git-promotion-requested",
         "team-git-release-recovery-requested",
         "team-release-verification-requested",
+        "team-deliverable-acceptance-verification-requested",
         "system.chat_assistant",
     ]
     assert "team-wake-due-agents" in _node_ids(config.effects)
@@ -470,6 +472,7 @@ def test_team_runtime_pack_loads_as_current_workflow_pack(tmp_path: Path) -> Non
     assert "team-git-promote-review-branch" in _node_ids(config.effects)
     assert "team-promote-release-recovery-branch" in _node_ids(config.effects)
     assert "team-verify-release-candidate" in _node_ids(config.effects)
+    assert "team-verify-deliverable-acceptance" in _node_ids(config.effects)
 
     service = build_admin_runtime(tmp_path / "runtime")
     document = service.workflow_config_admin.read_workflow_editor_document()
@@ -7513,6 +7516,7 @@ def test_successor_context_records_verified_direct_dependency_git(
             "deliverable_id": "dependency-deliverable",
             "branch": "agents/session-backend/tasks/dependency",
             "commit_sha": dependency_commit,
+            "relationship_kind": "task_dependency",
         }
     ]
     state, context_id = _team_admin_service(repo).create_git_work_context_with_id(
@@ -7529,7 +7533,8 @@ def test_successor_context_records_verified_direct_dependency_git(
     assert state.git_work_contexts[context_id].base_commit == "c" * 40
     durable_context = TeamStateRepository(tmp_path).read().git_work_contexts[context_id]
     assert [
-        source.model_dump(mode="json") for source in durable_context.dependency_git_sources
+        source.model_dump(mode="json", exclude_none=True)
+        for source in durable_context.dependency_git_sources
     ] == dependency_sources
 
     def _make_dependency_unaccepted(state: TeamState) -> TeamState:
@@ -7550,6 +7555,85 @@ def test_successor_context_records_verified_direct_dependency_git(
             task_id="task",
             managed_repo_id="mr_0123456789abcdefabcd",
         )
+
+
+def test_integration_context_derives_required_contribution_from_immutable_review_pin(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_team(tmp_path)
+    accepted_commit = "a" * 40
+    pinned_ref = "refs/evander/team-reviews/review-contribution"
+
+    def _seed_contribution(state: TeamState) -> TeamState:
+        state.projects["project"].git = ProjectGitConfig(
+            managed_repo_id="mr_0123456789abcdefabcd",
+            base_branch="main",
+        )
+        state.tasks["contribution"] = AgentTask(
+            id="contribution",
+            owner_agent_id="backend",
+            project_id="project",
+            priority=1,
+            state=TeamTaskState.ACCEPTED,
+            title="Contribution",
+            description="Accepted contribution",
+            created_by_agent_id="lead",
+            deliverable_ids=["deliverable-contribution"],
+        )
+        state.deliverables["deliverable-contribution"] = Deliverable(
+            id="deliverable-contribution",
+            task_id="contribution",
+            producer_agent_id="backend",
+            summary="Accepted contribution",
+            state=TeamRecordState.ACCEPTED,
+            git_refs=DeliverableGitRefs(
+                agent_branch="agents/session-backend/tasks/contribution",
+                commit_sha=accepted_commit,
+                submitted_commit_sha=accepted_commit,
+                reviewed_commit_sha=accepted_commit,
+                accepted_pinned_ref=pinned_ref,
+            ),
+        )
+        target = state.tasks["task"]
+        target.integration_boundary = True
+        target.deliverable_contract = TaskDeliverableContract(
+            require_git_provenance=True,
+            required_contribution_task_ids=["contribution"],
+        )
+        target.dependency_task_ids = []
+        return state
+
+    repo.update(_seed_contribution)
+
+    class _ManagedGit:
+        def resolve_branch_commit(self, *args: object, **kwargs: object) -> str:
+            raise AssertionError("accepted contribution must not consult its mutable branch")
+
+        def resolve_team_review_commit(self, *args: object, **kwargs: object) -> str:
+            assert args == ("mr_0123456789abcdefabcd",)
+            assert kwargs == {"directory_path": "root", "pinned_ref": pinned_ref}
+            return accepted_commit
+
+    sources = _project_repo_task_dependency_git_sources(
+        EffectRuntimeContext(
+            resolved_config={"runtime_dir": str(tmp_path)},
+            admin_service=SimpleNamespace(managed_git_admin=_ManagedGit()),
+        ),
+        state=repo.read(),
+        task_id="task",
+        managed_repo_id="mr_0123456789abcdefabcd",
+    )
+
+    assert sources == [
+        {
+            "dependency_task_id": "contribution",
+            "deliverable_id": "deliverable-contribution",
+            "branch": "agents/session-backend/tasks/contribution",
+            "commit_sha": accepted_commit,
+            "relationship_kind": "required_contribution",
+            "pinned_ref": pinned_ref,
+        }
+    ]
 
 
 def test_libvirt_dependency_git_composition_command_is_valid_shell() -> None:
@@ -8169,7 +8253,7 @@ def test_wake_due_agents_refreshes_state_after_repo_clone_revision_change(
     assert len(repo.read().git_work_contexts) == 1
 
 
-def test_wake_due_agents_retries_git_context_commit_conflict_without_recloning(
+def test_wake_due_agents_ignores_unrelated_state_revision_when_committing_git_context(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -8224,21 +8308,10 @@ def test_wake_due_agents_retries_git_context_commit_conflict_without_recloning(
 
     assert result["success"] is True
     assert len(result["dispatches"]) == 1
-    assert calls == 2
+    assert calls == 1
     assert len(repo_cloner.calls) == 1
     assert len(repo.read().git_work_contexts) == 1
-    assert result["transient_conflicts"] == [
-        {
-            "agent_id": "backend",
-            "session_id": "session-backend",
-            "dispatch_id": result["dispatches"][0]["dispatch_id"],
-            "phase": "git_work_context_commit",
-            "attempt_count": 2,
-            "conflict_count": 1,
-            "resolved": True,
-            "retry_scheduled": False,
-        }
-    ]
+    assert result["transient_conflicts"] == []
 
 
 def test_wake_due_agents_reschedules_exhausted_state_conflict_without_agent_failure(
@@ -8271,10 +8344,9 @@ def test_wake_due_agents_reschedules_exhausted_state_conflict_without_agent_fail
         calls += 1
         if calls == 1:
             return original(self, **kwargs)
-        expected_revision = int(kwargs["expected_revision"])
         raise TeamStateConflictError(
-            expected_revision=expected_revision,
-            current_revision=expected_revision + 1,
+            expected_revision=0,
+            current_revision=1,
         )
 
     monkeypatch.setattr(

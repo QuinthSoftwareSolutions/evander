@@ -64,6 +64,8 @@ TEAM_RUNTIME_V1: dict[str, Any] = {
                 "team-record-release-promotion",
                 "team-release-verification-requested",
                 "team-verify-release-candidate",
+                "team-deliverable-acceptance-verification-requested",
+                "team-verify-deliverable-acceptance",
                 "team-git-release-recovery-requested",
                 "team-promote-release-recovery-branch",
                 "team-record-release-recovery-promotion",
@@ -171,6 +173,16 @@ TEAM_RUNTIME_V1: dict[str, Any] = {
                     "display_name": "Team release verification requested",
                     "type": "trigger:event",
                     "config": {"event_type": "team.release.verification_requested"},
+                }
+            },
+            {
+                "node": {
+                    "id": "team-deliverable-acceptance-verification-requested",
+                    "display_name": "Team deliverable acceptance verification requested",
+                    "type": "trigger:event",
+                    "config": {
+                        "event_type": "team.deliverable.acceptance_verification_requested"
+                    },
                 }
             },
             {
@@ -856,6 +868,18 @@ TEAM_RUNTIME_V1: dict[str, Any] = {
             },
             {
                 "node": {
+                    "id": "team-verify-deliverable-acceptance",
+                    "display_name": "Verify pinned deliverable before acceptance",
+                    "type": "effect:team:verify-deliverable-acceptance",
+                    "config": {
+                        "deliverable_id": "${{team-deliverable-acceptance-verification-requested.payload.deliverable_id}}",
+                        "verification_run_id": "${{team-deliverable-acceptance-verification-requested.payload.verification_run_id}}",
+                        "candidate_commit_sha": "${{team-deliverable-acceptance-verification-requested.payload.candidate_commit_sha}}",
+                    },
+                }
+            },
+            {
+                "node": {
                     "id": "team-promote-release-recovery-branch",
                     "display_name": "Validate and consolidate release recovery branch",
                     "type": "effect:team:consolidate-git-branches",
@@ -1098,6 +1122,10 @@ TEAM_RUNTIME_V1: dict[str, Any] = {
                 "target_id": "team-verify-release-candidate",
             },
             {
+                "source_id": "team-deliverable-acceptance-verification-requested",
+                "target_id": "team-verify-deliverable-acceptance",
+            },
+            {
                 "source_id": "team-git-release-recovery-requested",
                 "target_id": "team-promote-release-recovery-branch",
             },
@@ -1172,9 +1200,11 @@ _TEAM_RUNTIME_V1_LAYOUT_NODE_POSITIONS: tuple[tuple[str, float, float], ...] = (
     ("team-record-release-recovery-promotion", 720.0, 1940.0),
     ("team-record-review-promotion", 1080.0, 1120.0),
     ("team-release-verification-requested", 0.0, 1800.0),
+    ("team-deliverable-acceptance-verification-requested", 0.0, 2200.0),
     ("team-route-completed-session", 360.0, -80.0),
     ("team-send-external-chat-reply", 360.0, 340.0),
     ("team-verify-release-candidate", 360.0, 1800.0),
+    ("team-verify-deliverable-acceptance", 360.0, 2200.0),
     ("team-wake-due-agents", 360.0, -400.0),
     ("team-wake-governance-managers", 360.0, -320.0),
     ("team-wake-queued-chat-message", 360.0, 180.0),

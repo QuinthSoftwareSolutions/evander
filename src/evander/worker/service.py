@@ -1735,6 +1735,33 @@ class WorkerDaemon:
                 expected_base_tree_hash=request.expected_base_tree_hash,
                 env=env,
             )
+        composition_root_commit_sha: str | None = None
+        if request.dependency_git_sources:
+            configured_composition_root = subprocess.run(
+                [
+                    "git",
+                    "config",
+                    "--worktree",
+                    "--get",
+                    "evander.dependencyCompositionRootCommit",
+                ],
+                cwd=target_dir,
+                env=env,
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            candidate_root = configured_composition_root.stdout.strip().casefold()
+            if configured_composition_root.returncode == 0 and re.fullmatch(
+                r"(?:[0-9a-f]{40}|[0-9a-f]{64})",
+                candidate_root,
+            ):
+                composition_root_commit_sha = candidate_root
+            else:
+                composition_root_commit_sha = self._git_commit_sha(
+                    target_dir,
+                    paths.agent_home,
+                ).casefold()
         base_commit_sha = self._compose_task_dependency_git_sources(
             repo_dir=repo_dir,
             target_dir=target_dir,
@@ -1758,6 +1785,39 @@ class WorkerDaemon:
             resolved_dependency_branch=request.resolved_dependency_branch,
             resolved_dependency_commit_sha=request.resolved_dependency_commit_sha,
         )
+        composed_commit_sha: str | None = None
+        composed_tree_hash: str | None = None
+        if composition_root_commit_sha is not None:
+            subprocess.run(
+                [
+                    "git",
+                    "config",
+                    "--worktree",
+                    "evander.dependencyCompositionRootCommit",
+                    composition_root_commit_sha,
+                ],
+                cwd=target_dir,
+                env=env,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            composed_commit_sha = self._git_commit_sha(
+                target_dir,
+                paths.agent_home,
+            ).casefold()
+            composed_tree_hash = (
+                subprocess.run(
+                    ["git", "rev-parse", "HEAD^{tree}"],
+                    cwd=target_dir,
+                    env=env,
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                )
+                .stdout.strip()
+                .casefold()
+            )
         if base_commit_sha is not None:
             subprocess.run(
                 ["git", "config", "--worktree", "evander.baseCommit", base_commit_sha],
@@ -1785,6 +1845,9 @@ class WorkerDaemon:
             branch=request.branch,
             commit_sha=commit_sha,
             base_commit_sha=base_commit_sha,
+            composition_root_commit_sha=composition_root_commit_sha,
+            composed_commit_sha=composed_commit_sha,
+            composed_tree_hash=composed_tree_hash,
             created=created,
         )
 
@@ -1842,7 +1905,9 @@ class WorkerDaemon:
         """
 
         expected_rows = [
-            source.model_dump(mode="json") if hasattr(source, "model_dump") else dict(source)
+            source.model_dump(mode="json", exclude_none=True, exclude_defaults=True)
+            if hasattr(source, "model_dump")
+            else dict(source)
             for source in dependency_git_sources
         ]
         expected_json = json.dumps(
@@ -1851,9 +1916,9 @@ class WorkerDaemon:
             separators=(",", ":"),
         )
 
-        def fetch_exact_branch(branch: str, expected_commit: str) -> None:
+        def fetch_exact_ref(ref: str, expected_commit: str, *, label: str) -> None:
             subprocess.run(
-                ["git", "fetch", "--no-tags", "origin", f"refs/heads/{branch}"],
+                ["git", "fetch", "--no-tags", "origin", ref],
                 cwd=repo_dir,
                 env=env,
                 check=True,
@@ -1874,9 +1939,18 @@ class WorkerDaemon:
             )
             if fetched != expected_commit:
                 raise ValueError(
-                    f"dependency branch {branch!r} moved: expected accepted "
+                    f"dependency source {label!r} moved: expected accepted "
                     f"commit {expected_commit}, found {fetched}"
                 )
+
+        def fetch_exact_source(source: Mapping[str, Any]) -> None:
+            branch = str(source["branch"])
+            pinned_ref = str(source.get("pinned_ref") or "").strip()
+            fetch_exact_ref(
+                pinned_ref or f"refs/heads/{branch}",
+                str(source["commit_sha"]),
+                label=pinned_ref or branch,
+            )
 
         if dependency_composition_mode == "manual_recovery":
             recovery_payload = json.dumps(
@@ -1936,7 +2010,7 @@ class WorkerDaemon:
                     "authoritative base before source preparation"
                 )
             for source in expected_rows:
-                fetch_exact_branch(str(source["branch"]), str(source["commit_sha"]))
+                fetch_exact_source(source)
             subprocess.run(
                 [
                     "git",
@@ -1957,9 +2031,13 @@ class WorkerDaemon:
             if base_commit_sha is None:
                 raise ValueError("resolved dependency adoption requires an authoritative base")
             resolved_commit = str(resolved_dependency_commit_sha)
-            fetch_exact_branch(str(resolved_dependency_branch), resolved_commit)
+            fetch_exact_ref(
+                f"refs/heads/{resolved_dependency_branch}",
+                resolved_commit,
+                label=str(resolved_dependency_branch),
+            )
             for source in expected_rows:
-                fetch_exact_branch(str(source["branch"]), str(source["commit_sha"]))
+                fetch_exact_source(source)
             for required_commit, description in [
                 (base_commit_sha, "authoritative base"),
                 *[
@@ -2111,9 +2189,8 @@ class WorkerDaemon:
             )
         all_dependencies_are_ancestors = True
         for source in expected_rows:
-            branch = str(source["branch"])
             expected_commit = str(source["commit_sha"])
-            fetch_exact_branch(branch, expected_commit)
+            fetch_exact_source(source)
             ancestor = subprocess.run(
                 ["git", "merge-base", "--is-ancestor", expected_commit, head_before],
                 cwd=target_dir,

@@ -744,6 +744,17 @@ def _apply_command_deliverable_submission(
         if not suppress_superior_notice
         else None
     )
+    branch_context = (
+        state.git_work_contexts.get(git_refs.branch_context_id)
+        if git_refs.branch_context_id is not None
+        else None
+    )
+    dependency_composition_manifest = (
+        branch_context.dependency_composition_manifest.model_copy(deep=True)
+        if branch_context is not None
+        and branch_context.dependency_composition_manifest is not None
+        else None
+    )
     new_deliverable = Deliverable(
         id=deliverable_id,
         task_id=task.id,
@@ -767,6 +778,8 @@ def _apply_command_deliverable_submission(
             if superseded_deliverable is not None
             else []
         ),
+        dependency_composition_manifest=dependency_composition_manifest,
+        acceptance_policy_version=(2 if suppress_superior_notice else 1),
     )
     state.deliverables[new_deliverable.id] = new_deliverable
     if superseded_deliverable is not None:

@@ -1,5 +1,20 @@
 # Changelog
 
+## 2026-08-23 - Durable Team Composition And Acceptance Gates
+
+- Retained newly accepted reviewed Git commits under immutable Team review refs and derived both
+  explicit task dependencies and required deliverable contributions from accepted provenance,
+  so later branch movement cannot invalidate an accepted input.
+- Recorded ancestry-reduced dependency-composition manifests on prepared contexts and submitted
+  deliverables, including the exact base, source fingerprint, frontier, and composed commit/tree.
+- Added server-owned release-equivalent verification for new integration and candidate-correction
+  review submissions, evidence-backed review criteria, and an audited operator waiver limited to
+  partial or not-run verification.
+- Made Git-context creation idempotent and resource-scoped so unrelated Team revisions do not
+  force a reclone, and expanded stable preparation generations to cover contribution provenance.
+- Exposed acceptance verification, immutable refs, and composition evidence in Team Admin UI and
+  documented the prospective policy-version boundary for historical accepted records.
+
 ## 2026-08-23 - Single-Review Team Dispatches
 
 - Limited ordinary Team reviewer dispatches to the oldest actionable review and excluded inbox

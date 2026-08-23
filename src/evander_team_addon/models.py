@@ -26,7 +26,7 @@ from evander_team_addon.git_naming import (
     validate_branch_name,
 )
 
-SCHEMA_VERSION = 13
+SCHEMA_VERSION = 14
 DEFAULT_TEAM_COST_WARNING_RATIO = Decimal("0.8")
 WORKTREE_CLEANUP_INVENTORY_SAMPLE_LIMIT = 200
 TEAM_CHAT_ATTACHMENT_DEFAULT_MIME_TYPES = (
@@ -1492,6 +1492,7 @@ class DeliverableGitRefs(TeamModel):
     reviewed_commit_sha: str | None = None
     feature_commit_sha: str | None = None
     release_commit_sha: str | None = None
+    accepted_pinned_ref: str | None = None
     promotion_record_ids: list[str] = Field(default_factory=list)
 
     @field_validator(
@@ -1504,6 +1505,7 @@ class DeliverableGitRefs(TeamModel):
         "reviewed_commit_sha",
         "feature_commit_sha",
         "release_commit_sha",
+        "accepted_pinned_ref",
         "branch_context_id",
         mode="before",
     )
@@ -1511,18 +1513,87 @@ class DeliverableGitRefs(TeamModel):
     def _optional_text(cls, value: object) -> str | None:
         return _optional_text(value)
 
+    @field_validator("accepted_pinned_ref")
+    @classmethod
+    def _accepted_pinned_ref(cls, value: str | None) -> str | None:
+        if value is not None and re.fullmatch(
+            r"refs/evander/team-reviews/[A-Za-z0-9_-]+",
+            value,
+        ) is None:
+            raise ValueError("accepted_pinned_ref must be an immutable Team review ref")
+        return value
+
     @field_validator("promotion_record_ids", mode="before")
     @classmethod
     def _promotion_record_ids(cls, value: object) -> list[str]:
         return _unique_text_list(value, "promotion_record_ids")
 
 
+class DeliverableAcceptanceVerificationWaiver(TeamModel):
+    reason: str
+    actor_kind: Literal["operator"] = "operator"
+    actor_id: str
+    created_at: datetime = Field(default_factory=utc_now)
+
+    @field_validator("reason", "actor_id", mode="before")
+    @classmethod
+    def _required_text(cls, value: object, info) -> str:
+        return _required_text(value, info.field_name)
+
+
+class DeliverableAcceptanceVerificationCommandResult(TeamModel):
+    name: str
+    state: Literal["pending", "running", "passed", "failed", "timed_out"] = "pending"
+    failure_kind: Literal["candidate", "infrastructure", "timeout"] | None = None
+    job_id: str | None = None
+    exit_code: int | None = None
+    failure_cause: WorkerFailureCause | None = None
+    duration_seconds: float | None = None
+    log_excerpt: str | None = None
+
+    @field_validator("name", mode="before")
+    @classmethod
+    def _required_text(cls, value: object, info) -> str:
+        return _required_text(value, info.field_name)
+
+    @field_validator("job_id", "log_excerpt", mode="before")
+    @classmethod
+    def _optional_text(cls, value: object) -> str | None:
+        return _optional_text(value)
+
+
 class DeliverableVerification(TeamModel):
-    status: Literal["passed", "failed", "partial", "not_run", "unknown"]
+    status: Literal[
+        "pending",
+        "running",
+        "passed",
+        "failed",
+        "partial",
+        "not_run",
+        "unknown",
+    ]
     summary: str | None = None
     evidence_refs: list[str] = Field(default_factory=list)
+    provenance: Literal["agent_reported", "server_release_equivalent"] = "agent_reported"
+    run_id: str | None = None
+    candidate_commit_sha: str | None = None
+    verification_commands: list[ReleaseVerificationCommand] = Field(default_factory=list)
+    command_results: list[DeliverableAcceptanceVerificationCommandResult] = Field(
+        default_factory=list
+    )
+    container_image: str | None = None
+    resource_limits: WorkerResourceLimits | None = None
+    waiver: DeliverableAcceptanceVerificationWaiver | None = None
+    started_at: datetime | None = None
+    finished_at: datetime | None = None
 
-    @field_validator("summary", mode="before")
+    @field_validator(
+        "summary",
+        "run_id",
+        "candidate_commit_sha",
+        "container_image",
+        mode="before",
+    )
     @classmethod
     def _optional_text(cls, value: object) -> str | None:
         return _optional_text(value)
@@ -1531,6 +1602,41 @@ class DeliverableVerification(TeamModel):
     @classmethod
     def _evidence_refs(cls, value: object) -> list[str]:
         return _unique_text_list(value, "evidence_refs")
+
+    @model_validator(mode="after")
+    def _validate_server_attestation(self) -> "DeliverableVerification":
+        if self.provenance == "agent_reported":
+            if any(
+                value is not None
+                for value in (
+                    self.run_id,
+                    self.candidate_commit_sha,
+                    self.container_image,
+                    self.resource_limits,
+                    self.waiver,
+                    self.started_at,
+                    self.finished_at,
+                )
+            ) or self.verification_commands or self.command_results:
+                raise ValueError(
+                    "agent-reported verification cannot contain server-owned attestation fields"
+                )
+            if self.status in {"pending", "running"}:
+                raise ValueError("agent-reported verification cannot be pending or running")
+            return self
+        if self.run_id is None or self.candidate_commit_sha is None:
+            raise ValueError(
+                "server release-equivalent verification requires run_id and candidate_commit_sha"
+            )
+        if len(self.command_results) != len(self.verification_commands):
+            raise ValueError(
+                "server release-equivalent verification commands and results must align"
+            )
+        if self.status == "passed" and not self.evidence_refs:
+            raise ValueError("passed server verification requires evidence_refs")
+        if self.waiver is not None and self.status not in {"partial", "not_run"}:
+            raise ValueError("acceptance verification waivers apply only to partial or not_run")
+        return self
 
 
 class ReviewFindingRecord(TeamModel):
@@ -1732,6 +1838,8 @@ class Deliverable(TeamModel):
     completion: TaskCompletion | None = None
     carried_findings: list[ReviewFindingRecord] = Field(default_factory=list)
     review_manifest: DeliverableReviewManifest | None = None
+    dependency_composition_manifest: DependencyCompositionManifest | None = None
+    acceptance_policy_version: Literal[1, 2] = 1
     acceptance_recipient_agent_id: str | None = None
     acceptance_decision: DeliverableAcceptanceDecision | None = None
     initial_release_disposition: DeliverableInitialReleaseDisposition | None = None
@@ -1839,6 +1947,8 @@ class DependencyGitSource(TeamModel):
     deliverable_id: str
     branch: str
     commit_sha: str
+    relationship_kind: Literal["task_dependency", "required_contribution"] = "task_dependency"
+    pinned_ref: str | None = None
 
     @field_validator(
         "dependency_task_id",
@@ -1858,6 +1968,87 @@ class DependencyGitSource(TeamModel):
         if re.fullmatch(r"(?:[0-9a-f]{40}|[0-9a-f]{64})", normalized) is None:
             raise ValueError("commit_sha must be a full Git object ID")
         return normalized
+
+    @field_validator("pinned_ref", mode="before")
+    @classmethod
+    def _optional_pinned_ref(cls, value: object) -> str | None:
+        normalized = _optional_text(value)
+        if normalized is not None and re.fullmatch(
+            r"refs/evander/team-reviews/[A-Za-z0-9_-]+",
+            normalized,
+        ) is None:
+            raise ValueError("pinned_ref must be an immutable Team review ref")
+        return normalized
+
+
+class DependencyCompositionManifest(TeamModel):
+    """Immutable evidence for the exact accepted Git inputs of one worktree."""
+
+    policy_version: Literal[1] = 1
+    target_task_id: str
+    managed_repo_id: str
+    directory_path: str = "root"
+    base_branch: str
+    base_commit_sha: str
+    base_tree_hash: str
+    dependency_git_sources: list[DependencyGitSource]
+    source_fingerprint: str
+    frontier_commit_shas: list[str] = Field(default_factory=list)
+    reduced_source_deliverable_ids: list[str] = Field(default_factory=list)
+    composed_commit_sha: str
+    composed_tree_hash: str
+
+    @field_validator(
+        "target_task_id",
+        "managed_repo_id",
+        "directory_path",
+        "base_branch",
+        "source_fingerprint",
+        mode="before",
+    )
+    @classmethod
+    def _required_text(cls, value: object, info) -> str:
+        return _required_text(value, info.field_name)
+
+    @field_validator(
+        "base_commit_sha",
+        "base_tree_hash",
+        "composed_commit_sha",
+        "composed_tree_hash",
+        mode="before",
+    )
+    @classmethod
+    def _git_object_id(cls, value: object, info) -> str:
+        normalized = _required_text(value, info.field_name).casefold()
+        if re.fullmatch(r"(?:[0-9a-f]{40}|[0-9a-f]{64})", normalized) is None:
+            raise ValueError(f"{info.field_name} must be a full Git object ID")
+        return normalized
+
+    @field_validator("frontier_commit_shas", mode="before")
+    @classmethod
+    def _frontier_commit_shas(cls, value: object) -> list[str]:
+        values = _unique_text_list(value or [], "frontier_commit_shas")
+        for item in values:
+            if re.fullmatch(r"(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})", item) is None:
+                raise ValueError("frontier_commit_shas entries must be full Git object IDs")
+        return [item.casefold() for item in values]
+
+    @field_validator("reduced_source_deliverable_ids", mode="before")
+    @classmethod
+    def _reduced_source_deliverable_ids(cls, value: object) -> list[str]:
+        return _unique_text_list(value or [], "reduced_source_deliverable_ids")
+
+    @model_validator(mode="after")
+    def _validate_sources(self) -> "DependencyCompositionManifest":
+        if not self.dependency_git_sources:
+            raise ValueError("dependency composition manifest requires Git sources")
+        source_commits = {source.commit_sha for source in self.dependency_git_sources}
+        if not set(self.frontier_commit_shas).issubset(source_commits):
+            raise ValueError("composition frontier must be drawn from dependency sources")
+        source_ids = {source.deliverable_id for source in self.dependency_git_sources}
+        if not set(self.reduced_source_deliverable_ids).issubset(source_ids):
+            raise ValueError("reduced sources must be drawn from dependency sources")
+        return self
 
 
 class DependencyCompositionRecovery(TeamModel):
@@ -1993,6 +2184,7 @@ class GitWorkContext(TeamModel):
     dependency_git_sources: list[DependencyGitSource] = Field(default_factory=list)
     dependency_composition_recovery_id: str | None = None
     manual_dependency_git_sources: list[DependencyGitSource] = Field(default_factory=list)
+    dependency_composition_manifest: DependencyCompositionManifest | None = None
     state: GitWorkContextState = GitWorkContextState.ACTIVE
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)
@@ -2071,11 +2263,17 @@ class ReviewCriterionResult(TeamModel):
     criterion_id: str
     state: Literal["passed", "failed", "skipped"]
     finding: str = ""
+    evidence_refs: list[str] = Field(default_factory=list)
 
     @field_validator("criterion_id", mode="before")
     @classmethod
     def _required_text(cls, value: object, info) -> str:
         return _required_text(value, info.field_name)
+
+    @field_validator("evidence_refs", mode="before")
+    @classmethod
+    def _evidence_refs(cls, value: object) -> list[str]:
+        return _unique_text_list(value or [], "evidence_refs")
 
 
 class ReviewRepositorySnapshot(TeamModel):

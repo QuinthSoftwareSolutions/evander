@@ -230,7 +230,7 @@ The add-on registers its providers only while enabled. The main grouped contract
 | Git/release effects | publish review branch, consolidate, record promotion, verify candidate, mark published |
 | Memory effects | index and reindex |
 
-The registered <code>team-runtime.v1</code> pack composes these with core agent, communication, Git, and event effects. Internal event routes include Chat queued, agent wake requested, ephemeral requested/completed, operator escalation, Git promotion/recovery, and release verification.
+The registered <code>team-runtime.v1</code> pack composes these with core agent, communication, Git, and event effects. Internal event routes include Chat queued, agent wake requested, ephemeral requested/completed, operator escalation, Git promotion/recovery, deliverable pre-acceptance verification, and release verification.
 
 The packaged Python definition is a source definition. Enablement materializes an operator-owned live workflow document under the normal revision and lock contract. Refresh it through the Add-ons surface. Never directly rewrite a live workflow-pack file, even during incident repair.
 

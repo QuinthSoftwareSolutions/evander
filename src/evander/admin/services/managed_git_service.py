@@ -746,6 +746,85 @@ class ManagedGitAdminService:
                 f"refs/heads/{normalized_branch}",
             )
 
+    def resolve_team_review_commit(
+        self,
+        managed_repo_id: str,
+        *,
+        directory_path: str,
+        pinned_ref: str,
+    ) -> str | None:
+        """Resolve one immutable Team review ref without consulting its source branch."""
+
+        record = self._require_scoped_record(managed_repo_id, directory_path)
+        normalized_ref = _normalize_ref(pinned_ref, field_name="pinned_ref")
+        if not normalized_ref.startswith("refs/evander/team-reviews/"):
+            raise ValueError("pinned_ref must be an immutable Team review ref")
+        bare_path = _managed_bare_path(self._managed_root, record)
+        with self._repo_lock(managed_repo_id, exclusive=False):
+            record = self._require_scoped_record(managed_repo_id, directory_path)
+            bare_path = _managed_bare_path(self._managed_root, record)
+            return self._resolve_ref(bare_path, normalized_ref)
+
+    def reduce_commit_frontier(
+        self,
+        managed_repo_id: str,
+        *,
+        directory_path: str,
+        base_commit_sha: str,
+        sources: Sequence[Mapping[str, str]],
+    ) -> dict[str, Any]:
+        """Return the deterministic ancestry frontier for immutable source commits."""
+
+        record = self._require_scoped_record(managed_repo_id, directory_path)
+        base_commit = _normalize_object_id(base_commit_sha, field_name="base_commit_sha")
+        normalized_sources = [
+            {
+                "deliverable_id": str(source.get("deliverable_id") or "").strip(),
+                "commit_sha": _normalize_object_id(
+                    source.get("commit_sha"),
+                    field_name="sources.commit_sha",
+                ),
+            }
+            for source in sources
+        ]
+        if any(not source["deliverable_id"] for source in normalized_sources):
+            raise ValueError("sources.deliverable_id must be a non-empty string")
+        bare_path = _managed_bare_path(self._managed_root, record)
+        with self._repo_lock(managed_repo_id, exclusive=False):
+            record = self._require_scoped_record(managed_repo_id, directory_path)
+            bare_path = _managed_bare_path(self._managed_root, record)
+            self._require_commit(bare_path, base_commit)
+            for source in normalized_sources:
+                self._require_commit(bare_path, source["commit_sha"])
+            frontier: list[str] = []
+            reduced_ids: list[str] = []
+            seen_commits: set[str] = set()
+            for source in normalized_sources:
+                commit = source["commit_sha"]
+                if commit in seen_commits or self._is_ancestor(bare_path, commit, base_commit):
+                    reduced_ids.append(source["deliverable_id"])
+                    continue
+                if any(
+                    commit != other["commit_sha"]
+                    and self._is_ancestor(bare_path, commit, other["commit_sha"])
+                    for other in normalized_sources
+                ):
+                    reduced_ids.append(source["deliverable_id"])
+                    continue
+                frontier.append(commit)
+                seen_commits.add(commit)
+            base_tree = self._git_output(
+                ["git", f"--git-dir={bare_path}", "rev-parse", f"{base_commit}^{{tree}}"]
+            ).strip()
+        return {
+            "managed_repo_id": managed_repo_id,
+            "directory_path": directory_path,
+            "base_commit_sha": base_commit,
+            "base_tree_hash": base_tree,
+            "frontier_commit_shas": frontier,
+            "reduced_source_deliverable_ids": reduced_ids,
+        }
+
     def verify_branch_commit_ancestry(
         self,
         managed_repo_id: str,
