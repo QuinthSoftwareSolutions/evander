@@ -136,10 +136,9 @@ class TeamCommandExecutor:
         payload_digest = self._repository.normalized_payload_digest(normalized_payload)
 
         def _transaction(
-            payload: dict[str, Any],
+            state: TeamState,
             tx: TeamStateSqliteCommandTransaction,
         ) -> tuple[TeamState, dict[str, Any]]:
-            state = TeamState.model_validate(payload)
             resolved, resolve_error = self._resolve_team_command_context(
                 state,
                 normalized_context,
@@ -253,17 +252,9 @@ class TeamCommandExecutor:
                 item.updated_at = now
 
             state_changed = apply_result.state_changed or bool(pending_handled_ids)
-            next_state = (
-                state.model_copy(
-                    update={"revision": state.revision + 1, "updated_at": now},
-                    deep=True,
-                )
-                if state_changed
-                else state
-            )
-            validated = TeamState.model_validate(next_state.model_dump(mode="json"))
-            payload.clear()
-            payload.update(validated.model_dump(mode="json"))
+            if state_changed:
+                state.revision += 1
+                state.updated_at = now
 
             activity_id = f"activity-{uuid4().hex}"
             outbox_records = _team_command_outbox_records(apply_result)
@@ -271,7 +262,7 @@ class TeamCommandExecutor:
                 tx.enqueue_outbox_record(outbox_record) for outbox_record in outbox_records
             ]
             response = _command_success_response(
-                state=validated,
+                state=state,
                 context=normalized_context,
                 activity_id=activity_id,
                 handled_inbox_item_ids=pending_handled_ids,
@@ -321,9 +312,9 @@ class TeamCommandExecutor:
                         created_event_ids=apply_result.created_event_ids,
                     )
                 )
-            return validated, response
+            return state, response
 
-        return self._repository.store.update_object_with_command_transaction(_transaction)
+        return self._repository.store.update_state_with_command_transaction(_transaction)
 
     def _validate_agent_dispatch_command_scope(
         self,

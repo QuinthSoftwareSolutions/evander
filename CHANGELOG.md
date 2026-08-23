@@ -1,5 +1,15 @@
 # Changelog
 
+## 2026-08-23 - Responsive MCP Gateway Tool Execution
+
+- Kept synchronous MCP tools off the gateway transport event loop so slow Team commands no
+  longer block unrelated client initialization and trigger 30-second startup failures.
+- Removed redundant full-state copies and validation round trips from atomic Team command
+  transactions while preserving aggregate validation, revision, idempotency, outbox, and
+  dispatch-activity semantics.
+- Added MCP request-duration logging and regression coverage for event-loop isolation and typed
+  transaction rollback.
+
 ## 2026-08-23 - Stateful Workflow Pack Validation
 
 - Preserved named graph metadata while reading and validating individual workflow packs, so graph-scoped state query and update nodes work correctly in multi-pack configurations.

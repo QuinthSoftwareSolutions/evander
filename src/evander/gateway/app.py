@@ -4,6 +4,7 @@ import contextlib
 import json
 import logging
 import os
+import time
 from datetime import datetime, timezone
 from hashlib import sha256
 from typing import Any
@@ -63,6 +64,7 @@ def _install_mcp_http_logging(
                 return await call_next(request)
 
             token = _MCP_REQUEST_CONTEXT.set(request)
+            request_started_at = time.perf_counter()
             declared_session_id = _ambient_session_id_from_request(
                 request,
                 transport_session_map=None,
@@ -225,12 +227,13 @@ def _install_mcp_http_logging(
                                 resolved_session_id
                             )
                 logger.info(
-                    "gateway_mcp_response method=%s path=%s status=%s content_type=%s mcp_session_id=%s",
+                    "gateway_mcp_response method=%s path=%s status=%s content_type=%s mcp_session_id=%s duration_ms=%d",
                     request.method,
                     request.url.path,
                     response.status_code,
                     response.headers.get("content-type", ""),
                     response.headers.get("mcp-session-id", ""),
+                    max(0, int((time.perf_counter() - request_started_at) * 1000)),
                 )
                 return response
             finally:

@@ -22,6 +22,7 @@ import httpx
 from mcp.server.fastmcp import Context, FastMCP
 from mcp.server.fastmcp.exceptions import ToolError
 from pydantic import Field as PydanticField
+from starlette.concurrency import run_in_threadpool
 from starlette.requests import Request
 
 from evander.addons import (
@@ -953,6 +954,27 @@ def create_server(context: RuntimeContext) -> FastMCP:
 
     _deprecate_session_id_parameter_schema()
     _inject_approval_request_id_schema()
+
+    def _offload_synchronous_tools() -> None:
+        """Keep blocking MCP tool implementations off the transport event loop."""
+
+        def _threaded_tool(sync_fn: Any) -> Any:
+            async def _run(**kwargs: Any) -> Any:
+                if _MCP_REQUEST_CONTEXT.get() is None:
+                    # Direct in-process calls are used by administrative code and
+                    # unit tests; only transport requests share the MCP event loop.
+                    return sync_fn(**kwargs)
+                return await run_in_threadpool(sync_fn, **kwargs)
+
+            return _run
+
+        for tool in server._tool_manager.list_tools():
+            if tool.is_async:
+                continue
+            tool.fn = _threaded_tool(tool.fn)
+            tool.is_async = True
+
+    _offload_synchronous_tools()
 
     original_list_tools = server._tool_manager.list_tools
 

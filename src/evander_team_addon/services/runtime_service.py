@@ -2410,10 +2410,9 @@ class TeamRuntimeService:
             }
 
         def _transaction(
-            payload: dict[str, Any],
+            state: TeamState,
             tx: TeamStateSqliteCommandTransaction,
         ) -> tuple[TeamState, dict[str, Any]]:
-            state = TeamState.model_validate(payload)
             if expected_revision is not None and state.revision != expected_revision:
                 raise TeamStateConflictError(
                     expected_revision=expected_revision,
@@ -2655,15 +2654,10 @@ class TeamRuntimeService:
             if stored_outbox_records:
                 result["outbox_record_ids"] = [record.id for record in stored_outbox_records]
 
-            next_state = state.model_copy(
-                update={"revision": state.revision + 1, "updated_at": completed_at},
-                deep=True,
-            )
-            validated = TeamState.model_validate(next_state.model_dump(mode="json"))
-            payload.clear()
-            payload.update(validated.model_dump(mode="json"))
-            finalized_runtime = validated.agent_runtimes[agent.id]
-            result["revision"] = validated.revision
+            state.revision += 1
+            state.updated_at = completed_at
+            finalized_runtime = state.agent_runtimes[agent.id]
+            result["revision"] = state.revision
             result["no_progress_count"] = finalized_runtime.no_progress_count
             result["last_progress_at"] = (
                 finalized_runtime.last_progress_at.isoformat()
@@ -2685,9 +2679,9 @@ class TeamRuntimeService:
                     updated_at=completed_at,
                 )
             )
-            return validated, result
+            return state, result
 
-        return self._repository.store.update_object_with_command_transaction(_transaction)
+        return self._repository.store.update_state_with_command_transaction(_transaction)
 
     def mirror_session_metadata_payload(
         self,
