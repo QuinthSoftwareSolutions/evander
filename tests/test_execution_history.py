@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+import zlib
 
 import pytest
 
+import evander.repositories.execution_history as execution_history
 import evander.repositories.orchestration_db as orchestration_db
 from evander.admin.payloads import WorkflowNodeExecutionFilterPayload
 from evander.daemons.effect_orchestrator import (
@@ -208,6 +210,9 @@ def test_execution_write_archives_sanitized_queryable_payload(tmp_path) -> None:
                     "privateKey": "private-key-value",
                     "sshKey": "ssh-key-camel-value",
                     "adoPat": "ado-pat-value",
+                    "prompt": "prompt-value",
+                    "body": "body-value",
+                    "connectionString": "connection-string-camel-value",
                     "path": "/safe/path",
                 },
                 "items": [{"hidden": "array-element"}],
@@ -244,6 +249,9 @@ def test_execution_write_archives_sanitized_queryable_payload(tmp_path) -> None:
     assert detail["input"]["user"]["privateKey"] == "[REDACTED]"
     assert detail["input"]["user"]["sshKey"] == "[REDACTED]"
     assert detail["input"]["user"]["adoPat"] == "[REDACTED]"
+    assert detail["input"]["user"]["prompt"] == "[REDACTED]"
+    assert detail["input"]["user"]["body"] == "[REDACTED]"
+    assert detail["input"]["user"]["connectionString"] == "[REDACTED]"
     assert detail["input"]["user"]["path"] == "/safe/path"
     assert detail["input"]["items"] == [{"hidden": "array-element"}]
     assert detail["record_tier"] == "full"
@@ -694,6 +702,122 @@ def test_retention_archives_before_full_record_delete(tmp_path) -> None:
     detail = read_node_execution_detail(path, execution_key="effect:expired-full")
     assert detail["record_tier"] == "compact"
     assert detail["full_record"] is None
+
+
+def test_retention_archival_redacts_default_policy_keys_and_camel_case_aliases(tmp_path) -> None:
+    path = tmp_path / "orchestration.db"
+    occurred_at = datetime.now(UTC) - timedelta(days=40)
+    sensitive_values = {
+        "prompt": "prompt-value-not-retained",
+        "body": "body-value-not-retained",
+        "body_text": "body-text-value-not-retained",
+        "authorization": "authorization-value-not-retained",
+        "token": "token-value-not-retained",
+        "api_key": "api-key-value-not-retained",
+        "response_token": "response-token-value-not-retained",
+        "parameters": {"secret": "parameters-value-not-retained"},
+        "password": "password-value-not-retained",
+        "connection_string": "connection-string-value-not-retained",
+        "connectionString": "connection-string-camel-value-not-retained",
+        "privateKey": "private-key-camel-value-not-retained",
+        "sshKey": "ssh-key-camel-value-not-retained",
+        "adoPat": "ado-pat-camel-value-not-retained",
+    }
+    queue = SqliteTriggerEventQueue(path, retention_days=None)
+    queue.publish(
+        TriggerEvent(
+            event_id="expired-agent-prompt",
+            trigger_id="agent-prompt-trigger",
+            trigger_type="trigger:agent:prompt:new",
+            trace_id="trace-expired-agent-prompt",
+            occurred_at=occurred_at,
+            payload={"agent_prompt": sensitive_values, "safe": "retained"},
+        )
+    )
+    assert queue.mark_delivered("expired-agent-prompt", delivered_at=occurred_at)
+
+    result = run_orchestration_retention(
+        path,
+        retention_days=30,
+        compact_history_retention_days=365,
+        execution_history_batch_size=1,
+    )
+
+    assert result.trigger_events_deleted == 1
+    detail = read_node_execution_detail(path, execution_key="trigger:expired-agent-prompt")
+    assert detail["record_tier"] == "compact"
+    assert detail["full_record"] is None
+    assert detail["output"]["safe"] == "retained"
+    assert detail["output"]["agent_prompt"] == {key: "[REDACTED]" for key in sensitive_values}
+    with connect_orchestration_db(path) as connection:
+        compressed = connection.execute(
+            """
+            SELECT b.payload_blob
+            FROM workflow_node_execution_history h
+            JOIN workflow_execution_payload_blobs b ON b.sha256 = h.output_blob_sha256
+            WHERE h.execution_key = ?
+            """,
+            ("trigger:expired-agent-prompt",),
+        ).fetchone()[0]
+        index_values = [
+            row["text_value"]
+            for row in connection.execute(
+                """
+                SELECT text_value
+                FROM workflow_node_execution_history_values
+                WHERE execution_key = ?
+                """,
+                ("trigger:expired-agent-prompt",),
+            )
+        ]
+    archived_blob = zlib.decompress(bytes(compressed)).decode("utf-8")
+    for value in sensitive_values.values():
+        if isinstance(value, str):
+            assert value not in archived_blob
+            assert value not in index_values
+
+
+def test_retention_archives_and_deletes_full_records_in_bounded_batches(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path = tmp_path / "orchestration.db"
+    ensure_orchestration_schema(path)
+    started_at = datetime.now(UTC) - timedelta(days=40)
+    for index in range(5):
+        _insert_legacy_effect(
+            path,
+            _effect_record(execution_id=f"expired-batch-{index}", started_at=started_at),
+        )
+
+    original_archive = execution_history.archive_records_for_retention
+    archived_batches: list[list[tuple[str, str]]] = []
+    batch_connections = []
+
+    def archive_batch(connection, *, cutoff: str, batch_size: int) -> list[tuple[str, str]]:
+        archived = original_archive(connection, cutoff=cutoff, batch_size=batch_size)
+        archived_batches.append(archived)
+        batch_connections.append(connection)
+        return archived
+
+    monkeypatch.setattr(execution_history, "archive_records_for_retention", archive_batch)
+
+    result = run_orchestration_retention(
+        path,
+        retention_days=30,
+        compact_history_retention_days=365,
+        execution_history_batch_size=2,
+    )
+
+    assert [len(batch) for batch in archived_batches] == [2, 2, 1, 0]
+    assert len({id(connection) for connection in batch_connections}) == 4
+    assert result.effect_executions_deleted == 5
+    with connect_orchestration_db(path) as connection:
+        assert connection.execute("SELECT COUNT(*) FROM effect_executions").fetchone()[0] == 0
+        assert (
+            connection.execute("SELECT COUNT(*) FROM workflow_node_execution_history").fetchone()[0]
+            == 5
+        )
 
 
 def test_execution_history_uses_stable_keyset_pagination(tmp_path) -> None:

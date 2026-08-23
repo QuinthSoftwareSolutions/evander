@@ -12,7 +12,10 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 
-from evander.approval_diagnostics import DEFAULT_SENSITIVE_PAYLOAD_MARKERS
+from evander.approval_diagnostics import (
+    DEFAULT_REDACTED_PAYLOAD_KEYS,
+    DEFAULT_SENSITIVE_PAYLOAD_MARKERS,
+)
 from evander.models import DirectoryPath
 from evander.repositories.orchestration_db import (
     connect_orchestration_db,
@@ -23,6 +26,7 @@ from evander.repositories.orchestration_db import (
 )
 
 EXECUTION_HISTORY_BACKFILL_BATCH_SIZE = 250
+EXECUTION_HISTORY_RETENTION_BATCH_SIZE = 250
 _REDACTED = "[REDACTED]"
 _SENSITIVE_KEY_MARKERS = tuple(
     dict.fromkeys(
@@ -40,6 +44,12 @@ _SENSITIVE_KEY_MARKERS = tuple(
     )
 )
 _SENSITIVE_KEY_SEGMENTS = frozenset({"pat", "pwd"})
+_SENSITIVE_KEY_NAMES = frozenset(
+    re.sub(r"(?<=[A-Z])(?=[A-Z][a-z])", "_", re.sub(r"(?<=[a-z0-9])(?=[A-Z])", "_", key))
+    .casefold()
+    .replace("-", "_")
+    for key in DEFAULT_REDACTED_PAYLOAD_KEYS
+)
 _NUMERIC_OPERATORS = {"gt", "gte", "lt", "lte"}
 _MAX_EXACT_FLOAT_INTEGER = (1 << 53) - 1
 
@@ -58,8 +68,10 @@ def _is_sensitive_key(key: str) -> bool:
     normalized = re.sub(r"(?<=[A-Z])(?=[A-Z][a-z])", "_", normalized)
     normalized = normalized.casefold().replace("-", "_")
     segments = frozenset(segment for segment in normalized.split("_") if segment)
-    return any(marker in normalized for marker in _SENSITIVE_KEY_MARKERS) or bool(
-        segments & _SENSITIVE_KEY_SEGMENTS
+    return (
+        normalized in _SENSITIVE_KEY_NAMES
+        or any(marker in normalized for marker in _SENSITIVE_KEY_MARKERS)
+        or bool(segments & _SENSITIVE_KEY_SEGMENTS)
     )
 
 
@@ -504,16 +516,30 @@ def _storage_timestamp(value: Any) -> str | None:
     return None
 
 
-def archive_records_for_retention(connection: sqlite3.Connection, *, cutoff: str) -> int:
+def archive_records_for_retention(
+    connection: sqlite3.Connection,
+    *,
+    cutoff: str,
+    batch_size: int = EXECUTION_HISTORY_RETENTION_BATCH_SIZE,
+) -> list[tuple[str, str]]:
+    """Archive one bounded retention batch and return its source row keys.
+
+    The caller must delete precisely these source rows in the same transaction.
+    Deleting each completed batch makes the remaining ordered source keys the
+    cursor for the following batch without loading an expired backlog at once.
+    """
+    if batch_size < 1 or batch_size > 10_000:
+        raise ValueError("batch_size must be between 1 and 10000")
     rows = connection.execute(
         """
-        SELECT 'trigger' AS execution_kind, payload_json, occurred_at AS sort_at
+        SELECT 'trigger' AS execution_kind, event_id AS source_id, payload_json,
+               occurred_at AS sort_at
         FROM trigger_events
         WHERE delivery_state = 'delivered'
           AND trigger_type LIKE 'trigger:%'
           AND COALESCE(delivered_at, occurred_at) < ?
         UNION ALL
-        SELECT 'effect', payload_json, started_at
+        SELECT 'effect', execution_id, payload_json, started_at
         FROM effect_executions
         WHERE (
             status IN ('succeeded', 'skipped', 'dropped')
@@ -524,7 +550,7 @@ def archive_records_for_retention(connection: sqlite3.Connection, *, cutoff: str
             AND COALESCE(dismissed_at, cleared_at, finished_at, started_at) < ?
         )
         UNION ALL
-        SELECT 'gate', payload_json, started_at
+        SELECT 'gate', execution_id, payload_json, started_at
         FROM gate_executions
         WHERE (
             status IN ('succeeded', 'skipped', 'dropped')
@@ -534,9 +560,10 @@ def archive_records_for_retention(connection: sqlite3.Connection, *, cutoff: str
             AND (dismissed_at IS NOT NULL OR cleared_at IS NOT NULL)
             AND COALESCE(dismissed_at, cleared_at, finished_at, started_at) < ?
         )
-        ORDER BY sort_at ASC
+        ORDER BY sort_at ASC, execution_kind ASC, source_id ASC
+        LIMIT ?
         """,
-        (cutoff, cutoff, cutoff, cutoff, cutoff),
+        (cutoff, cutoff, cutoff, cutoff, cutoff, batch_size),
     ).fetchall()
     for row in rows:
         archive_execution_record(
@@ -544,7 +571,7 @@ def archive_records_for_retention(connection: sqlite3.Connection, *, cutoff: str
             kind=str(row["execution_kind"]),
             record=json_loads_object(row["payload_json"]),
         )
-    return len(rows)
+    return [(str(row["execution_kind"]), str(row["source_id"])) for row in rows]
 
 
 def run_execution_history_backfill(

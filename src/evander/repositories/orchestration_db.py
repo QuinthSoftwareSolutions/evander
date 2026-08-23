@@ -522,11 +522,14 @@ def run_orchestration_retention(
     *,
     retention_days: int,
     compact_history_retention_days: int,
+    execution_history_batch_size: int = 250,
 ) -> OrchestrationRetentionResult:
     if retention_days < 0:
         raise ValueError("retention_days must be non-negative")
     if compact_history_retention_days < 0:
         raise ValueError("compact_history_retention_days must be non-negative")
+    if execution_history_batch_size < 1 or execution_history_batch_size > 10_000:
+        raise ValueError("execution_history_batch_size must be between 1 and 10000")
     ensure_orchestration_schema(path)
     now = datetime.now(UTC)
     cutoff = datetime_to_storage(now - timedelta(days=retention_days))
@@ -535,51 +538,34 @@ def run_orchestration_retention(
     assert compact_cutoff is not None
     today = now.date().isoformat()
 
-    with connect_orchestration_db(path) as connection:
-        # Preserve a compact, queryable snapshot before full execution payloads
-        # are allowed to expire. The helper uses this transaction, so a delete
-        # cannot commit without its history copy.
-        from evander.repositories.execution_history import archive_records_for_retention
+    trigger_deleted = 0
+    effect_deleted = 0
+    gate_deleted = 0
+    while True:
+        # Keep retention writes bounded: each compact archival and matching
+        # source deletion commits before the next source-key batch is read.
+        # A source row therefore cannot disappear without its compact copy.
+        with connect_orchestration_db(path) as connection:
+            # Import locally to keep the low-level schema module independent
+            # of the history query surface at import time.
+            from evander.repositories.execution_history import archive_records_for_retention
 
-        archive_records_for_retention(connection, cutoff=cutoff)
-        trigger_deleted = connection.execute(
-            """
-            DELETE FROM trigger_events
-            WHERE delivery_state = 'delivered'
-              AND COALESCE(delivered_at, occurred_at) < ?
-            """,
-            (cutoff,),
-        ).rowcount
-        effect_deleted = connection.execute(
-            """
-            DELETE FROM effect_executions
-            WHERE (
-                status IN ('succeeded', 'skipped', 'dropped')
-                AND COALESCE(finished_at, started_at) < ?
+            archived_sources = archive_records_for_retention(
+                connection,
+                cutoff=cutoff,
+                batch_size=execution_history_batch_size,
             )
-            OR (
-                status = 'failed'
-                AND (dismissed_at IS NOT NULL OR cleared_at IS NOT NULL)
-                AND COALESCE(dismissed_at, cleared_at, finished_at, started_at) < ?
-            )
-            """,
-            (cutoff, cutoff),
-        ).rowcount
-        gate_deleted = connection.execute(
-            """
-            DELETE FROM gate_executions
-            WHERE (
-                status IN ('succeeded', 'skipped', 'dropped')
-                AND COALESCE(finished_at, started_at) < ?
-            )
-            OR (
-                status = 'failed'
-                AND (dismissed_at IS NOT NULL OR cleared_at IS NOT NULL)
-                AND COALESCE(dismissed_at, cleared_at, finished_at, started_at) < ?
-            )
-            """,
-            (cutoff, cutoff),
-        ).rowcount
+            if not archived_sources:
+                break
+            deleted_by_kind = _delete_archived_execution_sources(connection, archived_sources)
+            trigger_deleted += deleted_by_kind["trigger"]
+            effect_deleted += deleted_by_kind["effect"]
+            gate_deleted += deleted_by_kind["gate"]
+
+    with connect_orchestration_db(path) as connection:
+        # Full execution records are already copied and deleted in bounded
+        # transactions above. The remaining retention tables contain no
+        # archival payload work.
         workflow_deleted = connection.execute(
             "DELETE FROM workflow_events WHERE occurred_at < ?",
             (cutoff,),
@@ -621,6 +607,30 @@ def run_orchestration_retention(
         compact_executions_deleted=max(0, compact_deleted),
         compact_payload_blobs_deleted=max(0, blob_deleted),
     )
+
+
+def _delete_archived_execution_sources(
+    connection: sqlite3.Connection,
+    sources: list[tuple[str, str]],
+) -> dict[str, int]:
+    """Delete source rows that were compacted in this transaction."""
+    deleted = {"trigger": 0, "effect": 0, "gate": 0}
+    source_tables = {
+        "trigger": ("trigger_events", "event_id"),
+        "effect": ("effect_executions", "execution_id"),
+        "gate": ("gate_executions", "execution_id"),
+    }
+    for kind, (table, key_column) in source_tables.items():
+        source_ids = [source_id for source_kind, source_id in sources if source_kind == kind]
+        if not source_ids:
+            continue
+        placeholders = ", ".join("?" for _ in source_ids)
+        result = connection.execute(
+            f"DELETE FROM {table} WHERE {key_column} IN ({placeholders})",
+            source_ids,
+        )
+        deleted[kind] = max(0, result.rowcount)
+    return deleted
 
 
 def _datetime_from_storage(value: Any) -> datetime | None:
