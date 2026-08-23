@@ -146,6 +146,7 @@ _TriggerEventQueue = SqliteTriggerEventQueue
 class _CapturedTeamsMessageMatcher:
     trigger_id: str
     trigger_type: str
+    directory_path: str
     matcher: _TeamsMessageMatcher
 
     def events_for(self, message: TeamsInboxMessage) -> tuple[TriggerEvent, ...]:
@@ -561,6 +562,16 @@ class TeamsIngestWorker:
                     _CapturedTeamsMessageMatcher(
                         trigger_id=materialized.id,
                         trigger_type=materialized.type,
+                        directory_path=DirectoryPath(
+                            segments=(
+                                str(getattr(materialized, "directory_path", "") or "").strip()
+                                or (
+                                    node_graph_metadata_by_id[materialized.id].directory_path
+                                    if materialized.id in node_graph_metadata_by_id
+                                    else "root"
+                                )
+                            )
+                        ).as_posix(),
                         matcher=matcher,
                     )
                 )
@@ -609,6 +620,7 @@ class TeamsIngestWorker:
         cache_key: tuple[object, ...] = (
             str(trigger_config.orchestration_store_path),
             trigger_config.orchestration_retention_days,
+            trigger_config.orchestration_compact_history_retention_days,
         )
         if self._event_queue_cache is None or self._event_queue_cache[0] != cache_key:
             self._event_queue_cache = (
@@ -616,6 +628,9 @@ class TeamsIngestWorker:
                 SqliteTriggerEventQueue(
                     trigger_config.orchestration_store_path,
                     retention_days=trigger_config.orchestration_retention_days,
+                    compact_history_retention_days=(
+                        trigger_config.orchestration_compact_history_retention_days
+                    ),
                 ),
             )
         assert self._event_queue_cache is not None
@@ -1108,7 +1123,11 @@ class TeamsIngestWorker:
                             f"{captured_matcher.trigger_id} runtime outputs"
                         ),
                     )
-                    publish_result = event_queue.publish_result(event)
+                    publish_result = event_queue.publish_result(
+                        event,
+                        config_revision=trigger_snapshot.revision,
+                        directory_path=captured_matcher.directory_path,
+                    )
                     if publish_result.record.event_id != event.event_id:
                         raise RuntimeError(
                             "trigger queue returned a record for a different deterministic event id"

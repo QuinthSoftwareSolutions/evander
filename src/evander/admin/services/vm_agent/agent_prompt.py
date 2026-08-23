@@ -369,6 +369,7 @@ class VmAgentPromptMixin:
                 resolved_config=resolved_config,
                 input_payload=input_payload,
                 outputs=outputs,
+                directory_path=directory_path,
             )
         )
 
@@ -461,6 +462,7 @@ class VmAgentPromptMixin:
                 resolved_config=resolved_config,
                 input_payload=input_payload,
                 outputs=outputs,
+                directory_path=directory_path,
             )
         )
 

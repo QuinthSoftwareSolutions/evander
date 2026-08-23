@@ -3600,6 +3600,7 @@ def test_run_admin_agent_action_prompt_agent_records_libvirt_waiting_execution(
     assert len(records) == 1
     assert records[0].status == "waiting"
     assert records[0].effect_type == "effect:agent:enqueue-prompt"
+    assert records[0].directory_path == "root"
     assert records[0].resolved_config["execution_backend"] == "libvirt_vm"
     assert records[0].outputs["prompt_lock_key"] == "vm:evander-receptionist-vm"
     assert records[0].outputs["prompt_lock_owner_id"] == result["prompt_lock_owner_id"]
@@ -3670,6 +3671,7 @@ def test_run_admin_agent_action_tracks_same_context_dispatch_without_new_thread_
     assert result["thread_id"] is None
     assert len(records) == 1
     assert records[0].status == "waiting"
+    assert records[0].directory_path == "root"
     assert records[0].outputs["dispatch_id"] == result["dispatch_id"]
     assert records[0].resolved_config["resume_mode"] == "same_context"
 
@@ -3823,6 +3825,7 @@ def test_run_admin_agent_action_prompt_agent_records_direct_container_dispatch(
     assert records[0].effect_type == "effect:agent:enqueue-prompt"
     assert records[0].resolved_config["execution_backend"] == "container_worker_vm"
     assert records[0].resolved_config["directory_path"] == "root"
+    assert records[0].directory_path == "root"
     assert records[0].outputs["output_mode"] == "on_completion"
     assert records[0].outputs["execution_id"] == backend.started_specs[0].target_name
     assert str(records[0].outputs["thread_id"]).startswith("dispatch-")
@@ -5100,6 +5103,8 @@ def test_resume_agent_passes_explicit_resume_thread_id(tmp_path: Path, monkeypat
     assert "--orchestration-store-path" in watcher["cmd"]
     store_index = watcher["cmd"].index("--orchestration-store-path")
     assert watcher["cmd"][store_index + 1] == str(service.config.runtime_dir / "orchestration.db")
+    compact_retention_index = watcher["cmd"].index("--orchestration-compact-history-retention-days")
+    assert watcher["cmd"][compact_retention_index + 1] == "365"
     assert "--session-id" in watcher["cmd"]
     assert "receptionist-session" in watcher["cmd"]
 

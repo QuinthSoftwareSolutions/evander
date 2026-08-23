@@ -120,6 +120,7 @@ from evander.repositories.orchestration import (
     SqliteExecutionRepository,
     SqliteGateExecutionRepository,
 )
+from evander.repositories.execution_history import run_execution_history_backfill
 
 logger = logging.getLogger(__name__)
 
@@ -914,6 +915,20 @@ class EffectOrchestratorWorker:
         )
         completion_events_published += published_count
         completion_events_published += self._run_post_event_maintenance(graph=graph)
+        if events_processed == 0:
+            phase_started = time.perf_counter()
+            try:
+                backfill = run_execution_history_backfill(
+                    self.worker_config.orchestration_store_path
+                )
+                self._log_phase_duration(
+                    "execution_history_backfill",
+                    phase_started,
+                    archived=backfill.get("last_batch_size", 0),
+                    completed=backfill.get("completed", False),
+                )
+            except Exception:  # noqa: BLE001
+                logger.exception("Workflow execution history backfill failed")
         self._run_orchestration_wal_checkpoint_maintenance()
 
         next_sleep_seconds = _compute_effect_cycle_sleep_seconds(
@@ -2679,6 +2694,7 @@ class SqliteExecutionStore(SqliteExecutionRepository[EffectExecutionRecord]):
         *,
         journal: Any | None = None,
         retention_days: int | None = None,
+        compact_history_retention_days: int | None = None,
     ) -> None:
         super().__init__(
             path,
@@ -2689,6 +2705,7 @@ class SqliteExecutionStore(SqliteExecutionRepository[EffectExecutionRecord]):
             journal=journal,
             source="effect_execution",
             retention_days=retention_days,
+            compact_history_retention_days=compact_history_retention_days,
         )
 
 
@@ -2699,6 +2716,7 @@ class SqliteGateExecutionStore(SqliteGateExecutionRepository[GateExecutionRecord
         *,
         journal: Any | None = None,
         retention_days: int | None = None,
+        compact_history_retention_days: int | None = None,
     ) -> None:
         super().__init__(
             path,
@@ -2709,6 +2727,7 @@ class SqliteGateExecutionStore(SqliteGateExecutionRepository[GateExecutionRecord
             journal=journal,
             source="gate_execution",
             retention_days=retention_days,
+            compact_history_retention_days=compact_history_retention_days,
         )
 
 
@@ -3389,6 +3408,9 @@ def _effect_store_binding_signature(
         if worker_config.orchestration_store_path is not None
         else None,
         "orchestration_retention_days": worker_config.orchestration_retention_days,
+        "orchestration_compact_history_retention_days": (
+            worker_config.orchestration_compact_history_retention_days
+        ),
         "effect_cursor_store_path": str(worker_config.effect_cursor_store_path)
         if worker_config.effect_cursor_store_path is not None
         else None,

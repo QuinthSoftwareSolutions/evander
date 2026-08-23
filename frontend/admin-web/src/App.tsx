@@ -63,6 +63,10 @@ import {
   type WorkflowRunToolCallLink,
   type WorkflowRunSnapshot,
   type WorkflowRunSummary,
+  type WorkflowNodeExecutionDetail,
+  type WorkflowNodeExecutionFields,
+  type WorkflowNodeExecutionFilter,
+  type WorkflowNodeExecutionSearch,
   type WorkflowValidationDiagnostic,
 } from "./types";
 import { ApiError } from "./features/admin/api";
@@ -215,6 +219,23 @@ type WorkflowRunSearchScopeOption = {
   kind: "graph" | "node";
   id: string;
   label: string;
+};
+
+type WorkflowNodeExecutionFilterDraft = {
+  location: "input" | "output";
+  path: string;
+  operator: WorkflowNodeExecutionFilter["operator"];
+  valueType: "string" | "number" | "boolean" | "null";
+  value: string;
+};
+
+type WorkflowNodeExecutionQuery = {
+  node_id: string;
+  started_from: string;
+  started_to: string;
+  statuses: string[];
+  filters: WorkflowNodeExecutionFilter[];
+  limit: number;
 };
 
 type BindingOption = {
@@ -2838,6 +2859,64 @@ function workflowRunSearchQuery(
   return query;
 }
 
+function workflowNodeExecutionLocalTimestamp(value: Date): string {
+  const local = new Date(value.getTime() - value.getTimezoneOffset() * 60_000);
+  return local.toISOString().slice(0, 23);
+}
+
+function workflowNodeExecutionDefaultWindow(now = new Date()): { from: string; to: string } {
+  return {
+    from: workflowNodeExecutionLocalTimestamp(new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000)),
+    to: workflowNodeExecutionLocalTimestamp(now),
+  };
+}
+
+function workflowNodeExecutionDefaultStart(): string {
+  return workflowNodeExecutionDefaultWindow().from;
+}
+
+function workflowNodeExecutionDefaultEnd(): string {
+  return workflowNodeExecutionDefaultWindow().to;
+}
+
+function workflowNodeExecutionFilterValue(draft: WorkflowNodeExecutionFilterDraft): unknown {
+  if (draft.valueType === "null") return null;
+  if (draft.valueType === "boolean") return draft.value.trim().toLowerCase() === "true";
+  if (draft.valueType === "number") {
+    const numericText = draft.value.trim();
+    if (!numericText) throw new Error("Execution numeric filter values must not be blank.");
+    const numericValue = Number(numericText);
+    if (!Number.isFinite(numericValue)) {
+      throw new Error("Execution numeric filter values must be finite.");
+    }
+    if (Number.isInteger(numericValue) && !Number.isSafeInteger(numericValue)) {
+      throw new Error("Execution integer filter values must be within JavaScript's safe range.");
+    }
+    return numericValue;
+  }
+  return draft.value;
+}
+
+function workflowNodeExecutionFilters(
+  drafts: WorkflowNodeExecutionFilterDraft[],
+): WorkflowNodeExecutionFilter[] {
+  return drafts.flatMap((draft) => {
+    const path = draft.path.trim();
+    if (!path) return [];
+    if (!path.startsWith("/")) {
+      throw new Error("Execution filter paths must be JSON Pointers beginning with '/'.");
+    }
+    return [{
+      location: draft.location,
+      path,
+      operator: draft.operator,
+      ...(!["exists", "not_exists"].includes(draft.operator)
+        ? { value: workflowNodeExecutionFilterValue(draft) }
+        : {}),
+    }];
+  });
+}
+
 function summarizeRunSearchStatuses(counts: Record<string, number>): string {
   const entries = Object.entries(counts).filter(([, count]) => count > 0);
   if (entries.length === 0) return "No recorded node status";
@@ -4007,6 +4086,9 @@ export default function App() {
   const runtimePulseSeenActivityKeyOrderRef = useRef<string[]>([]);
   const runtimePulseTimeoutsRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
   const workflowTargetInventoryCacheRef = useRef<Map<string, WorkflowTargetInventory>>(new Map());
+  const selectedNodeIdRef = useRef<string | null>(null);
+  const nodeExecutionQueryRef = useRef<WorkflowNodeExecutionQuery | null>(null);
+  const nodeExecutionWindowTouchedRef = useRef(false);
   const previousSelectedDirectoryPathRef = useRef(selectedDirectoryPath);
   const selectedWorkflowPackReferenceRef = useRef("");
   const [document, setDocument] = useState<WorkflowEditorDocument | null>(null);
@@ -4068,6 +4150,22 @@ export default function App() {
   const [runSearchResult, setRunSearchResult] = useState<WorkflowRunSearch | null>(null);
   const [runSearchLoading, setRunSearchLoading] = useState(false);
   const [runSearchError, setRunSearchError] = useState<string | null>(null);
+  const [nodeExecutionStartedFrom, setNodeExecutionStartedFrom] = useState(
+    workflowNodeExecutionDefaultStart,
+  );
+  const [nodeExecutionStartedTo, setNodeExecutionStartedTo] = useState(
+    workflowNodeExecutionDefaultEnd,
+  );
+  const [nodeExecutionStatuses, setNodeExecutionStatuses] = useState("");
+  const [nodeExecutionFilters, setNodeExecutionFilters] = useState<
+    WorkflowNodeExecutionFilterDraft[]
+  >([{ location: "output", path: "", operator: "eq", valueType: "string", value: "" }]);
+  const [nodeExecutionSearch, setNodeExecutionSearch] = useState<WorkflowNodeExecutionSearch | null>(null);
+  const [nodeExecutionFields, setNodeExecutionFields] = useState<WorkflowNodeExecutionFields | null>(null);
+  const [nodeExecutionDetail, setNodeExecutionDetail] = useState<WorkflowNodeExecutionDetail | null>(null);
+  const [nodeExecutionLoading, setNodeExecutionLoading] = useState(false);
+  const [nodeExecutionDetailLoading, setNodeExecutionDetailLoading] = useState(false);
+  const [nodeExecutionError, setNodeExecutionError] = useState<string | null>(null);
   const [runSnapshotError, setRunSnapshotError] = useState<string | null>(null);
   const [compactActivePanel, setCompactActivePanel] = useState<CompactActivePanel>(null);
   const [compactCanvasMode, setCompactCanvasMode] = useState<CompactCanvasMode>("select");
@@ -4505,8 +4603,18 @@ export default function App() {
   }, [runSearchScope, runSearchWithoutSession, runSearchIncludeCompleted]);
 
   useEffect(() => {
+    selectedNodeIdRef.current = selectedNode?.id ?? null;
+    const defaultWindow = workflowNodeExecutionDefaultWindow();
+    nodeExecutionWindowTouchedRef.current = false;
+    setNodeExecutionStartedFrom(defaultWindow.from);
+    setNodeExecutionStartedTo(defaultWindow.to);
     setCopiedBindingExpression(null);
     setOutputCopyError(null);
+    setNodeExecutionSearch(null);
+    nodeExecutionQueryRef.current = null;
+    setNodeExecutionFields(null);
+    setNodeExecutionDetail(null);
+    setNodeExecutionError(null);
   }, [selectedNode?.id]);
 
   useEffect(() => {
@@ -5252,6 +5360,121 @@ export default function App() {
     } finally {
       setRunSearchLoading(false);
     }
+  }
+
+  async function loadNodeExecutionHistory(cursor: string | null = null, append = false) {
+    if (!selectedNode || nodeExecutionLoading || workflowRunReadLocked) return;
+    const nodeId = selectedNode.id;
+    let query: WorkflowNodeExecutionQuery;
+    if (append) {
+      const originalQuery = nodeExecutionQueryRef.current;
+      if (!cursor || !originalQuery || originalQuery.node_id !== nodeId) {
+        setNodeExecutionError("Run the history query again before loading more results.");
+        return;
+      }
+      query = originalQuery;
+    } else {
+      const defaultWindow = nodeExecutionWindowTouchedRef.current
+        ? null
+        : workflowNodeExecutionDefaultWindow();
+      const startedFromText = defaultWindow?.from ?? nodeExecutionStartedFrom;
+      const startedToText = defaultWindow?.to ?? nodeExecutionStartedTo;
+      if (defaultWindow) {
+        setNodeExecutionStartedFrom(defaultWindow.from);
+        setNodeExecutionStartedTo(defaultWindow.to);
+      }
+      const startedFrom = new Date(startedFromText);
+      const startedTo = new Date(startedToText);
+      if (
+        Number.isNaN(startedFrom.getTime())
+        || Number.isNaN(startedTo.getTime())
+        || startedFrom >= startedTo
+      ) {
+        setNodeExecutionError("Choose a valid start before the end date.");
+        return;
+      }
+      let filters: WorkflowNodeExecutionFilter[];
+      try {
+        filters = workflowNodeExecutionFilters(nodeExecutionFilters);
+      } catch (reason: unknown) {
+        setNodeExecutionError(reason instanceof Error ? reason.message : String(reason));
+        return;
+      }
+      query = {
+        node_id: nodeId,
+        started_from: startedFrom.toISOString(),
+        started_to: startedTo.toISOString(),
+        statuses: nodeExecutionStatuses
+          .split(",")
+          .map((value) => value.trim())
+          .filter(Boolean),
+        filters,
+        limit: 50,
+      };
+    }
+    const body = { ...query, cursor };
+    setNodeExecutionLoading(true);
+    setNodeExecutionError(null);
+    try {
+      const payload = await fetchJson<WorkflowNodeExecutionSearch>(
+        "/api/workflow-editor/node-executions/search",
+        { method: "POST", body: JSON.stringify(body) },
+      );
+      if (selectedNodeIdRef.current !== nodeId) return;
+      if (!append) nodeExecutionQueryRef.current = query;
+      setNodeExecutionSearch((current) => append && current
+        ? {
+            ...payload,
+            returned: current.executions.length + payload.executions.length,
+            executions: [...current.executions, ...payload.executions],
+          }
+        : payload);
+      if (!append) {
+        const fields = await fetchJson<WorkflowNodeExecutionFields>(
+          "/api/workflow-editor/node-executions/fields",
+          {
+            method: "POST",
+            body: JSON.stringify({
+              node_id: nodeId,
+              started_from: query.started_from,
+              started_to: query.started_to,
+            }),
+          },
+        );
+        if (selectedNodeIdRef.current !== nodeId) return;
+        setNodeExecutionFields(fields);
+      }
+    } catch (reason: unknown) {
+      setNodeExecutionError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setNodeExecutionLoading(false);
+    }
+  }
+
+  async function loadNodeExecutionDetail(executionKey: string) {
+    if (nodeExecutionDetailLoading || workflowRunReadLocked) return;
+    const nodeId = selectedNode?.id ?? null;
+    setNodeExecutionDetailLoading(true);
+    setNodeExecutionError(null);
+    try {
+      const detail = await fetchJson<WorkflowNodeExecutionDetail>(
+        `/api/workflow-editor/node-executions/${encodeURIComponent(executionKey)}`,
+      );
+      if (selectedNodeIdRef.current !== nodeId) return;
+      setNodeExecutionDetail(detail);
+    } catch (reason: unknown) {
+      setNodeExecutionError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setNodeExecutionDetailLoading(false);
+    }
+  }
+
+  function updateNodeExecutionFilter(
+    index: number,
+    patch: Partial<WorkflowNodeExecutionFilterDraft>,
+  ) {
+    setNodeExecutionFilters((current) => current.map((filter, filterIndex) =>
+      filterIndex === index ? { ...filter, ...patch } : filter));
   }
 
   function inspectWorkflowRun(eventId: string) {
@@ -11365,6 +11588,274 @@ export default function App() {
     );
   }
 
+  function renderNodeExecutionHistory() {
+    if (!selectedNode || !canReadWorkflowRuns) return null;
+    const availability = nodeExecutionSearch?.availability;
+    return (
+      <details className="node-execution-history">
+        <summary>Execution history</summary>
+        <p className="field-description">
+          Query this node's inputs and outputs. Dates use your local timezone; the end is exclusive.
+        </p>
+        <form
+          className="node-execution-history-form"
+          onSubmit={(event) => {
+            event.preventDefault();
+            void loadNodeExecutionHistory();
+          }}
+        >
+          <div className="node-execution-history-window">
+            <label className="inspector-label">
+              <span>From</span>
+              <input
+                type="datetime-local"
+                step="0.001"
+                value={nodeExecutionStartedFrom}
+                onChange={(event) => {
+                  nodeExecutionWindowTouchedRef.current = true;
+                  setNodeExecutionStartedFrom(event.target.value);
+                }}
+              />
+            </label>
+            <label className="inspector-label">
+              <span>To (exclusive)</span>
+              <input
+                type="datetime-local"
+                step="0.001"
+                value={nodeExecutionStartedTo}
+                onChange={(event) => {
+                  nodeExecutionWindowTouchedRef.current = true;
+                  setNodeExecutionStartedTo(event.target.value);
+                }}
+              />
+            </label>
+          </div>
+          <label className="inspector-label">
+            <span>Statuses</span>
+            <input
+              value={nodeExecutionStatuses}
+              onChange={(event) => setNodeExecutionStatuses(event.target.value)}
+              placeholder="succeeded, failed (blank means all)"
+            />
+          </label>
+          <datalist id="node-execution-field-paths">
+            {(nodeExecutionFields?.fields ?? []).map((field) => (
+              <option
+                key={`${field.location}:${field.json_pointer}:${field.value_type}`}
+                value={field.json_pointer}
+              >
+                {field.location} · {field.value_type} · {field.observed_count}
+              </option>
+            ))}
+          </datalist>
+          <div className="node-execution-filter-list">
+            {nodeExecutionFilters.map((filter, index) => (
+              <div className="node-execution-filter" key={index}>
+                <select
+                  value={filter.location}
+                  aria-label={`Execution filter ${index + 1} location`}
+                  onChange={(event) => updateNodeExecutionFilter(index, {
+                    location: event.target.value as "input" | "output",
+                  })}
+                >
+                  <option value="input">Input</option>
+                  <option value="output">Output</option>
+                </select>
+                <input
+                  list="node-execution-field-paths"
+                  value={filter.path}
+                  aria-label={`Execution filter ${index + 1} JSON Pointer`}
+                  placeholder="/user/name"
+                  onChange={(event) => updateNodeExecutionFilter(index, { path: event.target.value })}
+                />
+                <select
+                  value={filter.operator}
+                  aria-label={`Execution filter ${index + 1} operator`}
+                  onChange={(event) => {
+                    const operator = event.target.value as WorkflowNodeExecutionFilter["operator"];
+                    updateNodeExecutionFilter(index, {
+                      operator,
+                      ...(operator === "gt" || operator === "gte" || operator === "lt" || operator === "lte"
+                        ? { valueType: "number" }
+                        : {}),
+                    });
+                  }}
+                >
+                  <option value="eq">equals</option>
+                  <option value="exists">exists</option>
+                  <option value="not_exists">does not exist</option>
+                  <option value="gt">greater than</option>
+                  <option value="gte">greater or equal</option>
+                  <option value="lt">less than</option>
+                  <option value="lte">less or equal</option>
+                </select>
+                {!(["exists", "not_exists"] as string[]).includes(filter.operator) ? (
+                  <>
+                    <select
+                      value={filter.valueType}
+                      aria-label={`Execution filter ${index + 1} value type`}
+                      disabled={["gt", "gte", "lt", "lte"].includes(filter.operator)}
+                      onChange={(event) => updateNodeExecutionFilter(index, {
+                        valueType: event.target.value as WorkflowNodeExecutionFilterDraft["valueType"],
+                      })}
+                    >
+                      <option value="string">text</option>
+                      <option value="number">number</option>
+                      <option value="boolean">boolean</option>
+                      <option value="null">null</option>
+                    </select>
+                    {filter.valueType !== "null" ? (
+                      filter.valueType === "boolean" ? (
+                        <select
+                          value={filter.value}
+                          aria-label={`Execution filter ${index + 1} value`}
+                          onChange={(event) => updateNodeExecutionFilter(index, { value: event.target.value })}
+                        >
+                          <option value="true">true</option>
+                          <option value="false">false</option>
+                        </select>
+                      ) : (
+                        <input
+                          type={filter.valueType === "number" ? "number" : "text"}
+                          value={filter.value}
+                          aria-label={`Execution filter ${index + 1} value`}
+                          onChange={(event) => updateNodeExecutionFilter(index, { value: event.target.value })}
+                        />
+                      )
+                    ) : null}
+                  </>
+                ) : null}
+                <button
+                  type="button"
+                  className="subtle-button"
+                  aria-label={`Remove execution filter ${index + 1}`}
+                  onClick={() => setNodeExecutionFilters((current) =>
+                    current.filter((_, filterIndex) => filterIndex !== index))}
+                >
+                  Remove
+                </button>
+              </div>
+            ))}
+          </div>
+          <div className="runtime-run-actions">
+            <button
+              type="button"
+              className="subtle-button"
+              disabled={nodeExecutionFilters.length >= 8}
+              onClick={() => setNodeExecutionFilters((current) => [
+                ...current,
+                { location: "output", path: "", operator: "eq", valueType: "string", value: "" },
+              ])}
+            >
+              Add filter
+            </button>
+            <button type="submit" className="subtle-button" disabled={nodeExecutionLoading}>
+              {nodeExecutionLoading ? "Querying..." : "Query history"}
+            </button>
+          </div>
+        </form>
+        {nodeExecutionError ? <div className="runtime-run-error">{nodeExecutionError}</div> : null}
+        {availability ? (
+          <div className="runtime-run-meta node-execution-availability">
+            Full payloads: {availability.full_retention_days} days. Compact query history: {availability.compact_retention_days} days.
+            {availability.backfill?.completed === true
+              ? " Existing-record backfill is complete."
+              : availability.backfill?.completed === false
+                ? ` Existing-record backfill is in progress (${availability.backfill.archived ?? 0} copied).`
+                : " Existing-record backfill has not started yet."}
+            {availability.earliest_compact_execution
+              ? ` Earliest available: ${formatRuntimeTimestamp(availability.earliest_compact_execution)}.`
+              : " No compact executions are available yet."}
+          </div>
+        ) : null}
+        {nodeExecutionSearch ? (
+          <div className="runtime-run-meta">
+            {nodeExecutionSearch.matched} matched; showing {nodeExecutionSearch.executions.length}.
+          </div>
+        ) : null}
+        <div className="runtime-runs node-execution-results">
+          {(nodeExecutionSearch?.executions ?? []).map((execution) => {
+            const durationMs = Math.max(
+              0,
+              new Date(execution.finished_at).getTime() - new Date(execution.started_at).getTime(),
+            );
+            return (
+              <div className="runtime-run-card" key={execution.execution_key}>
+                <div className="runtime-run-header">
+                  <div className="runtime-run-event">{formatRuntimeTimestamp(execution.started_at)}</div>
+                  <div className={`runtime-run-state state-${workflowRunStateClassName(execution.status)}`}>
+                    {execution.status}
+                  </div>
+                </div>
+                <div className="runtime-run-meta">
+                  {execution.execution_kind} · {durationMs} ms · {execution.full_record_available ? "full payload" : "compact payload"}
+                </div>
+                {execution.config_hash ? (
+                  <div className="runtime-run-meta">Configuration hash: <code>{execution.config_hash}</code></div>
+                ) : null}
+                <code>{execution.execution_id}</code>
+                {Object.keys(execution.matched_values).length > 0 ? (
+                  <pre>{JSON.stringify(execution.matched_values, null, 2)}</pre>
+                ) : null}
+                <div className="runtime-run-actions">
+                  <button
+                    type="button"
+                    className="subtle-button"
+                    disabled={nodeExecutionDetailLoading}
+                    onClick={() => void loadNodeExecutionDetail(execution.execution_key)}
+                  >
+                    Details
+                  </button>
+                  <button
+                    type="button"
+                    className="subtle-button"
+                    title={execution.full_record_available
+                      ? "Inspect the surrounding workflow run"
+                      : "Run inspection is unavailable after full run retention expires"}
+                    disabled={!execution.full_record_available}
+                    onClick={() => inspectWorkflowRun(execution.event_id)}
+                  >
+                    Inspect run
+                  </button>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+        {nodeExecutionSearch?.has_more && nodeExecutionSearch.next_cursor ? (
+          <button
+            type="button"
+            className="subtle-button"
+            disabled={nodeExecutionLoading}
+            onClick={() => void loadNodeExecutionHistory(nodeExecutionSearch.next_cursor ?? null, true)}
+          >
+            {nodeExecutionLoading ? "Loading..." : "Load more"}
+          </button>
+        ) : null}
+        {nodeExecutionDetail ? (
+          <details className="raw-json-panel node-execution-detail" open>
+            <summary>
+              Execution detail · {nodeExecutionDetail.record_tier} · {nodeExecutionDetail.execution_id}
+            </summary>
+            {nodeExecutionDetail.config_hash ? (
+              <div className="runtime-run-meta">Configuration hash: <code>{nodeExecutionDetail.config_hash}</code></div>
+            ) : null}
+            <div className="section-label">Input</div>
+            <pre>{JSON.stringify(nodeExecutionDetail.input, null, 2)}</pre>
+            <div className="section-label">Output</div>
+            <pre>{JSON.stringify(nodeExecutionDetail.output, null, 2)}</pre>
+            {nodeExecutionDetail.sources.length > 0 ? (
+              <>
+                <div className="section-label">Sources</div>
+                <pre>{JSON.stringify(nodeExecutionDetail.sources, null, 2)}</pre>
+              </>
+            ) : null}
+          </details>
+        ) : null}
+      </details>
+    );
+  }
+
   function renderEditableNodeInspectorPanel() {
     if (!selectedNode) return null;
     return (
@@ -11428,6 +11919,8 @@ export default function App() {
         {inspectorOutputFields.map((field) => renderField(field))}
 
         {renderSelectedNodeOutputContract()}
+
+        {renderNodeExecutionHistory()}
 
         {selectedNodeHasUnsavedChanges ? (
           <button className="primary" onClick={resetSelectedNodeChanges} disabled={workflowMutationLocked}>

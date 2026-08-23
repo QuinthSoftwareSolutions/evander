@@ -120,6 +120,7 @@ def await_agent_completion_and_publish(
     effect_lock_path: Path | None = None,
     orchestration_store_path: Path | None = None,
     orchestration_retention_days: int | None = None,
+    orchestration_compact_history_retention_days: int | None = None,
     vm_user: str = _DEFAULT_VM_USER,
     session_id: str | None = None,
     directory_path: str | None = None,
@@ -132,6 +133,7 @@ def await_agent_completion_and_publish(
     event_queue = SqliteTriggerEventQueue(
         orchestration_store_path or runtime_dir / "orchestration.db",
         retention_days=orchestration_retention_days,
+        compact_history_retention_days=orchestration_compact_history_retention_days,
     )
     resolved_effect_lock_path = effect_lock_path or runtime_dir / "effect-orchestrator.lock"
     started_at = time.monotonic()
@@ -165,6 +167,7 @@ def await_agent_completion_and_publish(
             publish_result = event_queue.publish_result(
                 event,
                 idempotency_key=f"{trigger_id}:{dispatch_id}",
+                directory_path=directory_path,
             )
             record = publish_result.record
             _mark_wake_completed_from_event(admin_service=admin_runtime, event=event)
@@ -187,6 +190,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--effect-lock-path")
     parser.add_argument("--orchestration-store-path")
     parser.add_argument("--orchestration-retention-days", type=int)
+    parser.add_argument("--orchestration-compact-history-retention-days", type=int)
     parser.add_argument("--vm-user", default=_DEFAULT_VM_USER)
     parser.add_argument("--session-id")
     parser.add_argument("--directory-path")
@@ -216,6 +220,9 @@ def main() -> int:
         if args.orchestration_store_path
         else None,
         orchestration_retention_days=args.orchestration_retention_days,
+        orchestration_compact_history_retention_days=(
+            args.orchestration_compact_history_retention_days
+        ),
         vm_user=args.vm_user,
         session_id=args.session_id,
         directory_path=args.directory_path,

@@ -69,7 +69,7 @@ class _FailingEventQueue:
     def __init__(self) -> None:
         self.published_event_ids: list[str] = []
 
-    def publish_result(self, event: TriggerEvent):
+    def publish_result(self, event: TriggerEvent, **_kwargs):
         _ = event
         raise RuntimeError("queue publish failed")
 
@@ -79,7 +79,7 @@ class _FailingSecondEventQueue:
         self.published_event_ids: list[str] = []
         self.calls = 0
 
-    def publish_result(self, event: TriggerEvent):
+    def publish_result(self, event: TriggerEvent, **_kwargs):
         self.calls += 1
         if self.calls == 2:
             raise RuntimeError("queue publish failed on second event")
@@ -169,6 +169,14 @@ def test_trigger_orchestrator_run_once_publishes_and_updates_cursor(tmp_path: Pa
                     "expression": "* * * * *",
                 }
             ],
+            "workflow_graphs": [
+                {
+                    "id": "graph-cron",
+                    "name": "Cron graph",
+                    "directory_path": "root/team-a",
+                    "node_ids": ["cron-1"],
+                }
+            ],
         }
     )
     worker = TriggerOrchestratorWorker(config=config, worker_config=worker_config, runtime=None)  # type: ignore[arg-type]
@@ -196,6 +204,8 @@ def test_trigger_orchestrator_run_once_publishes_and_updates_cursor(tmp_path: Pa
     queue_payload = trigger_queue_payload(worker_config)
     assert list(queue_payload.keys()) == ["event-1"]
     assert queue_payload["event-1"]["trace_id"]
+    assert queue_payload["event-1"]["directory_path"] == "root/team-a"
+    assert queue_payload["event-1"]["config_revision"]
     cursor_payload = json.loads(
         worker_config.event_queue_cursor_store_path.read_text(encoding="utf-8")
     )

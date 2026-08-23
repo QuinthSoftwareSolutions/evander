@@ -38,6 +38,8 @@ class TriggerQueueRecord(BaseModel):
     idempotency_key: str | None = None
     clear_reason: str | None = None
     error: str | None = None
+    config_revision: str | None = None
+    directory_path: str | None = None
 
 
 @dataclass(frozen=True)
@@ -69,22 +71,44 @@ class SqliteTriggerEventQueue:
         *,
         journal: SqliteWorkflowEventJournal | None = None,
         retention_days: int | None = None,
+        compact_history_retention_days: int | None = None,
     ) -> None:
         self.path = Path(path)
         ensure_orchestration_schema(self.path)
-        maybe_run_orchestration_retention(self.path, retention_days=retention_days)
+        maybe_run_orchestration_retention(
+            self.path,
+            retention_days=retention_days,
+            compact_history_retention_days=compact_history_retention_days,
+        )
         self._journal = journal or SqliteWorkflowEventJournal(
-            self.path, retention_days=retention_days
+            self.path,
+            retention_days=retention_days,
+            compact_history_retention_days=compact_history_retention_days,
         )
         self._lock = RLock()
 
     def publish(
-        self, event: TriggerEvent, *, idempotency_key: str | None = None
+        self,
+        event: TriggerEvent,
+        *,
+        idempotency_key: str | None = None,
+        config_revision: str | None = None,
+        directory_path: str | None = None,
     ) -> TriggerQueueRecord:
-        return self.publish_result(event, idempotency_key=idempotency_key).record
+        return self.publish_result(
+            event,
+            idempotency_key=idempotency_key,
+            config_revision=config_revision,
+            directory_path=directory_path,
+        ).record
 
     def publish_result(
-        self, event: TriggerEvent, *, idempotency_key: str | None = None
+        self,
+        event: TriggerEvent,
+        *,
+        idempotency_key: str | None = None,
+        config_revision: str | None = None,
+        directory_path: str | None = None,
     ) -> TriggerQueuePublishResult:
         normalized_key = _normalize_idempotency_key(idempotency_key)
         trace_id = _normalize_trace_id(event.trace_id)
@@ -109,6 +133,8 @@ class SqliteTriggerEventQueue:
                     delivery_state="pending",
                     delivered_at=None,
                     idempotency_key=normalized_key,
+                    config_revision=str(config_revision or "").strip() or None,
+                    directory_path=str(directory_path or "").strip() or None,
                 )
                 try:
                     self._insert_record(connection, created)
@@ -376,6 +402,7 @@ class SqliteTriggerEventQueue:
             """,
             cls._record_columns(record),
         )
+        cls._archive_record(connection, record)
 
     @classmethod
     def _upsert_record(cls, connection: Any, record: TriggerQueueRecord) -> None:
@@ -410,6 +437,17 @@ class SqliteTriggerEventQueue:
                 payload_json = excluded.payload_json
             """,
             cls._record_columns(record),
+        )
+        cls._archive_record(connection, record)
+
+    @staticmethod
+    def _archive_record(connection: Any, record: TriggerQueueRecord) -> None:
+        from evander.repositories.execution_history import archive_execution_record
+
+        archive_execution_record(
+            connection,
+            kind="trigger",
+            record=record.model_dump(mode="json"),
         )
 
     @classmethod

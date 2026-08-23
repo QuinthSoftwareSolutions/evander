@@ -84,6 +84,9 @@ def build_trigger_worker_wiring(
     event_queue = SqliteTriggerEventQueue(
         worker_config.orchestration_store_path,
         retention_days=int(worker_config.orchestration_retention_days),
+        compact_history_retention_days=int(
+            worker_config.orchestration_compact_history_retention_days
+        ),
     )
     maybe_checkpoint_orchestration_wal(
         worker_config.orchestration_store_path,

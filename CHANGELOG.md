@@ -1,5 +1,19 @@
 # Changelog
 
+## 2026-08-21 - Workflow Node Execution History
+
+- Added a generic selected-node execution-history query in Admin Web with inclusive-start,
+  exclusive-end date windows, status filters, up to eight typed JSON Pointer predicates,
+  keyset pagination, execution detail, and links into the existing run inspector.
+- Added sanitized, compressed, content-addressed compact inputs and outputs, typed scalar indexes,
+  and source provenance with a configurable 365-day default retention period. Full execution
+  records continue to default to 30 days.
+- Kept existing orchestration rows unchanged: the effect worker copies them oldest-first in bounded
+  idle batches, live writes update compact history transactionally, and retention guarantees a
+  compact copy before full-record deletion. No automatic database vacuum is performed.
+- Bound archived payload access to each execution's recorded directory, expanded credential
+  redaction, preserved exact numeric equality, and kept pagination and timestamp windows stable.
+
 ## 2026-08-20 - Workflow-Paused Team Tasks
 
 - Added the non-terminal Team task state `waiting_for_input` and the narrowly
@@ -10,6 +24,8 @@
 - Limited workflow work-state transitions to tasks already in that lifecycle,
   prevented stale agent dispatches from resuming paused tasks, and kept agents
   from creating tasks in the workflow-only paused state.
+- Prevented stand-down revocation and other immediate-wake paths from treating
+  workflow-paused tasks as newly actionable owner work.
 - Kept all five task-board lifecycle lanes on one desktop grid row.
 
 ## 2026-08-20 - Reference Repository Workflow Editor

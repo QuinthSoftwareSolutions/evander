@@ -19,6 +19,26 @@ DEFAULT_SENSITIVE_PAYLOAD_MARKERS: tuple[str, ...] = (
     "ssh_key",
 )
 
+# These names are the default operator policy for values whose complete
+# contents are too sensitive to retain in diagnostics or execution history.
+# Keep explicit spelling aliases here because configuration is intentionally
+# literal-key based, while individual storage surfaces can normalize them.
+DEFAULT_REDACTED_PAYLOAD_KEYS: frozenset[str] = frozenset(
+    {
+        "body",
+        "body_text",
+        "prompt",
+        "authorization",
+        "token",
+        "api_key",
+        "response_token",
+        "parameters",
+        "password",
+        "connection_string",
+        "connectionString",
+    }
+)
+
 
 def build_payload_diagnostic(
     *,

@@ -23,6 +23,9 @@ def build_internal_event_bus(
         journal=SqliteWorkflowEventJournal(
             worker_config.orchestration_store_path,
             retention_days=int(worker_config.orchestration_retention_days),
+            compact_history_retention_days=int(
+                worker_config.orchestration_compact_history_retention_days
+            ),
         ),
     )
 
@@ -91,6 +94,9 @@ def internal_event_bus_metadata(
         "internal_event_store_path": str(worker_config.internal_event_store_path),
         "orchestration_store_path": str(worker_config.orchestration_store_path),
         "orchestration_retention_days": int(worker_config.orchestration_retention_days),
+        "orchestration_compact_history_retention_days": int(
+            worker_config.orchestration_compact_history_retention_days
+        ),
     }
 
 
@@ -105,11 +111,16 @@ def build_internal_event_bus_from_metadata(
     )
     retention_value = values.get("orchestration_retention_days")
     retention_days = int(retention_value) if retention_value is not None else None
+    compact_retention_value = values.get("orchestration_compact_history_retention_days")
+    compact_retention_days = (
+        int(compact_retention_value) if compact_retention_value is not None else 365
+    )
     return InternalEventBus(
         event_path,
         journal=SqliteWorkflowEventJournal(
             Path(values.get("orchestration_store_path") or Path(runtime_dir) / "orchestration.db"),
             retention_days=retention_days,
+            compact_history_retention_days=compact_retention_days,
         ),
     )
 

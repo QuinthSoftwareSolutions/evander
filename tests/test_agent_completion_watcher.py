@@ -161,10 +161,18 @@ def test_await_agent_completion_publishes_when_dispatch_settles(
     class _QueueStub:
         def __init__(self, path: Path, **_kwargs: object) -> None:
             self.path = path
+            published["queue_kwargs"] = dict(_kwargs)
 
-        def publish_result(self, event: TriggerEvent, *, idempotency_key: str | None = None):
+        def publish_result(
+            self,
+            event: TriggerEvent,
+            *,
+            idempotency_key: str | None = None,
+            directory_path: str | None = None,
+        ):
             published["event"] = event
             published["idempotency_key"] = idempotency_key
+            published["directory_path"] = directory_path
             return SimpleNamespace(
                 record=SimpleNamespace(event_id=event.event_id),
                 created=True,
@@ -189,6 +197,8 @@ def test_await_agent_completion_publishes_when_dispatch_settles(
         vm_user="agent",
         session_id="session-14724",
         directory_path="root/example-industry/app",
+        orchestration_retention_days=30,
+        orchestration_compact_history_retention_days=730,
         poll_interval_seconds=0.01,
         timeout_seconds=1.0,
     )
@@ -196,6 +206,11 @@ def test_await_agent_completion_publishes_when_dispatch_settles(
     assert result is True
     assert wake_paths == [tmp_path / "runtime" / "effect-orchestrator.lock"]
     assert published["idempotency_key"] == "__await-agent-completion__:dispatch-123"
+    assert published["directory_path"] == "root/example-industry/app"
+    assert published["queue_kwargs"] == {
+        "retention_days": 30,
+        "compact_history_retention_days": 730,
+    }
     event = published["event"]
     assert isinstance(event, TriggerEvent)
     assert event.payload["agent_state"] == "idle"
@@ -261,7 +276,13 @@ def test_await_agent_completion_marks_matching_wake_request_completed(
         def __init__(self, path: Path, **_kwargs: object) -> None:
             self.path = path
 
-        def publish_result(self, event: TriggerEvent, *, idempotency_key: str | None = None):
+        def publish_result(
+            self,
+            event: TriggerEvent,
+            *,
+            idempotency_key: str | None = None,
+            directory_path: str | None = None,
+        ):
             published["event"] = event
             published["idempotency_key"] = idempotency_key
             return SimpleNamespace(
@@ -332,7 +353,13 @@ def test_await_agent_completion_uses_configured_orchestration_store_path(
         def __init__(self, path: Path, **_kwargs: object) -> None:
             published["path"] = path
 
-        def publish_result(self, event: TriggerEvent, *, idempotency_key: str | None = None):
+        def publish_result(
+            self,
+            event: TriggerEvent,
+            *,
+            idempotency_key: str | None = None,
+            directory_path: str | None = None,
+        ):
             published["event"] = event
             published["idempotency_key"] = idempotency_key
             return SimpleNamespace(

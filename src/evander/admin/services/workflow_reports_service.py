@@ -55,6 +55,9 @@ from evander.admin.payloads import (
     WorkflowRunSummaryPayload,
     WorkflowRunToolCallLinkPayload,
     WorkflowRunTriggerEventPayload,
+    WorkflowNodeExecutionDetailPayload,
+    WorkflowNodeExecutionFieldsPayload,
+    WorkflowNodeExecutionSearchPayload,
     WORKFLOW_RUN_DETAIL_AUDIT_SCAN_LIMIT,
 )
 from evander.admin.workflow_report_helpers import (
@@ -82,6 +85,13 @@ from evander.repositories.orchestration_db import (
     datetime_to_storage,
     ensure_orchestration_schema,
     json_loads_object,
+)
+from evander.repositories.execution_history import (
+    list_node_execution_authorization_paths,
+    list_node_execution_fields,
+    read_node_execution_authorization_path,
+    read_node_execution_detail,
+    search_node_executions,
 )
 from evander.admin.services.approval_audit_service import (
     iter_file_lines_reverse as _iter_file_lines_reverse,
@@ -144,6 +154,21 @@ class WorkflowReportsAdminService:
 
     def read_conformance_reports(self) -> "ConformanceReportsPayload":
         return self._read_conformance_reports()
+
+    def read_workflow_node_execution_search(self, **kwargs: Any):
+        return self._read_workflow_node_execution_search(**kwargs)
+
+    def read_workflow_node_execution_fields(self, **kwargs: Any):
+        return self._read_workflow_node_execution_fields(**kwargs)
+
+    def read_workflow_node_execution_detail(self, execution_key: str):
+        return self._read_workflow_node_execution_detail(execution_key)
+
+    def read_workflow_node_execution_authorization_paths(self, **kwargs: Any):
+        return self._read_workflow_node_execution_authorization_paths(**kwargs)
+
+    def read_workflow_node_execution_authorization_path(self, execution_key: str):
+        return self._read_workflow_node_execution_authorization_path(execution_key)
 
     def run_conformance_report(self, kind: str) -> "ConformanceReportRunPayload":
         return self._run_conformance_report(kind)
@@ -570,6 +595,88 @@ class WorkflowReportsAdminService:
                 for node_id, counts in sorted(node_activity.items())
             },
             recent_node_activity=recent_node_activity,
+        )
+
+    def _read_workflow_node_execution_search(
+        self,
+        *,
+        node_id: str,
+        started_from: datetime,
+        started_to: datetime,
+        statuses: list[str],
+        filters: list[Mapping[str, Any]],
+        limit: int,
+        cursor: str | None,
+    ) -> WorkflowNodeExecutionSearchPayload:
+        stores = self._workflow_run_store_paths()
+        payload = search_node_executions(
+            stores["orchestration_store_path"],
+            node_id=node_id,
+            started_from=started_from,
+            started_to=started_to,
+            statuses=statuses,
+            filters=filters,
+            limit=limit,
+            cursor=cursor,
+            full_retention_days=int(
+                stores["orchestration_retention_days"]
+                if stores.get("orchestration_retention_days") is not None
+                else 30
+            ),
+            compact_retention_days=int(
+                stores["orchestration_compact_history_retention_days"]
+                if stores.get("orchestration_compact_history_retention_days") is not None
+                else 365
+            ),
+        )
+        return WorkflowNodeExecutionSearchPayload.model_validate(payload)
+
+    def _read_workflow_node_execution_fields(
+        self,
+        *,
+        node_id: str,
+        started_from: datetime,
+        started_to: datetime,
+    ) -> WorkflowNodeExecutionFieldsPayload:
+        stores = self._workflow_run_store_paths()
+        return WorkflowNodeExecutionFieldsPayload.model_validate(
+            list_node_execution_fields(
+                stores["orchestration_store_path"],
+                node_id=node_id,
+                started_from=started_from,
+                started_to=started_to,
+            )
+        )
+
+    def _read_workflow_node_execution_detail(
+        self, execution_key: str
+    ) -> WorkflowNodeExecutionDetailPayload:
+        stores = self._workflow_run_store_paths()
+        return WorkflowNodeExecutionDetailPayload.model_validate(
+            read_node_execution_detail(
+                stores["orchestration_store_path"], execution_key=execution_key
+            )
+        )
+
+    def _read_workflow_node_execution_authorization_paths(
+        self,
+        *,
+        node_id: str,
+        started_from: datetime,
+        started_to: datetime,
+    ) -> tuple[str, ...]:
+        stores = self._workflow_run_store_paths()
+        return list_node_execution_authorization_paths(
+            stores["orchestration_store_path"],
+            node_id=node_id,
+            started_from=started_from,
+            started_to=started_to,
+        )
+
+    def _read_workflow_node_execution_authorization_path(self, execution_key: str) -> str:
+        stores = self._workflow_run_store_paths()
+        return read_node_execution_authorization_path(
+            stores["orchestration_store_path"], execution_key=execution_key
         )
 
     def _read_workflow_run_search(

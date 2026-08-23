@@ -171,7 +171,6 @@ def _worker_runtime_config(config: WorkerConfig) -> GatewayConfig:
     return load_runtime_gateway_config(runtime_dir=config.runtime_dir)
 
 
-
 def _trigger_orchestrator_config_path(config: WorkerConfig) -> Path:
     project_dir = (
         config.runtime_dir.parent if config.runtime_dir.name == "runtime" else config.runtime_dir
@@ -241,6 +240,11 @@ def _build_trigger_event_queue_for_worker_config(
         ),
         retention_days=(
             worker_config.orchestration_retention_days if worker_config is not None else None
+        ),
+        compact_history_retention_days=(
+            worker_config.orchestration_compact_history_retention_days
+            if worker_config is not None
+            else 365
         ),
     )
 
@@ -685,7 +689,10 @@ def _publish_directory_pr_feedback_events(
                     else {}
                 ),
             )
-            publish_result = event_queue.publish_result(event)
+            publish_result = event_queue.publish_result(
+                event,
+                directory_path=directory_path,
+            )
             record = publish_result.record
             if publish_result.created and record.event_id == event.event_id:
                 published_count += 1
@@ -837,7 +844,10 @@ def _publish_directory_pr_completion_events(
                 occurred_at=_pr_completion_occurred_at(event_entry),
                 payload=completion_event_payload(event_entry),
             )
-            publish_result = event_queue.publish_result(event)
+            publish_result = event_queue.publish_result(
+                event,
+                directory_path=directory_path,
+            )
             record = publish_result.record
             if record.event_id == event.event_id:
                 if mark_published:

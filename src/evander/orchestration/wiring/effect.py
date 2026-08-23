@@ -166,24 +166,29 @@ def build_effect_worker_store_wiring(
     )
 
     retention_days = int(worker_config.orchestration_retention_days)
+    compact_history_retention_days = int(worker_config.orchestration_compact_history_retention_days)
     workflow_event_journal = SqliteWorkflowEventJournal(
         worker_config.orchestration_store_path,
         retention_days=retention_days,
+        compact_history_retention_days=compact_history_retention_days,
     )
     event_queue = SqliteTriggerEventQueue(
         worker_config.orchestration_store_path,
         journal=workflow_event_journal,
         retention_days=retention_days,
+        compact_history_retention_days=compact_history_retention_days,
     )
     execution_store = SqliteExecutionStore(
         worker_config.orchestration_store_path,
         journal=workflow_event_journal,
         retention_days=retention_days,
+        compact_history_retention_days=compact_history_retention_days,
     )
     gate_execution_store = SqliteGateExecutionStore(
         worker_config.orchestration_store_path,
         journal=workflow_event_journal,
         retention_days=retention_days,
+        compact_history_retention_days=compact_history_retention_days,
     )
     workflow_config_snapshot_store = SqliteWorkflowConfigSnapshotRepository(
         worker_config.orchestration_store_path

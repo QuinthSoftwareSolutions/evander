@@ -25,6 +25,7 @@ from pydantic import (
 from evander.approval_notification_targets import (
     normalize_approval_notification_target_ids,
 )
+from evander.approval_diagnostics import DEFAULT_REDACTED_PAYLOAD_KEYS
 from evander.azure_devops import (
     ado_organization_from_legacy_url,
     azure_devops_organization_url,
@@ -549,21 +550,7 @@ class GatewayConfig(BaseModel):
         ]
     )
     assistant_settings: AssistantSettingsConfig = Field(default_factory=AssistantSettingsConfig)
-    redacted_keys: set[str] = Field(
-        default_factory=lambda: {
-            "body",
-            "body_text",
-            "prompt",
-            "authorization",
-            "token",
-            "api_key",
-            "response_token",
-            "parameters",
-            "password",
-            "connection_string",
-            "connectionString",
-        }
-    )
+    redacted_keys: set[str] = Field(default_factory=lambda: set(DEFAULT_REDACTED_PAYLOAD_KEYS))
 
     @model_validator(mode="before")
     @classmethod
@@ -1350,6 +1337,7 @@ class OrchestrationCoreConfig(BaseModel):
     jitter_seconds: float = Field(default=5.0, ge=0)
     orchestration_store_path: Path | None = None
     orchestration_retention_days: int = Field(default=30, ge=0)
+    orchestration_compact_history_retention_days: int = Field(default=365, ge=0)
     orchestration_wal_checkpoint_mode: Literal[
         "disabled", "passive", "full", "restart", "truncate"
     ] = "truncate"
