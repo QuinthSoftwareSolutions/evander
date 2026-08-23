@@ -473,8 +473,7 @@ class TeamAdminService:
         normalized_request_id = _required_text(request_id, "request_id")
         payload_digest = self._repository.normalized_payload_digest(dict(normalized_payload))
 
-        def _transaction(raw_state: dict[str, Any], tx: Any):
-            state = TeamState.model_validate(raw_state)
+        def _transaction(state: TeamState, tx: Any):
             replay = tx.get_idempotency_record(
                 tool_name=normalized_operation,
                 caller_identity=normalized_caller,
@@ -509,20 +508,15 @@ class TeamAdminService:
             }
             apply_command(state, result)
             now = utc_now()
-            next_state = state.model_copy(
-                update={"revision": state.revision + 1, "updated_at": now},
-                deep=True,
-            )
-            validated = TeamState.model_validate(next_state.model_dump(mode="json"))
-            raw_state.clear()
-            raw_state.update(validated.model_dump(mode="json"))
+            state.revision += 1
+            state.updated_at = now
 
             outbox_records = [
                 tx.enqueue_outbox_record(record)
                 for record in _team_event_outbox_records(result.get("events") or [])
             ]
             result["success"] = True
-            result["revision"] = validated.revision
+            result["revision"] = state.revision
             result["outbox_record_ids"] = [record.id for record in outbox_records]
             created_domain_ids = _human_command_created_domain_ids(result)
             for record in outbox_records:
@@ -541,9 +535,9 @@ class TeamAdminService:
                     created_domain_ids=created_domain_ids,
                 )
             )
-            return validated, result
+            return state, result
 
-        return self._repository.store.update_object_with_command_transaction(_transaction)
+        return self._repository.store.update_state_with_command_transaction(_transaction)
 
     def _project_repository_binding_exists(
         self,

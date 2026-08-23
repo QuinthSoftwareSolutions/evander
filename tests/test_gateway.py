@@ -1218,6 +1218,95 @@ def register_addon():
     assert addon_module.CALLS == ["session-1"]
 
 
+def test_synchronous_addon_tool_does_not_block_gateway_event_loop(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module_root = tmp_path / "plugins"
+    module_root.mkdir()
+    (module_root / "blocking_addon.py").write_text(
+        """
+CALLS = []
+
+def register_addon():
+    def register_mcp_tools(server, context):
+        @server.tool(name="blocking_addon_tool")
+        def blocking_addon_tool(session_id: str | None = None):
+            CALLS.append(session_id)
+            return {"ok": True, "session_id": session_id}
+        return ("blocking_addon_tool",)
+
+    return {
+        "addon_id": "blocking-addon",
+        "display_name": "Blocking Add-on",
+        "mcp_tools": register_mcp_tools,
+    }
+""",
+        encoding="utf-8",
+    )
+    monkeypatch.syspath_prepend(str(module_root))
+    importlib.invalidate_caches()
+    sys.modules.pop("blocking_addon", None)
+    addon_module = importlib.import_module("blocking_addon")
+
+    runtime_dir = tmp_path / "runtime"
+    context = build_runtime(
+        GatewayConfig(
+            runtime_dir=runtime_dir,
+            audit_log_path=runtime_dir / "audit.jsonl",
+            session_store_path=runtime_dir / "sessions.json",
+            approval_store_path=runtime_dir / "approvals.json",
+            draft_store_path=runtime_dir / "drafts.json",
+            email_store_path=runtime_dir / "emails.json",
+            discord_command_store_path=runtime_dir / "discord.json",
+            addon_loader=AddonLoaderConfig(
+                modules=["blocking_addon"],
+                enabled_entry_points=False,
+                enabled_addon_ids=["blocking-addon"],
+            ),
+        )
+    )
+    context.session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-1",
+            allowed_tools=["blocking_addon_tool"],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+            directory_path="root",
+        )
+    )
+    server = create_server(context)
+    offload_started = asyncio.Event()
+    offload_release = asyncio.Event()
+
+    async def run_in_test_thread(sync_fn, **kwargs):
+        offload_started.set()
+        await offload_release.wait()
+        return sync_fn(**kwargs)
+
+    monkeypatch.setattr("evander.gateway.server.run_in_threadpool", run_in_test_thread)
+
+    async def exercise_concurrency() -> None:
+        tool = server._tool_manager.get_tool("blocking_addon_tool")
+        assert tool is not None
+        request_token = _MCP_REQUEST_CONTEXT.set(SimpleNamespace())
+        tool_task = asyncio.create_task(
+            tool.run({"session_id": "session-1"})
+        )
+        try:
+            await asyncio.wait_for(offload_started.wait(), timeout=1)
+            await asyncio.sleep(0)
+            assert not tool_task.done()
+            assert addon_module.CALLS == []
+            offload_release.set()
+            await asyncio.wait_for(tool_task, timeout=1)
+            assert addon_module.CALLS == ["session-1"]
+        finally:
+            offload_release.set()
+            _MCP_REQUEST_CONTEXT.reset(request_token)
+
+    asyncio.run(exercise_concurrency())
+
+
 def test_approval_required_tool_creates_pending_request_without_execution(
     tmp_path: Path,
 ) -> None:

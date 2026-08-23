@@ -77,28 +77,21 @@ class TeamStateRepository:
         expected_revision: int | None = None,
     ) -> TeamState:
         def _update(
-            payload: dict[str, Any],
+            state: TeamState,
             tx: TeamStateSqliteCommandTransaction,
         ) -> TeamState:
-            state = TeamState.model_validate(payload)
             if expected_revision is not None and state.revision != expected_revision:
                 raise TeamStateConflictError(
                     expected_revision=expected_revision,
                     current_revision=state.revision,
                 )
             next_state = mutator(state) or state
-            next_state = next_state.model_copy(
-                update={"updated_at": utc_now()},
-                deep=True,
-            )
-            validated = TeamState.model_validate(next_state.model_dump(mode="json"))
-            payload.clear()
-            payload.update(validated.model_dump(mode="json"))
+            next_state.updated_at = utc_now()
             for record in outbox_records():
                 tx.enqueue_outbox_record(record)
-            return validated
+            return next_state
 
-        return self.store.update_object_with_command_transaction(_update)
+        return self.store.update_state_with_command_transaction(_update)
 
     def update_with_dispatch_activity(
         self,
@@ -108,27 +101,20 @@ class TeamStateRepository:
         expected_revision: int | None = None,
     ) -> TeamState:
         def _update(
-            payload: dict[str, Any],
+            state: TeamState,
             tx: TeamStateSqliteCommandTransaction,
         ) -> TeamState:
-            state = TeamState.model_validate(payload)
             if expected_revision is not None and state.revision != expected_revision:
                 raise TeamStateConflictError(
                     expected_revision=expected_revision,
                     current_revision=state.revision,
                 )
             next_state = mutator(state) or state
-            next_state = next_state.model_copy(
-                update={"updated_at": utc_now()},
-                deep=True,
-            )
-            validated = TeamState.model_validate(next_state.model_dump(mode="json"))
-            payload.clear()
-            payload.update(validated.model_dump(mode="json"))
+            next_state.updated_at = utc_now()
             tx.append_dispatch_activity(activity)
-            return validated
+            return next_state
 
-        return self.store.update_object_with_command_transaction(_update)
+        return self.store.update_state_with_command_transaction(_update)
 
     def update_with_command_transaction(
         self,
@@ -137,26 +123,19 @@ class TeamStateRepository:
         expected_revision: int | None = None,
     ) -> TeamState:
         def _update(
-            payload: dict[str, Any],
+            state: TeamState,
             tx: TeamStateSqliteCommandTransaction,
         ) -> TeamState:
-            state = TeamState.model_validate(payload)
             if expected_revision is not None and state.revision != expected_revision:
                 raise TeamStateConflictError(
                     expected_revision=expected_revision,
                     current_revision=state.revision,
                 )
             next_state = mutator(state, tx) or state
-            next_state = next_state.model_copy(
-                update={"updated_at": utc_now()},
-                deep=True,
-            )
-            validated = TeamState.model_validate(next_state.model_dump(mode="json"))
-            payload.clear()
-            payload.update(validated.model_dump(mode="json"))
-            return validated
+            next_state.updated_at = utc_now()
+            return next_state
 
-        return self.store.update_object_with_command_transaction(_update)
+        return self.store.update_state_with_command_transaction(_update)
 
     def append_dispatch_activity(
         self,

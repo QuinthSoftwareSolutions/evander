@@ -174,6 +174,38 @@ class TeamStateSqliteStore:
                 )
                 return _replace_state_result(result, state)
 
+    def update_state_with_command_transaction(
+        self,
+        updater: Callable[[TeamState, TeamStateSqliteCommandTransaction], T],
+    ) -> T:
+        """Atomically update typed Team state and command side tables.
+
+        The state is reconstructed once and the pre-mutation payload is retained as
+        the delta baseline. Dispatch activity, outbox, and idempotency writes share
+        the same SQLite transaction and roll back if final state validation fails.
+        """
+
+        with self._lock:
+            with self._connect() as connection:
+                connection.execute("BEGIN IMMEDIATE")
+                state = self._read_state(connection)
+                previous_payload = state.model_dump(mode="json")
+                previous_schema_version = state.schema_version
+                previous_revision = state.revision
+                previous_updated_at = state.updated_at
+                transaction = TeamStateSqliteCommandTransaction(self, connection)
+                result = updater(state, transaction)
+                candidate = _state_result_candidate(result, fallback=state)
+                persisted_state = self._persist_updated_state(
+                    connection,
+                    previous_payload=previous_payload,
+                    previous_schema_version=previous_schema_version,
+                    previous_revision=previous_revision,
+                    previous_updated_at=previous_updated_at,
+                    candidate=candidate,
+                )
+                return _replace_state_result(result, persisted_state)
+
     def _persist_updated_payload(
         self,
         connection: sqlite3.Connection,
@@ -222,7 +254,12 @@ class TeamStateSqliteStore:
         candidate: TeamState,
     ) -> TeamState:
         candidate_payload = candidate.model_dump(mode="json")
-        candidate_payload["updated_at"] = utc_now().isoformat()
+        candidate_updated_at = (
+            candidate.updated_at
+            if candidate.updated_at != previous_updated_at
+            else utc_now()
+        )
+        candidate_payload["updated_at"] = candidate_updated_at.isoformat()
         validated = TeamState.model_validate(candidate_payload)
         current_payload = validated.model_dump(mode="json")
         state_changed = _state_content_changed(previous_payload, current_payload)
@@ -4956,6 +4993,14 @@ def _replace_state_result(result: T, state: TeamState) -> T:
     if isinstance(result, tuple) and result and isinstance(result[0], TeamState):
         return (state, *result[1:])  # type: ignore[return-value]
     return result
+
+
+def _state_result_candidate(result: object, *, fallback: TeamState) -> TeamState:
+    if isinstance(result, TeamState):
+        return result
+    if isinstance(result, tuple) and result and isinstance(result[0], TeamState):
+        return result[0]
+    return fallback
 
 
 def _json_loads(value: str | None) -> Any:

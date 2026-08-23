@@ -657,6 +657,83 @@ def test_repository_update_uses_two_typed_state_validations(
     assert validation_count == 2
 
 
+def test_repository_command_transaction_uses_typed_state_and_commits_side_tables(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = TeamStateRepository(tmp_path)
+    original_model_validate = TeamState.model_validate
+    validation_count = 0
+    policy = TeamChatAttachmentPolicy.root_defaults()
+    outbox_record = TeamOutboxRecord(
+        id="outbox-typed-command",
+        intent_type="team.test.typed_command",
+        aggregate_type="team",
+        aggregate_id="root",
+        payload={"source": "test"},
+    )
+
+    def count_model_validate(cls, value, *args, **kwargs):
+        nonlocal validation_count
+        validation_count += 1
+        return original_model_validate(value, *args, **kwargs)
+
+    def fail_legacy_payload_update(*_args, **_kwargs):
+        raise AssertionError("command transactions must not use the legacy payload path")
+
+    def add_policy(state: TeamState) -> TeamState:
+        return state.model_copy(
+            update={"chat_attachment_policies": {policy.id: policy}},
+        )
+
+    monkeypatch.setattr(TeamState, "model_validate", classmethod(count_model_validate))
+    monkeypatch.setattr(
+        repo.store,
+        "update_object_with_command_transaction",
+        fail_legacy_payload_update,
+    )
+    monkeypatch.setattr(repo.store, "_read_payload", fail_legacy_payload_update)
+
+    state = repo.update_with_outbox(
+        add_policy,
+        outbox_records=lambda: [outbox_record],
+    )
+
+    assert state.revision == 1
+    assert state.chat_attachment_policies == {policy.id: policy}
+    assert validation_count == 2
+    assert [record.id for record in repo.list_outbox_records()] == [outbox_record.id]
+
+
+def test_repository_command_transaction_rolls_back_side_tables_on_invalid_state(
+    tmp_path: Path,
+) -> None:
+    repo = TeamStateRepository(tmp_path)
+    before = repo.read()
+    outbox_record = TeamOutboxRecord(
+        id="outbox-invalid-command",
+        intent_type="team.test.invalid_command",
+        aggregate_type="team",
+        aggregate_id="root",
+        payload={"source": "test"},
+    )
+
+    def invalidate_state(state: TeamState) -> TeamState:
+        state.revision = -1
+        return state
+
+    with pytest.raises(ValidationError):
+        repo.update_with_outbox(
+            invalidate_state,
+            outbox_records=lambda: [outbox_record],
+        )
+
+    persisted = repo.read()
+    assert persisted.revision == before.revision
+    assert persisted.updated_at == before.updated_at
+    assert repo.list_outbox_records() == []
+
+
 def test_repository_typed_update_noop_preserves_revision_and_timestamp(tmp_path: Path) -> None:
     repo = TeamStateRepository(tmp_path)
     before = repo.read()
