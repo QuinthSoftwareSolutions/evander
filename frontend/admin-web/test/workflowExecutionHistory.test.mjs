@@ -24,6 +24,15 @@ test("selected workflow nodes expose generic execution-history queries", () => {
   assert.match(app, /Configuration hash/);
 });
 
+test("desktop workflow inspector renders execution history below outputs", () => {
+  const desktopSidebar = app.slice(app.indexOf('<aside className="sidebar">'));
+
+  assert.match(
+    desktopSidebar,
+    /\{renderSelectedNodeOutputContract\(\)\}\s*\{renderNodeExecutionHistory\(\)\}/,
+  );
+});
+
 test("execution-history types distinguish full and compact records", () => {
   assert.match(types, /record_tier: "full" \| "compact"/);
   assert.match(types, /full_record_available: boolean/);

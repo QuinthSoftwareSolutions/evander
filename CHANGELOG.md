@@ -1,5 +1,10 @@
 # Changelog
 
+## 2026-08-23 - Workflow History Desktop Inspector
+
+- Restored the selected-node **Execution history** control in the desktop Workflow inspector,
+  matching the existing compact inspector behavior.
+
 ## 2026-08-21 - Workflow Node Execution History
 
 - Added a generic selected-node execution-history query in Admin Web with inclusive-start,

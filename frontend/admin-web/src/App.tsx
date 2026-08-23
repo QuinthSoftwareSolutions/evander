@@ -12501,6 +12501,8 @@ export default function App() {
 
                 {renderSelectedNodeOutputContract()}
 
+                {renderNodeExecutionHistory()}
+
                 {selectedNodeHasUnsavedChanges ? (
                   <button className="primary" onClick={resetSelectedNodeChanges} disabled={workflowMutationLocked}>
                     Reset changes
