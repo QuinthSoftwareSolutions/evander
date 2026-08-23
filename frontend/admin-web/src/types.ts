@@ -339,6 +339,7 @@ export type WorkflowNodeExecutionSearchItem = {
   started_at: string;
   finished_at: string;
   config_revision?: string | null;
+  config_hash?: string | null;
   published_event_id?: string | null;
   error?: string | null;
   full_record_available: boolean;
@@ -377,7 +378,7 @@ export type WorkflowNodeExecutionSearch = {
 export type WorkflowNodeExecutionField = {
   location: "input" | "output";
   json_pointer: string;
-  value_type: "null" | "boolean" | "number" | "string";
+  value_type: "null" | "boolean" | "number" | "string" | "container";
   observed_count: number;
 };
 

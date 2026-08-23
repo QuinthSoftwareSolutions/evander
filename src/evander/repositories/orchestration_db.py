@@ -4,6 +4,7 @@ import json
 import sqlite3
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any
 
@@ -18,6 +19,19 @@ SQLITE_WAL_CHECKPOINT_MODES = {
     "restart": "RESTART",
     "truncate": "TRUNCATE",
 }
+
+
+def _compare_execution_history_numbers(left: str | None, right: str | None) -> int | None:
+    if left is None or right is None:
+        return None
+    try:
+        left_value = Decimal(left)
+        right_value = Decimal(right)
+        if not left_value.is_finite() or not right_value.is_finite():
+            return None
+        return (left_value > right_value) - (left_value < right_value)
+    except (InvalidOperation, ValueError):
+        return None
 
 
 @dataclass(frozen=True)
@@ -50,6 +64,9 @@ def connect_orchestration_db(path: Path | str) -> sqlite3.Connection:
     connection.execute(f"PRAGMA busy_timeout={SQLITE_BUSY_TIMEOUT_MS}")
     connection.execute("PRAGMA journal_mode=WAL")
     connection.execute("PRAGMA foreign_keys=ON")
+    connection.create_function(
+        "execution_history_numeric_compare", 2, _compare_execution_history_numbers
+    )
     return connection
 
 
@@ -279,47 +296,51 @@ def ensure_orchestration_schema(path: Path | str) -> None:
                 );
             """
         )
-        history_columns = {
-            str(row["name"])
-            for row in connection.execute("PRAGMA table_info(workflow_node_execution_history)")
-        }
-        if "directory_path" not in history_columns:
+        v3_applied = connection.execute(
+            "SELECT 1 FROM schema_migrations WHERE version = ?", (3,)
+        ).fetchone()
+        if v3_applied is None:
+            history_columns = {
+                str(row["name"])
+                for row in connection.execute("PRAGMA table_info(workflow_node_execution_history)")
+            }
+            if "directory_path" not in history_columns:
+                connection.execute(
+                    "ALTER TABLE workflow_node_execution_history ADD COLUMN directory_path TEXT"
+                )
             connection.execute(
-                "ALTER TABLE workflow_node_execution_history ADD COLUMN directory_path TEXT"
+                """
+                CREATE INDEX IF NOT EXISTS idx_workflow_node_history_directory_started
+                ON workflow_node_execution_history(
+                    directory_path, node_id, started_at DESC, execution_key DESC
+                )
+                """
             )
-        connection.execute(
-            """
-            CREATE INDEX IF NOT EXISTS idx_workflow_node_history_directory_started
-            ON workflow_node_execution_history(
-                directory_path, node_id, started_at DESC, execution_key DESC
+            connection.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_workflow_node_history_values_exact
+                ON workflow_node_execution_history_values(
+                    location, json_pointer, value_type, text_value, execution_key
+                )
+                """
             )
-            """
-        )
-        connection.execute(
-            """
-            CREATE INDEX IF NOT EXISTS idx_workflow_node_history_values_exact
-            ON workflow_node_execution_history_values(
-                location, json_pointer, value_type, text_value, execution_key
+            # Execution-history comparisons require a fixed-width UTC representation.
+            # Rows written by schema v2 at an exact second used the shorter ``...00Z``
+            # spelling, which is not lexicographically ordered with fractional seconds.
+            connection.execute(
+                """
+                UPDATE workflow_node_execution_history
+                SET started_at = substr(started_at, 1, 19) || '.000000Z'
+                WHERE length(started_at) = 20 AND substr(started_at, -1) = 'Z'
+                """
             )
-            """
-        )
-        # Execution-history comparisons require a fixed-width UTC representation.
-        # Rows written by schema v2 at an exact second used the shorter ``...00Z``
-        # spelling, which is not lexicographically ordered with fractional seconds.
-        connection.execute(
-            """
-            UPDATE workflow_node_execution_history
-            SET started_at = substr(started_at, 1, 19) || '.000000Z'
-            WHERE length(started_at) = 20 AND substr(started_at, -1) = 'Z'
-            """
-        )
-        connection.execute(
-            """
-            UPDATE workflow_node_execution_history
-            SET finished_at = substr(finished_at, 1, 19) || '.000000Z'
-            WHERE length(finished_at) = 20 AND substr(finished_at, -1) = 'Z'
-            """
-        )
+            connection.execute(
+                """
+                UPDATE workflow_node_execution_history
+                SET finished_at = substr(finished_at, 1, 19) || '.000000Z'
+                WHERE length(finished_at) = 20 AND substr(finished_at, -1) = 'Z'
+                """
+            )
         applied_at = datetime_to_storage(datetime.now(UTC))
         connection.executemany(
             """

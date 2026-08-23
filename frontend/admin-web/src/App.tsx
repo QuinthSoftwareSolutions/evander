@@ -2861,21 +2861,39 @@ function workflowRunSearchQuery(
 
 function workflowNodeExecutionLocalTimestamp(value: Date): string {
   const local = new Date(value.getTime() - value.getTimezoneOffset() * 60_000);
-  return local.toISOString().slice(0, 16);
+  return local.toISOString().slice(0, 23);
+}
+
+function workflowNodeExecutionDefaultWindow(now = new Date()): { from: string; to: string } {
+  return {
+    from: workflowNodeExecutionLocalTimestamp(new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000)),
+    to: workflowNodeExecutionLocalTimestamp(now),
+  };
 }
 
 function workflowNodeExecutionDefaultStart(): string {
-  return workflowNodeExecutionLocalTimestamp(new Date(Date.now() - 7 * 24 * 60 * 60 * 1000));
+  return workflowNodeExecutionDefaultWindow().from;
 }
 
 function workflowNodeExecutionDefaultEnd(): string {
-  return workflowNodeExecutionLocalTimestamp(new Date());
+  return workflowNodeExecutionDefaultWindow().to;
 }
 
 function workflowNodeExecutionFilterValue(draft: WorkflowNodeExecutionFilterDraft): unknown {
   if (draft.valueType === "null") return null;
   if (draft.valueType === "boolean") return draft.value.trim().toLowerCase() === "true";
-  if (draft.valueType === "number") return Number(draft.value);
+  if (draft.valueType === "number") {
+    const numericText = draft.value.trim();
+    if (!numericText) throw new Error("Execution numeric filter values must not be blank.");
+    const numericValue = Number(numericText);
+    if (!Number.isFinite(numericValue)) {
+      throw new Error("Execution numeric filter values must be finite.");
+    }
+    if (Number.isInteger(numericValue) && !Number.isSafeInteger(numericValue)) {
+      throw new Error("Execution integer filter values must be within JavaScript's safe range.");
+    }
+    return numericValue;
+  }
   return draft.value;
 }
 
@@ -4070,6 +4088,7 @@ export default function App() {
   const workflowTargetInventoryCacheRef = useRef<Map<string, WorkflowTargetInventory>>(new Map());
   const selectedNodeIdRef = useRef<string | null>(null);
   const nodeExecutionQueryRef = useRef<WorkflowNodeExecutionQuery | null>(null);
+  const nodeExecutionWindowTouchedRef = useRef(false);
   const previousSelectedDirectoryPathRef = useRef(selectedDirectoryPath);
   const selectedWorkflowPackReferenceRef = useRef("");
   const [document, setDocument] = useState<WorkflowEditorDocument | null>(null);
@@ -4585,6 +4604,10 @@ export default function App() {
 
   useEffect(() => {
     selectedNodeIdRef.current = selectedNode?.id ?? null;
+    const defaultWindow = workflowNodeExecutionDefaultWindow();
+    nodeExecutionWindowTouchedRef.current = false;
+    setNodeExecutionStartedFrom(defaultWindow.from);
+    setNodeExecutionStartedTo(defaultWindow.to);
     setCopiedBindingExpression(null);
     setOutputCopyError(null);
     setNodeExecutionSearch(null);
@@ -5351,8 +5374,17 @@ export default function App() {
       }
       query = originalQuery;
     } else {
-      const startedFrom = new Date(nodeExecutionStartedFrom);
-      const startedTo = new Date(nodeExecutionStartedTo);
+      const defaultWindow = nodeExecutionWindowTouchedRef.current
+        ? null
+        : workflowNodeExecutionDefaultWindow();
+      const startedFromText = defaultWindow?.from ?? nodeExecutionStartedFrom;
+      const startedToText = defaultWindow?.to ?? nodeExecutionStartedTo;
+      if (defaultWindow) {
+        setNodeExecutionStartedFrom(defaultWindow.from);
+        setNodeExecutionStartedTo(defaultWindow.to);
+      }
+      const startedFrom = new Date(startedFromText);
+      const startedTo = new Date(startedToText);
       if (
         Number.isNaN(startedFrom.getTime())
         || Number.isNaN(startedTo.getTime())
@@ -11577,16 +11609,24 @@ export default function App() {
               <span>From</span>
               <input
                 type="datetime-local"
+                step="0.001"
                 value={nodeExecutionStartedFrom}
-                onChange={(event) => setNodeExecutionStartedFrom(event.target.value)}
+                onChange={(event) => {
+                  nodeExecutionWindowTouchedRef.current = true;
+                  setNodeExecutionStartedFrom(event.target.value);
+                }}
               />
             </label>
             <label className="inspector-label">
               <span>To (exclusive)</span>
               <input
                 type="datetime-local"
+                step="0.001"
                 value={nodeExecutionStartedTo}
-                onChange={(event) => setNodeExecutionStartedTo(event.target.value)}
+                onChange={(event) => {
+                  nodeExecutionWindowTouchedRef.current = true;
+                  setNodeExecutionStartedTo(event.target.value);
+                }}
               />
             </label>
           </div>
@@ -11750,6 +11790,9 @@ export default function App() {
                 <div className="runtime-run-meta">
                   {execution.execution_kind} · {durationMs} ms · {execution.full_record_available ? "full payload" : "compact payload"}
                 </div>
+                {execution.config_hash ? (
+                  <div className="runtime-run-meta">Configuration hash: <code>{execution.config_hash}</code></div>
+                ) : null}
                 <code>{execution.execution_id}</code>
                 {Object.keys(execution.matched_values).length > 0 ? (
                   <pre>{JSON.stringify(execution.matched_values, null, 2)}</pre>
@@ -11794,6 +11837,9 @@ export default function App() {
             <summary>
               Execution detail · {nodeExecutionDetail.record_tier} · {nodeExecutionDetail.execution_id}
             </summary>
+            {nodeExecutionDetail.config_hash ? (
+              <div className="runtime-run-meta">Configuration hash: <code>{nodeExecutionDetail.config_hash}</code></div>
+            ) : null}
             <div className="section-label">Input</div>
             <pre>{JSON.stringify(nodeExecutionDetail.input, null, 2)}</pre>
             <div className="section-label">Output</div>

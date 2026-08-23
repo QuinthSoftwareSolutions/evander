@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-import math
 from datetime import UTC, datetime
+from decimal import Decimal, InvalidOperation
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
@@ -330,12 +330,12 @@ class WorkflowNodeExecutionFilterPayload(BaseModel):
             raise ValueError(f"operator {self.operator} requires a numeric value")
         if self.operator in {"gt", "gte", "lt", "lte"}:
             try:
-                range_value = float(self.value)
-            except (OverflowError, ValueError) as exc:
+                range_value = Decimal(str(self.value))
+            except (InvalidOperation, ValueError) as exc:
                 raise ValueError(
                     f"operator {self.operator} requires a finite numeric value"
                 ) from exc
-            if not math.isfinite(range_value):
+            if not range_value.is_finite():
                 raise ValueError(f"operator {self.operator} requires a finite numeric value")
         if self.operator in {"exists", "not_exists"}:
             self.value = None
@@ -392,6 +392,7 @@ class WorkflowNodeExecutionSearchItemPayload(BaseModel):
     started_at: datetime
     finished_at: datetime
     config_revision: str | None = None
+    config_hash: str | None = None
     published_event_id: str | None = None
     error: str | None = None
     full_record_available: bool = False
@@ -437,7 +438,7 @@ class WorkflowNodeExecutionFieldsRequestPayload(BaseModel):
 class WorkflowNodeExecutionFieldPayload(BaseModel):
     location: Literal["input", "output"]
     json_pointer: str
-    value_type: Literal["null", "boolean", "number", "string"]
+    value_type: Literal["null", "boolean", "number", "string", "container"]
     observed_count: int
 
 

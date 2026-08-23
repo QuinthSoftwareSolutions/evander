@@ -6311,6 +6311,8 @@ def test_admin_web_includes_errored_workflow_runs_and_can_resume_them(tmp_path: 
     "started_at": "2026-04-08T12:00:05Z",
     "finished_at": "2026-04-08T12:00:07Z",
     "resolved_config_hash": "abc",
+    "config_revision": "revision-ops",
+    "directory_path": "root/ops",
     "resolved_config": {},
     "input_payload": {"issue_number": "77"},
     "outputs": {},
@@ -6355,6 +6357,18 @@ def test_admin_web_includes_errored_workflow_runs_and_can_resume_them(tmp_path: 
     assert queue_payload[resume_event_id]["payload"]["__resume_target_node_id"] == "effect-prompt"
     assert queue_payload[resume_event_id]["payload"]["__resume_source_event_id"] == "evt-failed"
     assert queue_payload[resume_event_id]["payload"]["issue_number"] == "77"
+    assert queue_payload[resume_event_id]["config_revision"] == "revision-ops"
+    assert queue_payload[resume_event_id]["directory_path"] == "root/ops"
+    with connect_orchestration_db(runtime_dir / "orchestration.db") as connection:
+        archived_resume = connection.execute(
+            """
+            SELECT config_revision, directory_path
+            FROM workflow_node_execution_history
+            WHERE execution_key = ?
+            """,
+            (f"trigger:{resume_event_id}",),
+        ).fetchone()
+    assert tuple(archived_resume) == ("revision-ops", "root/ops")
 
 
 def test_admin_web_reports_error_routed_workflow_runs_without_terminal_failure(
@@ -8235,6 +8249,7 @@ def test_admin_web_node_execution_history_search_fields_and_detail(tmp_path: Pat
                 "status": "succeeded",
                 "started_at": "2026-05-01T12:00:00Z",
                 "finished_at": "2026-05-01T12:00:02Z",
+                "resolved_config_hash": "history-config-hash",
                 "resolved_config": {},
                 "input_payload": {"request": {"owner": "Mikael"}},
                 "outputs": {"user": {"name": "Mikael Högberg"}, "count": 3},
@@ -8279,6 +8294,7 @@ def test_admin_web_node_execution_history_search_fields_and_detail(tmp_path: Pat
     search_payload = search.json()
     assert search_payload["matched"] == 1
     assert search_payload["executions"][0]["execution_id"] == "exec-history"
+    assert search_payload["executions"][0]["config_hash"] == "history-config-hash"
     assert search_payload["executions"][0]["matched_values"] == {
         "output:/user/name": "Mikael Högberg"
     }
@@ -8289,8 +8305,15 @@ def test_admin_web_node_execution_history_search_fields_and_detail(tmp_path: Pat
         item["location"] == "output" and item["json_pointer"] == "/user/name"
         for item in fields.json()["fields"]
     )
+    assert any(
+        item["location"] == "output"
+        and item["json_pointer"] == "/user"
+        and item["value_type"] == "container"
+        for item in fields.json()["fields"]
+    )
     assert detail.status_code == 200
     assert detail.json()["record_tier"] == "full"
+    assert detail.json()["config_hash"] == "history-config-hash"
     assert detail.json()["output"]["user"]["name"] == "Mikael Högberg"
     assert invalid.status_code == 400
 

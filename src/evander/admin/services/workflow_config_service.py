@@ -2833,6 +2833,8 @@ class WorkflowConfigAdminService:
         source_node_id = str(failed_record["source_node_id"])
         source_trigger_type = str(failed_record["source_trigger_type"])
         target_node_id = str(failed_record["node_id"])
+        config_revision = _coerce_optional_string(failed_record.get("config_revision"))
+        directory_path = _coerce_optional_string(failed_record.get("directory_path"))
         input_payload = dict(failed_record["input_payload"])
         input_payload["__resume_target_node_id"] = target_node_id
         input_payload["__resume_source_event_id"] = normalized_event_id
@@ -2846,7 +2848,11 @@ class WorkflowConfigAdminService:
             occurred_at=resumed_at,
             payload=input_payload,
         )
-        queue_store.publish(resume_event)
+        queue_store.publish(
+            resume_event,
+            config_revision=config_revision,
+            directory_path=directory_path,
+        )
         notify_wake_socket_for_lock(stores["effect_lock_path"])
         self._workflow_event_journal().append(
             "workflow.run.resumed",
@@ -2985,6 +2991,10 @@ class WorkflowConfigAdminService:
                         "source_trigger_type": source_trigger_type,
                         "trace_id": trace_id,
                         "input_payload": dict(input_payload),
+                        "config_revision": _coerce_optional_string(
+                            raw_record.get("config_revision")
+                        ),
+                        "directory_path": _coerce_optional_string(raw_record.get("directory_path")),
                         "finished_at": finished_at,
                         "started_at": started_at,
                     }

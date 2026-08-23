@@ -4,6 +4,7 @@ import base64
 import hashlib
 import json
 import math
+import re
 import sqlite3
 import zlib
 from datetime import UTC, datetime, timedelta
@@ -43,12 +44,19 @@ _NUMERIC_OPERATORS = {"gt", "gte", "lt", "lte"}
 _MAX_EXACT_FLOAT_INTEGER = (1 << 53) - 1
 
 
+class _ContainerValue:
+    def __init__(self, kind: str) -> None:
+        self.kind = kind
+
+
 def _execution_key(kind: str, execution_id: str) -> str:
     return f"{kind}:{execution_id}"
 
 
 def _is_sensitive_key(key: str) -> bool:
-    normalized = key.strip().casefold().replace("-", "_")
+    normalized = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", "_", key.strip())
+    normalized = re.sub(r"(?<=[A-Z])(?=[A-Z][a-z])", "_", normalized)
+    normalized = normalized.casefold().replace("-", "_")
     segments = frozenset(segment for segment in normalized.split("_") if segment)
     return any(marker in normalized for marker in _SENSITIVE_KEY_MARKERS) or bool(
         segments & _SENSITIVE_KEY_SEGMENTS
@@ -136,16 +144,19 @@ def _iter_object_scalars(
             if len(child_pointer) > 1024:
                 continue
             if isinstance(item, dict):
+                yield child_pointer, _ContainerValue("object")
                 yield from _iter_object_scalars(item, pointer=child_pointer, depth=depth + 1)
             elif isinstance(item, list):
-                # Arrays remain available in the compressed detail payload but
-                # deliberately have no v1 element predicates.
-                continue
+                # Arrays remain available in the compressed detail payload and
+                # support presence predicates, but their elements are not indexed.
+                yield child_pointer, _ContainerValue("array")
             else:
                 yield child_pointer, item
 
 
 def _scalar_columns(value: Any) -> tuple[str, str | None, str | None, float | None, int | None]:
+    if isinstance(value, _ContainerValue):
+        return "container", None, value.kind, None, None
     if value is None:
         return "null", None, None, None, None
     if isinstance(value, bool):
@@ -260,7 +271,7 @@ def archive_execution_record(
         input_payload: dict[str, Any] = {}
         output_payload = canonical_execution_payload(record.get("payload"))
         published_event_id = execution_id
-        config_revision = None
+        config_revision = record.get("config_revision")
         config_hash = None
     elif kind in {"effect", "gate"}:
         execution_id = str(record.get("execution_id") or "").strip()
@@ -552,6 +563,8 @@ def run_execution_history_backfill(
         state = json_loads_object(state_row["value_json"]) if state_row else {}
         if state.get("completed") is True:
             return state
+        last_sort_at = _optional_text(state.get("last_sort_at"))
+        last_source_key = _optional_text(state.get("last_source_key"))
         rows = connection.execute(
             """
             SELECT execution_kind, payload_json, sort_at, source_key
@@ -560,6 +573,11 @@ def run_execution_history_backfill(
                        'trigger:' || t.event_id AS source_key
                 FROM trigger_events t
                 WHERE t.trigger_type LIKE 'trigger:%'
+                  AND (
+                    ? IS NULL
+                    OR t.occurred_at > ?
+                    OR (t.occurred_at = ? AND 'trigger:' || t.event_id > ?)
+                  )
                   AND NOT EXISTS (
                     SELECT 1 FROM workflow_node_execution_history h
                     WHERE h.execution_key = 'trigger:' || t.event_id
@@ -568,7 +586,12 @@ def run_execution_history_backfill(
                 SELECT 'effect', e.payload_json, e.started_at,
                        'effect:' || e.execution_id
                 FROM effect_executions e
-                WHERE NOT EXISTS (
+                WHERE (
+                    ? IS NULL
+                    OR e.started_at > ?
+                    OR (e.started_at = ? AND 'effect:' || e.execution_id > ?)
+                )
+                  AND NOT EXISTS (
                     SELECT 1 FROM workflow_node_execution_history h
                     WHERE h.execution_key = 'effect:' || e.execution_id
                 )
@@ -576,7 +599,12 @@ def run_execution_history_backfill(
                 SELECT 'gate', g.payload_json, g.started_at,
                        'gate:' || g.execution_id
                 FROM gate_executions g
-                WHERE NOT EXISTS (
+                WHERE (
+                    ? IS NULL
+                    OR g.started_at > ?
+                    OR (g.started_at = ? AND 'gate:' || g.execution_id > ?)
+                )
+                  AND NOT EXISTS (
                     SELECT 1 FROM workflow_node_execution_history h
                     WHERE h.execution_key = 'gate:' || g.execution_id
                 )
@@ -584,7 +612,21 @@ def run_execution_history_backfill(
             ORDER BY sort_at ASC, source_key ASC
             LIMIT ?
             """,
-            (batch_size,),
+            (
+                last_sort_at,
+                last_sort_at,
+                last_sort_at,
+                last_source_key,
+                last_sort_at,
+                last_sort_at,
+                last_sort_at,
+                last_source_key,
+                last_sort_at,
+                last_sort_at,
+                last_sort_at,
+                last_source_key,
+                batch_size,
+            ),
         ).fetchall()
         for row in rows:
             archive_execution_record(
@@ -597,6 +639,8 @@ def run_execution_history_backfill(
             "completed": completed,
             "archived": int(state.get("archived") or 0) + len(rows),
             "last_batch_size": len(rows),
+            "last_sort_at": str(rows[-1]["sort_at"]) if rows else last_sort_at,
+            "last_source_key": str(rows[-1]["source_key"]) if rows else last_source_key,
             "updated_at": datetime_to_storage(datetime.now(UTC)),
         }
         connection.execute(
@@ -639,6 +683,14 @@ def search_node_executions(
         page_params.extend([cursor_value[0], cursor_value[0], cursor_value[1]])
     base_from = "FROM workflow_node_execution_history h"
     with connect_orchestration_db(path) as connection:
+        _validate_range_filters(
+            connection,
+            node_id=node_id,
+            started_from=started_from,
+            started_to=started_to,
+            statuses=statuses,
+            filters=filters,
+        )
         matched = int(
             connection.execute(
                 f"SELECT COUNT(*) {base_from} WHERE {' AND '.join(where)}",
@@ -887,13 +939,62 @@ def _filter_clause(item: Mapping[str, Any], *, alias: str) -> tuple[str, list[An
     elif operator in _NUMERIC_OPERATORS:
         sql_operator = {"gt": ">", "gte": ">=", "lt": "<", "lte": "<="}[operator]
         comparison = (
-            f" AND {alias}.value_type = 'number' AND {alias}.numeric_value {sql_operator} ?"
+            f" AND {alias}.value_type = 'number' "
+            f"AND execution_history_numeric_compare({alias}.text_value, ?) {sql_operator} 0"
         )
-        params.append(numeric_value)
+        params.append(_canonical_number_text(value))
     return (
         f"EXISTS (SELECT 1 FROM workflow_node_execution_history_values {alias} WHERE {base}{comparison})",
         params,
     )
+
+
+def _validate_range_filters(
+    connection: sqlite3.Connection,
+    *,
+    node_id: str,
+    started_from: datetime,
+    started_to: datetime,
+    statuses: list[str],
+    filters: list[Mapping[str, Any]],
+) -> None:
+    """Refuse range filters over pre-v3 float-only scalar rows.
+
+    Those rows have no exact text representation, so using their REAL value for
+    comparisons could silently collapse large JSON integers. New rows always
+    retain canonical numeric text and use the SQLite comparison function.
+    """
+    for item in filters:
+        if str(item.get("operator") or "") not in _NUMERIC_OPERATORS:
+            continue
+        where = ["h.node_id = ?", "h.started_at >= ?", "h.started_at < ?"]
+        params: list[Any] = [
+            node_id,
+            _storage_timestamp(started_from),
+            _storage_timestamp(started_to),
+        ]
+        if statuses:
+            where.append(f"h.status IN ({', '.join('?' for _ in statuses)})")
+            params.extend(statuses)
+        row = connection.execute(
+            f"""
+            SELECT 1
+            FROM workflow_node_execution_history_values v
+            JOIN workflow_node_execution_history h ON h.execution_key = v.execution_key
+            WHERE {" AND ".join(where)}
+              AND v.location = ?
+              AND v.json_pointer = ?
+              AND v.value_type = 'number'
+              AND v.text_value IS NULL
+            LIMIT 1
+            """,
+            [*params, str(item.get("location") or ""), str(item.get("path") or "")],
+        ).fetchone()
+        if row is not None:
+            raise ValueError(
+                "numeric range filters are unavailable for legacy history values without an "
+                "exact numeric representation"
+            )
 
 
 def _history_row_payload(
@@ -931,6 +1032,7 @@ def _history_row_payload(
         "started_at": row["started_at"],
         "finished_at": row["finished_at"],
         "config_revision": row["config_revision"],
+        "config_hash": row["config_hash"],
         "published_event_id": row["published_event_id"],
         "error": row["error"],
         "full_record_available": bool(row["full_record_available"])

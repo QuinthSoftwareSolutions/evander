@@ -4,6 +4,8 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
+import evander.repositories.orchestration_db as orchestration_db
+from evander.admin.payloads import WorkflowNodeExecutionFilterPayload
 from evander.daemons.effect_orchestrator import (
     EffectExecutionRecord,
     GateExecutionRecord,
@@ -13,6 +15,7 @@ from evander.daemons.effect_orchestrator import (
 from evander.events.models import TriggerEvent
 from evander.repositories.execution_history import (
     list_node_execution_authorization_paths,
+    list_node_execution_fields,
     read_node_execution_detail,
     read_node_execution_authorization_path,
     run_execution_history_backfill,
@@ -139,6 +142,56 @@ def test_execution_history_schema_upgrade_does_not_rewrite_v1_records(tmp_path) 
     assert migration_versions == [1, 2, 3]
 
 
+def test_execution_history_v3_timestamp_rewrite_runs_only_during_migration(
+    tmp_path, monkeypatch
+) -> None:
+    path = tmp_path / "orchestration.db"
+    ensure_orchestration_schema(path)
+    with connect_orchestration_db(path) as connection:
+        connection.execute("DELETE FROM schema_migrations WHERE version = 3")
+        connection.execute(
+            """
+            INSERT INTO workflow_node_execution_history(
+                execution_key, execution_kind, execution_id, event_id, trace_id,
+                node_id, node_type, status, started_at, finished_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "effect:legacy-timestamp",
+                "effect",
+                "legacy-timestamp",
+                "event-legacy-timestamp",
+                None,
+                "effect-1",
+                "effect:test",
+                "succeeded",
+                "2026-08-20T10:00:00Z",
+                "2026-08-20T10:00:01Z",
+                datetime_to_storage(datetime.now(UTC)),
+            ),
+        )
+
+    ensure_orchestration_schema(path)
+    with connect_orchestration_db(path) as connection:
+        normalized = connection.execute(
+            """
+            SELECT started_at, finished_at
+            FROM workflow_node_execution_history
+            WHERE execution_key = 'effect:legacy-timestamp'
+            """
+        ).fetchone()
+        statements: list[str] = []
+        connection.set_trace_callback(statements.append)
+        monkeypatch.setattr(orchestration_db, "connect_orchestration_db", lambda _path: connection)
+        orchestration_db.ensure_orchestration_schema(path)
+        connection.set_trace_callback(None)
+
+    assert tuple(normalized) == ("2026-08-20T10:00:00.000000Z", "2026-08-20T10:00:01.000000Z")
+    assert not any(
+        "UPDATE workflow_node_execution_history" in statement for statement in statements
+    )
+
+
 def test_execution_write_archives_sanitized_queryable_payload(tmp_path) -> None:
     path = tmp_path / "orchestration.db"
     store = SqliteExecutionStore(path, retention_days=None)
@@ -152,6 +205,9 @@ def test_execution_write_archives_sanitized_queryable_payload(tmp_path) -> None:
                     "pat": "pat-value",
                     "pwd": "pwd-value",
                     "ssh_key": "ssh-key-value",
+                    "privateKey": "private-key-value",
+                    "sshKey": "ssh-key-camel-value",
+                    "adoPat": "ado-pat-value",
                     "path": "/safe/path",
                 },
                 "items": [{"hidden": "array-element"}],
@@ -177,6 +233,7 @@ def test_execution_write_archives_sanitized_queryable_payload(tmp_path) -> None:
     )
     assert result["matched"] == 1
     assert result["executions"][0]["full_record_available"] is True
+    assert result["executions"][0]["config_hash"] == "config-hash"
 
     detail = read_node_execution_detail(path, execution_key="effect:execution-1")
     assert "__node_outputs" not in detail["input"]
@@ -184,9 +241,13 @@ def test_execution_write_archives_sanitized_queryable_payload(tmp_path) -> None:
     assert detail["input"]["user"]["pat"] == "[REDACTED]"
     assert detail["input"]["user"]["pwd"] == "[REDACTED]"
     assert detail["input"]["user"]["ssh_key"] == "[REDACTED]"
+    assert detail["input"]["user"]["privateKey"] == "[REDACTED]"
+    assert detail["input"]["user"]["sshKey"] == "[REDACTED]"
+    assert detail["input"]["user"]["adoPat"] == "[REDACTED]"
     assert detail["input"]["user"]["path"] == "/safe/path"
     assert detail["input"]["items"] == [{"hidden": "array-element"}]
     assert detail["record_tier"] == "full"
+    assert detail["config_hash"] == "config-hash"
     assert detail["full_record"]["resolved_config"]["token"] == "[REDACTED]"
 
     no_array_predicate = search_node_executions(
@@ -238,10 +299,56 @@ def test_execution_write_archives_sanitized_queryable_payload(tmp_path) -> None:
             """
             SELECT COUNT(*)
             FROM workflow_node_execution_history_values
-            WHERE text_value IN ('password-value', 'pat-value', 'pwd-value', 'ssh-key-value')
+            WHERE text_value IN (
+                'password-value', 'pat-value', 'pwd-value', 'ssh-key-value',
+                'private-key-value', 'ssh-key-camel-value', 'ado-pat-value'
+            )
             """
         ).fetchone()[0]
     assert indexed_secrets == 0
+
+    containers = search_node_executions(
+        path,
+        node_id="effect-1",
+        started_from=datetime(2026, 8, 20, tzinfo=UTC),
+        started_to=datetime(2026, 8, 21, tzinfo=UTC),
+        statuses=[],
+        filters=[
+            {"location": "input", "path": "/user", "operator": "exists"},
+            {"location": "input", "path": "/items", "operator": "exists"},
+        ],
+        limit=50,
+        cursor=None,
+        full_retention_days=30,
+        compact_retention_days=365,
+    )
+    missing_array = search_node_executions(
+        path,
+        node_id="effect-1",
+        started_from=datetime(2026, 8, 20, tzinfo=UTC),
+        started_to=datetime(2026, 8, 21, tzinfo=UTC),
+        statuses=[],
+        filters=[{"location": "input", "path": "/items", "operator": "not_exists"}],
+        limit=50,
+        cursor=None,
+        full_retention_days=30,
+        compact_retention_days=365,
+    )
+    fields = list_node_execution_fields(
+        path,
+        node_id="effect-1",
+        started_from=datetime(2026, 8, 20, tzinfo=UTC),
+        started_to=datetime(2026, 8, 21, tzinfo=UTC),
+    )
+    assert containers["matched"] == 1
+    assert containers["executions"][0]["matched_values"] == {
+        "input:/items": "array",
+        "input:/user": "object",
+    }
+    assert missing_array["matched"] == 0
+    assert {
+        item["value_type"] for item in fields["fields"] if item["json_pointer"] == "/items"
+    } == {"container"}
 
 
 def test_execution_history_numeric_equality_is_exact_and_huge_values_do_not_fail(
@@ -301,6 +408,28 @@ def test_execution_history_numeric_equality_is_exact_and_huge_values_do_not_fail
     assert matching(upper) == ["exact-upper"]
     assert matching(enormous) == ["exact-enormous"]
     assert matching(7) == ["safe-float"]
+    greater_than_lower = search_node_executions(
+        path,
+        node_id="effect-1",
+        started_from=started_at - timedelta(seconds=1),
+        started_to=started_at + timedelta(minutes=1),
+        statuses=[],
+        filters=[{"location": "output", "path": "/number", "operator": "gt", "value": lower}],
+        limit=50,
+        cursor=None,
+        full_retention_days=30,
+        compact_retention_days=365,
+    )
+    assert [item["execution_id"] for item in greater_than_lower["executions"]] == [
+        "exact-enormous",
+        "exact-upper",
+    ]
+    assert (
+        WorkflowNodeExecutionFilterPayload(
+            location="output", path="/number", operator="gt", value=enormous
+        ).value
+        == enormous
+    )
     with connect_orchestration_db(path) as connection:
         numeric_value = connection.execute(
             """
@@ -310,6 +439,28 @@ def test_execution_history_numeric_equality_is_exact_and_huge_values_do_not_fail
             """
         ).fetchone()[0]
     assert numeric_value is None
+
+    with connect_orchestration_db(path) as connection:
+        connection.execute(
+            """
+            UPDATE workflow_node_execution_history_values
+            SET text_value = NULL
+            WHERE execution_key = 'effect:safe-float' AND json_pointer = '/number'
+            """
+        )
+    with pytest.raises(ValueError, match="legacy history values"):
+        search_node_executions(
+            path,
+            node_id="effect-1",
+            started_from=started_at - timedelta(seconds=1),
+            started_to=started_at + timedelta(minutes=1),
+            statuses=[],
+            filters=[{"location": "output", "path": "/number", "operator": "gte", "value": 0}],
+            limit=50,
+            cursor=None,
+            full_retention_days=30,
+            compact_retention_days=365,
+        )
 
 
 def test_execution_history_timestamp_windows_are_chronological_at_exact_seconds(
@@ -403,6 +554,41 @@ def test_execution_history_records_snapshot_directory_and_legacy_scope_is_root(t
         read_node_execution_authorization_path(path, execution_key="effect:legacy-root") == "root"
     )
 
+    event = TriggerEvent(
+        event_id="trigger-scoped",
+        trigger_id="effect-1",
+        trigger_type="trigger:test",
+        trace_id="trigger-trace",
+        occurred_at=started_at,
+        payload={"value": "ok"},
+    )
+    SqliteTriggerEventQueue(path, retention_days=None).publish(
+        event,
+        config_revision="revision-1",
+    )
+    trigger_history = search_node_executions(
+        path,
+        node_id="effect-1",
+        started_from=started_at - timedelta(seconds=1),
+        started_to=started_at + timedelta(minutes=1),
+        statuses=[],
+        filters=[],
+        limit=50,
+        cursor=None,
+        full_retention_days=30,
+        compact_retention_days=365,
+    )
+    trigger = next(
+        item
+        for item in trigger_history["executions"]
+        if item["execution_key"] == "trigger:trigger-scoped"
+    )
+    assert trigger["config_revision"] == "revision-1"
+    assert (
+        read_node_execution_authorization_path(path, execution_key="trigger:trigger-scoped")
+        == "root/old"
+    )
+
 
 def test_retention_configuration_requires_compact_retention_when_enabled(tmp_path) -> None:
     with pytest.raises(ValueError, match="compact_history_retention_days is required"):
@@ -462,6 +648,7 @@ def test_execution_history_backfill_is_bounded_resumable_and_copy_only(tmp_path)
     first_batch = run_execution_history_backfill(path, batch_size=1)
     assert first_batch["last_batch_size"] == 1
     assert first_batch["completed"] is False
+    assert first_batch["last_source_key"] == "effect:legacy-1"
     with connect_orchestration_db(path) as connection:
         assert connection.execute("SELECT COUNT(*) FROM effect_executions").fetchone()[0] == 2
         archived = connection.execute(
@@ -478,6 +665,7 @@ def test_execution_history_backfill_is_bounded_resumable_and_copy_only(tmp_path)
     second_batch = run_execution_history_backfill(path, batch_size=1)
     final_batch = run_execution_history_backfill(path, batch_size=1)
     assert second_batch["last_batch_size"] == 1
+    assert second_batch["last_source_key"] == "effect:legacy-2"
     assert final_batch["completed"] is True
     assert run_execution_history_backfill(path, batch_size=1) == final_batch
 
