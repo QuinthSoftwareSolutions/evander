@@ -50,7 +50,9 @@ from ..domain.dispatch_scope import (
     _blocker_project_ids,
     _inbox_project_ids,
     _review_project_ids,
+    external_source_evidence_snapshot_ids_for_dispatch,
 )
+from ..domain.agent_access import _is_project_lead_for, _is_team_manager
 from ..domain.manager_fallback import (
     _manager_fallback_review_routing_authority_error,
 )
@@ -135,6 +137,7 @@ class TeamCommandExecutor:
         ],
         require_active_dispatch: bool,
         reject_stale_high_priority_inbox: bool = False,
+        reject_stale_source_evidence: bool = False,
     ) -> tuple[TeamState, dict[str, Any]]:
         normalized_context = _normalize_team_command_context(context)
         normalized_handled_ids = _unique_text_list(
@@ -205,6 +208,12 @@ class TeamCommandExecutor:
                     resolved=resolved,
                     normalized_payload=normalized_payload,
                 )
+                if reject_stale_source_evidence:
+                    self._validate_dispatch_source_evidence_freshness(
+                        state,
+                        resolved=resolved,
+                        normalized_payload=normalized_payload,
+                    )
                 if reject_stale_high_priority_inbox:
                     self._validate_dispatch_freshness(
                         state,
@@ -498,6 +507,66 @@ class TeamCommandExecutor:
                 "completion_tool_allowed": completion_tool_allowed,
             },
         )
+
+    def _validate_dispatch_source_evidence_freshness(
+        self,
+        state: TeamState,
+        *,
+        resolved: _ResolvedTeamCommandContext,
+        normalized_payload: Mapping[str, Any],
+    ) -> None:
+        if resolved.agent is None:
+            return
+        dispatch = state.dispatches.get(resolved.dispatch_id or "")
+        if dispatch is None:
+            return
+        target_task_ids = _existing_task_ids_from_payload(
+            state,
+            normalized_payload,
+        )
+        for review_id in _existing_review_ids_from_payload(state, normalized_payload):
+            review = state.review_requests[review_id]
+            deliverable = state.deliverables.get(review.deliverable_id or "")
+            if deliverable is not None and deliverable.task_id in state.tasks:
+                target_task_ids.add(deliverable.task_id)
+        target_project_ids = {
+            state.tasks[task_id].project_id
+            for task_id in target_task_ids
+            if task_id in state.tasks
+        }
+        current_source_evidence_snapshot_ids = set(
+            external_source_evidence_snapshot_ids_for_dispatch(
+                state,
+                agent=resolved.agent,
+                task_ids=target_task_ids,
+                project_ids=target_project_ids,
+            )
+        )
+        missing_source_evidence_snapshot_ids = sorted(
+            current_source_evidence_snapshot_ids
+            - set(dispatch.source_evidence_snapshot_ids)
+        )
+        if missing_source_evidence_snapshot_ids:
+            raise TeamCommandValidationError(
+                code="stale_dispatch_context",
+                message=(
+                    "immutable external-source evidence required by the affected "
+                    "work is outside this dispatch's immutable snapshot; end the "
+                    "current turn without retrying the work-committing action. "
+                    "Dispatch finalization will request a fresh wake so the evidence "
+                    "can be considered under a new dispatch"
+                ),
+                correction_context={
+                    "dispatch_id": resolved.dispatch_id,
+                    "recovery_action": "end_current_turn",
+                    "fresh_dispatch_required": True,
+                    "current_dispatch_scope_unchanged": True,
+                    "affected_task_ids": sorted(target_task_ids),
+                    "missing_source_evidence_snapshot_ids": (
+                        missing_source_evidence_snapshot_ids
+                    ),
+                },
+            )
 
     def _validate_dispatch_freshness(
         self,
@@ -1007,6 +1076,8 @@ _PROJECT_SCOPE_TOOLS = frozenset(
         "team_create_task",
         "team_create_tasks",
         "team_cancel_task",
+        "team_repair_cancelled_task_dependencies",
+        "team_recover_submitted_integration_boundary",
         "team_update_goal",
         "team_create_case",
         "team_update_case",
@@ -1358,18 +1429,88 @@ def _validate_report_blocker_dispatch_scope(
     dispatch: TeamDispatch,
     payload: Mapping[str, Any],
 ) -> None:
-    """Authorize deliverable reports from their exact task or handoff scope."""
+    """Authorize reports from exact work scope or bounded lead diagnostics."""
 
     source_kind = _optional_text(payload.get("source_kind"))
+    source_id = _optional_text(payload.get("source_id"))
+    if source_kind == TeamBlockerSourceKind.TASK.value:
+        task = state.tasks.get(source_id or "")
+        if task is None:
+            # Source validation returns the stable missing-resource error.
+            return
+        if _is_role_bounded_operator_chat_dispatch(dispatch):
+            _validate_role_bounded_chat_project_team_scope(
+                state,
+                dispatch=dispatch,
+                project_id=task.project_id,
+            )
+            _validate_dispatch_project_scope(
+                state,
+                dispatch=dispatch,
+                project_ids={task.project_id},
+            )
+            return
+        actor = state.agents.get(dispatch.agent_id)
+        project = state.projects.get(task.project_id)
+        if (
+            actor is not None
+            and task.project_id in dispatch.project_ids
+            and (
+                _is_project_lead_for(state, actor.id, task.project_id)
+                or (
+                    project is not None
+                    and actor.team_id == project.team_id
+                    and _is_team_manager(state, actor)
+                )
+            )
+        ):
+            _validate_dispatch_project_scope(
+                state,
+                dispatch=dispatch,
+                project_ids={task.project_id},
+            )
+            return
+        _validate_dispatch_task_scope(
+            state,
+            dispatch=dispatch,
+            task_ids={task.id},
+            require_actionable=True,
+        )
+        return
     if source_kind != TeamBlockerSourceKind.DELIVERABLE.value:
         return
-    source_id = _optional_text(payload.get("source_id"))
     deliverable = state.deliverables.get(source_id or "")
     task = state.tasks.get(deliverable.task_id) if deliverable is not None else None
     if deliverable is None or task is None:
         # Source validation returns the stable missing-resource error.
         return
     if _is_role_bounded_operator_chat_dispatch(dispatch):
+        _validate_role_bounded_chat_project_team_scope(
+            state,
+            dispatch=dispatch,
+            project_id=task.project_id,
+        )
+        _validate_dispatch_project_scope(
+            state,
+            dispatch=dispatch,
+            project_ids={task.project_id},
+        )
+        return
+
+    actor = state.agents.get(dispatch.agent_id)
+    project = state.projects.get(task.project_id)
+    if (
+        actor is not None
+        and task.project_id in dispatch.project_ids
+        and (
+            _is_project_lead_for(state, actor.id, task.project_id)
+            or (
+                project is not None
+                and actor.team_id == project.team_id
+                and _is_team_manager(state, actor)
+            )
+        )
+    ):
         _validate_dispatch_project_scope(
             state,
             dispatch=dispatch,
@@ -1416,7 +1557,10 @@ def _add_blocker_report_dispatch_scope_targets(
     source_kind = _optional_text(payload.get("source_kind"))
     source_id = _optional_text(payload.get("source_id"))
     if source_kind == TeamBlockerSourceKind.TASK.value and source_id in state.tasks:
-        targets["task_ids"].add(source_id)
+        # Task reports have two alternative scopes: the exact immutable task,
+        # or a project-scoped diagnostic dispatch held by its project lead or
+        # Team manager. The specialized validator below selects one without
+        # granting ordinary task owners project-wide authority.
         return
     if source_kind == TeamBlockerSourceKind.DELIVERABLE.value:
         deliverable = state.deliverables.get(source_id or "")
@@ -1937,6 +2081,31 @@ def _validate_dispatch_project_scope(
 
 def _is_role_bounded_operator_chat_dispatch(dispatch: TeamDispatch) -> bool:
     return dispatch.cause_kind == "team_chat" and bool(dispatch.project_ids)
+
+
+def _validate_role_bounded_chat_project_team_scope(
+    state: TeamState,
+    *,
+    dispatch: TeamDispatch,
+    project_id: str,
+) -> None:
+    actor = state.agents.get(dispatch.agent_id)
+    project = state.projects.get(project_id)
+    if actor is not None and project is not None and actor.team_id == project.team_id:
+        return
+    allowed_project_ids = [
+        scoped_project_id
+        for scoped_project_id in dispatch.project_ids
+        if (scoped_project := state.projects.get(scoped_project_id)) is not None
+        and actor is not None
+        and scoped_project.team_id == actor.team_id
+    ]
+    raise _dispatch_scope_error(
+        dispatch,
+        scope_kind="same-team project",
+        requested_ids=[project_id],
+        allowed_ids=allowed_project_ids,
+    )
 
 
 def _validate_dispatch_managed_repo_scope(

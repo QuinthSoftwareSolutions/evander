@@ -84,6 +84,7 @@ from evander_team_addon.models import (
     SCHEMA_VERSION,
     TeamState,
     TaskCompletionKind,
+    TaskMutationPolicy,
     TeamTaskKind,
     TeamTaskState,
     TaskDeliverableContract,
@@ -1785,7 +1786,32 @@ def test_repository_request_status_command_rejects_non_subordinate(
     assert state.inbox == {}
 
 
-def test_repository_question_and_progress_report_are_upward_only(
+def _seed_task_question_relationships(repo: TeamStateRepository) -> None:
+    def _mutate(state: TeamState) -> TeamState:
+        state.cases["question-case"] = TeamCase(
+            id="question-case",
+            team_id="team",
+            project_id="project",
+            title="Question routing case",
+            owner_agent_id="worker",
+            task_ids=["question-task"],
+        )
+        state.tasks["question-task"] = AgentTask(
+            id="question-task",
+            owner_agent_id="backend",
+            project_id="project",
+            case_id="question-case",
+            priority=1,
+            title="Question routing task",
+            description="Provide relationship-aware question context.",
+            created_by_actor="test:question-routing",
+        )
+        return state
+
+    repo.update(_mutate)
+
+
+def test_repository_question_and_progress_report_default_upward_routing(
     tmp_path: Path,
 ) -> None:
     repo = _seed_hierarchy(tmp_path)
@@ -1825,6 +1851,155 @@ def test_repository_question_and_progress_report_are_upward_only(
     assert denied["success"] is False
     assert denied["errors"][0]["code"] == "top_level_manager_requires_operator_escalation"
     assert denied["correction_context"]["recommended_tool"] == "team_escalate_operator"
+
+
+def test_repository_task_scoped_question_allows_relationship_recipients(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _seed_task_question_relationships(repo)
+    _lease_agent_dispatch(repo, agent_id="manager", dispatch_id="dispatch-related-question")
+
+    expected_relationships = {
+        "backend": "task owner",
+        "worker": "case owner",
+        "lead": "project lead",
+    }
+    created_item_ids: list[str] = []
+    for recipient_agent_id, relationship in expected_relationships.items():
+        state, result = _command_service(repo).ask_question_command(
+            session_id="session-manager",
+            recipient_agent_id=recipient_agent_id,
+            task_id="question-task",
+            question=f"Can you clarify this as the {relationship}?",
+            request_id=f"request-related-question-{recipient_agent_id}",
+        )
+
+        assert result["success"] is True
+        item = state.inbox[result["inbox_item_id"]]
+        assert item.sender_agent_id == "manager"
+        assert item.recipient_agent_id == recipient_agent_id
+        assert item.task_id == "question-task"
+        created_item_ids.append(item.id)
+
+    assert len(set(created_item_ids)) == len(expected_relationships)
+
+
+def test_repository_task_scoped_question_rejects_unrelated_peer(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    admin = _team_admin_service(repo)
+    admin.create_role(
+        role_id="project__peer",
+        team_id="team",
+        project_id="project",
+        name="Peer",
+        expected_revision=repo.read().revision,
+    )
+    admin.register_agent(
+        agent_id="peer",
+        team_id="team",
+        project_id="project",
+        role_id="project__peer",
+        session_id="session-peer",
+        reports_to_agent_id="manager",
+        expected_revision=repo.read().revision,
+    )
+    _seed_task_question_relationships(repo)
+    _lease_agent_dispatch(repo, agent_id="manager", dispatch_id="dispatch-unrelated-question")
+
+    state, result = _command_service(repo).ask_question_command(
+        session_id="session-manager",
+        recipient_agent_id="peer",
+        task_id="question-task",
+        question="Can you answer this task question?",
+        request_id="request-unrelated-question",
+    )
+
+    assert result["success"] is False
+    assert result["errors"][0]["code"] == "recipient_not_task_relationship"
+    assert result["correction_context"]["relationship_recipient_agent_ids"] == {
+        "task_owner": "backend",
+        "project_lead": "lead",
+        "case_owner": "worker",
+    }
+    assert state.inbox == {}
+    activities = repo.list_dispatch_activity(dispatch_id="dispatch-unrelated-question")
+    assert len(activities) == 1
+    assert activities[0].status == TeamDispatchActivityStatus.FAILURE
+    assert activities[0].error_code == "recipient_not_task_relationship"
+
+
+def test_repository_task_scoped_question_requires_dispatch_project_scope(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _seed_task_question_relationships(repo)
+    _lease_agent_dispatch(repo, agent_id="manager", dispatch_id="dispatch-question-scope")
+
+    def _remove_project_scope(state: TeamState) -> TeamState:
+        state.dispatches["dispatch-question-scope"].project_ids = []
+        return state
+
+    repo.update(_remove_project_scope)
+    state, result = _command_service(repo).ask_question_command(
+        session_id="session-manager",
+        recipient_agent_id="backend",
+        task_id="question-task",
+        question="Can you answer outside this dispatch scope?",
+        request_id="request-question-outside-scope",
+    )
+
+    assert result["success"] is False
+    assert result["errors"][0]["code"] == "dispatch_scope_forbidden"
+    assert result["correction_context"]["scope_kind"] == "project"
+    assert state.inbox == {}
+
+
+def test_repository_task_scoped_question_rejects_inactive_relationship_recipient(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _seed_task_question_relationships(repo)
+    _lease_agent_dispatch(repo, agent_id="manager", dispatch_id="dispatch-inactive-question")
+
+    def _pause_task_owner(state: TeamState) -> TeamState:
+        state.agents["backend"].status = AgentStatus.PAUSED
+        return state
+
+    repo.update(_pause_task_owner)
+    state, result = _command_service(repo).ask_question_command(
+        session_id="session-manager",
+        recipient_agent_id="backend",
+        task_id="question-task",
+        question="Can the inactive owner answer this?",
+        request_id="request-inactive-question",
+    )
+
+    assert result["success"] is False
+    assert result["errors"][0]["code"] == "recipient_not_active"
+    assert state.inbox == {}
+
+
+def test_repository_task_relationship_does_not_widen_progress_report_routing(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _seed_task_question_relationships(repo)
+    _lease_agent_dispatch(repo, agent_id="lead", dispatch_id="dispatch-related-progress")
+
+    state, result = _command_service(repo).send_progress_report_command(
+        session_id="session-lead",
+        recipient_agent_id="backend",
+        task_id="question-task",
+        message="This task is progressing.",
+        request_id="request-related-progress",
+    )
+
+    assert result["success"] is False
+    assert result["errors"][0]["code"] == "recipient_not_direct_superior"
+    assert state.inbox == {}
 
 
 def test_repository_question_command_replay_and_conflict(
@@ -3319,6 +3494,49 @@ def test_producer_reports_deliverable_blocker_from_original_task_dispatch(
     assert state.deliverables["deliverable-blocked"].state == TeamRecordState.BLOCKED
 
 
+def test_project_lead_reports_task_blocker_from_project_diagnostic_scope(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _seed_task(repo, task_id="worker-correction", owner_agent_id="worker")
+    _lease_agent_dispatch(repo, agent_id="lead", dispatch_id="dispatch-lead-diagnostic")
+    assert "worker-correction" not in repo.read().dispatches[
+        "dispatch-lead-diagnostic"
+    ].task_ids
+
+    state, result = _command_service(repo).report_blocker_command(
+        session_id="session-lead",
+        source_kind=TeamBlockerSourceKind.TASK,
+        source_id="worker-correction",
+        summary="The generated correction has no acceptance path.",
+        reason_code="acceptance_path_missing",
+        request_id="request-lead-correction-blocker",
+    )
+
+    assert result["success"] is True
+    assert state.blockers[result["blocker_id"]].task_id == "worker-correction"
+
+
+def test_project_peer_cannot_use_project_scope_to_report_another_owners_task(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _seed_task(repo, task_id="worker-correction", owner_agent_id="worker")
+    _lease_agent_dispatch(repo, agent_id="backend", dispatch_id="dispatch-peer-diagnostic")
+
+    state, result = _command_service(repo).report_blocker_command(
+        session_id="session-backend",
+        source_kind=TeamBlockerSourceKind.TASK,
+        source_id="worker-correction",
+        summary="This peer must not gain task authority.",
+        request_id="request-peer-correction-blocker",
+    )
+
+    assert result["success"] is False
+    assert result["errors"][0]["code"] == "dispatch_scope_forbidden"
+    assert state.blockers == {}
+
+
 def test_superior_rejects_direct_deliverable_with_actionable_rework(
     tmp_path: Path,
 ) -> None:
@@ -4121,6 +4339,7 @@ def test_composed_submission_persists_server_verified_candidate_ancestry(
 
     def _attach_manifest(state: TeamState) -> TeamState:
         context = state.git_work_contexts["ctx-task"]
+        context.base_commit = composed_commit
         context.dependency_git_sources = [source]
         context.dependency_composition_manifest = DependencyCompositionManifest(
             target_task_id="task",
@@ -4329,9 +4548,9 @@ def test_submit_deliverable_command_server_binds_advanced_task_branch_when_refs_
         return state
 
     repo.update(_set_base)
-    resolver_calls: list[dict[str, str]] = []
+    resolver_calls: list[dict[str, object]] = []
 
-    def _resolve(**kwargs: str) -> str:
+    def _resolve(**kwargs: object) -> str:
         resolver_calls.append(kwargs)
         return submitted_commit
 
@@ -4359,8 +4578,65 @@ def test_submit_deliverable_command_server_binds_advanced_task_branch_when_refs_
             "managed_repo_id": MANAGED_REPO_ID,
             "directory_path": "root",
             "agent_branch": "agents/session-backend/task",
+            "required_ancestor_shas": [base_commit],
         }
     ]
+
+
+def test_submit_deliverable_command_rejects_branch_outside_prepared_base_ancestry(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _set_project_git(repo)
+    _seed_task(repo, task_id="task")
+    _lease_agent_dispatch(repo, agent_id="backend", dispatch_id="dispatch-slice7")
+    prepared_base = "1" * 40
+    submitted_commit = "2" * 40
+    _seed_git_work_context(repo, commit_sha=None)
+
+    def _set_base(state: TeamState) -> TeamState:
+        state.git_work_contexts["ctx-task"].base_commit = prepared_base
+        return state
+
+    repo.update(_set_base)
+    resolver_calls: list[dict[str, object]] = []
+
+    def _reject_unrelated_candidate(**kwargs: object) -> str:
+        resolver_calls.append(kwargs)
+        raise ValueError(
+            f"commit {submitted_commit} does not contain required ancestor {prepared_base}"
+        )
+
+    state, result = TeamDeliverableSubmissionCommandService(
+        repo,
+        git_candidate_commit_resolver=_reject_unrelated_candidate,
+    ).submit_deliverable_command(
+        session_id="session-backend",
+        id="deliverable-unrelated-git",
+        task_id="task",
+        summary="A candidate from an unrelated history.",
+        branch_context_id="ctx-task",
+        git_refs={
+            "agent_branch": "agents/session-backend/task",
+            "commit_sha": submitted_commit,
+        },
+        request_id="request-submit-unrelated-git",
+    )
+
+    assert result["success"] is False
+    assert result["errors"][0]["code"] == "git_candidate_prepared_base_ancestry_failed"
+    assert result["correction_context"]["prepared_base_commit"] == prepared_base
+    assert result["correction_context"]["required_ancestor_shas"] == [prepared_base]
+    assert resolver_calls == [
+        {
+            "managed_repo_id": MANAGED_REPO_ID,
+            "directory_path": "root",
+            "agent_branch": "agents/session-backend/task",
+            "required_ancestor_shas": [prepared_base],
+        }
+    ]
+    assert state.deliverables == {}
+    assert state.git_work_contexts["ctx-task"].state == GitWorkContextState.ACTIVE
 
 
 def test_submit_deliverable_command_keeps_artifact_only_when_task_branch_is_unchanged(
@@ -6956,6 +7232,7 @@ def test_task_git_base_snapshot_resolves_unset_managed_repository_default(
     repo = _seed_hierarchy(tmp_path)
 
     def _configure_unset_base(state):
+        state.projects["project"].directory_path = "root/team-project"
         state.projects["project"].git = ProjectGitConfig(
             managed_repo_id=MANAGED_REPO_ID,
             directory_path="root/team-project",
@@ -7233,6 +7510,104 @@ def test_repository_update_task_command_owner_delegates_to_subordinate(
     assert result["success"] is True
     assert state.tasks["backend-task"].owner_agent_id == "worker"
     assert result["task_id"] == "backend-task"
+
+
+def test_workflow_managed_task_keeps_topology_but_allows_reassignment(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _seed_task(repo, task_id="managed-task")
+    _seed_task(repo, task_id="dependency")
+    _seed_task(repo, task_id="detached-task")
+
+    def _lock_topology(state: TeamState) -> None:
+        state.tasks["managed-task"].mutation_policy = TaskMutationPolicy(
+            policy_id="workflow-remediation-topology-v1",
+            reason="The workflow owns this remediation boundary.",
+            locked_fields=[
+                "dependency_task_ids",
+                "deliverable_contract",
+                "git_base_branch",
+                "integration_boundary",
+                "parent_task_id",
+                "task_kind",
+            ],
+            allow_child_tasks=False,
+            allow_agent_cancellation=False,
+        )
+
+    repo.update(_lock_topology)
+    _lease_agent_dispatch(repo, agent_id="backend", dispatch_id="dispatch-managed-task")
+    service = _command_service(repo)
+
+    state, dependency_edit = service.update_task_command(
+        session_id="session-backend",
+        task_id="managed-task",
+        dependency_task_ids=["dependency"],
+        request_id="request-managed-dependency-edit",
+    )
+    assert dependency_edit["success"] is False
+    assert dependency_edit["errors"][0]["code"] == "task_mutation_policy_locked"
+    assert state.tasks["managed-task"].dependency_task_ids == []
+
+    state, child_creation = service.create_task_command(
+        session_id="session-backend",
+        task_id="managed-child",
+        owner_agent_id="worker",
+        project_id="project",
+        title="Do not reshape the remediation",
+        description="This must remain the workflow-owned task.",
+        parent_task_id="managed-task",
+        request_id="request-managed-child",
+    )
+    assert child_creation["success"] is False
+    assert child_creation["errors"][0]["code"] == "task_mutation_policy_child_locked"
+    assert "managed-child" not in state.tasks
+
+    with pytest.raises(ValueError, match="does not allow child tasks"):
+        _team_admin_service(repo).update_task(
+            task_id="detached-task",
+            parent_task_id="managed-task",
+            set_parent_task_id=True,
+        )
+    assert repo.read().tasks["detached-task"].parent_task_id is None
+
+    with pytest.raises(ValueError, match="locks: task_kind"):
+        _team_admin_service(repo).create_or_reprioritize_task(
+            task_id="managed-task",
+            owner_agent_id="backend",
+            project_id="project",
+            priority=1,
+            title="Task managed-task",
+            description="Work to deliver.",
+            created_by_agent_id="lead",
+            task_kind=TeamTaskKind.OUTCOME,
+        )
+    assert repo.read().tasks["managed-task"].task_kind == TeamTaskKind.SUPPORT
+
+    state, cancellation = service.cancel_task_command(
+        session_id="session-backend",
+        task_id="managed-task",
+        reason_code="replace_topology",
+        reason="Try to replace the workflow task.",
+        request_id="request-managed-cancel",
+    )
+    assert cancellation["success"] is False
+    assert (
+        cancellation["errors"][0]["code"]
+        == "task_mutation_policy_cancellation_locked"
+    )
+    assert state.tasks["managed-task"].state == TeamTaskState.PENDING
+
+    state, reassignment = service.update_task_command(
+        session_id="session-backend",
+        task_id="managed-task",
+        owner_agent_id="worker",
+        request_id="request-managed-reassign",
+    )
+    assert reassignment["success"] is True
+    assert state.tasks["managed-task"].owner_agent_id == "worker"
+    assert state.tasks["managed-task"].mutation_policy is not None
 
 
 def test_task_finish_with_proposed_unresolved_dependency_is_rejected(
@@ -9217,6 +9592,7 @@ def test_repository_round_trips_review_repository_snapshot_and_reads_legacy_null
     commit_sha = "a" * 40
 
     def _configure_git_candidate(state: TeamState) -> TeamState:
+        state.projects["project"].directory_path = "root/project"
         state.projects["project"].git = ProjectGitConfig(
             managed_repo_id="mr_0123456789abcdefabcd",
             directory_path="root/project",
@@ -18956,9 +19332,17 @@ def test_final_review_acceptance_is_recorded_when_aggregate_boundary_is_blocked(
     assert state.review_requests["review-code"].state == TeamRecordState.ACCEPTED
     assert state.review_requests["review-code"].decision_at is not None
     assert state.deliverables["deliverable"].state == TeamRecordState.PENDING
-    assert state.tasks["task"].state == TeamTaskState.PENDING
+    assert state.tasks["task"].state == TeamTaskState.BLOCKED
     assert state.tasks["unfinished-child"].state == TeamTaskState.PENDING
     assert accepted["task"]["assessment"]["unresolved_descendant_ids"] == ["unfinished-child"]
+    blocker = next(
+        item
+        for item in state.blockers.values()
+        if item.reason_code.startswith("deliverable_acceptance_deferred:")
+    )
+    assert blocker.source_id == "deliverable"
+    assert blocker.reason_code == "deliverable_acceptance_deferred:task_boundary_blocked"
+    assert blocker.affected_task_ids == ["unfinished-child"]
 
 
 def test_apply_agent_action_late_review_request_reopens_accepted_work(

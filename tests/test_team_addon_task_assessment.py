@@ -6,8 +6,10 @@ import pytest
 
 from evander.models import utc_now
 from evander_team_addon.models import (
+    AgentStatus,
     AgentTask,
     Deliverable,
+    DeliverableAcceptanceDecision,
     DeliverableGitRefs,
     DeliverableOutcome,
     DeliverableVerification,
@@ -29,6 +31,7 @@ from evander_team_addon.models import (
     TaskDeliverableContract,
     TaskOutcomeContract,
     TaskResolutionStatus,
+    Team,
     TeamBlocker,
     TeamBlockerSourceKind,
     TeamRecordState,
@@ -57,6 +60,7 @@ from evander_team_addon.services.domain.deliverables import (
     _accept_deliverable_and_maybe_task,
     _superseded_deliverable_for_rework,
 )
+from evander_team_addon.services.domain.blockers import resolve_blocker
 from evander_team_addon.services.domain.ephemeral import (
     _apply_ephemeral_acceptance,
 )
@@ -69,7 +73,11 @@ from evander_team_addon.services.domain.git_work_contexts import (
 from evander_team_addon.services.domain.release_packages import (
     _build_release_package,
 )
-from evander_team_addon.services.domain.review import _cascade_review_decision
+from evander_team_addon.services.domain.review import (
+    _cascade_review_decision,
+    retry_deferred_deliverable_acceptance,
+    retry_deliverable_acceptance_if_reviewed,
+)
 
 
 def _state() -> TeamState:
@@ -1755,6 +1763,283 @@ def test_formal_review_cascade_defers_aggregate_with_unresolved_descendants() ->
     assert review.state == TeamRecordState.ACCEPTED
     assert review.decision_at is not None
     assert deliverable.state == TeamRecordState.PENDING
+
+
+def test_formal_review_cascade_routes_durable_acceptance_remediation() -> None:
+    state = _state()
+    state.teams["team"] = Team.model_construct(
+        id="team",
+        name="Team",
+        manager_agent_id="owner-parent",
+    )
+    state.projects["project"] = Project.model_construct(
+        id="project",
+        team_id="team",
+        name="Project",
+        lead_agent_id="owner-parent",
+    )
+    state.agents["owner-parent"] = PersistentAgent.model_construct(
+        id="owner-parent",
+        team_id="team",
+        session_id="session-owner-parent",
+        status=AgentStatus.ACTIVE,
+    )
+    parent = _outcome_task(
+        "parent",
+        state=TeamTaskState.WAITING_FOR_REVIEW,
+    )
+    state.tasks[parent.id] = parent
+    state.tasks["child"] = _support_task("child", parent_task_id=parent.id)
+    deliverable = _delivered(
+        state,
+        deliverable_id="deliverable-parent",
+        task_id=parent.id,
+        record_state=TeamRecordState.PENDING,
+    )
+    review = ReviewRequest(
+        id="review-parent",
+        deliverable_id=deliverable.id,
+        reviewer_agent_id="owner-parent",
+    )
+    state.review_requests[review.id] = review
+    deliverable.review_request_ids = [review.id]
+
+    result: dict[str, Any] = {"errors": []}
+    _cascade_review_decision(
+        state,
+        review=review,
+        decision_state=TeamRecordState.ACCEPTED,
+        findings=[],
+        projects_to_recalc=set(),
+        result=result,
+    )
+
+    blocker = state.blockers[result["deliverable_acceptance_deferred"]["blocker_id"]]
+    assert blocker.source_kind == TeamBlockerSourceKind.DELIVERABLE
+    assert blocker.source_id == "deliverable-parent"
+    assert blocker.task_id == parent.id
+    assert blocker.owner_agent_id == parent.owner_agent_id
+    assert blocker.affected_task_ids == ["child"]
+    assert parent.state == TeamTaskState.BLOCKED
+    assert any(
+        item.payload.get("blocker_id") == blocker.id
+        for item in state.inbox.values()
+    )
+
+    repeated: dict[str, Any] = {"events": []}
+    with pytest.raises(TaskAssessmentBoundaryError) as still_blocked:
+        retry_deferred_deliverable_acceptance(
+            state,
+            blocker_id=blocker.id,
+            actor_agent_id="owner-parent",
+            result=repeated,
+            now=utc_now(),
+        )
+    assert still_blocked.value.code == "task_boundary_blocked"
+    assert repeated["deliverable_acceptance_deferred"]["blocker_id"] == blocker.id
+    assert [item.id for item in state.blockers.values() if item.state.value == "open"] == [
+        blocker.id
+    ]
+
+    state.tasks["child"].state = TeamTaskState.CANCELLED
+    state.tasks["child"].cancellation = TaskCancellation(
+        reason_code="no_longer_required",
+        reason="The remediation proved this child is no longer required.",
+        actor_kind="operator",
+        actor_id="operator:test",
+    )
+    retried: dict[str, Any] = {"events": []}
+    assert retry_deferred_deliverable_acceptance(
+        state,
+        blocker_id=blocker.id,
+        actor_agent_id="owner-parent",
+        result=retried,
+        now=utc_now(),
+    )
+    assert blocker.state.value == "resolved"
+    assert deliverable.state == TeamRecordState.ACCEPTED
+    assert parent.state == TeamTaskState.ACCEPTED
+    assert retried["resolved_blocker_ids"] == [blocker.id]
+
+
+def test_resolving_unrelated_deliverable_blocker_reenters_accepted_review_boundary() -> None:
+    state = _state()
+    state.teams["team"] = Team.model_construct(
+        id="team",
+        name="Team",
+        manager_agent_id="owner-parent",
+    )
+    state.projects["project"] = Project.model_construct(
+        id="project",
+        team_id="team",
+        name="Project",
+        lead_agent_id="owner-parent",
+    )
+    state.agents["owner-parent"] = PersistentAgent.model_construct(
+        id="owner-parent",
+        team_id="team",
+        session_id="session-owner-parent",
+        status=AgentStatus.ACTIVE,
+    )
+    parent = _outcome_task("parent", state=TeamTaskState.WAITING_FOR_REVIEW)
+    state.tasks[parent.id] = parent
+    state.tasks["child"] = _support_task("child", parent_task_id=parent.id)
+    deliverable = _delivered(
+        state,
+        deliverable_id="deliverable-parent",
+        task_id=parent.id,
+        record_state=TeamRecordState.PENDING,
+    )
+    review = ReviewRequest(
+        id="review-parent",
+        deliverable_id=deliverable.id,
+        reviewer_agent_id="owner-parent",
+    )
+    state.review_requests[review.id] = review
+    deliverable.review_request_ids = [review.id]
+    unrelated = TeamBlocker(
+        id="blocker-unrelated",
+        team_id="team",
+        project_id="project",
+        task_id=parent.id,
+        source_kind=TeamBlockerSourceKind.DELIVERABLE,
+        source_id=deliverable.id,
+        reason_code="external_dependency_unavailable",
+        owner_agent_id=parent.owner_agent_id,
+        summary="A separate deliverable dependency is unavailable",
+    )
+    state.blockers[unrelated.id] = unrelated
+
+    initial: dict[str, Any] = {"events": []}
+    _cascade_review_decision(
+        state,
+        review=review,
+        decision_state=TeamRecordState.ACCEPTED,
+        findings=[],
+        projects_to_recalc=set(),
+        result=initial,
+    )
+
+    assert initial["deliverable_acceptance_deferred"]["blocker_ids"] == [
+        unrelated.id
+    ]
+    assert not any(
+        blocker.reason_code.startswith("deliverable_acceptance_deferred:")
+        for blocker in state.blockers.values()
+    )
+
+    now = utc_now()
+    resolve_blocker(
+        state,
+        blocker=unrelated,
+        actor_agent_id="owner-parent",
+        dispatch_id=None,
+        note="The separate dependency is now available.",
+        now=now,
+    )
+    retried: dict[str, Any] = {"events": []}
+    assert not retry_deliverable_acceptance_if_reviewed(
+        state,
+        deliverable_id=deliverable.id,
+        actor_agent_id="owner-parent",
+        result=retried,
+        now=now,
+    )
+
+    boundary_id = retried["deliverable_acceptance_deferred"]["blocker_id"]
+    assert boundary_id != unrelated.id
+    assert state.blockers[boundary_id].reason_code.startswith(
+        "deliverable_acceptance_deferred:"
+    )
+    assert deliverable.state == TeamRecordState.PENDING
+    assert parent.state == TeamTaskState.BLOCKED
+
+
+def test_acceptance_retry_waits_for_current_formal_review_after_direct_acceptance() -> None:
+    state = _state()
+    task = _outcome_task("parent", state=TeamTaskState.WAITING_FOR_REVIEW)
+    state.tasks[task.id] = task
+    deliverable = _delivered(
+        state,
+        deliverable_id="deliverable-parent",
+        task_id=task.id,
+        record_state=TeamRecordState.PENDING,
+    )
+    deliverable.acceptance_decision = DeliverableAcceptanceDecision(
+        decision="accepted",
+        decided_by_agent_id="owner-parent",
+    )
+    review = ReviewRequest(
+        id="review-parent-current",
+        deliverable_id=deliverable.id,
+        reviewer_agent_id="reviewer",
+    )
+    state.review_requests[review.id] = review
+    deliverable.review_request_ids = [review.id]
+
+    result: dict[str, Any] = {"events": []}
+    assert not retry_deliverable_acceptance_if_reviewed(
+        state,
+        deliverable_id=deliverable.id,
+        actor_agent_id="owner-parent",
+        result=result,
+        now=utc_now(),
+    )
+
+    assert review.state == TeamRecordState.PENDING
+    assert deliverable.state == TeamRecordState.PENDING
+    assert task.state == TeamTaskState.WAITING_FOR_REVIEW
+    assert "deliverable_acceptance_deferred" not in result
+
+
+def test_deferred_acceptance_retry_waits_for_current_formal_review() -> None:
+    state = _state()
+    task = _outcome_task("parent", state=TeamTaskState.BLOCKED)
+    state.tasks[task.id] = task
+    deliverable = _delivered(
+        state,
+        deliverable_id="deliverable-parent",
+        task_id=task.id,
+        record_state=TeamRecordState.PENDING,
+    )
+    deliverable.acceptance_decision = DeliverableAcceptanceDecision(
+        decision="accepted",
+        decided_by_agent_id="owner-parent",
+    )
+    review = ReviewRequest(
+        id="review-parent-current",
+        deliverable_id=deliverable.id,
+        reviewer_agent_id="reviewer",
+    )
+    state.review_requests[review.id] = review
+    deliverable.review_request_ids = [review.id]
+    blocker = TeamBlocker(
+        id="blocker-acceptance-boundary",
+        team_id="team",
+        project_id="project",
+        task_id=task.id,
+        source_kind=TeamBlockerSourceKind.DELIVERABLE,
+        source_id=deliverable.id,
+        reason_code="deliverable_acceptance_deferred:task_boundary_blocked",
+        owner_agent_id=task.owner_agent_id,
+        summary="Acceptance waits for the current formal review.",
+    )
+    state.blockers[blocker.id] = blocker
+
+    with pytest.raises(TaskAssessmentBoundaryError) as raised:
+        retry_deferred_deliverable_acceptance(
+            state,
+            blocker_id=blocker.id,
+            actor_agent_id="owner-parent",
+            result={"events": []},
+            now=utc_now(),
+        )
+
+    assert raised.value.code == "deliverable_acceptance_evidence_incomplete"
+    assert blocker.state.value == "open"
+    assert review.state == TeamRecordState.PENDING
+    assert deliverable.state == TeamRecordState.PENDING
+    assert task.state == TeamTaskState.BLOCKED
 
 
 def test_release_construction_refuses_non_top_level_or_unresolved_scope() -> None:

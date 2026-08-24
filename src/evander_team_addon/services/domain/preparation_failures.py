@@ -50,7 +50,7 @@ EXECUTION_PREPARATION_BLOCKER_REASON_CODES = frozenset(
 )
 _TASK_PREPARATION_SOURCE_PREFIX = "execution-preparation:task:"
 _INBOX_PREPARATION_SOURCE_PREFIX = "execution-preparation:inbox:"
-TASK_PREPARATION_CONTRACT_VERSION = 3
+TASK_PREPARATION_CONTRACT_VERSION = 4
 _TASK_PREPARATION_GENERATION_FIELDS = (
     "id",
     "owner_agent_id",
@@ -154,14 +154,34 @@ def _deliverable_generation_payload(deliverable: object) -> dict[str, object]:
     return payload
 
 
+def _source_evidence_generation_payload(
+    state: TeamState,
+    snapshot_ids: Sequence[str],
+) -> list[dict[str, str | None]]:
+    """Fingerprint immutable evidence by durable identity and verified content."""
+
+    return [
+        {
+            "id": snapshot_id,
+            "content_digest": (
+                snapshot.content_digest
+                if (snapshot := state.external_source_evidence_snapshots.get(snapshot_id))
+                is not None
+                else None
+            ),
+        }
+        for snapshot_id in sorted(set(snapshot_ids))
+    ]
+
+
 def task_preparation_generation(state: TeamState, task_id: str) -> str:
     """Fingerprint task and candidate state that can legitimately unblock setup.
 
     The fingerprint deliberately excludes blocker and dispatch state. Task
     instructions, ownership/state, project Git configuration, direct dependency
-    state, and current deliverable Git candidates are included so a meaningful
-    planning/candidate change starts a fresh generation without an operator
-    having to erase the prior incident.
+    state, current deliverable Git candidates, and direct or case-linked source
+    evidence are included so a meaningful planning/candidate change starts a
+    fresh generation without an operator having to erase the prior incident.
     """
 
     task = state.tasks.get(task_id)
@@ -206,6 +226,24 @@ def task_preparation_generation(state: TeamState, task_id: str) -> str:
                 key=lambda item: item.id,
             )
         ],
+        "external_source_evidence": {
+            "direct_task_snapshots": _source_evidence_generation_payload(
+                state,
+                task.source_evidence_snapshot_ids,
+            ),
+            "linked_case": (
+                {
+                    "id": linked_case.id,
+                    "snapshots": _source_evidence_generation_payload(
+                        state,
+                        linked_case.source_evidence_snapshot_ids,
+                    ),
+                }
+                if task.case_id is not None
+                and (linked_case := state.cases.get(task.case_id)) is not None
+                else None
+            ),
+        },
     }
     correction_source = _human_correction_generation_payload(
         state,

@@ -864,6 +864,7 @@ TEAM_OUTPUT_SCHEMAS: dict[str, dict[str, dict[str, Any]]] = {
         "projects": {"type": "object"},
         "agents": {"type": "object"},
         "tasks": {"type": "object"},
+        "external_source_evidence_snapshots": {"type": "object"},
     },
     "query:team:memory": {
         "success": {"type": "boolean"},

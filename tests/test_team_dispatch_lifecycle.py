@@ -7,7 +7,16 @@ import pytest
 
 from evander_team_addon.models import (
     AgentInboxItem,
+    AgentRuntime,
+    AgentTask,
+    DependencyCompositionManifest,
+    DependencyGitSource,
     Deliverable,
+    GitWorkContext,
+    GitWorkContextState,
+    HumanReviewFinding,
+    HumanReviewRequest,
+    HumanReviewRequirementSnapshot,
     ProjectGitConfig,
     ProjectGoal,
     ReleasePackage,
@@ -18,17 +27,24 @@ from evander_team_addon.models import (
     TeamBlockerEventType,
     TeamBlockerSourceKind,
     TeamBlockerState,
+    TeamCase,
+    TeamCaseStatus,
     TeamDispatch,
     TeamDispatchActivity,
     TeamDispatchActivityStatus,
     TeamDispatchStatus,
     TeamInboxItemType,
     TeamInboxItemState,
+    TeamInboxPriority,
     TeamRecordState,
+    TaskDeliverableContract,
+    TaskMutationPolicy,
     TeamTaskState,
+    TeamTaskKind,
     runtime_operations_payload,
 )
 from evander_team_addon.repository import TeamStateRepository
+from evander_team_addon.services.agent_action_service import TeamAgentActionService
 from evander_team_addon.services.admin_service import TeamAdminService
 from evander_team_addon.services.chat_service import (
     TeamChatService,
@@ -37,6 +53,7 @@ from evander_team_addon.services.chat_service import (
 from evander_team_addon.services.commands import (
     TeamAgentControlCommandService,
     TeamBlockerCommandService,
+    TeamCaseCommandService,
     TeamDeliverableSubmissionCommandService,
     TeamMemoryCommandService,
     TeamNoteCommandService,
@@ -69,6 +86,46 @@ def _authorized_chat_mutation(repository: TeamStateRepository, agent_id: str):
         principal_id="operator@example.com",
         recipient_directory_path="root",
         project_is_authorized=lambda _directory_path: True,
+    )
+
+
+def _begin_project_chat_dispatch(
+    repository: TeamStateRepository,
+    *,
+    agent_id: str,
+    body: str,
+) -> None:
+    chat = TeamChatService(repository)
+    state, conversation, _created = chat.create_or_get_conversation(
+        agent_id=agent_id,
+        operator_user_id="operator@example.com",
+        created_by="operator:operator@example.com",
+        expected_revision=repository.read().revision,
+    )
+    state, message = chat.record_operator_chat_message(
+        conversation_id=conversation.id,
+        body=body,
+        created_by="operator:operator@example.com",
+        mutation_authorization=_authorized_chat_mutation(repository, agent_id),
+        expected_revision=state.revision,
+    )
+    state, _message = chat.begin_chat_message_dispatch(
+        message_id=message.id,
+        dispatch_id=f"team-chat:{message.id}",
+    )
+    dispatch = state.dispatches[f"team-chat:{message.id}"]
+    assert dispatch.project_ids == ["project"]
+
+
+def _begin_project_lead_chat_dispatch(
+    repository: TeamStateRepository,
+    *,
+    body: str,
+) -> None:
+    _begin_project_chat_dispatch(
+        repository,
+        agent_id="lead",
+        body=body,
     )
 
 
@@ -124,6 +181,82 @@ def _seed_agent_with_task(tmp_path: Path) -> TeamStateRepository:
     return repository
 
 
+def test_non_git_project_chat_uses_provider_neutral_directory_scope(
+    tmp_path: Path,
+) -> None:
+    repository = _seed_agent_with_task(tmp_path)
+    directory_path = "root/departments/accounting"
+
+    def _make_project_non_git(state):
+        state.projects["project"].directory_path = directory_path
+        state.projects["project"].git = None
+        return state
+
+    state = repository.update(_make_project_non_git)
+    agent = state.agents["worker"]
+    checked_paths: list[str] = []
+    authorized = project_scoped_team_chat_authorization(
+        state,
+        agent=agent,
+        source="internal",
+        principal_id="operator@example.com",
+        recipient_directory_path=directory_path,
+        project_is_authorized=lambda value: checked_paths.append(value)
+        or value == directory_path,
+    )
+    root_only = project_scoped_team_chat_authorization(
+        state,
+        agent=agent,
+        source="internal",
+        principal_id="operator@example.com",
+        recipient_directory_path=directory_path,
+        project_is_authorized=lambda value: value == "root",
+    )
+
+    assert checked_paths == [directory_path]
+    assert authorized.mode == "project_scoped"
+    assert authorized.project_ids == ["project"]
+    assert authorized.managed_repo_ids == []
+    assert root_only.mode == "reply_only"
+    assert root_only.reason == "no_authorized_projects"
+
+
+def _seed_plain_cancelled_task_with_stranded_dependent(
+    repository: TeamStateRepository,
+) -> None:
+    admin = TeamAdminService(repository)
+    admin.create_or_reprioritize_task(
+        task_id="successor",
+        owner_agent_id="worker",
+        project_id="project",
+        priority=2,
+        title="Finished replacement",
+        description="This completed task is the recorded successor.",
+        created_by_agent_id="lead",
+        state=TeamTaskState.FINISHED,
+        expected_revision=repository.read().revision,
+    )
+    admin.create_or_reprioritize_task(
+        task_id="dependent",
+        owner_agent_id="lead",
+        project_id="project",
+        priority=1,
+        title="Stranded downstream work",
+        description="This edge predates audited cancellation repair.",
+        created_by_agent_id="lead",
+        dependency_task_ids=["task"],
+        expected_revision=repository.read().revision,
+    )
+    admin.cancel_task(
+        task_id="task",
+        reason_code="replaced",
+        reason="The successor owns the remaining scope.",
+        actor_id="operator:test",
+        successor_task_id="successor",
+        expected_revision=repository.read().revision,
+    )
+
+
 def _deferred_dispatch(
     repository: TeamStateRepository,
 ) -> tuple[TeamRuntimeService, str]:
@@ -158,6 +291,149 @@ def _seed_secondary_project_for_lead(repository: TeamStateRepository) -> None:
         ],
         expected_revision=repository.read().revision,
     )
+
+
+def _replace_active_dispatch_project_scope(
+    repository: TeamStateRepository,
+    *,
+    agent_id: str,
+    project_ids: list[str],
+) -> None:
+    def _replace_scope(state):
+        dispatch_id = state.agent_runtimes[agent_id].active_dispatch_id
+        assert dispatch_id is not None
+        state.dispatches[dispatch_id].project_ids = project_ids
+        return state
+
+    repository.update(_replace_scope)
+
+
+def _seed_forged_cross_team_manager_dispatch(
+    repository: TeamStateRepository,
+    *,
+    cause_kind: str = "scheduled",
+) -> None:
+    admin = TeamAdminService(repository)
+    admin.create_team(
+        team_id="foreign-team",
+        name="Foreign Team",
+        manager_agent_id="foreign-manager",
+        manager_session_id="session-foreign-manager",
+        expected_revision=repository.read().revision,
+    )
+
+    def _add_dispatch(state):
+        dispatch_id = f"forged-cross-team-{cause_kind}-project-dispatch"
+        expires_at = LEASE_NOW + timedelta(hours=1)
+        state.dispatches[dispatch_id] = TeamDispatch(
+            id=dispatch_id,
+            agent_id="foreign-manager",
+            session_id="session-foreign-manager",
+            cause_kind=cause_kind,
+            project_ids=["project"],
+            managed_repo_ids=[MANAGED_REPO_ID],
+            status=TeamDispatchStatus.LEASED,
+            prepared_at=LEASE_NOW,
+            leased_at=LEASE_NOW,
+            lease_expires_at=expires_at,
+        )
+        runtime = state.agent_runtimes.setdefault(
+            "foreign-manager",
+            AgentRuntime(agent_id="foreign-manager"),
+        )
+        runtime.active_dispatch_id = dispatch_id
+        runtime.wake_reason = cause_kind
+        runtime.last_wake_at = LEASE_NOW
+        runtime.wake_leased_until = expires_at
+        runtime.updated_at = LEASE_NOW
+        return state
+
+    repository.update(_add_dispatch)
+
+
+def _seed_cross_team_case_command_targets(
+    repository: TeamStateRepository,
+) -> None:
+    def _seed(state):
+        state.release_packages["human-release"] = ReleasePackage(
+            id="human-release",
+            project_id="project",
+            release_branch="team/team/releases/human-release",
+            candidate_commit_sha="a" * 40,
+            candidate_tree_hash="b" * 40,
+        )
+        state.human_review_requests["human-request"] = HumanReviewRequest(
+            id="human-request",
+            release_package_id="human-release",
+            candidate_commit_sha="a" * 40,
+            candidate_tree_hash="b" * 40,
+            requirement_snapshot=HumanReviewRequirementSnapshot(
+                directory_path="root",
+                configured_group_ids=["release-reviewers"],
+                initially_eligible_user_ids=["reviewer"],
+            ),
+            state="changes_requested",
+            completed_at=LEASE_NOW,
+        )
+        state.cases["human-case"] = TeamCase(
+            id="human-case",
+            team_id="team",
+            project_id="project",
+            title="Human review corrections",
+            status=TeamCaseStatus.IN_PROGRESS,
+            owner_agent_id="lead",
+            source="human_release_review",
+            source_ref="human-request",
+            task_ids=["human-correction"],
+        )
+        state.tasks["human-correction"] = AgentTask(
+            id="human-correction",
+            owner_agent_id="lead",
+            project_id="project",
+            case_id="human-case",
+            priority=0,
+            state=TeamTaskState.PENDING,
+            task_kind=TeamTaskKind.SUPPORT,
+            title="Correct a human review finding",
+            description="This correction belongs to the target project's Team.",
+            created_by_actor="system:human-review",
+        )
+        state.human_review_findings["human-finding"] = HumanReviewFinding(
+            id="human-finding",
+            source_human_review_request_id="human-request",
+            text="Release-wide behavior needs correction.",
+            correction_task_id="human-correction",
+        )
+        state.cases["post-release-case"] = TeamCase(
+            id="post-release-case",
+            team_id="team",
+            project_id="project",
+            title="Post-release report",
+            status=TeamCaseStatus.IN_PROGRESS,
+            owner_agent_id="lead",
+            source="post_release_feedback",
+            source_ref="published-release:report-1",
+            metadata={
+                "release_package_id": "published-release",
+                "evidence_refs": ["artifact:report"],
+            },
+            task_ids=["post-release-triage"],
+        )
+        state.tasks["post-release-triage"] = AgentTask(
+            id="post-release-triage",
+            owner_agent_id="lead",
+            project_id="project",
+            case_id="post-release-case",
+            priority=0,
+            state=TeamTaskState.FINISHED,
+            task_kind=TeamTaskKind.SUPPORT,
+            title="Triage post-release report",
+            description="The report was verified and corrected.",
+            created_by_actor="system:post-release-feedback",
+        )
+        return state
+
+    repository.update(_seed)
 
 
 def _lease_lead_for_primary_project(repository: TeamStateRepository) -> None:
@@ -763,6 +1039,1844 @@ def test_project_lead_cancels_task_from_role_bounded_operator_chat(
     assert state.tasks["task"].state == TeamTaskState.CANCELLED
     assert state.tasks["task"].cancellation is not None
     assert state.tasks["task"].cancellation.actor_id == "lead"
+
+
+def test_project_lead_task_replacement_rebinds_active_dependents_atomically(
+    tmp_path: Path,
+) -> None:
+    repository = _seed_agent_with_task(tmp_path)
+    admin = TeamAdminService(repository)
+    admin.create_or_reprioritize_task(
+        task_id="successor",
+        owner_agent_id="worker",
+        project_id="project",
+        priority=1,
+        title="Replacement work",
+        description="This task replaces the predecessor.",
+        created_by_agent_id="lead",
+        expected_revision=repository.read().revision,
+    )
+    admin.create_or_reprioritize_task(
+        task_id="active-dependent",
+        owner_agent_id="lead",
+        project_id="project",
+        priority=1,
+        title="Active downstream work",
+        description="This work must follow the replacement.",
+        created_by_agent_id="lead",
+        dependency_task_ids=["task"],
+        expected_revision=repository.read().revision,
+    )
+    admin.create_or_reprioritize_task(
+        task_id="historical-dependent",
+        owner_agent_id="lead",
+        project_id="project",
+        priority=2,
+        title="Completed downstream history",
+        description="Terminal dependency history must remain immutable.",
+        created_by_agent_id="lead",
+        dependency_task_ids=["task"],
+        expected_revision=repository.read().revision,
+    )
+
+    def _finish_successor_and_historical_dependent(state):
+        state.tasks["successor"].state = TeamTaskState.FINISHED
+        state.tasks["historical-dependent"].state = TeamTaskState.FINISHED
+        return state
+
+    repository.update(_finish_successor_and_historical_dependent)
+    _begin_project_lead_chat_dispatch(
+        repository,
+        body="Replace the predecessor and preserve its downstream graph.",
+    )
+
+    unchanged, stale_plan = TeamTaskUpdateCommandService(
+        repository
+    ).cancel_task_command(
+        session_id="session-lead",
+        task_id="task",
+        reason_code="replaced",
+        reason="Do not widen a stale replacement plan.",
+        successor_task_id="successor",
+        rebind_dependents=True,
+        expected_dependent_task_ids=[],
+        request_id="reject-expanded-task-replacement",
+    )
+
+    assert stale_plan["success"] is False
+    assert stale_plan["errors"][0]["code"] == (
+        "task_replacement_affected_set_mismatch"
+    )
+    assert stale_plan["errors"][0]["correction_context"][
+        "current_dependent_task_ids"
+    ] == ["active-dependent"]
+    assert unchanged.tasks["task"].state == TeamTaskState.PENDING
+    assert unchanged.tasks["task"].cancellation is None
+    assert unchanged.tasks["active-dependent"].dependency_task_ids == ["task"]
+
+    state, replaced = TeamTaskUpdateCommandService(repository).cancel_task_command(
+        session_id="session-lead",
+        task_id="task",
+        reason_code="replaced",
+        reason="The successor now owns the remaining work.",
+        successor_task_id="successor",
+        rebind_dependents=True,
+        expected_dependent_task_ids=["active-dependent"],
+        request_id="replace-task-and-rebind-dependents",
+    )
+
+    assert replaced["success"] is True
+    assert replaced["rebind_dependents"] is True
+    assert replaced["rebound_dependent_task_ids"] == ["active-dependent"]
+    assert replaced["newly_actionable_dependent_task_ids"] == ["active-dependent"]
+    assert replaced["dependency_rebindings"] == [
+        {
+            "dependent_task_id": "active-dependent",
+            "predecessor_task_id": "task",
+            "successor_task_id": "successor",
+            "dependency_task_ids": ["successor"],
+        }
+    ]
+    generation_change = replaced["preparation_generation_changes"]["active-dependent"]
+    assert generation_change["before"] != generation_change["after"]
+    assert state.tasks["active-dependent"].dependency_task_ids == ["successor"]
+    assert state.tasks["historical-dependent"].dependency_task_ids == ["task"]
+    cancellation = state.tasks["task"].cancellation
+    assert cancellation is not None
+    assert cancellation.rebind_dependents is True
+    assert cancellation.rebound_dependent_task_ids == ["active-dependent"]
+    task_ready_events = [
+        event
+        for event in replaced.get("events", [])
+        if event["payload"].get("reason") == "task_ready"
+    ]
+    assert task_ready_events == []
+
+
+def test_task_owner_can_cancel_but_cannot_rewrite_dependents(tmp_path: Path) -> None:
+    repository = _seed_agent_with_task(tmp_path)
+    admin = TeamAdminService(repository)
+    admin.create_or_reprioritize_task(
+        task_id="successor",
+        owner_agent_id="worker",
+        project_id="project",
+        priority=2,
+        title="Replacement work",
+        description="A lead may select this for an audited graph replacement.",
+        created_by_agent_id="lead",
+        expected_revision=repository.read().revision,
+    )
+    admin.create_or_reprioritize_task(
+        task_id="dependent",
+        owner_agent_id="lead",
+        project_id="project",
+        priority=1,
+        title="Dependent work",
+        description="An ordinary predecessor owner cannot rewrite this edge.",
+        created_by_agent_id="lead",
+        dependency_task_ids=["task"],
+        expected_revision=repository.read().revision,
+    )
+    _state, leases = TeamRuntimeService(repository).lease_due_agents(
+        agent_id="worker",
+        now=LEASE_NOW,
+        respect_wake_interval=False,
+    )
+    assert len(leases) == 1
+
+    state, forbidden = TeamTaskUpdateCommandService(repository).cancel_task_command(
+        session_id="session-worker",
+        task_id="task",
+        reason_code="replaced",
+        reason="An ordinary owner must not rewrite another task's dependency graph.",
+        successor_task_id="successor",
+        rebind_dependents=True,
+        expected_dependent_task_ids=["dependent"],
+        request_id="ordinary-owner-cannot-rebind-dependents",
+    )
+
+    assert forbidden["success"] is False
+    assert forbidden["errors"][0]["code"] == "task_replacement_not_permitted"
+    assert state.tasks["task"].state == TeamTaskState.PENDING
+    assert state.tasks["dependent"].dependency_task_ids == ["task"]
+
+    state, cancelled = TeamTaskUpdateCommandService(repository).cancel_task_command(
+        session_id="session-worker",
+        task_id="task",
+        reason_code="obsolete",
+        reason="The owner may still apply a plain audited cancellation.",
+        successor_task_id="successor",
+        request_id="ordinary-owner-plain-cancellation",
+    )
+
+    assert cancelled["success"] is True
+    assert state.tasks["task"].state == TeamTaskState.CANCELLED
+    assert state.tasks["task"].cancellation is not None
+    assert state.tasks["task"].cancellation.rebind_dependents is False
+    assert state.tasks["task"].cancellation.successor_task_id == "successor"
+    assert state.tasks["dependent"].dependency_task_ids == ["task"]
+
+
+def test_project_lead_repairs_plain_cancellation_idempotently_with_frozen_scope(
+    tmp_path: Path,
+) -> None:
+    repository = _seed_agent_with_task(tmp_path)
+    _seed_plain_cancelled_task_with_stranded_dependent(repository)
+    original_cancellation = repository.read().tasks["task"].cancellation
+    assert original_cancellation is not None
+    original_cancellation_payload = original_cancellation.model_dump(mode="json")
+    _begin_project_lead_chat_dispatch(
+        repository,
+        body="Repair only the frozen downstream set from the recorded successor.",
+    )
+    commands = TeamTaskUpdateCommandService(repository)
+
+    unchanged, stale_plan = commands.repair_cancelled_task_dependencies_command(
+        session_id="session-lead",
+        predecessor_task_id="task",
+        successor_task_id="successor",
+        expected_dependent_task_ids=[],
+        reason="The caller must not widen an out-of-date repair plan.",
+        request_id="reject-expanded-cancelled-task-repair",
+    )
+
+    assert stale_plan["success"] is False
+    assert stale_plan["errors"][0]["code"] == (
+        "task_dependency_repair_affected_set_mismatch"
+    )
+    assert stale_plan["errors"][0]["correction_context"][
+        "current_dependent_task_ids"
+    ] == ["dependent"]
+    assert unchanged.tasks["dependent"].dependency_task_ids == ["task"]
+
+    state, repaired = commands.repair_cancelled_task_dependencies_command(
+        session_id="session-lead",
+        predecessor_task_id="task",
+        successor_task_id="successor",
+        expected_dependent_task_ids=["dependent"],
+        reason="Repair the stranded edge without changing cancellation history.",
+        request_id="repair-cancelled-task-dependencies",
+    )
+
+    assert repaired["success"] is True
+    assert repaired["repair_applied"] is True
+    assert repaired["rebound_dependent_task_ids"] == ["dependent"]
+    assert repaired["newly_actionable_dependent_task_ids"] == []
+    assert state.tasks["dependent"].dependency_task_ids == ["successor"]
+    assert state.tasks["task"].cancellation.model_dump(mode="json") == (
+        original_cancellation_payload
+    )
+    audit_evidence_id = repaired["audit_action_evidence_id"]
+    evidence = state.inbox[audit_evidence_id]
+    assert evidence.item_type == TeamInboxItemType.PROGRESS_REPORT
+    assert evidence.state == TeamInboxItemState.HANDLED
+    assert evidence.recipient_agent_id == "lead"
+    assert evidence.payload["kind"] == "task_dependency_graph_repair_audit"
+    assert evidence.payload["actor_kind"] == "agent"
+    assert evidence.payload["actor_id"] == "lead"
+    assert evidence.payload["expected_dependent_task_ids"] == ["dependent"]
+
+    revision_before_repeat = state.revision
+    runtime_before_repeat = state.agent_runtimes["lead"].model_dump(mode="json")
+    outbox_count_before_repeat = len(repository.list_outbox_records())
+    state, repeated = commands.repair_cancelled_task_dependencies_command(
+        session_id="session-lead",
+        predecessor_task_id="task",
+        successor_task_id="successor",
+        expected_dependent_task_ids=["dependent"],
+        reason="Verify the previously recorded repair is still complete.",
+        request_id="repeat-cancelled-task-dependency-repair",
+    )
+
+    assert repeated["success"] is True
+    assert repeated["repair_applied"] is False
+    assert repeated["rebound_dependent_task_ids"] == []
+    assert repeated["audit_evidence_reused"] is True
+    assert repeated["audit_action_evidence_id"] == audit_evidence_id
+    assert state.revision == revision_before_repeat
+    assert state.agent_runtimes["lead"].model_dump(mode="json") == (
+        runtime_before_repeat
+    )
+    assert len(repository.list_outbox_records()) == outbox_count_before_repeat
+    assert sum(
+        item.payload.get("kind") == "task_dependency_graph_repair_audit"
+        for item in state.inbox.values()
+    ) == 1
+    assert state.tasks["task"].cancellation.model_dump(mode="json") == (
+        original_cancellation_payload
+    )
+
+
+def test_ordinary_task_owner_cannot_repair_plain_cancellation_graph(
+    tmp_path: Path,
+) -> None:
+    repository = _seed_agent_with_task(tmp_path)
+    admin = TeamAdminService(repository)
+    admin.create_or_reprioritize_task(
+        task_id="successor",
+        owner_agent_id="worker",
+        project_id="project",
+        priority=2,
+        title="Replacement task",
+        description="The recorded replacement.",
+        created_by_agent_id="lead",
+        state=TeamTaskState.FINISHED,
+        expected_revision=repository.read().revision,
+    )
+    admin.create_or_reprioritize_task(
+        task_id="dependent",
+        owner_agent_id="lead",
+        project_id="project",
+        priority=1,
+        title="Stranded downstream task",
+        description="Only a lead or manager may rewrite this dependency.",
+        created_by_agent_id="lead",
+        dependency_task_ids=["task"],
+        expected_revision=repository.read().revision,
+    )
+    _state, leases = TeamRuntimeService(repository).lease_due_agents(
+        agent_id="worker",
+        now=LEASE_NOW,
+        respect_wake_interval=False,
+    )
+    assert len(leases) == 1
+    assert leases[0]["dispatch"]["task_ids"] == ["task"]
+    admin.cancel_task(
+        task_id="task",
+        reason_code="replaced",
+        reason="Record the successor without rewriting dependents.",
+        actor_id="operator:test",
+        successor_task_id="successor",
+        expected_revision=repository.read().revision,
+    )
+
+    state, forbidden = TeamTaskUpdateCommandService(
+        repository
+    ).repair_cancelled_task_dependencies_command(
+        session_id="session-worker",
+        predecessor_task_id="task",
+        successor_task_id="successor",
+        expected_dependent_task_ids=["dependent"],
+        reason="An ordinary owner must not rewrite the project graph.",
+        request_id="ordinary-owner-cannot-repair-cancelled-task",
+    )
+
+    assert forbidden["success"] is False
+    assert forbidden["errors"][0]["code"] == "task_dependency_repair_not_permitted"
+    assert state.tasks["dependent"].dependency_task_ids == ["task"]
+    assert all(
+        item.payload.get("kind") != "task_dependency_graph_repair_audit"
+        for item in state.inbox.values()
+    )
+
+
+def test_team_manager_can_repair_plain_cancellation_graph(tmp_path: Path) -> None:
+    repository = _seed_agent_with_task(tmp_path)
+    _seed_plain_cancelled_task_with_stranded_dependent(repository)
+    _begin_project_chat_dispatch(
+        repository,
+        agent_id="manager",
+        body="Repair the project's frozen cancelled-task dependency set.",
+    )
+
+    state, repaired = TeamTaskUpdateCommandService(
+        repository
+    ).repair_cancelled_task_dependencies_command(
+        session_id="session-manager",
+        predecessor_task_id="task",
+        successor_task_id="successor",
+        expected_dependent_task_ids=["dependent"],
+        reason="The Team manager authorizes this bounded graph repair.",
+        request_id="team-manager-repairs-cancelled-task",
+    )
+
+    assert repaired["success"] is True
+    assert state.tasks["dependent"].dependency_task_ids == ["successor"]
+    evidence = state.inbox[repaired["audit_action_evidence_id"]]
+    assert evidence.payload["actor_id"] == "manager"
+
+
+def test_cancelled_task_repair_requires_target_project_in_dispatch_scope(
+    tmp_path: Path,
+) -> None:
+    repository = _seed_agent_with_task(tmp_path)
+    _seed_plain_cancelled_task_with_stranded_dependent(repository)
+    _begin_project_lead_chat_dispatch(
+        repository,
+        body="This dispatch belongs only to the unrelated project.",
+    )
+    _seed_secondary_project_for_lead(repository)
+    _replace_active_dispatch_project_scope(
+        repository,
+        agent_id="lead",
+        project_ids=["other-project"],
+    )
+
+    state, rejected = TeamTaskUpdateCommandService(
+        repository
+    ).repair_cancelled_task_dependencies_command(
+        session_id="session-lead",
+        predecessor_task_id="task",
+        successor_task_id="successor",
+        expected_dependent_task_ids=["dependent"],
+        reason="Do not authorize primary-project repair from another project scope.",
+        request_id="repair-outside-dispatch-project",
+    )
+
+    assert rejected["success"] is False
+    assert rejected["errors"][0]["code"] == "dispatch_scope_forbidden"
+    assert state.tasks["dependent"].dependency_task_ids == ["task"]
+
+
+def test_cross_team_manager_cannot_repair_cancelled_task_dependencies(
+    tmp_path: Path,
+) -> None:
+    repository = _seed_agent_with_task(tmp_path)
+    _seed_plain_cancelled_task_with_stranded_dependent(repository)
+    _seed_forged_cross_team_manager_dispatch(repository)
+
+    state, rejected = TeamTaskUpdateCommandService(
+        repository
+    ).repair_cancelled_task_dependencies_command(
+        session_id="session-foreign-manager",
+        predecessor_task_id="task",
+        successor_task_id="successor",
+        expected_dependent_task_ids=["dependent"],
+        reason="A foreign manager must not govern another Team's project graph.",
+        request_id="foreign-manager-cannot-repair-cancelled-task",
+    )
+
+    assert rejected["success"] is False
+    assert rejected["errors"][0]["code"] == (
+        "task_dependency_repair_not_permitted"
+    )
+    assert state.tasks["dependent"].dependency_task_ids == ["task"]
+
+
+@pytest.mark.parametrize(
+    ("cause_kind", "source_kind", "source_id", "expected_error_code"),
+    [
+        (
+            "scheduled",
+            TeamBlockerSourceKind.TASK,
+            "task",
+            "dispatch_scope_forbidden",
+        ),
+        (
+            "scheduled",
+            TeamBlockerSourceKind.DELIVERABLE,
+            "cross-team-deliverable",
+            "dispatch_scope_forbidden",
+        ),
+        (
+            "team_chat",
+            TeamBlockerSourceKind.TASK,
+            "task",
+            "dispatch_scope_forbidden",
+        ),
+        (
+            "team_chat",
+            TeamBlockerSourceKind.DELIVERABLE,
+            "cross-team-deliverable",
+            "dispatch_scope_forbidden",
+        ),
+        (
+            "team_chat",
+            TeamBlockerSourceKind.RELEASE_PACKAGE,
+            "cross-team-release",
+            "blocker_source_not_permitted",
+        ),
+    ],
+)
+def test_cross_team_manager_cannot_report_project_scoped_diagnostic_blocker(
+    tmp_path: Path,
+    cause_kind: str,
+    source_kind: TeamBlockerSourceKind,
+    source_id: str,
+    expected_error_code: str,
+) -> None:
+    repository = _seed_agent_with_task(tmp_path)
+    if source_kind == TeamBlockerSourceKind.DELIVERABLE:
+
+        def _seed_deliverable(state):
+            state.deliverables[source_id] = Deliverable(
+                id=source_id,
+                task_id="task",
+                producer_agent_id="worker",
+                summary="A handoff owned by another Team's project.",
+            )
+            state.tasks["task"].deliverable_ids = [source_id]
+            return state
+
+        repository.update(_seed_deliverable)
+    elif source_kind == TeamBlockerSourceKind.RELEASE_PACKAGE:
+
+        def _seed_release(state):
+            state.release_packages[source_id] = ReleasePackage(
+                id=source_id,
+                project_id="project",
+                release_branch="team/team/releases/cross-team-release",
+                candidate_commit_sha="a" * 40,
+                candidate_tree_hash="b" * 40,
+            )
+            return state
+
+        repository.update(_seed_release)
+    _seed_forged_cross_team_manager_dispatch(
+        repository,
+        cause_kind=cause_kind,
+    )
+
+    state, rejected = TeamBlockerCommandService(repository).report_blocker_command(
+        session_id="session-foreign-manager",
+        source_kind=source_kind,
+        source_id=source_id,
+        summary="A foreign manager must not gain project diagnostic authority.",
+        request_id=(
+            f"foreign-manager-cannot-report-{cause_kind}-{source_kind.value}-blocker"
+        ),
+    )
+
+    assert rejected["success"] is False
+    assert rejected["errors"][0]["code"] == expected_error_code
+    assert state.blockers == {}
+    assert state.tasks["task"].state == TeamTaskState.PENDING
+    if source_kind == TeamBlockerSourceKind.DELIVERABLE:
+        assert state.deliverables[source_id].state == TeamRecordState.PENDING
+
+
+def test_forged_cross_team_manager_chat_cannot_edit_task_graph(
+    tmp_path: Path,
+) -> None:
+    repository = _seed_agent_with_task(tmp_path)
+    TeamAdminService(repository).create_or_reprioritize_task(
+        task_id="dependency",
+        owner_agent_id="worker",
+        project_id="project",
+        priority=2,
+        title="Dependency",
+        description="This edge belongs to the target project's Team.",
+        created_by_agent_id="lead",
+        expected_revision=repository.read().revision,
+    )
+    _seed_forged_cross_team_manager_dispatch(
+        repository,
+        cause_kind="team_chat",
+    )
+
+    state, rejected = TeamTaskUpdateCommandService(repository).update_task_command(
+        session_id="session-foreign-manager",
+        task_id="task",
+        dependency_task_ids=["dependency"],
+        request_id="foreign-manager-chat-cannot-edit-task-graph",
+    )
+
+    assert rejected["success"] is False
+    assert rejected["errors"][0]["code"] == "task_graph_not_permitted"
+    assert state.tasks["task"].dependency_task_ids == []
+
+
+def test_legacy_action_forged_cross_team_manager_chat_cannot_edit_task_graph(
+    tmp_path: Path,
+) -> None:
+    repository = _seed_agent_with_task(tmp_path)
+    TeamAdminService(repository).create_or_reprioritize_task(
+        task_id="legacy-dependency",
+        owner_agent_id="worker",
+        project_id="project",
+        priority=2,
+        title="Legacy dependency",
+        description="This edge belongs to the target project's Team.",
+        created_by_agent_id="lead",
+        expected_revision=repository.read().revision,
+    )
+    _seed_forged_cross_team_manager_dispatch(
+        repository,
+        cause_kind="team_chat",
+    )
+    dispatch_id = repository.read().agent_runtimes[
+        "foreign-manager"
+    ].active_dispatch_id
+    assert dispatch_id is not None
+
+    state, rejected = TeamAgentActionService(repository).apply_agent_action(
+        session_id="session-foreign-manager",
+        dispatch_id=dispatch_id,
+        action={
+            "agent_id": "foreign-manager",
+            "task_updates": [
+                {
+                    "task_id": "task",
+                    "dependency_task_ids": ["legacy-dependency"],
+                }
+            ],
+        },
+    )
+
+    assert rejected["success"] is False
+    assert any("not permitted to edit the task graph" in error for error in rejected["errors"])
+    assert state.tasks["task"].dependency_task_ids == []
+
+
+def test_legacy_action_operator_escalation_rejects_cross_team_task_lineage(
+    tmp_path: Path,
+) -> None:
+    repository = _seed_agent_with_task(tmp_path)
+    _seed_forged_cross_team_manager_dispatch(
+        repository,
+        cause_kind="team_chat",
+    )
+    admin = TeamAdminService(repository)
+    for suffix in ("a", "b"):
+        admin.create_project(
+            project_id=f"foreign-project-{suffix}",
+            team_id="foreign-team",
+            name=f"Foreign Project {suffix.upper()}",
+            lead_agent_id=f"foreign-lead-{suffix}",
+            lead_session_id=f"session-foreign-lead-{suffix}",
+            goals=[ProjectGoal(id=f"foreign-goal-{suffix}", description="Ship work")],
+            expected_revision=repository.read().revision,
+        )
+    admin.create_or_reprioritize_task(
+        task_id="foreign-task",
+        owner_agent_id="foreign-lead-a",
+        project_id="foreign-project-a",
+        priority=1,
+        title="Foreign Team task",
+        description="This task belongs to foreign project A.",
+        created_by_agent_id="foreign-lead-a",
+        expected_revision=repository.read().revision,
+    )
+
+    def _configure_operator_target(state):
+        state.teams["foreign-team"].operator_communication_target_id = (
+            "foreign-team-operators"
+        )
+        return state
+
+    repository.update(_configure_operator_target)
+    dispatch_id = repository.read().agent_runtimes[
+        "foreign-manager"
+    ].active_dispatch_id
+    assert dispatch_id is not None
+
+    state, rejected = TeamAgentActionService(repository).apply_agent_action(
+        session_id="session-foreign-manager",
+        dispatch_id=dispatch_id,
+        action={
+            "agent_id": "foreign-manager",
+            "operator_escalations": [
+                {
+                    "title": "Foreign task escalation",
+                    "message": "This task must remain within its owning Team.",
+                    "task_id": "task",
+                },
+                {
+                    "title": "Missing task escalation",
+                    "message": "A missing task cannot provide escalation lineage.",
+                    "task_id": "missing-task",
+                },
+                {
+                    "title": "Mismatched project escalation",
+                    "message": "The supplied task and project must agree.",
+                    "project_id": "foreign-project-b",
+                    "task_id": "foreign-task",
+                },
+            ],
+        },
+    )
+
+    assert rejected["success"] is False
+    assert any("outside team foreign-team" in error for error in rejected["errors"])
+    assert any("missing-task does not exist" in error for error in rejected["errors"])
+    assert any(
+        "belongs to project foreign-project-a, not project foreign-project-b" in error
+        for error in rejected["errors"]
+    )
+    assert rejected["operator_escalation_event_ids"] == []
+    assert state.inbox == {}
+
+
+def test_forged_cross_team_manager_chat_cannot_request_deliverable_review(
+    tmp_path: Path,
+) -> None:
+    repository = _seed_agent_with_task(tmp_path)
+
+    def _seed_deliverable(state):
+        state.deliverables["cross-team-review-deliverable"] = Deliverable(
+            id="cross-team-review-deliverable",
+            task_id="task",
+            producer_agent_id="worker",
+            summary="A deliverable governed by the target project's Team.",
+        )
+        state.tasks["task"].deliverable_ids = ["cross-team-review-deliverable"]
+        return state
+
+    repository.update(_seed_deliverable)
+    _seed_forged_cross_team_manager_dispatch(
+        repository,
+        cause_kind="team_chat",
+    )
+
+    state, rejected = TeamReviewCommandService(repository).request_review_command(
+        session_id="session-foreign-manager",
+        deliverable_id="cross-team-review-deliverable",
+        reviewer_agent_id="foreign-manager",
+        request_id="foreign-manager-chat-cannot-request-review",
+    )
+
+    assert rejected["success"] is False
+    assert rejected["errors"][0]["code"] == "review_request_failed"
+    assert "not permitted" in rejected["errors"][0]["message"]
+    assert state.review_requests == {}
+    assert state.deliverables["cross-team-review-deliverable"].review_request_ids == []
+
+
+def test_forged_cross_team_manager_chat_cannot_govern_project_cases(
+    tmp_path: Path,
+) -> None:
+    repository = _seed_agent_with_task(tmp_path)
+    _seed_cross_team_case_command_targets(repository)
+    _seed_forged_cross_team_manager_dispatch(
+        repository,
+        cause_kind="team_chat",
+    )
+    service = TeamCaseCommandService(repository)
+
+    state, proposal = service.propose_human_finding_resolution_command(
+        session_id="session-foreign-manager",
+        finding_id="human-finding",
+        proposed_resolution="A foreign Team must not set this resolution.",
+        evidence_refs=["test:foreign-manager"],
+        proposed_by_deliverable_ids=[],
+        request_id="foreign-manager-chat-cannot-propose-human-resolution",
+    )
+    assert proposal["success"] is False
+    assert proposal["errors"][0]["code"] == (
+        "human_finding_resolution_not_permitted"
+    )
+
+    state, routing = service.route_human_finding_correction_command(
+        session_id="session-foreign-manager",
+        finding_id="human-finding",
+        owner_agent_id="worker",
+        request_id="foreign-manager-chat-cannot-route-human-correction",
+    )
+    assert routing["success"] is False
+    assert routing["errors"][0]["code"] == "human_finding_route_not_permitted"
+
+    state, closure = service.close_post_release_feedback_case_command(
+        session_id="session-foreign-manager",
+        case_id="post-release-case",
+        reason="A foreign Team must not close this case.",
+        evidence_refs=["test:foreign-manager"],
+        request_id="foreign-manager-chat-cannot-close-post-release-case",
+    )
+    assert closure["success"] is False
+    assert closure["errors"][0]["code"] == (
+        "post_release_case_close_not_permitted"
+    )
+
+    assert state.human_review_findings["human-finding"].proposed_resolution is None
+    assert state.tasks["human-correction"].owner_agent_id == "lead"
+    assert state.cases["post-release-case"].status == TeamCaseStatus.IN_PROGRESS
+
+
+def test_cancelled_task_repair_requires_recorded_successor(tmp_path: Path) -> None:
+    repository = _seed_agent_with_task(tmp_path)
+    _seed_plain_cancelled_task_with_stranded_dependent(repository)
+    admin = TeamAdminService(repository)
+    admin.create_or_reprioritize_task(
+        task_id="other-successor",
+        owner_agent_id="worker",
+        project_id="project",
+        priority=3,
+        title="Unrecorded alternative",
+        description="This task is not the cancellation's recorded successor.",
+        created_by_agent_id="lead",
+        state=TeamTaskState.FINISHED,
+        expected_revision=repository.read().revision,
+    )
+    original_cancellation = repository.read().tasks["task"].cancellation.model_dump(
+        mode="json"
+    )
+    _begin_project_lead_chat_dispatch(
+        repository,
+        body="Do not substitute a successor absent from the cancellation record.",
+    )
+
+    state, rejected = TeamTaskUpdateCommandService(
+        repository
+    ).repair_cancelled_task_dependencies_command(
+        session_id="session-lead",
+        predecessor_task_id="task",
+        successor_task_id="other-successor",
+        expected_dependent_task_ids=["dependent"],
+        reason="Attempt an invalid successor substitution.",
+        request_id="reject-unrecorded-repair-successor",
+    )
+
+    assert rejected["success"] is False
+    assert rejected["errors"][0]["code"] == (
+        "task_dependency_repair_successor_mismatch"
+    )
+    assert state.tasks["dependent"].dependency_task_ids == ["task"]
+    assert state.tasks["task"].cancellation.model_dump(mode="json") == (
+        original_cancellation
+    )
+
+
+@pytest.mark.parametrize(
+    "dependency_state",
+    [TeamTaskState.CANCELLED, TeamTaskState.REJECTED],
+)
+def test_agent_task_creation_rejects_dead_end_dependency(
+    tmp_path: Path,
+    dependency_state: TeamTaskState,
+) -> None:
+    repository = _seed_agent_with_task(tmp_path)
+    if dependency_state == TeamTaskState.CANCELLED:
+        _seed_plain_cancelled_task_with_stranded_dependent(repository)
+    else:
+        def _reject_dependency(state):
+            state.tasks["task"].state = TeamTaskState.REJECTED
+            return state
+
+        repository.update(_reject_dependency)
+    _begin_project_lead_chat_dispatch(
+        repository,
+        body="Create follow-up work only against live dependency frontiers.",
+    )
+
+    state, rejected = TeamTaskCreationCommandService(repository).create_task_command(
+        session_id="session-lead",
+        task_id="new-stale-dependent",
+        owner_agent_id="lead",
+        project_id="project",
+        title="Invalid newly stranded task",
+        description="A new task cannot depend on an existing dead-end predecessor.",
+        dependency_task_ids=["task"],
+        request_id=f"reject-new-{dependency_state.value}-dependency",
+    )
+
+    assert rejected["success"] is False
+    assert rejected["errors"][0]["code"] == "task_graph_invalid"
+    assert (
+        f"because it is {dependency_state.value}"
+        in rejected["errors"][0]["message"]
+    )
+    assert "new-stale-dependent" not in state.tasks
+
+
+@pytest.mark.parametrize(
+    ("locked_field", "integration_boundary"),
+    [
+        ("dependency_task_ids", False),
+        ("deliverable_contract", True),
+    ],
+)
+def test_task_replacement_respects_dependent_mutation_policy(
+    tmp_path: Path,
+    locked_field: str,
+    integration_boundary: bool,
+) -> None:
+    repository = _seed_agent_with_task(tmp_path)
+    admin = TeamAdminService(repository)
+    admin.create_or_reprioritize_task(
+        task_id="successor",
+        owner_agent_id="worker",
+        project_id="project",
+        priority=2,
+        title="Replacement work",
+        description="This successor must not override workflow topology policy.",
+        created_by_agent_id="lead",
+        expected_revision=repository.read().revision,
+    )
+    admin.create_or_reprioritize_task(
+        task_id="managed-dependent",
+        owner_agent_id="lead",
+        project_id="project",
+        priority=1,
+        title="Workflow-managed dependent",
+        description="Its workflow-owned topology is immutable.",
+        created_by_agent_id="lead",
+        dependency_task_ids=["task"],
+        integration_boundary=integration_boundary,
+        deliverable_contract=(
+            {"required_contribution_task_ids": ["task"]}
+            if integration_boundary
+            else None
+        ),
+        expected_revision=repository.read().revision,
+    )
+
+    def _lock_dependent(state):
+        state.tasks["managed-dependent"].mutation_policy = TaskMutationPolicy(
+            policy_id="workflow-owned-topology-v1",
+            reason="The workflow owns this task topology.",
+            locked_fields=[locked_field],
+        )
+        return state
+
+    repository.update(_lock_dependent)
+    _begin_project_lead_chat_dispatch(
+        repository,
+        body="Replace only if workflow-owned dependent topology permits it.",
+    )
+
+    state, rejected = TeamTaskUpdateCommandService(repository).cancel_task_command(
+        session_id="session-lead",
+        task_id="task",
+        reason_code="replaced",
+        reason="The mutation policy must remain authoritative.",
+        successor_task_id="successor",
+        rebind_dependents=True,
+        expected_dependent_task_ids=["managed-dependent"],
+        request_id=f"replacement-respects-{locked_field}-lock",
+    )
+
+    assert rejected["success"] is False
+    assert rejected["errors"][0]["code"] == "task_replacement_graph_invalid"
+    assert locked_field in rejected["errors"][0]["message"]
+    assert state.tasks["task"].state == TeamTaskState.PENDING
+    assert state.tasks["task"].cancellation is None
+    assert state.tasks["managed-dependent"].dependency_task_ids == ["task"]
+    if integration_boundary:
+        assert state.tasks[
+            "managed-dependent"
+        ].deliverable_contract.required_contribution_task_ids == ["task"]
+
+
+def test_task_replacement_rearms_stale_integration_preparation_without_rewriting_provenance(
+    tmp_path: Path,
+) -> None:
+    repository = _seed_agent_with_task(tmp_path)
+    admin = TeamAdminService(repository)
+    admin.create_or_reprioritize_task(
+        task_id="successor",
+        owner_agent_id="worker",
+        project_id="project",
+        priority=2,
+        title="Replacement contribution",
+        description="This contribution replaces the predecessor.",
+        created_by_agent_id="lead",
+        expected_revision=repository.read().revision,
+    )
+    admin.create_or_reprioritize_task(
+        task_id="integration",
+        owner_agent_id="lead",
+        project_id="project",
+        priority=1,
+        title="Integrate contributions",
+        description="Prepare the retained contribution frontier.",
+        created_by_agent_id="lead",
+        dependency_task_ids=["task"],
+        integration_boundary=True,
+        deliverable_contract={
+            "require_git_provenance": True,
+            "required_contribution_task_ids": ["task"],
+        },
+        expected_revision=repository.read().revision,
+    )
+    original_source = DependencyGitSource(
+        dependency_task_id="task",
+        deliverable_id="predecessor-deliverable",
+        branch="agents/session-worker/tasks/task",
+        commit_sha="a" * 40,
+        relationship_kind="required_contribution",
+        pinned_ref="refs/evander/team-reviews/review-predecessor",
+    )
+    original_manifest = DependencyCompositionManifest(
+        target_task_id="integration",
+        managed_repo_id=MANAGED_REPO_ID,
+        directory_path="root",
+        base_branch="main",
+        base_commit_sha="b" * 40,
+        base_tree_hash="c" * 40,
+        dependency_git_sources=[original_source],
+        source_fingerprint="source-fingerprint",
+        frontier_commit_shas=["a" * 40],
+        composed_commit_sha="d" * 40,
+        composed_tree_hash="e" * 40,
+    )
+
+    def _seed_prepared_integration(state):
+        # Model both contributions as direct children rather than explicit
+        # dependencies; replacement must move the contract frontier even though
+        # there is no dependency-list edge to rewrite.
+        state.tasks["integration"].dependency_task_ids = []
+        state.tasks["task"].parent_task_id = "integration"
+        state.tasks["successor"].parent_task_id = "integration"
+        state.git_work_contexts["integration-context"] = GitWorkContext(
+            id="integration-context",
+            agent_id="lead",
+            task_id="integration",
+            agent_branch="agents/session-lead/tasks/integration",
+            base_branch="main",
+            base_commit="d" * 40,
+            worktree_path="/worktrees/integration-context",
+            dependency_git_sources=[original_source],
+            dependency_composition_manifest=original_manifest,
+        )
+        return state
+
+    repository.update(_seed_prepared_integration)
+    prepared = repository.read().git_work_contexts["integration-context"]
+    immutable_sources = [
+        source.model_dump(mode="json") for source in prepared.dependency_git_sources
+    ]
+    immutable_manifest = prepared.dependency_composition_manifest.model_dump(mode="json")
+    _begin_project_lead_chat_dispatch(
+        repository,
+        body="Replace the predecessor contribution and re-arm integration.",
+    )
+
+    state, replaced = TeamTaskUpdateCommandService(repository).cancel_task_command(
+        session_id="session-lead",
+        task_id="task",
+        reason_code="replaced",
+        reason="The successor owns this contribution frontier.",
+        successor_task_id="successor",
+        rebind_dependents=True,
+        expected_dependent_task_ids=["integration"],
+        request_id="replace-stale-integration-preparation",
+    )
+
+    assert replaced["success"] is True
+    assert replaced["rebound_dependent_task_ids"] == ["integration"]
+    assert replaced["affected_integration_boundary_task_ids"] == ["integration"]
+    assert replaced["invalidated_git_work_context_ids"] == ["integration-context"]
+    assert replaced["dependency_rebindings"] == []
+    assert replaced["required_contribution_rebindings"] == [
+        {
+            "integration_task_id": "integration",
+            "predecessor_task_id": "task",
+            "successor_task_id": "successor",
+            "required_contribution_task_ids": ["successor"],
+        }
+    ]
+    integration = state.tasks["integration"]
+    assert integration.dependency_task_ids == []
+    assert integration.deliverable_contract == TaskDeliverableContract(
+        require_git_provenance=True,
+        required_contribution_task_ids=["successor"],
+    )
+    cancellation = state.tasks["task"].cancellation
+    assert cancellation is not None
+    assert cancellation.rebound_integration_boundary_task_ids == ["integration"]
+    assert cancellation.invalidated_git_work_context_ids == ["integration-context"]
+    invalidated = state.git_work_contexts["integration-context"]
+    assert invalidated.state == GitWorkContextState.ABANDONED
+    assert [source.model_dump(mode="json") for source in invalidated.dependency_git_sources] == (
+        immutable_sources
+    )
+    assert invalidated.dependency_composition_manifest is not None
+    assert invalidated.dependency_composition_manifest.model_dump(mode="json") == immutable_manifest
+    [recovery_inbox_id] = replaced["created_preparation_recovery_inbox_item_ids"]
+    recovery = state.inbox[recovery_inbox_id]
+    assert recovery.recipient_agent_id == "lead"
+    assert recovery.payload["kind"] == "task_replacement_preparation_recovery"
+    assert recovery.payload["invalidated_git_work_context_ids"] == ["integration-context"]
+    assert recovery.payload["required_action"] == ("reprepare_from_current_contribution_frontier")
+    assert (
+        recovery.payload["preparation_generation_before"]
+        != recovery.payload["preparation_generation_after"]
+    )
+
+
+def test_task_replacement_does_not_rewrite_submitted_integration_frontier(
+    tmp_path: Path,
+) -> None:
+    repository = _seed_agent_with_task(tmp_path)
+    admin = TeamAdminService(repository)
+    admin.create_or_reprioritize_task(
+        task_id="successor",
+        owner_agent_id="worker",
+        project_id="project",
+        priority=2,
+        title="Replacement contribution",
+        description="This contribution arrived after integration submission.",
+        created_by_agent_id="lead",
+        expected_revision=repository.read().revision,
+    )
+    admin.create_or_reprioritize_task(
+        task_id="integration",
+        owner_agent_id="lead",
+        project_id="project",
+        priority=1,
+        title="Submitted integration",
+        description="Its submitted frontier is immutable.",
+        created_by_agent_id="lead",
+        dependency_task_ids=["task"],
+        integration_boundary=True,
+        deliverable_contract={"required_contribution_task_ids": ["task"]},
+        expected_revision=repository.read().revision,
+    )
+
+    def _seed_submission(state):
+        state.deliverables["integration-deliverable"] = Deliverable(
+            id="integration-deliverable",
+            task_id="integration",
+            producer_agent_id="lead",
+            summary="Submitted from the predecessor frontier.",
+        )
+        state.tasks["integration"].deliverable_ids = ["integration-deliverable"]
+        state.tasks["integration"].state = TeamTaskState.WAITING_FOR_REVIEW
+        state.git_work_contexts["integration-context"] = GitWorkContext(
+            id="integration-context",
+            agent_id="lead",
+            task_id="integration",
+            agent_branch="agents/session-lead/tasks/integration",
+            base_branch="main",
+            base_commit="a" * 40,
+        )
+        return state
+
+    repository.update(_seed_submission)
+    _begin_project_lead_chat_dispatch(
+        repository,
+        body="Attempt the replacement without rewriting submitted provenance.",
+    )
+
+    state, rejected = TeamTaskUpdateCommandService(repository).cancel_task_command(
+        session_id="session-lead",
+        task_id="task",
+        reason_code="replaced",
+        reason="A submitted integration must not have its frontier rewritten.",
+        successor_task_id="successor",
+        rebind_dependents=True,
+        expected_dependent_task_ids=["integration"],
+        request_id="reject-submitted-integration-frontier-rewrite",
+    )
+
+    assert rejected["success"] is False
+    assert rejected["errors"][0]["code"] == "task_replacement_graph_invalid"
+    assert "after it submitted a deliverable" in rejected["errors"][0]["message"]
+    assert state.tasks["task"].state == TeamTaskState.PENDING
+    assert state.tasks["task"].cancellation is None
+    assert state.tasks["integration"].dependency_task_ids == ["task"]
+    assert state.tasks[
+        "integration"
+    ].deliverable_contract.required_contribution_task_ids == ["task"]
+    assert state.git_work_contexts["integration-context"].state == GitWorkContextState.ACTIVE
+
+
+def _seed_submitted_integration_boundary_recovery(
+    repository: TeamStateRepository,
+    *,
+    require_git_provenance: bool = True,
+) -> None:
+    admin = TeamAdminService(repository)
+    if not require_git_provenance:
+
+        def _remove_project_git(state):
+            state.projects["project"].git = None
+            return state
+
+        repository.update(_remove_project_git)
+    admin.create_or_reprioritize_task(
+        task_id="successor",
+        owner_agent_id="worker",
+        project_id="project",
+        priority=2,
+        title="Accepted successor contribution",
+        description="This task is the cancelled contribution's recorded successor.",
+        created_by_agent_id="lead",
+        state=TeamTaskState.FINISHED,
+        expected_revision=repository.read().revision,
+    )
+    admin.create_or_reprioritize_task(
+        task_id="integration",
+        owner_agent_id="lead",
+        project_id="project",
+        priority=1,
+        title="Submitted integration boundary",
+        description="Rebuild this boundary without rewriting its submitted history.",
+        created_by_agent_id="lead",
+        dependency_task_ids=["task"],
+        integration_boundary=True,
+        deliverable_contract={
+            "require_git_provenance": require_git_provenance,
+            "required_contribution_task_ids": ["task"],
+        },
+        expected_revision=repository.read().revision,
+    )
+
+    def _submit_integration(state):
+        review_snapshot = (
+            ReviewRepositorySnapshot(
+                managed_repo_id=MANAGED_REPO_ID,
+                directory_path="root",
+                commit_sha="d" * 40,
+                pinned_ref="refs/evander/team-reviews/integration-review",
+                source_kind="deliverable_candidate",
+                source_ref="agents/session-lead/tasks/integration",
+            )
+            if require_git_provenance
+            else None
+        )
+        state.deliverables["integration-deliverable"] = Deliverable(
+            id="integration-deliverable",
+            task_id="integration",
+            producer_agent_id="lead",
+            summary="Submitted from the original contribution frontier.",
+            review_request_ids=["integration-review"],
+        )
+        state.review_requests["integration-review"] = ReviewRequest(
+            id="integration-review",
+            deliverable_id="integration-deliverable",
+            reviewer_agent_id="worker",
+            requested_by_agent_id="lead",
+            repository_snapshot=review_snapshot,
+        )
+        integration = state.tasks["integration"]
+        integration.deliverable_ids = ["integration-deliverable"]
+        integration.state = TeamTaskState.WAITING_FOR_REVIEW
+        if require_git_provenance:
+            state.git_work_contexts["integration-context"] = GitWorkContext(
+                id="integration-context",
+                agent_id="lead",
+                task_id="integration",
+                agent_branch="agents/session-lead/tasks/integration",
+                base_branch="main",
+                base_commit="b" * 40,
+                commit_sha="d" * 40,
+                state=GitWorkContextState.SUBMITTED,
+            )
+        return state
+
+    repository.update(_submit_integration)
+    admin.cancel_task(
+        task_id="task",
+        reason_code="replaced",
+        reason="The successor owns this contribution going forward.",
+        actor_id="operator:test",
+        successor_task_id="successor",
+        expected_revision=repository.read().revision,
+    )
+
+
+def _recover_submitted_integration_as_lead(
+    repository: TeamStateRepository,
+    *,
+    replacement_task_id: str = "integration-recovery",
+    expected_dependency_task_ids: list[str] | None = None,
+    expected_required_contribution_task_ids: list[str] | None = None,
+    git_base_commit_sha: str | None = "f" * 40,
+    git_base_branch: str | None = "main",
+    reason: str = (
+        "Rebuild the submitted boundary from its frozen successor frontier."
+    ),
+    request_id: str = "recover-submitted-integration",
+) -> tuple[object, dict[str, object]]:
+    return TeamTaskUpdateCommandService(
+        repository
+    ).recover_submitted_integration_boundary_command(
+        session_id="session-lead",
+        predecessor_task_id="task",
+        successor_task_id="successor",
+        integration_task_id="integration",
+        replacement_task_id=replacement_task_id,
+        expected_dependency_task_ids=(
+            ["task"]
+            if expected_dependency_task_ids is None
+            else expected_dependency_task_ids
+        ),
+        expected_required_contribution_task_ids=(
+            ["task"]
+            if expected_required_contribution_task_ids is None
+            else expected_required_contribution_task_ids
+        ),
+        reason=reason,
+        git_base_commit_sha=git_base_commit_sha,
+        git_base_branch=git_base_branch,
+        request_id=request_id,
+    )
+
+
+def test_ordinary_agent_cannot_recover_submitted_integration_boundary(
+    tmp_path: Path,
+) -> None:
+    repository = _seed_agent_with_task(tmp_path)
+    _seed_submitted_integration_boundary_recovery(repository)
+    _begin_project_chat_dispatch(
+        repository,
+        agent_id="worker",
+        body="Attempt the project-governed submitted-boundary recovery.",
+    )
+
+    state, rejected = TeamTaskUpdateCommandService(
+        repository
+    ).recover_submitted_integration_boundary_command(
+        session_id="session-worker",
+        predecessor_task_id="task",
+        successor_task_id="successor",
+        integration_task_id="integration",
+        replacement_task_id="integration-recovery",
+        expected_dependency_task_ids=["task"],
+        expected_required_contribution_task_ids=["task"],
+        reason="An ordinary agent must not replace a submitted integration boundary.",
+        git_base_commit_sha="f" * 40,
+        git_base_branch="main",
+        request_id="ordinary-agent-submitted-integration-recovery",
+    )
+
+    assert rejected["success"] is False
+    assert rejected["errors"][0]["code"] == (
+        "submitted_integration_recovery_not_permitted"
+    )
+    assert "integration-recovery" not in state.tasks
+
+
+def test_submitted_integration_recovery_requires_target_project_in_dispatch_scope(
+    tmp_path: Path,
+) -> None:
+    repository = _seed_agent_with_task(tmp_path)
+    _seed_submitted_integration_boundary_recovery(repository)
+    _begin_project_lead_chat_dispatch(
+        repository,
+        body="This dispatch belongs only to the unrelated project.",
+    )
+    _seed_secondary_project_for_lead(repository)
+    _replace_active_dispatch_project_scope(
+        repository,
+        agent_id="lead",
+        project_ids=["other-project"],
+    )
+
+    state, rejected = _recover_submitted_integration_as_lead(
+        repository,
+        request_id="recover-boundary-outside-dispatch-project",
+    )
+
+    assert rejected["success"] is False
+    assert rejected["errors"][0]["code"] == "dispatch_scope_forbidden"
+    assert "integration-recovery" not in state.tasks
+
+
+def test_cross_team_manager_cannot_recover_submitted_integration_boundary(
+    tmp_path: Path,
+) -> None:
+    repository = _seed_agent_with_task(tmp_path)
+    _seed_submitted_integration_boundary_recovery(repository)
+    _seed_forged_cross_team_manager_dispatch(repository)
+
+    state, rejected = TeamTaskUpdateCommandService(
+        repository
+    ).recover_submitted_integration_boundary_command(
+        session_id="session-foreign-manager",
+        predecessor_task_id="task",
+        successor_task_id="successor",
+        integration_task_id="integration",
+        replacement_task_id="integration-recovery",
+        expected_dependency_task_ids=["task"],
+        expected_required_contribution_task_ids=["task"],
+        reason="A foreign manager must not govern another Team's recovery boundary.",
+        git_base_commit_sha="f" * 40,
+        git_base_branch="main",
+        request_id="foreign-manager-cannot-recover-integration",
+    )
+
+    assert rejected["success"] is False
+    assert rejected["errors"][0]["code"] == (
+        "submitted_integration_recovery_not_permitted"
+    )
+    assert "integration-recovery" not in state.tasks
+
+
+def test_submitted_integration_recovery_rejects_late_high_priority_instruction(
+    tmp_path: Path,
+) -> None:
+    repository = _seed_agent_with_task(tmp_path)
+    _seed_submitted_integration_boundary_recovery(repository)
+    _begin_project_lead_chat_dispatch(
+        repository,
+        body="Recover the submitted boundary from this frozen dispatch snapshot.",
+    )
+    wake_at = datetime(2098, 12, 31, 23, 58, tzinfo=UTC)
+
+    def _add_late_instruction(state):
+        state.agent_runtimes["lead"].last_wake_at = wake_at
+        created_at = wake_at + timedelta(seconds=1)
+        state.inbox["late-recovery-instruction"] = AgentInboxItem(
+            id="late-recovery-instruction",
+            recipient_agent_id="lead",
+            sender_agent_id="manager",
+            task_id="integration",
+            item_type=TeamInboxItemType.OPERATOR_DIRECTIVE,
+            priority=TeamInboxPriority.HIGH,
+            payload={"message": "Use the revised recovery frontier."},
+            created_at=created_at,
+            updated_at=created_at,
+        )
+        return state
+
+    repository.update(_add_late_instruction)
+    before = repository.read()
+
+    state, rejected = _recover_submitted_integration_as_lead(
+        repository,
+        request_id="reject-stale-submitted-integration-recovery",
+    )
+
+    assert rejected["success"] is False
+    assert rejected["errors"][0]["code"] == "stale_dispatch_context"
+    assert "integration-recovery" not in state.tasks
+    assert state.tasks["integration"].model_dump(mode="json") == before.tasks[
+        "integration"
+    ].model_dump(mode="json")
+    assert all(
+        item.payload.get("kind")
+        != "submitted_integration_boundary_recovery_audit"
+        for item in state.inbox.values()
+    )
+
+
+@pytest.mark.parametrize(
+    ("git_base_commit_sha", "expected_error_code"),
+    [
+        (None, "submitted_integration_recovery_git_pin_required"),
+        ("f" * 12, "submitted_integration_recovery_git_pin_required"),
+    ],
+)
+def test_git_submitted_integration_recovery_requires_full_pinned_base(
+    tmp_path: Path,
+    git_base_commit_sha: str | None,
+    expected_error_code: str,
+) -> None:
+    repository = _seed_agent_with_task(tmp_path)
+    _seed_submitted_integration_boundary_recovery(repository)
+    _begin_project_lead_chat_dispatch(
+        repository,
+        body="Recover only from a full immutable Git base object ID.",
+    )
+
+    state, rejected = _recover_submitted_integration_as_lead(
+        repository,
+        git_base_commit_sha=git_base_commit_sha,
+        request_id=f"reject-incomplete-recovery-pin-{git_base_commit_sha}",
+    )
+
+    assert rejected["success"] is False
+    assert rejected["errors"][0]["code"] == expected_error_code
+    assert "integration-recovery" not in state.tasks
+
+
+def test_project_lead_recovers_submitted_integration_and_replays_without_mutating_history(
+    tmp_path: Path,
+) -> None:
+    repository = _seed_agent_with_task(tmp_path)
+    _seed_submitted_integration_boundary_recovery(repository)
+    before = repository.read()
+    old_deliverable = before.deliverables["integration-deliverable"].model_dump(
+        mode="json"
+    )
+    old_review = before.review_requests["integration-review"].model_dump(mode="json")
+    old_context = before.git_work_contexts["integration-context"].model_dump(
+        mode="json"
+    )
+    _begin_project_lead_chat_dispatch(
+        repository,
+        body="Create one pinned replacement while retaining submitted provenance.",
+    )
+
+    state, recovered = _recover_submitted_integration_as_lead(repository)
+
+    assert recovered["success"] is True
+    assert recovered["recovery_applied"] is True
+    assert recovered["replayed"] is False
+    assert recovered["old_integration_task_id"] == "integration"
+    assert recovered["replacement_integration_task_id"] == "integration-recovery"
+    assert recovered["created_task_ids"] == ["integration-recovery"]
+    replacement = state.tasks["integration-recovery"]
+    assert replacement.originating_task_id == "integration"
+    assert replacement.integration_boundary is True
+    assert replacement.dependency_task_ids == ["successor"]
+    assert replacement.deliverable_contract == TaskDeliverableContract(
+        require_git_provenance=True,
+        required_contribution_task_ids=["successor"],
+    )
+    assert replacement.git_base_branch == "main"
+    assert replacement.git_base_commit_sha == "f" * 40
+    assert replacement.deliverable_ids == []
+    assert replacement.completion is None
+    assert state.deliverables["integration-deliverable"].model_dump(
+        mode="json"
+    ) == old_deliverable
+    assert state.review_requests["integration-review"].model_dump(
+        mode="json"
+    ) == old_review
+    assert state.git_work_contexts["integration-context"].model_dump(
+        mode="json"
+    ) == old_context
+    assert recovered["retained_deliverable_ids"] == ["integration-deliverable"]
+    assert recovered["retained_review_request_ids"] == ["integration-review"]
+    assert recovered["retained_git_work_context_ids"] == ["integration-context"]
+    assert recovered["old_boundary_terminalized"] is False
+    blocker_id = recovered["old_boundary_blocker_id"]
+    assert blocker_id is not None
+    assert state.blockers[blocker_id].state == TeamBlockerState.OPEN
+    audit_id = recovered["audit_action_evidence_id"]
+    assert state.inbox[audit_id].state == TeamInboxItemState.HANDLED
+
+    first_dispatch_id = state.agent_runtimes["lead"].active_dispatch_id
+    assert first_dispatch_id is not None
+    _state, finalized = TeamRuntimeService(
+        repository
+    ).finalize_agent_dispatch_from_activity(
+        session_id="session-lead",
+        dispatch_id=first_dispatch_id,
+    )
+    assert finalized["success"] is True
+
+    _begin_project_lead_chat_dispatch(
+        repository,
+        body="Reconcile the exact prior recovery under a fresh dispatch snapshot.",
+    )
+    state_before_replay = repository.read()
+    revision_before_replay = state_before_replay.revision
+    runtime_before_replay = state_before_replay.agent_runtimes["lead"].model_dump(
+        mode="json"
+    )
+    outbox_count_before_replay = len(repository.list_outbox_records())
+    state, replayed = _recover_submitted_integration_as_lead(
+        repository,
+        request_id="replay-submitted-integration-recovery",
+    )
+
+    assert replayed["success"] is True, replayed.get("errors")
+    assert replayed["recovery_applied"] is False
+    assert replayed["replayed"] is True
+    assert replayed["replacement_integration_task_id"] == "integration-recovery"
+    assert state.revision == revision_before_replay
+    assert state.agent_runtimes["lead"].model_dump(mode="json") == (
+        runtime_before_replay
+    )
+    assert len(repository.list_outbox_records()) == outbox_count_before_replay
+    assert state.deliverables["integration-deliverable"].model_dump(
+        mode="json"
+    ) == old_deliverable
+    assert state.review_requests["integration-review"].model_dump(
+        mode="json"
+    ) == old_review
+    assert state.git_work_contexts["integration-context"].model_dump(
+        mode="json"
+    ) == old_context
+
+    revision_before_mismatch = state.revision
+    runtime_before_mismatch = state.agent_runtimes["lead"].model_dump(mode="json")
+    outbox_count_before_mismatch = len(repository.list_outbox_records())
+    replacement_before_mismatch = state.tasks["integration-recovery"].model_dump(
+        mode="json"
+    )
+    state, mismatched = _recover_submitted_integration_as_lead(
+        repository,
+        reason="A changed reason must not claim the existing replacement boundary.",
+        request_id="mismatched-submitted-integration-recovery",
+    )
+
+    assert mismatched["success"] is False
+    assert mismatched["errors"][0]["code"] == (
+        "submitted_integration_recovery_replay_mismatch"
+    )
+    assert state.revision == revision_before_mismatch
+    assert state.agent_runtimes["lead"].model_dump(mode="json") == (
+        runtime_before_mismatch
+    )
+    assert len(repository.list_outbox_records()) == outbox_count_before_mismatch
+    assert state.tasks["integration-recovery"].model_dump(mode="json") == (
+        replacement_before_mismatch
+    )
+
+
+def test_project_lead_recovers_prepared_integration_before_deliverable_submission(
+    tmp_path: Path,
+) -> None:
+    repository = _seed_agent_with_task(tmp_path)
+    _seed_submitted_integration_boundary_recovery(repository)
+
+    def _restore_pre_submission_boundary(state):
+        state.deliverables.pop("integration-deliverable")
+        state.review_requests.pop("integration-review")
+        integration = state.tasks["integration"]
+        integration.deliverable_ids = []
+        integration.state = TeamTaskState.IN_PROGRESS
+        state.git_work_contexts["integration-context"].state = (
+            GitWorkContextState.ACTIVE
+        )
+        return state
+
+    repository.update(_restore_pre_submission_boundary)
+    retained_context = repository.read().git_work_contexts[
+        "integration-context"
+    ].model_dump(mode="json")
+    _begin_project_lead_chat_dispatch(
+        repository,
+        body="Recover the prepared boundary before it submits stale provenance.",
+    )
+
+    state, recovered = _recover_submitted_integration_as_lead(repository)
+
+    assert recovered["success"] is True
+    assert recovered["replacement_integration_task_id"] == "integration-recovery"
+    assert state.tasks["integration-recovery"].dependency_task_ids == ["successor"]
+    assert recovered["retained_deliverable_ids"] == []
+    assert recovered["retained_review_request_ids"] == []
+    assert recovered["retained_git_work_context_ids"] == ["integration-context"]
+    assert state.git_work_contexts["integration-context"].model_dump(
+        mode="json"
+    ) == retained_context
+    assert recovered["old_boundary_terminalized"] is False
+    assert any(
+        reason.startswith("active Git contexts:")
+        for reason in recovered["old_boundary_retention_reasons"]
+    )
+
+
+def test_team_manager_can_recover_and_safely_terminalize_submitted_integration(
+    tmp_path: Path,
+) -> None:
+    repository = _seed_agent_with_task(tmp_path)
+    _seed_submitted_integration_boundary_recovery(repository)
+
+    def _reject_old_submission(state):
+        deliverable = state.deliverables["integration-deliverable"]
+        deliverable.state = TeamRecordState.REJECTED
+        review = state.review_requests["integration-review"]
+        review.state = TeamRecordState.REJECTED
+        review.decision_at = LEASE_NOW
+        return state
+
+    repository.update(_reject_old_submission)
+    before = repository.read()
+    old_deliverable = before.deliverables["integration-deliverable"].model_dump(
+        mode="json"
+    )
+    old_review = before.review_requests["integration-review"].model_dump(mode="json")
+    old_context = before.git_work_contexts["integration-context"].model_dump(
+        mode="json"
+    )
+    _begin_project_chat_dispatch(
+        repository,
+        agent_id="manager",
+        body="Recover and safely terminalize the submitted integration boundary.",
+    )
+
+    state, recovered = TeamTaskUpdateCommandService(
+        repository
+    ).recover_submitted_integration_boundary_command(
+        session_id="session-manager",
+        predecessor_task_id="task",
+        successor_task_id="successor",
+        integration_task_id="integration",
+        replacement_task_id="integration-manager-recovery",
+        expected_dependency_task_ids=["task"],
+        expected_required_contribution_task_ids=["task"],
+        reason="No active handoff remains, so retain history and terminalize the old boundary.",
+        git_base_commit_sha="e" * 40,
+        git_base_branch="main",
+        request_id="manager-submitted-integration-recovery",
+    )
+
+    assert recovered["success"] is True
+    assert recovered["recovery_applied"] is True
+    assert recovered["old_boundary_terminalized"] is True
+    assert recovered["old_boundary_blocker_id"] is None
+    old_boundary = state.tasks["integration"]
+    assert old_boundary.state == TeamTaskState.CANCELLED
+    assert old_boundary.cancellation is not None
+    assert old_boundary.cancellation.successor_task_id == (
+        "integration-manager-recovery"
+    )
+    assert state.tasks["integration-manager-recovery"].originating_task_id == (
+        "integration"
+    )
+    assert state.deliverables["integration-deliverable"].model_dump(
+        mode="json"
+    ) == old_deliverable
+    assert state.review_requests["integration-review"].model_dump(
+        mode="json"
+    ) == old_review
+    assert state.git_work_contexts["integration-context"].model_dump(
+        mode="json"
+    ) == old_context
+    evidence = state.inbox[recovered["audit_action_evidence_id"]]
+    assert evidence.payload["actor_kind"] == "agent"
+    assert evidence.payload["actor_id"] == "manager"
+
+
+def test_submitted_integration_recovery_rejects_frozen_frontier_mismatch(
+    tmp_path: Path,
+) -> None:
+    repository = _seed_agent_with_task(tmp_path)
+    _seed_submitted_integration_boundary_recovery(repository)
+    _begin_project_lead_chat_dispatch(
+        repository,
+        body="Do not widen a stale submitted-boundary recovery plan.",
+    )
+
+    state, rejected = _recover_submitted_integration_as_lead(
+        repository,
+        expected_dependency_task_ids=["task", "successor"],
+        request_id="reject-submitted-integration-frontier-expansion",
+    )
+
+    assert rejected["success"] is False
+    assert rejected["errors"][0]["code"] == (
+        "submitted_integration_recovery_frontier_mismatch"
+    )
+    assert "integration-recovery" not in state.tasks
+
+
+def test_submitted_integration_recovery_respects_mutation_policy(
+    tmp_path: Path,
+) -> None:
+    repository = _seed_agent_with_task(tmp_path)
+    _seed_submitted_integration_boundary_recovery(repository)
+
+    def _lock_boundary_contract(state):
+        state.tasks["integration"].mutation_policy = TaskMutationPolicy(
+            policy_id="workflow-owned-integration-v1",
+            reason="The workflow owns the submitted integration topology.",
+            locked_fields=["deliverable_contract"],
+        )
+        return state
+
+    repository.update(_lock_boundary_contract)
+    _begin_project_lead_chat_dispatch(
+        repository,
+        body="Honor the workflow-owned submitted-boundary policy.",
+    )
+
+    state, rejected = _recover_submitted_integration_as_lead(
+        repository,
+        request_id="reject-workflow-locked-integration-recovery",
+    )
+
+    assert rejected["success"] is False
+    assert rejected["errors"][0]["code"] == (
+        "submitted_integration_recovery_mutation_policy_locked"
+    )
+    assert "integration-recovery" not in state.tasks
+
+
+def test_task_replacement_rejects_cycle_without_partial_mutation(tmp_path: Path) -> None:
+    repository = _seed_agent_with_task(tmp_path)
+    admin = TeamAdminService(repository)
+    admin.create_or_reprioritize_task(
+        task_id="dependent",
+        owner_agent_id="lead",
+        project_id="project",
+        priority=1,
+        title="Downstream work",
+        description="This work currently follows the predecessor.",
+        created_by_agent_id="lead",
+        dependency_task_ids=["task"],
+        expected_revision=repository.read().revision,
+    )
+    admin.create_or_reprioritize_task(
+        task_id="cyclic-successor",
+        owner_agent_id="worker",
+        project_id="project",
+        priority=1,
+        title="Invalid successor",
+        description="This successor already waits on the dependent.",
+        created_by_agent_id="lead",
+        dependency_task_ids=["dependent"],
+        expected_revision=repository.read().revision,
+    )
+    _begin_project_lead_chat_dispatch(
+        repository,
+        body="Attempt the replacement only if the complete graph remains acyclic.",
+    )
+
+    state, rejected = TeamTaskUpdateCommandService(repository).cancel_task_command(
+        session_id="session-lead",
+        task_id="task",
+        reason_code="replaced",
+        reason="This invalid replacement must be rejected atomically.",
+        successor_task_id="cyclic-successor",
+        rebind_dependents=True,
+        expected_dependent_task_ids=["dependent"],
+        request_id="reject-cyclic-task-replacement",
+    )
+
+    assert rejected["success"] is False
+    assert rejected["errors"][0]["code"] == "task_replacement_graph_invalid"
+    assert state.tasks["task"].state == TeamTaskState.PENDING
+    assert state.tasks["task"].cancellation is None
+    assert state.tasks["dependent"].dependency_task_ids == ["task"]
+
+
+@pytest.mark.parametrize(
+    "successor_state",
+    [TeamTaskState.CANCELLED, TeamTaskState.REJECTED],
+)
+def test_task_replacement_rejects_dead_end_successor_without_partial_mutation(
+    tmp_path: Path,
+    successor_state: TeamTaskState,
+) -> None:
+    repository = _seed_agent_with_task(tmp_path)
+    admin = TeamAdminService(repository)
+    admin.create_or_reprioritize_task(
+        task_id="dead-end-successor",
+        owner_agent_id="worker",
+        project_id="project",
+        priority=2,
+        title="Dead-end successor",
+        description="This task cannot safely receive active dependents.",
+        created_by_agent_id="lead",
+        expected_revision=repository.read().revision,
+    )
+    admin.create_or_reprioritize_task(
+        task_id="dependent",
+        owner_agent_id="lead",
+        project_id="project",
+        priority=1,
+        title="Downstream work",
+        description="This dependency must remain unchanged on failure.",
+        created_by_agent_id="lead",
+        dependency_task_ids=["task"],
+        expected_revision=repository.read().revision,
+    )
+
+    if successor_state == TeamTaskState.CANCELLED:
+        admin.cancel_task(
+            task_id="dead-end-successor",
+            reason_code="obsolete",
+            reason="This candidate was cancelled before it could become a successor.",
+            actor_id="operator:test",
+            expected_revision=repository.read().revision,
+        )
+    else:
+
+        def _reject_successor(state):
+            state.tasks["dead-end-successor"].state = TeamTaskState.REJECTED
+            return state
+
+        repository.update(_reject_successor)
+    _begin_project_lead_chat_dispatch(
+        repository,
+        body="Reject a replacement successor that is already a dead end.",
+    )
+
+    state, rejected = TeamTaskUpdateCommandService(repository).cancel_task_command(
+        session_id="session-lead",
+        task_id="task",
+        reason_code="replaced",
+        reason="This dead-end successor must be rejected atomically.",
+        successor_task_id="dead-end-successor",
+        rebind_dependents=True,
+        expected_dependent_task_ids=["dependent"],
+        request_id=f"reject-{successor_state.value}-successor",
+    )
+
+    assert rejected["success"] is False
+    assert rejected["errors"][0]["code"] == "task_replacement_graph_invalid"
+    assert "must not already be cancelled or rejected" in rejected["errors"][0]["message"]
+    assert state.tasks["task"].state == TeamTaskState.PENDING
+    assert state.tasks["task"].cancellation is None
+    assert state.tasks["dependent"].dependency_task_ids == ["task"]
 
 
 def test_operator_chat_ignores_legacy_mutation_flags_without_server_grant(

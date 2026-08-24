@@ -5,8 +5,11 @@ import os
 from collections.abc import Callable, Mapping, Sequence
 from contextlib import contextmanager
 from datetime import UTC, datetime
+from pathlib import PurePosixPath
 from typing import Any
 from uuid import uuid4
+
+from evander.models import DirectoryPath
 
 from ..git_naming import validate_branch_name
 from .domain import common as _team_common
@@ -28,6 +31,12 @@ from ..models import (
     Deliverable,
     DeliverableOutcome,
     EphemeralAgentPolicy,
+    ExternalSourceEvidenceAcceptanceCriterion,
+    ExternalSourceEvidenceBody,
+    ExternalSourceEvidenceDiscussionEntry,
+    ExternalSourceEvidenceFreshnessStatus,
+    ExternalSourceEvidenceLink,
+    ExternalSourceEvidenceSnapshot,
     GovernanceAgendaItem,
     GovernanceAgendaItemState,
     GovernanceAgendaItemType,
@@ -79,6 +88,7 @@ from ..models import (
     _ensure_unique,
     _unique_text_list,
     agent_project_ids,
+    external_source_evidence_content_digest,
     outcome_kind_snapshots,
     release_package_payload_with_derived,
 )
@@ -206,11 +216,28 @@ from .historical_lifecycle_migration import (
     plan_historical_lifecycle_migration,
 )
 from .domain.task_supervision import queue_parent_resolution_transitions
-from .domain.wake import _append_agent_wake_requested_event
+from .domain.submitted_integration_recovery import (
+    apply_submitted_integration_boundary_recovery,
+    plan_submitted_integration_boundary_recovery,
+)
+from .domain.task_replacement import (
+    apply_cancelled_task_dependency_repair,
+    apply_task_dependency_rebinding,
+    invalidate_rebound_integration_git_contexts,
+    plan_task_dependency_rebinding,
+    plan_cancelled_task_dependency_repair,
+    queue_rebound_integration_preparation_recovery,
+)
+from .domain.wake import (
+    _append_agent_wake_requested_event,
+    _append_newly_ready_task_owner_wake_requested_events,
+    _dependency_status_snapshot,
+)
 from .domain.work_due import _mark_agent_work_due
 from .domain.common import DEFAULT_AGENT_WAKE_REQUEST_DEBOUNCE_SECONDS
 from .domain.preparation_failures import (
     create_rejected_candidate_correction_preparation_recovery_inbox,
+    task_preparation_generation,
 )
 from .domain.dependency_composition_recovery import (
     release_dependency_composition_recovery_after_task_cancellation,
@@ -434,6 +461,141 @@ def _legacy_operator_repair_blocker(
         now=now,
     )
     return blocker
+
+
+def _evidence_utc_datetime(value: datetime, label: str) -> datetime:
+    if not isinstance(value, datetime):
+        raise ValueError(f"{label} must be an ISO 8601 datetime")
+    if value.tzinfo is None:
+        return value.replace(tzinfo=UTC)
+    return value.astimezone(UTC)
+
+
+def _attach_external_source_evidence_snapshot(
+    state: TeamState,
+    *,
+    snapshot: ExternalSourceEvidenceSnapshot,
+    case_ids: Sequence[str],
+    task_ids: Sequence[str],
+    now: datetime,
+) -> None:
+    affected_active_task_ids: set[str] = set()
+    for case_id in case_ids:
+        case = _require_present(state.cases, case_id, "case")
+        if case.team_id != snapshot.team_id:
+            raise ValueError(
+                f"case {case.id} does not belong to snapshot team {snapshot.team_id}"
+            )
+        if snapshot.project_id is not None and case.project_id != snapshot.project_id:
+            raise ValueError(
+                f"case {case.id} does not belong to snapshot project {snapshot.project_id}"
+            )
+        if snapshot.id in case.source_evidence_snapshot_ids:
+            continue
+        case.source_evidence_snapshot_ids = _append_unique(
+            case.source_evidence_snapshot_ids,
+            snapshot.id,
+        )
+        case.updated_at = now
+        for linked_task_id in case.task_ids:
+            linked_task = _require_present(state.tasks, linked_task_id, "task")
+            if linked_task.state in _NON_TERMINAL_TASK_STATES:
+                affected_active_task_ids.add(linked_task.id)
+    for task_id in task_ids:
+        task = _require_present(state.tasks, task_id, "task")
+        project = _require_present(state.projects, task.project_id, "project")
+        if project.team_id != snapshot.team_id:
+            raise ValueError(
+                f"task {task.id} does not belong to snapshot team {snapshot.team_id}"
+            )
+        if snapshot.project_id is not None and task.project_id != snapshot.project_id:
+            raise ValueError(
+                f"task {task.id} does not belong to snapshot project {snapshot.project_id}"
+            )
+        if snapshot.id in task.source_evidence_snapshot_ids:
+            continue
+        task.source_evidence_snapshot_ids = _append_unique(
+            task.source_evidence_snapshot_ids,
+            snapshot.id,
+        )
+        task.updated_at = now
+        if task.state in _NON_TERMINAL_TASK_STATES:
+            affected_active_task_ids.add(task.id)
+    for affected_task_id in sorted(affected_active_task_ids):
+        affected_task = state.tasks[affected_task_id]
+        affected_task.updated_at = now
+        _mark_agent_work_due(
+            state,
+            agent_id=affected_task.owner_agent_id,
+            now=now,
+        )
+
+
+def _unfrozen_project_worktree_context_ids(
+    state: TeamState,
+    *,
+    project: Project,
+) -> list[str]:
+    newest_by_lineage: dict[tuple[str, str, str, str], GitWorkContext] = {}
+    unresolved_contexts: list[GitWorkContext] = []
+    for context in state.git_work_contexts.values():
+        if context.worktree_path is None:
+            continue
+        task = state.tasks.get(context.task_id)
+        if task is None:
+            continue
+        session_id = _git_work_context_session_id_for_cleanup_scope(state, context)
+        if session_id is None:
+            unresolved_contexts.append(context)
+            continue
+        lineage = (
+            context.agent_id,
+            session_id,
+            str(PurePosixPath(context.worktree_path)),
+            context.agent_branch,
+        )
+        current = newest_by_lineage.get(lineage)
+        if current is None or (
+            _team_common._ensure_utc(context.created_at),
+            _team_common._ensure_utc(context.updated_at),
+            context.id,
+        ) > (
+            _team_common._ensure_utc(current.created_at),
+            _team_common._ensure_utc(current.updated_at),
+            current.id,
+        ):
+            newest_by_lineage[lineage] = context
+
+    context_ids: list[str] = []
+    for context in (*newest_by_lineage.values(), *unresolved_contexts):
+        task = state.tasks.get(context.task_id)
+        if task is None or task.project_id != project.id:
+            continue
+        covered = any(
+            candidate.project_id == project.id
+            and candidate.git_work_context_id == context.id
+            for candidate in state.worktree_cleanup_candidates.values()
+        )
+        if not covered:
+            context_ids.append(context.id)
+    return sorted(context_ids)
+
+
+def _git_work_context_session_id_for_cleanup_scope(
+    state: TeamState,
+    context: GitWorkContext,
+) -> str | None:
+    if context.dispatch_id is not None:
+        dispatch = state.dispatches.get(context.dispatch_id)
+        if (
+            dispatch is None
+            or dispatch.agent_id != context.agent_id
+            or context.task_id not in dispatch.task_ids
+        ):
+            return None
+        return dispatch.session_id
+    agent = state.agents.get(context.agent_id)
+    return agent.session_id if agent is not None else None
 
 
 class TeamAdminService:
@@ -790,12 +952,49 @@ class TeamAdminService:
                     "with retry or create_verified_replacement"
                 )
             now = utc_now()
+            route_before_resolution = blocker.route.value
+            if (
+                blocker.source_kind == TeamBlockerSourceKind.DELIVERABLE
+                and blocker.reason_code.startswith("deliverable_acceptance_deferred:")
+            ):
+                from .domain.review import retry_deferred_deliverable_acceptance
+
+                append_blocker_event(
+                    state,
+                    blocker=blocker,
+                    event_type=TeamBlockerEventType.PROGRESS,
+                    note=normalized_note,
+                    reference_ids=normalized_refs,
+                    metadata={"operator_actor_id": normalized_actor_id},
+                    now=now,
+                )
+                retry_deferred_deliverable_acceptance(
+                    state,
+                    blocker_id=blocker.id,
+                    actor_agent_id=None,
+                    result=result,
+                    now=now,
+                )
+                result.update(
+                    {
+                        "success": True,
+                        "event_id": next(
+                            (
+                                event.id
+                                for event in reversed(list(state.blocker_events.values()))
+                                if event.blocker_id == blocker.id
+                            ),
+                            None,
+                        ),
+                        "route_before_resolution": route_before_resolution,
+                    }
+                )
+                return state
             restored_task_owner_id = _prepare_blocker_source_for_resolution(
                 state,
                 blocker=blocker,
                 now=now,
             )
-            route_before_resolution = blocker.route.value
             event = resolve_blocker(
                 state,
                 blocker=blocker,
@@ -806,6 +1005,21 @@ class TeamAdminService:
                 metadata={"operator_actor_id": normalized_actor_id},
                 now=now,
             )
+            deliverable_acceptance_route_handled = False
+            if blocker.source_kind == TeamBlockerSourceKind.DELIVERABLE:
+                from .domain.review import retry_deliverable_acceptance_if_reviewed
+
+                acceptance_completed = retry_deliverable_acceptance_if_reviewed(
+                    state,
+                    deliverable_id=blocker.source_id,
+                    actor_agent_id=None,
+                    result=result,
+                    now=now,
+                )
+                deliverable_acceptance_route_handled = bool(
+                    acceptance_completed
+                    or result.get("deliverable_acceptance_deferred")
+                )
             if blocker.source_kind == TeamBlockerSourceKind.AGENT_EXECUTION_STALL:
                 _mark_agent_work_due(
                     state,
@@ -821,7 +1035,10 @@ class TeamAdminService:
                     delay_seconds=DEFAULT_AGENT_WAKE_REQUEST_DEBOUNCE_SECONDS,
                     idempotency_suffix=blocker.id,
                 )
-            if restored_task_owner_id is not None:
+            if (
+                restored_task_owner_id is not None
+                and not deliverable_acceptance_route_handled
+            ):
                 _mark_agent_work_due(
                     state,
                     agent_id=restored_task_owner_id,
@@ -1752,6 +1969,7 @@ class TeamAdminService:
         lead_session_id: str | None,
         lead_display_name: str | None = None,
         goals: list[ProjectGoal | Mapping[str, Any]] | None = None,
+        directory_path: str | None = None,
         git: ProjectGitConfig | None = None,
         release_policy: ProjectReleasePolicy | None = None,
         lead_role_id: str | None = None,
@@ -1767,6 +1985,17 @@ class TeamAdminService:
         normalized_lead_display_name = _optional_text(lead_display_name)
         normalized_lead_role_id = _optional_text(lead_role_id)
         normalized_lead_role_name = _optional_text(lead_role_name) or "Project Lead"
+        normalized_directory_path = DirectoryPath(
+            segments=(
+                _optional_text(directory_path)
+                or (git.directory_path if git is not None else "root")
+            )
+        ).as_posix()
+        if git is not None and git.directory_path != normalized_directory_path:
+            raise ValueError(
+                "project git directory_path must match the provider-neutral "
+                "project directory_path"
+            )
         goal_inputs = list(goals or [])
         current_state = self._repository.read()
         effective_project_id = normalized_project_id or _generated_id(
@@ -1862,6 +2091,7 @@ class TeamAdminService:
                 team_id=normalized_team_id,
                 name=normalized_name,
                 lead_agent_id=lead.id,
+                directory_path=normalized_directory_path,
                 goals=project_goals,
                 git=git,
                 release_policy=release_policy,
@@ -1886,6 +2116,8 @@ class TeamAdminService:
         *,
         project_id: str,
         name: str | None = None,
+        directory_path: str | None = None,
+        set_directory_path: bool = False,
         git: ProjectGitConfig | None = None,
         set_git: bool = False,
         release_policy: ProjectReleasePolicy | None = None,
@@ -1896,12 +2128,50 @@ class TeamAdminService:
     ) -> TeamState:
         if set_release_policy:
             _validate_resolved_human_release_policy(release_policy)
+        normalized_directory_path = (
+            DirectoryPath(segments=_required_text(directory_path, "directory_path")).as_posix()
+            if set_directory_path
+            else None
+        )
         next_managed_repo_id = git.managed_repo_id if set_git and git is not None else None
 
         def _mutate(state: TeamState) -> TeamState:
             project = _require_present(state.projects, project_id, "project")
             if name is not None:
                 project.name = name
+            next_directory_path = project.directory_path
+            if normalized_directory_path is not None:
+                next_directory_path = normalized_directory_path
+            elif set_git and git is not None:
+                next_directory_path = git.directory_path
+            next_git = git if set_git else project.git
+            if next_git is not None and next_git.directory_path != next_directory_path:
+                raise ValueError(
+                    "project git directory_path must match the provider-neutral "
+                    "project directory_path"
+                )
+            current_managed_repo_id = (
+                project.git.managed_repo_id if project.git is not None else None
+            )
+            next_managed_repo_id_for_state = (
+                next_git.managed_repo_id if next_git is not None else None
+            )
+            if (
+                next_directory_path != project.directory_path
+                or next_managed_repo_id_for_state != current_managed_repo_id
+            ):
+                unfrozen_context_ids = _unfrozen_project_worktree_context_ids(
+                    state,
+                    project=project,
+                )
+                if unfrozen_context_ids:
+                    raise ValueError(
+                        f"project {project.id} repository scope cannot change while Git "
+                        "work contexts lack frozen cleanup scope: "
+                        f"{', '.join(unfrozen_context_ids)}; resolve or reassign the "
+                        "tasks and run worktree cleanup enqueue first"
+                    )
+            project.directory_path = next_directory_path
             if set_git:
                 project.git = git
             if set_release_policy:
@@ -2673,6 +2943,269 @@ class TeamAdminService:
 
         return self._repository.update(_mutate, expected_revision=expected_revision)
 
+    def create_external_source_evidence_snapshot(
+        self,
+        *,
+        snapshot_id: str | None,
+        team_id: str,
+        project_id: str | None,
+        provider_type: str,
+        source_type: str,
+        external_identifier: str,
+        external_version: str,
+        fetched_at: datetime,
+        expires_at: datetime | None,
+        freshness_status: ExternalSourceEvidenceFreshnessStatus | str,
+        access_classification: str,
+        title: str | None = None,
+        body: Mapping[str, Any] | ExternalSourceEvidenceBody | None = None,
+        acceptance_criteria: Sequence[
+            Mapping[str, Any] | ExternalSourceEvidenceAcceptanceCriterion
+        ] = (),
+        discussion: Sequence[
+            Mapping[str, Any] | ExternalSourceEvidenceDiscussionEntry
+        ] = (),
+        links: Sequence[Mapping[str, Any] | ExternalSourceEvidenceLink] = (),
+        metadata: Mapping[str, Any] | None = None,
+        content_digest: str | None = None,
+        case_ids: Sequence[str] = (),
+        task_ids: Sequence[str] = (),
+        created_by_actor: str,
+        expected_revision: int | None = None,
+    ) -> tuple[TeamState, ExternalSourceEvidenceSnapshot]:
+        normalized_snapshot_id = _optional_text(snapshot_id)
+        normalized_team_id = _required_text(team_id, "team_id")
+        normalized_project_id = _optional_text(project_id)
+        normalized_provider_type = _required_text(provider_type, "provider_type")
+        normalized_source_type = _required_text(source_type, "source_type")
+        normalized_external_identifier = _required_text(
+            external_identifier,
+            "external_identifier",
+        )
+        normalized_external_version = _required_text(external_version, "external_version")
+        normalized_fetched_at = _evidence_utc_datetime(fetched_at, "fetched_at")
+        normalized_expires_at = (
+            _evidence_utc_datetime(expires_at, "expires_at")
+            if expires_at is not None
+            else None
+        )
+        normalized_freshness_status = (
+            freshness_status
+            if isinstance(freshness_status, ExternalSourceEvidenceFreshnessStatus)
+            else ExternalSourceEvidenceFreshnessStatus(str(freshness_status))
+        )
+        normalized_access_classification = _required_text(
+            access_classification,
+            "access_classification",
+        )
+        normalized_title = _optional_text(title)
+        normalized_body = (
+            body
+            if isinstance(body, ExternalSourceEvidenceBody)
+            else ExternalSourceEvidenceBody.model_validate(body)
+            if body is not None
+            else None
+        )
+        normalized_acceptance_criteria = [
+            item
+            if isinstance(item, ExternalSourceEvidenceAcceptanceCriterion)
+            else ExternalSourceEvidenceAcceptanceCriterion.model_validate(item)
+            for item in acceptance_criteria
+        ]
+        normalized_discussion = [
+            item
+            if isinstance(item, ExternalSourceEvidenceDiscussionEntry)
+            else ExternalSourceEvidenceDiscussionEntry.model_validate(item)
+            for item in discussion
+        ]
+        normalized_links = [
+            item
+            if isinstance(item, ExternalSourceEvidenceLink)
+            else ExternalSourceEvidenceLink.model_validate(item)
+            for item in links
+        ]
+        normalized_metadata = _mapping(metadata or {}, "metadata")
+        normalized_case_ids = _unique_text_list(case_ids, "case_ids")
+        normalized_task_ids = _unique_text_list(task_ids, "task_ids")
+        normalized_created_by_actor = _required_text(created_by_actor, "created_by_actor")
+        computed_digest = external_source_evidence_content_digest(
+            title=normalized_title,
+            body=normalized_body,
+            acceptance_criteria=normalized_acceptance_criteria,
+            discussion=normalized_discussion,
+            links=normalized_links,
+            metadata=normalized_metadata,
+        )
+        supplied_digest = _optional_text(content_digest)
+        if supplied_digest is not None and supplied_digest.casefold() != computed_digest:
+            raise ValueError(
+                "content_digest does not match the normalized evidence snapshot content"
+            )
+        created_snapshot_id: str | None = None
+
+        def _mutate(state: TeamState) -> TeamState:
+            nonlocal created_snapshot_id
+            _require_present(state.teams, normalized_team_id, "team")
+            if normalized_project_id is not None:
+                project = _require_present(state.projects, normalized_project_id, "project")
+                if project.team_id != normalized_team_id:
+                    raise ValueError(
+                        f"project {project.id} does not belong to team {normalized_team_id}"
+                    )
+            identity_matches = sorted(
+                (
+                    snapshot
+                    for snapshot in state.external_source_evidence_snapshots.values()
+                    if snapshot.team_id == normalized_team_id
+                    and snapshot.project_id == normalized_project_id
+                    and snapshot.provider_type == normalized_provider_type
+                    and snapshot.source_type == normalized_source_type
+                    and snapshot.external_identifier
+                    == normalized_external_identifier
+                    and snapshot.external_version == normalized_external_version
+                ),
+                key=lambda snapshot: (snapshot.created_at, snapshot.id),
+            )
+            if identity_matches:
+                existing = next(
+                    (
+                        snapshot
+                        for snapshot in identity_matches
+                        if snapshot.id == normalized_snapshot_id
+                    ),
+                    identity_matches[0],
+                )
+                if any(
+                    snapshot.content_digest != computed_digest
+                    for snapshot in identity_matches
+                ):
+                    raise ValueError(
+                        "external source evidence version already exists with "
+                        "different normalized content"
+                    )
+                if normalized_snapshot_id is not None and all(
+                    snapshot.id != normalized_snapshot_id
+                    for snapshot in identity_matches
+                ):
+                    raise ValueError(
+                        "external source evidence identity already exists as "
+                        f"{existing.id}, not requested id {normalized_snapshot_id}"
+                    )
+                if any(
+                    snapshot.access_classification
+                    != normalized_access_classification
+                    for snapshot in identity_matches
+                ):
+                    raise ValueError(
+                        "external source evidence version already exists with a "
+                        "different access classification"
+                    )
+                if any(
+                    snapshot.fetched_at != normalized_fetched_at
+                    or snapshot.expires_at != normalized_expires_at
+                    or snapshot.freshness_status != normalized_freshness_status
+                    for snapshot in identity_matches
+                ):
+                    raise ValueError(
+                        "external source evidence version already exists with "
+                        "different capture metadata"
+                    )
+                now = utc_now()
+                _attach_external_source_evidence_snapshot(
+                    state,
+                    snapshot=existing,
+                    case_ids=normalized_case_ids,
+                    task_ids=normalized_task_ids,
+                    now=now,
+                )
+                created_snapshot_id = existing.id
+                return state
+            effective_snapshot_id = normalized_snapshot_id or _generated_id(
+                prefix="source-evidence",
+                labels=[
+                    normalized_provider_type,
+                    normalized_source_type,
+                    normalized_external_identifier,
+                    normalized_external_version,
+                ],
+                existing_ids=state.external_source_evidence_snapshots,
+            )
+            _require_absent(
+                state.external_source_evidence_snapshots,
+                effective_snapshot_id,
+                "external source evidence snapshot",
+            )
+            now = utc_now()
+            snapshot = ExternalSourceEvidenceSnapshot(
+                id=effective_snapshot_id,
+                team_id=normalized_team_id,
+                project_id=normalized_project_id,
+                provider_type=normalized_provider_type,
+                source_type=normalized_source_type,
+                external_identifier=normalized_external_identifier,
+                external_version=normalized_external_version,
+                fetched_at=normalized_fetched_at,
+                expires_at=normalized_expires_at,
+                freshness_status=normalized_freshness_status,
+                access_classification=normalized_access_classification,
+                content_digest=computed_digest,
+                title=normalized_title,
+                body=normalized_body,
+                acceptance_criteria=normalized_acceptance_criteria,
+                discussion=normalized_discussion,
+                links=normalized_links,
+                metadata=dict(normalized_metadata),
+                created_by_actor=normalized_created_by_actor,
+                created_at=now,
+            )
+            state.external_source_evidence_snapshots[snapshot.id] = snapshot
+            _attach_external_source_evidence_snapshot(
+                state,
+                snapshot=snapshot,
+                case_ids=normalized_case_ids,
+                task_ids=normalized_task_ids,
+                now=now,
+            )
+            created_snapshot_id = snapshot.id
+            return state
+
+        state = self._repository.update(_mutate, expected_revision=expected_revision)
+        if created_snapshot_id is None:
+            raise RuntimeError("external source evidence snapshot was not created")
+        return state, state.external_source_evidence_snapshots[created_snapshot_id]
+
+    def attach_external_source_evidence_snapshot(
+        self,
+        *,
+        snapshot_id: str,
+        case_ids: Sequence[str] = (),
+        task_ids: Sequence[str] = (),
+        expected_revision: int | None = None,
+    ) -> tuple[TeamState, ExternalSourceEvidenceSnapshot]:
+        normalized_snapshot_id = _required_text(snapshot_id, "snapshot_id")
+        normalized_case_ids = _unique_text_list(case_ids, "case_ids")
+        normalized_task_ids = _unique_text_list(task_ids, "task_ids")
+        if not normalized_case_ids and not normalized_task_ids:
+            raise ValueError("case_ids or task_ids is required")
+
+        def _mutate(state: TeamState) -> TeamState:
+            snapshot = _require_present(
+                state.external_source_evidence_snapshots,
+                normalized_snapshot_id,
+                "external source evidence snapshot",
+            )
+            _attach_external_source_evidence_snapshot(
+                state,
+                snapshot=snapshot,
+                case_ids=normalized_case_ids,
+                task_ids=normalized_task_ids,
+                now=utc_now(),
+            )
+            return state
+
+        state = self._repository.update(_mutate, expected_revision=expected_revision)
+        return state, state.external_source_evidence_snapshots[normalized_snapshot_id]
+
     def create_case(
         self,
         *,
@@ -3143,6 +3676,48 @@ class TeamAdminService:
                     proposed_integration_boundary != task.integration_boundary
                     or proposed_deliverable_contract != task.deliverable_contract
                 )
+                if task.mutation_policy is not None:
+                    locked_fields = set(task.mutation_policy.locked_fields)
+                    changed_locked_fields: list[str] = []
+                    if (
+                        "parent_task_id" in locked_fields
+                        and proposed_parent_task_id != task.parent_task_id
+                    ):
+                        changed_locked_fields.append("parent_task_id")
+                    if (
+                        "dependency_task_ids" in locked_fields
+                        and proposed_dependency_task_ids != task.dependency_task_ids
+                    ):
+                        changed_locked_fields.append("dependency_task_ids")
+                    if (
+                        "task_kind" in locked_fields
+                        and normalized_task_kind is not None
+                        and normalized_task_kind != task.task_kind
+                    ):
+                        changed_locked_fields.append("task_kind")
+                    if deliverable_policy_edit:
+                        if (
+                            "integration_boundary" in locked_fields
+                            and proposed_integration_boundary != task.integration_boundary
+                        ):
+                            changed_locked_fields.append("integration_boundary")
+                        if (
+                            "deliverable_contract" in locked_fields
+                            and proposed_deliverable_contract != task.deliverable_contract
+                        ):
+                            changed_locked_fields.append("deliverable_contract")
+                    if (
+                        "git_base_branch" in locked_fields
+                        and (set_git_base_branch or git_base_branch is not None)
+                        and normalized_git_base_branch != task.git_base_branch
+                    ):
+                        changed_locked_fields.append("git_base_branch")
+                    if changed_locked_fields:
+                        raise ValueError(
+                            f"task {task.id} mutation policy "
+                            f"{task.mutation_policy.policy_id} locks: "
+                            + ", ".join(changed_locked_fields)
+                        )
                 graph_error = _task_graph_edit_error(
                     state_model,
                     task_id=task.id,
@@ -3477,6 +4052,43 @@ class TeamAdminService:
                     proposed_integration_boundary != task.integration_boundary
                     or proposed_deliverable_contract != task.deliverable_contract
                 )
+            if task.mutation_policy is not None:
+                locked_fields = set(task.mutation_policy.locked_fields)
+                changed_locked_fields: list[str] = []
+                if (
+                    set_parent_task_id
+                    and "parent_task_id" in locked_fields
+                    and normalized_parent_task_id != task.parent_task_id
+                ):
+                    changed_locked_fields.append("parent_task_id")
+                if (
+                    normalized_dependency_task_ids is not None
+                    and "dependency_task_ids" in locked_fields
+                    and normalized_dependency_task_ids != task.dependency_task_ids
+                ):
+                    changed_locked_fields.append("dependency_task_ids")
+                if (
+                    set_git_base_branch
+                    and "git_base_branch" in locked_fields
+                    and normalized_git_base_branch != task.git_base_branch
+                ):
+                    changed_locked_fields.append("git_base_branch")
+                if deliverable_policy_edit:
+                    if (
+                        "integration_boundary" in locked_fields
+                        and proposed_integration_boundary != task.integration_boundary
+                    ):
+                        changed_locked_fields.append("integration_boundary")
+                    if (
+                        "deliverable_contract" in locked_fields
+                        and proposed_deliverable_contract != task.deliverable_contract
+                    ):
+                        changed_locked_fields.append("deliverable_contract")
+                if changed_locked_fields:
+                    raise ValueError(
+                        f"task {task.id} mutation policy {task.mutation_policy.policy_id} "
+                        "locks: " + ", ".join(changed_locked_fields)
+                    )
             if deliverable_policy_edit:
                 if task.state not in _NON_TERMINAL_TASK_STATES:
                     raise ValueError(
@@ -3781,6 +4393,8 @@ class TeamAdminService:
         reason: str,
         actor_id: str,
         successor_task_id: str | None = None,
+        rebind_dependents: bool = False,
+        expected_dependent_task_ids: Sequence[str] | None = None,
         expected_revision: int | None = None,
     ) -> TeamState:
         normalized_task_id = _required_text(task_id, "task_id")
@@ -3788,9 +4402,33 @@ class TeamAdminService:
         normalized_reason = _required_text(reason, "reason")
         normalized_actor_id = _required_text(actor_id, "actor_id")
         normalized_successor_id = _optional_text(successor_task_id)
-        idle_rotation_result: dict[str, Any] = {"events": []}
+        if not isinstance(rebind_dependents, bool):
+            raise ValueError("rebind_dependents must be a boolean")
+        normalized_rebind_dependents = rebind_dependents
+        normalized_expected_dependent_ids = (
+            None
+            if expected_dependent_task_ids is None
+            else tuple(
+                sorted(
+                    _unique_text_list(
+                        expected_dependent_task_ids,
+                        "expected_dependent_task_ids",
+                    )
+                )
+            )
+        )
+        if normalized_rebind_dependents and normalized_expected_dependent_ids is None:
+            raise ValueError(
+                "expected_dependent_task_ids is required when rebind_dependents is true"
+            )
+        if not normalized_rebind_dependents and normalized_expected_dependent_ids:
+            raise ValueError(
+                "expected_dependent_task_ids requires rebind_dependents=true"
+            )
+        cancellation_result: dict[str, Any] = {"events": []}
 
         def _mutate(state_model: TeamState) -> TeamState:
+            dependency_statuses_before = _dependency_status_snapshot(state_model)
             task = _require_present(state_model.tasks, normalized_task_id, "task")
             if task.state not in {
                 *_NON_TERMINAL_TASK_STATES,
@@ -3828,13 +4466,71 @@ class TeamAdminService:
                         "a cancellation successor must be a different task in "
                         f"project {task.project_id}"
                     )
+            if normalized_rebind_dependents and normalized_successor_id is None:
+                raise ValueError("rebind_dependents requires a same-project successor task")
+            replacement_plan = None
+            if normalized_rebind_dependents and normalized_successor_id is not None:
+                replacement_plan = plan_task_dependency_rebinding(
+                    state_model,
+                    predecessor_task_id=task.id,
+                    successor_task_id=normalized_successor_id,
+                )
+                assert normalized_expected_dependent_ids is not None
+                if replacement_plan.dependent_task_ids != normalized_expected_dependent_ids:
+                    raise ValueError(
+                        "task replacement affected set changed; expected "
+                        f"{list(normalized_expected_dependent_ids)!r}, current "
+                        f"{list(replacement_plan.dependent_task_ids)!r}"
+                    )
+            preparation_generations_before = (
+                {
+                    dependent_id: task_preparation_generation(state_model, dependent_id)
+                    for dependent_id in replacement_plan.dependent_task_ids
+                }
+                if replacement_plan is not None
+                else {}
+            )
             now = utc_now()
+            rebound_dependent_task_ids = (
+                apply_task_dependency_rebinding(
+                    state_model,
+                    plan=replacement_plan,
+                    now=now,
+                )
+                if replacement_plan is not None
+                else []
+            )
+            invalidated_git_context_ids_by_task = (
+                invalidate_rebound_integration_git_contexts(
+                    state_model,
+                    plan=replacement_plan,
+                    now=now,
+                )
+                if replacement_plan is not None
+                else {}
+            )
+            affected_integration_boundary_task_ids = (
+                list(replacement_plan.affected_integration_boundary_task_ids)
+                if replacement_plan is not None
+                else []
+            )
+            invalidated_git_work_context_ids = sorted(
+                context_id
+                for context_ids in invalidated_git_context_ids_by_task.values()
+                for context_id in context_ids
+            )
             task.cancellation = TaskCancellation(
                 reason_code=normalized_reason_code,
                 reason=normalized_reason,
                 actor_kind="operator",
                 actor_id=normalized_actor_id,
                 successor_task_id=normalized_successor_id,
+                rebind_dependents=normalized_rebind_dependents,
+                rebound_dependent_task_ids=rebound_dependent_task_ids,
+                rebound_integration_boundary_task_ids=(
+                    affected_integration_boundary_task_ids
+                ),
+                invalidated_git_work_context_ids=invalidated_git_work_context_ids,
                 cancelled_at=now,
             )
             _set_task_state(task, TeamTaskState.CANCELLED, now=now)
@@ -3865,22 +4561,218 @@ class TeamAdminService:
                 sender_agent_id=task.owner_agent_id,
                 now=now,
             )
+            if replacement_plan is not None:
+                queue_rebound_integration_preparation_recovery(
+                    state_model,
+                    plan=replacement_plan,
+                    invalidated_git_context_ids_by_task=(
+                        invalidated_git_context_ids_by_task
+                    ),
+                    preparation_generations_before=preparation_generations_before,
+                    sender_agent_id=None,
+                    result=cancellation_result,
+                    now=now,
+                )
             _maybe_mark_idle_context_rotation_due(
                 state_model,
                 agent_id=task.owner_agent_id,
                 now=now,
-                result=idle_rotation_result,
+                result=cancellation_result,
             )
             _recalculate_project_status(state_model, task.project_id)
+            _append_newly_ready_task_owner_wake_requested_events(
+                state_model,
+                dependency_statuses_before=dependency_statuses_before,
+                result=cancellation_result,
+                now=now,
+            )
             return state_model
 
         return self._repository.update_with_outbox(
             _mutate,
             outbox_records=lambda: _team_event_outbox_records(
-                idle_rotation_result.get("events") or []
+                cancellation_result.get("events") or []
             ),
             expected_revision=expected_revision,
         )
+
+    def repair_cancelled_task_dependencies(
+        self,
+        *,
+        predecessor_task_id: str,
+        successor_task_id: str,
+        expected_dependent_task_ids: Sequence[str],
+        reason: str,
+        actor_id: str,
+        expected_revision: int | None = None,
+    ) -> tuple[TeamState, dict[str, Any]]:
+        normalized_predecessor_id = _required_text(
+            predecessor_task_id,
+            "predecessor_task_id",
+        )
+        normalized_successor_id = _required_text(successor_task_id, "successor_task_id")
+        normalized_expected_dependent_ids = tuple(
+            sorted(
+                _unique_text_list(
+                    expected_dependent_task_ids,
+                    "expected_dependent_task_ids",
+                )
+            )
+        )
+        normalized_reason = _required_text(reason, "reason")
+        normalized_actor_id = _required_text(actor_id, "actor_id")
+        repair_result: dict[str, Any] = {"events": []}
+
+        def _mutate(state_model: TeamState) -> TeamState:
+            now = utc_now()
+            dependency_statuses_before = _dependency_status_snapshot(state_model)
+            plan = plan_cancelled_task_dependency_repair(
+                state_model,
+                predecessor_task_id=normalized_predecessor_id,
+                successor_task_id=normalized_successor_id,
+                expected_dependent_task_ids=normalized_expected_dependent_ids,
+            )
+            _changed_domain_ids, state_changed = apply_cancelled_task_dependency_repair(
+                state_model,
+                plan=plan,
+                actor_kind="operator",
+                actor_id=normalized_actor_id,
+                reason=normalized_reason,
+                expected_dependent_task_ids=normalized_expected_dependent_ids,
+                result=repair_result,
+                now=now,
+            )
+            predecessor = state_model.tasks[normalized_predecessor_id]
+            if state_changed:
+                _recalculate_project_status(state_model, predecessor.project_id)
+                _append_newly_ready_task_owner_wake_requested_events(
+                    state_model,
+                    dependency_statuses_before=dependency_statuses_before,
+                    result=repair_result,
+                    now=now,
+                )
+            return state_model
+
+        state = self._repository.update_with_outbox(
+            _mutate,
+            outbox_records=lambda: _team_event_outbox_records(
+                repair_result.get("events") or []
+            ),
+            expected_revision=expected_revision,
+        )
+        return state, repair_result
+
+    def recover_submitted_integration_boundary(
+        self,
+        *,
+        predecessor_task_id: str,
+        successor_task_id: str,
+        integration_task_id: str,
+        replacement_task_id: str,
+        expected_dependency_task_ids: Sequence[str],
+        expected_required_contribution_task_ids: Sequence[str],
+        reason: str,
+        actor_id: str,
+        git_base_commit_sha: str | None = None,
+        git_base_branch: str | None = None,
+        expected_revision: int | None = None,
+    ) -> tuple[TeamState, dict[str, Any]]:
+        normalized_predecessor_id = _required_text(
+            predecessor_task_id,
+            "predecessor_task_id",
+        )
+        normalized_successor_id = _required_text(successor_task_id, "successor_task_id")
+        normalized_integration_id = _required_text(
+            integration_task_id,
+            "integration_task_id",
+        )
+        normalized_replacement_id = _required_text(
+            replacement_task_id,
+            "replacement_task_id",
+        )
+        normalized_expected_dependency_ids = tuple(
+            sorted(
+                _unique_text_list(
+                    expected_dependency_task_ids,
+                    "expected_dependency_task_ids",
+                )
+            )
+        )
+        normalized_expected_contribution_ids = tuple(
+            sorted(
+                _unique_text_list(
+                    expected_required_contribution_task_ids,
+                    "expected_required_contribution_task_ids",
+                )
+            )
+        )
+        normalized_reason = _required_text(reason, "reason")
+        normalized_actor_id = _required_text(actor_id, "actor_id")
+        normalized_git_base_commit_sha = _optional_text(git_base_commit_sha)
+        normalized_git_base_branch = _optional_text(git_base_branch)
+        recovery_result: dict[str, Any] = {"events": []}
+
+        def _mutate(state_model: TeamState) -> TeamState:
+            now = utc_now()
+            plan = plan_submitted_integration_boundary_recovery(
+                state_model,
+                predecessor_task_id=normalized_predecessor_id,
+                successor_task_id=normalized_successor_id,
+                integration_task_id=normalized_integration_id,
+                replacement_task_id=normalized_replacement_id,
+                expected_dependency_task_ids=normalized_expected_dependency_ids,
+                expected_required_contribution_task_ids=(
+                    normalized_expected_contribution_ids
+                ),
+                reason=normalized_reason,
+                git_base_commit_sha=normalized_git_base_commit_sha,
+                git_base_branch=normalized_git_base_branch,
+                actor_kind="operator",
+            )
+            before_blocker_event_ids = set(state_model.blocker_events)
+            _changed_domain_ids, state_changed = (
+                apply_submitted_integration_boundary_recovery(
+                    state_model,
+                    plan=plan,
+                    actor_kind="operator",
+                    actor_id=normalized_actor_id,
+                    result=recovery_result,
+                    now=now,
+                )
+            )
+            blocker_event_ids = sorted(
+                set(state_model.blocker_events) - before_blocker_event_ids
+            )
+            if blocker_event_ids:
+                recovery_result["blocker_event_ids"] = blocker_event_ids
+            if state_changed:
+                replacement = state_model.tasks[normalized_replacement_id]
+                if assess_task(state_model, replacement.id).readiness.value == "actionable":
+                    _append_agent_wake_requested_event(
+                        state_model,
+                        agent_id=replacement.owner_agent_id,
+                        result=recovery_result,
+                        reason="task_ready",
+                        now=now,
+                        delay_seconds=DEFAULT_AGENT_WAKE_REQUEST_DEBOUNCE_SECONDS,
+                        payload_extra={
+                            "task_id": replacement.id,
+                            "recovery_kind": (
+                                "submitted_integration_boundary_recovery"
+                            ),
+                        },
+                    )
+                _recalculate_project_status(state_model, replacement.project_id)
+            return state_model
+
+        state = self._repository.update_with_outbox(
+            _mutate,
+            outbox_records=lambda: _team_event_outbox_records(
+                recovery_result.get("events") or []
+            ),
+            expected_revision=expected_revision,
+        )
+        return state, recovery_result
 
     def create_operator_directive(
         self,

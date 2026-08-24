@@ -653,7 +653,35 @@ class TeamBlockerCommandService(TeamCommandExecutor):
                         now=now,
                     )
             elif normalized_action == "resolve":
-                if blocker.source_kind == TeamBlockerSourceKind.HUMAN_REVIEW_REQUEST:
+                is_acceptance_remediation = (
+                    blocker.source_kind == TeamBlockerSourceKind.DELIVERABLE
+                    and blocker.reason_code.startswith("deliverable_acceptance_deferred:")
+                )
+                if is_acceptance_remediation:
+                    from ..domain.review import retry_deferred_deliverable_acceptance
+                    from ..domain.task_assessment import TaskAssessmentBoundaryError
+
+                    before_event_ids = set(state.blocker_events)
+                    try:
+                        retry_deferred_deliverable_acceptance(
+                            state,
+                            blocker_id=blocker.id,
+                            actor_agent_id=actor.id,
+                            result=result,
+                            now=now,
+                        )
+                    except TaskAssessmentBoundaryError as exc:
+                        raise TeamCommandValidationError(
+                            code=exc.code,
+                            message=exc.message,
+                            correction_context=exc.correction_context,
+                        ) from None
+                    event_ids.extend(
+                        event_id
+                        for event_id in state.blocker_events
+                        if event_id not in before_event_ids
+                    )
+                elif blocker.source_kind == TeamBlockerSourceKind.HUMAN_REVIEW_REQUEST:
                     from ..domain.human_reviews import resume_human_review
 
                     before_event_ids = set(state.blocker_events)
@@ -695,7 +723,33 @@ class TeamBlockerCommandService(TeamCommandExecutor):
                         now=now,
                     )
                     event_ids.append(event.id)
-                    if restored_task_owner_id is not None:
+                    deliverable_acceptance_route_handled = False
+                    if blocker.source_kind == TeamBlockerSourceKind.DELIVERABLE:
+                        from ..domain.review import (
+                            retry_deliverable_acceptance_if_reviewed,
+                        )
+
+                        before_event_ids = set(state.blocker_events)
+                        acceptance_completed = retry_deliverable_acceptance_if_reviewed(
+                            state,
+                            deliverable_id=blocker.source_id,
+                            actor_agent_id=actor.id,
+                            result=result,
+                            now=now,
+                        )
+                        deliverable_acceptance_route_handled = bool(
+                            acceptance_completed
+                            or result.get("deliverable_acceptance_deferred")
+                        )
+                        event_ids.extend(
+                            event_id
+                            for event_id in state.blocker_events
+                            if event_id not in before_event_ids
+                        )
+                    if (
+                        restored_task_owner_id is not None
+                        and not deliverable_acceptance_route_handled
+                    ):
                         _mark_agent_work_due(
                             state,
                             agent_id=restored_task_owner_id,
@@ -940,8 +994,14 @@ def _validate_report_source(
             raise TeamCommandValidationError(
                 code="task_not_found", message=f"task {source_id} does not exist"
             )
+        project = state.projects.get(task.project_id)
         if task.owner_agent_id != actor.id and not (
-            _is_project_lead_for(state, actor.id, task.project_id) or _is_team_manager(state, actor)
+            _is_project_lead_for(state, actor.id, task.project_id)
+            or (
+                project is not None
+                and actor.team_id == project.team_id
+                and _is_team_manager(state, actor)
+            )
         ):
             raise TeamCommandValidationError(
                 code="blocker_source_not_permitted",
@@ -956,11 +1016,16 @@ def _validate_report_source(
                 message=f"deliverable {source_id} does not exist",
             )
         task = state.tasks.get(deliverable.task_id)
+        project = state.projects.get(task.project_id) if task is not None else None
         if deliverable.producer_agent_id != actor.id and not (
             task is not None
             and (
                 _is_project_lead_for(state, actor.id, task.project_id)
-                or _is_team_manager(state, actor)
+                or (
+                    project is not None
+                    and actor.team_id == project.team_id
+                    and _is_team_manager(state, actor)
+                )
             )
         ):
             raise TeamCommandValidationError(
@@ -992,8 +1057,14 @@ def _validate_report_source(
             code="release_package_not_found",
             message=f"release package {source_id} does not exist",
         )
+    project = state.projects.get(release.project_id)
     if not (
-        _is_project_lead_for(state, actor.id, release.project_id) or _is_team_manager(state, actor)
+        _is_project_lead_for(state, actor.id, release.project_id)
+        or (
+            project is not None
+            and actor.team_id == project.team_id
+            and _is_team_manager(state, actor)
+        )
     ):
         raise TeamCommandValidationError(
             code="blocker_source_not_permitted",

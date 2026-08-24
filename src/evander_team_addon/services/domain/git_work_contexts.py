@@ -786,21 +786,35 @@ def _resolve_git_context_branch_commit(
     require_live_resolution: bool,
 ) -> str:
     recorded_commit_sha = _optional_text(context.commit_sha)
+    prepared_base_commit = _optional_text(context.base_commit)
+    # New Team preparation records full object IDs. Keep legacy contexts with
+    # pre-object-ID placeholder values readable, but never treat those values
+    # as ancestry evidence for managed Git.
+    prepared_base_ancestor = (
+        prepared_base_commit.casefold()
+        if prepared_base_commit is not None
+        and re.fullmatch(r"(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})", prepared_base_commit)
+        else None
+    )
     composition_manifest = context.dependency_composition_manifest
-    required_ancestor_shas = (
-        list(
-            dict.fromkeys(
-                [
-                    composition_manifest.composed_commit_sha,
-                    *[
-                        source.commit_sha
-                        for source in composition_manifest.dependency_git_sources
-                    ],
-                ]
-            )
-        )
+    composition_ancestor_shas = (
+        [
+            composition_manifest.composed_commit_sha,
+            *[
+                source.commit_sha
+                for source in composition_manifest.dependency_git_sources
+            ],
+        ]
         if composition_manifest is not None
         else []
+    )
+    required_ancestor_shas = list(
+        dict.fromkeys(
+            [
+                *([prepared_base_ancestor] if prepared_base_ancestor is not None else []),
+                *composition_ancestor_shas,
+            ]
+        )
     )
     if (
         candidate_commit_resolver is None
@@ -853,14 +867,20 @@ def _resolve_git_context_branch_commit(
         raise
     except Exception as exc:
         ancestry_verification = bool(required_ancestor_shas)
+        composition_ancestry_verification = composition_manifest is not None
         raise GitWorkContextValidationError(
             code=(
                 "git_candidate_composition_ancestry_failed"
+                if composition_ancestry_verification
+                else "git_candidate_prepared_base_ancestry_failed"
                 if ancestry_verification
                 else "git_candidate_commit_resolution_failed"
             ),
             message=(
                 f"could not verify dependency composition ancestry for managed Git "
+                f"branch {context.agent_branch!r}: {exc}"
+                if composition_ancestry_verification
+                else f"could not verify prepared base ancestry for managed Git "
                 f"branch {context.agent_branch!r}: {exc}"
                 if ancestry_verification
                 else f"could not resolve managed Git branch {context.agent_branch!r}: {exc}"
@@ -869,6 +889,11 @@ def _resolve_git_context_branch_commit(
                 "branch_context_id": context.id,
                 "task_id": task_id,
                 "agent_branch": context.agent_branch,
+                **(
+                    {"prepared_base_commit": prepared_base_ancestor}
+                    if prepared_base_ancestor is not None
+                    else {}
+                ),
                 **(
                     {"required_ancestor_shas": required_ancestor_shas}
                     if ancestry_verification

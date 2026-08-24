@@ -473,6 +473,7 @@ class TeamDeliverableSubmissionCommandService(TeamCommandExecutor):
             apply_command=_apply,
             require_active_dispatch=True,
             reject_stale_high_priority_inbox=True,
+            reject_stale_source_evidence=True,
         )
 
     def decide_deliverable_command(
@@ -760,6 +761,7 @@ class TeamDeliverableSubmissionCommandService(TeamCommandExecutor):
             apply_command=_apply,
             require_active_dispatch=True,
             reject_stale_high_priority_inbox=True,
+            reject_stale_source_evidence=(normalized_decision == "accepted"),
         )
 
     def submit_deliverable_for_review_command(
@@ -1053,6 +1055,7 @@ class TeamDeliverableSubmissionCommandService(TeamCommandExecutor):
             apply_command=_apply,
             require_active_dispatch=True,
             reject_stale_high_priority_inbox=True,
+            reject_stale_source_evidence=True,
         )
 
     def link_deliverable_replacement_command(

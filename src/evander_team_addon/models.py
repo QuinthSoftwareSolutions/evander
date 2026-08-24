@@ -26,7 +26,7 @@ from evander_team_addon.git_naming import (
     validate_branch_name,
 )
 
-SCHEMA_VERSION = 14
+SCHEMA_VERSION = 17
 DEFAULT_TEAM_COST_WARNING_RATIO = Decimal("0.8")
 WORKTREE_CLEANUP_INVENTORY_SAMPLE_LIMIT = 200
 TEAM_CHAT_ATTACHMENT_DEFAULT_MIME_TYPES = (
@@ -160,6 +160,13 @@ class TeamCaseStatus(str, Enum):
     WAITING = "waiting"
     RESOLVED = "resolved"
     CLOSED = "closed"
+
+
+class ExternalSourceEvidenceFreshnessStatus(str, Enum):
+    CURRENT = "current"
+    STALE = "stale"
+    EXPIRED = "expired"
+    UNKNOWN = "unknown"
 
 
 ACTIVE_TEAM_CASE_STATUS_VALUES = frozenset(
@@ -783,7 +790,6 @@ class ProjectGitIdentity(TeamModel):
 
 class ProjectGitConfig(TeamModel):
     managed_repo_id: str
-    directory_path: str
     directory_path: str = "root"
     base_branch: str | None = None
     canonical_release_branch_prefix: str = DEFAULT_CANONICAL_RELEASE_BRANCH_PREFIX
@@ -942,6 +948,7 @@ class Project(TeamModel):
     team_id: str
     name: str
     lead_agent_id: str
+    directory_path: str = "root"
     goals: list[ProjectGoal] = Field(default_factory=list)
     git: ProjectGitConfig | None = None
     release_policy: ProjectReleasePolicy | None = None
@@ -954,9 +961,32 @@ class Project(TeamModel):
     def _required_text(cls, value: object, info) -> str:
         return _required_text(value, info.field_name)
 
+    @model_validator(mode="before")
+    @classmethod
+    def _default_directory_path_from_legacy_git(cls, value: object) -> object:
+        if not isinstance(value, Mapping) or "directory_path" in value:
+            return value
+        git = value.get("git")
+        if not isinstance(git, Mapping):
+            return value
+        git_directory_path = _optional_text(git.get("directory_path"))
+        if git_directory_path is None:
+            return value
+        return {**value, "directory_path": git_directory_path}
+
+    @field_validator("directory_path", mode="before")
+    @classmethod
+    def _directory_path(cls, value: object) -> str:
+        return DirectoryPath(segments=str(value or "root").strip() or "root").as_posix()
+
     @model_validator(mode="after")
     def _validate_goal_ids(self) -> "Project":
         _ensure_unique([goal.id for goal in self.goals], "project goals")
+        if self.git is not None and self.git.directory_path != self.directory_path:
+            raise ValueError(
+                "project git directory_path must match the provider-neutral "
+                "project directory_path"
+            )
         return self
 
 
@@ -1129,6 +1159,253 @@ class AgentRuntime(TeamModel):
         return self
 
 
+class ExternalSourceEvidenceBody(TeamModel):
+    content: str
+    format: str = "plain_text"
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("content", "format", mode="before")
+    @classmethod
+    def _required_text(cls, value: object, info) -> str:
+        return _required_text(value, info.field_name)
+
+    @field_validator("metadata", mode="before")
+    @classmethod
+    def _metadata(cls, value: object) -> dict[str, Any]:
+        if value is None:
+            return {}
+        if not isinstance(value, Mapping):
+            raise ValueError("metadata must be a JSON object")
+        return dict(value)
+
+
+class ExternalSourceEvidenceAcceptanceCriterion(TeamModel):
+    text: str
+    external_id: str | None = None
+    status: str | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("text", mode="before")
+    @classmethod
+    def _required_text(cls, value: object, info) -> str:
+        return _required_text(value, info.field_name)
+
+    @field_validator("external_id", "status", mode="before")
+    @classmethod
+    def _optional_text(cls, value: object) -> str | None:
+        return _optional_text(value)
+
+    @field_validator("metadata", mode="before")
+    @classmethod
+    def _metadata(cls, value: object) -> dict[str, Any]:
+        if value is None:
+            return {}
+        if not isinstance(value, Mapping):
+            raise ValueError("metadata must be a JSON object")
+        return dict(value)
+
+
+class ExternalSourceEvidenceDiscussionEntry(TeamModel):
+    body: str
+    external_id: str | None = None
+    author: str | None = None
+    occurred_at: datetime | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("body", mode="before")
+    @classmethod
+    def _required_text(cls, value: object, info) -> str:
+        return _required_text(value, info.field_name)
+
+    @field_validator("external_id", "author", mode="before")
+    @classmethod
+    def _optional_text(cls, value: object) -> str | None:
+        return _optional_text(value)
+
+    @field_validator("metadata", mode="before")
+    @classmethod
+    def _metadata(cls, value: object) -> dict[str, Any]:
+        if value is None:
+            return {}
+        if not isinstance(value, Mapping):
+            raise ValueError("metadata must be a JSON object")
+        return dict(value)
+
+
+class ExternalSourceEvidenceLink(TeamModel):
+    url: str
+    label: str | None = None
+    relation: str | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("url", mode="before")
+    @classmethod
+    def _required_text(cls, value: object, info) -> str:
+        return _required_text(value, info.field_name)
+
+    @field_validator("label", "relation", mode="before")
+    @classmethod
+    def _optional_text(cls, value: object) -> str | None:
+        return _optional_text(value)
+
+    @field_validator("metadata", mode="before")
+    @classmethod
+    def _metadata(cls, value: object) -> dict[str, Any]:
+        if value is None:
+            return {}
+        if not isinstance(value, Mapping):
+            raise ValueError("metadata must be a JSON object")
+        return dict(value)
+
+
+def external_source_evidence_content_digest(
+    *,
+    title: str | None,
+    body: ExternalSourceEvidenceBody | Mapping[str, Any] | None,
+    acceptance_criteria: Sequence[
+        ExternalSourceEvidenceAcceptanceCriterion | Mapping[str, Any]
+    ],
+    discussion: Sequence[ExternalSourceEvidenceDiscussionEntry | Mapping[str, Any]],
+    links: Sequence[ExternalSourceEvidenceLink | Mapping[str, Any]],
+    metadata: Mapping[str, Any],
+) -> str:
+    def _json_payload(value: object) -> object:
+        if isinstance(value, BaseModel):
+            return value.model_dump(mode="json")
+        if isinstance(value, Mapping):
+            return {str(key): _json_payload(item) for key, item in value.items()}
+        if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
+            return [_json_payload(item) for item in value]
+        if isinstance(value, datetime):
+            return value.isoformat()
+        if isinstance(value, Enum):
+            return value.value
+        return value
+
+    content = {
+        "title": _optional_text(title),
+        "body": _json_payload(body),
+        "acceptance_criteria": _json_payload(acceptance_criteria),
+        "discussion": _json_payload(discussion),
+        "links": _json_payload(links),
+        "metadata": _json_payload(metadata),
+    }
+    encoded = json.dumps(
+        content,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+    ).encode("utf-8")
+    return f"sha256:{hashlib.sha256(encoded).hexdigest()}"
+
+
+class ExternalSourceEvidenceSnapshot(TeamModel):
+    id: str
+    team_id: str
+    project_id: str | None = None
+    provider_type: str
+    source_type: str
+    external_identifier: str
+    external_version: str
+    fetched_at: datetime
+    expires_at: datetime | None = None
+    freshness_status: ExternalSourceEvidenceFreshnessStatus = (
+        ExternalSourceEvidenceFreshnessStatus.UNKNOWN
+    )
+    access_classification: str
+    content_digest: str
+    title: str | None = None
+    body: ExternalSourceEvidenceBody | None = None
+    acceptance_criteria: list[ExternalSourceEvidenceAcceptanceCriterion] = Field(
+        default_factory=list
+    )
+    discussion: list[ExternalSourceEvidenceDiscussionEntry] = Field(default_factory=list)
+    links: list[ExternalSourceEvidenceLink] = Field(default_factory=list)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    created_by_actor: str
+    created_at: datetime = Field(default_factory=utc_now)
+
+    @field_validator(
+        "id",
+        "team_id",
+        "provider_type",
+        "source_type",
+        "external_identifier",
+        "external_version",
+        "access_classification",
+        "created_by_actor",
+        mode="before",
+    )
+    @classmethod
+    def _required_text(cls, value: object, info) -> str:
+        return _required_text(value, info.field_name)
+
+    @field_validator("project_id", "title", mode="before")
+    @classmethod
+    def _optional_text(cls, value: object) -> str | None:
+        return _optional_text(value)
+
+    @field_validator("content_digest", mode="before")
+    @classmethod
+    def _content_digest(cls, value: object) -> str:
+        normalized = _required_text(value, "content_digest").casefold()
+        if re.fullmatch(r"sha256:[0-9a-f]{64}", normalized) is None:
+            raise ValueError("content_digest must be a sha256:<64 lowercase hex> digest")
+        return normalized
+
+    @field_validator("metadata", mode="before")
+    @classmethod
+    def _metadata(cls, value: object) -> dict[str, Any]:
+        if value is None:
+            return {}
+        if not isinstance(value, Mapping):
+            raise ValueError("metadata must be a JSON object")
+        return dict(value)
+
+    @model_validator(mode="after")
+    def _validate_snapshot(self) -> "ExternalSourceEvidenceSnapshot":
+        expected_digest = external_source_evidence_content_digest(
+            title=self.title,
+            body=self.body,
+            acceptance_criteria=self.acceptance_criteria,
+            discussion=self.discussion,
+            links=self.links,
+            metadata=self.metadata,
+        )
+        if self.content_digest != expected_digest:
+            raise ValueError(
+                "content_digest does not match the normalized evidence snapshot content"
+            )
+        if self.expires_at is not None and _ensure_utc(self.expires_at) < _ensure_utc(
+            self.fetched_at
+        ):
+            if self.freshness_status not in {
+                ExternalSourceEvidenceFreshnessStatus.EXPIRED,
+                ExternalSourceEvidenceFreshnessStatus.STALE,
+            }:
+                raise ValueError(
+                    "expires_at before fetched_at requires stale or expired freshness_status"
+                )
+        return self
+
+
+def external_source_evidence_snapshot_payload(
+    snapshot: ExternalSourceEvidenceSnapshot,
+    *,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    payload = snapshot.model_dump(mode="json")
+    effective_now = _ensure_utc(now or utc_now())
+    effective_status = snapshot.freshness_status
+    if (
+        snapshot.expires_at is not None
+        and _ensure_utc(snapshot.expires_at) <= effective_now
+    ):
+        effective_status = ExternalSourceEvidenceFreshnessStatus.EXPIRED
+    payload["effective_freshness_status"] = effective_status.value
+    return payload
+
+
 class TeamCase(TeamModel):
     id: str
     team_id: str
@@ -1143,6 +1420,7 @@ class TeamCase(TeamModel):
     tags: list[str] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
     task_ids: list[str] = Field(default_factory=list)
+    source_evidence_snapshot_ids: list[str] = Field(default_factory=list)
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)
     closed_at: datetime | None = None
@@ -1168,7 +1446,7 @@ class TeamCase(TeamModel):
     def _description_text(cls, value: object) -> str:
         return _optional_text(value) or ""
 
-    @field_validator("tags", "task_ids", mode="before")
+    @field_validator("tags", "task_ids", "source_evidence_snapshot_ids", mode="before")
     @classmethod
     def _text_lists(cls, value: object, info) -> list[str]:
         return _unique_text_list(value, info.field_name)
@@ -1309,6 +1587,10 @@ class TaskCancellation(TeamModel):
     actor_kind: Literal["agent", "operator", "system"]
     actor_id: str
     successor_task_id: str | None = None
+    rebind_dependents: bool = False
+    rebound_dependent_task_ids: list[str] = Field(default_factory=list)
+    rebound_integration_boundary_task_ids: list[str] = Field(default_factory=list)
+    invalidated_git_work_context_ids: list[str] = Field(default_factory=list)
     cancelled_at: datetime = Field(default_factory=utc_now)
 
     @field_validator("reason_code", "reason", "actor_id", mode="before")
@@ -1320,6 +1602,66 @@ class TaskCancellation(TeamModel):
     @classmethod
     def _optional_text(cls, value: object) -> str | None:
         return _optional_text(value)
+
+    @field_validator(
+        "rebound_dependent_task_ids",
+        "rebound_integration_boundary_task_ids",
+        "invalidated_git_work_context_ids",
+        mode="before",
+    )
+    @classmethod
+    def _replacement_ids(cls, value: object, info) -> list[str]:
+        return _unique_text_list(value or [], info.field_name)
+
+    @model_validator(mode="after")
+    def _validate_dependency_rebinding(self) -> "TaskCancellation":
+        if self.rebind_dependents and self.successor_task_id is None:
+            raise ValueError("rebind_dependents requires successor_task_id")
+        if (
+            self.rebound_dependent_task_ids
+            or self.rebound_integration_boundary_task_ids
+            or self.invalidated_git_work_context_ids
+        ) and not self.rebind_dependents:
+            raise ValueError("task replacement audit IDs require rebind_dependents")
+        return self
+
+
+_TASK_MUTATION_POLICY_FIELDS = frozenset(
+    {
+        "dependency_task_ids",
+        "deliverable_contract",
+        "git_base_branch",
+        "integration_boundary",
+        "parent_task_id",
+        "task_kind",
+    }
+)
+
+
+class TaskMutationPolicy(TeamModel):
+    """Immutable workflow-owned constraints on otherwise mutable task fields."""
+
+    policy_id: str
+    reason: str
+    locked_fields: list[str] = Field(default_factory=list)
+    allow_child_tasks: bool = True
+    allow_agent_cancellation: bool = True
+
+    @field_validator("policy_id", "reason", mode="before")
+    @classmethod
+    def _required_text(cls, value: object, info) -> str:
+        return _required_text(value, info.field_name)
+
+    @field_validator("locked_fields", mode="before")
+    @classmethod
+    def _locked_fields(cls, value: object) -> list[str]:
+        fields = _unique_text_list(value or [], "locked_fields")
+        unsupported = sorted(set(fields) - _TASK_MUTATION_POLICY_FIELDS)
+        if unsupported:
+            raise ValueError(
+                "unsupported task mutation policy fields: " + ", ".join(unsupported)
+            )
+        return fields
 
 
 class TaskAssessment(TeamModel):
@@ -1378,9 +1720,11 @@ class AgentTask(TeamModel):
     originating_task_id: str | None = None
     git_base_branch: str | None = None
     git_base_commit_sha: str | None = None
+    mutation_policy: TaskMutationPolicy | None = None
     cancellation: TaskCancellation | None = None
     dependency_task_ids: list[str] = Field(default_factory=list)
     deliverable_ids: list[str] = Field(default_factory=list)
+    source_evidence_snapshot_ids: list[str] = Field(default_factory=list)
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)
 
@@ -1442,6 +1786,11 @@ class AgentTask(TeamModel):
     @classmethod
     def _deliverable_ids(cls, value: object) -> list[str]:
         return _unique_text_list(value, "deliverable_ids")
+
+    @field_validator("source_evidence_snapshot_ids", mode="before")
+    @classmethod
+    def _source_evidence_snapshot_ids(cls, value: object) -> list[str]:
+        return _unique_text_list(value or [], "source_evidence_snapshot_ids")
 
     @model_validator(mode="after")
     def _validate_self_links(self) -> "AgentTask":
@@ -1516,10 +1865,14 @@ class DeliverableGitRefs(TeamModel):
     @field_validator("accepted_pinned_ref")
     @classmethod
     def _accepted_pinned_ref(cls, value: str | None) -> str | None:
-        if value is not None and re.fullmatch(
-            r"refs/evander/team-reviews/[A-Za-z0-9_-]+",
-            value,
-        ) is None:
+        if (
+            value is not None
+            and re.fullmatch(
+                r"refs/evander/team-reviews/[A-Za-z0-9_-]+",
+                value,
+            )
+            is None
+        ):
             raise ValueError("accepted_pinned_ref must be an immutable Team review ref")
         return value
 
@@ -1606,18 +1959,22 @@ class DeliverableVerification(TeamModel):
     @model_validator(mode="after")
     def _validate_server_attestation(self) -> "DeliverableVerification":
         if self.provenance == "agent_reported":
-            if any(
-                value is not None
-                for value in (
-                    self.run_id,
-                    self.candidate_commit_sha,
-                    self.container_image,
-                    self.resource_limits,
-                    self.waiver,
-                    self.started_at,
-                    self.finished_at,
+            if (
+                any(
+                    value is not None
+                    for value in (
+                        self.run_id,
+                        self.candidate_commit_sha,
+                        self.container_image,
+                        self.resource_limits,
+                        self.waiver,
+                        self.started_at,
+                        self.finished_at,
+                    )
                 )
-            ) or self.verification_commands or self.command_results:
+                or self.verification_commands
+                or self.command_results
+            ):
                 raise ValueError(
                     "agent-reported verification cannot contain server-owned attestation fields"
                 )
@@ -1977,10 +2334,14 @@ class DependencyGitSource(TeamModel):
     @classmethod
     def _optional_pinned_ref(cls, value: object) -> str | None:
         normalized = _optional_text(value)
-        if normalized is not None and re.fullmatch(
-            r"refs/evander/team-reviews/[A-Za-z0-9_-]+",
-            normalized,
-        ) is None:
+        if (
+            normalized is not None
+            and re.fullmatch(
+                r"refs/evander/team-reviews/[A-Za-z0-9_-]+",
+                normalized,
+            )
+            is None
+        ):
             raise ValueError("pinned_ref must be an immutable Team review ref")
         return normalized
 
@@ -2740,7 +3101,26 @@ class WorktreeCleanupState(str, Enum):
     PENDING = "pending"
     PROCESSING = "processing"
     SUCCEEDED = "succeeded"
+    OPERATOR_ACTION_REQUIRED = "operator_action_required"
+    # Legacy persisted value. Model and SQLite migrations translate it to
+    # either pending automatic retry or operator action required.
     RECOVERY_REQUIRED = "recovery_required"
+
+
+WORKTREE_CLEANUP_TRANSIENT_FAILURE_CHECKS = frozenset(
+    {
+        "active_dispatch_reference",
+        "active_git_context_reference",
+        "backend_cleanup_failed",
+        "ignored_path_cleanup_failed",
+        "processing_lease_expired",
+        "task_not_cleanup_eligible",
+        "worktree_path_changed",
+        "worktree_registration_active",
+        "worktree_removal_failed",
+        "worktree_removal_incomplete",
+    }
+)
 
 
 class TeamDispatchMcpCapabilityReceipt(TeamModel):
@@ -2819,6 +3199,7 @@ class TeamDispatch(TeamModel):
     inbox_item_ids: list[str] = Field(default_factory=list)
     project_ids: list[str] = Field(default_factory=list)
     managed_repo_ids: list[str] = Field(default_factory=list)
+    source_evidence_snapshot_ids: list[str] = Field(default_factory=list)
     chat_message_ids: list[str] = Field(default_factory=list)
     review_routing_authorities: list[TeamDispatchReviewRoutingAuthority] = Field(
         default_factory=list
@@ -2880,6 +3261,7 @@ class TeamDispatch(TeamModel):
         "inbox_item_ids",
         "project_ids",
         "managed_repo_ids",
+        "source_evidence_snapshot_ids",
         "chat_message_ids",
         "action_feedback_dispatch_ids",
         "initial_release_decision_deliverable_ids",
@@ -2927,7 +3309,9 @@ class WorktreeCleanupCandidate(TeamModel):
     session_id: str
     task_id: str
     project_id: str
+    git_work_context_id: str
     managed_repo_id: str
+    directory_path: str = "root"
     execution_backend: Literal["libvirt_vm", "container_worker_vm"]
     worktree_path: str
     branch: str
@@ -2938,8 +3322,14 @@ class WorktreeCleanupCandidate(TeamModel):
     reason: str
     eligible_at: datetime = Field(default_factory=utc_now)
     attempt_count: int = Field(default=0, ge=0)
+    automatic_retry_count: int = Field(default=0, ge=0)
     last_safety_check: str | None = None
     last_error: str | None = None
+    operator_action_required_at: datetime | None = None
+    operator_action_reason: str | None = None
+    last_operator_retry_at: datetime | None = None
+    last_operator_retry_by: str | None = None
+    last_operator_retry_reason: str | None = None
     ignored_file_inventory: list[str] = Field(default_factory=list)
     ignored_file_count: int = Field(default=0, ge=0)
     ignored_file_inventory_sha256: str | None = None
@@ -2957,6 +3347,9 @@ class WorktreeCleanupCandidate(TeamModel):
         if not isinstance(data, Mapping):
             return data
         migrated = dict(data)
+        if not str(migrated.get("git_work_context_id") or "").strip():
+            candidate_id = str(migrated.get("id") or "unknown").strip() or "unknown"
+            migrated["git_work_context_id"] = f"legacy:{candidate_id}"
         inventory = migrated.get("ignored_file_inventory") or []
         if not all(
             field_name in migrated
@@ -2971,6 +3364,23 @@ class WorktreeCleanupCandidate(TeamModel):
             migrated["ignored_file_count"] = count
             migrated["ignored_file_inventory_sha256"] = digest
             migrated["ignored_file_inventory_truncated"] = truncated
+        raw_state = migrated.get("state")
+        state = raw_state.value if isinstance(raw_state, WorktreeCleanupState) else raw_state
+        if state == WorktreeCleanupState.RECOVERY_REQUIRED.value:
+            failed_check = str(migrated.get("last_safety_check") or "").strip()
+            if failed_check in WORKTREE_CLEANUP_TRANSIENT_FAILURE_CHECKS:
+                migrated["state"] = WorktreeCleanupState.PENDING.value
+                migrated.setdefault("automatic_retry_count", 0)
+            else:
+                migrated["state"] = WorktreeCleanupState.OPERATOR_ACTION_REQUIRED.value
+                if migrated.get("operator_action_required_at") is None:
+                    migrated["operator_action_required_at"] = (
+                        migrated.get("updated_at") or migrated.get("eligible_at") or utc_now()
+                    )
+                if migrated.get("operator_action_reason") is None:
+                    migrated["operator_action_reason"] = (
+                        failed_check or "legacy_recovery_required"
+                    )
         return migrated
 
     @field_validator(
@@ -2979,6 +3389,7 @@ class WorktreeCleanupCandidate(TeamModel):
         "session_id",
         "task_id",
         "project_id",
+        "git_work_context_id",
         "managed_repo_id",
         "worktree_path",
         "branch",
@@ -2989,12 +3400,20 @@ class WorktreeCleanupCandidate(TeamModel):
     def _required_text(cls, value: object, info) -> str:
         return _required_text(value, info.field_name)
 
+    @field_validator("directory_path", mode="before")
+    @classmethod
+    def _directory_path(cls, value: object) -> str:
+        return DirectoryPath(segments=str(value or "root").strip() or "root").as_posix()
+
     @field_validator(
         "base_ref",
         "expected_head",
         "retained_commit_sha",
         "last_safety_check",
         "last_error",
+        "operator_action_reason",
+        "last_operator_retry_by",
+        "last_operator_retry_reason",
         "ignored_file_inventory_sha256",
         mode="before",
     )
@@ -3009,6 +3428,19 @@ class WorktreeCleanupCandidate(TeamModel):
         if len(inventory) > WORKTREE_CLEANUP_INVENTORY_SAMPLE_LIMIT:
             raise ValueError("ignored_file_inventory exceeds the bounded evidence sample limit")
         return inventory
+
+    @model_validator(mode="after")
+    def _validate_operator_action_evidence(self) -> "WorktreeCleanupCandidate":
+        if self.state == WorktreeCleanupState.OPERATOR_ACTION_REQUIRED:
+            if self.operator_action_required_at is None:
+                raise ValueError(
+                    "operator-action-required cleanup requires operator_action_required_at"
+                )
+            if self.operator_action_reason is None:
+                raise ValueError(
+                    "operator-action-required cleanup requires operator_action_reason"
+                )
+        return self
 
 
 class TeamDispatchActivityStatus(str, Enum):
@@ -3637,9 +4069,7 @@ class ReleaseVerificationRun(TeamModel):
         if self.provenance == "server_acceptance_reuse" and (
             self.state != "passed" or not self.evidence_refs
         ):
-            raise ValueError(
-                "reused server acceptance verification requires passed evidence"
-            )
+            raise ValueError("reused server acceptance verification requires passed evidence")
         return self
 
 
@@ -4370,6 +4800,9 @@ class TeamState(TeamModel):
     agent_runtimes: dict[str, AgentRuntime] = Field(default_factory=dict)
     cases: dict[str, TeamCase] = Field(default_factory=dict)
     tasks: dict[str, AgentTask] = Field(default_factory=dict)
+    external_source_evidence_snapshots: dict[str, ExternalSourceEvidenceSnapshot] = Field(
+        default_factory=dict
+    )
     deliverables: dict[str, Deliverable] = Field(default_factory=dict)
     review_requests: dict[str, ReviewRequest] = Field(default_factory=dict)
     outcome_kind_definitions: dict[str, OutcomeKindDefinition] = Field(default_factory=dict)
@@ -4573,6 +5006,7 @@ class TeamState(TeamModel):
         self._validate_agents(errors)
         self._validate_project_assignments(errors)
         self._validate_agent_runtimes(errors)
+        self._validate_external_source_evidence_snapshots(errors)
         self._validate_cases(errors)
         self._validate_tasks(errors)
         self._validate_task_graph(errors)
@@ -4616,6 +5050,7 @@ class TeamState(TeamModel):
             "agent_runtimes",
             "cases",
             "tasks",
+            "external_source_evidence_snapshots",
             "deliverables",
             "review_requests",
             "outcome_kind_definitions",
@@ -4959,6 +5394,26 @@ class TeamState(TeamModel):
             current = self.agents.get(current_id)
             current_id = current.reports_to_agent_id if current is not None else None
 
+    def _validate_external_source_evidence_snapshots(self, errors: list[str]) -> None:
+        for snapshot in self.external_source_evidence_snapshots.values():
+            if snapshot.team_id not in self.teams:
+                errors.append(
+                    f"external source evidence snapshot {snapshot.id} references "
+                    f"missing team {snapshot.team_id}"
+                )
+            if snapshot.project_id is not None:
+                project = self.projects.get(snapshot.project_id)
+                if project is None:
+                    errors.append(
+                        f"external source evidence snapshot {snapshot.id} references "
+                        f"missing project {snapshot.project_id}"
+                    )
+                elif project.team_id != snapshot.team_id:
+                    errors.append(
+                        f"external source evidence snapshot {snapshot.id} project "
+                        f"{project.id} belongs to team {project.team_id}"
+                    )
+
     def _validate_cases(self, errors: list[str]) -> None:
         for case in self.cases.values():
             team = self.teams.get(case.team_id)
@@ -4999,6 +5454,24 @@ class TeamState(TeamModel):
                 if case.project_id is not None and task.project_id != case.project_id:
                     errors.append(
                         f"case {case.id} task {task.id} belongs to project {task.project_id}"
+                    )
+            for snapshot_id in case.source_evidence_snapshot_ids:
+                snapshot = self.external_source_evidence_snapshots.get(snapshot_id)
+                if snapshot is None:
+                    errors.append(
+                        f"case {case.id} references missing external source evidence "
+                        f"snapshot {snapshot_id}"
+                    )
+                    continue
+                if snapshot.team_id != case.team_id:
+                    errors.append(
+                        f"case {case.id} external source evidence snapshot {snapshot.id} "
+                        f"belongs to team {snapshot.team_id}"
+                    )
+                if snapshot.project_id is not None and snapshot.project_id != case.project_id:
+                    errors.append(
+                        f"case {case.id} external source evidence snapshot {snapshot.id} "
+                        f"belongs to project {snapshot.project_id}"
                     )
 
     def _validate_tasks(self, errors: list[str]) -> None:
@@ -5070,6 +5543,24 @@ class TeamState(TeamModel):
                 elif deliverable.task_id != task.id:
                     errors.append(
                         f"task {task.id} deliverable {deliverable_id} does not point back"
+                    )
+            for snapshot_id in task.source_evidence_snapshot_ids:
+                snapshot = self.external_source_evidence_snapshots.get(snapshot_id)
+                if snapshot is None:
+                    errors.append(
+                        f"task {task.id} references missing external source evidence "
+                        f"snapshot {snapshot_id}"
+                    )
+                    continue
+                if project is not None and snapshot.team_id != project.team_id:
+                    errors.append(
+                        f"task {task.id} external source evidence snapshot {snapshot.id} "
+                        f"belongs to team {snapshot.team_id}"
+                    )
+                if snapshot.project_id is not None and snapshot.project_id != task.project_id:
+                    errors.append(
+                        f"task {task.id} external source evidence snapshot {snapshot.id} "
+                        f"belongs to project {snapshot.project_id}"
                     )
 
     def _validate_task_graph(self, errors: list[str]) -> None:
@@ -6290,6 +6781,33 @@ class TeamState(TeamModel):
             for project_id in dispatch.project_ids:
                 if project_id not in self.projects:
                     errors.append(f"dispatch {dispatch.id} references missing project {project_id}")
+            for snapshot_id in dispatch.source_evidence_snapshot_ids:
+                snapshot = self.external_source_evidence_snapshots.get(snapshot_id)
+                if snapshot is None:
+                    errors.append(
+                        f"dispatch {dispatch.id} references missing external source evidence "
+                        f"snapshot {snapshot_id}"
+                    )
+                    continue
+                effective_agent_team_id = (
+                    agent.team_id or agent.retired_team_id if agent is not None else None
+                )
+                if (
+                    effective_agent_team_id is not None
+                    and snapshot.team_id != effective_agent_team_id
+                ):
+                    errors.append(
+                        f"dispatch {dispatch.id} external source evidence snapshot "
+                        f"{snapshot.id} belongs to team {snapshot.team_id}"
+                    )
+                if (
+                    snapshot.project_id is not None
+                    and snapshot.project_id not in dispatch.project_ids
+                ):
+                    errors.append(
+                        f"dispatch {dispatch.id} external source evidence snapshot "
+                        f"{snapshot.id} is outside dispatch project scope"
+                    )
             for deliverable_id in dispatch.initial_release_decision_deliverable_ids:
                 if deliverable_id not in self.deliverables:
                     errors.append(
@@ -6382,13 +6900,6 @@ class TeamState(TeamModel):
                 errors.append(
                     f"worktree cleanup {candidate.id} references missing project "
                     f"{candidate.project_id}"
-                )
-            elif (
-                project.git is not None and project.git.managed_repo_id != candidate.managed_repo_id
-            ):
-                errors.append(
-                    f"worktree cleanup {candidate.id} repository does not match "
-                    f"project {project.id}"
                 )
 
     def _validate_ephemeral_assignments(self, errors: list[str]) -> None:
@@ -7047,7 +7558,8 @@ def _activity_task_blocked(state: TeamState, task: AgentTask) -> bool:
 
 def _activity_task_waiting(state: TeamState, task: AgentTask) -> bool:
     return (
-        task.state in {
+        task.state
+        in {
             TeamTaskState.WAITING_FOR_INPUT,
             TeamTaskState.WAITING_FOR_REVIEW,
         }
@@ -7275,6 +7787,10 @@ def team_state_payload(
             assessments=assessments,
         )
         for task_id, task in state.tasks.items()
+    }
+    payload["external_source_evidence_snapshots"] = {
+        snapshot_id: external_source_evidence_snapshot_payload(snapshot, now=now)
+        for snapshot_id, snapshot in state.external_source_evidence_snapshots.items()
     }
     payload["release_packages"] = {
         release_id: release_package_payload_with_derived(state, release)
@@ -8214,13 +8730,10 @@ def _active_tasks_for_runtime_agent(state: TeamState, agent_id: str) -> list[Age
 
 
 def _runtime_task_can_wake_owner_for_work(state: TeamState, task: AgentTask) -> bool:
-    return (
-        task.state not in {
-            TeamTaskState.BLOCKED,
-            TeamTaskState.WAITING_FOR_INPUT,
-        }
-        and not _runtime_task_waits_on_active_deliverable_review(state, task)
-    )
+    return task.state not in {
+        TeamTaskState.BLOCKED,
+        TeamTaskState.WAITING_FOR_INPUT,
+    } and not _runtime_task_waits_on_active_deliverable_review(state, task)
 
 
 def _runtime_task_waits_on_active_deliverable_review(

@@ -14,6 +14,7 @@ import httpx
 from PIL import Image
 import pytest
 from starlette.applications import Starlette
+from starlette.requests import Request
 from starlette.testclient import TestClient
 
 from evander.addons import AddonContext
@@ -93,6 +94,8 @@ from evander_team_addon.models import (
     TeamRecordState,
     TeamState,
     TeamTaskState,
+    WorktreeCleanupCandidate,
+    WorktreeCleanupState,
 )
 from evander_team_addon.repository import TeamStateRepository
 from evander_team_addon.providers import (
@@ -128,6 +131,62 @@ def _team_chat_service(repo: TeamStateRepository) -> TeamChatService:
 
 def _team_runtime_service(repo: TeamStateRepository) -> TeamRuntimeService:
     return TeamRuntimeService(repo)
+
+
+def _json_route_request(
+    *,
+    method: str,
+    path: str,
+    path_params: dict[str, str],
+    payload: dict[str, object],
+) -> Request:
+    body = json.dumps(payload).encode("utf-8")
+    sent = False
+
+    async def _receive():
+        nonlocal sent
+        if sent:
+            return {"type": "http.disconnect"}
+        sent = True
+        return {"type": "http.request", "body": body, "more_body": False}
+
+    return Request(
+        {
+            "type": "http",
+            "method": method,
+            "path": path,
+            "path_params": path_params,
+            "query_string": b"",
+            "headers": [(b"content-type", b"application/json")],
+        },
+        _receive,
+    )
+
+
+def _invoke_team_json_route(
+    routes,
+    *,
+    route_path: str,
+    actual_path: str,
+    path_params: dict[str, str],
+    payload: dict[str, object],
+    method: str = "POST",
+):
+    endpoint = next(
+        route.endpoint
+        for route in routes
+        if route.path == route_path and method in route.methods
+    )
+    return asyncio.run(
+        endpoint(
+            _json_route_request(
+                method=method,
+                path=actual_path,
+                path_params=path_params,
+                payload=payload,
+            )
+        )
+    )
 
 
 def test_team_outbox_publication_wake_is_durable_and_notifies_trigger_worker(
@@ -229,6 +288,197 @@ def test_human_release_policy_resolves_directory_groups_and_rejects_empty_pool()
             payload,
             directory_path="root/team/project",
         )
+
+
+def test_legacy_release_manifest_uses_provider_neutral_project_directory() -> None:
+    directory_path = "root/departments/accounting"
+    state = SimpleNamespace(
+        projects={
+            "project": SimpleNamespace(
+                directory_path=directory_path,
+                git=None,
+            )
+        }
+    )
+    release = SimpleNamespace(
+        project_id="project",
+        manifest=SimpleNamespace(
+            human_review_requirement=SimpleNamespace(directory_path=None),
+        ),
+    )
+
+    assert team_addon_api._release_human_review_directory(state, release) == (
+        directory_path
+    )
+
+
+def test_non_owner_cannot_create_project_in_nested_directory(tmp_path: Path) -> None:
+    runtime_dir = tmp_path / "runtime"
+    directory_path = "root/departments/accounting"
+    auth = _HumanApiAuthStub(
+        login="unrelated@example.com",
+        owner=False,
+        privileged=True,
+    )
+    routes = team_addon_api.admin_api_routes(
+        AddonContext(
+            addon_id="team-addon",
+            runtime_dir=runtime_dir,
+            addon_runtime_dir=runtime_dir / "addons" / "team-addon",
+            auth=auth,
+        )
+    )
+
+    response = _invoke_team_json_route(
+        routes,
+        route_path="/projects",
+        actual_path="/projects",
+        path_params={},
+        payload={
+            "id": "accounting",
+            "team_id": "team",
+            "name": "Accounting",
+            "lead_agent_id": "lead",
+            "lead_session_id": "session-lead",
+            "directory_path": directory_path,
+            "expected_revision": 0,
+        },
+    )
+
+    assert response.status_code == 403
+    assert "directory owner permission" in json.loads(response.body)["error"]
+    assert TeamStateRepository(runtime_dir).read().projects == {}
+
+
+def test_project_move_requires_owner_on_current_and_target_directory(
+    tmp_path: Path,
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    repository = _seed_runtime_operations_state(runtime_dir)
+    current_directory = "root/departments/accounting"
+    TeamAdminService(repository).update_project(
+        project_id="project",
+        directory_path=current_directory,
+        set_directory_path=True,
+    )
+    before = repository.read()
+    auth = _HumanApiAuthStub(
+        login="accounting-owner@example.com",
+        owner=False,
+        privileged=True,
+    )
+    auth.can = lambda _request, permission, directory_path=None: (
+        permission == "admin.owner" and directory_path == current_directory
+    )
+    routes = team_addon_api.admin_api_routes(
+        AddonContext(
+            addon_id="team-addon",
+            runtime_dir=runtime_dir,
+            addon_runtime_dir=runtime_dir / "addons" / "team-addon",
+            auth=auth,
+        )
+    )
+
+    response = _invoke_team_json_route(
+        routes,
+        route_path="/projects/{project_id}",
+        actual_path="/projects/project",
+        path_params={"project_id": "project"},
+        payload={
+            "directory_path": "root",
+            "expected_revision": before.revision,
+        },
+        method="PATCH",
+    )
+
+    assert response.status_code == 403
+    assert "directory owner permission" in json.loads(response.body)["error"]
+    after = repository.read()
+    assert after.revision == before.revision
+    assert after.projects["project"].directory_path == current_directory
+
+
+def test_directory_only_project_move_re_resolves_human_review_scope(
+    tmp_path: Path,
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    repository = _seed_runtime_operations_state(runtime_dir)
+    admin = TeamAdminService(repository)
+    current_directory = "root/departments/accounting"
+    target_directory = "root/departments/finance"
+    admin.update_project(
+        project_id="project",
+        directory_path=current_directory,
+        set_directory_path=True,
+        release_policy=ProjectReleasePolicy(
+            human_review_requirement=HumanReviewRequirement(
+                reviewer_group_ids=["finance-reviewers"],
+                directory_path=current_directory,
+                resolved_reviewer_user_ids=["old-reviewer@example.com"],
+            )
+        ),
+        set_release_policy=True,
+    )
+    state = repository.read()
+    reviewer = "finance-reviewer@example.com"
+    assignment = SimpleNamespace(
+        login=reviewer,
+        group_id="finance-reviewers",
+        directory_path=target_directory,
+    )
+    auth = _HumanApiAuthStub(
+        login="owner@example.com",
+        owner=True,
+        privileged=True,
+        known_users=[reviewer],
+        permission_users=[reviewer],
+    )
+    auth.user_store = SimpleNamespace(
+        get_group=lambda group_id: (
+            SimpleNamespace(group_id=group_id)
+            if group_id == "finance-reviewers"
+            else None
+        ),
+        list_user_group_assignments=lambda _login=None: [assignment],
+        get_user=lambda login: (
+            SimpleNamespace(login=reviewer)
+            if str(login).casefold() == reviewer
+            else None
+        ),
+        can=lambda login, permission, directory_path=None: (
+            str(login).casefold() == reviewer
+            and permission == "team.human_reviews.decide"
+            and directory_path == target_directory
+        ),
+    )
+    routes = team_addon_api.admin_api_routes(
+        AddonContext(
+            addon_id="team-addon",
+            runtime_dir=runtime_dir,
+            addon_runtime_dir=runtime_dir / "addons" / "team-addon",
+            auth=auth,
+        )
+    )
+
+    response = _invoke_team_json_route(
+        routes,
+        route_path="/projects/{project_id}",
+        actual_path="/projects/project",
+        path_params={"project_id": "project"},
+        payload={
+            "directory_path": target_directory,
+            "expected_revision": state.revision,
+        },
+        method="PATCH",
+    )
+
+    assert response.status_code == 200, response.body.decode()
+    project = repository.read().projects["project"]
+    assert project.directory_path == target_directory
+    requirement = project.release_policy.human_review_requirement
+    assert requirement is not None
+    assert requirement.directory_path == target_directory
+    assert requirement.resolved_reviewer_user_ids == [reviewer]
 
 
 @pytest.mark.parametrize(
@@ -360,6 +610,12 @@ def test_team_addon_registers_release_gate_retry_api_route(tmp_path: Path) -> No
         if route.path == "/release-packages/{release_package_id}/retry-gate"
     )
     assert retry_route.methods == {"POST"}
+    cleanup_retry_route = next(
+        route
+        for route in routes
+        if route.path == "/worktree-cleanup-candidates/{cleanup_candidate_id}/retry"
+    )
+    assert cleanup_retry_route.methods == {"POST"}
 
     verification_live_route = next(
         route
@@ -480,6 +736,131 @@ def test_team_addon_retry_gate_api_routes_rejected_review_exception_flag(
     assert captured["release_package_id"] == "release-rejected"
     assert captured["gate_id"] == "review-rejected"
     assert captured["allow_rejected_review_exception"] is True
+
+
+def test_team_addon_owner_can_requeue_operator_action_cleanup_candidate(
+    tmp_path: Path,
+) -> None:
+    repository = TeamStateRepository(tmp_path)
+    admin = TeamAdminService(repository)
+    state = admin.create_team(
+        team_id="team",
+        name="Team",
+        manager_agent_id="manager",
+        manager_session_id="session-manager",
+    )
+    state = admin.create_project(
+        project_id="project",
+        team_id="team",
+        name="Project",
+        lead_agent_id="lead",
+        lead_session_id="session-lead",
+        git=ProjectGitConfig(
+            managed_repo_id="mr_0123456789abcdefabcd",
+            directory_path="root/team/project",
+            base_branch="main",
+        ),
+        expected_revision=state.revision,
+    )
+    state = admin.create_or_reprioritize_task(
+        task_id="task",
+        owner_agent_id="lead",
+        project_id="project",
+        priority=1,
+        title="Completed task",
+        description="Retained cleanup candidate.",
+        created_by_agent_id="lead",
+        expected_revision=state.revision,
+    )
+
+    def _add_candidate(current: TeamState) -> TeamState:
+        current.worktree_cleanup_candidates["cleanup"] = WorktreeCleanupCandidate(
+            id="cleanup",
+            agent_id="lead",
+            session_id="session-lead",
+            task_id="task",
+            project_id="project",
+            git_work_context_id="legacy:cleanup",
+            managed_repo_id="mr_0123456789abcdefabcd",
+            directory_path="root/team/legacy-project-scope",
+            execution_backend="libvirt_vm",
+            worktree_path="/home/agent/worktrees/project/task-12345678",
+            branch="agents/session-lead/tasks/task-12345678",
+            expected_head="1" * 40,
+            state=WorktreeCleanupState.OPERATOR_ACTION_REQUIRED,
+            reason="task_resolved",
+            last_safety_check="tracked_changes",
+            last_error="tracked changes prevent cleanup",
+            operator_action_required_at=datetime(2026, 8, 24, 12, tzinfo=UTC),
+            operator_action_reason="tracked_changes",
+        )
+        return current
+
+    state = repository.update(_add_candidate, expected_revision=state.revision)
+
+    class CurrentProjectScopeOwnerAuth(_HumanApiAuthStub):
+        def can(
+            self,
+            _request,
+            permission: str,
+            directory_path: str | None = None,
+        ) -> bool:
+            self.permission_calls.append((permission, directory_path))
+            return permission == "admin.owner" and directory_path == "root/team/project"
+
+    auth = CurrentProjectScopeOwnerAuth(login="owner@example.com")
+    client = TestClient(
+        Starlette(
+            routes=team_addon_api.admin_api_routes(
+                AddonContext(
+                    addon_id="team-addon",
+                    runtime_dir=tmp_path,
+                    addon_runtime_dir=tmp_path / "addons" / "team-addon",
+                    auth=auth,
+                )
+            )
+        )
+    )
+
+    response = client.post(
+        "/worktree-cleanup-candidates/cleanup/retry",
+        json={
+            "reason": "The retained tracked edits were committed.",
+            "expected_revision": state.revision,
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    payload = response.json()["worktree_cleanup_candidate"]
+    assert payload["state"] == "pending"
+    assert payload["last_safety_check"] == "tracked_changes"
+    assert payload["last_operator_retry_by"] == "operator:owner@example.com"
+    assert ("admin.owner", "root/team/project") in auth.permission_calls
+    assert ("admin.owner", "root/team/legacy-project-scope") not in auth.permission_calls
+    audits = repository.list_dispatch_activity(tool_name="team_worktree_cleanup_retry")
+    assert len(audits) == 1
+    assert audits[0].caller_identity == "operator:owner@example.com"
+
+    denied_client = TestClient(
+        Starlette(
+            routes=team_addon_api.admin_api_routes(
+                AddonContext(
+                    addon_id="team-addon",
+                    runtime_dir=tmp_path,
+                    addon_runtime_dir=tmp_path / "addons" / "team-addon",
+                    auth=_HumanApiAuthStub(login="member@example.com", owner=False),
+                )
+            )
+        )
+    )
+    denied = denied_client.post(
+        "/worktree-cleanup-candidates/cleanup/retry",
+        json={
+            "reason": "Try without owner permission.",
+            "expected_revision": repository.read_revision(),
+        },
+    )
+    assert denied.status_code == 403
 
 
 @pytest.fixture(autouse=True)
@@ -777,6 +1158,275 @@ def _seed_runtime_operations_state(runtime_dir: Path) -> TeamStateRepository:
 
     repo.update(_mutate)
     return repo
+
+
+def test_admin_api_task_replacement_rebinds_active_dependents(tmp_path: Path) -> None:
+    runtime_dir = tmp_path / "runtime"
+    repo = _seed_runtime_operations_state(runtime_dir)
+    _team_admin_service(repo).create_or_reprioritize_task(
+        task_id="replacement-task",
+        owner_agent_id="backend",
+        project_id="project",
+        priority=1,
+        title="Replacement dependency",
+        description="This task replaces the old dependency.",
+        created_by_agent_id="lead",
+        state=TeamTaskState.FINISHED,
+    )
+    client = _client(tmp_path)
+
+    response = client.post(
+        "/api/addons/team-addon/tasks/dependency-task/cancel",
+        json={
+            "reason_code": "replaced",
+            "reason": "The replacement now owns this scope.",
+            "successor_task_id": "replacement-task",
+            "rebind_dependents": True,
+            "expected_dependent_task_ids": ["waiting-task"],
+            "expected_revision": repo.read().revision,
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    reread = repo.read()
+    cancellation = reread.tasks["dependency-task"].cancellation
+    assert cancellation is not None
+    assert cancellation.rebind_dependents is True
+    assert cancellation.rebound_dependent_task_ids == ["waiting-task"]
+    assert reread.tasks["waiting-task"].dependency_task_ids == ["replacement-task"]
+
+
+def test_admin_api_repairs_dependencies_after_plain_task_cancellation(
+    tmp_path: Path,
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    repo = _seed_runtime_operations_state(runtime_dir)
+    admin = _team_admin_service(repo)
+    admin.create_or_reprioritize_task(
+        task_id="replacement-task",
+        owner_agent_id="backend",
+        project_id="project",
+        priority=1,
+        title="Recorded replacement dependency",
+        description="This task replaces the old dependency.",
+        created_by_agent_id="lead",
+        state=TeamTaskState.FINISHED,
+    )
+    state = admin.cancel_task(
+        task_id="dependency-task",
+        reason_code="replaced",
+        reason="Record the successor before graph repair is authorized.",
+        actor_id="operator:original",
+        successor_task_id="replacement-task",
+    )
+    cancellation_before = state.tasks["dependency-task"].cancellation.model_dump(
+        mode="json"
+    )
+    client = _client(tmp_path)
+
+    response = client.post(
+        "/api/addons/team-addon/tasks/dependency-task/repair-cancelled-dependencies",
+        json={
+            "successor_task_id": "replacement-task",
+            "expected_dependent_task_ids": ["waiting-task"],
+            "reason": "Repair the frozen stranded dependent set.",
+            "expected_revision": state.revision,
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    payload = response.json()["task_dependency_repair"]
+    assert payload["rebound_dependent_task_ids"] == ["waiting-task"]
+    assert payload["audit_action_evidence_id"]
+    reread = repo.read()
+    assert reread.tasks["waiting-task"].dependency_task_ids == ["replacement-task"]
+    assert reread.tasks["dependency-task"].cancellation.model_dump(mode="json") == (
+        cancellation_before
+    )
+
+
+@pytest.mark.parametrize(
+    ("route_path", "actual_path", "payload"),
+    [
+        (
+            "/tasks/{task_id}/cancel",
+            "/tasks/dependency-task/cancel",
+            {
+                "reason_code": "replaced",
+                "reason": "Attempt a cross-directory graph rewrite.",
+                "successor_task_id": "replacement-task",
+                "rebind_dependents": True,
+                "expected_dependent_task_ids": ["waiting-task"],
+            },
+        ),
+        (
+            "/tasks/{task_id}/repair-cancelled-dependencies",
+            "/tasks/dependency-task/repair-cancelled-dependencies",
+            {
+                "successor_task_id": "replacement-task",
+                "expected_dependent_task_ids": ["waiting-task"],
+                "reason": "Attempt a cross-directory graph repair.",
+            },
+        ),
+        (
+            "/tasks/{task_id}/recover-submitted-integration-boundary",
+            "/tasks/dependency-task/recover-submitted-integration-boundary",
+            {
+                "predecessor_task_id": "dependency-task",
+                "successor_task_id": "replacement-task",
+                "replacement_task_id": "replacement-integration",
+                "expected_dependency_task_ids": ["dependency-task"],
+                "expected_required_contribution_task_ids": ["dependency-task"],
+                "reason": "Attempt a cross-directory boundary recovery.",
+            },
+        ),
+    ],
+)
+def test_admin_graph_rewrites_require_affected_project_directory_owner(
+    tmp_path: Path,
+    route_path: str,
+    actual_path: str,
+    payload: dict[str, object],
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    repository = _seed_runtime_operations_state(runtime_dir)
+    directory_path = "root/departments/accounting"
+    TeamAdminService(repository).update_project(
+        project_id="project",
+        directory_path=directory_path,
+        set_directory_path=True,
+    )
+    before = repository.read()
+    auth = _HumanApiAuthStub(
+        login="unrelated@example.com",
+        owner=False,
+        privileged=True,
+    )
+    routes = team_addon_api.admin_api_routes(
+        AddonContext(
+            addon_id="team-addon",
+            runtime_dir=runtime_dir,
+            addon_runtime_dir=runtime_dir / "addons" / "team-addon",
+            auth=auth,
+        )
+    )
+
+    response = _invoke_team_json_route(
+        routes,
+        route_path=route_path,
+        actual_path=actual_path,
+        path_params={"task_id": "dependency-task"},
+        payload={**payload, "expected_revision": before.revision},
+    )
+
+    assert response.status_code == 403
+    assert "directory owner permission" in json.loads(response.body)["error"]
+    after = repository.read()
+    assert after.revision == before.revision
+    assert after.tasks["dependency-task"] == before.tasks["dependency-task"]
+    assert after.tasks["waiting-task"] == before.tasks["waiting-task"]
+
+
+def test_project_directory_owner_recovers_submitted_non_git_boundary_via_api(
+    tmp_path: Path,
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    repository = _seed_runtime_operations_state(runtime_dir)
+    admin = TeamAdminService(repository)
+    directory_path = "root/departments/accounting"
+    admin.update_project(
+        project_id="project",
+        directory_path=directory_path,
+        set_directory_path=True,
+    )
+    admin.create_or_reprioritize_task(
+        task_id="replacement-task",
+        owner_agent_id="backend",
+        project_id="project",
+        priority=1,
+        title="Accepted replacement",
+        description="This finished task replaces the cancelled contribution.",
+        created_by_agent_id="lead",
+        state=TeamTaskState.FINISHED,
+    )
+    admin.create_or_reprioritize_task(
+        task_id="integration",
+        owner_agent_id="lead",
+        project_id="project",
+        priority=1,
+        title="Submitted integration boundary",
+        description="Recover this boundary without rewriting its submission.",
+        created_by_agent_id="lead",
+        dependency_task_ids=["dependency-task"],
+        integration_boundary=True,
+        deliverable_contract={
+            "required_contribution_task_ids": ["dependency-task"],
+        },
+    )
+
+    def _submit_boundary(state):
+        state.deliverables["integration-deliverable"] = Deliverable(
+            id="integration-deliverable",
+            task_id="integration",
+            producer_agent_id="lead",
+            summary="Submitted from the original contribution frontier.",
+            review_request_ids=["integration-review"],
+        )
+        state.review_requests["integration-review"] = ReviewRequest(
+            id="integration-review",
+            deliverable_id="integration-deliverable",
+            reviewer_agent_id="backend",
+            requested_by_agent_id="lead",
+        )
+        state.tasks["integration"].deliverable_ids = ["integration-deliverable"]
+        state.tasks["integration"].state = TeamTaskState.WAITING_FOR_REVIEW
+        return state
+
+    repository.update(_submit_boundary)
+    state = admin.cancel_task(
+        task_id="dependency-task",
+        reason_code="replaced",
+        reason="The accepted successor owns this contribution.",
+        actor_id="operator:owner@example.com",
+        successor_task_id="replacement-task",
+    )
+    routes = team_addon_api.admin_api_routes(
+        AddonContext(
+            addon_id="team-addon",
+            runtime_dir=runtime_dir,
+            addon_runtime_dir=runtime_dir / "addons" / "team-addon",
+            auth=_HumanApiAuthStub(
+                login="owner@example.com",
+                owner=True,
+                privileged=True,
+            ),
+        )
+    )
+
+    response = _invoke_team_json_route(
+        routes,
+        route_path="/tasks/{task_id}/recover-submitted-integration-boundary",
+        actual_path="/tasks/integration/recover-submitted-integration-boundary",
+        path_params={"task_id": "integration"},
+        payload={
+            "predecessor_task_id": "dependency-task",
+            "successor_task_id": "replacement-task",
+            "replacement_task_id": "integration-recovery",
+            "expected_dependency_task_ids": ["dependency-task"],
+            "expected_required_contribution_task_ids": ["dependency-task"],
+            "reason": "Create a fresh boundary from the frozen successor frontier.",
+            "expected_revision": state.revision,
+        },
+    )
+
+    assert response.status_code == 200, response.body.decode()
+    reread = repository.read()
+    assert reread.tasks["integration-recovery"].dependency_task_ids == [
+        "replacement-task"
+    ]
+    assert reread.tasks[
+        "integration-recovery"
+    ].deliverable_contract.required_contribution_task_ids == ["replacement-task"]
 
 
 def _attach_pending_human_review(repo: TeamStateRepository) -> None:
@@ -3571,9 +4221,7 @@ def test_team_addon_bootstrap_lists_all_registered_communication_targets(
 ) -> None:
     client = _client(tmp_path)
     runtime_dir = tmp_path / "runtime"
-    SqliteCommunicationTargetsRepository(
-        communication_targets_db_path(runtime_dir)
-    ).write_overlay(
+    SqliteCommunicationTargetsRepository(communication_targets_db_path(runtime_dir)).write_overlay(
         "root",
         {
             "targets": [
@@ -5351,6 +5999,10 @@ def test_team_addon_routes_are_available_only_when_enabled(tmp_path: Path) -> No
     assert "Resume release recovery" in script.text
     assert "data-resolve-terminal-blocker-id" in script.text
     assert "resolveTerminalBlocker" in script.text
+    assert "data-worktree-cleanup-retry" in script.text
+    assert "retryWorktreeCleanup" in script.text
+    assert "/worktree-cleanup-candidates/" in script.text
+    assert '["[data-worktree-cleanup-retry]", "retry worktree cleanup"]' in script.text
     assert "data-candidate-correction-recovery-id" in script.text
     assert "recoverCandidateCorrectionSuccessor" in script.text
     assert "candidateCorrectionRecoveryTaskForBlocker" in script.text
@@ -8644,9 +9296,7 @@ def test_team_addon_admin_api_review_profile_flow(tmp_path: Path) -> None:
     assert [result["criterion_id"] for result in review["criteria"]] == ["authz", "logging"]
     assert review["criteria"][0]["state"] == "passed"
     assert review["criteria"][0]["finding"] == "scoped"
-    assert review["criteria"][0]["evidence_refs"] == [
-        "artifact-space:/reviews/authz-check"
-    ]
+    assert review["criteria"][0]["evidence_refs"] == ["artifact-space:/reviews/authz-check"]
 
 
 def test_team_addon_admin_api_review_request_without_profile_still_works(

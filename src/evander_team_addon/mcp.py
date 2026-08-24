@@ -106,6 +106,12 @@ TEAM_ARCHIVE_OUTCOME_KIND_TOOL = "team_archive_outcome_kind"
 TEAM_UPDATE_TASK_TOOL = "team_update_task"
 TEAM_REOPEN_TASK_FOR_REWORK_TOOL = "team_reopen_task_for_rework"
 TEAM_CANCEL_TASK_TOOL = "team_cancel_task"
+TEAM_REPAIR_CANCELLED_TASK_DEPENDENCIES_TOOL = (
+    "team_repair_cancelled_task_dependencies"
+)
+TEAM_RECOVER_SUBMITTED_INTEGRATION_BOUNDARY_TOOL = (
+    "team_recover_submitted_integration_boundary"
+)
 TEAM_UPDATE_GOAL_TOOL = "team_update_goal"
 TEAM_STAND_DOWN_AGENT_TOOL = "team_stand_down_agent"
 TEAM_REVOKE_STAND_DOWN_TOOL = "team_revoke_stand_down"
@@ -184,6 +190,8 @@ ORDINARY_TEAM_MCP_TOOL_NAMES = (
     TEAM_UPDATE_TASK_TOOL,
     TEAM_REOPEN_TASK_FOR_REWORK_TOOL,
     TEAM_CANCEL_TASK_TOOL,
+    TEAM_REPAIR_CANCELLED_TASK_DEPENDENCIES_TOOL,
+    TEAM_RECOVER_SUBMITTED_INTEGRATION_BOUNDARY_TOOL,
     TEAM_UPDATE_GOAL_TOOL,
     TEAM_STAND_DOWN_AGENT_TOOL,
     TEAM_REVOKE_STAND_DOWN_TOOL,
@@ -267,6 +275,8 @@ IMPLEMENTED_ORDINARY_TEAM_MCP_TOOL_NAMES = (
     TEAM_UPDATE_TASK_TOOL,
     TEAM_REOPEN_TASK_FOR_REWORK_TOOL,
     TEAM_CANCEL_TASK_TOOL,
+    TEAM_REPAIR_CANCELLED_TASK_DEPENDENCIES_TOOL,
+    TEAM_RECOVER_SUBMITTED_INTEGRATION_BOUNDARY_TOOL,
     TEAM_UPDATE_GOAL_TOOL,
     TEAM_STAND_DOWN_AGENT_TOOL,
     TEAM_REVOKE_STAND_DOWN_TOOL,
@@ -325,6 +335,8 @@ MCP_TOOL_NAMES = (
     TEAM_UPDATE_TASK_TOOL,
     TEAM_REOPEN_TASK_FOR_REWORK_TOOL,
     TEAM_CANCEL_TASK_TOOL,
+    TEAM_REPAIR_CANCELLED_TASK_DEPENDENCIES_TOOL,
+    TEAM_RECOVER_SUBMITTED_INTEGRATION_BOUNDARY_TOOL,
     TEAM_UPDATE_GOAL_TOOL,
     TEAM_STAND_DOWN_AGENT_TOOL,
     TEAM_REVOKE_STAND_DOWN_TOOL,
@@ -882,8 +894,12 @@ def _register_slice5_tools(
         team_ask_question,
         name=TEAM_ASK_QUESTION_TOOL,
         description=(
-            "Ask the caller's direct superior a question. Top-level managers "
-            "must use team_escalate_operator. Requires question and request_id."
+            "Ask a question, defaulting to the caller's direct superior. With "
+            "task_id, recipient_agent_id may select the active same-Team task "
+            "owner, linked case owner, or project lead when the current dispatch "
+            "authorizes that project. Top-level managers must use "
+            "team_escalate_operator for operator escalation. Requires question "
+            "and request_id."
         ),
     )
 
@@ -1774,6 +1790,8 @@ def _register_slice6_tools(
         reason: str,
         request_id: str,
         successor_task_id: str | None = None,
+        rebind_dependents: bool = False,
+        expected_dependent_task_ids: list[str] | None = None,
         handled_inbox_item_ids: list[str] | None = None,
         correlation_id: str | None = None,
         causation_id: str | None = None,
@@ -1790,6 +1808,8 @@ def _register_slice6_tools(
                 reason_code=reason_code,
                 reason=reason,
                 successor_task_id=successor_task_id,
+                rebind_dependents=rebind_dependents,
+                expected_dependent_task_ids=expected_dependent_task_ids,
                 request_id=request_id,
                 handled_inbox_item_ids=handled_inbox_item_ids,
                 correlation_id=correlation_id,
@@ -1804,7 +1824,126 @@ def _register_slice6_tools(
         name=TEAM_CANCEL_TASK_TOOL,
         description=(
             "Cancel a Team task with an audited reason and optional same-project "
-            "successor. Unresolved descendants must be handled first."
+            "successor. Set rebind_dependents=true to atomically replace every "
+            "nonterminal dependent task's edge from the cancelled task to that "
+            "successor, including required contribution frontiers. The complete "
+            "resulting graph is validated before mutation; stale active integration "
+            "Git preparations are abandoned and explicitly queued for re-preparation. "
+            "When rebinding, supply the sorted expected_dependent_task_ids from the "
+            "dispatch snapshot; concurrent graph expansion fails closed. "
+            "Only the project lead or Team manager may rebind dependents; an ordinary "
+            "task owner may still cancel without rewriting the graph. "
+            "Unresolved descendants must be handled first. When cancellation fulfills "
+            "a task-linked operator directive, include that directive ID in "
+            "handled_inbox_item_ids so disposition is atomic with cancellation."
+        ),
+    )
+
+    def team_repair_cancelled_task_dependencies(
+        predecessor_task_id: str,
+        successor_task_id: str,
+        expected_dependent_task_ids: list[str],
+        reason: str,
+        request_id: str,
+        handled_inbox_item_ids: list[str] | None = None,
+        correlation_id: str | None = None,
+        causation_id: str | None = None,
+        session_id: str | None = None,
+    ) -> dict[str, Any]:
+        caller = resolver.require_persistent_action_context(
+            session_id=session_id,
+            tool_name=TEAM_REPAIR_CANCELLED_TASK_DEPENDENCIES_TOOL,
+        )
+        try:
+            _state, result = (
+                task_update_commands.repair_cancelled_task_dependencies_command(
+                    session_id=caller.session_id,
+                    predecessor_task_id=predecessor_task_id,
+                    successor_task_id=successor_task_id,
+                    expected_dependent_task_ids=expected_dependent_task_ids,
+                    reason=reason,
+                    request_id=request_id,
+                    handled_inbox_item_ids=handled_inbox_item_ids,
+                    correlation_id=correlation_id,
+                    causation_id=causation_id,
+                )
+            )
+        except (TypeError, ValueError) as exc:
+            raise ToolError(str(exc)) from exc
+        return _team_command_mcp_result(result, caller=caller, context=context)
+
+    server.add_tool(
+        team_repair_cancelled_task_dependencies,
+        name=TEAM_REPAIR_CANCELLED_TASK_DEPENDENCIES_TOOL,
+        description=(
+            "Repair active dependent tasks stranded behind an already-cancelled "
+            "predecessor. The requested successor must exactly match the immutable "
+            "successor recorded by the original cancellation. Supply the frozen, "
+            "sorted expected_dependent_task_ids from the current task graph so a "
+            "concurrent graph expansion fails closed. The project lead or Team manager "
+            "may run this; the original cancellation and terminal history remain "
+            "unchanged, and Team stores durable repair action evidence."
+        ),
+    )
+
+    def team_recover_submitted_integration_boundary(
+        predecessor_task_id: str,
+        successor_task_id: str,
+        integration_task_id: str,
+        replacement_task_id: str,
+        expected_dependency_task_ids: list[str],
+        expected_required_contribution_task_ids: list[str],
+        reason: str,
+        request_id: str,
+        git_base_commit_sha: str | None = None,
+        git_base_branch: str | None = None,
+        handled_inbox_item_ids: list[str] | None = None,
+        correlation_id: str | None = None,
+        causation_id: str | None = None,
+        session_id: str | None = None,
+    ) -> dict[str, Any]:
+        caller = resolver.require_persistent_action_context(
+            session_id=session_id,
+            tool_name=TEAM_RECOVER_SUBMITTED_INTEGRATION_BOUNDARY_TOOL,
+        )
+        try:
+            _state, result = (
+                task_update_commands.recover_submitted_integration_boundary_command(
+                    session_id=caller.session_id,
+                    predecessor_task_id=predecessor_task_id,
+                    successor_task_id=successor_task_id,
+                    integration_task_id=integration_task_id,
+                    replacement_task_id=replacement_task_id,
+                    expected_dependency_task_ids=expected_dependency_task_ids,
+                    expected_required_contribution_task_ids=(
+                        expected_required_contribution_task_ids
+                    ),
+                    reason=reason,
+                    request_id=request_id,
+                    git_base_commit_sha=git_base_commit_sha,
+                    git_base_branch=git_base_branch,
+                    handled_inbox_item_ids=handled_inbox_item_ids,
+                    correlation_id=correlation_id,
+                    causation_id=causation_id,
+                )
+            )
+        except (TypeError, ValueError) as exc:
+            raise ToolError(str(exc)) from exc
+        return _team_command_mcp_result(result, caller=caller, context=context)
+
+    server.add_tool(
+        team_recover_submitted_integration_boundary,
+        name=TEAM_RECOVER_SUBMITTED_INTEGRATION_BOUNDARY_TOOL,
+        description=(
+            "Recover a submitted integration boundary whose immutable contribution "
+            "frontier contains an already-cancelled predecessor. The predecessor's "
+            "recorded successor must match exactly. Supply the frozen dependency and "
+            "required-contribution sets plus a caller-chosen fresh boundary ID. Team "
+            "creates a new boundary originating from the submitted one and never "
+            "rewrites old deliverables, reviews, or Git contexts. Git-provenance "
+            "boundaries require an explicit full pinned base commit; non-Git "
+            "boundaries omit Git fields. Only the project lead or Team manager may "
+            "run this operation. Exact semantic replay is a no-op."
         ),
     )
 

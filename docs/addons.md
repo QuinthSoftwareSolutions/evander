@@ -531,7 +531,18 @@ Eligible task rows use a dedicated **Cancel task** dialog rather than a generic
 state edit. It requires a reason category and explanation and may link an
 optional successor selected only from the same project; the dialog calls out
 that cancellation is a terminal audited disposition that resolves active
-blockers and finalizes the task Git context.
+blockers and finalizes the task Git context. When work is being replaced, the
+operator can explicitly move every nonterminal direct dependent from the old
+task to the successor in the same atomic mutation. Team validates the complete
+resulting graph first, preserves terminal task history, records the changed
+dependent IDs on the cancellation, refreshes their derived preparation
+generations, and wakes only owners whose work becomes actionable. If a changed
+dependent is an integration boundary, Team also rebinds its required
+contribution frontier. Any active Git work context prepared from the obsolete
+frontier is marked abandoned without changing its immutable source provenance,
+and a durable high-priority re-preparation request is queued for its owner. The
+cancellation audit records both the affected integration boundaries and the
+invalidated context IDs.
 
 The `Teams` tab includes an org-chart hierarchy view for each team. It renders
 the manager, subordinate agents, nested reporting lines, and unreachable or
@@ -855,6 +866,65 @@ blocker routing emits for an immediate governance-manager wake. Use generic
 `trigger:event` workflows for these durable events; use
 `trigger:team:deliverable-created` for deliverable-created workflows because it
 owns the deliverable cursor and startup baseline behavior.
+
+### External Source Evidence Snapshots
+
+Provider adapters can normalize a fetched ticket, document, accounting record,
+or other external source into an immutable Team evidence snapshot with
+`POST /api/addons/team-addon/external-source-evidence-snapshots`. Core Team does
+not fetch from provider APIs. Each snapshot records the provider and source
+types, external identifier and version, fetch and optional expiry timestamps,
+declared freshness, descriptive access classification, a canonical SHA-256
+content digest, and structured body, acceptance-criteria, discussion, link, and
+metadata fields. The server computes the digest and rejects a supplied digest
+that does not match the normalized content.
+
+Every project has a provider-neutral `directory_path`, including projects with
+no Git repository. This is the authorization scope for project evidence and
+other project-level operator data. Existing Git-backed projects migrate that
+value from their Git configuration; when Git is configured, both directory
+values must agree. New non-Git projects default to `root` unless the operator
+selects a narrower `root/...` scope. Project creation requires directory-owner
+permission on the selected scope; moving a project requires ownership of both
+its current and target scopes, including a path change implied by Git config.
+
+Snapshot creation is idempotent on team, optional project, provider type,
+source type, external identifier, and external version. Replaying the same
+normalized version reuses the immutable snapshot and adds only missing case or
+task attachments. Reusing that identity with different normalized content,
+capture time/expiry/freshness metadata, access classification, or an unrelated
+caller-supplied snapshot ID fails closed, so at-least-once adapters cannot
+create duplicate evidence or silently rewrite a captured version.
+
+Creation may attach the immutable snapshot ID to cases or tasks; operators can
+add later attachments with
+`POST /api/addons/team-addon/external-source-evidence-snapshots/{snapshot_id}/attachments`.
+Each newly added direct-task or linked-case attachment updates affected active
+tasks, makes their owners work-due, and changes the task preparation generation;
+an idempotent repeat does none of those things. The generation fingerprints each
+direct and case-derived snapshot ID and content digest so a newly captured
+source version cannot reuse preparation state from older evidence.
+Dispatches freeze only attached snapshot IDs within their authorized
+team/project/task/case scope, and agent-scoped state projections omit unattached
+and other-agent snapshots. `access_classification` remains provider metadata,
+not an authorization decision. Full Admin Web and Admin API snapshot content
+requires directory-owner permission for the snapshot's project directory (or
+`root` for team-level snapshots); other authenticated viewers receive neither
+snapshot bodies nor attached snapshot IDs. Frozen dispatch scope independently
+controls agent visibility. Expired snapshots are marked effectively expired in
+responses and prompts so an adapter can refresh them or the agent can disclose
+the limitation instead of silently substituting live provider data. Compact
+wake context deduplicates only the same immutable team/project/provider/source/
+external-identifier/version identity, orders retained versions newest-first,
+caps them at eight, and reports all duplicate or capped records in its omitted
+count.
+
+If task- or linked-case evidence arrives after a dispatch is leased, that dispatch
+cannot finish the task, submit its immutable work result, or accept its deliverable
+or review until a fresh dispatch includes the new snapshot. Rejection and other
+administrative disposition paths remain available. Deliverable-acceptance and
+reviewer dispatches hydrate evidence from the referenced producer task even when
+that task is not otherwise in the reviewer's ordinary owned-task scope.
 
 Admin API write routes require `expected_revision`. Missing or null revisions
 return `400`, stale revisions return `409`, and successful writes advance the
@@ -1197,6 +1267,8 @@ Ordinary persistent Team wakes may receive these tools:
 - `team_archive_outcome_kind`
 - `team_update_task`
 - `team_cancel_task`
+- `team_repair_cancelled_task_dependencies`
+- `team_recover_submitted_integration_boundary`
 - `team_reopen_task_for_rework`
 - `team_report_blocker`
 - `team_update_blocker`
@@ -1573,9 +1645,79 @@ Support tasks resolve as `finished`. Outcome tasks resolve only as `accepted`
 through a current contract-compatible delivered result or accepted
 `evidenced_noop`. Either kind may resolve as `cancelled` through an authorized,
 reason-coded disposition that records actor, time, and optional same-project
-successor. `blocked` and `rejected` do not resolve ancestors. A parent cannot
+successor. `team_cancel_task` and the Admin cancellation endpoint accept
+`rebind_dependents=true` only with that successor; this atomically replaces the
+cancelled task in every nonterminal direct dependent after validating the
+resulting project-local acyclic graph. The caller must also send the sorted,
+frozen `expected_dependent_task_ids`; if the graph changed after inspection,
+the whole cancellation fails without changing the task or any dependency.
+Agent commands require the project lead
+or Team manager for this graph rewrite; an ordinary task owner may still make a
+plain audited cancellation. The operator Admin endpoint remains available, but
+dependency rebinding requires directory-owner permission for the affected
+project and never auto-rebases across another Team-state revision.
+Workflow-owned dependents whose mutation policy locks dependencies or their
+deliverable contract reject the replacement. The command response and persisted
+cancellation identify the rebound dependent tasks. Required-contribution
+frontiers on integration boundaries move with the edge. Any active integration
+Git context based on the old frontier is abandoned, its immutable composition
+manifest remains intact, and Team persists an actionable re-preparation inbox
+item rather than silently reusing stale provenance. `blocked` and `rejected` do
+not resolve ancestors. A parent cannot
 submit its final deliverable, finish, become accepted, or enter release while
 any descendant is unresolved.
+
+For a predecessor that was already cancelled by the plain disposition path,
+the project lead or Team manager can use
+`team_repair_cancelled_task_dependencies`; operators can use
+`POST /api/addons/team-addon/tasks/{predecessor-id}/repair-cancelled-dependencies`.
+The operator route requires directory-owner permission for the affected
+project.
+The requested successor must exactly match the successor retained by the
+original cancellation, and callers must submit the sorted, frozen
+`expected_dependent_task_ids` they inspected. A concurrent graph expansion
+therefore fails closed instead of silently widening repair authority. The
+operation idempotently applies the same dependency, integration-frontier, stale
+Git-context, and re-preparation behavior without changing the cancellation's
+actor, reason, or time. A handled `task_dependency_graph_repair_audit` action
+evidence item records the late actor, reason, affected set, and recovery output;
+an exact repeat reuses that evidence and creates no new wake or Team-state
+revision. New task creation and unrelated graph edits cannot introduce a fresh
+dependency on a cancelled or rejected task, while pre-existing historical edges
+remain readable until explicitly repaired.
+
+If the stranded dependent is an integration boundary that already prepared a
+retained Git context or submitted a deliverable, Team does not rewrite it in
+place. A project lead or Team manager
+uses `team_recover_submitted_integration_boundary`, or an operator posts to
+`/api/addons/team-addon/tasks/{integration-task-id}/recover-submitted-integration-boundary`.
+The operator route requires directory-owner permission for the affected
+project.
+The request identifies the cancelled predecessor, its exactly recorded
+successor, a caller-chosen fresh boundary ID, both frozen dependency and
+required-contribution sets, and a reason. For a Git-provenance contract it also
+supplies a full 40- or 64-character base commit pin. The selected branch must
+contain that commit, but may be a different immutable frontier branch from the
+old boundary; when omitted, the retained branch is used. The pin is the fresh
+boundary's authoritative prepared base and must already contain the frozen
+accepted contribution frontier. Non-Git boundaries omit both Git fields.
+
+The operation creates a fresh integration boundary whose `originating_task_id`
+points to the submitted boundary. It copies the project, case, parent, owner,
+kind, priority, outcome, evidence, contract, and workflow-policy semantics,
+substitutes the cancelled predecessor with its successor, and starts with no
+completion, deliverables, reviews, or Git contexts. Existing submitted
+deliverables, review requests, and contexts remain byte-for-byte lifecycle
+history. Team cancels and links the old boundary only when it has no unresolved
+descendants, active handoffs, active contexts, blockers, or active downstream
+consumers; otherwise it remains intact and a recovery-specific blocker plus
+handled audit evidence explains the required disposition. Exact semantic replay
+reuses that evidence without a Team-state revision or wake, while changed
+frontiers, policy locks, or a mismatched existing replacement fail closed.
+Both agent recovery commands require the affected project in the immutable
+dispatch scope, reject managers from another Team even if a malformed dispatch
+mentions that project, and reject a terminal mutation if newer high-priority
+work arrived after the dispatch wake snapshot.
 
 Agents enter and leave intrinsic blocked work through `team_report_blocker` and
 source-aware blocker resolution. Generic Admin task `PATCH` rejects transitions
@@ -1760,7 +1902,9 @@ The snapshot can be edited only before any Git work context, deliverable, or
 promotion exists. On first worktree creation Team fetches that task snapshot
 from the managed remote and records the exact base commit. Reused worktrees and
 later dispatches retain both values even if the remote branch or project default
-moves.
+moves. A pre-existing worktree cannot establish that authority from its own
+`evander.baseCommit`: without a persisted Team base or explicit immutable task
+pin, preparation fails closed and requires audited provenance recovery.
 
 Accepted Git deliverables in one release must share one authoritative task base
 branch and commit. Incompatible workstreams fail with
@@ -1892,7 +2036,15 @@ compatibility release, but new callers receive a deprecation warning and no
 hidden verifier or waiver is created.
 
 Resolved tasks and task reassignment create durable, checkout-specific
-`WorktreeCleanupCandidate` records. The periodic Team wake reconciler starts in
+`WorktreeCleanupCandidate` records. Each candidate freezes the originating Git-work-context
+generation and the project's normalized directory scope when it is enqueued. A later context
+generation receives a separate candidate instead of reopening cleanup for an older checkout.
+Physical backend and configuration resolution
+continues to use that immutable scope if the project later moves, while operator retry
+authorization deliberately follows the project's current directory scope. A project directory
+or managed-repository binding change is rejected while any physical Git work context lacks such
+a frozen candidate, closing the gap between checkout creation and the first maintenance enqueue.
+The periodic Team wake reconciler starts in
 staged mode when `worktree_cleanup_dry_run` is omitted: the first eligible safe
 pass is an audited dry run, leaves the candidate pending with
 `last_safety_check: dry_run_safe`, and schedules it after the retry interval;
@@ -1902,9 +2054,11 @@ removal on the first eligible pass. The reconciler also exposes configurable
 cleanup limit, grace, retry, and interrupted-processing recovery intervals.
 Before invoking either the libvirt or container-worker backend it rereads Team
 state twice and refuses or defers cleanup while the task is still actionable
-for the checkout owner, a preparing/leased dispatch references the task, an
-active Git context references the path, the project repository changed, or the
-expected retained commit is not durably evidenced.
+for the checkout owner, a preparing/leased dispatch references that owner's
+same-session task, an active Git context references the same-session checkout,
+the project disappeared, or the expected retained commit is not durably
+evidenced. A later project repository swap or removal does not rebind the
+already frozen cleanup candidate.
 
 Both execution backends serialize task-worktree preparation and cleanup for the
 session repository. A host coordinator lock is shared by Team preparation and
@@ -1917,9 +2071,18 @@ counts and may be reclaimed only after those checks pass. Durable evidence
 retains the exact file count, byte totals, a SHA-256 of the complete sorted
 inventory, and at most the first 200 sorted paths;
 `ignored_file_inventory_truncated` says whether the sample is partial.
-Refusals remain `recovery_required` with the exact path, branch, failed check,
-timestamp, and bounded evidence; successful cleanup is audited before obsolete
-unreferenced Git-context metadata is pruned.
+Deterministic safety refusals such as `retained_commit_mismatch`,
+`tracked_changes`, and `untracked_files` move the candidate to the nonclaimable
+`operator_action_required` state instead of retrying automatically. Transient
+backend and state-race failures return to `pending` with bounded exponential
+backoff; exhausting the automatic-attempt limit also requires operator action.
+The durable candidate retains the exact path, branch, failed check, timestamp,
+retry counts, operator-action reason, and bounded evidence. After correcting the
+cause, a directory owner may requeue it with a reason through
+`POST /api/addons/team-addon/worktree-cleanup-candidates/{cleanup_candidate_id}/retry`.
+Requeueing never removes files or bypasses path, lock, dirty-tree, retained-ref,
+or immediate pre-removal revalidation. Successful cleanup is audited before
+obsolete unreferenced Git-context metadata is pruned.
 
 `effect:team:wake-due-agents` accepts `run_global_maintenance`, defaulting to
 `true` for compatibility. The bundled scheduled wake leaves it enabled. The
@@ -2037,10 +2200,21 @@ deterministic successor package and correction-aggregate promotion
 automatically; the project lead does not submit another release request. The
 review decision and successor intent are one atomic state transition. Scheduled
 global maintenance performs the same idempotent reconciliation for interrupted
-or older states. A packaging or validation failure opens a durable blocker on
-the correction owner instead of silently returning release responsibility to
-the manager. Initial releases and post-release-feedback successors remain
-explicit requests.
+or older states. Reconciliation also recognizes the narrowly defined legacy
+state in which an automatic, nonterminal correction still has its obsolete
+single-child integration wrapper, while the parent and accepted child evidence,
+sealed formal-review cohort, and submitted Git context all prove the same full
+commit and acceptance fails only because no dependency-composition manifest was
+created. In one atomic update it removes only that active wrapper topology,
+applies the current direct-correction mutation policy, replays the durable
+accepted review, and continues ordinary deterministic successor creation. The
+child records, deliverables, reviews, and Git context remain as history. A
+repeated reconciliation is a no-op, and ambiguous sources, differing commits,
+incomplete review, existing composition evidence, or non-system tasks are not
+automatically migrated. A packaging or validation failure opens a durable
+blocker on the correction owner instead of silently returning release
+responsibility to the manager. Initial releases and post-release-feedback
+successors remain explicit requests.
 
 Candidate-correction successor blockers use the typed
 `candidate_correction_successor` source and `downstream` resolution scope. They

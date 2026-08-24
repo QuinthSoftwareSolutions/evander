@@ -80,6 +80,9 @@ EVANDER_UNITS=(
   evander-effect-orchestrator.service
   evander-trigger-orchestrator.service
 )
+EVANDER_TARGETS=(
+  evander-team-runtime.target
+)
 
 PASS_COUNT=0
 FAIL_COUNT=0
@@ -534,8 +537,12 @@ render_unit \
   "${ROOT_DIR}/systemd/evander-trigger-orchestrator.service.template" \
   "${SYSTEMD_DIR}/evander-trigger-orchestrator.service"
 
+render_unit \
+  "${ROOT_DIR}/systemd/evander-team-runtime.target.template" \
+  "${SYSTEMD_DIR}/evander-team-runtime.target"
+
 systemctl daemon-reload
-systemctl enable "${EVANDER_UNITS[@]}"
+systemctl enable "${EVANDER_UNITS[@]}" "${EVANDER_TARGETS[@]}"
 
 cat <<EOF
 Installed systemd units:
@@ -557,6 +564,7 @@ Installed systemd units:
   evander-teams-meeting-ingest.service
   evander-effect-orchestrator.service
   evander-trigger-orchestrator.service
+  evander-team-runtime.target
 
 Next steps:
   1. Populate ${ROOT_DIR}/runtime/directory-config/root/ado-worker.json via the root directory config migration commands.
@@ -568,10 +576,10 @@ Next steps:
   7. Export the required host secrets in the service manager environment, source ${ROOT_DIR}/secrets.env if you keep one there, or put host-local secrets in ${LOCAL_SECRETS_FILE}.
   8. Populate ${ROOT_DIR}/config/admin-web.env from the example file and keep Admin Web password/session secrets in ${LOCAL_SECRETS_FILE} or another service-manager secret source.
   9. Optionally edit ${ROOT_DIR}/config/firewall.env to change allowed host ports.
-  10. Start services:
-     sudo systemctl start evander-admin-web.service
+  10. Start the Team control plane as one generation:
+     sudo systemctl restart evander-team-runtime.target
+  11. Start any additional services you use:
      sudo systemctl start evander-firewall.service
-     sudo systemctl start evander-gateway.service
      sudo systemctl start evander-openai-relay.service
      sudo systemctl start evander-didww-sip-bridge.service
      sudo systemctl start evander-nuget-relay.service

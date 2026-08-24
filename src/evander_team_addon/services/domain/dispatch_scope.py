@@ -7,6 +7,7 @@ from collections.abc import Mapping
 from typing import Iterable
 
 from ...models import (
+    ACTIVE_TEAM_CASE_STATUS_VALUES,
     AgentInboxItem,
     AgentTask,
     PersistentAgent,
@@ -39,6 +40,7 @@ class AgentDispatchScope:
     inbox_item_ids: tuple[str, ...]
     project_ids: tuple[str, ...]
     managed_repo_ids: tuple[str, ...]
+    source_evidence_snapshot_ids: tuple[str, ...]
 
     def model_fields(self) -> dict[str, list[str]]:
         return {
@@ -48,6 +50,7 @@ class AgentDispatchScope:
             "inbox_item_ids": list(self.inbox_item_ids),
             "project_ids": list(self.project_ids),
             "managed_repo_ids": list(self.managed_repo_ids),
+            "source_evidence_snapshot_ids": list(self.source_evidence_snapshot_ids),
         }
 
 
@@ -207,6 +210,34 @@ def build_agent_dispatch_scope(
             }
         )
     )
+    evidence_task_ids = {row.id for row in task_rows}
+    for review in review_rows:
+        deliverable = (
+            state.deliverables.get(review.deliverable_id)
+            if review.deliverable_id is not None
+            else None
+        )
+        if deliverable is not None:
+            evidence_task_ids.add(deliverable.task_id)
+    for item in inbox_rows:
+        if item.item_type != TeamInboxItemType.DELIVERABLE_NOTICE:
+            continue
+        deliverable_id = item.payload.get("deliverable_id")
+        deliverable = (
+            state.deliverables.get(deliverable_id)
+            if isinstance(deliverable_id, str)
+            else None
+        )
+        if deliverable is not None:
+            evidence_task_ids.add(deliverable.task_id)
+        elif item.task_id is not None:
+            evidence_task_ids.add(item.task_id)
+    source_evidence_snapshot_ids = external_source_evidence_snapshot_ids_for_dispatch(
+        state,
+        agent=agent,
+        task_ids=evidence_task_ids,
+        project_ids=scoped_project_ids,
+    )
     return AgentDispatchScope(
         task_ids=tuple(row.id for row in task_rows),
         blocker_ids=tuple(row.id for row in blocker_rows),
@@ -214,6 +245,7 @@ def build_agent_dispatch_scope(
         inbox_item_ids=tuple(row.id for row in inbox_rows),
         project_ids=scoped_project_ids,
         managed_repo_ids=managed_repo_ids,
+        source_evidence_snapshot_ids=source_evidence_snapshot_ids,
     )
 
 
@@ -269,6 +301,78 @@ def build_preparation_recovery_dispatch_scope(
         inbox_item_ids=tuple(row.id for row in inbox_rows),
         project_ids=(),
         managed_repo_ids=(),
+        source_evidence_snapshot_ids=(),
+    )
+
+
+def external_source_evidence_snapshot_ids_for_dispatch(
+    state: TeamState,
+    *,
+    agent: PersistentAgent,
+    task_ids: Iterable[str],
+    project_ids: Iterable[str],
+    include_team_cases: bool = False,
+) -> tuple[str, ...]:
+    """Return immutable source snapshots already authorized by dispatch scope."""
+
+    scoped_project_ids = set(project_ids)
+    scoped_task_ids = {
+        task_id
+        for task_id in task_ids
+        if (task := state.tasks.get(task_id)) is not None
+        and task.project_id in scoped_project_ids
+    }
+    snapshot_ids: set[str] = {
+        snapshot_id
+        for task_id in scoped_task_ids
+        for snapshot_id in state.tasks[task_id].source_evidence_snapshot_ids
+    }
+    active_owned_task_ids = {
+        task.id
+        for task in state.tasks.values()
+        if task.owner_agent_id == agent.id
+        and task.state
+        not in {
+            TeamTaskState.FINISHED,
+            TeamTaskState.ACCEPTED,
+            TeamTaskState.REJECTED,
+            TeamTaskState.CANCELLED,
+        }
+    }
+    for case in state.cases.values():
+        case_matches_scoped_task = bool(
+            set(case.task_ids).intersection(scoped_task_ids)
+        )
+        if (
+            not case_matches_scoped_task
+            and case.status.value not in ACTIVE_TEAM_CASE_STATUS_VALUES
+        ):
+            continue
+        if include_team_cases:
+            if agent.team_id is None or case.team_id != agent.team_id:
+                continue
+        elif (
+            case.owner_agent_id != agent.id
+            and not case_matches_scoped_task
+            and not any(task_id in active_owned_task_ids for task_id in case.task_ids)
+        ):
+            continue
+        if case.project_id is not None and case.project_id not in scoped_project_ids:
+            continue
+        snapshot_ids.update(case.source_evidence_snapshot_ids)
+    effective_team_id = agent.team_id or agent.retired_team_id
+    return tuple(
+        sorted(
+            snapshot_id
+            for snapshot_id in snapshot_ids
+            if (snapshot := state.external_source_evidence_snapshots.get(snapshot_id))
+            is not None
+            and snapshot.team_id == effective_team_id
+            and (
+                snapshot.project_id is None
+                or snapshot.project_id in scoped_project_ids
+            )
+        )
     )
 
 

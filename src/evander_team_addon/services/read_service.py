@@ -23,6 +23,7 @@ from ..models import (
     agent_lead_project_ids,
     agent_project_ids,
     effective_role_permissions,
+    external_source_evidence_snapshot_payload,
     runtime_operations_payload,
 )
 from ..human_review_projection import release_package_api_payload
@@ -367,6 +368,13 @@ class TeamReadService:
                 "reviews": reviews,
                 "inbox": inbox,
                 "projects": projects,
+                "external_source_evidence_snapshots": [
+                    external_source_evidence_snapshot_payload(
+                        self._state.external_source_evidence_snapshots[snapshot_id]
+                    )
+                    for snapshot_id in dispatch.source_evidence_snapshot_ids
+                    if snapshot_id in self._state.external_source_evidence_snapshots
+                ],
                 "git_work_contexts": [
                     row
                     for task_id in dispatch.task_ids

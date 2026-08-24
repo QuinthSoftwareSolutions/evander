@@ -1598,6 +1598,13 @@ class WorkerDaemon:
             candidate=target_dir,
             description="task worktree target",
         )
+        target_exists = target_dir.exists()
+        if target_exists and request.expected_base_commit_sha is None:
+            raise ValueError(
+                "existing task worktree has no authoritative server-recorded "
+                "base; preserve the checkout and use an audited provenance "
+                "recovery"
+            )
         env = _git_subprocess_env(paths.agent_home)
         self._validate_git_branch(repo_dir, request.branch, env=env)
         subprocess.run(
@@ -1610,7 +1617,29 @@ class WorkerDaemon:
         )
         created = False
         base_commit_sha: str | None = None
-        if target_dir.exists():
+        if not target_exists and request.expected_base_commit_sha is not None:
+            if request.expected_base_tree_hash is None:
+                base_commit_sha = self._resolve_authoritative_task_base_commit(
+                    repo_dir,
+                    request.base_ref,
+                    expected_base_commit_sha=request.expected_base_commit_sha,
+                    env=env,
+                )
+            else:
+                base_commit_sha = self._resolve_fresh_task_base_commit(
+                    repo_dir,
+                    request.base_ref,
+                    env=env,
+                )
+                self._verify_task_base_provenance(
+                    repo_dir=repo_dir,
+                    base_ref=request.base_ref,
+                    base_commit_sha=base_commit_sha,
+                    expected_base_commit_sha=request.expected_base_commit_sha,
+                    expected_base_tree_hash=request.expected_base_tree_hash,
+                    env=env,
+                )
+        if target_exists:
             self._make_task_worktree_metadata_portable(
                 repo_dir=repo_dir,
                 target_dir=target_dir,
@@ -1639,19 +1668,15 @@ class WorkerDaemon:
             )
             args = ["git", "worktree", "add"]
             if local_branch.returncode == 0:
+                if request.expected_base_commit_sha is None:
+                    raise ValueError(
+                        "reused task branch has no authoritative server-recorded "
+                        "base; preserve the branch and use an audited provenance "
+                        "recovery"
+                    )
                 args.extend([str(target_dir), request.branch])
             else:
-                if (
-                    request.expected_base_commit_sha is not None
-                    and request.expected_base_tree_hash is None
-                ):
-                    base_commit_sha = self._resolve_authoritative_task_base_commit(
-                        repo_dir,
-                        request.base_ref,
-                        expected_base_commit_sha=request.expected_base_commit_sha,
-                        env=env,
-                    )
-                else:
+                if base_commit_sha is None:
                     base_commit_sha = self._resolve_fresh_task_base_commit(
                         repo_dir,
                         request.base_ref,

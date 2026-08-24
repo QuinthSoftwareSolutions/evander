@@ -189,6 +189,28 @@ def test_versioned_agent_guidance_explains_task_topology_and_cancellation() -> N
     assert "Confirm the managed agent branch resolves to the same commit" in content
 
 
+def test_task_cancellation_ui_exposes_atomic_dependency_replacement() -> None:
+    source = (ROOT / "src" / "evander_team_addon" / "ui_static" / "team-ui.js").read_text(
+        encoding="utf-8"
+    )
+    markup = (ROOT / "src" / "evander_team_addon" / "ui_static" / "index.html").read_text(
+        encoding="utf-8"
+    )
+
+    assert 'name="rebind_dependents"' in markup
+    assert "Replace this task in active dependencies" in markup
+    assert "required contribution" in markup
+    assert "rebind_dependents: rebindDependents" in source
+    assert "integration preparations re-armed" in source
+    assert "stale Git contexts abandoned" in source
+    assert "Select a successor before replacing active dependencies." in source
+    assert "data-repair-cancelled-task-dependencies" in source
+    assert "Repair stranded dependents" in source
+    assert "expected_dependent_task_ids: expectedDependentTaskIds" in source
+    assert "/repair-cancelled-dependencies" in source
+    assert "task_dependency_graph_repair_audit" in source
+
+
 def test_task_creation_guidance_keeps_root_authority_distinct_from_provenance() -> None:
     child_only = _task_creation_mandate_guidance(
         {

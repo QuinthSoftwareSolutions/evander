@@ -20,6 +20,32 @@
   composed base, composed candidates recover their pre-composition root, and multi-product tasks
   retain every unsuperseded rejected candidate.
 
+## 2026-08-24 - Team Runtime Reliability And Recovery
+
+- Added immutable external-source evidence snapshots with directory-scoped access, freshness
+  metadata, bounded prompt projection, deterministic task-preparation invalidation on refresh,
+  late-evidence fences for work-committing dispatch actions, reviewer handoff hydration, and
+  natural-identity replay that adds only missing attachments.
+- Added a provider-neutral directory scope to every project, including non-Git projects, with a
+  legacy Git-derived migration so operational teams use the same ACL model.
+- Scoped questions and blocker diagnostics to explicit task, case, project-lead, or manager
+  authority instead of relying on development-specific roles or provider semantics.
+- Retained accepted reviews when acceptance-boundary remediation is required, added typed retry
+  paths, and locked workflow-owned correction topology against ordinary agent mutation.
+- Normalized the exact legacy accepted-correction wrapper that lacks composition evidence,
+  replaying retained review evidence without rewriting child, deliverable, review, or Git history.
+- Added bounded cleanup retries with explicit operator disposition, coherent multi-table SQLite
+  reads, atomic failure audit/disposition, enqueue-time repository/directory-scope snapshots for
+  physical cleanup, per-Git-context cleanup generations, pre-freeze project repository-scope
+  change guards, and coordinated runtime-generation checks across the Team-serving processes.
+- Pinned preparation and guest pushes to an immutable server-authorized Git base, including after
+  the named base branch advances, and rejected reused branches or pre-existing worktrees without
+  authoritative provenance before they can be mutated.
+- Added audited, policy-aware dependency repair after task replacement and fresh integration-
+  boundary recovery that preserves submitted review, delivery, and provenance history; frozen
+  affected sets, dispatch scope, Team membership, directory ownership, and fresh high-priority
+  context now fail closed.
+
 ## 2026-08-24 - Correction Dependency Composition
 
 - Composed newly accepted correction-task Git inputs on top of the rejected candidate and

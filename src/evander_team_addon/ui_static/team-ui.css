@@ -6940,6 +6940,7 @@ label textarea {
 }
 
 .state-pill.changes_requested,
+.state-pill.operator_action_required,
 .state-pill.recovery_required {
   color: var(--danger);
   border-color: rgba(155, 47, 47, 0.35);

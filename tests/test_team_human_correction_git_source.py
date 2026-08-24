@@ -980,7 +980,7 @@ def test_container_correction_accepts_composed_base_and_validates_candidate_root
     composition_root_commit = "a" * 40
     with pytest.raises(
         DependencyGitPreparationError,
-        match="composition root .* not pinned rejected candidate",
+        match="composition root .* not authoritative pinned composition root",
     ):
         _prepare_project_repo_task_worktree(
             context,

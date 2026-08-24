@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import shlex
 import subprocess
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -747,7 +748,7 @@ class FakeVmExecutor:
         self.calls.append(dict(kwargs))
         return {
             "success": True,
-            "stdout": "",
+            "stdout": f"EVANDER_BASE_COMMIT={'a' * 40}\n",
             "stderr": "",
             "exit_code": 0,
             "message": "task worktree prepared",
@@ -6750,6 +6751,314 @@ def test_admin_task_cancellation_enqueues_idle_grace_expiry_wake(
     assert idle_wake_outbox.payload["run_at"] == due_at.isoformat().replace("+00:00", "Z")
 
 
+def test_admin_task_replacement_persists_rebound_dependents_and_ready_wake(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_team(tmp_path)
+    admin = _team_admin_service(repo)
+    admin.create_or_reprioritize_task(
+        task_id="successor",
+        owner_agent_id="backend",
+        project_id="project",
+        priority=1,
+        title="Replacement task",
+        description="This task replaces the existing scope.",
+        created_by_agent_id="lead",
+        state=TeamTaskState.FINISHED,
+    )
+    admin.create_or_reprioritize_task(
+        task_id="dependent",
+        owner_agent_id="lead",
+        project_id="project",
+        priority=1,
+        title="Dependent task",
+        description="This task should follow the replacement.",
+        created_by_agent_id="lead",
+        dependency_task_ids=["task"],
+    )
+    admin.create_or_reprioritize_task(
+        task_id="integration",
+        owner_agent_id="backend",
+        project_id="project",
+        priority=2,
+        title="Integration boundary",
+        description="This retained preparation also follows the replacement.",
+        created_by_agent_id="lead",
+        dependency_task_ids=["task"],
+        integration_boundary=True,
+        deliverable_contract={
+            "require_git_provenance": True,
+            "required_contribution_task_ids": ["task"],
+        },
+    )
+
+    def _reject_predecessor(state_model: TeamState) -> TeamState:
+        state_model.tasks["task"].state = TeamTaskState.REJECTED
+        state_model.git_work_contexts["integration-context"] = GitWorkContext(
+            id="integration-context",
+            agent_id="backend",
+            task_id="integration",
+            agent_branch="agents/session-backend/tasks/integration",
+            base_branch="main",
+            base_commit="a" * 40,
+            worktree_path="/worktrees/integration-context",
+        )
+        return state_model
+
+    repo.update(_reject_predecessor)
+
+    state = admin.cancel_task(
+        task_id="task",
+        reason_code="replaced",
+        reason="The replacement now owns this scope.",
+        actor_id="operator:test",
+        successor_task_id="successor",
+        rebind_dependents=True,
+        expected_dependent_task_ids=["dependent", "integration"],
+    )
+
+    cancellation = state.tasks["task"].cancellation
+    assert cancellation is not None
+    assert cancellation.rebind_dependents is True
+    assert cancellation.rebound_dependent_task_ids == ["dependent", "integration"]
+    assert cancellation.rebound_integration_boundary_task_ids == ["integration"]
+    assert cancellation.invalidated_git_work_context_ids == ["integration-context"]
+    assert state.tasks["dependent"].dependency_task_ids == ["successor"]
+    assert state.tasks["integration"].dependency_task_ids == ["successor"]
+    assert state.tasks[
+        "integration"
+    ].deliverable_contract.required_contribution_task_ids == ["successor"]
+    assert (
+        state.git_work_contexts["integration-context"].state
+        == GitWorkContextState.ABANDONED
+    )
+    recovery_items = [
+        item
+        for item in state.inbox.values()
+        if item.payload.get("kind") == "task_replacement_preparation_recovery"
+    ]
+    assert [item.task_id for item in recovery_items] == ["integration"]
+    assert recovery_items[0].payload["invalidated_git_work_context_ids"] == [
+        "integration-context"
+    ]
+    ready_wakes = [
+        record
+        for record in repo.list_outbox_records(intent_type=AGENT_WAKE_REQUESTED_EVENT_TYPE)
+        if record.payload["payload"].get("reason") == "task_ready"
+    ]
+    assert [record.payload["payload"]["agent_id"] for record in ready_wakes] == ["lead"]
+
+
+def test_admin_repairs_plain_cancelled_task_dependencies_with_audit_evidence(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_team(tmp_path)
+    admin = _team_admin_service(repo)
+    admin.create_or_reprioritize_task(
+        task_id="successor",
+        owner_agent_id="backend",
+        project_id="project",
+        priority=2,
+        title="Recorded successor",
+        description="This completed task owns the remaining scope.",
+        created_by_agent_id="lead",
+        state=TeamTaskState.FINISHED,
+    )
+    admin.create_or_reprioritize_task(
+        task_id="dependent",
+        owner_agent_id="lead",
+        project_id="project",
+        priority=1,
+        title="Stranded dependent",
+        description="This active edge predates graph repair support.",
+        created_by_agent_id="lead",
+        dependency_task_ids=["task"],
+    )
+    state = admin.cancel_task(
+        task_id="task",
+        reason_code="replaced",
+        reason="Record the replacement without rewriting graph history.",
+        actor_id="operator:original",
+        successor_task_id="successor",
+    )
+    cancellation_before = state.tasks["task"].cancellation.model_dump(mode="json")
+
+    state, result = admin.repair_cancelled_task_dependencies(
+        predecessor_task_id="task",
+        successor_task_id="successor",
+        expected_dependent_task_ids=["dependent"],
+        reason="Repair the verified stranded edge.",
+        actor_id="operator:repair",
+        expected_revision=state.revision,
+    )
+
+    assert result["repair_applied"] is True
+    assert result["rebound_dependent_task_ids"] == ["dependent"]
+    assert state.tasks["dependent"].dependency_task_ids == ["successor"]
+    assert state.tasks["task"].cancellation.model_dump(mode="json") == (
+        cancellation_before
+    )
+    evidence = state.inbox[result["audit_action_evidence_id"]]
+    assert evidence.state == TeamInboxItemState.HANDLED
+    assert evidence.payload["kind"] == "task_dependency_graph_repair_audit"
+    assert evidence.payload["actor_kind"] == "operator"
+    assert evidence.payload["actor_id"] == "operator:repair"
+    assert evidence.payload["reason"] == "Repair the verified stranded edge."
+
+    revision_before_repeat = state.revision
+    outbox_count_before_repeat = len(repo.list_outbox_records())
+    state, repeated = admin.repair_cancelled_task_dependencies(
+        predecessor_task_id="task",
+        successor_task_id="successor",
+        expected_dependent_task_ids=["dependent"],
+        reason="Verify that the repair remains complete.",
+        actor_id="operator:repair",
+        expected_revision=state.revision,
+    )
+
+    assert repeated["repair_applied"] is False
+    assert repeated["audit_evidence_reused"] is True
+    assert repeated["audit_action_evidence_id"] == evidence.id
+    assert state.revision == revision_before_repeat
+    assert len(repo.list_outbox_records()) == outbox_count_before_repeat
+
+
+def test_admin_recovers_non_git_submitted_integration_without_git_pin(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_team(tmp_path)
+    admin = _team_admin_service(repo)
+    admin.create_or_reprioritize_task(
+        task_id="successor",
+        owner_agent_id="backend",
+        project_id="project",
+        priority=2,
+        title="Recorded successor contribution",
+        description="This completed task owns the replacement contribution.",
+        created_by_agent_id="lead",
+        state=TeamTaskState.FINISHED,
+    )
+    admin.create_or_reprioritize_task(
+        task_id="integration",
+        owner_agent_id="lead",
+        project_id="project",
+        priority=1,
+        title="Submitted non-Git integration",
+        description="Recover the workflow frontier without inventing Git provenance.",
+        created_by_agent_id="lead",
+        dependency_task_ids=["task"],
+        integration_boundary=True,
+        deliverable_contract={
+            "require_git_provenance": False,
+            "required_contribution_task_ids": ["task"],
+        },
+    )
+
+    def _submit_non_git_integration(state_model: TeamState) -> TeamState:
+        state_model.deliverables["integration-deliverable"] = Deliverable(
+            id="integration-deliverable",
+            task_id="integration",
+            producer_agent_id="lead",
+            summary="Submitted non-Git integration evidence.",
+            review_request_ids=["integration-review"],
+        )
+        state_model.review_requests["integration-review"] = ReviewRequest(
+            id="integration-review",
+            deliverable_id="integration-deliverable",
+            reviewer_agent_id="backend",
+            requested_by_agent_id="lead",
+        )
+        integration = state_model.tasks["integration"]
+        integration.deliverable_ids = ["integration-deliverable"]
+        integration.state = TeamTaskState.WAITING_FOR_REVIEW
+        return state_model
+
+    repo.update(_submit_non_git_integration)
+    state = admin.cancel_task(
+        task_id="task",
+        reason_code="replaced",
+        reason="The successor owns this non-Git contribution.",
+        actor_id="operator:original",
+        successor_task_id="successor",
+        expected_revision=repo.read().revision,
+    )
+    old_deliverable = state.deliverables["integration-deliverable"].model_dump(
+        mode="json"
+    )
+    old_review = state.review_requests["integration-review"].model_dump(mode="json")
+
+    state, result = admin.recover_submitted_integration_boundary(
+        predecessor_task_id="task",
+        successor_task_id="successor",
+        integration_task_id="integration",
+        replacement_task_id="integration-recovery",
+        expected_dependency_task_ids=["task"],
+        expected_required_contribution_task_ids=["task"],
+        reason="Rebuild the submitted non-Git boundary from the verified frontier.",
+        actor_id="operator:recovery",
+        expected_revision=state.revision,
+    )
+
+    assert result["recovery_applied"] is True
+    assert result["replayed"] is False
+    replacement = state.tasks["integration-recovery"]
+    assert replacement.originating_task_id == "integration"
+    assert replacement.integration_boundary is True
+    assert replacement.dependency_task_ids == ["successor"]
+    assert replacement.deliverable_contract == TaskDeliverableContract(
+        require_git_provenance=False,
+        required_contribution_task_ids=["successor"],
+    )
+    assert replacement.git_base_branch is None
+    assert replacement.git_base_commit_sha is None
+    assert replacement.deliverable_ids == []
+    assert state.deliverables["integration-deliverable"].model_dump(
+        mode="json"
+    ) == old_deliverable
+    assert state.review_requests["integration-review"].model_dump(
+        mode="json"
+    ) == old_review
+    assert result["retained_deliverable_ids"] == ["integration-deliverable"]
+    assert result["retained_review_request_ids"] == ["integration-review"]
+    assert result["retained_git_work_context_ids"] == []
+    assert state.inbox[result["audit_action_evidence_id"]].state == (
+        TeamInboxItemState.HANDLED
+    )
+
+    revision_before_replay = state.revision
+    runtime_before_replay = state.agent_runtimes["lead"].model_dump(mode="json")
+    outbox_count_before_replay = len(repo.list_outbox_records())
+    replacement_before_replay = replacement.model_dump(mode="json")
+    state, replayed = admin.recover_submitted_integration_boundary(
+        predecessor_task_id="task",
+        successor_task_id="successor",
+        integration_task_id="integration",
+        replacement_task_id="integration-recovery",
+        expected_dependency_task_ids=["task"],
+        expected_required_contribution_task_ids=["task"],
+        reason="Rebuild the submitted non-Git boundary from the verified frontier.",
+        actor_id="operator:recovery",
+        expected_revision=revision_before_replay,
+    )
+
+    assert replayed["recovery_applied"] is False
+    assert replayed["replayed"] is True
+    assert state.revision == revision_before_replay
+    assert state.agent_runtimes["lead"].model_dump(mode="json") == (
+        runtime_before_replay
+    )
+    assert len(repo.list_outbox_records()) == outbox_count_before_replay
+    assert state.tasks["integration-recovery"].model_dump(mode="json") == (
+        replacement_before_replay
+    )
+    assert state.deliverables["integration-deliverable"].model_dump(
+        mode="json"
+    ) == old_deliverable
+    assert state.review_requests["integration-review"].model_dump(
+        mode="json"
+    ) == old_review
+
+
 def test_stale_idle_context_grace_expiry_does_not_handoff_active_work(
     tmp_path: Path,
 ) -> None:
@@ -7354,6 +7663,7 @@ def test_wake_due_agents_provider_prepares_project_repo_when_configured(
         "task_id": "task",
         "agent_branch": "agents/session-backend/tasks/task-0ebb429f",
         "base_branch": "main",
+        "base_commit": "a" * 40,
         "dispatch_id": result["dispatches"][0]["dispatch_id"],
         "worktree_path": "/home/agent/worktrees/Truman/task-0ebb429f",
         "state": "active",
@@ -7872,6 +8182,11 @@ def test_libvirt_dependency_git_composition_command_is_valid_shell() -> None:
     assert "evander.dependencyCompositionRootCommit" in command
     assert "evander.dependencyComposedCommit" in command
     assert 'EVANDER_COMPOSITION_ROOT_COMMIT=$composition_root_commit' in command
+    assert (
+        'if [ "$created" != 1 ] && [ -z "$expected_prior_base" ] '
+        '&& [ -z "$pinned_base_commit" ]; then'
+    ) in command
+    assert "reused task worktree has no authoritative server-recorded base" in command
     assert command.index("dependency_branch_0") < command.index("dependency_branch_1")
     assert command.index("dependency_commit_0=") < command.index(
         'if [ -n "$current_dependency_provenance" ]'
@@ -7891,6 +8206,286 @@ def test_libvirt_dependency_git_composition_command_is_valid_shell() -> None:
     assert 'helper_temp="$(mktemp "$target/.evander/bin/.${helper_name}.XXXXXX")"' in command
     assert 'mv -f "$helper_temp" "$target/.evander/bin/$helper_name"' in command
     assert 'test ! -L "$target/.evander/bin"' in command
+    assert (
+        'base_commit="$(git -C "$target" config --worktree --get evander.baseCommit)"'
+        in command
+    )
+    assert "evander.baseCommit || git -C" not in command
+
+
+def test_libvirt_reused_worktree_without_server_base_authority_fails_closed(
+    tmp_path: Path,
+) -> None:
+    remote = tmp_path / "remote.git"
+    control = tmp_path / "control"
+    target = tmp_path / "existing-task-worktree"
+    subprocess.run(
+        ["git", "init", "--bare", "-q", "--initial-branch", "main", str(remote)],
+        check=True,
+    )
+    subprocess.run(["git", "clone", "-q", str(remote), str(control)], check=True)
+    subprocess.run(
+        ["git", "config", "user.email", "test@example.invalid"],
+        cwd=control,
+        check=True,
+    )
+    subprocess.run(
+        ["git", "config", "user.name", "Runtime Test"],
+        cwd=control,
+        check=True,
+    )
+    (control / "README.md").write_text("base\n", encoding="utf-8")
+    subprocess.run(["git", "add", "README.md"], cwd=control, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "base"], cwd=control, check=True)
+    subprocess.run(["git", "push", "-q", "-u", "origin", "main"], cwd=control, check=True)
+    subprocess.run(
+        ["git", "config", "extensions.worktreeConfig", "true"],
+        cwd=control,
+        check=True,
+    )
+    branch = "agents/session-backend/tasks/task-ui"
+    subprocess.run(
+        ["git", "worktree", "add", "-q", "-b", branch, str(target), "main"],
+        cwd=control,
+        check=True,
+    )
+    guest_chosen_base = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=target,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    subprocess.run(
+        ["git", "config", "--worktree", "evander.baseCommit", guest_chosen_base],
+        cwd=target,
+        check=True,
+    )
+
+    executor = FakeVmExecutor()
+    _prepare_project_repo_task_worktree(
+        EffectRuntimeContext(
+            resolved_config={"runtime_dir": str(tmp_path / "runtime")},
+            vm_executor=executor,
+            session_lookup=FakeSessionStore(),
+        ),
+        project_repo={
+            "guest_repo_name": "Truman",
+            "target_dir": str(control),
+            "execution_backend": "libvirt_vm",
+        },
+        session_id="session-backend",
+        task_id="task-ui",
+        agent_branch=branch,
+        base_ref="main",
+    )
+    command = str(executor.calls[0]["command"])
+    generated_target_line = next(
+        line for line in command.splitlines() if line.startswith("target=")
+    )
+    command = command.replace(
+        generated_target_line,
+        f"target={shlex.quote(str(target))}",
+        1,
+    )
+    generated_lock_line = next(
+        line for line in command.splitlines() if line.startswith("lock=")
+    )
+    command = command.replace(
+        generated_lock_line,
+        f"lock={shlex.quote(str(tmp_path / 'task-worktree.lock'))}",
+        1,
+    )
+
+    completed = subprocess.run(
+        ["bash", "-c", command],
+        cwd=control,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert completed.returncode != 0
+    assert "no authoritative server-recorded base" in completed.stderr
+
+
+def test_libvirt_task_pin_remains_authoritative_after_base_branch_advances(
+    tmp_path: Path,
+) -> None:
+    remote = tmp_path / "remote.git"
+    control = tmp_path / "control"
+    target = tmp_path / "pinned-task-worktree"
+    subprocess.run(
+        ["git", "init", "--bare", "-q", "--initial-branch", "main", str(remote)],
+        check=True,
+    )
+    subprocess.run(["git", "clone", "-q", str(remote), str(control)], check=True)
+    subprocess.run(
+        ["git", "config", "user.email", "test@example.invalid"],
+        cwd=control,
+        check=True,
+    )
+    subprocess.run(
+        ["git", "config", "user.name", "Runtime Test"],
+        cwd=control,
+        check=True,
+    )
+    (control / "README.md").write_text("pinned\n", encoding="utf-8")
+    subprocess.run(["git", "add", "README.md"], cwd=control, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "pinned"], cwd=control, check=True)
+    subprocess.run(["git", "push", "-q", "-u", "origin", "main"], cwd=control, check=True)
+    pinned_commit = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=control,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    (control / "README.md").write_text("advanced\n", encoding="utf-8")
+    subprocess.run(["git", "add", "README.md"], cwd=control, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "advance main"], cwd=control, check=True)
+    subprocess.run(["git", "push", "-q", "origin", "main"], cwd=control, check=True)
+    advanced_commit = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=control,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+
+    class _PinnedVmExecutor(FakeVmExecutor):
+        def vm_exec(self, **kwargs: object) -> dict[str, object]:
+            result = super().vm_exec(**kwargs)
+            result["stdout"] = f"EVANDER_BASE_COMMIT={pinned_commit}\n"
+            return result
+
+    executor = _PinnedVmExecutor()
+    branch = "agents/session-backend/tasks/task-ui"
+    _worktree_path, prepared_base = _prepare_project_repo_task_worktree(
+        EffectRuntimeContext(
+            resolved_config={"runtime_dir": str(tmp_path / "runtime")},
+            vm_executor=executor,
+            session_lookup=FakeSessionStore(),
+        ),
+        project_repo={
+            "guest_repo_name": "Truman",
+            "target_dir": str(control),
+            "execution_backend": "libvirt_vm",
+        },
+        session_id="session-backend",
+        task_id="task-ui",
+        agent_branch=branch,
+        base_ref="main",
+        pinned_base_commit=pinned_commit,
+    )
+    assert prepared_base == pinned_commit
+
+    command = str(executor.calls[0]["command"])
+    generated_target_line = next(
+        line for line in command.splitlines() if line.startswith("target=")
+    )
+    command = command.replace(
+        generated_target_line,
+        f"target={shlex.quote(str(target))}",
+        1,
+    )
+    generated_lock_line = next(
+        line for line in command.splitlines() if line.startswith("lock=")
+    )
+    command = command.replace(
+        generated_lock_line,
+        f"lock={shlex.quote(str(tmp_path / 'task-worktree.lock'))}",
+        1,
+    )
+
+    completed = subprocess.run(
+        ["bash", "-c", command],
+        cwd=control,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert f"EVANDER_BASE_COMMIT={pinned_commit}" in completed.stdout
+    assert advanced_commit != pinned_commit
+    assert (
+        subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=target,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+        == pinned_commit
+    )
+
+
+def test_libvirt_worktree_preparation_preserves_reported_prepared_base() -> None:
+    prepared_base = "a" * 40
+    worktree_head = "b" * 40
+
+    class _ReportingVmExecutor(FakeVmExecutor):
+        def vm_exec(self, **kwargs: object) -> dict[str, object]:
+            result = super().vm_exec(**kwargs)
+            result["stdout"] = (
+                f"EVANDER_BASE_COMMIT={prepared_base}\n"
+                f"{worktree_head}\n"
+            )
+            return result
+
+    executor = _ReportingVmExecutor()
+    context = EffectRuntimeContext(
+        resolved_config={"runtime_dir": "/runtime"},
+        vm_executor=executor,
+        session_lookup=FakeSessionStore(),
+    )
+
+    _worktree_path, base_commit = _prepare_project_repo_task_worktree(
+        context,
+        project_repo={
+            "guest_repo_name": "Truman",
+            "target_dir": "/home/agent/Truman",
+            "execution_backend": "libvirt_vm",
+        },
+        session_id="session-backend",
+        task_id="task-ui",
+        agent_branch="agents/session-backend/tasks/task-ui",
+        base_ref="main",
+    )
+
+    assert base_commit == prepared_base
+
+
+def test_libvirt_worktree_preparation_rejects_missing_prepared_base_marker() -> None:
+    class _MissingMarkerVmExecutor(FakeVmExecutor):
+        def vm_exec(self, **kwargs: object) -> dict[str, object]:
+            result = super().vm_exec(**kwargs)
+            result["stdout"] = f"{'b' * 40}\n"
+            return result
+
+    context = EffectRuntimeContext(
+        resolved_config={"runtime_dir": "/runtime"},
+        vm_executor=_MissingMarkerVmExecutor(),
+        session_lookup=FakeSessionStore(),
+    )
+
+    with pytest.raises(
+        RuntimeError,
+        match="did not report its immutable base commit.*repair evander.baseCommit",
+    ):
+        _prepare_project_repo_task_worktree(
+            context,
+            project_repo={
+                "guest_repo_name": "Truman",
+                "target_dir": "/home/agent/Truman",
+                "execution_backend": "libvirt_vm",
+            },
+            session_id="session-backend",
+            task_id="task-ui",
+            agent_branch="agents/session-backend/tasks/task-ui",
+            base_ref="main",
+        )
 
 
 def test_dependency_recovery_worktree_uses_pinned_commit_not_live_base_branch(
@@ -8015,6 +8610,78 @@ def test_dependency_recovery_worktree_uses_pinned_commit_not_live_base_branch(
     git_context = next(iter(result_state.git_work_contexts.values()))
     assert git_context.base_branch == "main"
     assert git_context.base_commit == base_commit
+
+
+def test_task_level_git_base_commit_pin_is_used_for_first_preparation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = _seed_team(tmp_path)
+    pinned_commit = "a" * 40
+
+    def _seed_pin(state: TeamState) -> TeamState:
+        state.projects["project"].git = ProjectGitConfig(
+            managed_repo_id="mr_0123456789abcdefabcd",
+            directory_path="root",
+            base_branch="main",
+        )
+        task = state.tasks["task"]
+        task.git_base_branch = "main"
+        task.git_base_commit_sha = pinned_commit
+        state.agent_runtimes["backend"].active_dispatch_id = "dispatch-pinned-base"
+        return state
+
+    state = repo.update(_seed_pin)
+    prepared: dict[str, object] = {}
+
+    def _prepare(_context: object, **kwargs: object) -> tuple[str, str]:
+        prepared.update(kwargs)
+        return "/home/agent/worktrees/repo/task", pinned_commit
+
+    monkeypatch.setattr(
+        "evander_team_addon.providers._prepare_project_repo_task_worktree",
+        _prepare,
+    )
+    monkeypatch.setattr(
+        "evander_team_addon.providers._project_repo_task_dependency_git_sources",
+        lambda *_args, **_kwargs: [],
+    )
+
+    result_state, rows, _metrics = _create_project_repo_git_work_contexts(
+        EffectRuntimeContext(
+            resolved_config={"runtime_dir": str(tmp_path)},
+            admin_service=SimpleNamespace(managed_git_admin=None),
+        ),
+        repo,
+        state=state,
+        agent_id="backend",
+        session_id="session-backend",
+        project_id="project",
+        project_repo={
+            "managed_repo_id": "mr_0123456789abcdefabcd",
+            "guest_repo_name": "repo",
+            "target_dir": "/home/agent/repo",
+            "execution_backend": "libvirt_vm",
+        },
+        dispatch_id="dispatch-pinned-base",
+        tasks=[
+            {
+                "id": "task",
+                "project_id": "project",
+                "owner_agent_id": "backend",
+                "git_base_branch": "main",
+                "git_base_commit_sha": pinned_commit,
+            }
+        ],
+        base_branch="main",
+    )
+
+    assert prepared["pinned_base_commit"] == pinned_commit
+    assert prepared["pinned_base_tree"] is None
+    assert len(rows) == 1
+    assert next(iter(result_state.git_work_contexts.values())).base_commit == (
+        pinned_commit
+    )
 
 
 @pytest.mark.parametrize(

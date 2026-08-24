@@ -1,0 +1,8 @@
+[Unit]
+Description=Evander Team control-plane runtime
+After=network-online.target
+Wants=network-online.target
+Wants=evander-gateway.service evander-admin-web.service evander-trigger-orchestrator.service evander-effect-orchestrator.service
+
+[Install]
+WantedBy=multi-user.target

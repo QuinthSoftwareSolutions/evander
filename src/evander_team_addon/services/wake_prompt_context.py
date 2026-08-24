@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from decimal import Decimal
 from enum import Enum
 from typing import Any
@@ -23,6 +23,7 @@ MAX_INBOX = 10
 MAX_BLOCKERS = 8
 MAX_REVIEWS = 8
 MAX_CASES = 8
+MAX_EXTERNAL_SOURCE_EVIDENCE_SNAPSHOTS = 8
 MAX_RELEASE_PACKAGES = 8
 MAX_RUNTIME_ATTENTION = 10
 MAX_ACTION_FEEDBACK = 4
@@ -233,6 +234,38 @@ def build_compact_wake_context(
             "cases",
         )
 
+    all_source_evidence_snapshots = sorted(
+        (
+            _compact_external_source_evidence_snapshot(row)
+            for row in _mapping_rows(
+                lease.get("external_source_evidence_snapshots")
+            )
+        ),
+        key=_external_source_evidence_newest_sort_key,
+        reverse=True,
+    )
+    unique_source_evidence_snapshots: list[dict[str, Any]] = []
+    seen_source_identities: set[tuple[str, str, str, str, str, str]] = set()
+    for snapshot in all_source_evidence_snapshots:
+        source_identity = _external_source_evidence_identity(snapshot)
+        if source_identity in seen_source_identities:
+            continue
+        seen_source_identities.add(source_identity)
+        unique_source_evidence_snapshots.append(snapshot)
+    if unique_source_evidence_snapshots:
+        limited_source_evidence_snapshots = unique_source_evidence_snapshots[
+            :MAX_EXTERNAL_SOURCE_EVIDENCE_SNAPSHOTS
+        ]
+        context["external_source_evidence_snapshots"] = (
+            limited_source_evidence_snapshots
+        )
+        _add_omitted(
+            omitted_counts,
+            "external_source_evidence_snapshots",
+            len(all_source_evidence_snapshots)
+            - len(limited_source_evidence_snapshots),
+        )
+
     releases, non_current_release_count = _current_release_rows(lease.get("release_packages"))
     _add_omitted(omitted_counts, "release_packages_non_current", non_current_release_count)
     context["release_packages"] = _limited_release_packages(
@@ -368,6 +401,7 @@ def _compact_current_dispatch(lease: Mapping[str, Any]) -> dict[str, Any]:
             "inbox_item_ids",
             "project_ids",
             "managed_repo_ids",
+            "source_evidence_snapshot_ids",
             "review_routing_authorities",
             "lease_expires_at",
         ),
@@ -484,6 +518,7 @@ def _compact_task(task: Mapping[str, Any]) -> dict[str, Any]:
             "state_entered_at",
             "task_kind",
             "integration_boundary",
+            "source_evidence_snapshot_ids",
         ),
     )
     row["title"] = _trim_text(task.get("title"), TITLE_LIMIT)
@@ -546,6 +581,132 @@ def _compact_project(project: Mapping[str, Any]) -> dict[str, Any]:
             for source in blocking_sources[:ID_LIST_LIMIT]
         ]
     return row
+
+
+def _compact_external_source_evidence_snapshot(
+    snapshot: Mapping[str, Any],
+) -> dict[str, Any]:
+    row = _compact_fields(
+        snapshot,
+        (
+            "id",
+            "team_id",
+            "project_id",
+            "provider_type",
+            "source_type",
+            "external_identifier",
+            "external_version",
+            "fetched_at",
+            "expires_at",
+            "freshness_status",
+            "effective_freshness_status",
+            "access_classification",
+            "content_digest",
+            "created_at",
+        ),
+    )
+    title = _optional_text(snapshot.get("title"))
+    if title is not None:
+        row["title"] = _trim_text(title, TITLE_LIMIT)
+    body = snapshot.get("body")
+    if isinstance(body, Mapping):
+        row["body"] = {
+            **_compact_fields(body, ("format",)),
+            "content": _trim_text(body.get("content"), 6000),
+        }
+        body_metadata = body.get("metadata")
+        if isinstance(body_metadata, Mapping) and body_metadata:
+            row["body"]["metadata"] = _compact_payload(body_metadata, text_limit=640)
+    acceptance_criteria = [
+        {
+            **_compact_fields(item, ("external_id", "status")),
+            "text": _trim_text(item.get("text"), 2000),
+            **(
+                {"metadata": _compact_payload(item["metadata"], text_limit=640)}
+                if isinstance(item.get("metadata"), Mapping) and item.get("metadata")
+                else {}
+            ),
+        }
+        for item in _mapping_rows(snapshot.get("acceptance_criteria"))
+    ]
+    if acceptance_criteria:
+        row["acceptance_criteria"] = acceptance_criteria[:30]
+        if len(acceptance_criteria) > 30:
+            row["acceptance_criteria_omitted_count"] = len(acceptance_criteria) - 30
+    discussion = [
+        {
+            **_compact_fields(item, ("external_id", "author", "occurred_at")),
+            "body": _trim_text(item.get("body"), 1200),
+            **(
+                {"metadata": _compact_payload(item["metadata"], text_limit=640)}
+                if isinstance(item.get("metadata"), Mapping) and item.get("metadata")
+                else {}
+            ),
+        }
+        for item in _mapping_rows(snapshot.get("discussion"))
+    ]
+    if discussion:
+        row["discussion"] = discussion[:20]
+        if len(discussion) > 20:
+            row["discussion_omitted_count"] = len(discussion) - 20
+    links = [
+        {
+            **_compact_fields(item, ("url", "label", "relation")),
+            **(
+                {"metadata": _compact_payload(item["metadata"], text_limit=640)}
+                if isinstance(item.get("metadata"), Mapping) and item.get("metadata")
+                else {}
+            ),
+        }
+        for item in _mapping_rows(snapshot.get("links"))
+    ]
+    if links:
+        row["links"] = links[:30]
+        if len(links) > 30:
+            row["links_omitted_count"] = len(links) - 30
+    metadata = snapshot.get("metadata")
+    if isinstance(metadata, Mapping) and metadata:
+        row["metadata"] = _compact_payload(metadata, text_limit=640)
+    return row
+
+
+def _external_source_evidence_identity(
+    snapshot: Mapping[str, Any],
+) -> tuple[str, str, str, str, str, str]:
+    return (
+        _sort_text(snapshot.get("team_id")),
+        _sort_text(snapshot.get("project_id")),
+        _sort_text(snapshot.get("provider_type")),
+        _sort_text(snapshot.get("source_type")),
+        _sort_text(snapshot.get("external_identifier")),
+        _sort_text(snapshot.get("external_version")),
+    )
+
+
+def _external_source_evidence_newest_sort_key(
+    snapshot: Mapping[str, Any],
+) -> tuple[tuple[int, float, str], tuple[int, float, str], str]:
+    return (
+        _absolute_timestamp_sort_key(snapshot.get("fetched_at")),
+        _absolute_timestamp_sort_key(snapshot.get("created_at")),
+        _sort_text(snapshot.get("id")),
+    )
+
+
+def _absolute_timestamp_sort_key(value: object) -> tuple[int, float, str]:
+    """Sort offset-aware timestamps by instant, with deterministic invalid fallback."""
+
+    parsed: datetime | None = None
+    if isinstance(value, datetime):
+        parsed = value
+    elif isinstance(value, str):
+        try:
+            parsed = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+        except ValueError:
+            parsed = None
+    if parsed is not None and parsed.tzinfo is not None:
+        return (1, parsed.astimezone(timezone.utc).timestamp(), "")
+    return (0, 0.0, _sort_text(value))
 
 
 def _compact_outcome_kind(definition: Mapping[str, Any]) -> dict[str, Any]:
@@ -617,6 +778,7 @@ def _compact_case(case: Mapping[str, Any]) -> dict[str, Any]:
             "source_ref",
             "created_at",
             "updated_at",
+            "source_evidence_snapshot_ids",
         ),
     )
     row["title"] = _trim_text(case.get("title"), TITLE_LIMIT)

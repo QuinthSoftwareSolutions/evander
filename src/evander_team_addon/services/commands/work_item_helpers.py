@@ -218,6 +218,25 @@ def _command_plan_task_creation(
     creation: dict[str, Any],
     reserved_task_ids: set[str],
 ) -> _TaskCreationPlan:
+    parent_task_id = _optional_text(creation.get("parent_task_id"))
+    parent = state.tasks.get(parent_task_id or "")
+    if (
+        parent is not None
+        and parent.mutation_policy is not None
+        and not parent.mutation_policy.allow_child_tasks
+    ):
+        raise TeamCommandValidationError(
+            code="task_mutation_policy_child_locked",
+            message=(
+                f"workflow-managed task {parent.id} does not allow child tasks; "
+                "continue or reassign that same task"
+            ),
+            correction_context={
+                "parent_task_id": parent.id,
+                "policy": parent.mutation_policy.model_dump(mode="json"),
+                "recommended_action": "reassign the same parent task if needed",
+            },
+        )
     result: dict[str, Any] = {"errors": []}
     try:
         plan = _plan_task_creation(

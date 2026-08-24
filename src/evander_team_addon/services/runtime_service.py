@@ -50,6 +50,7 @@ from ..models import (
     agent_project_assignment_payloads,
     agent_project_ids,
     effective_role_permissions,
+    external_source_evidence_snapshot_payload,
     wake_work_changed_since_latest_attempt,
     wake_work_fingerprint,
     wake_work_record_fingerprints,
@@ -97,6 +98,7 @@ from .domain.dispatch_scope import (
     actionable_dispatch_tasks,
     build_agent_dispatch_scope,
     build_preparation_recovery_dispatch_scope,
+    external_source_evidence_snapshot_ids_for_dispatch,
     inbox_references_review_ids,
     mcp_capability_blocked_review_ids,
 )
@@ -1068,6 +1070,14 @@ class TeamRuntimeService:
                             )
                         ],
                         "cases": _case_payloads_for_agent(state_model, agent.id),
+                        "external_source_evidence_snapshots": [
+                            external_source_evidence_snapshot_payload(
+                                state_model.external_source_evidence_snapshots[snapshot_id],
+                                now=effective_now,
+                            )
+                            for snapshot_id in durable_dispatch.source_evidence_snapshot_ids
+                            if snapshot_id in state_model.external_source_evidence_snapshots
+                        ],
                         "inbox": [item.model_dump(mode="json") for item in pending_inbox],
                         "blockers": scoped_blockers,
                         "reviews": [review.model_dump(mode="json") for review in pending_reviews],
@@ -1278,6 +1288,22 @@ class TeamRuntimeService:
                         and project.git is not None
                     }
                 )
+                manager_source_evidence_snapshot_ids = (
+                    external_source_evidence_snapshot_ids_for_dispatch(
+                        state_model,
+                        agent=manager,
+                        task_ids={
+                            *manager_scope.task_ids,
+                            *(
+                                state_model.deliverables[deliverable_id].task_id
+                                for deliverable_id in initial_release_decision_ids
+                                if deliverable_id in state_model.deliverables
+                            ),
+                        },
+                        project_ids=scoped_project_ids,
+                        include_team_cases=True,
+                    )
+                )
                 has_prior_successful_wake = _has_prior_successful_ordinary_wake(
                     state_model,
                     manager,
@@ -1303,6 +1329,9 @@ class TeamRuntimeService:
                     blocker_ids=list(manager_scope.blocker_ids),
                     review_request_ids=list(manager_scope.review_request_ids),
                     inbox_item_ids=list(manager_scope.inbox_item_ids),
+                    source_evidence_snapshot_ids=list(
+                        manager_source_evidence_snapshot_ids
+                    ),
                     mcp_capability_receipt=_new_review_mcp_capability_receipt(
                         state_model,
                         agent_id=manager.id,
@@ -1369,6 +1398,14 @@ class TeamRuntimeService:
                             for task in manager_tasks
                         ],
                         "cases": _case_payloads_for_team(state_model, team.id),
+                        "external_source_evidence_snapshots": [
+                            external_source_evidence_snapshot_payload(
+                                state_model.external_source_evidence_snapshots[snapshot_id],
+                                now=effective_now,
+                            )
+                            for snapshot_id in durable_dispatch.source_evidence_snapshot_ids
+                            if snapshot_id in state_model.external_source_evidence_snapshots
+                        ],
                         "inbox": [item.model_dump(mode="json") for item in manager_inbox],
                         "blockers": scoped_blockers,
                         "reviews": [review.model_dump(mode="json") for review in manager_reviews],

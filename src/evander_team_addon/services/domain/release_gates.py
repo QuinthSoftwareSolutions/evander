@@ -29,6 +29,7 @@ from ...models import (
     TeamState,
     TaskCancellation,
     TaskDeliverableContract,
+    TaskMutationPolicy,
     TeamTaskKind,
     TeamTaskState,
     agent_has_project_assignment,
@@ -62,6 +63,26 @@ _TERMINAL_CANDIDATE_CORRECTION_TASK_STATES = {
     TeamTaskState.REJECTED,
     TeamTaskState.CANCELLED,
 }
+
+
+def _candidate_correction_mutation_policy() -> TaskMutationPolicy:
+    return TaskMutationPolicy(
+        policy_id="system-remediation-topology-v1",
+        reason=(
+            "This workflow-generated correction must remain one direct, "
+            "candidate-rooted task so release provenance stays reviewable."
+        ),
+        locked_fields=[
+            "dependency_task_ids",
+            "deliverable_contract",
+            "git_base_branch",
+            "integration_boundary",
+            "parent_task_id",
+            "task_kind",
+        ],
+        allow_child_tasks=False,
+        allow_agent_cancellation=False,
+    )
 
 
 def _candidate_correction_git_base(release: ReleasePackage) -> str | None:
@@ -612,6 +633,7 @@ def _materialize_candidate_verification_correction(
             deliverable_contract=TaskDeliverableContract(
                 require_git_provenance=True,
             ),
+            mutation_policy=_candidate_correction_mutation_policy(),
             title=f"Correct verification failure in {release.id}",
             description=description,
             created_by_actor="system:release-verification-correction",
@@ -629,6 +651,8 @@ def _materialize_candidate_verification_correction(
             f"reserved release verification correction task id {task_id} is already in use"
         )
     elif task.state not in _TERMINAL_CANDIDATE_CORRECTION_TASK_STATES:
+        if task.mutation_policy is None:
+            task.mutation_policy = _candidate_correction_mutation_policy()
         _reconcile_candidate_correction_task_git_base(
             state,
             task=task,
@@ -664,7 +688,9 @@ def _materialize_candidate_verification_correction(
                 "branch into this correction. Fix the verifier failure and submit the "
                 "changed Git work as the correction deliverable. After that deliverable "
                 "is accepted and reviewed, Team automatically creates the successor "
-                "release. Do "
+                "release. Keep this same task and its direct correction topology; if "
+                "another owner is needed, reassign this task instead of creating a child "
+                "or dependency wrapper. Do "
                 "not retry or resubmit the unchanged candidate. Do not finish this task "
                 "directly or request a release; its accepted reviewed Git deliverable is "
                 "required to continue the automatic release loop."
@@ -975,6 +1001,7 @@ def materialize_release_review_rejection_correction(
             deliverable_contract=TaskDeliverableContract(
                 require_git_provenance=True,
             ),
+            mutation_policy=_candidate_correction_mutation_policy(),
             title=f"Correct rejected release review in {release.id}",
             description=description,
             created_by_actor="system:release-review-correction",
@@ -997,6 +1024,8 @@ def materialize_release_review_rejection_correction(
             _set_task_state(task, TeamTaskState.PENDING, now=now)
             result.setdefault("reactivated_task_ids", []).append(task.id)
         if task.state not in _TERMINAL_CANDIDATE_CORRECTION_TASK_STATES:
+            if task.mutation_policy is None:
+                task.mutation_policy = _candidate_correction_mutation_policy()
             _reconcile_candidate_correction_task_git_base(
                 state,
                 task=task,
@@ -2014,7 +2043,7 @@ def _candidate_manifest(
         HumanReviewRequirementSnapshot(
             directory_path=(
                 human_requirement.directory_path
-                or (project.git.directory_path if project.git is not None else "root")
+                or project.directory_path
             ),
             configured_group_ids=list(human_requirement.reviewer_group_ids),
             initially_eligible_user_ids=list(human_requirement.resolved_reviewer_user_ids),

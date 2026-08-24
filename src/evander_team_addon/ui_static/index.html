@@ -940,6 +940,16 @@
                   <option value="">No successor</option>
                 </select>
               </label>
+              <label>
+                <span>
+                  <input type="checkbox" name="rebind_dependents" />
+                  Replace this task in active dependencies
+                </span>
+                <small>
+                  Atomically move every nonterminal dependent task and required contribution
+                  frontier to the selected successor. Terminal task history is preserved.
+                </small>
+              </label>
             </div>
             <div class="edit-modal-actions">
               <button type="submit" class="task-cancellation-confirm">Cancel task</button>

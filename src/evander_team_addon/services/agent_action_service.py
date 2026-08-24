@@ -407,11 +407,16 @@ class TeamAgentActionService:
                             continue
                     new_dependency_task_ids: list[str] | None = None
                     if has_dependency_edit:
+                        project = state_model.projects.get(task.project_id)
                         graph_permitted = (
                             is_owner
                             or _supervises(state_model, agent.id, task.owner_agent_id)
                             or _is_project_lead_for(state_model, agent.id, task.project_id)
-                            or _is_team_manager(state_model, agent)
+                            or (
+                                project is not None
+                                and agent.team_id == project.team_id
+                                and _is_team_manager(state_model, agent)
+                            )
                         )
                         if not graph_permitted:
                             result["errors"].append(
@@ -811,15 +816,21 @@ class TeamAgentActionService:
                 result["created_operator_chat_message_ids"].append(created_id)
                 _mark_progress()
 
-            for escalation in _list_of_mappings(
-                normalized_action.get("operator_escalations"), "operator_escalations"
-            ):
-                _apply_operator_escalation(
-                    state_model,
-                    actor=agent,
-                    escalation=escalation,
-                    result=result,
+            for index, escalation in enumerate(
+                _list_of_mappings(
+                    normalized_action.get("operator_escalations"),
+                    "operator_escalations",
                 )
+            ):
+                try:
+                    _apply_operator_escalation(
+                        state_model,
+                        actor=agent,
+                        escalation=escalation,
+                        result=result,
+                    )
+                except ValueError as exc:
+                    _append_action_item_error(result, "operator_escalations", index, exc)
 
             for index, deliverable_payload in enumerate(
                 _list_of_mappings(normalized_action.get("deliverables"), "deliverables")

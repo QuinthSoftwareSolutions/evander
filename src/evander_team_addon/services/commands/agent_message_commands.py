@@ -15,6 +15,7 @@ from .validators import (
     _require_command_agent,
     _require_command_agent_by_id,
     _required_command_text,
+    _resolve_question_command_recipient,
     _resolve_upward_command_recipient,
     _team_command_priority,
     _validate_command_recipient_active,
@@ -238,14 +239,13 @@ class TeamAgentMessageCommandService(TeamCommandExecutor):
                 field_name="question",
                 code="empty_question",
             )
-            recipient = _resolve_upward_command_recipient(
+            _validate_command_task_scope(state, agent=agent, task_id=normalized_task_id)
+            recipient = _resolve_question_command_recipient(
                 state,
                 agent=agent,
                 recipient_agent_id=normalized_recipient_id,
-                tool_name="team_ask_question",
-                communication_kind="questions",
+                task_id=normalized_task_id,
             )
-            _validate_command_task_scope(state, agent=agent, task_id=normalized_task_id)
             payload: dict[str, Any] = {"question": question_text}
             if normalized_message is not None:
                 payload["message"] = normalized_message

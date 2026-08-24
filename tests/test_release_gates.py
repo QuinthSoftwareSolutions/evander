@@ -888,6 +888,16 @@ def test_candidate_verification_failure_creates_candidate_rooted_correction_task
     assert task.integration_boundary is False
     assert task.deliverable_contract is not None
     assert task.deliverable_contract.require_git_provenance is True
+    assert task.mutation_policy is not None
+    assert task.mutation_policy.policy_id == "system-remediation-topology-v1"
+    assert task.mutation_policy.allow_child_tasks is False
+    assert task.mutation_policy.allow_agent_cancellation is False
+    assert set(task.mutation_policy.locked_fields) >= {
+        "dependency_task_ids",
+        "deliverable_contract",
+        "git_base_branch",
+        "integration_boundary",
+    }
     assert "Candidate commit: candidate-sha" in task.description
     assert "Do not merge or rebase the current project base branch" in task.description
     assert "Do not amend, reset, rebase, or otherwise rewrite" in task.description
@@ -926,6 +936,7 @@ def test_candidate_verification_failure_creates_candidate_rooted_correction_task
     assert "rooted at candidate_commit_sha" in item.payload["next_action"]
     assert "Do not merge or rebase" in item.payload["next_action"]
     assert "Team automatically creates the successor release" in item.payload["next_action"]
+    assert "reassign this task instead of creating a child" in item.payload["next_action"]
     assert "create a replacement release" not in item.payload["next_action"]
     wake = next(
         event for event in result["events"] if event["event_type"] == "team.agent.wake_requested"
@@ -1088,6 +1099,10 @@ def test_rejected_release_review_creates_candidate_rooted_correction_task() -> N
     assert task.integration_boundary is False
     assert task.deliverable_contract is not None
     assert task.deliverable_contract.require_git_provenance is True
+    assert task.mutation_policy is not None
+    assert task.mutation_policy.policy_id == "system-remediation-topology-v1"
+    assert task.mutation_policy.allow_child_tasks is False
+    assert task.mutation_policy.allow_agent_cancellation is False
     assert "Release reviews: release-review" in task.description
     assert "PLC device mappings persist opcTagId 0." in task.description
     assert "Do not amend, reset, rebase, or otherwise rewrite" in task.description
