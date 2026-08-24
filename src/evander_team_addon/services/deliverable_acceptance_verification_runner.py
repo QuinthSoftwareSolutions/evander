@@ -47,6 +47,7 @@ class DeliverableAcceptanceVerificationExecutor(Protocol):
         *,
         run_id: str,
         session_id: str,
+        review_id: str,
         snapshot: ReviewRepositorySnapshot,
     ) -> str: ...
 
@@ -118,7 +119,7 @@ class TeamDeliverableAcceptanceVerificationRunner:
         candidate_commit_sha: str,
     ) -> dict[str, Any]:
         state = self._repo.read()
-        deliverable, snapshot = _validate_request(
+        deliverable, review_id, snapshot = _validate_request(
             state,
             deliverable_id=deliverable_id,
             verification_run_id=verification_run_id,
@@ -138,7 +139,7 @@ class TeamDeliverableAcceptanceVerificationRunner:
         session_id = f"team-acceptance-verification-{verification_run_id}"
 
         def _mark_started(current: TeamState) -> TeamState:
-            current_deliverable, _snapshot = _validate_request(
+            current_deliverable, _review_id, _snapshot = _validate_request(
                 current,
                 deliverable_id=deliverable_id,
                 verification_run_id=verification_run_id,
@@ -151,7 +152,7 @@ class TeamDeliverableAcceptanceVerificationRunner:
             return current
 
         state = self._repo.update(_mark_started)
-        deliverable, snapshot = _validate_request(
+        deliverable, review_id, snapshot = _validate_request(
             state,
             deliverable_id=deliverable_id,
             verification_run_id=verification_run_id,
@@ -180,6 +181,7 @@ class TeamDeliverableAcceptanceVerificationRunner:
             target_dir = self._executor.clone_candidate(
                 run_id=verification_run_id,
                 session_id=session_id,
+                review_id=review_id,
                 snapshot=snapshot,
             )
             self._executor.pin_candidate(
@@ -323,7 +325,7 @@ class TeamDeliverableAcceptanceVerificationRunner:
                         terminal_error = f"failed to destroy acceptance verifier: {exc}"
 
         def _record_terminal(current: TeamState) -> TeamState:
-            current_deliverable, _snapshot = _validate_request(
+            current_deliverable, _review_id, _snapshot = _validate_request(
                 current,
                 deliverable_id=deliverable_id,
                 verification_run_id=verification_run_id,
@@ -377,7 +379,7 @@ class TeamDeliverableAcceptanceVerificationRunner:
         parsed = DeliverableAcceptanceVerificationCommandResult.model_validate(command_result)
 
         def _mutate(state: TeamState) -> TeamState:
-            deliverable, _snapshot = _validate_request(
+            deliverable, _review_id, _snapshot = _validate_request(
                 state,
                 deliverable_id=deliverable_id,
                 verification_run_id=verification_run_id,
@@ -402,7 +404,7 @@ def _validate_request(
     deliverable_id: str,
     verification_run_id: str,
     candidate_commit_sha: str,
-) -> tuple[Deliverable, ReviewRepositorySnapshot]:
+) -> tuple[Deliverable, str, ReviewRepositorySnapshot]:
     deliverable = state.deliverables.get(deliverable_id)
     if deliverable is None:
         raise ValueError(f"deliverable {deliverable_id} does not exist")
@@ -422,7 +424,7 @@ def _validate_request(
     ):
         raise ValueError("acceptance verification request does not match the frozen run")
     snapshots = [
-        review.repository_snapshot
+        (review_id, review.repository_snapshot)
         for review_id in deliverable.review_request_ids
         if (review := state.review_requests.get(review_id)) is not None
         and review.repository_snapshot is not None
@@ -430,15 +432,15 @@ def _validate_request(
     ]
     if not snapshots:
         raise ValueError("acceptance verification has no immutable review repository snapshot")
-    snapshot = snapshots[0]
+    review_id, snapshot = snapshots[0]
     if any(
         item.managed_repo_id != snapshot.managed_repo_id
         or item.directory_path != snapshot.directory_path
         or item.commit_sha.casefold() != snapshot.commit_sha.casefold()
-        for item in snapshots[1:]
+        for _item_review_id, item in snapshots[1:]
     ):
         raise ValueError("acceptance verification review snapshots disagree")
-    return deliverable, snapshot
+    return deliverable, review_id, snapshot
 
 
 __all__ = [

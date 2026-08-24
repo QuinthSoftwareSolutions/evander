@@ -1348,6 +1348,35 @@ def test_policy_v2_composition_manifest_must_match_new_git_dependency() -> None:
     ] == [added_source.id]
 
 
+def test_policy_v2_composition_manifest_ignores_cancelled_git_dependency() -> None:
+    state, integration, candidate = _policy_v2_mixed_source_candidate()
+    cancelled_dependency_payload = _support_task("cancelled-git-dependency").model_dump()
+    cancelled_dependency_payload.update(
+        state=TeamTaskState.CANCELLED,
+        cancellation=TaskCancellation(
+            reason_code="obsolete",
+            reason="The integration no longer requires this dependency.",
+            actor_kind="operator",
+            actor_id="operator:test",
+        ),
+    )
+    cancelled_dependency = AgentTask.model_validate(cancelled_dependency_payload)
+    state.tasks[cancelled_dependency.id] = cancelled_dependency
+    cancelled_source = _delivered(
+        state,
+        deliverable_id="cancelled-git-source",
+        task_id=cancelled_dependency.id,
+    )
+    cancelled_source.git_refs = DeliverableGitRefs(
+        agent_branch="agents/source/cancelled-git-dependency",
+        commit_sha="8" * 40,
+        submitted_commit_sha="8" * 40,
+    )
+    integration.dependency_task_ids.append(cancelled_dependency.id)
+
+    require_deliverable_acceptance(state, candidate.id)
+
+
 def test_integration_boundary_rejects_artifact_only_submission_before_side_effects() -> None:
     state = _state()
     task = AgentTask(

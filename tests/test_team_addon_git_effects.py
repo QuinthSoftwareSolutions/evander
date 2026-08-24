@@ -16,6 +16,7 @@ from evander.effects.providers.agent_exec import AgentExecEffectProvider
 from evander.effects.providers.base import EffectRuntimeContext
 from evander.events.internal import InternalEventBus, internal_event_store_path
 from evander.events.models import WorkflowNodeEnvelope
+from evander.review_snapshots import team_review_snapshot_ref
 from evander_team_addon.models import (
     AgentInboxItem,
     AgentStandDown,
@@ -35,6 +36,7 @@ from evander_team_addon.models import (
     ReleaseVerificationCommand,
     ReleaseVerificationCommandResult,
     ReleaseVerificationRun,
+    ReviewRepositorySnapshot,
     TeamInboxItemState,
     TeamInboxItemType,
     TeamBlocker,
@@ -67,6 +69,7 @@ from evander_team_addon.services.domain.release_packages import (
 )
 from evander_team_addon.services.release_gate_service import TeamReleaseGateService
 from evander_team_addon.services.release_verification_effects import (
+    EffectDeliverableAcceptanceVerificationExecutor,
     EffectReleaseVerificationExecutor,
 )
 from evander_team_addon.services.release_verification_runner import (
@@ -1782,6 +1785,70 @@ def test_release_verification_effect_adapter_translates_subprocess_timeouts(
         )
 
     assert isinstance(raised.value.__cause__, subprocess.TimeoutExpired)
+
+
+def test_acceptance_verifier_reuses_original_review_id_and_retained_ref(
+    monkeypatch,
+) -> None:
+    review_id = "review/original:one"
+    commit_sha = "1" * 40
+    pinned_ref = team_review_snapshot_ref(review_id)
+    recorded: dict[str, object] = {}
+
+    class _ManagedGitAdmin:
+        def pin_team_review_snapshot(
+            self,
+            managed_repo_id: str,
+            directory_path: str,
+            **kwargs: object,
+        ) -> dict[str, str]:
+            recorded["pin_managed_repo_id"] = managed_repo_id
+            recorded["pin_directory_path"] = directory_path
+            recorded["pin_kwargs"] = dict(kwargs)
+            return {"commit_sha": commit_sha}
+
+    def _clone(self, **_kwargs: object) -> dict[str, object]:
+        definition = self.effect_definition
+        assert definition is not None
+        recorded["clone_branch"] = definition.clone_branch
+        recorded["clone_pinned_ref"] = definition.pinned_ref
+        recorded["clone_pinned_commit_sha"] = definition.pinned_commit_sha
+        return {"success": True, "target_dir": "/workspace/repo"}
+
+    monkeypatch.setattr(AgentCloneRepoEffectProvider, "execute", _clone)
+    context = EffectRuntimeContext(
+        resolved_config={},
+        admin_service=SimpleNamespace(managed_git_admin=_ManagedGitAdmin()),
+    )
+    executor = EffectDeliverableAcceptanceVerificationExecutor(context)
+    snapshot = ReviewRepositorySnapshot(
+        managed_repo_id="mr_0123456789abcdefabcd",
+        directory_path="root",
+        commit_sha=commit_sha,
+        pinned_ref=pinned_ref,
+        source_kind="deliverable_candidate",
+        source_ref="agents/reviewer/deleted-source-branch",
+    )
+
+    target_dir = executor.clone_candidate(
+        run_id="verification-1",
+        session_id="verification-session",
+        review_id=review_id,
+        snapshot=snapshot,
+    )
+
+    assert target_dir == "/workspace/repo"
+    assert recorded["pin_managed_repo_id"] == snapshot.managed_repo_id
+    assert recorded["pin_directory_path"] == snapshot.directory_path
+    assert recorded["pin_kwargs"] == {
+        "review_id": review_id,
+        "commit_sha": commit_sha,
+        "source_ref": "agents/reviewer/deleted-source-branch",
+        "pinned_ref": pinned_ref,
+    }
+    assert recorded["clone_branch"] is None
+    assert recorded["clone_pinned_ref"] == pinned_ref
+    assert recorded["clone_pinned_commit_sha"] == commit_sha
 
 
 def test_release_verifier_treats_reported_cleanup_failure_as_infrastructure_failure(

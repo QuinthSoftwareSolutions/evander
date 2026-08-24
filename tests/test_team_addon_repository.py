@@ -3809,11 +3809,14 @@ def test_integration_review_runs_release_equivalent_verification_before_acceptan
     assert premature["success"] is False
     assert "wait for the server-owned run" in premature["errors"][0]["message"]
 
+    clone_requests: list[dict[str, object]] = []
+
     class _Executor:
         def create_verifier(self, **_kwargs: object) -> None:
             return None
 
-        def clone_candidate(self, **_kwargs: object) -> str:
+        def clone_candidate(self, **kwargs: object) -> str:
+            clone_requests.append(dict(kwargs))
             return "/work/checkout"
 
         def pin_candidate(self, **_kwargs: object) -> None:
@@ -3834,6 +3837,7 @@ def test_integration_review_runs_release_equivalent_verification_before_acceptan
         candidate_commit_sha=authoritative_commit,
     )
     assert run_result["verification_state"] == expected_status
+    assert clone_requests[0]["review_id"] == "review-verified"
     persisted = repo.read().deliverables["deliverable-verified"].verification
     assert persisted is not None
     assert persisted.status == expected_status

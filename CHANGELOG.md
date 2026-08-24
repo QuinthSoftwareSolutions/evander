@@ -23,6 +23,8 @@
   pre-acceptance waivers without duplicating release-package audit records.
 - Verified composed Git ancestry against the submitted candidate, rechecked manifest dependency
   scope against the current task graph, and normalized optional provenance during context replay.
+- Kept acceptance verification on immutable review identities and retained refs, and aligned
+  composition validation with preparation when task dependencies are cancelled.
 
 ## 2026-08-23 - Single-Review Team Dispatches
 

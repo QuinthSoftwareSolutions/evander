@@ -257,6 +257,7 @@ class EffectDeliverableAcceptanceVerificationExecutor:
         *,
         run_id: str,
         session_id: str,
+        review_id: str,
         snapshot: ReviewRepositorySnapshot,
     ) -> str:
         managed_git = getattr(
@@ -270,7 +271,7 @@ class EffectDeliverableAcceptanceVerificationExecutor:
         pinned = pin_snapshot(
             snapshot.managed_repo_id,
             snapshot.directory_path,
-            review_id=snapshot.pinned_ref.rsplit("/", 1)[-1],
+            review_id=review_id,
             commit_sha=snapshot.commit_sha,
             source_ref=snapshot.source_ref,
             pinned_ref=snapshot.pinned_ref,
@@ -288,7 +289,6 @@ class EffectDeliverableAcceptanceVerificationExecutor:
                 type="effect:agent:clone-repo",
                 session_id=session_id,
                 managed_repo_id=snapshot.managed_repo_id,
-                clone_branch=snapshot.source_ref,
                 git_access_mode="read-only",
                 pinned_ref=snapshot.pinned_ref,
                 pinned_commit_sha=snapshot.commit_sha,
