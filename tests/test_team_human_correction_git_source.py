@@ -29,6 +29,7 @@ from evander_team_addon.models import (
     TeamRole,
     TeamState,
     TeamTaskState,
+    TaskDeliverableContract,
 )
 from evander_team_addon.providers import (
     _create_project_repo_git_work_contexts,
@@ -619,6 +620,158 @@ def test_correction_git_context_records_candidate_base_and_manifest_sources(
             "pinned_ref": None,
         }
     ]
+
+
+def test_correction_git_context_composes_new_required_contribution_and_records_manifest(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state = _verification_correction_state()
+    fix_commit = "f" * 40
+    fix_tree = "9" * 40
+    state.tasks["fix-task"] = AgentTask(
+        id="fix-task",
+        owner_agent_id="owner",
+        project_id="project",
+        priority=1,
+        state=TeamTaskState.FINISHED,
+        title="Fix release verification",
+        description="Correct the rejected candidate.",
+        created_by_agent_id="lead",
+        deliverable_ids=["fix-deliverable"],
+    )
+    state.deliverables["fix-deliverable"] = Deliverable(
+        id="fix-deliverable",
+        task_id="fix-task",
+        producer_agent_id="owner",
+        summary="Release verification correction",
+        state=TeamRecordState.ACCEPTED,
+        git_refs={
+            "agent_branch": "agents/owner/tasks/fix-task",
+            "commit_sha": fix_commit,
+            "submitted_commit_sha": fix_commit,
+            "reviewed_commit_sha": fix_commit,
+        },
+    )
+    correction_task = state.tasks["correction-task"]
+    correction_task.dependency_task_ids = ["fix-task"]
+    correction_task.integration_boundary = True
+    correction_task.deliverable_contract = TaskDeliverableContract(
+        require_git_provenance=True,
+        required_contribution_task_ids=["fix-task"],
+    )
+    state.agent_runtimes["owner"] = AgentRuntime(
+        agent_id="owner",
+        active_dispatch_id="dispatch",
+    )
+    repo = TeamStateRepository(tmp_path)
+    state = repo.update(lambda _state: state, expected_revision=0)
+
+    class _ManagedGit:
+        def resolve_snapshot(self, *args: object, **kwargs: object) -> dict[str, object]:
+            return {
+                "commit_sha": CANDIDATE_COMMIT,
+                "tree_hash": CANDIDATE_TREE,
+            }
+
+        def resolve_branch_commit(self, *args: object, **kwargs: object) -> str:
+            return fix_commit
+
+        def reduce_commit_frontier(self, *args: object, **kwargs: object) -> dict[str, object]:
+            assert kwargs["base_commit_sha"] == CANDIDATE_COMMIT
+            assert kwargs["sources"] == [
+                {
+                    "dependency_task_id": "fix-task",
+                    "deliverable_id": "fix-deliverable",
+                    "branch": "agents/owner/tasks/fix-task",
+                    "commit_sha": fix_commit,
+                    "relationship_kind": "required_contribution",
+                }
+            ]
+            return {
+                "base_tree_hash": CANDIDATE_TREE,
+                "frontier_commit_shas": [fix_commit],
+                "reduced_source_deliverable_ids": [],
+            }
+
+    prepared: dict[str, object] = {}
+
+    def _prepare(*_args: object, **kwargs: object) -> tuple[str, str]:
+        prepared.update(kwargs)
+        composition_result = kwargs["composition_result"]
+        assert isinstance(composition_result, dict)
+        composition_result.update(
+            {
+                "root_commit_sha": CANDIDATE_COMMIT,
+                "composed_commit_sha": fix_commit,
+                "composed_tree_hash": fix_tree,
+            }
+        )
+        return "/home/agent/worktrees/repo/correction-task", CANDIDATE_COMMIT
+
+    monkeypatch.setattr(
+        "evander_team_addon.providers._prepare_project_repo_task_worktree",
+        _prepare,
+    )
+    context = EffectRuntimeContext(
+        resolved_config={"runtime_dir": str(tmp_path)},
+        admin_service=SimpleNamespace(managed_git_admin=_ManagedGit()),
+    )
+    result_state, rows, _metrics = _create_project_repo_git_work_contexts(
+        context,
+        repo,
+        state=state,
+        agent_id="owner",
+        session_id="owner-session",
+        project_id="project",
+        project_repo={
+            "managed_repo_id": MANAGED_REPO_ID,
+            "guest_repo_name": "repo",
+            "target_dir": "/home/agent/repo",
+            "execution_backend": "libvirt_vm",
+        },
+        dispatch_id="dispatch",
+        tasks=[
+            {
+                "id": "correction-task",
+                "project_id": "project",
+                "owner_agent_id": "owner",
+            }
+        ],
+        base_branch="main",
+    )
+
+    assert len(rows) == 1
+    assert prepared["dependency_git_sources"] == [
+        {
+            "dependency_task_id": "fix-task",
+            "deliverable_id": "fix-deliverable",
+            "branch": "agents/owner/tasks/fix-task",
+            "commit_sha": fix_commit,
+            "relationship_kind": "required_contribution",
+        }
+    ]
+    context_model = next(iter(result_state.git_work_contexts.values()))
+    assert [
+        source.deliverable_id for source in context_model.dependency_git_sources
+    ] == ["fix-deliverable", "source-deliverable"]
+    manifest = context_model.dependency_composition_manifest
+    assert manifest is not None
+    assert [
+        source.model_dump(mode="json") for source in manifest.dependency_git_sources
+    ] == [
+        {
+            "dependency_task_id": "fix-task",
+            "deliverable_id": "fix-deliverable",
+            "branch": "agents/owner/tasks/fix-task",
+            "commit_sha": fix_commit,
+            "relationship_kind": "required_contribution",
+            "pinned_ref": None,
+        }
+    ]
+    assert manifest.base_commit_sha == CANDIDATE_COMMIT
+    assert manifest.composed_commit_sha == fix_commit
+    assert manifest.composed_tree_hash == fix_tree
 
 
 def test_operator_preparation_recovery_creates_one_fresh_inbox_and_due_wake(

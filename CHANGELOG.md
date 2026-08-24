@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-08-24 - Correction Dependency Composition
+
+- Composed newly accepted correction-task Git inputs on top of the rejected candidate and
+  recorded those exact immutable inputs in the dependency-composition manifest, so reviewed
+  correction aggregates can pass acceptance and create their deterministic successor releases.
+
 ## 2026-08-24 - Task-Scoped Team Directives
 
 - Included an owned task explicitly selected by an operator directive in that

@@ -8838,6 +8838,7 @@ def _create_project_repo_git_work_contexts(
         resolved_dependency_branch: str | None = None
         resolved_dependency_commit_sha: str | None = None
         manual_dependency_git_sources: list[dict[str, str]] = []
+        composition_manifest_git_sources: list[dict[str, str]] = []
         correction_source = _verified_rejected_candidate_git_source(
             context,
             state=state,
@@ -8859,20 +8860,36 @@ def _create_project_repo_git_work_contexts(
             pinned_base_commit = dependency_recovery.base_commit_sha
             pinned_base_tree = dependency_recovery.base_tree_hash
             composition_git_sources = dependency_git_sources
+            composition_manifest_git_sources = dependency_git_sources
             manual_dependency_git_sources = dependency_git_sources
             dependency_composition_mode = "manual_recovery"
             dependency_composition_recovery_id = dependency_recovery.id
         elif correction_source is not None:
-            dependency_git_sources = [
+            rejected_candidate_git_sources = [
                 source.model_dump(mode="json")
                 for source in correction_source.dependency_git_sources
             ]
+            correction_task_git_sources = _project_repo_task_dependency_git_sources(
+                context,
+                state=state,
+                task_id=task_id,
+                managed_repo_id=managed_repo_id,
+            )
+            dependency_git_sources = _merge_dependency_git_source_rows(
+                rejected_candidate_git_sources,
+                correction_task_git_sources,
+            )
             effective_base_branch = correction_source.release_branch
             worktree_base_ref = effective_base_branch
             prior_base_commit = correction_source.candidate_commit_sha
             pinned_base_commit = correction_source.candidate_commit_sha
             pinned_base_tree = correction_source.candidate_tree_hash
-            composition_git_sources: list[dict[str, str]] = []
+            # The rejected candidate already contains its original release
+            # sources. Compose only newly accepted correction-task inputs on
+            # top of that immutable base, and attest those current inputs in
+            # the acceptance manifest.
+            composition_git_sources = correction_task_git_sources
+            composition_manifest_git_sources = correction_task_git_sources
         else:
             dependency_git_sources = _project_repo_task_dependency_git_sources(
                 context,
@@ -8885,6 +8902,7 @@ def _create_project_repo_git_work_contexts(
             pinned_base_commit = None
             pinned_base_tree = None
             composition_git_sources = dependency_git_sources
+            composition_manifest_git_sources = dependency_git_sources
             accepted_recovery = accepted_recovery_for_target(
                 state,
                 target_task_id=task_id,
@@ -9003,7 +9021,7 @@ def _create_project_repo_git_work_contexts(
                     or "root"
                 ),
                 base_branch=effective_base_branch or "HEAD",
-                dependency_git_sources=dependency_git_sources,
+                dependency_git_sources=composition_manifest_git_sources,
                 composition_result=composition_result,
             )
             context_id = _project_repo_git_work_context_id(
@@ -9031,10 +9049,18 @@ def _create_project_repo_git_work_contexts(
                         for source in current_dependency_recovery.dependency_git_sources
                     ]
                     if current_dependency_recovery is not None
-                    else [
-                        source.model_dump(mode="json")
-                        for source in current_correction_source.dependency_git_sources
-                    ]
+                    else _merge_dependency_git_source_rows(
+                        [
+                            source.model_dump(mode="json")
+                            for source in current_correction_source.dependency_git_sources
+                        ],
+                        _project_repo_task_dependency_git_sources(
+                            context,
+                            state=current_state,
+                            task_id=task_id,
+                            managed_repo_id=managed_repo_id,
+                        ),
+                    )
                     if current_correction_source is not None
                     else _project_repo_task_dependency_git_sources(
                         context,
@@ -9432,6 +9458,25 @@ def _project_repo_task_dependency_git_sources(
             task_id=task_id,
             message=str(exc),
         ) from None
+
+
+def _merge_dependency_git_source_rows(
+    *groups: Sequence[Mapping[str, str]],
+) -> list[dict[str, str]]:
+    """Merge immutable source rows by deliverable, preferring current task semantics."""
+
+    rows_by_deliverable_id: dict[str, dict[str, str]] = {}
+    for group in groups:
+        for source in group:
+            deliverable_id = _required_text(
+                source.get("deliverable_id"),
+                "dependency source deliverable_id",
+            )
+            rows_by_deliverable_id[deliverable_id] = dict(source)
+    return [
+        rows_by_deliverable_id[deliverable_id]
+        for deliverable_id in sorted(rows_by_deliverable_id)
+    ]
 
 
 def _project_repo_task_dependency_git_sources_unchecked(
