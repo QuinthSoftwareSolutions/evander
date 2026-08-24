@@ -1397,6 +1397,76 @@ def test_worker_reconciles_task_worktree_helpers_without_replacing_other_state(
         assert stat.S_IMODE(helper_path.stat().st_mode) == 0o755
 
 
+def test_worker_helper_reconciliation_anchors_source_and_target_parent_directories(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    trusted_root = tmp_path / "session" / "agent_home"
+    helper_source = trusted_root / "repos" / "repo" / ".evander"
+    helper_target = trusted_root / "worktrees" / "repo" / "task" / ".evander"
+    source_bin = helper_source / "bin"
+    target_bin = helper_target / "bin"
+    attacker_bin = tmp_path / "attacker-source"
+    victim_bin = tmp_path / "other-session-bin"
+    for directory in (source_bin, target_bin, attacker_bin, victim_bin):
+        directory.mkdir(parents=True)
+    (source_bin / "push-agent").write_text("trusted helper\n", encoding="utf-8")
+    (target_bin / "push-agent").write_text("stale helper\n", encoding="utf-8")
+    (attacker_bin / "push-agent").write_text("attacker helper\n", encoding="utf-8")
+    (victim_bin / "push-agent").write_text("victim helper\n", encoding="utf-8")
+    displaced_source_bin = helper_source / "trusted-bin"
+    displaced_target_bin = helper_target / "original-bin"
+    original_open = os.open
+    source_swapped = False
+    target_swapped = False
+
+    def swap_parent_directories_before_helper_io(
+        path: str | bytes | os.PathLike[str] | os.PathLike[bytes],
+        flags: int,
+        mode: int = 0o777,
+        *,
+        dir_fd: int | None = None,
+    ) -> int:
+        nonlocal source_swapped, target_swapped
+        name = os.fsdecode(path)
+        if (
+            not source_swapped
+            and dir_fd is not None
+            and name == "push-agent"
+            and flags & (os.O_WRONLY | os.O_RDWR) == 0
+        ):
+            source_bin.rename(displaced_source_bin)
+            source_bin.symlink_to(attacker_bin, target_is_directory=True)
+            source_swapped = True
+        if (
+            source_swapped
+            and not target_swapped
+            and dir_fd is not None
+            and name.startswith(".push-agent-")
+        ):
+            target_bin.rename(displaced_target_bin)
+            target_bin.symlink_to(victim_bin, target_is_directory=True)
+            target_swapped = True
+        if dir_fd is None:
+            return original_open(path, flags, mode)
+        return original_open(path, flags, mode, dir_fd=dir_fd)
+
+    monkeypatch.setattr(os, "open", swap_parent_directories_before_helper_io)
+
+    WorkerDaemon._reconcile_task_worktree_helpers(
+        trusted_root=trusted_root,
+        helper_source=helper_source,
+        helper_target=helper_target,
+    )
+
+    assert source_swapped is True
+    assert target_swapped is True
+    assert (victim_bin / "push-agent").read_text(encoding="utf-8") == "victim helper\n"
+    refreshed_helper = displaced_target_bin / "push-agent"
+    assert refreshed_helper.read_text(encoding="utf-8") == "trusted helper\n"
+    assert stat.S_IMODE(refreshed_helper.stat().st_mode) == 0o755
+
+
 def test_worker_refuses_symlinked_task_worktree_helper_directory(tmp_path: Path) -> None:
     source = tmp_path / "source"
     source.mkdir()

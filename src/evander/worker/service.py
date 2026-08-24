@@ -103,6 +103,18 @@ from .store import WorkerJobStore
 logger = logging.getLogger(__name__)
 
 _TASK_WORKTREE_HELPER_NAMES = ("agent-pr-note", "push-agent", "sync-base")
+_TASK_WORKTREE_DIRECTORY_OPEN_FLAGS = (
+    os.O_RDONLY
+    | getattr(os, "O_CLOEXEC", 0)
+    | getattr(os, "O_DIRECTORY", 0)
+    | getattr(os, "O_NOFOLLOW", 0)
+)
+_TASK_WORKTREE_HELPER_READ_FLAGS = (
+    os.O_RDONLY
+    | getattr(os, "O_CLOEXEC", 0)
+    | getattr(os, "O_NONBLOCK", 0)
+    | getattr(os, "O_NOFOLLOW", 0)
+)
 
 
 class WorkerDependencyCompositionConflict(ValueError):
@@ -1901,6 +1913,7 @@ class WorkerDaemon:
                 text=True,
             )
         self._reconcile_task_worktree_helpers(
+            trusted_root=paths.agent_home,
             helper_source=repo_dir / ".evander",
             helper_target=target_dir / ".evander",
         )
@@ -1928,50 +1941,270 @@ class WorkerDaemon:
     def _reconcile_task_worktree_helpers(
         cls,
         *,
+        trusted_root: Path,
         helper_source: Path,
         helper_target: Path,
     ) -> None:
-        if not cls._managed_directory_exists_no_follow(
-            helper_source,
+        source_parts = cls._task_worktree_relative_directory_parts(
+            trusted_root=trusted_root,
+            path=helper_source,
             label="task worktree helper source directory",
-        ):
-            return
-        source_bin = helper_source / "bin"
-        if not cls._managed_directory_exists_no_follow(
-            source_bin,
-            label="task worktree helper source bin directory",
-        ):
-            return
+        )
+        target_parent_parts = cls._task_worktree_relative_directory_parts(
+            trusted_root=trusted_root,
+            path=helper_target.parent,
+            label="task worktree helper parent directory",
+        )
+        root_fd = cls._open_task_worktree_directory_no_follow(
+            trusted_root,
+            label="worker session agent home",
+        )
+        opened_fds = [root_fd]
+        try:
+            source_fd = cls._open_task_worktree_relative_directory_no_follow(
+                root_fd,
+                source_parts,
+                label="task worktree helper source directory",
+                missing_ok=True,
+            )
+            if source_fd is None:
+                return
+            opened_fds.append(source_fd)
+            source_bin_fd = cls._open_task_worktree_child_directory_no_follow(
+                source_fd,
+                "bin",
+                label="task worktree helper source bin directory",
+                missing_ok=True,
+            )
+            if source_bin_fd is None:
+                return
+            opened_fds.append(source_bin_fd)
 
-        cls._ensure_managed_directory_no_follow(
-            helper_target,
-            label="task worktree helper directory",
-        )
-        target_bin = helper_target / "bin"
-        cls._ensure_managed_directory_no_follow(
-            target_bin,
-            label="task worktree helper bin directory",
-        )
-        for helper_name in _TASK_WORKTREE_HELPER_NAMES:
-            source_path = source_bin / helper_name
-            if not cls._managed_regular_file_exists_no_follow(
-                source_path,
-                label=f"task worktree {helper_name} source",
-            ):
-                continue
-            source_fd = cls._open_regular_file_no_follow(
-                source_path,
-                label=f"task worktree {helper_name} source",
-                flags=os.O_RDONLY,
+            target_parent_fd = cls._open_task_worktree_relative_directory_no_follow(
+                root_fd,
+                target_parent_parts,
+                label="task worktree helper parent directory",
             )
-            with os.fdopen(source_fd, "rb") as source_handle:
-                content = source_handle.read()
-            cls._write_managed_bytes_file_no_follow(
-                target_bin / helper_name,
-                content,
-                mode=0o755,
-                label=f"task worktree {helper_name}",
+            assert target_parent_fd is not None
+            opened_fds.append(target_parent_fd)
+            target_fd = cls._open_task_worktree_child_directory_no_follow(
+                target_parent_fd,
+                helper_target.name,
+                label="task worktree helper directory",
+                create=True,
             )
+            assert target_fd is not None
+            opened_fds.append(target_fd)
+            target_bin_fd = cls._open_task_worktree_child_directory_no_follow(
+                target_fd,
+                "bin",
+                label="task worktree helper bin directory",
+                create=True,
+            )
+            assert target_bin_fd is not None
+            opened_fds.append(target_bin_fd)
+
+            for helper_name in _TASK_WORKTREE_HELPER_NAMES:
+                content = cls._read_task_worktree_helper_at(
+                    source_bin_fd,
+                    helper_name,
+                    label=f"task worktree {helper_name} source",
+                )
+                if content is None:
+                    continue
+                cls._write_task_worktree_helper_at(
+                    target_bin_fd,
+                    helper_name,
+                    content,
+                    mode=0o755,
+                    label=f"task worktree {helper_name}",
+                )
+        finally:
+            for fd in reversed(opened_fds):
+                os.close(fd)
+
+    @staticmethod
+    def _task_worktree_relative_directory_parts(
+        *,
+        trusted_root: Path,
+        path: Path,
+        label: str,
+    ) -> tuple[str, ...]:
+        root_path = Path(os.path.abspath(trusted_root))
+        candidate_path = Path(os.path.abspath(path))
+        try:
+            relative_path = candidate_path.relative_to(root_path)
+        except ValueError as exc:
+            raise ValueError(f"{label} must stay below {root_path}") from exc
+        if not relative_path.parts or any(part in {"", ".", ".."} for part in relative_path.parts):
+            raise ValueError(f"{label} must stay below {root_path}")
+        return relative_path.parts
+
+    @staticmethod
+    def _open_task_worktree_directory_no_follow(path: Path, *, label: str) -> int:
+        try:
+            fd = os.open(path, _TASK_WORKTREE_DIRECTORY_OPEN_FLAGS)
+        except OSError as exc:
+            if exc.errno in {errno.ELOOP, errno.ENOTDIR}:
+                raise ValueError(f"{label} must not be a symlink and must be a directory") from exc
+            raise
+        try:
+            if not stat.S_ISDIR(os.fstat(fd).st_mode):
+                raise ValueError(f"{label} must be a directory")
+        except Exception:
+            os.close(fd)
+            raise
+        return fd
+
+    @classmethod
+    def _open_task_worktree_relative_directory_no_follow(
+        cls,
+        root_fd: int,
+        parts: tuple[str, ...],
+        *,
+        label: str,
+        missing_ok: bool = False,
+    ) -> int | None:
+        current_fd = os.dup(root_fd)
+        try:
+            for part in parts:
+                next_fd = cls._open_task_worktree_child_directory_no_follow(
+                    current_fd,
+                    part,
+                    label=label,
+                    missing_ok=missing_ok,
+                )
+                if next_fd is None:
+                    os.close(current_fd)
+                    return None
+                os.close(current_fd)
+                current_fd = next_fd
+            return current_fd
+        except Exception:
+            os.close(current_fd)
+            raise
+
+    @staticmethod
+    def _open_task_worktree_child_directory_no_follow(
+        parent_fd: int,
+        name: str,
+        *,
+        label: str,
+        missing_ok: bool = False,
+        create: bool = False,
+    ) -> int | None:
+        while True:
+            try:
+                fd = os.open(
+                    name,
+                    _TASK_WORKTREE_DIRECTORY_OPEN_FLAGS,
+                    dir_fd=parent_fd,
+                )
+            except FileNotFoundError:
+                if create:
+                    try:
+                        os.mkdir(name, mode=0o755, dir_fd=parent_fd)
+                    except FileExistsError:
+                        pass
+                    continue
+                if missing_ok:
+                    return None
+                raise
+            except OSError as exc:
+                if exc.errno in {errno.ELOOP, errno.ENOTDIR}:
+                    raise ValueError(
+                        f"{label} must not be a symlink and must be a directory"
+                    ) from exc
+                raise
+            try:
+                if not stat.S_ISDIR(os.fstat(fd).st_mode):
+                    raise ValueError(f"{label} must be a directory")
+            except Exception:
+                os.close(fd)
+                raise
+            return fd
+
+    @staticmethod
+    def _read_task_worktree_helper_at(
+        source_bin_fd: int,
+        helper_name: str,
+        *,
+        label: str,
+    ) -> bytes | None:
+        try:
+            fd = os.open(
+                helper_name,
+                _TASK_WORKTREE_HELPER_READ_FLAGS,
+                dir_fd=source_bin_fd,
+            )
+        except FileNotFoundError:
+            return None
+        except OSError as exc:
+            if exc.errno in {errno.ELOOP, errno.EISDIR, errno.ENOTDIR}:
+                raise ValueError(f"{label} must be a regular file") from exc
+            raise
+        try:
+            if not stat.S_ISREG(os.fstat(fd).st_mode):
+                raise ValueError(f"{label} must be a regular file")
+            with os.fdopen(fd, "rb") as source_handle:
+                fd = -1
+                return source_handle.read()
+        finally:
+            if fd >= 0:
+                os.close(fd)
+
+    @staticmethod
+    def _write_task_worktree_helper_at(
+        target_bin_fd: int,
+        helper_name: str,
+        content: bytes,
+        *,
+        mode: int,
+        label: str,
+    ) -> None:
+        try:
+            target_stat = os.stat(
+                helper_name,
+                dir_fd=target_bin_fd,
+                follow_symlinks=False,
+            )
+        except FileNotFoundError:
+            pass
+        else:
+            if not stat.S_ISREG(target_stat.st_mode):
+                raise ValueError(f"{label} must be a regular file")
+
+        temp_name = f".{helper_name}-{uuid.uuid4().hex}"
+        fd = os.open(
+            temp_name,
+            os.O_WRONLY
+            | os.O_CREAT
+            | os.O_EXCL
+            | getattr(os, "O_CLOEXEC", 0)
+            | getattr(os, "O_NOFOLLOW", 0),
+            mode,
+            dir_fd=target_bin_fd,
+        )
+        try:
+            os.fchmod(fd, mode)
+            with os.fdopen(fd, "wb") as target_handle:
+                fd = -1
+                target_handle.write(content)
+                target_handle.flush()
+                os.fsync(target_handle.fileno())
+            os.replace(
+                temp_name,
+                helper_name,
+                src_dir_fd=target_bin_fd,
+                dst_dir_fd=target_bin_fd,
+            )
+        finally:
+            if fd >= 0:
+                os.close(fd)
+            try:
+                os.unlink(temp_name, dir_fd=target_bin_fd)
+            except FileNotFoundError:
+                pass
 
     @staticmethod
     def _publish_initial_task_branch(
@@ -3991,34 +4224,6 @@ class WorkerDaemon:
         if not stat.S_ISREG(stat_result.st_mode):
             raise ValueError(f"{label} must be a regular file")
         return True
-
-    @staticmethod
-    def _managed_directory_exists_no_follow(
-        path: Path,
-        *,
-        label: str,
-    ) -> bool:
-        try:
-            stat_result = path.lstat()
-        except FileNotFoundError:
-            return False
-        if stat.S_ISLNK(stat_result.st_mode):
-            raise ValueError(f"{label} must not be a symlink")
-        if not stat.S_ISDIR(stat_result.st_mode):
-            raise ValueError(f"{label} must be a directory")
-        return True
-
-    @classmethod
-    def _ensure_managed_directory_no_follow(
-        cls,
-        path: Path,
-        *,
-        label: str,
-    ) -> None:
-        if not cls._managed_directory_exists_no_follow(path, label=label):
-            path.mkdir(mode=0o755)
-        if not cls._managed_directory_exists_no_follow(path, label=label):
-            raise ValueError(f"{label} must be a directory")
 
     @classmethod
     def _ensure_managed_ssh_dir(cls, ssh_dir: Path) -> None:
