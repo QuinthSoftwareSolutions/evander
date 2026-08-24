@@ -56,10 +56,7 @@ from .git_work_contexts import (
     require_authoritative_git_review_retry_candidate,
 )
 from .review_repository_snapshots import deliverable_review_repository_snapshot
-from .acceptance_verification import (
-    apply_formal_review_acceptance_policy,
-    deliverable_acceptance_verification_error,
-)
+from .acceptance_verification import apply_formal_review_acceptance_policy
 from .manager_fallback import _manager_fallback_review_decision_guard_error
 from .outcome_catalog import snapshot_review_profile_outcomes
 from .review_handoff import queue_actionable_inbox_item
@@ -1597,12 +1594,7 @@ def _apply_review_decision(
         "finding_resolutions",
     )
     findings = _string_list(decision.get("findings"), "findings")
-    criterion_results = _with_default_required_criterion_evidence(
-        state,
-        review=review,
-        decision_state=decision_state,
-        criterion_results=criterion_results or [],
-    )
+    criterion_results = criterion_results or []
     decision_error = _review_decision_policy_error(
         state,
         review=review,
@@ -1706,50 +1698,6 @@ def _criterion_definitions_for_review(
     return profile.criteria if profile is not None else None
 
 
-def _with_default_required_criterion_evidence(
-    state: TeamState,
-    *,
-    review: ReviewRequest,
-    decision_state: TeamRecordState,
-    criterion_results: Sequence[ReviewCriterionResult],
-) -> list[ReviewCriterionResult]:
-    """Attach durable server-known evidence without making reviewers shuttle IDs.
-
-    Formal Git reviews already have a server-owned immutable repository snapshot.
-    Published deliverable artifacts and persisted verification evidence provide the
-    equivalent source for non-Git reviews. Preserve any more-specific references
-    supplied by the reviewer and only fill otherwise-empty required passed rows.
-    """
-
-    results = [result.model_copy(deep=True) for result in criterion_results]
-    if decision_state != TeamRecordState.ACCEPTED or review.deliverable_id is None:
-        return results
-    deliverable = state.deliverables.get(review.deliverable_id)
-    if deliverable is None or deliverable.acceptance_policy_version < 2:
-        return results
-    definitions = _criterion_definitions_for_review(state, review)
-    if definitions is None:
-        return results
-    default_refs: list[str] = []
-    if review.repository_snapshot is not None:
-        default_refs.append(review.repository_snapshot.pinned_ref)
-    default_refs.extend(deliverable.artifact_refs)
-    if deliverable.verification is not None:
-        default_refs.extend(deliverable.verification.evidence_refs)
-    default_refs = list(dict.fromkeys(default_refs))
-    if not default_refs:
-        return results
-    required_ids = {definition.id for definition in definitions if definition.required}
-    for result in results:
-        if (
-            result.criterion_id in required_ids
-            and result.state == "passed"
-            and not result.evidence_refs
-        ):
-            result.evidence_refs = list(default_refs)
-    return results
-
-
 def _review_decision_policy_error(
     state: TeamState,
     *,
@@ -1799,22 +1747,6 @@ def _review_decision_policy_error(
                 f"accepted review {review.id} has required criteria that did not pass: "
                 + ", ".join(not_passed)
             )
-        if review.deliverable_id is not None:
-            deliverable = state.deliverables.get(review.deliverable_id)
-            missing_evidence = [
-                criterion.id
-                for criterion in criterion_definitions
-                if criterion.required
-                and deliverable is not None
-                and deliverable.acceptance_policy_version >= 2
-                and not by_id[criterion.id].evidence_refs
-            ]
-            if missing_evidence:
-                return (
-                    f"accepted review {review.id} has required criteria without evidence: "
-                    + ", ".join(missing_evidence)
-                )
-
     if review.release_package_id is not None:
         release = _require_present(
             state.release_packages,
@@ -1829,18 +1761,13 @@ def _review_decision_policy_error(
             )
         if finding_resolutions:
             return "release review decisions do not accept carried finding resolutions"
-        if decision_state == TeamRecordState.BLOCKED and not findings:
-            return "blocked release review requires a non-empty blocker finding"
+        if decision_state in {TeamRecordState.REJECTED, TeamRecordState.BLOCKED} and not findings:
+            return f"{decision_state.value} release review requires a non-empty explanation"
         return None
 
     deliverable = _require_present(state.deliverables, review.deliverable_id, "deliverable")
-    if decision_state == TeamRecordState.ACCEPTED:
-        verification_error = deliverable_acceptance_verification_error(
-            state,
-            deliverable=deliverable,
-        )
-        if verification_error is not None:
-            return verification_error
+    if decision_state in {TeamRecordState.REJECTED, TeamRecordState.BLOCKED} and not findings:
+        return f"{decision_state.value} review {review.id} requires an explanation"
     if finding_resolutions and decision_state != TeamRecordState.ACCEPTED:
         return "carried findings may only be resolved by an accepted review decision"
     resolution_ids: list[str] = []

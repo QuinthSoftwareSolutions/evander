@@ -1027,26 +1027,6 @@ def require_deliverable_acceptance(
                 "contribution_coverage": coverage,
             },
         )
-    from .acceptance_verification import deliverable_acceptance_verification_error
-
-    verification_error = deliverable_acceptance_verification_error(
-        state,
-        deliverable=deliverable,
-    )
-    if verification_error is not None:
-        raise TaskAssessmentBoundaryError(
-            code="deliverable_acceptance_verification_incomplete",
-            message=verification_error,
-            correction_context={
-                "deliverable_id": deliverable.id,
-                "task_id": deliverable.task_id,
-                "verification": (
-                    deliverable.verification.model_dump(mode="json", exclude_none=True)
-                    if deliverable.verification is not None
-                    else None
-                ),
-            },
-        )
     task = state.tasks[deliverable.task_id]
     submitted_git_source_ids = sorted(
         source_deliverable_id

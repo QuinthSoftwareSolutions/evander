@@ -157,10 +157,7 @@ from .domain.deliverables import (
     _superseded_deliverable_for_rework,
     _validate_deliverable_outcomes_against_task_contract,
 )
-from .domain.acceptance_verification import (
-    apply_formal_review_acceptance_policy,
-    authorize_deliverable_acceptance_verification_waiver,
-)
+from .domain.acceptance_verification import apply_formal_review_acceptance_policy
 from .domain.git_work_contexts import finalize_active_git_work_contexts_for_task
 from .domain.review_repository_snapshots import deliverable_review_repository_snapshot
 from .domain.governance import (
@@ -194,7 +191,6 @@ from .domain.review import (
     _reopen_accepted_deliverable_for_pending_review,
     _review_decision_policy_error,
     _review_profile_for_request,
-    _with_default_required_criterion_evidence,
     retire_terminal_review,
     withdraw_pending_review,
 )
@@ -791,8 +787,7 @@ class TeamAdminService:
                 raise ValueError(
                     f"blocker {blocker.id} belongs to candidate-correction successor "
                     f"recovery; use POST /candidate-correction-recoveries/{blocker.id} "
-                    "with retry, create_verified_replacement, or "
-                    "authorize_verification_waiver"
+                    "with retry or create_verified_replacement"
                 )
             now = utc_now()
             restored_task_owner_id = _prepare_blocker_source_for_resolution(
@@ -872,22 +867,14 @@ class TeamAdminService:
         expected_revision: int | None = None,
     ) -> tuple[TeamState, Deliverable]:
         normalized_deliverable_id = _required_text(deliverable_id, "deliverable_id")
-        normalized_reason = _required_text(reason, "reason")
-        normalized_actor_id = _required_text(operator_actor_id, "operator_actor_id")
+        _required_text(reason, "reason")
+        _required_text(operator_actor_id, "operator_actor_id")
 
-        def _mutate(state: TeamState) -> TeamState:
-            authorize_deliverable_acceptance_verification_waiver(
-                state,
-                deliverable_id=normalized_deliverable_id,
-                operator_actor_id=normalized_actor_id,
-                reason=normalized_reason,
-            )
-            return state
-
-        state = self._repository.update(
-            _mutate,
-            expected_revision=expected_revision,
-        )
+        # Keep the endpoint callable for one compatibility release, but do not
+        # mutate state or create a waiver that a new release could consume.
+        state = self._repository.read()
+        if normalized_deliverable_id not in state.deliverables:
+            raise ValueError(f"deliverable {normalized_deliverable_id} does not exist")
         return state, state.deliverables[normalized_deliverable_id]
 
     def start_dependency_composition_recovery_as_operator(
@@ -975,15 +962,12 @@ class TeamAdminService:
         if normalized_action not in {
             "retry",
             "create_verified_replacement",
-            "authorize_verification_waiver",
         }:
             raise ValueError(f"unsupported candidate correction recovery action {action!r}")
         normalized_actor_id = _required_text(operator_actor_id, "operator_actor_id")
         normalized_reason = _optional_text(reason)
         normalized_instruction = _optional_text(instruction)
         normalized_owner_id = _optional_text(owner_agent_id)
-        if normalized_action == "authorize_verification_waiver" and normalized_reason is None:
-            raise ValueError("authorize_verification_waiver requires reason")
         if (
             normalized_instruction is not None
             and normalized_action != "create_verified_replacement"
@@ -4934,18 +4918,13 @@ class TeamAdminService:
             effective_criteria = (
                 criterion_results if criterion_results is not None else list(review.criteria)
             )
-            effective_criteria = _with_default_required_criterion_evidence(
-                state_model,
-                review=review,
-                decision_state=state,
-                criterion_results=effective_criteria,
-            )
             policy_error = _review_decision_policy_error(
                 state_model,
                 review=review,
                 decision_state=state,
                 criterion_results=effective_criteria,
                 finding_resolutions=normalized_finding_resolutions,
+                findings=findings_list,
             )
             if policy_error is not None:
                 raise ValueError(policy_error)
@@ -5561,7 +5540,7 @@ class TeamAdminService:
         release_branch: str | None = None,
         canonical_branch: str | None = None,
         summary: str | None = None,
-        verification_waivers: list[Mapping[str, Any]] | None = None,
+        verification_waivers: object | None = None,
         operator_actor_id: str = "operator",
         expected_revision: int | None = None,
     ) -> TeamState:
@@ -5591,7 +5570,7 @@ class TeamAdminService:
         release_branch: str | None = None,
         canonical_branch: str | None = None,
         summary: str | None = None,
-        verification_waivers: list[Mapping[str, Any]] | None = None,
+        verification_waivers: object | None = None,
         operator_actor_id: str = "operator",
         expected_revision: int | None = None,
     ) -> tuple[TeamState, dict[str, Any]]:
@@ -5605,13 +5584,14 @@ class TeamAdminService:
             "release_branch": _optional_text(release_branch),
             "canonical_branch": _optional_text(canonical_branch),
             "summary": _optional_text(summary),
-            "verification_waivers": [dict(item) for item in (verification_waivers or [])],
-            "waiver_actor_kind": "operator",
-            "waiver_actor_id": _required_text(operator_actor_id, "operator_actor_id"),
             "release_requested_by_actor": (
                 "operator:" + _required_text(operator_actor_id, "operator_actor_id")
             ),
         }
+        if verification_waivers is not None:
+            # Presence is retained only so the response can warn legacy callers.
+            # Contents are deliberately ignored without validation.
+            request["verification_waivers"] = True
         result: dict[str, Any] = {
             "success": False,
             "created": False,

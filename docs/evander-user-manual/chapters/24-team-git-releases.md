@@ -173,21 +173,13 @@ This prevents policy drift after request time from silently redefining what was 
 >   carried human findings when this is a correction successor;
 > - actor and timestamp evidence.
 
-## Verification evidence and waivers
+## Verification evidence
 
-Deliverable verification is enforced at release time:
-
-| Status | Release rule |
-|---|---|
-| <code>passed</code> | Eligible without a verification waiver. |
-| <code>failed</code> | Cannot be waived. Fix, re-review, and submit new evidence. |
-| missing, <code>partial</code>, <code>not_run</code>, or <code>unknown</code> | Requires a reasoned waiver from project lead, Team manager, or authenticated operator. |
-
-A role with <code>request_release</code> alone cannot grant the waiver. Each waiver records deliverable, original status, reason, actor kind and ID, and timestamp.
-
-A waiver acknowledges incomplete verification evidence; it does not waive reviewed-scope mismatch.
-
-In everyday terms, “we could not run this check” may be acknowledged by an authorized person with a reason; “this check failed” may not. A waiver never permits extra, unreviewed content.
+Deliverable verification status and evidence are advisory diagnostics. A report can be
+<code>passed</code>, <code>failed</code>, <code>partial</code>, <code>not_run</code>, or
+<code>unknown</code> without blocking acceptance or package intake. The release candidate's
+server-executed command results are authoritative and run after candidate construction. Historical
+waiver records remain visible for audit only; new release decisions never use them.
 
 ## Release policy
 
@@ -630,7 +622,8 @@ Before release:
 1. Confirm every selected deliverable is current, accepted, and in one project.
 2. Verify each Git source resolves to the pinned reviewed commit.
 3. Inspect reviewed manifests and expected path union.
-4. Resolve incomplete verification with an authorized, reasoned waiver or new evidence.
+4. Treat agent-reported verification as diagnostic context. Do not create a waiver; the frozen
+   candidate receives a fresh visible server-owned verification run after the package is created.
 5. Validate the project release policy, worker image/commands, agent reviewers,
    and any human reviewer groups/checklist/preparation instructions.
 

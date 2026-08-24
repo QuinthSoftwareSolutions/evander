@@ -5359,7 +5359,9 @@ def test_team_addon_routes_are_available_only_when_enabled(tmp_path: Path) -> No
     assert "Create verified replacement" in script.text
     assert "Add instructions for the verified replacement task" in script.text
     assert "payload.instruction" in script.text
-    assert "Authorize waiver instead" in script.text
+    assert "Authorize waiver instead" not in script.text
+    assert "Deliverable verification (diagnostic)" in script.text
+    assert "Agent-reported verification (diagnostic)" not in script.text
     assert "existing_recovery_task_id" in script.text
     assert "/candidate-correction-recoveries/" in script.text
     assert "data-start-dependency-composition-recovery-id" in script.text
@@ -8370,6 +8372,19 @@ def test_team_addon_admin_api_review_decision_and_release_flow(tmp_path: Path) -
     assert state["deliverables"]["deliverable"]["state"] == "accepted"
     assert state["tasks"]["task"]["state"] == "finished"
 
+    revision_before_legacy_noop = state["revision"]
+    legacy_noop = client.post(
+        "/api/addons/team-addon/deliverables/deliverable/acceptance-verification-waiver",
+        json={
+            "reason": "Legacy client retry after the gate was retired.",
+            "expected_revision": 0,
+        },
+    )
+    assert legacy_noop.status_code == 200, legacy_noop.text
+    assert legacy_noop.json()["revision"] == revision_before_legacy_noop
+    assert legacy_noop.json()["deliverable_acceptance_verification"] is None
+    assert "gate has been retired" in legacy_noop.json()["warning"]
+
     def _attach_feature_branch(current):
         deliverable = current.deliverables["deliverable"]
         deliverable.verification = DeliverableVerification(status="passed")
@@ -8396,6 +8411,7 @@ def test_team_addon_admin_api_review_decision_and_release_flow(tmp_path: Path) -
             "project_id": "project",
             "deliverable_ids": ["deliverable"],
             "summary": "Publish the reviewed backend delivery.",
+            "verification_waivers": "malformed legacy value that is ignored",
             "expected_revision": 10,
         },
     )
@@ -8406,6 +8422,10 @@ def test_team_addon_admin_api_review_decision_and_release_flow(tmp_path: Path) -
         payload["release_packages"]["release"]["summary"]
         == "Publish the reviewed backend delivery."
     )
+    assert payload["warnings"] == [
+        "Legacy verification_waivers input was ignored because verification waivers "
+        "are retired; release-candidate verification is authoritative."
+    ]
     assert len(payload["published_event_ids"]) == 1
     events = InternalEventBus(internal_event_store_path(tmp_path / "runtime")).list_events()
     assert len(events) == 1

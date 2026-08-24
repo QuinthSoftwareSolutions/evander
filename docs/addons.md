@@ -1380,24 +1380,20 @@ unavailable.
 
 Review acceptance is policy-enforced. When a review has a profile, every
 required criterion must be present and `passed`; optional criteria may be
-omitted. New formal reviews retain the evidence requirement, but the reviewer
-does not need to copy server-owned IDs between records: an immutable review
-snapshot is attached automatically to otherwise-empty passed required criteria,
-along with published deliverable artifacts or verification evidence when
-available. An empty agent-reported verification evidence list is not by itself
-a blocker when the reviewer can inspect that pinned snapshot. Rejected or
+omitted. Criterion evidence references are optional. Reviewers must explain
+rejections and provide a non-empty explanation for each carried-finding
+resolution. Rejected or
 blocked review findings are stored on the deliverable and
 copied to its superseding rework deliverable. An accepted review can resolve
 only findings owned by the same review profile (or, for legacy unprofiled
 reviews, the same reviewer role), and a deliverable cannot become accepted
 while any carried finding remains open.
 
-Release requests enforce the verification record instead of treating it as
-informational. `failed` verification cannot be waived. `partial`, `not_run`,
-`unknown`, or missing verification requires a reasoned waiver from the project
-lead, top-level team manager, or an authenticated operator; ordinary roles with
-`request_release` cannot grant waivers. Each waiver records the deliverable,
-status, reason, actor kind, actor id, and timestamp on the release package.
+Release requests treat any agent-reported verification status as informational.
+Legacy `verification_waivers` input is ignored with an explicit deprecation
+warning; historical waiver rows remain visible for audit and do not affect new
+decisions. The release candidate's server-executed command results are the
+authoritative verification.
 
 ### Communication And Escalation Rules
 
@@ -1875,22 +1871,25 @@ deliverable do not need Git contexts. Once a deliverable includes Git metadata,
 `team_submit_deliverable` and `team_submit_deliverable_for_review` require a
 matching `branch_context_id` plus `git_refs.commit_sha`, verify the exact
 server-owned branch tip, and reject missing, wrong-task, wrong-agent,
-wrong-dispatch, inactive, or mismatched contexts and commits. When Git metadata
-is omitted, the submission rules above still inspect a unique active context
-and automatically bind an advanced task branch.
+wrong-dispatch, inactive, or mismatched contexts and commits. The exact candidate
+is retained immediately under a server-owned deliverable ref before either a
+direct-superior or formal-review handoff, so later dependency preparation never
+needs the mutable agent branch. Formal reviews retain their own immutable review
+snapshot as well. When Git metadata is omitted, the submission rules above still
+inspect a unique active context and automatically bind an advanced task branch.
 
-Formal reviewed deliverables created under acceptance policy version 2 use an
-additional pre-acceptance gate for integration boundaries and system-created
-rejected-candidate corrections. Team freezes the project's release verification
-commands, pins the exact review snapshot, and emits
-`team.deliverable.acceptance_verification_requested`; the bundled runtime routes
-that event to `effect:team:verify-deliverable-acceptance` in a disposable
-`container_worker_vm`. Acceptance requires a server-owned passed result with a
-durable evidence ref. `partial` and `not_run` may proceed only after an
-authenticated operator records a reason through
-`POST /deliverables/{deliverable_id}/acceptance-verification-waiver`; failed,
-pending, and running checks cannot be waived. Required passed review criteria
-also require evidence refs under policy version 2.
+Review acceptance is separate from server-owned release verification. Agent
+verification records, logs, links, and criterion evidence are optional
+diagnostic information. The immutable review snapshot remains system-owned Git
+provenance and is never a reviewer-supplied evidence gate. After all required
+deliverables are accepted and their Git provenance/composition validates, Team
+creates the release package and frozen candidate; configured release commands
+then run in order against that candidate through a fresh, visible container-worker
+verification run. Typed infrastructure retries keep the same candidate and release
+lineage while preserving every attempt. The old
+acceptance-verification event and waiver endpoint remain readable for one
+compatibility release, but new callers receive a deprecation warning and no
+hidden verifier or waiver is created.
 
 Resolved tasks and task reassignment create durable, checkout-specific
 `WorktreeCleanupCandidate` records. The periodic Team wake reconciler starts in
@@ -2047,12 +2046,13 @@ Candidate-correction successor blockers use the typed
 `candidate_correction_successor` source and `downstream` resolution scope. They
 remain visible at project/release level but do not make the already-terminal
 correction task unresolved or propagate through task dependencies. Admin Web
-offers three source-aware actions: retry packaging against current evidence,
+offers two source-aware actions: retry packaging against current evidence, or
 create a dependency-free recovery task pinned to the accepted correction branch
-and full commit SHA, or authorize a verification waiver with an audited reason.
+and full commit SHA. Verification-waiver recovery is retired; corrected reviewed
+content must pass the candidate verification run.
 Generic blocker resolution is refused for this source. Reconciliation keeps
 retrying while its blocker is open, prefers a current accepted downstream
-deliverable with `verification.status: passed`, and checks for an existing
+deliverable, and checks for an existing
 direct successor before task readiness so interrupted completion resolves the
 blocker without creating another package.
 

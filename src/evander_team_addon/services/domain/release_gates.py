@@ -11,7 +11,6 @@ from ...models import (
     GitPromotionRecord,
     PersistentAgent,
     Project,
-    ProjectReleasePolicy,
     ReleaseCandidateDeliverableEvidence,
     ReleaseCandidateManifest,
     ReleaseCandidateReviewEvidence,
@@ -329,71 +328,32 @@ def begin_release_gates(
         run_id = _verification_run_id(release.id, candidate_commit_sha, 1)
         run = state.release_verification_runs.get(run_id)
         if run is None:
-            reusable_verification = _reusable_server_acceptance_verification(
-                release=release,
-                policy=policy,
-            )
             now = utc_now()
             run = ReleaseVerificationRun(
                 id=run_id,
                 release_package_id=release.id,
                 candidate_commit_sha=candidate_commit_sha,
                 session_id=f"team-release-verification-{uuid4().hex}",
-                state=("passed" if reusable_verification is not None else "pending"),
-                provenance=(
-                    "server_acceptance_reuse"
-                    if reusable_verification is not None
-                    else "server_executed"
-                ),
-                evidence_refs=(
-                    list(reusable_verification.verification.evidence_refs)
-                    if reusable_verification is not None
-                    and reusable_verification.verification is not None
-                    else []
-                ),
+                state="pending",
+                provenance="server_executed",
+                evidence_refs=[],
                 container_image=policy.container_image,
                 resource_limits=policy.resource_limits,
                 attempt_number=1,
                 command_results=[
-                    ReleaseVerificationCommandResult.model_validate(
-                        command_result.model_dump(mode="json", exclude_none=True)
-                    )
-                    for command_result in reusable_verification.verification.command_results
-                ]
-                if reusable_verification is not None
-                and reusable_verification.verification is not None
-                else [
                     ReleaseVerificationCommandResult(name=command.name)
                     for command in policy.verification_commands
                 ],
-                current_command_index=(
-                    len(policy.verification_commands)
-                    if reusable_verification is not None
-                    else 0
-                ),
+                current_command_index=0,
                 created_at=now,
                 updated_at=now,
-                finished_at=(now if reusable_verification is not None else None),
+                finished_at=None,
             )
             state.release_verification_runs[run.id] = run
         release.verification_run_ids = _append_unique(
             release.verification_run_ids,
             run.id,
         )
-        if run.provenance == "server_acceptance_reuse":
-            result.setdefault("release_verification_run_ids", []).append(run.id)
-            result["reused_release_verification"] = {
-                "verification_run_id": run.id,
-                "provenance": run.provenance,
-                "evidence_refs": list(run.evidence_refs),
-            }
-            advance_release_gates(
-                state,
-                release=release,
-                release_promotion=release_promotion,
-                result=result,
-            )
-            return
         _append_verification_requested_event(
             result,
             release=release,
@@ -408,62 +368,6 @@ def begin_release_gates(
         release_promotion=release_promotion,
         result=result,
     )
-
-
-def _reusable_server_acceptance_verification(
-    *,
-    release: ReleasePackage,
-    policy: ProjectReleasePolicy,
-) -> ReleaseCandidateDeliverableEvidence | None:
-    """Find exact frozen server evidence that already satisfies the release gate."""
-
-    manifest = release.manifest
-    candidate_commit_sha = release.candidate_commit_sha
-    if manifest is None or candidate_commit_sha is None:
-        return None
-    expected_commands = [
-        command.model_dump(mode="json") for command in policy.verification_commands
-    ]
-    expected_resource_limits = (
-        policy.resource_limits.model_dump(mode="json")
-        if policy.resource_limits is not None
-        else None
-    )
-    for evidence in manifest.deliverables:
-        verification = evidence.verification
-        if verification is None:
-            continue
-        command_results = verification.command_results
-        if not (
-            verification.provenance == "server_release_equivalent"
-            and verification.status == "passed"
-            and verification.waiver is None
-            and verification.run_id is not None
-            and verification.candidate_commit_sha == candidate_commit_sha
-            and verification.finished_at is not None
-            and verification.evidence_refs
-            and verification.container_image == policy.container_image
-            and [
-                command.model_dump(mode="json")
-                for command in verification.verification_commands
-            ]
-            == expected_commands
-            and (
-                verification.resource_limits.model_dump(mode="json")
-                if verification.resource_limits is not None
-                else None
-            )
-            == expected_resource_limits
-            and len(command_results) == len(expected_commands)
-            and all(
-                result.state == "passed"
-                and result.name == policy.verification_commands[index].name
-                for index, result in enumerate(command_results)
-            )
-        ):
-            continue
-        return evidence
-    return None
 
 
 def record_release_verification_result(

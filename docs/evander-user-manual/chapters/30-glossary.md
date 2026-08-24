@@ -431,7 +431,7 @@ A boundary with a defined threat/authority level: external providers, host contr
 ## V
 
 **Verification evidence**<br>
-Structured proof attached to a release candidate, such as job result, command, commit SHA, artifact, timestamp, and any policy-authorized reasoned waiver. A failed verification is unwaivable; narrative confidence is never equivalent evidence.
+Structured proof attached to a release candidate, such as job result, command, commit SHA, artifact, timestamp, log excerpt, and retry lineage. The visible server-executed candidate run is authoritative; agent-reported checks and legacy waiver records remain diagnostic audit data.
 
 **VM overlay**<br>
 A disposable disk derived from the base image. New overlays default to 20 GB and belong under `/var/lib/libvirt/images/evander`.

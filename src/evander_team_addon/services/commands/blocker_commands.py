@@ -818,7 +818,7 @@ def _prepare_blocker_source_for_resolution(
             code="candidate_correction_recovery_command_required",
             message=(
                 "candidate-correction successor blockers require the typed "
-                "retry, verified-replacement, or verification-waiver recovery; "
+                "retry or verified-replacement recovery; "
                 "generic blocker resolution cannot bypass that lifecycle"
             ),
             correction_context={
@@ -827,7 +827,6 @@ def _prepare_blocker_source_for_resolution(
                 "recovery_actions": [
                     "retry",
                     "create_verified_replacement",
-                    "authorize_verification_waiver",
                 ],
             },
         )

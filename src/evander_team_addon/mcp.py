@@ -2109,8 +2109,9 @@ def _register_slice7_tools(
             "coordination, or acknowledgement-only work with team_update_task "
             "state=finished instead. Publishes any artifact_paths from /artifacts "
             "before recording state. Optional "
-            "verification records status passed, failed, partial, not_run, or "
-            "unknown with a summary. Git deliverables must include "
+            "verification records are optional diagnostic reports with status "
+            "passed, failed, partial, not_run, or unknown and a summary; they never "
+            "gate acceptance or release intake. Git deliverables must include "
             "branch_context_id; git_refs are provenance only and must match that "
             "context. git_refs accepts exactly branch_context_id, agent_branch, "
             "and commit_sha; use commit_sha, not commit, to pin the submitted "
@@ -2353,12 +2354,9 @@ def _register_slice7_tools(
             "decisions, block_kind may identify dependency, input_unavailable, policy, "
             "system, or unspecified. An accepted review must use finding_resolutions "
             "for every open carried finding owned by its profile or reviewer role; "
-            "criterion entries accept evidence_refs, and required criteria on new "
-            "formal-review deliverables require at least one durable evidence reference. "
-            "For passed required criteria without explicit references, the service uses "
-            "the server-owned pinned review snapshot, published deliverable artifacts, "
-            "or persisted verification references when available; an empty deliverable "
-            "verification evidence list is not by itself a blocker; "
+            "criterion entries may include optional evidence_refs; the immutable "
+            "repository snapshot is server-owned provenance rather than reviewer-supplied "
+            "evidence. Agent-reported verification and links are diagnostic only; "
             "acceptance cascades only when all current reviews are accepted and no "
             "finding remains open. Requires review_request_id, state, and request_id."
         ),
@@ -2580,7 +2578,6 @@ def _register_slice8_tools(
         release_branch: str | None = None,
         canonical_branch: str | None = None,
         summary: str | None = None,
-        verification_waivers: list[dict[str, Any]] | None = None,
         handled_inbox_item_ids: list[str] | None = None,
         correlation_id: str | None = None,
         causation_id: str | None = None,
@@ -2601,7 +2598,6 @@ def _register_slice8_tools(
                 release_branch=release_branch,
                 canonical_branch=canonical_branch,
                 summary=summary,
-                verification_waivers=verification_waivers,
                 request_id=request_id,
                 handled_inbox_item_ids=handled_inbox_item_ids,
                 correlation_id=correlation_id,
@@ -2616,7 +2612,9 @@ def _register_slice8_tools(
         name=TEAM_REQUEST_RELEASE_TOOL,
         description=(
             "Record asynchronous Git release-package intent from accepted "
-            "deliverables. Requires project_id, deliverable_ids, and request_id."
+            "deliverables. Candidate verification runs afterward on the frozen "
+            "candidate and is the authoritative build/test result. Requires "
+            "project_id, deliverable_ids, and request_id."
         ),
     )
 

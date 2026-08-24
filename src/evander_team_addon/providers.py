@@ -300,13 +300,7 @@ from .services.candidate_correction_reconciliation_service import (
     CandidateCorrectionReconciliationService,
 )
 from .services.release_gate_service import TeamReleaseGateService
-from .services.release_verification_effects import (
-    EffectDeliverableAcceptanceVerificationExecutor,
-    EffectReleaseVerificationExecutor,
-)
-from .services.deliverable_acceptance_verification_runner import (
-    TeamDeliverableAcceptanceVerificationRunner,
-)
+from .services.release_verification_effects import EffectReleaseVerificationExecutor
 from .services.release_verification_runner import (
     ReleaseVerificationExecutor,
     TeamReleaseVerificationRunner,
@@ -2275,8 +2269,11 @@ _TEAM_INTERNAL_EVENT_CATALOG: tuple[WorkflowInternalEventCatalogEntry, ...] = (
     ),
     _team_internal_event(
         DELIVERABLE_ACCEPTANCE_VERIFICATION_REQUESTED_EVENT_TYPE,
-        "Team deliverable acceptance verification requested",
-        "Published when a reviewed commit is ready for server-owned pre-acceptance checks.",
+        "Team deliverable acceptance verification requested (deprecated)",
+        (
+            "Legacy event accepted as a no-op for queued work; new Team actions do not "
+            "publish it."
+        ),
     ),
     _team_internal_event(
         HUMAN_REVIEW_REQUESTED_EVENT_TYPE,
@@ -5689,29 +5686,20 @@ class TeamVerifyDeliverableAcceptanceEffectProvider(EffectProviderBase):
         )
         if resolved_config:
             payload.update(dict(resolved_config))
-        deliverable_id = _required_text(payload.get("deliverable_id"), "deliverable_id")
-        run_id = _required_text(payload.get("verification_run_id"), "verification_run_id")
-        candidate_sha = _required_text(
-            payload.get("candidate_commit_sha"),
-            "candidate_commit_sha",
-        )
-        repo = TeamStateRepository(_runtime_dir(self.runtime_context))
-        result = TeamDeliverableAcceptanceVerificationRunner(
-            repo,
-            EffectDeliverableAcceptanceVerificationExecutor(self.runtime_context),
-        ).run(
-            deliverable_id=deliverable_id,
-            verification_run_id=run_id,
-            candidate_commit_sha=candidate_sha,
-        )
-        if not result.get("coalesced"):
-            published_event_ids = _publish_team_events(
-                self.runtime_context,
-                result.get("events") or [],
-            )
-            if published_event_ids:
-                result["published_event_ids"] = published_event_ids
-        return result
+        # One-release compatibility handler for events emitted before the
+        # deliverable gate was retired. Never execute a hidden verifier and
+        # never mutate the deliverable or wake state.
+        return {
+            "success": True,
+            "deprecated": True,
+            "deliverable_id": _optional_text(payload.get("deliverable_id")),
+            "verification_run_id": _optional_text(payload.get("verification_run_id")),
+            "candidate_commit_sha": _optional_text(payload.get("candidate_commit_sha")),
+            "warning": (
+                "Deliverable acceptance verification was retired; the release candidate "
+                "verification run is authoritative."
+            ),
+        }
 
 
 class TeamPublishReviewBranchEffectProvider(EffectProviderBase):
@@ -7780,12 +7768,10 @@ def _assigned_deliverable_review_guidance(context: Mapping[str, Any]) -> str:
         "project_repos checkout at its pinned_ref and commit_sha. The checkout "
         "is detached deliberately; never substitute an existing work branch or "
         "a newer branch tip.\n"
-        "- A review repository_snapshot is server-owned durable evidence. Cite its "
-        "pinned_ref for required criteria supported by inspection of that snapshot; "
-        "the decision service also fills this reference for otherwise-empty passed "
-        "required criteria. Published artifact_refs and verification.evidence_refs "
-        "are added when present. An empty deliverable verification.evidence_refs list "
-        "is not by itself a blocker and does not require a replacement deliverable.\n"
+        "- A review repository_snapshot is server-owned immutable provenance, not "
+        "reviewer-supplied criterion evidence. Criterion evidence_refs, published "
+        "artifact_refs, and verification links are optional diagnostic information; "
+        "their absence is not by itself a blocker.\n"
         f"- {TEAM_DECIDE_REVIEW_TOOL} is granted for this review dispatch. "
         "Team tools can be deferred in Codex code mode even after the MCP capability "
         "receipt verifies the grant. Resolve each required callable from ALL_TOOLS by "
@@ -7903,9 +7889,9 @@ def _deliverable_mechanics_guidance(lease: Mapping[str, Any]) -> str:
         "summarize the deliverable under /artifacts before reporting it.\n"
         "- A Git deliverable must include the runtime-provided branch_context_id; "
         "do not invent or reuse branch names from another task worktree.\n"
-        "- Include verification.status when you ran checks or could not run them. "
-        "Use verification.status=not_run with verification.summary explaining "
-        "missing test tooling or unavailable services.\n"
+        "- You may include verification.status and a summary when checks were run, "
+        "failed, or could not run. This diagnostic report is optional and does not "
+        "gate acceptance or release intake.\n"
         "- Follow team, role, task, and operator review-routing guidance. Use "
         f"{TEAM_SUBMIT_DELIVERABLE_TOOL} when a superior, workflow, or operator "
         "provides routing. Use "

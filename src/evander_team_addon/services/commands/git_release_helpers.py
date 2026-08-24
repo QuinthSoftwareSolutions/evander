@@ -1,10 +1,7 @@
 from __future__ import annotations
 
 
-from collections.abc import (
-    Mapping,
-    Sequence,
-)
+from collections.abc import Mapping, Sequence
 from typing import Any
 from .types import TeamCommandValidationError
 from ...models import (
@@ -76,7 +73,6 @@ def _team_request_release_normalized_payload(
     release_branch: str | None,
     canonical_branch: str | None,
     summary: str | None,
-    verification_waivers: Sequence[Mapping[str, Any]],
     handled_inbox_item_ids: Sequence[str],
     correlation_id: str | None,
     causation_id: str | None,
@@ -90,19 +86,6 @@ def _team_request_release_normalized_payload(
         "release_branch": _optional_text(release_branch),
         "canonical_branch": _optional_text(canonical_branch),
         "summary": _optional_text(summary),
-        "verification_waivers": [
-            {
-                "deliverable_id": _required_text(
-                    item.get("deliverable_id"),
-                    "verification_waivers.deliverable_id",
-                ),
-                "reason": _required_text(
-                    item.get("reason"),
-                    "verification_waivers.reason",
-                ),
-            }
-            for item in verification_waivers
-        ],
         "handled_inbox_item_ids": sorted(
             _unique_text_list(handled_inbox_item_ids, "handled_inbox_item_ids")
         ),
@@ -220,12 +203,6 @@ def _git_command_validation_error(
         messages = [str(errors)] if errors else []
     message = "; ".join(messages) or "Git intent validation failed"
     correction_context: dict[str, Any] = {"errors": messages}
-    waiver_requirements = result.get("verification_waiver_requirements")
-    if isinstance(waiver_requirements, Sequence) and not isinstance(
-        waiver_requirements,
-        (str, bytes),
-    ):
-        correction_context["verification_waiver_requirements"] = list(waiver_requirements)
     return TeamCommandValidationError(
         code=code,
         message=message,

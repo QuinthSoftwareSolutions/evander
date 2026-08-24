@@ -793,11 +793,11 @@ TEAM_OUTPUT_SCHEMAS: dict[str, dict[str, dict[str, Any]]] = {
     },
     "effect:team:verify-deliverable-acceptance": {
         "success": {"type": "boolean"},
-        "revision": {"type": "integer"},
-        "deliverable_id": {"type": "string"},
-        "verification_run_id": {"type": "string"},
-        "verification_state": {"type": "string"},
-        "error": {"type": ["string", "null"]},
+        "deprecated": {"type": "boolean"},
+        "deliverable_id": {"type": ["string", "null"]},
+        "verification_run_id": {"type": ["string", "null"]},
+        "candidate_commit_sha": {"type": ["string", "null"]},
+        "warning": {"type": "string"},
     },
     "effect:team:publish-review-branch": {
         "success": {"type": "boolean"},

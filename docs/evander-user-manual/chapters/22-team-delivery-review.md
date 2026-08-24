@@ -168,9 +168,11 @@ A commit that exists only in the worker worktree cannot be reviewed or accepted.
 ### Immutable dependency composition
 
 When a task declares dependencies or required contribution tasks, Team derives the Git inputs
-from the accepted deliverables. A newly accepted reviewed commit is retained under an immutable
-<code>refs/evander/team-reviews/...</code> ref. Later preparation resolves that retained ref, not
-the mutable agent branch, so a subsequent push cannot change an already accepted input.
+from the accepted deliverables. Every newly submitted Git candidate is retained immediately under
+an immutable <code>refs/evander/team-reviews/...</code> deliverable ref before either a direct or
+formal handoff. Formal reviews also retain their own immutable review snapshot. Later preparation
+resolves the accepted retained ref, not the mutable agent branch, so a subsequent push cannot
+change an already accepted input.
 
 The prepared context records a dependency-composition manifest containing the pinned task base,
 base tree, every source relationship, deliverable, immutable ref and commit, the ancestry-reduced
@@ -181,8 +183,9 @@ reduced sources rather than cherry-picked twice. A genuine content conflict stil
 typed dependency-composition recovery; it never falls back to an unreviewed history merge.
 
 These rules apply prospectively. Historical accepted deliverables remain readable and use their
-legacy branch/context validation. A new reviewed acceptance records policy version 2 and must
-satisfy the immutable-ref and composition evidence gates that apply to its task.
+legacy branch/context validation. A new formal review records policy version 2 and must satisfy
+the immutable-ref and composition gates that apply to its Git task; direct acceptance uses the
+submission-time retained ref without acquiring formal-review criteria.
 
 ## Submitting, superior acceptance, and formal review
 
@@ -233,25 +236,20 @@ remainder requires an explicit profile ID. Use profiles for repeatable policy su
 
 Creating the same active review for one deliverable and reviewer is replay-safe: the service returns the existing review rather than duplicating inbox and wake work.
 
-### Pre-acceptance verification and evidence
+### Acceptance evidence and release verification
 
-New formal-review submissions for integration boundaries and system-created rejected-candidate
-corrections run the project's frozen release verification commands in a disposable
-<code>container_worker_vm</code> against the exact immutable review snapshot. This is a
-server-owned, release-equivalent check; an agent-supplied verification claim cannot satisfy it.
-The review can be inspected while the run is pending, but it cannot be accepted until the run has
-passed and recorded a durable evidence reference.
+Reviewers must record criterion decisions when a review profile is configured and explain
+rejections and carried-finding resolutions. Criterion evidence references, agent-reported tests,
+logs, and links are optional diagnostics. The immutable repository snapshot is server-owned Git
+provenance, not reviewer-supplied evidence.
 
-If no release verification commands are configured, the result is <code>not_run</code> and the
-acceptance remains closed. An operator can authorize a waiver only for <code>partial</code> or
-<code>not_run</code>, must supply a reason, and has their authenticated operator identity and time
-stored on the deliverable. A failed check cannot be waived; corrected reviewed content is
-required. Policy-version-2 reviews also require an evidence reference for every required passed
-criterion. Team supplies the server-owned immutable review snapshot as the default reference for
-otherwise-empty passed criteria and also includes published deliverable artifacts or persisted
-verification references when present. Reviewers may add narrower references, but they do not need
-to copy identifiers merely to satisfy the gate. An empty agent-reported verification evidence list
-is not by itself a blocker when the pinned candidate can be inspected.
+After required deliverables are accepted and provenance, dependency composition, and candidate
+integrity validate, Team creates the release package and frozen candidate. Configured commands run
+in order against that candidate through a fresh, visible disposable
+<code>container_worker_vm</code> verification run; this server-owned run is the authoritative
+build/test result. Typed infrastructure retries retain the same candidate and release lineage while
+preserving every attempt. Historical acceptance-verification and waiver records remain readable
+for audit, but new submissions do not create or consume them.
 
 > <span class="sidebar-kicker">Technical sidebar</span> **Submission and automatic review creation**
 >
@@ -280,7 +278,7 @@ Only the assigned reviewer may decide a review. The decision is immutable.
 
 ### Accepted
 
-For a profiled review, every required criterion must be present and passed. Optional criteria may be omitted. The accepted decision pins its reviewed evidence and findings. If a passed required criterion has no explicit evidence reference, Team attaches the immutable repository snapshot, published deliverable artifacts, or persisted verification references already known to the review.
+For a profiled review, every required criterion must be present and passed. Optional criteria may be omitted. Evidence references are optional diagnostics and are preserved when supplied; Team does not duplicate the immutable repository snapshot across criterion rows. The snapshot remains separate, server-owned provenance for the exact reviewed commit.
 
 A deliverable becomes accepted only when:
 

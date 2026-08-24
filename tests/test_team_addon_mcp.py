@@ -606,6 +606,7 @@ def test_team_addon_mcp_registers_all_plan_tool_names_as_addon_tools(
     escalation_description = tools[TEAM_ESCALATE_OPERATOR_TOOL].description or ""
     retry_release_description = tools[TEAM_RETRY_RELEASE_GATE_TOOL].description or ""
     decide_review_description = tools[TEAM_DECIDE_REVIEW_TOOL].description or ""
+    request_release = tools[TEAM_REQUEST_RELEASE_TOOL]
     retry_review_description = tools[TEAM_RETRY_REVIEW_TOOL].description or ""
     withdraw_review_description = tools[TEAM_WITHDRAW_REVIEW_TOOL].description or ""
     retire_review_description = tools[TEAM_RETIRE_REVIEW_TOOL].description or ""
@@ -616,7 +617,7 @@ def test_team_addon_mcp_registers_all_plan_tool_names_as_addon_tools(
     )
     correction_route_description = tools[TEAM_ROUTE_HUMAN_FINDING_CORRECTION_TOOL].description or ""
     post_release_close_description = tools[TEAM_CLOSE_POST_RELEASE_CASE_TOOL].description or ""
-    assert "verification records status" in submit_description
+    assert "verification records are optional diagnostic reports" in submit_description
     assert "git_refs are provenance only" in submit_description
     assert "use commit_sha, not commit" in submit_description
     assert "does not make the human decision" in finding_resolution_description
@@ -635,6 +636,8 @@ def test_team_addon_mcp_registers_all_plan_tool_names_as_addon_tools(
     assert "concrete evidence that the failure recovered" in retry_release_description
     assert "cannot retry a failed agent-requested" in retry_release_description
     assert "all current reviews are accepted" in decide_review_description
+    assert "authoritative build/test result" in (request_release.description or "")
+    assert "verification_waivers" not in request_release.parameters["properties"]
     assert "supersedes a current blocked" in retry_review_description
     assert "pending non-release review" in withdraw_review_description
     assert "project lead or team manager" in retire_review_description

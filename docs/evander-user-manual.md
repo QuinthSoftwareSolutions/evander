@@ -6450,9 +6450,11 @@ A commit that exists only in the worker worktree cannot be reviewed or accepted.
 ### Immutable dependency composition
 
 When a task declares dependencies or required contribution tasks, Team derives the Git inputs
-from the accepted deliverables. A newly accepted reviewed commit is retained under an immutable
-<code>refs/evander/team-reviews/...</code> ref. Later preparation resolves that retained ref, not
-the mutable agent branch, so a subsequent push cannot change an already accepted input.
+from the accepted deliverables. Every newly submitted Git candidate is retained immediately under
+an immutable <code>refs/evander/team-reviews/...</code> deliverable ref before either a direct or
+formal handoff. Formal reviews also retain their own immutable review snapshot. Later preparation
+resolves the accepted retained ref, not the mutable agent branch, so a subsequent push cannot
+change an already accepted input.
 
 The prepared context records a dependency-composition manifest containing the pinned task base,
 base tree, every source relationship, deliverable, immutable ref and commit, the ancestry-reduced
@@ -6463,8 +6465,9 @@ reduced sources rather than cherry-picked twice. A genuine content conflict stil
 typed dependency-composition recovery; it never falls back to an unreviewed history merge.
 
 These rules apply prospectively. Historical accepted deliverables remain readable and use their
-legacy branch/context validation. A new reviewed acceptance records policy version 2 and must
-satisfy the immutable-ref and composition evidence gates that apply to its task.
+legacy branch/context validation. A new formal review records policy version 2 and must satisfy
+the immutable-ref and composition gates that apply to its Git task; direct acceptance uses the
+submission-time retained ref without acquiring formal-review criteria.
 
 ## Submitting, superior acceptance, and formal review
 
@@ -6515,25 +6518,20 @@ remainder requires an explicit profile ID. Use profiles for repeatable policy su
 
 Creating the same active review for one deliverable and reviewer is replay-safe: the service returns the existing review rather than duplicating inbox and wake work.
 
-### Pre-acceptance verification and evidence
+### Acceptance evidence and release verification
 
-New formal-review submissions for integration boundaries and system-created rejected-candidate
-corrections run the project's frozen release verification commands in a disposable
-<code>container_worker_vm</code> against the exact immutable review snapshot. This is a
-server-owned, release-equivalent check; an agent-supplied verification claim cannot satisfy it.
-The review can be inspected while the run is pending, but it cannot be accepted until the run has
-passed and recorded a durable evidence reference.
+Reviewers must record criterion decisions when a review profile is configured and explain
+rejections and carried-finding resolutions. Criterion evidence references, agent-reported tests,
+logs, and links are optional diagnostics. The immutable repository snapshot is server-owned Git
+provenance, not reviewer-supplied evidence.
 
-If no release verification commands are configured, the result is <code>not_run</code> and the
-acceptance remains closed. An operator can authorize a waiver only for <code>partial</code> or
-<code>not_run</code>, must supply a reason, and has their authenticated operator identity and time
-stored on the deliverable. A failed check cannot be waived; corrected reviewed content is
-required. Policy-version-2 reviews also require an evidence reference for every required passed
-criterion. Team supplies the server-owned immutable review snapshot as the default reference for
-otherwise-empty passed criteria and also includes published deliverable artifacts or persisted
-verification references when present. Reviewers may add narrower references, but they do not need
-to copy identifiers merely to satisfy the gate. An empty agent-reported verification evidence list
-is not by itself a blocker when the pinned candidate can be inspected.
+After required deliverables are accepted and provenance, dependency composition, and candidate
+integrity validate, Team creates the release package and frozen candidate. Configured commands run
+in order against that candidate through a fresh, visible disposable
+<code>container_worker_vm</code> verification run; this server-owned run is the authoritative
+build/test result. Typed infrastructure retries retain the same candidate and release lineage while
+preserving every attempt. Historical acceptance-verification and waiver records remain readable
+for audit, but new submissions do not create or consume them.
 
 > <span class="sidebar-kicker">Technical sidebar</span> **Submission and automatic review creation**
 >
@@ -6562,7 +6560,7 @@ Only the assigned reviewer may decide a review. The decision is immutable.
 
 ### Accepted
 
-For a profiled review, every required criterion must be present and passed. Optional criteria may be omitted. The accepted decision pins its reviewed evidence and findings. If a passed required criterion has no explicit evidence reference, Team attaches the immutable repository snapshot, published deliverable artifacts, or persisted verification references already known to the review.
+For a profiled review, every required criterion must be present and passed. Optional criteria may be omitted. Evidence references are optional diagnostics and are preserved when supplied; Team does not duplicate the immutable repository snapshot across criterion rows. The snapshot remains separate, server-owned provenance for the exact reviewed commit.
 
 A deliverable becomes accepted only when:
 
@@ -7157,21 +7155,13 @@ This prevents policy drift after request time from silently redefining what was 
 >   carried human findings when this is a correction successor;
 > - actor and timestamp evidence.
 
-## Verification evidence and waivers
+## Verification evidence
 
-Deliverable verification is enforced at release time:
-
-| Status | Release rule |
-|---|---|
-| <code>passed</code> | Eligible without a verification waiver. |
-| <code>failed</code> | Cannot be waived. Fix, re-review, and submit new evidence. |
-| missing, <code>partial</code>, <code>not_run</code>, or <code>unknown</code> | Requires a reasoned waiver from project lead, Team manager, or authenticated operator. |
-
-A role with <code>request_release</code> alone cannot grant the waiver. Each waiver records deliverable, original status, reason, actor kind and ID, and timestamp.
-
-A waiver acknowledges incomplete verification evidence; it does not waive reviewed-scope mismatch.
-
-In everyday terms, “we could not run this check” may be acknowledged by an authorized person with a reason; “this check failed” may not. A waiver never permits extra, unreviewed content.
+Deliverable verification status and evidence are advisory diagnostics. A report can be
+<code>passed</code>, <code>failed</code>, <code>partial</code>, <code>not_run</code>, or
+<code>unknown</code> without blocking acceptance or package intake. The release candidate's
+server-executed command results are authoritative and run after candidate construction. Historical
+waiver records remain visible for audit only; new release decisions never use them.
 
 ## Release policy
 
@@ -7614,7 +7604,8 @@ Before release:
 1. Confirm every selected deliverable is current, accepted, and in one project.
 2. Verify each Git source resolves to the pinned reviewed commit.
 3. Inspect reviewed manifests and expected path union.
-4. Resolve incomplete verification with an authorized, reasoned waiver or new evidence.
+4. Treat agent-reported verification as diagnostic context. Do not create a waiver; the frozen
+   candidate receives a fresh visible server-owned verification run after the package is created.
 5. Validate the project release policy, worker image/commands, agent reviewers,
    and any human reviewer groups/checklist/preparation instructions.
 
@@ -7894,7 +7885,7 @@ The add-on registers its providers only while enabled. The main grouped contract
 | Git/release effects | publish review branch, consolidate, record promotion, verify candidate, mark published |
 | Memory effects | index and reindex |
 
-The registered <code>team-runtime.v1</code> pack composes these with core agent, communication, Git, and event effects. Internal event routes include Chat queued, agent wake requested, ephemeral requested/completed, operator escalation, Git promotion/recovery, deliverable pre-acceptance verification, and release verification.
+The registered <code>team-runtime.v1</code> pack composes these with core agent, communication, Git, and event effects. Internal event routes include Chat queued, agent wake requested, ephemeral requested/completed, operator escalation, Git promotion/recovery, and release-candidate verification. The former deliverable acceptance-verification route remains only as a one-release no-op compatibility handler for already-queued events.
 
 The packaged Python definition is a source definition. Enablement materializes an operator-owned live workflow document under the normal revision and lock contract. Refresh it through the Add-ons surface. Never directly rewrite a live workflow-pack file, even during incident repair.
 
@@ -8992,7 +8983,7 @@ The presence of a task, message, or deliverable does not by itself prove that th
 | Deliverable was submitted but no review begins | Deliverable, review request, reviewer assignment, and outbox/event state | Review cascade creation or reviewer capacity | Trace deliverable ID to review request and dispatch; requeue only if no idempotent equivalent exists |
 | Reviewer rejects but implementer is not reactivated | Review decision, deliverable cohort ID, every active cohort slot, follow-up inbox, and wake | Independent cascade failure or a sealed cohort still settling | For a sealed cohort, this is expected until every pending/blocked slot settles; recover blocked slots and let the round finish. For an independent review with no follow-up, trace the ordinary rejection cascade |
 | Ephemeral delegate never exits | Delegation task, lease, child session, terminal result | Cleanup/finalization | Preserve result/artifacts, then run the supported terminal cleanup; do not silently convert it into a persistent agent |
-| Release is waiting | Release package, verification records, approved candidate SHA, and gate status | Missing evidence, failed job, or lease mismatch | Satisfy the named gate; only partial, not-run, unknown, or missing verification can receive an authorized reasoned waiver—failed verification is unwaivable and requires a corrected reviewed candidate |
+| Release is waiting | Release package, visible candidate-verification run, approved candidate SHA, and gate status | Candidate failure, verifier infrastructure failure, pending review, or lease mismatch | Follow the named gate. A candidate command failure requires corrected reviewed content and a new candidate; an infrastructure failure uses the typed retry on the same release lineage and preserves every attempt. Agent-reported deliverable verification and legacy waivers do not decide release progress |
 | Release verifier reports `pids_limit_exhausted` or `memory_limit_exhausted` | Structured worker failure cause, live project `resource_limits`, current verification run, and `retry_requested_by` | Container resource exhaustion, not a test-output guess | Repair or deliberately resize the live verifier policy and cite evidence before retrying. If an agent-requested retry already failed, escalate; another agent retry is forbidden |
 | Human release review is blocked with no assignee | Human request, assignment generation, snapshotted groups, current Admin membership/RBAC, and assignment-unavailable blocker | Human assignment reconciliation | Repair membership or use audited reassignment on the same request; never skip the gate or create a replacement attempt |
 | Human preview failed or expired | Human request candidate SHA/tree, preparation generation, safe target metadata, and blocker reason | Preview preparation | Repair the host-owned workflow target and resume the same request to create a new preparation generation |
@@ -9473,7 +9464,7 @@ A boundary with a defined threat/authority level: external providers, host contr
 ## V
 
 **Verification evidence**<br>
-Structured proof attached to a release candidate, such as job result, command, commit SHA, artifact, timestamp, and any policy-authorized reasoned waiver. A failed verification is unwaivable; narrative confidence is never equivalent evidence.
+Structured proof attached to a release candidate, such as job result, command, commit SHA, artifact, timestamp, log excerpt, and retry lineage. The visible server-executed candidate run is authoritative; agent-reported checks and legacy waiver records remain diagnostic audit data.
 
 **VM overlay**<br>
 A disposable disk derived from the base image. New overlays default to 20 GB and belong under `/var/lib/libvirt/images/evander`.

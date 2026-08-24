@@ -285,7 +285,6 @@ def _refresh_blocked_successor_from_reviewed_rework(
                 "summary": successor.summary,
                 "release_branch": successor.release_branch,
                 "canonical_branch": successor.canonical_branch,
-                "verification_waivers": [],
             },
             result=preview_result,
             projects_to_recalc=set(),
@@ -414,8 +413,6 @@ def _current_successor_deliverable_ids(
         for deliverable in state.deliverables.values()
         if deliverable.state == TeamRecordState.ACCEPTED
         and deliverable.superseded_by_deliverable_id is None
-        and deliverable.verification is not None
-        and deliverable.verification.status == "passed"
         and _candidate_correction_downstream_recovery_base(
             state,
             predecessor=predecessor,
@@ -845,7 +842,6 @@ def reconcile_candidate_correction_successors(
                         f"Automatic successor for {predecessor.id} after accepted "
                         "rejected-gate correction."
                     ),
-                    "verification_waivers": [],
                 },
                 result=package_result,
                 projects_to_recalc=set(),
@@ -1032,8 +1028,9 @@ def recover_candidate_correction_successor(
                     f"Recover the failed successor packaging for {predecessor.id}. "
                     f"Start from accepted correction branch {source_branch} at exact "
                     f"commit {source_commit}. Make only the downstream correction, run "
-                    "the relevant release verification plus focused checks, and "
-                    "submit an accepted Git deliverable with verification passed. Do "
+                    "focused checks as appropriate, and submit an accepted reviewed Git "
+                    "deliverable. The frozen release candidate verification remains "
+                    "authoritative. Do "
                     "not merge or rebase another base branch and do not request a release."
                     f"{operator_instruction}"
                 ),
@@ -1097,68 +1094,7 @@ def recover_candidate_correction_successor(
         result["success"] = True
         return
 
-    deliverable_ids = _current_accepted_deliverable_ids(state, correction_task)
-    if not deliverable_ids:
-        raise ValueError(f"correction task {correction_task.id} has no accepted deliverables")
-    waivers: list[dict[str, Any]] = []
-    for deliverable_id in deliverable_ids:
-        deliverable = state.deliverables[deliverable_id]
-        status = (
-            deliverable.verification.status if deliverable.verification is not None else "unknown"
-        )
-        if status == "failed":
-            raise ValueError(
-                f"deliverable {deliverable.id} has failed verification and cannot be waived"
-            )
-        if status != "passed":
-            waivers.append({"deliverable_id": deliverable.id, "reason": reason})
-    successor_id = "release-" + _stable_token(
-        "candidate-correction-waiver",
-        predecessor.id,
-        *deliverable_ids,
-    )
-    package_result = _package_result()
-    project = state.projects[predecessor.project_id]
-    created_id = _build_release_package(
-        state,
-        project=project,
-        request={
-            "id": successor_id,
-            "project_id": project.id,
-            "deliverable_ids": deliverable_ids,
-            "supersedes_release_package_id": predecessor.id,
-            "summary": f"Operator-authorized verification-waiver successor for {predecessor.id}.",
-            "verification_waivers": waivers,
-            "waiver_actor_kind": "operator",
-            "waiver_actor_id": operator_actor_id,
-            "release_requested_by_actor": f"operator:{operator_actor_id}",
-        },
-        result=package_result,
-        projects_to_recalc=set(),
-        actor_agent_id=project.lead_agent_id,
-        team_id=project.team_id,
-    )
-    if created_id is None or package_result["errors"]:
-        raise ValueError(
-            "; ".join(package_result["errors"])
-            or "verification-waiver successor could not be created"
-        )
-    result["events"].extend(package_result.get("events") or [])
-    result["release_package_id"] = created_id
-    result["verification_waiver_count"] = len(waivers)
-    resolve_active_blockers_for_source(
-        state,
-        source_kind=TeamBlockerSourceKind.CANDIDATE_CORRECTION_SUCCESSOR,
-        source_id=blocker.source_id,
-        actor_agent_id=None,
-        dispatch_id=None,
-        note=(f"Operator {operator_actor_id} authorized verified successor {created_id}: {reason}"),
-        reference_ids=[created_id],
-        result=result,
-        now=now,
-    )
-    _recalculate_project_status(state, project.id)
-    result["success"] = True
+    raise ValueError(f"unsupported candidate correction recovery action {action!r}")
 
 
 class CandidateCorrectionReconciliationService:

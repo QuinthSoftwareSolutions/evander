@@ -127,6 +127,7 @@ from .outbox_publication import (
 )
 from .sqlite_store import TeamIdempotencyConflictError
 from .services.domain.chat import CHAT_MESSAGE_QUEUED_EVENT_TYPE
+from .services.domain.acceptance_verification import ACCEPTANCE_VERIFICATION_RETIRED_WARNING
 from .services.domain.case_task import TaskGitBaseValidationError
 from .services.domain.case_events import TEAM_CASE_CLOSED_EVENT_TYPE
 from .services.domain.context_rotation import (
@@ -2766,6 +2767,7 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
             request,
             state,
             extra={
+                "warning": ACCEPTANCE_VERIFICATION_RETIRED_WARNING,
                 "deliverable_acceptance_verification": (
                     deliverable.verification.model_dump(mode="json", exclude_none=True)
                     if deliverable.verification is not None
@@ -3525,8 +3527,10 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
             canonical_branch=_optional(payload, "canonical_branch"),
             summary=_optional(payload, "summary"),
             verification_waivers=(
-                _optional_list(payload, "verification_waivers")
+                payload.get("verification_waivers")
                 if payload.get("verification_waivers") is not None
+                else []
+                if "verification_waivers" in payload
                 else None
             ),
             operator_actor_id=_operator_actor_from_request(context.auth, request),
@@ -3536,12 +3540,18 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
         published_event_ids = _publish_team_events(context, result.get("events"))
         if published_event_ids:
             response_payload["published_event_ids"] = published_event_ids
+        warnings = list(result.get("warnings") or [])
+        if warnings:
+            response_payload["warnings"] = warnings
         if _request_wants_view_scoped_response(request):
             return _state_response(
                 request,
                 state,
                 status_code=201,
-                extra={"published_event_ids": published_event_ids},
+                extra={
+                    "published_event_ids": published_event_ids,
+                    **({"warnings": warnings} if warnings else {}),
+                },
             )
         return JSONResponse(response_payload, status_code=201)
 

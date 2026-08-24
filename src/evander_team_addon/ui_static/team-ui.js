@@ -2392,16 +2392,7 @@ function bindRecordEditing() {
       );
       let reason = null;
       let instruction = null;
-      if (action === "authorize_verification_waiver") {
-        reason = window.prompt(
-          "Why is a verification waiver justified? This reason is recorded on the release.",
-          "",
-        );
-        if (!text(reason)) {
-          setStatus("A verification-waiver reason is required.", "error");
-          return;
-        }
-      } else if (action === "create_verified_replacement") {
+      if (action === "create_verified_replacement") {
         instruction = window.prompt(
           "Add instructions for the verified replacement task (optional). These become part of its durable task scope.",
           "",
@@ -2416,30 +2407,6 @@ function bindRecordEditing() {
         action,
         text(reason) || null,
         text(instruction) || null,
-      );
-      return;
-    }
-
-    const acceptanceVerificationWaiverButton = event.target.closest(
-      "[data-acceptance-verification-waiver-deliverable-id]",
-    );
-    if (acceptanceVerificationWaiverButton) {
-      event.preventDefault();
-      if (!guardTeamMutation("authorize deliverable acceptance verification waivers")) {
-        return;
-      }
-      const reason = window.prompt(
-        "Why is this partial or not-run pre-acceptance verification safe to waive? The reason and your operator identity are recorded.",
-        "",
-      );
-      if (!text(reason)) {
-        setStatus("An acceptance-verification waiver reason is required.", "error");
-        return;
-      }
-      void authorizeDeliverableAcceptanceVerificationWaiver(
-        acceptanceVerificationWaiverButton,
-        acceptanceVerificationWaiverButton.dataset.acceptanceVerificationWaiverDeliverableId,
-        text(reason),
       );
       return;
     }
@@ -2973,7 +2940,6 @@ const lockedMutationControlSelectors = [
   ["[data-dismiss-action-id]", "dismiss failed actions"],
   ["[data-resume-release-recovery-blocker-id]", "resume release recoveries"],
   ["[data-candidate-correction-recovery-id]", "recover candidate correction successors"],
-  ["[data-acceptance-verification-waiver-deliverable-id]", "authorize deliverable acceptance verification waivers"],
   ["[data-start-dependency-composition-recovery-id]", "start dependency composition recoveries"],
   ["[data-resolve-terminal-blocker-id]", "resolve terminal blockers"],
   ["[data-release-gate-retry]", "retry release gates"],
@@ -14117,11 +14083,6 @@ function renderTerminalBlockerResolveAction(blocker, extraClass = "") {
                   ${lockedAttrs("retry candidate correction recovery")}
                 >Retry packaging</button>`
           }
-          <button type="button" class="record-action"
-            data-candidate-correction-recovery-id="${escapeAttr(blocker.id)}"
-            data-candidate-correction-recovery-action="authorize_verification_waiver"
-            ${lockedAttrs("authorize candidate verification waivers")}
-          >Authorize waiver instead</button>
         </div>
       `;
     }
@@ -14137,11 +14098,6 @@ function renderTerminalBlockerResolveAction(blocker, extraClass = "") {
           data-candidate-correction-recovery-action="create_verified_replacement"
           ${lockedAttrs("create verified replacement tasks")}
         >Create verified replacement</button>
-        <button type="button" class="record-action"
-          data-candidate-correction-recovery-id="${escapeAttr(blocker.id)}"
-          data-candidate-correction-recovery-action="authorize_verification_waiver"
-          ${lockedAttrs("authorize candidate verification waivers")}
-        >Authorize waiver</button>
       </div>
     `;
   }
@@ -15479,13 +15435,9 @@ function renderDeliverableAcceptanceVerification(deliverable) {
   const status = text(verification.status || "unknown");
   const commands = verification.command_results || [];
   const waiver = verification.waiver;
-  const canWaive =
-    verification.provenance === "server_release_equivalent" &&
-    ["partial", "not_run"].includes(status) &&
-    !waiver;
   return `
     <section class="deliverable-detail-group deliverable-acceptance-verification">
-      <h4>Acceptance verification</h4>
+      <h4>Deliverable verification (diagnostic)</h4>
       <div class="delivery-detail-grid">
         <div><div class="delivery-detail-label">Status</div><div class="delivery-detail-value"><span class="state-pill ${escapeAttr(status)}">${escapeHtml(humanizeToken(status))}</span></div></div>
         <div><div class="delivery-detail-label">Provenance</div><div class="delivery-detail-value">${escapeHtml(humanizeToken(verification.provenance || "agent_reported"))}</div></div>
@@ -15496,7 +15448,6 @@ function renderDeliverableAcceptanceVerification(deliverable) {
       ${commands.length ? `<ul>${commands.map((command) => `<li><strong>${escapeHtml(command.name)}</strong> - ${escapeHtml(humanizeToken(command.state || "pending"))}${command.failure_kind ? ` (${escapeHtml(humanizeToken(command.failure_kind))})` : ""}</li>`).join("")}</ul>` : ""}
       ${(verification.evidence_refs || []).length ? `<p class="meta-line"><strong>Evidence:</strong> ${(verification.evidence_refs || []).map((ref) => `<code>${escapeHtml(ref)}</code>`).join(" ")}</p>` : ""}
       ${waiver ? `<p class="meta-line"><strong>Waived by ${escapeHtml(waiver.actor_id)}:</strong> ${escapeHtml(waiver.reason)}</p>` : ""}
-      ${canWaive ? `<button type="button" class="secondary" data-acceptance-verification-waiver-deliverable-id="${escapeAttr(deliverable.id)}" ${lockedAttrs("authorize deliverable acceptance verification waivers")}>Authorize waiver</button>` : ""}
     </section>
   `;
 }
@@ -15723,8 +15674,8 @@ function renderReviewCriterionInputs(criteria) {
           <label>Finding
             <input name="criterion_finding__${escapeAttr(criterion.id)}" type="text" />
           </label>
-          <label>Evidence references
-            <textarea name="criterion_evidence_refs__${escapeAttr(criterion.id)}" rows="2" placeholder="One durable reference per line or comma-separated"></textarea>
+          <label>Evidence references (optional)
+            <textarea name="criterion_evidence_refs__${escapeAttr(criterion.id)}" rows="2" placeholder="Optional diagnostic references"></textarea>
           </label>
         </div>
       `).join("")}
@@ -22223,60 +22174,6 @@ async function startDependencyCompositionRecovery(button, blockerId, resolverAge
   } catch (error) {
     setStatus(
       error instanceof Error ? error.message : "Dependency merge recovery failed.",
-      "error",
-    );
-  } finally {
-    if (button.isConnected) {
-      button.disabled = false;
-    }
-  }
-}
-
-async function authorizeDeliverableAcceptanceVerificationWaiver(
-  button,
-  deliverableId,
-  reason,
-) {
-  const normalizedDeliverableId = text(deliverableId);
-  if (!normalizedDeliverableId || !text(reason)) {
-    setStatus("A deliverable and waiver reason are required.", "error");
-    return;
-  }
-  const drafts = captureFormDrafts();
-  button.disabled = true;
-  setStatus(`Authorizing acceptance-verification waiver for ${normalizedDeliverableId}.`, "loading");
-  const endpoint = `/deliverables/${encodeURIComponent(normalizedDeliverableId)}/acceptance-verification-waiver`;
-  try {
-    const response = await teamFetch(`${API_BASE}${endpoint}`, {
-      method: "POST",
-      headers: {
-        Accept: "application/json",
-        "Content-Type": "application/json",
-        "X-Team-Addon-Response-Scope": "view",
-      },
-      body: JSON.stringify(
-        mutationBodyWithConflictMetadata(endpoint, "POST", { reason: text(reason) }),
-      ),
-    });
-    if (response.status === 409) {
-      const conflict = await response.json().catch(() => ({}));
-      await reloadActiveTeamView({ preserveForms: true });
-      restoreFormDrafts(drafts);
-      setStatus(
-        `Revision conflict. Reloaded revision ${conflict.current_revision ?? state.revision}; verify the deliverable and try again.`,
-        "warning",
-      );
-      return;
-    }
-    if (!response.ok) {
-      throw new Error(await responseText(response));
-    }
-    await applyMutationResultPayload(await response.json());
-    restoreFormDrafts(drafts);
-    setStatus(`Authorized acceptance-verification waiver for ${normalizedDeliverableId}.`, "ok");
-  } catch (error) {
-    setStatus(
-      error instanceof Error ? error.message : "Acceptance-verification waiver failed.",
       "error",
     );
   } finally {

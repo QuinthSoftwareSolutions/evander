@@ -7,36 +7,29 @@
   so later branch movement cannot invalidate an accepted input.
 - Recorded ancestry-reduced dependency-composition manifests on prepared contexts and submitted
   deliverables, including the exact base, source fingerprint, frontier, and composed commit/tree.
-- Added server-owned release-equivalent verification for new integration and candidate-correction
-  review submissions, evidence-backed review criteria, and an audited operator waiver limited to
-  partial or not-run verification.
 - Made Git-context creation idempotent and resource-scoped so unrelated Team revisions do not
   force a reclone, and expanded stable preparation generations to cover contribution provenance.
-- Exposed acceptance verification, immutable refs, and composition evidence in Team Admin UI and
-  documented the prospective policy-version boundary for historical accepted records.
-- Closed review-attachment and artifact-only verification gaps, retained criterion evidence across
-  command, Admin UI, and SQLite boundaries, and made acceptance waivers immutable.
+- Exposed immutable refs and composition evidence in Team Admin UI and documented the prospective
+  policy-version boundary for historical accepted records.
 - Scoped composition evidence to Git-backed inputs, retained its original root across dispatches,
   revalidated dependency generations transactionally, and materialized immutable review refs before
   dependency checkout with legacy branch fallback.
-- Replayed the complete verification command chain after interrupted verifier cleanup and reused
-  pre-acceptance waivers without duplicating release-package audit records.
 - Verified composed Git ancestry against the submitted candidate, rechecked manifest dependency
   scope against the current task graph, and normalized optional provenance during context replay.
-- Kept acceptance verification on immutable review identities and retained refs, and aligned
-  composition validation with preparation when task dependencies are cancelled.
+- Kept immutable review identities and retained refs, and aligned composition validation with
+  preparation when task dependencies are cancelled.
 - Required agents to publish local commits before deliverable submission, made provenance
   mismatches point directly to `git push-agent`, and taught the helper to preserve an already
   session-owned Team task branch instead of double-prefixing it.
-- Reused each server-owned immutable review snapshot as default criterion evidence, while
-  preserving explicit artifact and verification references, so the evidence gate no longer
-  turns missing clerical reference plumbing into a producer/reviewer blocker.
+- Retired hidden deliverable acceptance verification and verification waivers. Required review
+  criteria still need explicit pass/fail decisions and rejections still need explanations, but
+  criterion evidence, agent-reported checks, logs, and links are advisory.
+- Created each release package before its frozen candidate is verified, and gave every new
+  candidate a fresh visible server-executed verification run before release-cohort and human
+  review. Legacy waiver inputs and queued acceptance-verification effects remain safe no-ops for
+  compatibility without changing persisted historical audit data.
 - Merged concurrent managed PR-note histories before publication and retried racing note updates,
   so a stale worktree note ref cannot block an otherwise verified Team branch handoff.
-- Suspended reviewer dispatch while server acceptance verification is pending, woke the reviewer
-  exactly once when it completes or its stall blocker is resolved, and reused exact passed
-  server-owned acceptance evidence at the release gate when the commit, commands, image, and
-  resource limits are unchanged.
 
 ## 2026-08-23 - Single-Review Team Dispatches
 
