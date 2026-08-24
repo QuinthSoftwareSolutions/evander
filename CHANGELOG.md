@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-08-24 - Task-Scoped Team Directives
+
+- Included an owned task explicitly selected by an operator directive in that
+  directive's ordinary Team dispatch scope, even while normal task readiness is
+  invalid. This preserves narrow task authority for workflow repair without
+  granting authority from ordinary handoff or observation inbox items.
+
 ## 2026-08-23 - Durable Team Composition And Acceptance Gates
 
 - Retained every newly submitted Git candidate under an immutable Team deliverable ref before

@@ -14793,6 +14793,74 @@ def test_create_operator_directive_wakes_manager_inbox(tmp_path: Path) -> None:
     assert leases[0]["inbox"][0]["id"] == item.id
 
 
+def test_task_scoped_operator_directive_authorizes_owned_non_actionable_task(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _team_admin_service(repo).create_or_reprioritize_task(
+        task_id="repair-review-transition",
+        owner_agent_id="manager",
+        project_id="project",
+        priority=1,
+        title="Repair review transition",
+        description="Restore a failed review-to-acceptance transition.",
+        created_by_agent_id="manager",
+    )
+
+    def _park_task_for_reconciliation(state):
+        state.tasks["repair-review-transition"].state = TeamTaskState.WAITING_FOR_REVIEW
+        return state
+
+    repo.update(_park_task_for_reconciliation)
+    _state, item = _team_admin_service(repo).create_operator_directive(
+        team_id="team",
+        message="Repair the selected task without bypassing its release gate.",
+        project_id="project",
+        task_id="repair-review-transition",
+    )
+
+    _state, leases = _team_runtime_service(repo).lease_due_agents(
+        agent_id="manager",
+        respect_wake_interval=False,
+    )
+
+    assert len(leases) == 1
+    assert leases[0]["reason"] == "inbox"
+    assert leases[0]["dispatch"]["inbox_item_ids"] == [item.id]
+    assert leases[0]["dispatch"]["task_ids"] == ["repair-review-transition"]
+    assert leases[0]["dispatch"]["project_ids"] == ["project"]
+
+
+def test_task_scoped_operator_directive_does_not_authorize_another_owner_task(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _team_admin_service(repo).create_or_reprioritize_task(
+        task_id="lead-only-task",
+        owner_agent_id="lead",
+        project_id="project",
+        priority=1,
+        title="Lead-only task",
+        description="Must not be granted to the manager by an inbox reference.",
+        created_by_agent_id="manager",
+    )
+    _state, item = _team_admin_service(repo).create_operator_directive(
+        team_id="team",
+        message="Review the selected task status.",
+        project_id="project",
+        task_id="lead-only-task",
+    )
+
+    _state, leases = _team_runtime_service(repo).lease_due_agents(
+        agent_id="manager",
+        respect_wake_interval=False,
+    )
+
+    assert len(leases) == 1
+    assert leases[0]["dispatch"]["inbox_item_ids"] == [item.id]
+    assert leases[0]["dispatch"]["task_ids"] == []
+
+
 def test_create_operator_directive_rejects_non_manager_session(tmp_path: Path) -> None:
     repo = _seed_hierarchy(tmp_path)
 

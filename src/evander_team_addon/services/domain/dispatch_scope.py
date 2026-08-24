@@ -172,6 +172,11 @@ def build_agent_dispatch_scope(
                 agent=agent,
                 blockers=blocker_rows,
             ),
+            *_owned_task_scoped_operator_directive_tasks(
+                state,
+                agent=agent,
+                inbox_items=inbox_rows,
+            ),
         ]
     )
     review_rows = _unique_by_id(reviews)
@@ -210,6 +215,31 @@ def build_agent_dispatch_scope(
         project_ids=scoped_project_ids,
         managed_repo_ids=managed_repo_ids,
     )
+
+
+def _owned_task_scoped_operator_directive_tasks(
+    state: TeamState,
+    *,
+    agent: PersistentAgent,
+    inbox_items: Iterable[AgentInboxItem],
+) -> list[AgentTask]:
+    """Authorize the owner task explicitly selected by an operator directive.
+
+    Most task-bearing inbox items are observations or handoffs, and must not
+    grant a recipient authority over the referenced task. An operator directive
+    is the narrow exception: when it targets a task owned by its recipient, the
+    task must be included even if normal readiness is temporarily invalid (for
+    example, while repairing a failed review-to-acceptance transition).
+    """
+
+    tasks: list[AgentTask] = []
+    for item in inbox_items:
+        if item.item_type != TeamInboxItemType.OPERATOR_DIRECTIVE or item.task_id is None:
+            continue
+        task = state.tasks.get(item.task_id)
+        if task is not None and task.owner_agent_id == agent.id:
+            tasks.append(task)
+    return tasks
 
 
 def build_preparation_recovery_dispatch_scope(

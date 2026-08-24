@@ -40,6 +40,7 @@ from ..models import (
     TeamDispatchMcpCapabilityStatus,
     TeamDispatchStatus,
     TEAM_DISPATCH_PREPARATION_TIMEOUT_SECONDS,
+    TeamInboxItemType,
     TeamInboxPriority,
     TeamInboxItemState,
     TeamRecordState,
@@ -3113,6 +3114,14 @@ def _dispatch_staleness_errors(
         if dispatch_agent is not None
         else set()
     )
+    operator_directive_task_ids = {
+        item.task_id
+        for inbox_id in dispatch.inbox_item_ids
+        if (item := state.inbox.get(inbox_id)) is not None
+        and item.item_type == TeamInboxItemType.OPERATOR_DIRECTIVE
+        and item.recipient_agent_id == dispatch.agent_id
+        and item.task_id is not None
+    }
     for task_id in dispatch.task_ids:
         task = state.tasks.get(task_id)
         if task is None:
@@ -3124,6 +3133,7 @@ def _dispatch_staleness_errors(
         assessment = assessment_service.assess(task.id)
         if (
             task_id not in recovery_task_ids
+            and task_id not in operator_directive_task_ids
             and assessment.readiness != TaskAssessmentReadiness.ACTIONABLE
         ):
             errors.append(f"task {task.id} is {assessment.readiness.value}, not actionable")
