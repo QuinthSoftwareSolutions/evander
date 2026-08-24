@@ -1864,6 +1864,19 @@ def test_mark_release_published_success(tmp_path: Path) -> None:
     assert release.canonical_branch == "releases/project/release-1"
     assert release.published_at is not None
 
+    retry_result = _mark_release_provider(
+        tmp_path,
+        release_package_id="release-1",
+        success=True,
+        canonical_branch="releases/project/release-1",
+        published_commit_sha="cafef00d",
+    )
+
+    assert retry_result["success"] is True
+    assert retry_result["state"] == TeamRecordState.ACCEPTED.value
+    assert retry_result["ignored_terminal_state"] is True
+    assert retry_result["error"] is None
+
 
 def test_mark_release_published_revalidates_current_hierarchy_scope(
     tmp_path: Path,
@@ -1911,10 +1924,9 @@ def test_mark_release_published_ignores_conflicting_late_result_for_accepted_rel
     late_result = _mark_release_provider(
         tmp_path,
         release_package_id="release-1",
-        success=False,
+        success=True,
         canonical_branch="releases/project/other",
         published_commit_sha="different-candidate",
-        error="late failure",
     )
 
     assert first_result["state"] == TeamRecordState.ACCEPTED.value

@@ -29,9 +29,10 @@
   candidate a fresh visible server-executed verification run before release-cohort and human
   review. Legacy waiver inputs and queued acceptance-verification effects remain safe no-ops for
   compatibility without changing persisted historical audit data.
-- Published a generic `team.release.published` event from the generated Team runtime pack after a
-  successful canonical push, so operator-owned publication and PR workflows can remain in the
-  main pack and survive add-on runtime-pack refreshes.
+- Published a generic `team.release.published` event from the generated Team runtime pack only
+  after a successful canonical push is recorded without a conflicting immutable release result,
+  so operator-owned publication and PR workflows can remain in the main pack and survive add-on
+  runtime-pack refreshes.
 - Merged concurrent managed PR-note histories before publication and retried racing note updates,
   so a stale worktree note ref cannot block an otherwise verified Team branch handoff.
 

@@ -1017,6 +1017,10 @@ TEAM_RUNTIME_V1: dict[str, Any] = {
                                     "left": "${{team-mark-release-published.state}}",
                                 },
                                 {
+                                    "equals": None,
+                                    "left": "${{team-mark-release-published.error}}",
+                                },
+                                {
                                     "equals": "${{team-git-promotion-requested.payload.expected_commit_sha}}",
                                     "left": "${{team-push-canonical-branch.commit_sha}}",
                                 },

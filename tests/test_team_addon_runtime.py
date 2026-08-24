@@ -21,6 +21,7 @@ from evander.effects.providers.agent_prompt import AgentPromptEffectProvider
 from evander.effects.providers.base import EffectRuntimeContext
 from evander.effects.providers.lifecycle_hooks import AgentEnqueuePromptQueueDispatchHook
 from evander.execution import ExecutionStatusKind
+from evander.gate_runtime import filter_when_matches
 from evander.review_snapshots import team_deliverable_snapshot_ref
 from evander.model_usage.store import ModelUsageStore
 from evander.messaging.targets import (
@@ -31,6 +32,7 @@ from evander.messaging.discord_inbox_store import DiscordInboxStore
 from evander.published_artifacts import PublishedArtifactStore
 from evander.queries.providers.base import QueryRuntimeContext
 from evander.workflow.packs import WorkflowPack
+from evander.workflow.binding import resolve_workflow_bindings
 from evander.workflow.runtime_config import load_trigger_orchestrator_worker_global_config
 import evander_team_addon.outbox_publication as team_outbox_publication
 from evander_team_addon.chat_attachments import TeamChatAttachmentStorage
@@ -12548,6 +12550,7 @@ def test_team_runtime_pack_routes_git_promotion_kinds() -> None:
         "all": [
             {"equals": True, "left": "${{team-mark-release-published.success}}"},
             {"equals": "accepted", "left": "${{team-mark-release-published.state}}"},
+            {"equals": None, "left": "${{team-mark-release-published.error}}"},
             {
                 "equals": "${{team-git-promotion-requested.payload.expected_commit_sha}}",
                 "left": "${{team-push-canonical-branch.commit_sha}}",
@@ -12582,6 +12585,46 @@ def test_team_runtime_pack_routes_git_promotion_kinds() -> None:
         "team-gate-release-published-successfully",
         "team-emit-release-published",
     ) in edges
+
+
+@pytest.mark.parametrize(
+    ("mark_error", "expected_match"),
+    [
+        (None, True),
+        ("published release release-1 is immutable; late publication result was ignored", False),
+    ],
+)
+def test_team_release_published_gate_requires_non_conflicting_mark_result(
+    mark_error: str | None,
+    expected_match: bool,
+) -> None:
+    pack = _team_runtime_sections()
+    gate = next(
+        node
+        for node in pack["gates"]
+        if node["id"] == "team-gate-release-published-successfully"
+    )
+    resolved = resolve_workflow_bindings(
+        gate["when"],
+        {
+            "team-git-promotion-requested": {
+                "payload": {"expected_commit_sha": "candidate-sha"}
+            },
+            "team-push-canonical-branch": {"commit_sha": "candidate-sha"},
+            "team-mark-release-published": {
+                "success": True,
+                "state": "accepted",
+                "error": mark_error,
+            },
+        },
+        {
+            "team-git-promotion-requested": {"payload"},
+            "team-push-canonical-branch": {"commit_sha"},
+            "team-mark-release-published": {"success", "state", "error"},
+        },
+    ).resolved_config
+
+    assert filter_when_matches(resolved) is expected_match
 
 
 def test_team_consolidation_schema_advertises_failure_reason_code() -> None:
