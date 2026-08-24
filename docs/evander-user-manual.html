@@ -13097,7 +13097,13 @@ authorize a waiver only for <code>partial</code> or
 operator identity and time stored on the deliverable. A failed check
 cannot be waived; corrected reviewed content is required.
 Policy-version-2 reviews also require an evidence reference for every
-required passed criterion.</p>
+required passed criterion. Team supplies the server-owned immutable
+review snapshot as the default reference for otherwise-empty passed
+criteria and also includes published deliverable artifacts or persisted
+verification references when present. Reviewers may add narrower
+references, but they do not need to copy identifiers merely to satisfy
+the gate. An empty agent-reported verification evidence list is not by
+itself a blocker when the pinned candidate can be inspected.</p>
 <blockquote>
 <p><span class="sidebar-kicker">Technical sidebar</span>
 <strong>Submission and automatic review creation</strong></p>
@@ -13129,7 +13135,10 @@ the earlier decision remains evidence.</p>
 <h3 id="accepted">Accepted</h3>
 <p>For a profiled review, every required criterion must be present and
 passed. Optional criteria may be omitted. The accepted decision pins its
-reviewed evidence and findings.</p>
+reviewed evidence and findings. If a passed required criterion has no
+explicit evidence reference, Team attaches the immutable repository
+snapshot, published deliverable artifacts, or persisted verification
+references already known to the review.</p>
 <p>A deliverable becomes accepted only when:</p>
 <ul>
 <li>all current, non-retired attached reviews are accepted; and</li>

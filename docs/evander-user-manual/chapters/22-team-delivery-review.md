@@ -247,7 +247,11 @@ acceptance remains closed. An operator can authorize a waiver only for <code>par
 <code>not_run</code>, must supply a reason, and has their authenticated operator identity and time
 stored on the deliverable. A failed check cannot be waived; corrected reviewed content is
 required. Policy-version-2 reviews also require an evidence reference for every required passed
-criterion.
+criterion. Team supplies the server-owned immutable review snapshot as the default reference for
+otherwise-empty passed criteria and also includes published deliverable artifacts or persisted
+verification references when present. Reviewers may add narrower references, but they do not need
+to copy identifiers merely to satisfy the gate. An empty agent-reported verification evidence list
+is not by itself a blocker when the pinned candidate can be inspected.
 
 > <span class="sidebar-kicker">Technical sidebar</span> **Submission and automatic review creation**
 >
@@ -276,7 +280,7 @@ Only the assigned reviewer may decide a review. The decision is immutable.
 
 ### Accepted
 
-For a profiled review, every required criterion must be present and passed. Optional criteria may be omitted. The accepted decision pins its reviewed evidence and findings.
+For a profiled review, every required criterion must be present and passed. Optional criteria may be omitted. The accepted decision pins its reviewed evidence and findings. If a passed required criterion has no explicit evidence reference, Team attaches the immutable repository snapshot, published deliverable artifacts, or persisted verification references already known to the review.
 
 A deliverable becomes accepted only when:
 

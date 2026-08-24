@@ -334,7 +334,7 @@ from .services.worktree_cleanup_service import (
 
 logger = logging.getLogger(__name__)
 
-TEAM_AGENT_GUIDANCE_VERSION = 35
+TEAM_AGENT_GUIDANCE_VERSION = 36
 TEAM_AGENT_GUIDANCE_PATH = "/home/agent/AGENTS.md"
 TEAM_AGENT_GUIDANCE_SECTION_ID = "evander-team-addon"
 LEGACY_TEAM_AGENT_GUIDANCE_SECTION_IDS = ("truman-team-addon",)
@@ -7772,6 +7772,12 @@ def _assigned_deliverable_review_guidance(context: Mapping[str, Any]) -> str:
         "project_repos checkout at its pinned_ref and commit_sha. The checkout "
         "is detached deliberately; never substitute an existing work branch or "
         "a newer branch tip.\n"
+        "- A review repository_snapshot is server-owned durable evidence. Cite its "
+        "pinned_ref for required criteria supported by inspection of that snapshot; "
+        "the decision service also fills this reference for otherwise-empty passed "
+        "required criteria. Published artifact_refs and verification.evidence_refs "
+        "are added when present. An empty deliverable verification.evidence_refs list "
+        "is not by itself a blocker and does not require a replacement deliverable.\n"
         f"- {TEAM_DECIDE_REVIEW_TOOL} is granted for this review dispatch. "
         "Team tools can be deferred in Codex code mode even after the MCP capability "
         "receipt verifies the grant. Resolve each required callable from ALL_TOOLS by "
@@ -7808,7 +7814,8 @@ def _assigned_deliverable_review_guidance(context: Mapping[str, Any]) -> str:
         "missing, unexpected, or invalid contribution coverage.\n"
         f"- Only then decide with {TEAM_DECIDE_REVIEW_TOOL}. If required task, "
         "deliverable, artifact, or verification context cannot be inspected, decide "
-        "blocked and name the missing record IDs instead of guessing.\n\n"
+        "blocked and name the missing record IDs instead of guessing. Do not report a "
+        "decision-service rejection unless the tool actually returned one.\n\n"
     )
 
 

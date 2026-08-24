@@ -2354,7 +2354,11 @@ def _register_slice7_tools(
             "system, or unspecified. An accepted review must use finding_resolutions "
             "for every open carried finding owned by its profile or reviewer role; "
             "criterion entries accept evidence_refs, and required criteria on new "
-            "formal-review deliverables require at least one durable evidence reference; "
+            "formal-review deliverables require at least one durable evidence reference. "
+            "For passed required criteria without explicit references, the service uses "
+            "the server-owned pinned review snapshot, published deliverable artifacts, "
+            "or persisted verification references when available; an empty deliverable "
+            "verification evidence list is not by itself a blocker; "
             "acceptance cascades only when all current reviews are accepted and no "
             "finding remains open. Requires review_request_id, state, and request_id."
         ),

@@ -4845,6 +4845,10 @@ def test_build_prompt_instructs_assigned_reviewer_to_read_leaf_or_composite_spec
     assert "repeat this procedure recursively" in prompt
     assert "coverage alone is not proof of correct integration" in prompt
     assert "decide blocked and name the missing record IDs" in prompt
+    assert "repository_snapshot is server-owned durable evidence" in prompt
+    assert "empty deliverable verification.evidence_refs list" in prompt
+    assert "does not require a replacement deliverable" in prompt
+    assert "unless the tool actually returned one" in prompt
     assert TEAM_DECIDE_REVIEW_TOOL in prompt
     assert "matching its exact logical name" in prompt
     assert "tools[toolName](...)" in prompt

@@ -1380,7 +1380,13 @@ unavailable.
 
 Review acceptance is policy-enforced. When a review has a profile, every
 required criterion must be present and `passed`; optional criteria may be
-omitted. Rejected or blocked review findings are stored on the deliverable and
+omitted. New formal reviews retain the evidence requirement, but the reviewer
+does not need to copy server-owned IDs between records: an immutable review
+snapshot is attached automatically to otherwise-empty passed required criteria,
+along with published deliverable artifacts or verification evidence when
+available. An empty agent-reported verification evidence list is not by itself
+a blocker when the reviewer can inspect that pinned snapshot. Rejected or
+blocked review findings are stored on the deliverable and
 copied to its superseding rework deliverable. An accepted review can resolve
 only findings owned by the same review profile (or, for legacy unprofiled
 reviews, the same reviewer role), and a deliverable cannot become accepted

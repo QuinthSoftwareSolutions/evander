@@ -194,6 +194,7 @@ from .domain.review import (
     _reopen_accepted_deliverable_for_pending_review,
     _review_decision_policy_error,
     _review_profile_for_request,
+    _with_default_required_criterion_evidence,
     retire_terminal_review,
     withdraw_pending_review,
 )
@@ -4918,6 +4919,12 @@ class TeamAdminService:
             effective_criteria = (
                 criterion_results if criterion_results is not None else list(review.criteria)
             )
+            effective_criteria = _with_default_required_criterion_evidence(
+                state_model,
+                review=review,
+                decision_state=state,
+                criterion_results=effective_criteria,
+            )
             policy_error = _review_decision_policy_error(
                 state_model,
                 review=review,
@@ -4927,8 +4934,7 @@ class TeamAdminService:
             )
             if policy_error is not None:
                 raise ValueError(policy_error)
-            if criterion_results is not None:
-                review.criteria = criterion_results
+            review.criteria = effective_criteria
             _apply_finding_resolutions(
                 state_model,
                 review=review,

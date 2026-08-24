@@ -1597,19 +1597,24 @@ def _apply_review_decision(
         "finding_resolutions",
     )
     findings = _string_list(decision.get("findings"), "findings")
-    decision_error = _review_decision_policy_error(
+    criterion_results = _with_default_required_criterion_evidence(
         state,
         review=review,
         decision_state=decision_state,
         criterion_results=criterion_results or [],
+    )
+    decision_error = _review_decision_policy_error(
+        state,
+        review=review,
+        decision_state=decision_state,
+        criterion_results=criterion_results,
         finding_resolutions=finding_resolutions,
         findings=findings,
     )
     if decision_error is not None:
         result["errors"].append(decision_error)
         return None
-    if criterion_results is not None:
-        review.criteria = criterion_results
+    review.criteria = criterion_results
     review.block_kind = block_kind
     _apply_finding_resolutions(
         state,
@@ -1622,7 +1627,7 @@ def _apply_review_decision(
         review=review,
         decision_state=decision_state,
         findings=findings,
-        criterion_results=criterion_results or [],
+        criterion_results=criterion_results,
     )
     _cascade_review_decision(
         state,
@@ -1699,6 +1704,50 @@ def _criterion_definitions_for_review(
         else None
     )
     return profile.criteria if profile is not None else None
+
+
+def _with_default_required_criterion_evidence(
+    state: TeamState,
+    *,
+    review: ReviewRequest,
+    decision_state: TeamRecordState,
+    criterion_results: Sequence[ReviewCriterionResult],
+) -> list[ReviewCriterionResult]:
+    """Attach durable server-known evidence without making reviewers shuttle IDs.
+
+    Formal Git reviews already have a server-owned immutable repository snapshot.
+    Published deliverable artifacts and persisted verification evidence provide the
+    equivalent source for non-Git reviews. Preserve any more-specific references
+    supplied by the reviewer and only fill otherwise-empty required passed rows.
+    """
+
+    results = [result.model_copy(deep=True) for result in criterion_results]
+    if decision_state != TeamRecordState.ACCEPTED or review.deliverable_id is None:
+        return results
+    deliverable = state.deliverables.get(review.deliverable_id)
+    if deliverable is None or deliverable.acceptance_policy_version < 2:
+        return results
+    definitions = _criterion_definitions_for_review(state, review)
+    if definitions is None:
+        return results
+    default_refs: list[str] = []
+    if review.repository_snapshot is not None:
+        default_refs.append(review.repository_snapshot.pinned_ref)
+    default_refs.extend(deliverable.artifact_refs)
+    if deliverable.verification is not None:
+        default_refs.extend(deliverable.verification.evidence_refs)
+    default_refs = list(dict.fromkeys(default_refs))
+    if not default_refs:
+        return results
+    required_ids = {definition.id for definition in definitions if definition.required}
+    for result in results:
+        if (
+            result.criterion_id in required_ids
+            and result.state == "passed"
+            and not result.evidence_refs
+        ):
+            result.evidence_refs = list(default_refs)
+    return results
 
 
 def _review_decision_policy_error(

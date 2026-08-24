@@ -54,6 +54,7 @@ from evander_team_addon.models import (
     ReviewCriterionResult,
     ReviewRequest,
     ReviewProfileCriterion,
+    ReviewRepositorySnapshot,
     RolePermission,
     TeamDispatchActivity,
     TeamDispatchActivityStatus,
@@ -24564,6 +24565,82 @@ def test_team_decide_review_preserves_required_criterion_evidence(
     assert repo.read().review_requests["review-1"].criteria[0].evidence_refs == [
         "artifact-space:/review/focused-checks"
     ]
+
+
+def test_team_decide_review_defaults_required_evidence_to_pinned_snapshot(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _seed_task(repo, task_id="task")
+    _seed_deliverable(repo, deliverable_id="deliverable", task_id="task")
+    _seed_review_profile(repo)
+    _request_review_with_profile(repo)
+    pinned_ref = "refs/evander/team-reviews/review-1-pinned"
+
+    def _harden_formal_review(state: TeamState) -> TeamState:
+        state.deliverables["deliverable"].acceptance_policy_version = 2
+        state.review_requests["review-1"].repository_snapshot = ReviewRepositorySnapshot(
+            managed_repo_id=MANAGED_REPO_ID,
+            directory_path="root",
+            commit_sha="a" * 40,
+            pinned_ref=pinned_ref,
+            source_kind="deliverable_candidate",
+            source_ref="agents/session-backend/task",
+        )
+        return state
+
+    repo.update(_harden_formal_review)
+    _lease_agent_dispatch(repo, agent_id="worker", dispatch_id="dispatch-default-evidence")
+
+    state, result = _command_service(repo).decide_review_command(
+        session_id="session-worker",
+        review_request_id="review-1",
+        state="accepted",
+        criteria=[
+            {
+                "criterion_id": "tests",
+                "state": "passed",
+                "finding": "Pinned candidate inspection and focused checks passed.",
+            }
+        ],
+        request_id="request-default-evidence",
+    )
+
+    assert result["success"] is True
+    assert state.review_requests["review-1"].criteria[0].evidence_refs == [pinned_ref]
+    assert repo.read().review_requests["review-1"].criteria[0].evidence_refs == [pinned_ref]
+
+
+def test_team_decide_review_still_rejects_required_criterion_without_any_evidence(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _seed_task(repo, task_id="task")
+    _seed_deliverable(repo, deliverable_id="deliverable", task_id="task")
+    _seed_review_profile(repo)
+    _request_review_with_profile(repo)
+
+    def _enable_policy(state: TeamState) -> TeamState:
+        state.deliverables["deliverable"].acceptance_policy_version = 2
+        return state
+
+    repo.update(_enable_policy)
+    _lease_agent_dispatch(repo, agent_id="worker", dispatch_id="dispatch-missing-evidence")
+
+    state, result = _command_service(repo).decide_review_command(
+        session_id="session-worker",
+        review_request_id="review-1",
+        state="accepted",
+        criteria=[{"criterion_id": "tests", "state": "passed"}],
+        request_id="request-missing-evidence",
+    )
+
+    assert result["success"] is False
+    assert any(
+        "required criteria without evidence: tests" in error["message"]
+        for error in result["errors"]
+    ), result
+    assert state.review_requests["review-1"].state == TeamRecordState.PENDING
 
 
 def test_apply_agent_action_review_decision_unknown_criterion_errors(tmp_path: Path) -> None:
