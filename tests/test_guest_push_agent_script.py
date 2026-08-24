@@ -293,6 +293,76 @@ def test_push_agent_refuses_when_base_branch_has_unmerged_commits(
     assert refs == ""
 
 
+def test_push_agent_allows_server_prepared_base_when_current_base_advances(
+    tmp_path: Path,
+) -> None:
+    source, agent, dropbox = _create_issue_repos(tmp_path)
+    prepared_base = _git(agent, "rev-parse", "HEAD").stdout.strip()
+    _git(agent, "config", "evander.baseCommit", prepared_base)
+    agent_sha = _commit_agent_work(agent)
+
+    _git(source, "checkout", "main")
+    (source / "base.txt").write_text("unrelated base update\n", encoding="utf-8")
+    _git(source, "add", "base.txt")
+    _git(source, "commit", "-m", "Base work")
+    _git(source, "push", "origin", "main")
+
+    _git(agent, "push-agent")
+
+    pushed_ref = f"refs/heads/agents/{SESSION_ID}/{WORK_BRANCH}-vm-test"
+    assert _git_dir(dropbox, "rev-parse", pushed_ref).stdout.strip() == agent_sha
+
+
+def test_push_agent_allows_dependency_composed_prepared_base_off_current_base(
+    tmp_path: Path,
+) -> None:
+    _, agent, dropbox = _create_issue_repos(tmp_path)
+    _git(agent, "switch", "-c", "accepted-contribution")
+    (agent / "contribution.txt").write_text("accepted contribution\n", encoding="utf-8")
+    _git(agent, "add", "contribution.txt")
+    _git(agent, "commit", "-m", "Accepted contribution")
+    _git(agent, "switch", WORK_BRANCH)
+    _git(agent, "merge", "--no-ff", "accepted-contribution", "-m", "Compose accepted work")
+    prepared_base = _git(agent, "rev-parse", "HEAD").stdout.strip()
+    assert (
+        _git(agent, "merge-base", "--is-ancestor", prepared_base, "origin/main", check=False)
+        .returncode
+        != 0
+    )
+    _git(agent, "config", "evander.baseCommit", prepared_base)
+    agent_sha = _commit_agent_work(agent)
+
+    _git(agent, "push-agent")
+
+    pushed_ref = f"refs/heads/agents/{SESSION_ID}/{WORK_BRANCH}-vm-test"
+    assert _git_dir(dropbox, "rev-parse", pushed_ref).stdout.strip() == agent_sha
+
+
+def test_push_agent_refuses_head_that_does_not_retain_server_prepared_base(
+    tmp_path: Path,
+) -> None:
+    _, agent, dropbox = _create_issue_repos(tmp_path)
+    prepared_base = _git(agent, "rev-parse", "HEAD").stdout.strip()
+    _git(agent, "config", "evander.baseCommit", prepared_base)
+    _commit_agent_work(agent)
+    _git(agent, "checkout", "--orphan", "unrelated")
+    _git(agent, "config", "evander.destinationBranch", "unrelated")
+    _git(agent, "rm", "-rf", ".")
+    (agent / "unrelated.txt").write_text("unrelated\n", encoding="utf-8")
+    _git(agent, "add", "unrelated.txt")
+    _git(agent, "commit", "-m", "Unrelated root")
+
+    completed = _git(agent, "push-agent", check=False)
+
+    assert completed.returncode == 1
+    assert "does not contain configured prepared base commit" in completed.stderr
+    assert (
+        _git_dir(dropbox, "for-each-ref", "--format=%(refname)", "refs/heads/agents")
+        .stdout.strip()
+        == ""
+    )
+
+
 def test_sync_base_merges_configured_base_branch_into_work_branch(tmp_path: Path) -> None:
     source, agent, _ = _create_issue_repos(tmp_path)
     _commit_agent_work(agent)

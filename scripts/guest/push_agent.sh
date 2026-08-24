@@ -6,12 +6,13 @@ show_help() {
 Usage:
   push-agent
 
-Validate that the current branch contains the configured destination and base
-branches, refresh the branch-local PR summary note onto HEAD, and push the agent
-branch plus the configured PR notes ref to the agent remote. A current branch
-already owned by this session under agents/<session-id>/ is pushed without
-adding another session namespace. Concurrent PR-note updates are merged before
-publication and retried without overwriting remote notes.
+Validate that the current branch contains the configured destination and either
+the server-prepared immutable base commit or the current base branch, refresh
+the branch-local PR summary note onto HEAD, and push the agent branch plus the
+configured PR notes ref to the agent remote. A current branch already owned by
+this session under agents/<session-id>/ is pushed without adding another
+session namespace. Concurrent PR-note updates are merged before publication and
+retried without overwriting remote notes.
 EOF
 }
 
@@ -118,6 +119,10 @@ expected_destination_branch() {
 
 base_branch() {
   config_value evander.baseBranch
+}
+
+prepared_base_commit() {
+  config_value evander.baseCommit
 }
 
 issue_number_from_value() {
@@ -248,12 +253,26 @@ EOF
 verify_publish_preconditions() {
   local destination_branch="$1"
   local base_branch="$2"
+  local prepared_base_commit="$3"
 
   if [[ -n "${destination_branch}" ]]; then
     verify_remote_branch_contained "${destination_branch}" "destination branch" "1"
   fi
-  if [[ -n "${base_branch}" && "${base_branch}" != "${destination_branch}" ]]; then
+  if [[ -n "${prepared_base_commit}" ]]; then
+    verify_prepared_base_contained "${prepared_base_commit}"
+  elif [[ -n "${base_branch}" && "${base_branch}" != "${destination_branch}" ]]; then
     verify_remote_branch_contained "${base_branch}" "base branch" "0"
+  fi
+}
+
+verify_prepared_base_contained() {
+  local prepared_commit="$1"
+
+  if ! git rev-parse --verify "${prepared_commit}^{commit}" >/dev/null 2>&1; then
+    die "Configured prepared base commit ${prepared_commit} is not available locally."
+  fi
+  if ! git merge-base --is-ancestor "${prepared_commit}" HEAD >/dev/null 2>&1; then
+    die "Refusing to push: HEAD does not contain configured prepared base commit ${prepared_commit}."
   fi
 }
 
@@ -315,7 +334,7 @@ main() {
 
   require_repo
 
-  local session_id_value expected_issue_number suffix notes_ref repo_root branch destination_branch base_branch_value publish_ref
+  local session_id_value expected_issue_number suffix notes_ref repo_root branch destination_branch base_branch_value prepared_base_commit_value publish_ref
   session_id_value="$(session_id)"
   expected_issue_number="$(config_value evander.issueNumber)"
   verify_session_matches_issue "${session_id_value}" "${expected_issue_number}"
@@ -325,8 +344,9 @@ main() {
   publish_ref="$(agent_branch_ref "${session_id_value}" "${branch}" "${suffix}")"
   destination_branch="$(expected_destination_branch "${expected_issue_number}" "${session_id_value}")"
   base_branch_value="$(base_branch)"
+  prepared_base_commit_value="$(prepared_base_commit)"
 
-  verify_publish_preconditions "${destination_branch}" "${base_branch_value}"
+  verify_publish_preconditions "${destination_branch}" "${base_branch_value}" "${prepared_base_commit_value}"
 
   repo_root="$(git rev-parse --show-toplevel)"
   "${repo_root}/.evander/bin/agent-pr-note" ensure-head

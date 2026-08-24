@@ -10450,7 +10450,25 @@ def _prepare_project_repo_task_worktree(
             'git -C "$target" config --worktree evander.baseCommit '
             '"$configured_base"; fi'
         ),
+        'if [ -d .evander ]; then test ! -L .evander; fi',
+        'if [ -L "$target/.evander" ]; then exit 1; fi',
         'if [ -d .evander ] && [ ! -e "$target/.evander" ]; then cp -R .evander "$target/.evander"; fi',
+        'if [ -d .evander/bin ]; then',
+        '  test ! -L .evander',
+        '  test ! -L .evander/bin',
+        '  if [ -e "$target/.evander" ]; then test ! -L "$target/.evander"; fi',
+        '  install -d -m 0755 "$target/.evander"',
+        '  if [ -e "$target/.evander/bin" ]; then test ! -L "$target/.evander/bin"; fi',
+        '  install -d -m 0755 "$target/.evander/bin"',
+        '  for helper_name in agent-pr-note push-agent sync-base; do',
+        '    helper_source=".evander/bin/$helper_name"',
+        '    if [ -f "$helper_source" ] && [ ! -L "$helper_source" ]; then',
+        '      helper_temp="$(mktemp "$target/.evander/bin/.${helper_name}.XXXXXX")"',
+        '      install -m 0755 "$helper_source" "$helper_temp"',
+        '      mv -f "$helper_temp" "$target/.evander/bin/$helper_name"',
+        '    fi',
+        '  done',
+        'fi',
         (
             'base_commit="$(git -C "$target" config --worktree --get '
             'evander.baseCommit || git -C "$target" rev-parse HEAD)"'

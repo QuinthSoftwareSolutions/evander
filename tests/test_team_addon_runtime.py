@@ -7887,6 +7887,10 @@ def test_libvirt_dependency_git_composition_command_is_valid_shell() -> None:
     conflict_gate = 'if [ -n "$conflict_paths" ]; then'
     assert command.index(conflict_gate) < command.index('echo "EVANDER_DEPENDENCY_CONFLICT=1"')
     assert 'reset --hard "$frontier_commit"' in command
+    assert "for helper_name in agent-pr-note push-agent sync-base" in command
+    assert 'helper_temp="$(mktemp "$target/.evander/bin/.${helper_name}.XXXXXX")"' in command
+    assert 'mv -f "$helper_temp" "$target/.evander/bin/$helper_name"' in command
+    assert 'test ! -L "$target/.evander/bin"' in command
 
 
 def test_dependency_recovery_worktree_uses_pinned_commit_not_live_base_branch(

@@ -102,6 +102,8 @@ from .store import WorkerJobStore
 
 logger = logging.getLogger(__name__)
 
+_TASK_WORKTREE_HELPER_NAMES = ("agent-pr-note", "push-agent", "sync-base")
+
 
 class WorkerDependencyCompositionConflict(ValueError):
     """Structured, recoverable conflict while composing exact dependency commits."""
@@ -1627,11 +1629,22 @@ class WorkerDaemon:
             if local_branch.returncode == 0:
                 args.extend([str(target_dir), request.branch])
             else:
-                base_commit_sha = self._resolve_fresh_task_base_commit(
-                    repo_dir,
-                    request.base_ref,
-                    env=env,
-                )
+                if (
+                    request.expected_base_commit_sha is not None
+                    and request.expected_base_tree_hash is None
+                ):
+                    base_commit_sha = self._resolve_authoritative_task_base_commit(
+                        repo_dir,
+                        request.base_ref,
+                        expected_base_commit_sha=request.expected_base_commit_sha,
+                        env=env,
+                    )
+                else:
+                    base_commit_sha = self._resolve_fresh_task_base_commit(
+                        repo_dir,
+                        request.base_ref,
+                        env=env,
+                    )
                 self._verify_task_base_provenance(
                     repo_dir=repo_dir,
                     base_ref=request.base_ref,
@@ -1887,10 +1900,10 @@ class WorkerDaemon:
                 capture_output=True,
                 text=True,
             )
-        helper_source = repo_dir / ".evander"
-        helper_target = target_dir / ".evander"
-        if helper_source.is_dir() and not helper_target.exists():
-            shutil.copytree(helper_source, helper_target)
+        self._reconcile_task_worktree_helpers(
+            helper_source=repo_dir / ".evander",
+            helper_target=target_dir / ".evander",
+        )
         commit_sha = self._git_commit_sha(target_dir, paths.agent_home)
         if base_commit_sha is not None and commit_sha.casefold() == base_commit_sha.casefold():
             self._publish_initial_task_branch(
@@ -1910,6 +1923,55 @@ class WorkerDaemon:
             composed_tree_hash=composed_tree_hash,
             created=created,
         )
+
+    @classmethod
+    def _reconcile_task_worktree_helpers(
+        cls,
+        *,
+        helper_source: Path,
+        helper_target: Path,
+    ) -> None:
+        if not cls._managed_directory_exists_no_follow(
+            helper_source,
+            label="task worktree helper source directory",
+        ):
+            return
+        source_bin = helper_source / "bin"
+        if not cls._managed_directory_exists_no_follow(
+            source_bin,
+            label="task worktree helper source bin directory",
+        ):
+            return
+
+        cls._ensure_managed_directory_no_follow(
+            helper_target,
+            label="task worktree helper directory",
+        )
+        target_bin = helper_target / "bin"
+        cls._ensure_managed_directory_no_follow(
+            target_bin,
+            label="task worktree helper bin directory",
+        )
+        for helper_name in _TASK_WORKTREE_HELPER_NAMES:
+            source_path = source_bin / helper_name
+            if not cls._managed_regular_file_exists_no_follow(
+                source_path,
+                label=f"task worktree {helper_name} source",
+            ):
+                continue
+            source_fd = cls._open_regular_file_no_follow(
+                source_path,
+                label=f"task worktree {helper_name} source",
+                flags=os.O_RDONLY,
+            )
+            with os.fdopen(source_fd, "rb") as source_handle:
+                content = source_handle.read()
+            cls._write_managed_bytes_file_no_follow(
+                target_bin / helper_name,
+                content,
+                mode=0o755,
+                label=f"task worktree {helper_name}",
+            )
 
     @staticmethod
     def _publish_initial_task_branch(
@@ -3701,6 +3763,43 @@ class WorkerDaemon:
             raise ValueError(f"task worktree base ref does not resolve: {base_ref!r}")
         return normalized_local_commit
 
+    @classmethod
+    def _resolve_authoritative_task_base_commit(
+        cls,
+        repo_dir: Path,
+        base_ref: str,
+        *,
+        expected_base_commit_sha: str,
+        env: dict[str, str],
+    ) -> str:
+        """Resolve an immutable task pin while proving it belongs to the named base."""
+
+        current_base_tip = cls._resolve_fresh_task_base_commit(
+            repo_dir,
+            base_ref,
+            env=env,
+        )
+        pinned_is_ancestor = subprocess.run(
+            [
+                "git",
+                "merge-base",
+                "--is-ancestor",
+                expected_base_commit_sha,
+                current_base_tip,
+            ],
+            cwd=repo_dir,
+            env=env,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        if pinned_is_ancestor.returncode != 0:
+            raise ValueError(
+                f"authoritative Team base commit {expected_base_commit_sha} is not "
+                f"reachable from base ref {base_ref!r}"
+            )
+        return expected_base_commit_sha
+
     @staticmethod
     def _verify_task_base_provenance(
         *,
@@ -3892,6 +3991,34 @@ class WorkerDaemon:
         if not stat.S_ISREG(stat_result.st_mode):
             raise ValueError(f"{label} must be a regular file")
         return True
+
+    @staticmethod
+    def _managed_directory_exists_no_follow(
+        path: Path,
+        *,
+        label: str,
+    ) -> bool:
+        try:
+            stat_result = path.lstat()
+        except FileNotFoundError:
+            return False
+        if stat.S_ISLNK(stat_result.st_mode):
+            raise ValueError(f"{label} must not be a symlink")
+        if not stat.S_ISDIR(stat_result.st_mode):
+            raise ValueError(f"{label} must be a directory")
+        return True
+
+    @classmethod
+    def _ensure_managed_directory_no_follow(
+        cls,
+        path: Path,
+        *,
+        label: str,
+    ) -> None:
+        if not cls._managed_directory_exists_no_follow(path, label=label):
+            path.mkdir(mode=0o755)
+        if not cls._managed_directory_exists_no_follow(path, label=label):
+            raise ValueError(f"{label} must be a directory")
 
     @classmethod
     def _ensure_managed_ssh_dir(cls, ssh_dir: Path) -> None:

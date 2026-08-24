@@ -1,5 +1,10 @@
 # Changelog
 
+## 2026-08-24 - Prepared Git Helper Reconciliation
+
+- Pinned guest pushes to their immutable prepared base and atomically refreshed generated Git
+  helpers whenever task worktrees are prepared, preserving other worktree-local control state.
+
 ## 2026-08-24 - Correction Dependency Composition
 
 - Composed newly accepted correction-task Git inputs on top of the rejected candidate and

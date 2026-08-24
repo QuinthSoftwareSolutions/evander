@@ -1342,6 +1342,106 @@ def test_worker_prepares_and_reuses_task_scoped_worktree(tmp_path: Path) -> None
     )
 
 
+def test_worker_reconciles_task_worktree_helpers_without_replacing_other_state(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "source"
+    source.mkdir()
+    subprocess.run(["git", "init", "-q", "-b", "main"], cwd=source, check=True)
+    subprocess.run(["git", "config", "user.email", "test@example.invalid"], cwd=source, check=True)
+    subprocess.run(["git", "config", "user.name", "Worker Test"], cwd=source, check=True)
+    (source / "README.md").write_text("base\n", encoding="utf-8")
+    subprocess.run(["git", "add", "README.md"], cwd=source, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "base"], cwd=source, check=True)
+    daemon = WorkerDaemon(
+        runtime_dir=tmp_path / "runtime",
+        worker_root=tmp_path / "worker-root",
+        container_runtime=FakeContainerRuntime(),
+        token="test-token",
+        allowed_git_source_prefixes=[str(tmp_path)],
+    )
+    daemon.clone_repo(
+        "session-1",
+        WorkerRepoCloneRequest(repo_source=str(source), repo_name="repo"),
+    )
+    paths = WorkerSessionPaths.resolve(daemon.worker_root, "session-1")
+    helper_source = paths.repo_root / "repo" / ".evander" / "bin"
+    helper_source.mkdir(parents=True)
+    helper_names = ("agent-pr-note", "push-agent", "sync-base")
+    for helper_name in helper_names:
+        (helper_source / helper_name).write_text(f"{helper_name} v1\n", encoding="utf-8")
+
+    request = WorkerTaskWorktreeRequest(
+        repo_name="repo",
+        worktree_name="task-helper-1234",
+        branch="agents/session-1/tasks/task-helper-1234",
+        base_ref="main",
+    )
+    daemon.prepare_task_worktree("session-1", request)
+    helper_target = (
+        paths.agent_home / "worktrees" / "repo" / request.worktree_name / ".evander"
+    )
+    local_state = helper_target / "local-state.json"
+    local_state.write_text('{"keep":true}\n', encoding="utf-8")
+    (helper_target / "bin" / "push-agent").write_text("stale\n", encoding="utf-8")
+    for helper_name in helper_names:
+        (helper_source / helper_name).write_text(f"{helper_name} v2\n", encoding="utf-8")
+
+    reused = daemon.prepare_task_worktree("session-1", request)
+
+    assert reused.created is False
+    assert local_state.read_text(encoding="utf-8") == '{"keep":true}\n'
+    for helper_name in helper_names:
+        helper_path = helper_target / "bin" / helper_name
+        assert helper_path.read_text(encoding="utf-8") == f"{helper_name} v2\n"
+        assert stat.S_IMODE(helper_path.stat().st_mode) == 0o755
+
+
+def test_worker_refuses_symlinked_task_worktree_helper_directory(tmp_path: Path) -> None:
+    source = tmp_path / "source"
+    source.mkdir()
+    subprocess.run(["git", "init", "-q", "-b", "main"], cwd=source, check=True)
+    subprocess.run(["git", "config", "user.email", "test@example.invalid"], cwd=source, check=True)
+    subprocess.run(["git", "config", "user.name", "Worker Test"], cwd=source, check=True)
+    (source / "README.md").write_text("base\n", encoding="utf-8")
+    subprocess.run(["git", "add", "README.md"], cwd=source, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "base"], cwd=source, check=True)
+    daemon = WorkerDaemon(
+        runtime_dir=tmp_path / "runtime",
+        worker_root=tmp_path / "worker-root",
+        container_runtime=FakeContainerRuntime(),
+        token="test-token",
+        allowed_git_source_prefixes=[str(tmp_path)],
+    )
+    daemon.clone_repo(
+        "session-1",
+        WorkerRepoCloneRequest(repo_source=str(source), repo_name="repo"),
+    )
+    paths = WorkerSessionPaths.resolve(daemon.worker_root, "session-1")
+    helper_source = paths.repo_root / "repo" / ".evander" / "bin"
+    helper_source.mkdir(parents=True)
+    (helper_source / "push-agent").write_text("current\n", encoding="utf-8")
+    request = WorkerTaskWorktreeRequest(
+        repo_name="repo",
+        worktree_name="task-helper-link-1234",
+        branch="agents/session-1/tasks/task-helper-link-1234",
+        base_ref="main",
+    )
+    daemon.prepare_task_worktree("session-1", request)
+    helper_target = (
+        paths.agent_home / "worktrees" / "repo" / request.worktree_name / ".evander"
+    )
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    shutil.rmtree(helper_target / "bin")
+    (helper_target / "bin").symlink_to(outside, target_is_directory=True)
+
+    with pytest.raises(ValueError, match="helper bin directory must not be a symlink"):
+        daemon.prepare_task_worktree("session-1", request)
+
+    assert list(outside.iterdir()) == []
+
+
 def test_worker_composes_exact_dependency_git_source_before_task_work(
     tmp_path: Path,
 ) -> None:
@@ -2517,6 +2617,81 @@ def test_worker_pins_new_task_worktree_to_fresh_remote_base_without_moving_exist
 
     assert detached.commit_sha == initial_commit
     assert detached.base_commit_sha == initial_commit
+
+
+def test_worker_uses_authoritative_task_pin_after_base_branch_advances(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "source-pinned"
+    source.mkdir()
+    subprocess.run(["git", "init", "-q", "-b", "main"], cwd=source, check=True)
+    subprocess.run(
+        ["git", "config", "user.email", "test@example.invalid"],
+        cwd=source,
+        check=True,
+    )
+    subprocess.run(
+        ["git", "config", "user.name", "Worker Test"],
+        cwd=source,
+        check=True,
+    )
+    (source / "README.md").write_text("prepared base\n", encoding="utf-8")
+    subprocess.run(["git", "add", "README.md"], cwd=source, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "prepared base"], cwd=source, check=True)
+    prepared_base = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=source,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    daemon = WorkerDaemon(
+        runtime_dir=tmp_path / "runtime",
+        worker_root=tmp_path / "worker-root",
+        container_runtime=FakeContainerRuntime(),
+        token="test-token",
+        allowed_git_source_prefixes=[str(tmp_path)],
+    )
+    daemon.clone_repo(
+        "session-1",
+        WorkerRepoCloneRequest(repo_source=str(source), repo_name="repo"),
+    )
+    (source / "later.txt").write_text("unrelated later work\n", encoding="utf-8")
+    subprocess.run(["git", "add", "later.txt"], cwd=source, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "later work"], cwd=source, check=True)
+    advanced_base = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=source,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+
+    prepared = daemon.prepare_task_worktree(
+        "session-1",
+        WorkerTaskWorktreeRequest(
+            repo_name="repo",
+            worktree_name="task-authoritative-pin",
+            branch="agents/session-1/tasks/task-authoritative-pin",
+            base_ref="main",
+            expected_base_commit_sha=prepared_base,
+        ),
+    )
+
+    assert prepared.created is True
+    assert prepared.base_commit_sha == prepared_base
+    assert prepared.commit_sha == prepared_base
+    checkout = WorkerSessionPaths.resolve(
+        daemon.worker_root,
+        "session-1",
+    ).repo_root / "repo"
+    assert subprocess.run(
+        ["git", "rev-parse", "origin/main"],
+        cwd=checkout,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip() == advanced_base
 
 
 def test_worker_fetches_new_release_branch_missing_from_persistent_clone(
