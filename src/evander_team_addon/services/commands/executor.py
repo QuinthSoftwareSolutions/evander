@@ -88,12 +88,14 @@ class TeamCommandExecutor:
         *,
         session_lookup: Any | None = None,
         git_candidate_commit_resolver: GitCandidateCommitResolver | None = None,
+        git_candidate_snapshot_pinner: Callable[..., Mapping[str, Any]] | None = None,
         git_default_branch_resolver: Callable[..., object] | None = None,
         dependency_recovery_commit_verifier: (DependencyRecoveryCommitVerifier | None) = None,
     ) -> None:
         self._repository = repository
         self._session_lookup = session_lookup
         self._git_candidate_commit_resolver = git_candidate_commit_resolver
+        self._git_candidate_snapshot_pinner = git_candidate_snapshot_pinner
         self._git_default_branch_resolver = git_default_branch_resolver
         self._dependency_recovery_commit_verifier = dependency_recovery_commit_verifier
 
@@ -104,6 +106,12 @@ class TeamCommandExecutor:
     @property
     def git_candidate_commit_resolver(self) -> GitCandidateCommitResolver | None:
         return self._git_candidate_commit_resolver
+
+    @property
+    def git_candidate_snapshot_pinner(
+        self,
+    ) -> Callable[..., Mapping[str, Any]] | None:
+        return self._git_candidate_snapshot_pinner
 
     @property
     def git_default_branch_resolver(self) -> Callable[..., object] | None:

@@ -24,6 +24,7 @@ from evander.effects.providers.base import EffectRuntimeContext
 from evander.effects.providers.agent_exec import AgentExecEffectProvider
 from evander.events.provider_models import AgentExecEffectDefinition
 from evander.queries.providers.base import QueryRuntimeContext
+from evander.review_snapshots import team_deliverable_snapshot_binding_id
 
 from .mcp_context import (
     TeamMcpContextResolver,
@@ -423,6 +424,10 @@ def register_mcp_tools(server: FastMCP, context: AddonContext) -> tuple[str, ...
     deliverable_submission_commands = TeamDeliverableSubmissionCommandService(
         repo,
         git_candidate_commit_resolver=_team_mcp_git_candidate_commit_resolver(
+            context,
+            managed_git=managed_git,
+        ),
+        git_candidate_snapshot_pinner=_team_mcp_git_candidate_snapshot_pinner(
             context,
             managed_git=managed_git,
         ),
@@ -2826,6 +2831,38 @@ def _team_mcp_git_candidate_commit_resolver(
         return commit_sha
 
     return _resolve
+
+
+def _team_mcp_git_candidate_snapshot_pinner(
+    context: AddonContext,
+    *,
+    managed_git=None,
+):
+    if managed_git is None:
+        managed_git = _team_mcp_managed_git_admin(context)
+
+    def _pin(
+        *,
+        managed_repo_id: str,
+        directory_path: str,
+        deliverable_id: str,
+        commit_sha: str,
+        source_ref: str | None,
+        expected_pinned_ref: str,
+    ) -> Mapping[str, Any]:
+        pin_snapshot = getattr(managed_git, "pin_team_review_snapshot", None)
+        if not callable(pin_snapshot):
+            raise RuntimeError("managed Git candidate snapshot pinning is unavailable")
+        return pin_snapshot(
+            managed_repo_id,
+            directory_path,
+            review_id=team_deliverable_snapshot_binding_id(deliverable_id),
+            commit_sha=commit_sha,
+            source_ref=source_ref,
+            pinned_ref=expected_pinned_ref,
+        )
+
+    return _pin
 
 
 def _team_mcp_git_default_branch_resolver(

@@ -21,6 +21,7 @@ from evander.effects.providers.agent_prompt import AgentPromptEffectProvider
 from evander.effects.providers.base import EffectRuntimeContext
 from evander.effects.providers.lifecycle_hooks import AgentEnqueuePromptQueueDispatchHook
 from evander.execution import ExecutionStatusKind
+from evander.review_snapshots import team_deliverable_snapshot_ref
 from evander.model_usage.store import ModelUsageStore
 from evander.messaging.targets import (
     SqliteCommunicationTargetsRepository,
@@ -7617,7 +7618,7 @@ def test_integration_context_derives_required_contribution_from_immutable_review
 ) -> None:
     repo = _seed_team(tmp_path)
     accepted_commit = "a" * 40
-    pinned_ref = "refs/evander/team-reviews/review-contribution"
+    pinned_ref = team_deliverable_snapshot_ref("deliverable-contribution")
 
     def _seed_contribution(state: TeamState) -> TeamState:
         state.projects["project"].git = ProjectGitConfig(
@@ -12540,6 +12541,46 @@ def test_team_runtime_pack_routes_git_promotion_kinds() -> None:
     assert (
         "team-record-canonical-promotion",
         "team-mark-release-published",
+    ) in edges
+    release_published_gate = gates["team-gate-release-published-successfully"]
+    assert release_published_gate["type"] == "gate:filter"
+    assert release_published_gate["when"] == {
+        "all": [
+            {"equals": True, "left": "${{team-mark-release-published.success}}"},
+            {"equals": "accepted", "left": "${{team-mark-release-published.state}}"},
+            {
+                "equals": "${{team-git-promotion-requested.payload.expected_commit_sha}}",
+                "left": "${{team-push-canonical-branch.commit_sha}}",
+            },
+        ]
+    }
+    emitted = effects["team-emit-release-published"]
+    assert emitted["type"] == "effect:event:emit"
+    assert emitted["event_type"] == "team.release.published"
+    assert emitted["correlation_key"] == (
+        "${{team-git-promotion-requested.payload.release_package_id}}"
+    )
+    assert emitted["payload"] == {
+        "base_commit_sha": "${{team-git-promotion-requested.payload.base_commit_sha}}",
+        "canonical_branch": "${{team-git-promotion-requested.payload.target_branch}}",
+        "directory_path": "${{team-git-promotion-requested.payload.directory_path ?? \"root\"}}",
+        "expected_commit_sha": "${{team-git-promotion-requested.payload.expected_commit_sha}}",
+        "managed_repo_id": "${{team-git-promotion-requested.payload.managed_repo_id}}",
+        "project_id": "${{team-git-promotion-requested.payload.project_id}}",
+        "publication_revision": "${{team-mark-release-published.revision}}",
+        "published_commit_sha": "${{team-push-canonical-branch.commit_sha}}",
+        "release_package_id": "${{team-git-promotion-requested.payload.release_package_id}}",
+        "source_ref": "${{team-git-promotion-requested.payload.source_branch}}",
+        "state": "${{team-mark-release-published.state}}",
+        "success": "${{team-mark-release-published.success}}",
+    }
+    assert (
+        "team-mark-release-published",
+        "team-gate-release-published-successfully",
+    ) in edges
+    assert (
+        "team-gate-release-published-successfully",
+        "team-emit-release-published",
     ) in edges
 
 

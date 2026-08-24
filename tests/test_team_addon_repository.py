@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 from pydantic import ValidationError
+from evander.review_snapshots import team_deliverable_snapshot_ref
 
 import evander_team_addon.services.domain.common as team_domain_common
 import evander_team_addon.services.admin_service as admin_service_module
@@ -2603,6 +2604,85 @@ def test_submit_deliverable_command_publishes_artifacts_once_and_replays(
     assert wake_events[0]["payload"]["agent_id"] == "lead"
     outbox_records = repo.list_outbox_records(intent_type=AGENT_WAKE_REQUESTED_EVENT_TYPE)
     assert [record.id for record in outbox_records] == first["outbox_record_ids"]
+
+
+def test_direct_git_submission_pins_candidate_before_superior_acceptance(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    commit_sha = "a" * 40
+
+    def _configure(state: TeamState) -> TeamState:
+        state.projects["project"].git = ProjectGitConfig(
+            managed_repo_id="mr_0123456789abcdefabcd",
+            base_branch="main",
+        )
+        return state
+
+    repo.update(_configure)
+    _seed_task(repo, task_id="task")
+    _lease_agent_dispatch(repo, agent_id="backend", dispatch_id="dispatch-submit-pin")
+    _seed_git_work_context(
+        repo,
+        dispatch_id="dispatch-submit-pin",
+        commit_sha=commit_sha,
+    )
+    pin_calls: list[dict[str, object]] = []
+
+    def _pin(**kwargs: object) -> dict[str, str]:
+        pin_calls.append(dict(kwargs))
+        return {
+            "pin_ref": str(kwargs["expected_pinned_ref"]),
+            "commit_sha": str(kwargs["commit_sha"]),
+        }
+
+    service = TeamDeliverableSubmissionCommandService(
+        repo,
+        git_candidate_commit_resolver=lambda **_kwargs: commit_sha,
+        git_candidate_snapshot_pinner=_pin,
+    )
+    service._session_lookup = _root_session_lookup
+    state, submitted = service.submit_deliverable_command(
+        session_id="session-backend",
+        id="deliverable-direct-pinned",
+        task_id="task",
+        summary="Ready for direct acceptance.",
+        branch_context_id="ctx-task",
+        git_refs={
+            "agent_branch": "agents/session-backend/task",
+            "commit_sha": commit_sha,
+        },
+        request_id="request-submit-direct-pinned",
+    )
+
+    expected_ref = team_deliverable_snapshot_ref("deliverable-direct-pinned")
+    assert submitted["success"] is True
+    assert state.deliverables["deliverable-direct-pinned"].git_refs.accepted_pinned_ref == (
+        expected_ref
+    )
+    assert pin_calls == [
+        {
+            "managed_repo_id": "mr_0123456789abcdefabcd",
+            "directory_path": "root",
+            "deliverable_id": "deliverable-direct-pinned",
+            "commit_sha": commit_sha,
+            "source_ref": "agents/session-backend/task",
+            "expected_pinned_ref": expected_ref,
+        }
+    ]
+
+    _lease_agent_dispatch(repo, agent_id="lead", dispatch_id="dispatch-accept-pinned")
+    state, accepted = service.decide_deliverable_command(
+        session_id="session-lead",
+        deliverable_id="deliverable-direct-pinned",
+        decision="accepted",
+        reason="The pinned candidate is acceptable.",
+        request_id="request-accept-direct-pinned",
+    )
+    assert accepted["success"] is True
+    assert state.deliverables["deliverable-direct-pinned"].git_refs.accepted_pinned_ref == (
+        expected_ref
+    )
 
 
 def test_superior_accepts_direct_deliverable_and_automatically_handles_notice(

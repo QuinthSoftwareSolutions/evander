@@ -54,6 +54,7 @@ def _deliverable_git_refs_from_payload(value: object) -> DeliverableGitRefs:
         agent_branch=agent_branch,
         commit_sha=_optional_text(payload.get("commit_sha")),
         submitted_commit_sha=_optional_text(payload.get("submitted_commit_sha")),
+        accepted_pinned_ref=_optional_text(payload.get("accepted_pinned_ref")),
     )
 
 

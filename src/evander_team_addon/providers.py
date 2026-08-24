@@ -68,6 +68,10 @@ from evander.model_usage.runtime import register_model_usage_correlation_context
 from evander.messaging.targets import load_communication_targets_config
 from evander.messaging.discord_inbox_store import DiscordInboxStore
 from evander.repositories.mcp_transport_bindings import JsonMcpTransportBindingRepository
+from evander.review_snapshots import (
+    team_deliverable_snapshot_binding_id,
+    team_deliverable_snapshot_ref,
+)
 from evander.orchestration.effect_extensions import (
     list_vm_summaries_for_agent_reconciliation,
 )
@@ -9671,12 +9675,17 @@ def _accepted_deliverable_pinned_ref(
         (row for row in snapshot_rows if row[1].pinned_ref == selected_ref),
         None,
     )
-    review_id = (
-        selected_row[0]
-        if selected_row is not None
-        else selected_ref.rsplit("/", 1)[-1]
-    )
-    source_ref = selected_row[1].source_ref if selected_row is not None else None
+    if selected_row is not None:
+        review_id = selected_row[0]
+        source_ref = selected_row[1].source_ref
+    elif selected_ref == team_deliverable_snapshot_ref(deliverable_id):
+        review_id = team_deliverable_snapshot_binding_id(deliverable_id)
+        source_ref = _optional_text(deliverable.git_refs.agent_branch)
+    else:
+        raise RuntimeError(
+            f"accepted Git deliverable {deliverable_id} records unrecognized "
+            f"immutable ref {selected_ref!r}"
+        )
     managed_git = getattr(getattr(context, "admin_service", None), "managed_git_admin", None)
     resolve_review_commit = getattr(managed_git, "resolve_team_review_commit", None)
     pin_snapshot = getattr(managed_git, "pin_team_review_snapshot", None)

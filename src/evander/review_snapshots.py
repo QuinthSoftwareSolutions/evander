@@ -24,4 +24,23 @@ def team_review_snapshot_ref(review_id: str) -> str:
     return f"refs/evander/team-reviews/{encoded}"
 
 
-__all__ = ["team_review_snapshot_ref"]
+def team_deliverable_snapshot_binding_id(deliverable_id: str) -> str:
+    """Return the retained-snapshot binding used for one submitted deliverable."""
+
+    normalized = str(deliverable_id or "").strip()
+    if not normalized:
+        raise ValueError("deliverable_id is required")
+    return f"deliverable:{normalized}"
+
+
+def team_deliverable_snapshot_ref(deliverable_id: str) -> str:
+    """Return the immutable ref created as soon as a Git deliverable is submitted."""
+
+    return team_review_snapshot_ref(team_deliverable_snapshot_binding_id(deliverable_id))
+
+
+__all__ = [
+    "team_deliverable_snapshot_binding_id",
+    "team_deliverable_snapshot_ref",
+    "team_review_snapshot_ref",
+]

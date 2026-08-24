@@ -2,9 +2,10 @@
 
 ## 2026-08-23 - Durable Team Composition And Acceptance Gates
 
-- Retained newly accepted reviewed Git commits under immutable Team review refs and derived both
-  explicit task dependencies and required deliverable contributions from accepted provenance,
-  so later branch movement cannot invalidate an accepted input.
+- Retained every newly submitted Git candidate under an immutable Team deliverable ref before
+  either direct or formal handoff, retained formal review snapshots separately, and derived both
+  explicit task dependencies and required contributions from accepted provenance so later branch
+  movement cannot invalidate an accepted input.
 - Recorded ancestry-reduced dependency-composition manifests on prepared contexts and submitted
   deliverables, including the exact base, source fingerprint, frontier, and composed commit/tree.
 - Made Git-context creation idempotent and resource-scoped so unrelated Team revisions do not
@@ -28,6 +29,9 @@
   candidate a fresh visible server-executed verification run before release-cohort and human
   review. Legacy waiver inputs and queued acceptance-verification effects remain safe no-ops for
   compatibility without changing persisted historical audit data.
+- Published a generic `team.release.published` event from the generated Team runtime pack after a
+  successful canonical push, so operator-owned publication and PR workflows can remain in the
+  main pack and survive add-on runtime-pack refreshes.
 - Merged concurrent managed PR-note histories before publication and retried racing note updates,
   so a stale worktree note ref cannot block an otherwise verified Team branch handoff.
 

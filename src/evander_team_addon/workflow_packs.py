@@ -73,6 +73,8 @@ TEAM_RUNTIME_V1: dict[str, Any] = {
                 "team-push-canonical-branch",
                 "team-record-canonical-promotion",
                 "team-mark-release-published",
+                "team-gate-release-published-successfully",
+                "team-emit-release-published",
             ],
         }
     ],
@@ -998,6 +1000,56 @@ TEAM_RUNTIME_V1: dict[str, Any] = {
                     },
                 }
             },
+            {
+                "node": {
+                    "id": "team-gate-release-published-successfully",
+                    "display_name": "Successfully published releases only",
+                    "type": "gate:filter",
+                    "config": {
+                        "when": {
+                            "all": [
+                                {
+                                    "equals": True,
+                                    "left": "${{team-mark-release-published.success}}",
+                                },
+                                {
+                                    "equals": "accepted",
+                                    "left": "${{team-mark-release-published.state}}",
+                                },
+                                {
+                                    "equals": "${{team-git-promotion-requested.payload.expected_commit_sha}}",
+                                    "left": "${{team-push-canonical-branch.commit_sha}}",
+                                },
+                            ]
+                        }
+                    },
+                }
+            },
+            {
+                "node": {
+                    "id": "team-emit-release-published",
+                    "display_name": "Publish release published event",
+                    "type": "effect:event:emit",
+                    "config": {
+                        "event_type": "team.release.published",
+                        "correlation_key": "${{team-git-promotion-requested.payload.release_package_id}}",
+                        "payload": {
+                            "base_commit_sha": "${{team-git-promotion-requested.payload.base_commit_sha}}",
+                            "canonical_branch": "${{team-git-promotion-requested.payload.target_branch}}",
+                            "directory_path": "${{team-git-promotion-requested.payload.directory_path ?? \"root\"}}",
+                            "expected_commit_sha": "${{team-git-promotion-requested.payload.expected_commit_sha}}",
+                            "managed_repo_id": "${{team-git-promotion-requested.payload.managed_repo_id}}",
+                            "project_id": "${{team-git-promotion-requested.payload.project_id}}",
+                            "publication_revision": "${{team-mark-release-published.revision}}",
+                            "published_commit_sha": "${{team-push-canonical-branch.commit_sha}}",
+                            "release_package_id": "${{team-git-promotion-requested.payload.release_package_id}}",
+                            "source_ref": "${{team-git-promotion-requested.payload.source_branch}}",
+                            "state": "${{team-mark-release-published.state}}",
+                            "success": "${{team-mark-release-published.success}}",
+                        },
+                    },
+                }
+            },
         ],
         "edges": [
             {"source_id": "team-cron", "target_id": "team-wake-due-agents"},
@@ -1145,6 +1197,14 @@ TEAM_RUNTIME_V1: dict[str, Any] = {
                 "source_id": "team-record-canonical-promotion",
                 "target_id": "team-mark-release-published",
             },
+            {
+                "source_id": "team-mark-release-published",
+                "target_id": "team-gate-release-published-successfully",
+            },
+            {
+                "source_id": "team-gate-release-published-successfully",
+                "target_id": "team-emit-release-published",
+            },
         ],
     },
 }
@@ -1178,6 +1238,8 @@ _TEAM_RUNTIME_V1_LAYOUT_NODE_POSITIONS: tuple[tuple[str, float, float], ...] = (
     ("team-mark-ephemeral-cleaned-up", 1440.0, 20.0),
     ("team-mark-ephemeral-spawned", 720.0, 820.0),
     ("team-mark-release-published", 1440.0, 1600.0),
+    ("team-gate-release-published-successfully", 1800.0, 1600.0),
+    ("team-emit-release-published", 2160.0, 1600.0),
     ("team-notify-operator", 360.0, 1000.0),
     ("team-notify-operator-fallback", 720.0, 900.0),
     ("team-record-operator-escalation-delivery", 720.0, 1000.0),

@@ -60,6 +60,11 @@ from evander_team_addon.mcp import (
     TEAM_UPDATE_GOAL_TOOL,
     TEAM_UPDATE_TASK_TOOL,
     _team_mcp_git_candidate_commit_resolver,
+    _team_mcp_git_candidate_snapshot_pinner,
+)
+from evander.review_snapshots import (
+    team_deliverable_snapshot_binding_id,
+    team_deliverable_snapshot_ref,
 )
 from evander_team_addon.chat_attachments import (
     TeamChatAttachmentPolicyService,
@@ -582,6 +587,54 @@ def test_team_git_candidate_resolver_builds_admin_authority_for_gateway_context(
     ]
 
 
+def test_team_git_candidate_pinner_uses_deliverable_scoped_immutable_ref(
+    tmp_path: Path,
+) -> None:
+    deliverable_id = "deliverable-direct-pinned"
+    commit_sha = "a" * 40
+    expected_ref = team_deliverable_snapshot_ref(deliverable_id)
+    calls: list[dict[str, object]] = []
+
+    class _ManagedGit:
+        def pin_team_review_snapshot(
+            self,
+            managed_repo_id: str,
+            directory_path: str,
+            **kwargs: object,
+        ) -> dict[str, str]:
+            calls.append(
+                {
+                    "managed_repo_id": managed_repo_id,
+                    "directory_path": directory_path,
+                    **kwargs,
+                }
+            )
+            return {"pin_ref": expected_ref, "commit_sha": commit_sha}
+
+    pinner = _team_mcp_git_candidate_snapshot_pinner(
+        SimpleNamespace(runtime_dir=tmp_path, service=SimpleNamespace()),
+        managed_git=_ManagedGit(),
+    )
+    result = pinner(
+        managed_repo_id="mr_0123456789abcdefabcd",
+        directory_path="root",
+        deliverable_id=deliverable_id,
+        commit_sha=commit_sha,
+        source_ref="agents/session-backend/tasks/task",
+        expected_pinned_ref=expected_ref,
+    )
+
+    assert result == {"pin_ref": expected_ref, "commit_sha": commit_sha}
+    assert calls == [
+        {
+            "managed_repo_id": "mr_0123456789abcdefabcd",
+            "directory_path": "root",
+            "review_id": team_deliverable_snapshot_binding_id(deliverable_id),
+            "commit_sha": commit_sha,
+            "source_ref": "agents/session-backend/tasks/task",
+            "pinned_ref": expected_ref,
+        }
+    ]
 def test_team_addon_mcp_registers_all_plan_tool_names_as_addon_tools(
     tmp_path: Path,
 ) -> None:

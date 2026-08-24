@@ -7,6 +7,7 @@ from collections.abc import (
 from typing import Any
 
 from evander.models import utc_now
+from evander.review_snapshots import team_deliverable_snapshot_ref
 
 from .deliverable_helpers import (
     _apply_command_deliverable_submission,
@@ -75,6 +76,71 @@ from ..domain.wake import _append_agent_wake_requested_event_for_inbox_item
 from ..domain.dependency_composition_recovery import (
     verify_dependency_recovery_submission,
 )
+
+
+def _with_server_pinned_git_candidate(
+    state: TeamState,
+    *,
+    task: Any,
+    deliverable: Mapping[str, Any],
+    deliverable_id: str,
+    candidate_snapshot_pinner: Any | None,
+) -> dict[str, Any]:
+    """Pin a submitted Git candidate before its mutable agent branch can move."""
+
+    payload = dict(deliverable)
+    git_refs = dict(payload.get("git_refs") or {})
+    commit_sha = _optional_text(git_refs.get("commit_sha"))
+    project = state.projects.get(task.project_id)
+    if commit_sha is None or project is None or project.git is None:
+        return payload
+
+    pinned_ref = team_deliverable_snapshot_ref(deliverable_id)
+    if candidate_snapshot_pinner is not None:
+        try:
+            result = candidate_snapshot_pinner(
+                managed_repo_id=project.git.managed_repo_id,
+                directory_path=project.git.directory_path,
+                deliverable_id=deliverable_id,
+                commit_sha=commit_sha,
+                source_ref=_optional_text(git_refs.get("agent_branch")),
+                expected_pinned_ref=pinned_ref,
+            )
+        except Exception as exc:
+            raise TeamCommandValidationError(
+                code="git_candidate_snapshot_pin_failed",
+                message=(
+                    f"could not retain immutable Git candidate {commit_sha} for "
+                    f"deliverable {deliverable_id}: {exc}"
+                ),
+                correction_context={
+                    "deliverable_id": deliverable_id,
+                    "commit_sha": commit_sha,
+                    "expected_pinned_ref": pinned_ref,
+                },
+            ) from None
+        actual_ref = _optional_text(result.get("pin_ref"))
+        actual_commit = _optional_text(result.get("commit_sha"))
+        if actual_ref != pinned_ref or actual_commit is None or (
+            actual_commit.casefold() != commit_sha.casefold()
+        ):
+            raise TeamCommandValidationError(
+                code="git_candidate_snapshot_pin_mismatch",
+                message=(
+                    f"immutable Git candidate pin for deliverable {deliverable_id} "
+                    "returned different provenance"
+                ),
+                correction_context={
+                    "deliverable_id": deliverable_id,
+                    "commit_sha": commit_sha,
+                    "expected_pinned_ref": pinned_ref,
+                    "actual_commit_sha": actual_commit,
+                    "actual_pinned_ref": actual_ref,
+                },
+            )
+    git_refs["accepted_pinned_ref"] = pinned_ref
+    payload["git_refs"] = git_refs
+    return payload
 
 
 def _require_predecessor_review_coverage(
@@ -333,6 +399,13 @@ class TeamDeliverableSubmissionCommandService(TeamCommandExecutor):
                         "recommended_tool": "team_submit_deliverable_for_review",
                     },
                 )
+            submission_deliverable = _with_server_pinned_git_candidate(
+                state,
+                task=task,
+                deliverable=normalized_deliverable,
+                deliverable_id=deliverable_id,
+                candidate_snapshot_pinner=self.git_candidate_snapshot_pinner,
+            )
             published_records = _publish_command_deliverable_artifacts(
                 state,
                 agent=agent,
@@ -346,7 +419,7 @@ class TeamDeliverableSubmissionCommandService(TeamCommandExecutor):
                 state,
                 agent=agent,
                 task=task,
-                deliverable=normalized_deliverable,
+                deliverable=submission_deliverable,
                 deliverable_id=deliverable_id,
                 published_records=published_records,
                 suppress_superior_notice=False,
@@ -859,6 +932,13 @@ class TeamDeliverableSubmissionCommandService(TeamCommandExecutor):
                 predecessor=predecessor,
                 planned_reviews=planned_reviews,
             )
+            submission_deliverable = _with_server_pinned_git_candidate(
+                state,
+                task=task,
+                deliverable=normalized_deliverable,
+                deliverable_id=deliverable_id,
+                candidate_snapshot_pinner=self.git_candidate_snapshot_pinner,
+            )
             published_records = _publish_command_deliverable_artifacts(
                 state,
                 agent=agent,
@@ -872,7 +952,7 @@ class TeamDeliverableSubmissionCommandService(TeamCommandExecutor):
                 state,
                 agent=agent,
                 task=task,
-                deliverable=normalized_deliverable,
+                deliverable=submission_deliverable,
                 deliverable_id=deliverable_id,
                 published_records=published_records,
                 suppress_superior_notice=True,
