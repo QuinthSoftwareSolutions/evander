@@ -8,7 +8,9 @@ Usage:
 
 Validate that the current branch contains the configured destination and base
 branches, refresh the branch-local PR summary note onto HEAD, and push the agent
-branch plus the configured PR notes ref to the agent remote.
+branch plus the configured PR notes ref to the agent remote. A current branch
+already owned by this session under agents/<session-id>/ is pushed without
+adding another session namespace.
 EOF
 }
 
@@ -32,6 +34,21 @@ current_branch() {
   fi
   [[ -n "${branch}" ]] || die "push-agent could not determine the current branch."
   printf '%s\n' "${branch}"
+}
+
+agent_branch_ref() {
+  local session_id_value="$1"
+  local branch="$2"
+  local suffix="$3"
+
+  if [[ "${branch}" == agents/"${session_id_value}"/* ]]; then
+    printf 'refs/heads/%s\n' "${branch}"
+    return 0
+  fi
+  if [[ "${branch}" == agents/* ]]; then
+    die "Current branch ${branch} belongs to a different agent session; refusing agent push."
+  fi
+  printf 'refs/heads/agents/%s/%s-%s\n' "${session_id_value}" "${branch}" "${suffix}"
 }
 
 sanitize_suffix() {
@@ -240,13 +257,14 @@ main() {
 
   require_repo
 
-  local session_id_value expected_issue_number suffix notes_ref repo_root branch destination_branch base_branch_value
+  local session_id_value expected_issue_number suffix notes_ref repo_root branch destination_branch base_branch_value publish_ref
   session_id_value="$(session_id)"
   expected_issue_number="$(config_value evander.issueNumber)"
   verify_session_matches_issue "${session_id_value}" "${expected_issue_number}"
   suffix="$(branch_suffix)"
   notes_ref="$(pr_notes_ref)"
   branch="$(current_branch)"
+  publish_ref="$(agent_branch_ref "${session_id_value}" "${branch}" "${suffix}")"
   destination_branch="$(expected_destination_branch "${expected_issue_number}" "${session_id_value}")"
   base_branch_value="$(base_branch)"
 
@@ -254,7 +272,7 @@ main() {
 
   repo_root="$(git rev-parse --show-toplevel)"
   "${repo_root}/.evander/bin/agent-pr-note" ensure-head
-  git push agent "HEAD:refs/heads/agents/${session_id_value}/${branch}-${suffix}" "${notes_ref}"
+  git push agent "HEAD:${publish_ref}" "${notes_ref}"
 }
 
 main "$@"

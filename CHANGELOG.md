@@ -25,6 +25,9 @@
   scope against the current task graph, and normalized optional provenance during context replay.
 - Kept acceptance verification on immutable review identities and retained refs, and aligned
   composition validation with preparation when task dependencies are cancelled.
+- Required agents to publish local commits before deliverable submission, made provenance
+  mismatches point directly to `git push-agent`, and taught the helper to preserve an already
+  session-owned Team task branch instead of double-prefixing it.
 
 ## 2026-08-23 - Single-Review Team Dispatches
 

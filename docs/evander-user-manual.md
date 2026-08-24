@@ -6408,6 +6408,11 @@ When the result includes code, Team does not trust a branch name typed into the 
 
 The branch remains internal evidence at this stage. Review does not publish it to the project's canonical upstream branch; Chapter 24 covers that later boundary.
 
+The local commit must first be published to this internal managed agent branch. Run
+<code>git push-agent</code>, require it to succeed, and confirm the managed branch resolves to
+the same SHA as <code>git rev-parse HEAD</code> before calling a deliverable submission tool.
+A commit that exists only in the worker worktree cannot be reviewed or accepted.
+
 > <span class="sidebar-kicker">Technical sidebar</span> **Persistent work-context checks**
 >
 > When a project uses managed Git, a persistent Team wake reuses the stable

@@ -132,6 +132,47 @@ def test_push_agent_pushes_branch_and_notes_when_destination_is_contained(
     )
 
 
+def test_push_agent_preserves_team_owned_agent_branch_without_double_prefix(
+    tmp_path: Path,
+) -> None:
+    _, agent, dropbox = _create_issue_repos(tmp_path)
+    team_branch = f"agents/{SESSION_ID}/tasks/task-1"
+    _git(agent, "branch", "-m", team_branch)
+    agent_sha = _commit_agent_work(agent)
+
+    _git(agent, "push-agent")
+
+    exact_ref = f"refs/heads/{team_branch}"
+    assert _git_dir(dropbox, "rev-parse", exact_ref).stdout.strip() == agent_sha
+    pushed_refs = _git_dir(
+        dropbox,
+        "for-each-ref",
+        "--format=%(refname)",
+        "refs/heads/agents",
+    ).stdout.splitlines()
+    assert pushed_refs == [exact_ref]
+
+
+def test_push_agent_refuses_branch_owned_by_another_session(tmp_path: Path) -> None:
+    _, agent, dropbox = _create_issue_repos(tmp_path)
+    _git(agent, "branch", "-m", "agents/another-session/tasks/task-1")
+    _commit_agent_work(agent)
+
+    completed = _git(agent, "push-agent", check=False)
+
+    assert completed.returncode == 1
+    assert "belongs to a different agent session" in completed.stderr
+    assert (
+        _git_dir(
+            dropbox,
+            "for-each-ref",
+            "--format=%(refname)",
+            "refs/heads/agents",
+        ).stdout.strip()
+        == ""
+    )
+
+
 def test_push_agent_refuses_when_destination_branch_has_unmerged_commits(
     tmp_path: Path,
 ) -> None:

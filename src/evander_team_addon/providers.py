@@ -334,7 +334,7 @@ from .services.worktree_cleanup_service import (
 
 logger = logging.getLogger(__name__)
 
-TEAM_AGENT_GUIDANCE_VERSION = 34
+TEAM_AGENT_GUIDANCE_VERSION = 35
 TEAM_AGENT_GUIDANCE_PATH = "/home/agent/AGENTS.md"
 TEAM_AGENT_GUIDANCE_SECTION_ID = "evander-team-addon"
 LEGACY_TEAM_AGENT_GUIDANCE_SECTION_IDS = ("truman-team-addon",)
@@ -7385,7 +7385,10 @@ def _team_agent_guidance_content(*, agent: Mapping[str, Any]) -> str:
         "- Git deliverables must include the runtime-provided branch_context_id. "
         "Do not invent branch names; submitted git_refs must match that context "
         "and may contain only branch_context_id, agent_branch, and commit_sha. "
-        "After committing, use git rev-parse HEAD and pass that value as "
+        "After committing, run git push-agent and require it to succeed; if it "
+        "reports a synchronization blocker, follow its recovery instructions and "
+        "retry the push. Confirm the managed agent branch resolves to the same "
+        "commit as git rev-parse HEAD before submission. Then pass that value as "
         "git_refs.commit_sha (not commit) so every review pins one immutable "
         "candidate. "
         "Artifact-only, administrative, customer-service, and operations work do "

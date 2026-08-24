@@ -1351,6 +1351,12 @@ worktree. Persistent sessions receive one deterministic branch and physical Git
 worktree per task under `/home/agent/worktrees/<repo>/...`; later wakes reuse the
 same task branch without sharing a mutable checkout with another task.
 
+The commit must reach that managed agent branch before submission. After
+committing, run `git push-agent`, require it to succeed, and verify that the
+managed branch resolves to the same commit as `git rev-parse HEAD`. A commit
+that exists only in the worker's local worktree is not deliverable provenance;
+Team reports the authoritative branch tip and leaves the submission unrecorded.
+
 When a submission explicitly carries any Git metadata, it must include the
 context's `branch_context_id` and `git_refs.commit_sha`. The server resolves the
 server-owned branch tip, rejects a supplied commit or branch that does not match

@@ -145,7 +145,7 @@ def test_versioned_agent_guidance_explains_task_topology_and_cancellation() -> N
         agent={"id": "implementer", "display_name": "Implementer"}
     )
 
-    assert TEAM_AGENT_GUIDANCE_VERSION == 34
+    assert TEAM_AGENT_GUIDANCE_VERSION == 35
     assert "Every test command must have an explicit timeout" in content
     assert "timeout --preserve-status -k 20s <seconds> <test command>" in content
     assert "Do not retry the unchanged command indefinitely" in content
@@ -185,6 +185,8 @@ def test_versioned_agent_guidance_explains_task_topology_and_cancellation() -> N
     assert "Do not submit a coordination-parent deliverable" in content
     assert "produces no deliverable" in content
     assert "automatic successors of generated rejected-candidate" in content
+    assert "run git push-agent and require it to succeed" in content
+    assert "Confirm the managed agent branch resolves to the same commit" in content
 
 
 def test_task_creation_guidance_keeps_root_authority_distinct_from_provenance() -> None:
