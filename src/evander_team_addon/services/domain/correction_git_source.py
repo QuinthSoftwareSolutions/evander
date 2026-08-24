@@ -62,16 +62,16 @@ RejectedCandidateGitSource = (
 )
 
 
-def rejected_deliverable_continuation_git_source(
+def rejected_deliverable_continuation_git_sources(
     state: TeamState,
     *,
     task_id: str,
-) -> RejectedDeliverableContinuationGitSource | None:
-    """Return the rejected Git candidate that same-task rework must retain."""
+) -> tuple[RejectedDeliverableContinuationGitSource, ...]:
+    """Return every rejected Git candidate that same-task rework must retain."""
 
     task = state.tasks.get(task_id)
     if task is None:
-        return None
+        return ()
     matches = sorted(
         (
             deliverable
@@ -97,8 +97,15 @@ def rejected_deliverable_continuation_git_source(
         branch = git_refs.agent_branch
         commit_sha = git_refs.submitted_commit_sha or git_refs.commit_sha
         branch_context = state.git_work_contexts.get(git_refs.branch_context_id or "")
+        composition_manifest = (
+            branch_context.dependency_composition_manifest
+            if branch_context is not None and branch_context.task_id == task.id
+            else None
+        )
         base_commit_sha = (
-            branch_context.base_commit
+            composition_manifest.base_commit_sha
+            if composition_manifest is not None
+            else branch_context.base_commit
             if branch_context is not None and branch_context.task_id == task.id
             else None
         )
@@ -134,12 +141,22 @@ def rejected_deliverable_continuation_git_source(
                 pinned_ref=pinned_ref,
             )
         )
-    if len(git_matches) > 1:
-        raise ValueError(
-            f"task {task_id} has multiple unsuperseded rejected Git deliverables: "
-            + ", ".join(source.deliverable_id for source in git_matches)
-        )
-    return git_matches[0] if git_matches else None
+    return tuple(git_matches)
+
+
+def rejected_deliverable_continuation_git_source(
+    state: TeamState,
+    *,
+    task_id: str,
+) -> RejectedDeliverableContinuationGitSource | None:
+    """Return the first retained candidate for compatibility with singular callers.
+
+    Preparation uses :func:`rejected_deliverable_continuation_git_sources` so
+    every independently reviewed product is retained.
+    """
+
+    sources = rejected_deliverable_continuation_git_sources(state, task_id=task_id)
+    return sources[0] if sources else None
 
 
 def is_human_review_correction_task(
@@ -649,6 +666,7 @@ __all__ = [
     "is_release_verification_correction_task",
     "rejected_candidate_git_source",
     "rejected_deliverable_continuation_git_source",
+    "rejected_deliverable_continuation_git_sources",
     "release_review_correction_git_source",
     "release_verification_correction_git_source",
 ]

@@ -10,7 +10,9 @@
 
 - Continued same-task rejected-deliverable rework from its immutable retained candidate across
   agent reassignment, using a fresh commit-suffixed branch and worktree instead of the task's
-  original base.
+  original base; pinned preparations now retain the verified base tree, retries reuse the recorded
+  composed base, composed candidates recover their pre-composition root, and multi-product tasks
+  retain every unsuperseded rejected candidate.
 
 ## 2026-08-24 - Correction Dependency Composition
 
