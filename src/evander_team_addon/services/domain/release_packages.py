@@ -513,6 +513,13 @@ def _build_release_package(
         )
         if predecessor is None:
             return branch, commit
+        composed_correction_base = _candidate_correction_composition_base(
+            state,
+            predecessor=predecessor,
+            deliverable=deliverable,
+        )
+        if composed_correction_base is not None:
+            branch, commit = composed_correction_base
         downstream_recovery_base = _candidate_correction_downstream_recovery_base(
             state,
             predecessor=predecessor,
@@ -982,6 +989,72 @@ def _build_release_package(
         )
     projects_to_recalc.add(project_id)
     return release_id
+
+
+def _candidate_correction_composition_base(
+    state: TeamState,
+    *,
+    predecessor: ReleasePackage,
+    deliverable: Deliverable,
+) -> tuple[str, str] | None:
+    """Recover a rejected-candidate root from immutable composition evidence."""
+
+    failure = predecessor.gate_failure
+    manifest = deliverable.dependency_composition_manifest
+    project = state.projects.get(predecessor.project_id)
+    project_git = project.git if project is not None else None
+    candidate_branch = _release_candidate_branch(predecessor)
+    candidate_commit = predecessor.candidate_commit_sha
+    candidate_tree = predecessor.candidate_tree_hash
+    correction_task_id: str | None = None
+    if failure is not None and failure.stage == "verification" and failure.kind == "candidate":
+        run = state.release_verification_runs.get(failure.source_id or "")
+        if run is not None and run.release_package_id == predecessor.id:
+            correction_task_id = run.correction_task_id
+    elif failure is not None and failure.stage == "review" and failure.kind == "rejected":
+        correction_task_id = predecessor.review_correction_task_id
+    if (
+        manifest is None
+        or project_git is None
+        or candidate_branch is None
+        or candidate_commit is None
+        or candidate_tree is None
+        or correction_task_id is None
+        or deliverable.task_id != correction_task_id
+        or manifest.target_task_id != correction_task_id
+        or manifest.managed_repo_id != project_git.managed_repo_id
+        or manifest.directory_path != project_git.directory_path
+        or manifest.base_branch != candidate_branch
+        or manifest.base_commit_sha != candidate_commit.casefold()
+        or manifest.base_tree_hash != candidate_tree.casefold()
+    ):
+        return None
+
+    context_id = deliverable.git_refs.branch_context_id
+    context = state.git_work_contexts.get(context_id or "")
+    context_manifest = context.dependency_composition_manifest if context is not None else None
+    if (
+        context is None
+        or context.task_id != correction_task_id
+        or context_manifest is None
+        or context_manifest
+        != manifest.model_copy(update={"verified_candidate_commit_sha": None})
+    ):
+        return None
+
+    reviewed_commit, review_error = _reviewed_commit_for_release(state, deliverable)
+    submitted_commit = deliverable.git_refs.submitted_commit_sha
+    if (
+        review_error is not None
+        or not reviewed_commit
+        or manifest.verified_candidate_commit_sha != reviewed_commit
+        or context.commit_sha is None
+        or context.commit_sha.casefold() != reviewed_commit
+        or submitted_commit is None
+        or submitted_commit.casefold() != reviewed_commit
+    ):
+        return None
+    return manifest.base_branch, manifest.base_commit_sha
 
 
 def _ordered_correction_deliverable_ids(

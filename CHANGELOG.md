@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-08-24 - Rejected Candidate Successor Recovery
+
+- Recovered automatic successor creation for reviewed correction aggregates whose retained
+  worktree starts at the correction commit, while requiring immutable server composition evidence
+  to prove the exact rejected candidate branch, commit, tree, and reviewed correction.
+
 ## 2026-08-24 - Prepared Git Helper Reconciliation
 
 - Pinned guest pushes to their immutable prepared base and atomically refreshed generated Git
