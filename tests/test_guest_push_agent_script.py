@@ -153,6 +153,68 @@ def test_push_agent_preserves_team_owned_agent_branch_without_double_prefix(
     assert pushed_refs == [exact_ref]
 
 
+def test_push_agent_merges_concurrent_remote_notes_before_publication(
+    tmp_path: Path,
+) -> None:
+    source, agent, dropbox = _create_issue_repos(tmp_path)
+    first_agent_sha = _commit_agent_work(agent)
+    _git(agent, "push-agent")
+
+    concurrent = tmp_path / "concurrent"
+    _run(["git", "clone", "--branch", ISSUE_BRANCH, str(source), str(concurrent)])
+    _git(concurrent, "config", "user.name", "Concurrent Bot")
+    _git(concurrent, "config", "user.email", "concurrent@example.com")
+    _git(
+        concurrent,
+        "fetch",
+        str(dropbox),
+        f"+{NOTES_REF}:{NOTES_REF}",
+    )
+    concurrent_sha = _git(concurrent, "rev-parse", "HEAD").stdout.strip()
+    _git(
+        concurrent,
+        "notes",
+        f"--ref={NOTES_REF}",
+        "add",
+        "-m",
+        "Concurrent summary",
+        concurrent_sha,
+    )
+    _git(concurrent, "push", str(dropbox), f"{NOTES_REF}:{NOTES_REF}")
+
+    (agent / "second.txt").write_text("second agent change\n", encoding="utf-8")
+    _git(agent, "add", "second.txt")
+    _git(agent, "commit", "-m", "Second agent work")
+    _git(agent, "agent-pr-note", "set", "-m", "Updated agent summary")
+    second_agent_sha = _git(agent, "rev-parse", "HEAD").stdout.strip()
+
+    _git(agent, "push-agent")
+
+    pushed_ref = f"refs/heads/agents/{SESSION_ID}/{WORK_BRANCH}-vm-test"
+    assert _git_dir(dropbox, "rev-parse", pushed_ref).stdout.strip() == second_agent_sha
+    assert (
+        _git_dir(
+            dropbox,
+            "notes",
+            f"--ref={NOTES_REF}",
+            "show",
+            second_agent_sha,
+        ).stdout.strip()
+        == "Updated agent summary"
+    )
+    assert (
+        _git_dir(
+            dropbox,
+            "notes",
+            f"--ref={NOTES_REF}",
+            "show",
+            concurrent_sha,
+        ).stdout.strip()
+        == "Concurrent summary"
+    )
+    assert first_agent_sha != second_agent_sha
+
+
 def test_push_agent_refuses_branch_owned_by_another_session(tmp_path: Path) -> None:
     _, agent, dropbox = _create_issue_repos(tmp_path)
     _git(agent, "branch", "-m", "agents/another-session/tasks/task-1")

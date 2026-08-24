@@ -10,9 +10,20 @@ Validate that the current branch contains the configured destination and base
 branches, refresh the branch-local PR summary note onto HEAD, and push the agent
 branch plus the configured PR notes ref to the agent remote. A current branch
 already owned by this session under agents/<session-id>/ is pushed without
-adding another session namespace.
+adding another session namespace. Concurrent PR-note updates are merged before
+publication and retried without overwriting remote notes.
 EOF
 }
+
+NOTES_SYNC_REF=""
+
+cleanup_notes_sync_ref() {
+  if [[ -n "${NOTES_SYNC_REF}" ]]; then
+    git update-ref -d "${NOTES_SYNC_REF}" >/dev/null 2>&1 || true
+  fi
+}
+
+trap cleanup_notes_sync_ref EXIT
 
 die() {
   echo "$*" >&2
@@ -246,6 +257,53 @@ verify_publish_preconditions() {
   fi
 }
 
+sync_remote_notes_ref() {
+  local remote_name="$1"
+  local notes_ref="$2"
+  local output status
+
+  set +e
+  output="$(git ls-remote --exit-code "${remote_name}" "${notes_ref}" 2>&1)"
+  status=$?
+  set -e
+
+  if [[ "${status}" -eq 2 ]]; then
+    return 0
+  fi
+  if [[ "${status}" -ne 0 ]]; then
+    die "Could not inspect managed PR notes ${remote_name}/${notes_ref}: ${output}"
+  fi
+
+  if ! output="$(git fetch "${remote_name}" "+${notes_ref}:${NOTES_SYNC_REF}" 2>&1)"; then
+    die "Could not refresh managed PR notes ${remote_name}/${notes_ref}: ${output}"
+  fi
+  if ! output="$(git notes --ref="${notes_ref}" merge -s union "${NOTES_SYNC_REF}" 2>&1)"; then
+    die "Could not merge concurrent managed PR notes from ${remote_name}/${notes_ref}: ${output}"
+  fi
+}
+
+push_notes_ref_with_retry() {
+  local remote_name="$1"
+  local notes_ref="$2"
+  local max_attempts=4
+  local attempt=1
+  local output
+
+  while (( attempt <= max_attempts )); do
+    sync_remote_notes_ref "${remote_name}" "${notes_ref}"
+    if output="$(git push "${remote_name}" "${notes_ref}:${notes_ref}" 2>&1)"; then
+      [[ -z "${output}" ]] || printf '%s\n' "${output}"
+      return 0
+    fi
+    if (( attempt == max_attempts )); then
+      die "Could not publish managed PR notes ${remote_name}/${notes_ref} after ${max_attempts} synchronized attempts: ${output}"
+    fi
+    printf 'Managed PR notes changed during publication; synchronizing and retrying (%d/%d).\n' \
+      "${attempt}" "${max_attempts}" >&2
+    attempt=$((attempt + 1))
+  done
+}
+
 main() {
   if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
     show_help
@@ -272,7 +330,11 @@ main() {
 
   repo_root="$(git rev-parse --show-toplevel)"
   "${repo_root}/.evander/bin/agent-pr-note" ensure-head
-  git push agent "HEAD:${publish_ref}" "${notes_ref}"
+  NOTES_SYNC_REF="refs/evander/agent-pr-sync/$(
+    printf '%s\n' "${session_id_value}:${branch}:$$" | git hash-object --stdin
+  )"
+  git push agent "HEAD:${publish_ref}"
+  push_notes_ref_with_retry "agent" "${notes_ref}"
 }
 
 main "$@"

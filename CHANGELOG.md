@@ -31,6 +31,8 @@
 - Reused each server-owned immutable review snapshot as default criterion evidence, while
   preserving explicit artifact and verification references, so the evidence gate no longer
   turns missing clerical reference plumbing into a producer/reviewer blocker.
+- Merged concurrent managed PR-note histories before publication and retried racing note updates,
+  so a stale worktree note ref cannot block an otherwise verified Team branch handoff.
 
 ## 2026-08-23 - Single-Review Team Dispatches
 
