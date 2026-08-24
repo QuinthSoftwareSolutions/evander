@@ -32,6 +32,7 @@ from evander_team_addon.models import (
     TaskDeliverableContract,
 )
 from evander_team_addon.providers import (
+    DependencyGitPreparationError,
     _create_project_repo_git_work_contexts,
     _prepare_project_repo_task_worktree,
     _verified_human_review_correction_git_source,
@@ -537,6 +538,112 @@ def test_libvirt_correction_worktree_fetches_and_checks_pinned_candidate() -> No
     assert command.index(pinned_ancestry_check) < command.index("current_dependency_provenance=")
 
 
+def test_container_correction_accepts_composed_base_and_validates_candidate_root(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fix_commit = "f" * 40
+    fix_tree = "9" * 40
+    calls: list[dict[str, object]] = []
+    composition_root_commit = CANDIDATE_COMMIT
+
+    class _ContainerBackend:
+        def prepare_task_worktree(self, **kwargs: object) -> SimpleNamespace:
+            calls.append(dict(kwargs))
+            return SimpleNamespace(
+                target_dir="/home/agent/worktrees/repo/correction-task",
+                branch=kwargs["branch"],
+                commit_sha=fix_commit,
+                base_commit_sha=fix_commit,
+                composition_root_commit_sha=composition_root_commit,
+                composed_commit_sha=fix_commit,
+                composed_tree_hash=fix_tree,
+                created=True,
+            )
+
+    monkeypatch.setattr(
+        "evander_team_addon.providers.selected_execution_backend_for_target",
+        lambda *_args, **_kwargs: ("container_worker_vm", SimpleNamespace()),
+    )
+    monkeypatch.setattr(
+        "evander_team_addon.providers.container_backend",
+        lambda *_args, **_kwargs: _ContainerBackend(),
+    )
+    context = SimpleNamespace(metadata={"directory_path": "root"})
+    project_repo = {
+        "guest_repo_name": "repo",
+        "target_dir": "/home/agent/repo",
+        "execution_backend": "container_worker_vm",
+    }
+    dependency_sources = [
+        {
+            "dependency_task_id": "fix-task",
+            "deliverable_id": "fix-deliverable",
+            "branch": "agents/owner/tasks/fix-task",
+            "commit_sha": fix_commit,
+            "relationship_kind": "required_contribution",
+        }
+    ]
+    composition_result: dict[str, object] = {}
+
+    path, base_commit = _prepare_project_repo_task_worktree(
+        context,
+        project_repo=project_repo,
+        session_id="owner-session",
+        task_id="correction-task",
+        agent_branch="agents/owner/tasks/correction-task",
+        base_ref=RELEASE_BRANCH,
+        prior_base_commit=CANDIDATE_COMMIT,
+        pinned_base_commit=CANDIDATE_COMMIT,
+        pinned_base_tree=CANDIDATE_TREE,
+        dependency_git_sources=dependency_sources,
+        composition_result=composition_result,
+    )
+
+    assert path == "/home/agent/worktrees/repo/correction-task"
+    assert base_commit == fix_commit
+    assert composition_result == {
+        "root_commit_sha": CANDIDATE_COMMIT,
+        "composed_commit_sha": fix_commit,
+        "composed_tree_hash": fix_tree,
+    }
+    assert calls[0]["expected_base_commit_sha"] == CANDIDATE_COMMIT
+    assert calls[0]["expected_base_tree_hash"] == CANDIDATE_TREE
+
+    _prepare_project_repo_task_worktree(
+        context,
+        project_repo=project_repo,
+        session_id="owner-session",
+        task_id="correction-task",
+        agent_branch="agents/owner/tasks/correction-task",
+        base_ref=RELEASE_BRANCH,
+        prior_base_commit=fix_commit,
+        pinned_base_commit=CANDIDATE_COMMIT,
+        pinned_base_tree=CANDIDATE_TREE,
+        dependency_git_sources=dependency_sources,
+    )
+
+    assert calls[1]["expected_base_commit_sha"] == fix_commit
+    assert calls[1]["expected_base_tree_hash"] is None
+
+    composition_root_commit = "a" * 40
+    with pytest.raises(
+        DependencyGitPreparationError,
+        match="composition root .* not pinned rejected candidate",
+    ):
+        _prepare_project_repo_task_worktree(
+            context,
+            project_repo=project_repo,
+            session_id="owner-session",
+            task_id="correction-task",
+            agent_branch="agents/owner/tasks/correction-task",
+            base_ref=RELEASE_BRANCH,
+            prior_base_commit=CANDIDATE_COMMIT,
+            pinned_base_commit=CANDIDATE_COMMIT,
+            pinned_base_tree=CANDIDATE_TREE,
+            dependency_git_sources=dependency_sources,
+        )
+
+
 def test_correction_git_context_records_candidate_base_and_manifest_sources(
     tmp_path,
 ) -> None:
@@ -622,7 +729,7 @@ def test_correction_git_context_records_candidate_base_and_manifest_sources(
     ]
 
 
-def test_correction_git_context_composes_new_required_contribution_and_records_manifest(
+def test_correction_git_context_records_manifest_and_reuses_composed_base(
     tmp_path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -694,10 +801,10 @@ def test_correction_git_context_composes_new_required_contribution_and_records_m
                 "reduced_source_deliverable_ids": [],
             }
 
-    prepared: dict[str, object] = {}
+    prepared_calls: list[dict[str, object]] = []
 
     def _prepare(*_args: object, **kwargs: object) -> tuple[str, str]:
-        prepared.update(kwargs)
+        prepared_calls.append(dict(kwargs))
         composition_result = kwargs["composition_result"]
         assert isinstance(composition_result, dict)
         composition_result.update(
@@ -707,7 +814,7 @@ def test_correction_git_context_composes_new_required_contribution_and_records_m
                 "composed_tree_hash": fix_tree,
             }
         )
-        return "/home/agent/worktrees/repo/correction-task", CANDIDATE_COMMIT
+        return "/home/agent/worktrees/repo/correction-task", fix_commit
 
     monkeypatch.setattr(
         "evander_team_addon.providers._prepare_project_repo_task_worktree",
@@ -742,6 +849,9 @@ def test_correction_git_context_composes_new_required_contribution_and_records_m
     )
 
     assert len(rows) == 1
+    prepared = prepared_calls[0]
+    assert prepared["prior_base_commit"] == CANDIDATE_COMMIT
+    assert prepared["pinned_base_commit"] == CANDIDATE_COMMIT
     assert prepared["dependency_git_sources"] == [
         {
             "dependency_task_id": "fix-task",
@@ -752,6 +862,7 @@ def test_correction_git_context_composes_new_required_contribution_and_records_m
         }
     ]
     context_model = next(iter(result_state.git_work_contexts.values()))
+    assert context_model.base_commit == fix_commit
     assert [
         source.deliverable_id for source in context_model.dependency_git_sources
     ] == ["fix-deliverable", "source-deliverable"]
@@ -772,6 +883,41 @@ def test_correction_git_context_composes_new_required_contribution_and_records_m
     assert manifest.base_commit_sha == CANDIDATE_COMMIT
     assert manifest.composed_commit_sha == fix_commit
     assert manifest.composed_tree_hash == fix_tree
+
+    def _start_next_dispatch(current: TeamState) -> TeamState:
+        current.agent_runtimes["owner"].active_dispatch_id = "dispatch-next"
+        return current
+
+    state = repo.update(
+        _start_next_dispatch,
+        expected_revision=result_state.revision,
+    )
+    _create_project_repo_git_work_contexts(
+        context,
+        repo,
+        state=state,
+        agent_id="owner",
+        session_id="owner-session",
+        project_id="project",
+        project_repo={
+            "managed_repo_id": MANAGED_REPO_ID,
+            "guest_repo_name": "repo",
+            "target_dir": "/home/agent/repo",
+            "execution_backend": "libvirt_vm",
+        },
+        dispatch_id="dispatch-next",
+        tasks=[
+            {
+                "id": "correction-task",
+                "project_id": "project",
+                "owner_agent_id": "owner",
+            }
+        ],
+        base_branch="main",
+    )
+
+    assert prepared_calls[1]["prior_base_commit"] == fix_commit
+    assert prepared_calls[1]["pinned_base_commit"] == CANDIDATE_COMMIT
 
 
 def test_operator_preparation_recovery_creates_one_fresh_inbox_and_due_wake(

@@ -8948,8 +8948,8 @@ def _create_project_repo_git_work_contexts(
             ),
         )
         try:
-            if correction_source is None:
-                prior_base_commit = _prior_project_repo_task_base_commit(
+            if dependency_recovery is None:
+                recorded_base_commit = _prior_project_repo_task_base_commit(
                     state,
                     agent_id=agent_id,
                     task_id=task_id,
@@ -8957,6 +8957,11 @@ def _create_project_repo_git_work_contexts(
                     base_branch=effective_base_branch,
                     dependency_git_sources=dependency_git_sources,
                 )
+                # The rejected-candidate pin remains the immutable composition
+                # root, while a retained correction resumes from its recorded
+                # composed base after the first preparation.
+                if correction_source is None or recorded_base_commit is not None:
+                    prior_base_commit = recorded_base_commit
         except RuntimeError as exc:
             if dependency_git_sources:
                 raise DependencyGitPreparationError(
@@ -9893,6 +9898,16 @@ def _prepare_project_repo_task_worktree(
     )
     execution_backend = _optional_text(project_repo.get("execution_backend")) or selected_backend
     if execution_backend == "container_worker_vm":
+        expected_base_commit = prior_base_commit or pinned_base_commit
+        # A composed retained base has a different tree from its pinned root.
+        # The worker validates that root through its composition record below.
+        expected_base_tree = (
+            pinned_base_tree
+            if pinned_base_commit is not None
+            and expected_base_commit is not None
+            and expected_base_commit.casefold() == pinned_base_commit.casefold()
+            else None
+        )
         dependency_composition_kwargs = (
             {
                 "dependency_composition_commit_message": (
@@ -9909,8 +9924,8 @@ def _prepare_project_repo_task_worktree(
                 worktree_name=worktree_name,
                 branch=agent_branch,
                 base_ref=base_ref,
-                expected_base_commit_sha=pinned_base_commit or prior_base_commit,
-                expected_base_tree_hash=pinned_base_tree,
+                expected_base_commit_sha=expected_base_commit,
+                expected_base_tree_hash=expected_base_tree,
                 dependency_git_sources=[dict(row) for row in dependency_git_sources],
                 dependency_composition_mode=dependency_composition_mode,
                 dependency_composition_recovery_id=(dependency_composition_recovery_id),
@@ -9957,19 +9972,32 @@ def _prepare_project_repo_task_worktree(
                     message=error,
                 )
             raise RuntimeError(error)
-        if (
-            pinned_base_commit is not None
-            and dependency_composition_mode != "adopt_resolved"
-            and base_commit_sha.casefold() != pinned_base_commit.casefold()
-        ):
-            raise DependencyGitPreparationError(
-                task_id=task_id,
-                message=(
-                    f"prepared worktree {record.target_dir} reports base "
-                    f"{base_commit_sha}, not pinned rejected candidate "
-                    f"{pinned_base_commit}"
-                ),
-            )
+        if pinned_base_commit is not None and dependency_composition_mode != "adopt_resolved":
+            if dependency_git_sources:
+                composition_root_commit = _optional_text(
+                    getattr(record, "composition_root_commit_sha", None)
+                )
+                if (
+                    composition_root_commit is None
+                    or composition_root_commit.casefold() != pinned_base_commit.casefold()
+                ):
+                    raise DependencyGitPreparationError(
+                        task_id=task_id,
+                        message=(
+                            f"prepared worktree {record.target_dir} reports composition root "
+                            f"{composition_root_commit or 'none'}, not pinned rejected "
+                            f"candidate {pinned_base_commit}"
+                        ),
+                    )
+            elif base_commit_sha.casefold() != pinned_base_commit.casefold():
+                raise DependencyGitPreparationError(
+                    task_id=task_id,
+                    message=(
+                        f"prepared worktree {record.target_dir} reports base "
+                        f"{base_commit_sha}, not pinned rejected candidate "
+                        f"{pinned_base_commit}"
+                    ),
+                )
         if (
             dependency_composition_mode == "adopt_resolved"
             and resolved_dependency_commit_sha is not None
