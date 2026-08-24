@@ -811,6 +811,21 @@ class TeamAdminService:
                 metadata={"operator_actor_id": normalized_actor_id},
                 now=now,
             )
+            if blocker.source_kind == TeamBlockerSourceKind.AGENT_EXECUTION_STALL:
+                _mark_agent_work_due(
+                    state,
+                    agent_id=blocker.source_id,
+                    now=now,
+                )
+                _append_agent_wake_requested_event(
+                    state,
+                    agent_id=blocker.source_id,
+                    result=result,
+                    reason="blocker_resolved",
+                    now=now,
+                    delay_seconds=DEFAULT_AGENT_WAKE_REQUEST_DEBOUNCE_SECONDS,
+                    idempotency_suffix=blocker.id,
+                )
             if restored_task_owner_id is not None:
                 _mark_agent_work_due(
                     state,

@@ -1073,13 +1073,20 @@ def _seed_release_verification(repo: TeamStateRepository) -> None:
             release_package_id=release.id,
             candidate_commit_sha="candidate-sha",
             session_id="verification-session",
-            command_results=[ReleaseVerificationCommandResult(name="frozen-check")],
-        )
-        state.projects["project"].release_policy = ProjectReleasePolicy(
+            container_image="frozen-verifier:v1",
             resource_limits={
                 "memory": "6g",
                 "cpus": 4,
                 "pids_limit": 1536,
+            },
+            command_results=[ReleaseVerificationCommandResult(name="frozen-check")],
+        )
+        state.projects["project"].release_policy = ProjectReleasePolicy(
+            container_image="live-verifier:v2",
+            resource_limits={
+                "memory": "12g",
+                "cpus": 8,
+                "pids_limit": 3072,
             },
             verification_commands=[
                 ReleaseVerificationCommand(

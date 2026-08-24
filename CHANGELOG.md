@@ -33,6 +33,10 @@
   turns missing clerical reference plumbing into a producer/reviewer blocker.
 - Merged concurrent managed PR-note histories before publication and retried racing note updates,
   so a stale worktree note ref cannot block an otherwise verified Team branch handoff.
+- Suspended reviewer dispatch while server acceptance verification is pending, woke the reviewer
+  exactly once when it completes or its stall blocker is resolved, and reused exact passed
+  server-owned acceptance evidence at the release gate when the commit, commands, image, and
+  resource limits are unchanged.
 
 ## 2026-08-23 - Single-Review Team Dispatches
 

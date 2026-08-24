@@ -23,6 +23,7 @@ from evander_team_addon.models import (
     AgentStatus,
     AgentVoiceProfile,
     Deliverable,
+    DeliverableAcceptanceVerificationCommandResult,
     DeliverableAcceptanceVerificationWaiver,
     DeliverableGitRefs,
     DeliverableInitialReleaseDisposition,
@@ -3800,6 +3801,12 @@ def test_integration_review_runs_release_equivalent_verification_before_acceptan
     ]
     assert len(verification_events) == 1
 
+    _state, waiting_leases = _team_runtime_service(repo).lease_due_agents(
+        agent_id="worker",
+        respect_wake_interval=False,
+    )
+    assert waiting_leases == []
+
     _lease_agent_dispatch(repo, agent_id="worker", dispatch_id="dispatch-review-pending")
     _state, premature = _command_service(repo).decide_review_command(
         session_id="session-worker",
@@ -3809,6 +3816,12 @@ def test_integration_review_runs_release_equivalent_verification_before_acceptan
     )
     assert premature["success"] is False
     assert "wait for the server-owned run" in premature["errors"][0]["message"]
+
+    def _seed_waiting_no_progress(state_model: TeamState) -> TeamState:
+        state_model.agent_runtimes["worker"].no_progress_count = 2
+        return state_model
+
+    repo.update(_seed_waiting_no_progress)
 
     clone_requests: list[dict[str, object]] = []
 
@@ -3838,6 +3851,18 @@ def test_integration_review_runs_release_equivalent_verification_before_acceptan
         candidate_commit_sha=authoritative_commit,
     )
     assert run_result["verification_state"] == expected_status
+    assert len(run_result["events"]) == 1
+    assert run_result["events"][0]["payload"]["reason"] == (
+        "review_verification_completed"
+    )
+    assert repo.read().agent_runtimes["worker"].no_progress_count == 0
+    assert any(
+        record.intent_type == AGENT_WAKE_REQUESTED_EVENT_TYPE
+        and record.payload["payload"].get("reason")
+        == "review_verification_completed"
+        and record.payload["payload"]["verification_run_id"] == verification.run_id
+        for record in repo.list_outbox_records()
+    )
     assert clone_requests[0]["review_id"] == "review-verified"
     persisted = repo.read().deliverables["deliverable-verified"].verification
     assert persisted is not None
@@ -5818,6 +5843,46 @@ def test_operator_can_resolve_terminal_blocker_with_audited_reason(tmp_path: Pat
         and event.metadata["operator_actor_id"] == "operator:admin"
         and event.reference_ids == ["incident-123"]
         for event in state.blocker_events.values()
+    )
+
+
+def test_operator_resolution_wakes_execution_stall_source(tmp_path: Path) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    future = datetime(2026, 8, 24, 12, tzinfo=UTC)
+
+    def _seed_execution_stall(state: TeamState) -> TeamState:
+        state.agent_runtimes["worker"] = AgentRuntime(
+            agent_id="worker",
+            no_progress_count=3,
+            next_wake_at=future,
+        )
+        state.blockers["operator-execution-stall"] = TeamBlocker(
+            id="operator-execution-stall",
+            team_id="team",
+            source_kind=TeamBlockerSourceKind.AGENT_EXECUTION_STALL,
+            source_id="worker",
+            owner_agent_id="manager",
+            route=TeamBlockerRoute.OPERATOR,
+            summary="Reviewer waited on server verification.",
+        )
+        return state
+
+    state = repo.update(_seed_execution_stall)
+    state, result = _team_admin_service(repo).resolve_terminal_blocker_as_operator(
+        blocker_id="operator-execution-stall",
+        note="The server-owned verification completed.",
+        operator_actor_id="operator:admin",
+        expected_revision=state.revision,
+    )
+
+    runtime = state.agent_runtimes["worker"]
+    assert runtime.no_progress_count == 0
+    assert runtime.next_wake_at is None
+    assert result["events"][0]["payload"]["reason"] == "blocker_resolved"
+    assert any(
+        record.intent_type == AGENT_WAKE_REQUESTED_EVENT_TYPE
+        and record.payload["payload"]["agent_id"] == "worker"
+        for record in repo.list_outbox_records()
     )
 
 
@@ -21725,6 +21790,188 @@ def test_canonical_push_waits_for_candidate_verification_and_release_review(
             "expected_commit_sha": "candidate-feedface",
         }
     ]
+
+
+def test_release_reuses_exact_server_acceptance_verification(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _set_project_git(repo)
+    _seed_review_profile(repo, applicable_role_ids=["project__worker"])
+    _seed_accepted_feature_deliverable(
+        repo,
+        deliverable_id="deliverable",
+        task_id="task",
+        feature="team/team/features/task-backend",
+    )
+    verification_command = ReleaseVerificationCommand(
+        name="operator-client",
+        cwd="Src/Clients/OperatorClient",
+        argv=["npm", "test", "--", "--runInBand"],
+    )
+
+    def _configure_reusable_evidence(state):
+        state.projects["project"].release_policy = ProjectReleasePolicy(
+            verification_commands=[verification_command],
+            review_requirements=[
+                ReleaseReviewRequirement(
+                    reviewer_agent_id="worker",
+                    review_profile_id="profile",
+                )
+            ],
+        )
+        state.deliverables["deliverable"].verification = DeliverableVerification(
+            status="passed",
+            summary="Server-owned acceptance verification passed.",
+            evidence_refs=[
+                "team://deliverables/deliverable/acceptance-verifications/acceptance-1"
+            ],
+            provenance="server_release_equivalent",
+            run_id="acceptance-1",
+            candidate_commit_sha="candidate-feedface",
+            verification_commands=[verification_command],
+            command_results=[
+                DeliverableAcceptanceVerificationCommandResult(
+                    name="operator-client",
+                    state="passed",
+                    exit_code=0,
+                )
+            ],
+            finished_at=datetime(2026, 8, 24, 9, tzinfo=UTC),
+        )
+        return state
+
+    repo.update(_configure_reusable_evidence)
+    state, requested = _team_agent_action_service(repo).apply_agent_action(
+        action={
+            "agent_id": "lead",
+            "git_release_requests": [
+                {
+                    "id": "release-reused-verification",
+                    "project_id": "project",
+                    "deliverable_ids": ["deliverable"],
+                }
+            ],
+        },
+    )
+    promotion_id = state.release_packages[
+        "release-reused-verification"
+    ].git_promotion_record_ids[0]
+
+    state, result = _team_git_release_service(repo).record_git_promotion_result(
+        promotion_id=promotion_id,
+        success=True,
+        commit_sha="candidate-feedface",
+        outputs={"base_commit_sha": "base-main", "tree_hash": "candidate-tree"},
+    )
+
+    release = state.release_packages["release-reused-verification"]
+    run = state.release_verification_runs[release.verification_run_ids[0]]
+    assert run.state == "passed"
+    assert run.provenance == "server_acceptance_reuse"
+    assert run.evidence_refs == [
+        "team://deliverables/deliverable/acceptance-verifications/acceptance-1"
+    ]
+    assert run.command_results[0].state == "passed"
+    assert result["reused_release_verification"]["verification_run_id"] == run.id
+    assert not any(
+        event["event_type"] == "team.release.verification_requested"
+        for event in result["events"]
+    )
+    assert len(release.review_request_ids) == 1
+
+
+@pytest.mark.parametrize(
+    "mismatch",
+    ["candidate", "command", "container_image", "resource_limits"],
+)
+def test_release_does_not_reuse_mismatched_server_acceptance_verification(
+    tmp_path: Path,
+    mismatch: str,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _set_project_git(repo)
+    _seed_accepted_feature_deliverable(
+        repo,
+        deliverable_id="deliverable",
+        task_id="task",
+        feature="team/team/features/task-backend",
+    )
+    policy_command = ReleaseVerificationCommand(
+        name="operator-client",
+        cwd="Src/Clients/OperatorClient",
+        argv=["npm", "test"],
+    )
+    evidence_command = (
+        policy_command.model_copy(update={"argv": ["npm", "test", "--", "--changed"]})
+        if mismatch == "command"
+        else policy_command
+    )
+
+    def _configure_mismatched_evidence(state):
+        state.projects["project"].release_policy = ProjectReleasePolicy(
+            container_image="verifier:v2" if mismatch == "container_image" else "verifier:v1",
+            resource_limits=(
+                {"cpus": 2.0} if mismatch == "resource_limits" else {"cpus": 1.0}
+            ),
+            verification_commands=[policy_command],
+            allow_ungated=True,
+        )
+        state.deliverables["deliverable"].verification = DeliverableVerification(
+            status="passed",
+            evidence_refs=[
+                "team://deliverables/deliverable/acceptance-verifications/acceptance-1"
+            ],
+            provenance="server_release_equivalent",
+            run_id="acceptance-1",
+            candidate_commit_sha=(
+                "different-candidate" if mismatch == "candidate" else "candidate-feedface"
+            ),
+            verification_commands=[evidence_command],
+            command_results=[
+                DeliverableAcceptanceVerificationCommandResult(
+                    name="operator-client",
+                    state="passed",
+                )
+            ],
+            container_image="verifier:v1",
+            resource_limits={"cpus": 1.0},
+            finished_at=datetime(2026, 8, 24, 9, tzinfo=UTC),
+        )
+        return state
+
+    repo.update(_configure_mismatched_evidence)
+    state, _requested = _team_agent_action_service(repo).apply_agent_action(
+        action={
+            "agent_id": "lead",
+            "git_release_requests": [
+                {
+                    "id": f"release-mismatch-{mismatch}",
+                    "project_id": "project",
+                    "deliverable_ids": ["deliverable"],
+                }
+            ],
+        },
+    )
+    release = state.release_packages[f"release-mismatch-{mismatch}"]
+    promotion_id = release.git_promotion_record_ids[0]
+
+    state, result = _team_git_release_service(repo).record_git_promotion_result(
+        promotion_id=promotion_id,
+        success=True,
+        commit_sha="candidate-feedface",
+        outputs={"base_commit_sha": "base-main", "tree_hash": "candidate-tree"},
+    )
+
+    release = state.release_packages[f"release-mismatch-{mismatch}"]
+    run = state.release_verification_runs[release.verification_run_ids[0]]
+    assert run.state == "pending"
+    assert run.provenance == "server_executed"
+    assert any(
+        event["event_type"] == "team.release.verification_requested"
+        for event in result["events"]
+    )
+    assert release.review_request_ids == []
 
 
 def test_release_review_uses_criteria_snapshot_after_profile_edit(

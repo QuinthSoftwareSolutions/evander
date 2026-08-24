@@ -139,7 +139,6 @@ class TeamReleaseVerificationRunner:
             }
 
         project = state.projects.get(release.project_id)
-        policy = project.release_policy if project is not None else None
         git = project.git if project is not None else None
         manifest = release.manifest
         if project is None or git is None or manifest is None:
@@ -185,8 +184,8 @@ class TeamReleaseVerificationRunner:
                 release_package_id=release.id,
                 candidate_commit_sha=candidate_commit_sha,
                 directory_path=git.directory_path,
-                container_image=policy.container_image if policy is not None else None,
-                resource_limits=policy.resource_limits if policy is not None else None,
+                container_image=run.container_image,
+                resource_limits=run.resource_limits,
             )
             created = True
             target_dir = self._executor.clone_candidate(

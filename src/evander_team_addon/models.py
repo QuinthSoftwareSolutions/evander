@@ -3574,6 +3574,10 @@ class ReleaseVerificationRun(TeamModel):
     candidate_commit_sha: str
     session_id: str
     state: Literal["pending", "running", "passed", "failed", "timed_out"] = "pending"
+    provenance: Literal["server_executed", "server_acceptance_reuse"] = "server_executed"
+    evidence_refs: list[str] = Field(default_factory=list)
+    container_image: str | None = None
+    resource_limits: WorkerResourceLimits | None = None
     attempt_number: int = Field(default=1, ge=1)
     failure_kind: Literal["candidate", "infrastructure", "timeout"] | None = None
     supersedes_verification_run_id: str | None = None
@@ -3602,11 +3606,17 @@ class ReleaseVerificationRun(TeamModel):
         "retry_reason",
         "retry_requested_by",
         "correction_task_id",
+        "container_image",
         mode="before",
     )
     @classmethod
     def _optional_text(cls, value: object) -> str | None:
         return _optional_text(value)
+
+    @field_validator("evidence_refs", mode="before")
+    @classmethod
+    def _evidence_refs(cls, value: object) -> list[str]:
+        return _unique_text_list(value or [], "evidence_refs")
 
     @model_validator(mode="after")
     def _validate_retry_audit(self) -> "ReleaseVerificationRun":
@@ -3615,6 +3625,16 @@ class ReleaseVerificationRun(TeamModel):
         ):
             raise ValueError(
                 "superseding release verification requires retry_reason and retry_requested_by"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _validate_reused_evidence(self) -> "ReleaseVerificationRun":
+        if self.provenance == "server_acceptance_reuse" and (
+            self.state != "passed" or not self.evidence_refs
+        ):
+            raise ValueError(
+                "reused server acceptance verification requires passed evidence"
             )
         return self
 

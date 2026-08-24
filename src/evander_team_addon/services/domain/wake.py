@@ -177,6 +177,7 @@ def _pending_reviews_for_agent(state: TeamState, agent_id: str) -> list[ReviewRe
         and review.state in pending_states
         and review.superseded_by_review_request_id is None
         and review.retired_at is None
+        and not _review_waits_on_server_acceptance_verification(state, review)
     ]
     reviews.sort(key=lambda item: (item.created_at or datetime.min.replace(tzinfo=UTC), item.id))
     return reviews
@@ -203,9 +204,39 @@ def _pending_inbox_for_agent(state: TeamState, agent_id: str) -> list[AgentInbox
         if item.recipient_agent_id == agent_id
         and item.state == TeamInboxItemState.PENDING
         and not inbox_has_current_preparation_blocker(state, item=item)
+        and not _inbox_waits_on_server_acceptance_verification(state, item)
     ]
     items.sort(key=lambda item: (item.created_at, item.id))
     return items
+
+
+def _review_waits_on_server_acceptance_verification(
+    state: TeamState,
+    review: ReviewRequest,
+) -> bool:
+    deliverable = state.deliverables.get(review.deliverable_id or "")
+    verification = deliverable.verification if deliverable is not None else None
+    return bool(
+        verification is not None
+        and verification.provenance == "server_release_equivalent"
+        and verification.status in {"pending", "running"}
+    )
+
+
+def _inbox_waits_on_server_acceptance_verification(
+    state: TeamState,
+    item: AgentInboxItem,
+) -> bool:
+    payload = item.payload if isinstance(item.payload, Mapping) else {}
+    review_id = payload.get("review_request_id")
+    if not isinstance(review_id, str):
+        return False
+    review = state.review_requests.get(review_id.strip())
+    return bool(
+        review is not None
+        and review.reviewer_agent_id == item.recipient_agent_id
+        and _review_waits_on_server_acceptance_verification(state, review)
+    )
 
 
 def _ordinary_wake_work_for_agent(

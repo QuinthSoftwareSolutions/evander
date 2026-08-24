@@ -18,7 +18,13 @@ from ..repository import TeamStateRepository
 from .domain.acceptance_verification import (
     deliverable_requires_server_acceptance_verification,
 )
-from .domain.common import _optional_text
+from .commands.outbox import _team_event_outbox_records
+from .domain.common import (
+    DEFAULT_AGENT_WAKE_REQUEST_DEBOUNCE_SECONDS,
+    _optional_text,
+)
+from .domain.wake import _append_agent_wake_requested_event
+from .domain.work_due import _mark_agent_work_due
 from .release_verification_runner import (
     ReleaseVerificationTimeoutError,
     _bounded_verification_log_excerpt,
@@ -324,6 +330,8 @@ class TeamDeliverableAcceptanceVerificationRunner:
                         terminal_state = "partial"
                         terminal_error = f"failed to destroy acceptance verifier: {exc}"
 
+        result: dict[str, Any] = {"events": []}
+
         def _record_terminal(current: TeamState) -> TeamState:
             current_deliverable, _review_id, _snapshot = _validate_request(
                 current,
@@ -352,10 +360,42 @@ class TeamDeliverableAcceptanceVerificationRunner:
                 if terminal_state == "passed"
                 else []
             )
-            current_verification.finished_at = utc_now()
+            finished_at = utc_now()
+            current_verification.finished_at = finished_at
+            reviewer_ids = {
+                review.reviewer_agent_id
+                for review_id in current_deliverable.review_request_ids
+                if (review := current.review_requests.get(review_id)) is not None
+                and review.state.value in {"pending", "in_progress"}
+                and review.superseded_by_review_request_id is None
+                and review.retired_at is None
+            }
+            for reviewer_agent_id in sorted(reviewer_ids):
+                _mark_agent_work_due(
+                    current,
+                    agent_id=reviewer_agent_id,
+                    now=finished_at,
+                )
+                _append_agent_wake_requested_event(
+                    current,
+                    agent_id=reviewer_agent_id,
+                    result=result,
+                    reason="review_verification_completed",
+                    now=finished_at,
+                    delay_seconds=DEFAULT_AGENT_WAKE_REQUEST_DEBOUNCE_SECONDS,
+                    idempotency_suffix=verification_run_id,
+                    payload_extra={
+                        "deliverable_id": deliverable_id,
+                        "verification_run_id": verification_run_id,
+                        "verification_state": terminal_state,
+                    },
+                )
             return current
 
-        final_state = self._repo.update(_record_terminal)
+        final_state = self._repo.update_with_outbox(
+            _record_terminal,
+            outbox_records=lambda: _team_event_outbox_records(result["events"]),
+        )
         final = final_state.deliverables[deliverable_id].verification
         assert final is not None
         return {
@@ -364,6 +404,7 @@ class TeamDeliverableAcceptanceVerificationRunner:
             "deliverable_id": deliverable_id,
             "verification_run_id": verification_run_id,
             "verification_state": final.status,
+            "events": result["events"],
             **({"error": terminal_error} if terminal_error is not None else {}),
         }
 

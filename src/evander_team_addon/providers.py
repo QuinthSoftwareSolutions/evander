@@ -5696,7 +5696,7 @@ class TeamVerifyDeliverableAcceptanceEffectProvider(EffectProviderBase):
             "candidate_commit_sha",
         )
         repo = TeamStateRepository(_runtime_dir(self.runtime_context))
-        return TeamDeliverableAcceptanceVerificationRunner(
+        result = TeamDeliverableAcceptanceVerificationRunner(
             repo,
             EffectDeliverableAcceptanceVerificationExecutor(self.runtime_context),
         ).run(
@@ -5704,6 +5704,14 @@ class TeamVerifyDeliverableAcceptanceEffectProvider(EffectProviderBase):
             verification_run_id=run_id,
             candidate_commit_sha=candidate_sha,
         )
+        if not result.get("coalesced"):
+            published_event_ids = _publish_team_events(
+                self.runtime_context,
+                result.get("events") or [],
+            )
+            if published_event_ids:
+                result["published_event_ids"] = published_event_ids
+        return result
 
 
 class TeamPublishReviewBranchEffectProvider(EffectProviderBase):
