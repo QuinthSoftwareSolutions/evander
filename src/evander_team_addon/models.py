@@ -1947,7 +1947,11 @@ class DependencyGitSource(TeamModel):
     deliverable_id: str
     branch: str
     commit_sha: str
-    relationship_kind: Literal["task_dependency", "required_contribution"] = "task_dependency"
+    relationship_kind: Literal[
+        "task_dependency",
+        "required_contribution",
+        "task_continuation",
+    ] = "task_dependency"
     pinned_ref: str | None = None
 
     @field_validator(

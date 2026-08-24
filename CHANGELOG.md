@@ -6,6 +6,12 @@
   helpers through descriptor-anchored reads and replacements whenever task worktrees are prepared,
   preserving other worktree-local control state.
 
+## 2026-08-24 - Rejected Deliverable Continuation
+
+- Continued same-task rejected-deliverable rework from its immutable retained candidate across
+  agent reassignment, using a fresh commit-suffixed branch and worktree instead of the task's
+  original base.
+
 ## 2026-08-24 - Correction Dependency Composition
 
 - Composed newly accepted correction-task Git inputs on top of the rejected candidate and

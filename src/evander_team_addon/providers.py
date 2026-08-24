@@ -267,8 +267,10 @@ from .services.domain.preparation_failures import (
 from .services.domain.correction_git_source import (
     HumanReviewCorrectionGitSource,
     RejectedCandidateGitSource,
+    RejectedDeliverableContinuationGitSource,
     human_review_correction_git_source,
     rejected_candidate_git_source,
+    rejected_deliverable_continuation_git_source,
 )
 from .services.domain.release_packages import GIT_RELEASE_RECOVERY_EVENT_TYPE
 from .services.domain.release_gates import RELEASE_VERIFICATION_REQUESTED_EVENT_TYPE
@@ -8845,6 +8847,12 @@ def _create_project_repo_git_work_contexts(
             task_id=task_id,
             managed_repo_id=managed_repo_id,
         )
+        continuation_source = _verified_rejected_deliverable_continuation_git_source(
+            context,
+            state=state,
+            task_id=task_id,
+            managed_repo_id=managed_repo_id,
+        )
         dependency_recovery = recovery_for_task(
             state,
             recovery_task_id=task_id,
@@ -8864,6 +8872,42 @@ def _create_project_repo_git_work_contexts(
             manual_dependency_git_sources = dependency_git_sources
             dependency_composition_mode = "manual_recovery"
             dependency_composition_recovery_id = dependency_recovery.id
+        elif continuation_source is not None:
+            dependency_git_sources = _merge_dependency_git_source_rows(
+                [
+                    _rejected_deliverable_continuation_dependency_source(
+                        task_id=task_id,
+                        source=continuation_source,
+                    )
+                ],
+                _project_repo_task_dependency_git_sources(
+                    context,
+                    state=state,
+                    task_id=task_id,
+                    managed_repo_id=managed_repo_id,
+                ),
+            )
+            effective_base_branch = _optional_text(task.get("git_base_branch")) or base_branch
+            worktree_base_ref = effective_base_branch
+            pinned_base_commit = _optional_text(task.get("git_base_commit_sha"))
+            if pinned_base_commit is not None and pinned_base_commit.casefold() != (
+                continuation_source.base_commit_sha
+            ):
+                raise DependencyGitPreparationError(
+                    task_id=task_id,
+                    message=(
+                        f"rejected deliverable {continuation_source.deliverable_id} was "
+                        f"prepared from {continuation_source.base_commit_sha}, not task pin "
+                        f"{pinned_base_commit}"
+                    ),
+                )
+            prior_base_commit = continuation_source.base_commit_sha
+            pinned_base_tree = None
+            # Treat the reviewed candidate as a distinct composition relationship:
+            # its immutable pin becomes an ancestor of the replacement branch,
+            # while the task's original base provenance remains unchanged.
+            composition_git_sources = dependency_git_sources
+            composition_manifest_git_sources = dependency_git_sources
         elif correction_source is not None:
             rejected_candidate_git_sources = [
                 source.model_dump(mode="json")
@@ -8944,11 +8988,15 @@ def _create_project_repo_git_work_contexts(
             session_id,
             task_id=task_id,
             candidate_commit_sha=(
-                correction_source.candidate_commit_sha if correction_source is not None else None
+                continuation_source.commit_sha
+                if continuation_source is not None
+                else correction_source.candidate_commit_sha
+                if correction_source is not None
+                else None
             ),
         )
         try:
-            if dependency_recovery is None:
+            if dependency_recovery is None and continuation_source is None:
                 recorded_base_commit = _prior_project_repo_task_base_commit(
                     state,
                     agent_id=agent_id,
@@ -8983,6 +9031,11 @@ def _create_project_repo_git_work_contexts(
                     task_id=task_id,
                     agent_branch=agent_branch,
                     base_ref=worktree_base_ref or "HEAD",
+                    worktree_identity_commit=(
+                        continuation_source.commit_sha
+                        if continuation_source is not None
+                        else None
+                    ),
                     prior_base_commit=prior_base_commit,
                     pinned_base_commit=pinned_base_commit,
                     pinned_base_tree=pinned_base_tree,
@@ -9044,6 +9097,14 @@ def _create_project_repo_git_work_contexts(
                     task_id=task_id,
                     managed_repo_id=managed_repo_id,
                 )
+                current_continuation_source = (
+                    _verified_rejected_deliverable_continuation_git_source(
+                        context,
+                        state=current_state,
+                        task_id=task_id,
+                        managed_repo_id=managed_repo_id,
+                    )
+                )
                 current_dependency_recovery = recovery_for_task(
                     current_state,
                     recovery_task_id=task_id,
@@ -9054,6 +9115,21 @@ def _create_project_repo_git_work_contexts(
                         for source in current_dependency_recovery.dependency_git_sources
                     ]
                     if current_dependency_recovery is not None
+                    else _merge_dependency_git_source_rows(
+                        [
+                            _rejected_deliverable_continuation_dependency_source(
+                                task_id=task_id,
+                                source=current_continuation_source,
+                            )
+                        ],
+                        _project_repo_task_dependency_git_sources(
+                            context,
+                            state=current_state,
+                            task_id=task_id,
+                            managed_repo_id=managed_repo_id,
+                        ),
+                    )
+                    if current_continuation_source is not None
                     else _merge_dependency_git_source_rows(
                         [
                             source.model_dump(mode="json")
@@ -9080,6 +9156,14 @@ def _create_project_repo_git_work_contexts(
                         message=(
                             f"task {task_id} rejected-candidate Git source changed "
                             "during worktree preparation; no lease was granted"
+                        ),
+                    )
+                if current_continuation_source != continuation_source:
+                    raise DependencyGitPreparationError(
+                        task_id=task_id,
+                        message=(
+                            f"task {task_id} rejected-deliverable continuation source "
+                            "changed during worktree preparation; no lease was granted"
                         ),
                     )
                 if current_dependency_recovery != dependency_recovery:
@@ -9378,6 +9462,105 @@ def _verified_rejected_candidate_git_source(
         source=source,
     )
     return source
+
+
+def _verified_rejected_deliverable_continuation_git_source(
+    context: Any,
+    *,
+    state: Any,
+    task_id: str,
+    managed_repo_id: str,
+) -> RejectedDeliverableContinuationGitSource | None:
+    try:
+        source = rejected_deliverable_continuation_git_source(
+            state,
+            task_id=task_id,
+        )
+    except ValueError as exc:
+        raise DependencyGitPreparationError(
+            task_id=task_id,
+            message=str(exc),
+        ) from None
+    if source is None:
+        return None
+    task = state.tasks.get(task_id)
+    project = state.projects.get(task.project_id) if task is not None else None
+    project_git = getattr(project, "git", None)
+    if project_git is None or project_git.managed_repo_id != managed_repo_id:
+        raise DependencyGitPreparationError(
+            task_id=task_id,
+            message=(
+                f"rejected deliverable {source.deliverable_id} belongs to a different "
+                "managed repository"
+            ),
+        )
+    managed_git = getattr(
+        getattr(context, "admin_service", None),
+        "managed_git_admin",
+        None,
+    )
+    resolve_pinned = getattr(managed_git, "resolve_team_review_commit", None)
+    resolve_branch = getattr(managed_git, "resolve_branch_commit", None)
+    verify_ancestry = getattr(managed_git, "verify_branch_commit_ancestry", None)
+    if not all(callable(item) for item in (resolve_pinned, resolve_branch, verify_ancestry)):
+        raise DependencyGitPreparationError(
+            task_id=task_id,
+            message=(
+                "managed Git rejected-deliverable verification is unavailable; "
+                f"cannot resume {source.deliverable_id}"
+            ),
+        )
+    try:
+        pinned_commit = resolve_pinned(
+            managed_repo_id,
+            directory_path=project_git.directory_path,
+            pinned_ref=source.pinned_ref,
+        )
+        if _optional_text(pinned_commit) is None or str(pinned_commit).casefold() != (
+            source.commit_sha
+        ):
+            raise RuntimeError(
+                f"immutable ref {source.pinned_ref!r} does not retain "
+                f"{source.commit_sha}"
+            )
+        branch_commit = resolve_branch(
+            managed_repo_id,
+            directory_path=project_git.directory_path,
+            branch=source.agent_branch,
+        )
+        if _optional_text(branch_commit) is None:
+            raise RuntimeError(f"retained branch {source.agent_branch!r} does not exist")
+        verify_ancestry(
+            managed_repo_id,
+            directory_path=project_git.directory_path,
+            branch=source.agent_branch,
+            commit_sha=str(branch_commit),
+            required_ancestor_shas=[source.base_commit_sha, source.commit_sha],
+        )
+    except Exception as exc:
+        raise DependencyGitPreparationError(
+            task_id=task_id,
+            message=(
+                "could not verify rejected deliverable continuation "
+                f"{source.deliverable_id}: {exc}"
+            ),
+        ) from None
+    return source
+
+
+def _rejected_deliverable_continuation_dependency_source(
+    *,
+    task_id: str,
+    source: RejectedDeliverableContinuationGitSource,
+) -> dict[str, str]:
+    return {
+        "dependency_task_id": task_id,
+        "deliverable_id": source.deliverable_id,
+        "branch": source.agent_branch,
+        "commit_sha": source.commit_sha,
+        "relationship_kind": "task_continuation",
+        "pinned_ref": source.pinned_ref,
+    }
 
 
 def _verify_rejected_candidate_git_source(
@@ -9872,6 +10055,7 @@ def _prepare_project_repo_task_worktree(
     task_id: str,
     agent_branch: str,
     base_ref: str,
+    worktree_identity_commit: str | None = None,
     prior_base_commit: str | None = None,
     pinned_base_commit: str | None = None,
     pinned_base_tree: str | None = None,
@@ -9886,9 +10070,8 @@ def _prepare_project_repo_task_worktree(
     repo_name = _required_text(project_repo.get("guest_repo_name"), "guest_repo_name")
     task_slug = _slug_id_part(task_id, fallback="task")[:40]
     task_hash = hashlib.sha256(task_id.encode("utf-8")).hexdigest()[:8]
-    candidate_suffix = (
-        f"-{pinned_base_commit.casefold()[:12]}" if pinned_base_commit is not None else ""
-    )
+    identity_commit = worktree_identity_commit or pinned_base_commit
+    candidate_suffix = f"-{identity_commit.casefold()[:12]}" if identity_commit is not None else ""
     worktree_name = f"{task_slug}-{task_hash}{candidate_suffix}"
     directory_path = str(getattr(context, "metadata", {}).get("directory_path") or "root")
     selected_backend, config = selected_execution_backend_for_target(

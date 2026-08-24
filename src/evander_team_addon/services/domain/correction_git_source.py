@@ -44,11 +44,102 @@ class ReleaseReviewCorrectionGitSource:
     dependency_git_sources: tuple[DependencyGitSource, ...]
 
 
+@dataclass(frozen=True)
+class RejectedDeliverableContinuationGitSource:
+    """Immutable same-task Git source retained for a replacement deliverable."""
+
+    deliverable_id: str
+    agent_branch: str
+    base_commit_sha: str
+    commit_sha: str
+    pinned_ref: str
+
+
 RejectedCandidateGitSource = (
     HumanReviewCorrectionGitSource
     | ReleaseVerificationCorrectionGitSource
     | ReleaseReviewCorrectionGitSource
 )
+
+
+def rejected_deliverable_continuation_git_source(
+    state: TeamState,
+    *,
+    task_id: str,
+) -> RejectedDeliverableContinuationGitSource | None:
+    """Return the rejected Git candidate that same-task rework must retain."""
+
+    task = state.tasks.get(task_id)
+    if task is None:
+        return None
+    matches = sorted(
+        (
+            deliverable
+            for deliverable_id in task.deliverable_ids
+            if (deliverable := state.deliverables.get(deliverable_id)) is not None
+            and deliverable.task_id == task.id
+            and deliverable.state == TeamRecordState.REJECTED
+            and deliverable.superseded_by_deliverable_id is None
+        ),
+        key=lambda deliverable: deliverable.id,
+    )
+    git_matches: list[RejectedDeliverableContinuationGitSource] = []
+    for deliverable in matches:
+        git_refs = deliverable.git_refs
+        git_values = (
+            git_refs.agent_branch,
+            git_refs.commit_sha,
+            git_refs.submitted_commit_sha,
+            git_refs.accepted_pinned_ref,
+        )
+        if not any(git_values):
+            continue
+        branch = git_refs.agent_branch
+        commit_sha = git_refs.submitted_commit_sha or git_refs.commit_sha
+        branch_context = state.git_work_contexts.get(git_refs.branch_context_id or "")
+        base_commit_sha = (
+            branch_context.base_commit
+            if branch_context is not None and branch_context.task_id == task.id
+            else None
+        )
+        if branch is None or commit_sha is None or base_commit_sha is None:
+            raise ValueError(f"rejected deliverable {deliverable.id} has partial Git provenance")
+        if git_refs.commit_sha is not None and git_refs.commit_sha.casefold() != (
+            commit_sha.casefold()
+        ):
+            raise ValueError(
+                f"rejected deliverable {deliverable.id} records conflicting Git commits"
+            )
+        normalized_commit = commit_sha.casefold()
+        normalized_base_commit = base_commit_sha.casefold()
+        if _FULL_OBJECT_ID_RE.fullmatch(normalized_commit) is None:
+            raise ValueError(
+                f"rejected deliverable {deliverable.id} commit is not a full Git object ID"
+            )
+        if _FULL_OBJECT_ID_RE.fullmatch(normalized_base_commit) is None:
+            raise ValueError(
+                f"rejected deliverable {deliverable.id} base is not a full Git object ID"
+            )
+        pinned_ref = git_refs.accepted_pinned_ref
+        if pinned_ref is None:
+            raise ValueError(
+                f"rejected Git deliverable {deliverable.id} has no immutable candidate ref"
+            )
+        git_matches.append(
+            RejectedDeliverableContinuationGitSource(
+                deliverable_id=deliverable.id,
+                agent_branch=branch,
+                base_commit_sha=normalized_base_commit,
+                commit_sha=normalized_commit,
+                pinned_ref=pinned_ref,
+            )
+        )
+    if len(git_matches) > 1:
+        raise ValueError(
+            f"task {task_id} has multiple unsuperseded rejected Git deliverables: "
+            + ", ".join(source.deliverable_id for source in git_matches)
+        )
+    return git_matches[0] if git_matches else None
 
 
 def is_human_review_correction_task(
@@ -548,6 +639,7 @@ def rejected_candidate_git_source(
 __all__ = [
     "HumanReviewCorrectionGitSource",
     "RejectedCandidateGitSource",
+    "RejectedDeliverableContinuationGitSource",
     "ReleaseReviewCorrectionGitSource",
     "ReleaseVerificationCorrectionGitSource",
     "human_review_correction_git_source",
@@ -556,6 +648,7 @@ __all__ = [
     "is_release_review_correction_task",
     "is_release_verification_correction_task",
     "rejected_candidate_git_source",
+    "rejected_deliverable_continuation_git_source",
     "release_review_correction_git_source",
     "release_verification_correction_git_source",
 ]

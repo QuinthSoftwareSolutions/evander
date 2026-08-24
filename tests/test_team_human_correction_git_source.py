@@ -7,10 +7,12 @@ from types import SimpleNamespace
 import pytest
 
 from evander.effects.providers.base import EffectRuntimeContext
+from evander.worker.models import WorkerTaskDependencyGitSource
 from evander_team_addon.models import (
     AgentRuntime,
     AgentTask,
     Deliverable,
+    GitWorkContext,
     HumanReviewFinding,
     HumanReviewRequest,
     HumanReviewRequirementSnapshot,
@@ -42,6 +44,7 @@ from evander_team_addon.repository import TeamStateRepository
 from evander_team_addon.services.admin_service import TeamAdminService
 from evander_team_addon.services.domain.correction_git_source import (
     human_review_correction_git_source,
+    rejected_deliverable_continuation_git_source,
     release_review_correction_git_source,
     release_verification_correction_git_source,
 )
@@ -62,6 +65,193 @@ CANDIDATE_TREE = "d" * 40
 FEATURE_COMMIT = "e" * 40
 RELEASE_BRANCH = "team/team/releases/rejected"
 FEATURE_BRANCH = "agents/source-session/tasks/source"
+
+
+@pytest.mark.parametrize("pin_task_base", [False, True])
+def test_reassigned_rework_starts_from_immutable_rejected_deliverable(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+    pin_task_base: bool,
+) -> None:
+    state = _correction_state()
+    base_commit = "6" * 40
+    base_tree = "5" * 40
+    rejected_commit = "7" * 40
+    composed_commit = "8" * 40
+    composed_tree = "9" * 40
+    rejected_branch = "agents/original-session/tasks/rework-task"
+    pinned_ref = "refs/evander/team-reviews/rejected-rework"
+    state.agents["replacement"] = PersistentAgent(
+        id="replacement",
+        team_id="team",
+        role_id="owner-role",
+        session_id="replacement-session",
+        reports_to_agent_id="lead",
+    )
+    state.tasks["rework-task"] = AgentTask(
+        id="rework-task",
+        owner_agent_id="replacement",
+        project_id="project",
+        priority=1,
+        state=TeamTaskState.IN_PROGRESS,
+        title="Revise rejected candidate",
+        description="Continue from the reviewed Git candidate.",
+        created_by_agent_id="lead",
+        deliverable_ids=["rejected-deliverable"],
+        git_base_branch="main",
+        git_base_commit_sha=base_commit if pin_task_base else None,
+    )
+    state.git_work_contexts["rejected-context"] = GitWorkContext(
+        id="rejected-context",
+        agent_id="owner",
+        task_id="rework-task",
+        agent_branch=rejected_branch,
+        base_branch="main",
+        base_commit=base_commit,
+        commit_sha=rejected_commit,
+        state="submitted",
+    )
+    state.deliverables["rejected-deliverable"] = Deliverable(
+        id="rejected-deliverable",
+        task_id="rework-task",
+        producer_agent_id="owner",
+        summary="Rejected candidate",
+        state=TeamRecordState.REJECTED,
+        acceptance_policy_version=2,
+        git_refs={
+            "branch_context_id": "rejected-context",
+            "agent_branch": rejected_branch,
+            "commit_sha": rejected_commit,
+            "submitted_commit_sha": rejected_commit,
+            "accepted_pinned_ref": pinned_ref,
+        },
+    )
+    state.agent_runtimes["replacement"] = AgentRuntime(
+        agent_id="replacement",
+        active_dispatch_id="dispatch-rework",
+    )
+    repo = TeamStateRepository(tmp_path)
+    state = repo.update(lambda _state: state, expected_revision=0)
+
+    class _ManagedGit:
+        def resolve_team_review_commit(self, *_args: object, **_kwargs: object) -> str:
+            return rejected_commit
+
+        def resolve_branch_commit(self, *_args: object, **_kwargs: object) -> str:
+            return rejected_commit
+
+        def verify_branch_commit_ancestry(
+            self,
+            *_args: object,
+            **kwargs: object,
+        ) -> dict[str, object]:
+            assert kwargs["branch"] == rejected_branch
+            assert kwargs["required_ancestor_shas"] == [base_commit, rejected_commit]
+            return {"commit_sha": rejected_commit}
+
+        def reduce_commit_frontier(
+            self,
+            *_args: object,
+            **kwargs: object,
+        ) -> dict[str, object]:
+            assert kwargs["base_commit_sha"] == base_commit
+            return {
+                "base_tree_hash": base_tree,
+                "frontier_commit_shas": [rejected_commit],
+                "reduced_source_deliverable_ids": [],
+            }
+
+    prepared: dict[str, object] = {}
+
+    def _prepare(*_args: object, **kwargs: object) -> tuple[str, str]:
+        prepared.update(kwargs)
+        kwargs["composition_result"].update(
+            {
+                "root_commit_sha": base_commit,
+                "composed_commit_sha": composed_commit,
+                "composed_tree_hash": composed_tree,
+            }
+        )
+        return "/home/agent/worktrees/repo/rework-task-777777777777", base_commit
+
+    monkeypatch.setattr(
+        "evander_team_addon.providers._prepare_project_repo_task_worktree",
+        _prepare,
+    )
+    monkeypatch.setattr(
+        "evander_team_addon.providers._project_repo_task_dependency_git_sources",
+        lambda *_args, **_kwargs: [],
+    )
+    context = EffectRuntimeContext(
+        resolved_config={"runtime_dir": str(tmp_path)},
+        admin_service=SimpleNamespace(managed_git_admin=_ManagedGit()),
+    )
+
+    result_state, rows, _metrics = _create_project_repo_git_work_contexts(
+        context,
+        repo,
+        state=state,
+        agent_id="replacement",
+        session_id="replacement-session",
+        project_id="project",
+        project_repo={
+            "managed_repo_id": MANAGED_REPO_ID,
+            "guest_repo_name": "repo",
+            "target_dir": "/home/agent/repo",
+            "execution_backend": "libvirt_vm",
+        },
+        dispatch_id="dispatch-rework",
+        tasks=[
+            {
+                "id": "rework-task",
+                "project_id": "project",
+                "owner_agent_id": "replacement",
+                "git_base_branch": "main",
+                "git_base_commit_sha": base_commit if pin_task_base else None,
+            }
+        ],
+        base_branch="main",
+    )
+
+    assert (
+        rejected_deliverable_continuation_git_source(
+            state,
+            task_id="rework-task",
+        )
+        is not None
+    )
+    assert prepared["base_ref"] == "main"
+    assert prepared["prior_base_commit"] == base_commit
+    assert prepared["pinned_base_commit"] == (base_commit if pin_task_base else None)
+    assert prepared["worktree_identity_commit"] == rejected_commit
+    assert prepared["agent_branch"].endswith("-777777777777")
+    assert prepared["dependency_git_sources"] == [
+        {
+            "dependency_task_id": "rework-task",
+            "deliverable_id": "rejected-deliverable",
+            "branch": rejected_branch,
+            "commit_sha": rejected_commit,
+            "relationship_kind": "task_continuation",
+            "pinned_ref": pinned_ref,
+        }
+    ]
+    assert (
+        WorkerTaskDependencyGitSource.model_validate(
+            prepared["dependency_git_sources"][0]
+        ).relationship_kind
+        == "task_continuation"
+    )
+    assert len(rows) == 1
+    work_context = next(
+        context
+        for context in result_state.git_work_contexts.values()
+        if context.agent_id == "replacement"
+    )
+    assert work_context.base_branch == "main"
+    assert work_context.base_commit == base_commit
+    assert work_context.dependency_git_sources[0].relationship_kind == "task_continuation"
+    assert work_context.dependency_composition_manifest is not None
+    assert work_context.dependency_composition_manifest.composed_commit_sha == composed_commit
 
 
 def _correction_state() -> TeamState:
