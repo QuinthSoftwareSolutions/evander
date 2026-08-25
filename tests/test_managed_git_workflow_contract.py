@@ -14,6 +14,7 @@ from evander.effects.providers.git_promote_agent_branch import (
 from evander.effects.providers.git_push_branch import GitPushBranchEffectProvider
 from evander.events.provider_models import (
     GitEnsureManagedRepoEffectDefinition,
+    GitMergeBaseQueryDefinition,
     GitPrNoteQueryDefinition,
     GitPromoteAgentBranchEffectDefinition,
     GitPushBranchEffectDefinition,
@@ -22,6 +23,7 @@ from evander.events.provider_models import (
 from evander.events.models import materialize_node_definition
 from evander.git_pr_notes import agent_pr_notes_ref_for_session
 from evander.queries.providers.base import QueryRuntimeContext
+from evander.queries.providers.git_merge_base import GitMergeBaseQueryProvider
 from evander.queries.providers.git_pr_note import GitPrNoteQueryProvider
 from evander.triggers.providers.base import TriggerRuntimeContext
 from evander.triggers.providers.git_push import (
@@ -58,6 +60,14 @@ class _ManagedGitPort:
     def git_pr_note_query(self, **kwargs: object) -> dict[str, object]:
         self.calls.append(("note", dict(kwargs)))
         return {"has_note": True, "body": "PR body", "commit_sha": _COMMIT_SHA}
+
+    def resolve_managed_git_merge_base(self, **kwargs: object) -> dict[str, object]:
+        self.calls.append(("merge-base", dict(kwargs)))
+        return {
+            "target_commit_sha": "b" * 40,
+            "candidate_commit_sha": _COMMIT_SHA,
+            "merge_base_commit_sha": "c" * 40,
+        }
 
 
 def _effect_context(port: _ManagedGitPort) -> EffectRuntimeContext:
@@ -112,6 +122,23 @@ def test_managed_git_effect_and_query_providers_call_exact_managed_id_contract()
     )
     assert push.execute()["success"] is True
 
+    merge_base = GitMergeBaseQueryProvider()
+    merge_base.initialize(
+        GitMergeBaseQueryDefinition(
+            id="merge-base",
+            display_name="Resolve merge base",
+            type="query:git:merge-base",
+            managed_repo_id=f" {_MANAGED_REPO_ID} ",
+            target_branch=" main ",
+            candidate_commit_sha=f" {_COMMIT_SHA} ",
+        ),
+        QueryRuntimeContext(
+            git_merge_base_reader=port,
+            metadata={"directory_path": "root/team"},
+        ),
+    )
+    assert merge_base.execute()["merge_base_commit_sha"] == "c" * 40
+
     note = GitPrNoteQueryProvider()
     note.initialize(
         GitPrNoteQueryDefinition(
@@ -152,6 +179,15 @@ def test_managed_git_effect_and_query_providers_call_exact_managed_id_contract()
                 "expected_commit_sha": _COMMIT_SHA,
                 "destination_branch": "feature/topic",
                 "directory_path": "root",
+            },
+        ),
+        (
+            "merge-base",
+            {
+                "managed_repo_id": _MANAGED_REPO_ID,
+                "target_branch": "main",
+                "candidate_commit_sha": _COMMIT_SHA,
+                "directory_path": "root/team",
             },
         ),
         (

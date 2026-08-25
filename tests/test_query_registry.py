@@ -6,11 +6,13 @@ from types import SimpleNamespace
 
 import pytest
 
+from evander.admin.workflow_catalog import _WORKFLOW_EDITOR_NODE_CATALOG
 from evander.config import GatewayConfig
 from evander.events.models import materialize_node_definition
 from evander.events.provider_models import (
     AdoWorkItemsQueryDefinition,
     AgentArtifactTextQueryDefinition,
+    GitMergeBaseQueryDefinition,
     GitPrNoteQueryDefinition,
     IssueGetQueryDefinition,
     IssueListQueryDefinition,
@@ -45,6 +47,8 @@ class _AdminServiceStub:
     vms: list[VmSummary]
     pr_note_result: dict[str, object] | None = None
     pr_note_calls: list[dict[str, object]] | None = None
+    merge_base_result: dict[str, object] | None = None
+    merge_base_calls: list[dict[str, object]] | None = None
     issue_result: dict[str, object] | None = None
     issue_calls: list[dict[str, object]] | None = None
     issue_list_result: list[dict[str, object]] | None = None
@@ -62,6 +66,13 @@ class _AdminServiceStub:
         if self.pr_note_result is None:
             raise RuntimeError("pr_note_result not configured")
         return dict(self.pr_note_result)
+
+    def resolve_managed_git_merge_base(self, **kwargs):
+        if self.merge_base_calls is not None:
+            self.merge_base_calls.append(kwargs)
+        if self.merge_base_result is None:
+            raise RuntimeError("merge_base_result not configured")
+        return dict(self.merge_base_result)
 
     def get_issue(self, **kwargs):
         if self.issue_calls is not None:
@@ -94,6 +105,7 @@ def test_default_registry_includes_known_query_types() -> None:
         "query:vm:run-state",
         "query:artifact-space:list",
         "query:artifact-space:latest",
+        "query:git:merge-base",
         "query:git:pr-note",
         "query:session-context",
         "query:session:list",
@@ -133,6 +145,40 @@ def test_pull_request_get_query_definition_materializes_and_normalizes_provider(
     assert materialized.provider == "azure_devops"
     assert materialized.repo == "repo-1"
     assert materialized.pr_id == "17"
+
+
+def test_git_merge_base_query_definition_materializes() -> None:
+    node = WorkflowNodeEnvelope(
+        id="query-merge-base",
+        display_name="Git merge base",
+        type="query:git:merge-base",
+        config={
+            "managed_repo_id": "mr_0123456789abcdefabcd",
+            "target_branch": "main",
+            "candidate_commit_sha": "a" * 40,
+            "directory_path": "root/team-a",
+        },
+    )
+
+    materialized = materialize_node_definition(node)
+
+    assert isinstance(materialized, GitMergeBaseQueryDefinition)
+    assert materialized.target_branch == "main"
+    assert materialized.candidate_commit_sha == "a" * 40
+
+
+def test_git_merge_base_query_has_editor_catalog_metadata() -> None:
+    entry = next(
+        item for item in _WORKFLOW_EDITOR_NODE_CATALOG if item.type == "query:git:merge-base"
+    )
+
+    assert entry.label == "Git merge base"
+    assert [field.key for field in entry.fields] == [
+        "managed_repo_id",
+        "target_branch",
+        "candidate_commit_sha",
+        "directory_path",
+    ]
 
 
 def test_pull_request_work_items_query_definition_materializes_and_normalizes_provider() -> None:
@@ -271,6 +317,52 @@ def test_git_pr_note_query_provider_returns_note_body(tmp_path: Path) -> None:
     ]
     assert output["has_note"] is True
     assert output["body"] == "Agent note body"
+
+
+def test_git_merge_base_query_provider_returns_pinned_target_and_merge_base() -> None:
+    target_commit = "b" * 40
+    candidate_commit = "c" * 40
+    merge_base_commit = "a" * 40
+    query = GitMergeBaseQueryDefinition(
+        id="query-merge-base",
+        display_name="Git merge base",
+        type="query:git:merge-base",
+        managed_repo_id="mr_0123456789abcdefabcd",
+        target_branch="main",
+        candidate_commit_sha=candidate_commit,
+        directory_path="root/team-a",
+    )
+    admin_service = _AdminServiceStub(
+        vms=[],
+        merge_base_result={
+            "managed_repo_id": "mr_0123456789abcdefabcd",
+            "directory_path": "root/team-a",
+            "target_branch": "main",
+            "target_commit_sha": target_commit,
+            "candidate_commit_sha": candidate_commit,
+            "merge_base_commit_sha": merge_base_commit,
+        },
+        merge_base_calls=[],
+    )
+    admin_service.managed_git_admin = SimpleNamespace(  # type: ignore[attr-defined]
+        resolve_merge_base=admin_service.resolve_managed_git_merge_base
+    )
+
+    factory = QueryProviderFactory(
+        provider_config_resolver=_ResolverStub(), admin_service=admin_service
+    )
+    output = factory.build(query).execute()
+
+    assert admin_service.merge_base_calls == [
+        {
+            "managed_repo_id": "mr_0123456789abcdefabcd",
+            "target_branch": "main",
+            "candidate_commit_sha": candidate_commit,
+            "directory_path": "root/team-a",
+        }
+    ]
+    assert output["target_commit_sha"] == target_commit
+    assert output["merge_base_commit_sha"] == merge_base_commit
 
 
 def test_session_context_query_provider_returns_metadata(tmp_path: Path) -> None:

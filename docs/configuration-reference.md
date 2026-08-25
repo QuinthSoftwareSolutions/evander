@@ -1011,6 +1011,7 @@ Each query entry uses the same `id`, `display_name`, `type`, and optional
 | `query:ado:work-items` | _none beyond envelope_ | `directory_path`, `project`, `query_mode`, `wiql`, `current_iteration`, `team`, `iteration`, `area_path`, `states`, `types`, `tags_any`, `text_search`, `top`, `skip`, `outputs` |
 | `query:ado:activity` | `since` | `until`, `directory_path`, `actor`, `activity_kinds`, `project`, `repo`, `work_item_id`, `pr_id`, `top`, `cursor`, `include_raw`, `outputs` |
 | `query:remote-issues` | `provider` | `directory_path`, ADO: `project`, `query_mode`, `wiql`, `current_iteration`, `team`, `iteration`, `area_path`, `states`, `types`, `tags_any`; GitHub: `repo`, `state`, `labels_any`, `labels_all`, `assignee`, `author`, `mentioned`, `milestone`, `since`; common: `text_search`, `top`, `skip`, `outputs` |
+| `query:git:merge-base` | `managed_repo_id`, `target_branch`, `candidate_commit_sha` | `directory_path`, `outputs` |
 | `query:git:pr-note` | `managed_repo_id`, `commit_sha`, `notes_ref` | `outputs` |
 | `query:issue:get` | `issue_id` | `outputs` |
 | `query:issue:list` | _none beyond envelope_ | `directory_path`, `direct_only`, `states`, `exclude_states`, `source`, `source_type`, `tags_any`, `tags_all`, `metadata_equals`, `metadata_exists`, `metadata_prefix`, `limit`, `outputs` |
@@ -1032,6 +1033,11 @@ Each query entry uses the same `id`, `display_name`, `type`, and optional
 
 `query:agent:artifact-text` reads a UTF-8 text file from the resolved session's
 artifacts folder. The `path` value must be relative and stay inside that folder.
+
+`query:git:merge-base` refreshes the selected managed target branch, pins its exact
+commit, and resolves the unique merge base with the exact candidate commit. It returns
+`target_commit_sha`, `candidate_commit_sha`, and `merge_base_commit_sha` so later nodes
+can use a reproducible full-branch content boundary without consulting a mutable ref.
 
 `query:session:list` reads host-side session manifests and filters by generic
 session metadata. `metadata_equals` and `metadata_prefix` are JSON objects keyed

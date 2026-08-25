@@ -618,6 +618,38 @@ def test_resolve_branch_commit_uses_scoped_managed_repository_ref(tmp_path: Path
         )
 
 
+def test_resolve_merge_base_keeps_original_feature_scope_for_correction_successor(
+    tmp_path: Path,
+) -> None:
+    source, _, initial_main = _source_repository(tmp_path)
+    _run("git", "switch", "-c", "release/candidate", cwd=source)
+    _commit(source, "feature.txt", "feature\n", "feature capability")
+    _commit(source, "verification.txt", "verification\n", "release verification correction")
+    candidate = _commit(source, "test-host.txt", "host\n", "test host correction")
+    _run("git", "switch", "main", cwd=source)
+    target_commit = _commit(source, "main.txt", "main advance\n", "advance main")
+    _run("git", "push", "origin", "main", cwd=source)
+
+    service = _service(tmp_path)
+    record = service.register_repository("root/team-a", str(source))
+
+    result = service.resolve_merge_base(
+        record["managed_repo_id"],
+        directory_path="root/team-a/project",
+        target_branch="main",
+        candidate_commit_sha=candidate,
+    )
+
+    assert result == {
+        "managed_repo_id": record["managed_repo_id"],
+        "directory_path": "root/team-a/project",
+        "target_branch": "main",
+        "target_commit_sha": target_commit,
+        "candidate_commit_sha": candidate,
+        "merge_base_commit_sha": initial_main,
+    }
+
+
 def test_verify_branch_commit_ancestry_pins_tip_and_required_history(
     tmp_path: Path,
 ) -> None:

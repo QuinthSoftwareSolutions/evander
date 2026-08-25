@@ -10,6 +10,7 @@ from evander.events.models import (
     materialize_node_definition,
 )
 from evander.provider_runtime.contracts import (
+    GitMergeBaseReader,
     GitPrNoteReader,
     IssueReader,
     ProviderRuntimeBase,
@@ -26,6 +27,7 @@ class QueryRuntimeContext(ProviderRuntimeBase):
     """Host-side runtime inputs used by query providers."""
 
     vm_inventory: VmInventory | None = None
+    git_merge_base_reader: GitMergeBaseReader | None = None
     git_pr_note_reader: GitPrNoteReader | None = None
     issue_reader: IssueReader | None = None
     session_lookup: SessionLookup | None = None

@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-08-25 - Release PR Scope Pinning
+
+- Added a read-only managed-Git merge-base query that refreshes and pins the PR target branch
+  separately from canonical publication leases.
+- Based True APP release PR titles and descriptions on the complete candidate branch against the
+  pinned `main` target, including correction successors, and moved Tricia's packaging runs to
+  `gpt-5.6-terra`.
+
 ## 2026-08-24 - Rejected Candidate Successor Recovery
 
 - Recovered automatic successor creation for reviewed correction aggregates whose retained

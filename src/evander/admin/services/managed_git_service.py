@@ -746,6 +746,73 @@ class ManagedGitAdminService:
                 f"refs/heads/{normalized_branch}",
             )
 
+    def resolve_merge_base(
+        self,
+        managed_repo_id: str,
+        *,
+        directory_path: str,
+        target_branch: str,
+        candidate_commit_sha: str,
+    ) -> dict[str, str]:
+        """Pin a fresh target branch tip and resolve its merge base with a candidate."""
+
+        directory = self._normalize_directory_path(directory_path)
+        normalized_target_branch = _normalize_branch(
+            target_branch,
+            field_name="target_branch",
+        )
+        candidate_commit = _normalize_object_id(
+            candidate_commit_sha,
+            field_name="candidate_commit_sha",
+        )
+        self.refresh_repository_if_branch_changed(
+            managed_repo_id,
+            branch=normalized_target_branch,
+            directory_path=directory,
+        )
+
+        record = self._require_scoped_record(managed_repo_id, directory)
+        bare_path = _managed_bare_path(self._managed_root, record)
+        with self._repo_lock(managed_repo_id, exclusive=False):
+            record = self._require_scoped_record(managed_repo_id, directory)
+            bare_path = _managed_bare_path(self._managed_root, record)
+            target_commit = self._resolve_ref(
+                bare_path,
+                f"refs/heads/{normalized_target_branch}",
+            )
+            if target_commit is None:
+                raise ValueError(
+                    f"managed Git target branch {normalized_target_branch!r} does not exist"
+                )
+            self._require_commit(bare_path, target_commit)
+            self._require_commit(bare_path, candidate_commit)
+            merge_base_result = self._run_git(
+                [
+                    "git",
+                    f"--git-dir={bare_path}",
+                    "merge-base",
+                    "--all",
+                    target_commit,
+                    candidate_commit,
+                ],
+                check=False,
+            )
+            merge_base_commit = merge_base_result.stdout.strip().casefold()
+            if merge_base_result.returncode != 0 or not _HEX_OBJECT_ID.fullmatch(merge_base_commit):
+                raise ValueError(
+                    f"target branch {normalized_target_branch!r} and candidate "
+                    f"{candidate_commit} have no unique merge base"
+                )
+
+        return {
+            "managed_repo_id": managed_repo_id,
+            "directory_path": directory,
+            "target_branch": normalized_target_branch,
+            "target_commit_sha": target_commit,
+            "candidate_commit_sha": candidate_commit,
+            "merge_base_commit_sha": merge_base_commit,
+        }
+
     def resolve_team_review_commit(
         self,
         managed_repo_id: str,

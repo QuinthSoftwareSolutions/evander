@@ -243,6 +243,7 @@ The managed Git workflow contracts are:
 | `effect:agent:grant-repo-access` | session/VM selector, `managed_repo_id`, access mode; creates a session-persistent grant |
 | `effect:agent:revoke-repo-access` | session/VM selector and exact `managed_repo_id` |
 | `effect:git:promote-agent-branch` | `managed_repo_id`, `agent_branch`, `target_branch`, `expected_commit_sha` |
+| `query:git:merge-base` | `managed_repo_id`, `target_branch`, exact `candidate_commit_sha`; returns the pinned target and merge-base SHAs |
 | `query:git:pr-note` | `managed_repo_id`, exact `commit_sha`, `notes_ref` |
 | `effect:git:push-branch` / `effect:pr:create` | `managed_repo_id`, `source_ref`, `expected_commit_sha`, `destination_branch` |
 
@@ -252,6 +253,10 @@ the commit under review. A superseded event returns `source_ref_moved` instead o
 newer tip implicitly. Updates of review and Team refs use compare-and-swap semantics.
 
 PR-note lookup reads only the note attached to the pinned commit. It does not walk first parents.
+
+Merge-base lookup refreshes only the requested upstream target branch, pins the observed target
+commit, requires the candidate object to exist in the managed repository, and returns their unique
+merge base. Workflows should keep this PR-content boundary separate from publication lease bases.
 
 Publication fetches the upstream destination into an operation-local ref, requires that destination
 to be an ancestor of the approved SHA, and pushes the exact SHA with an explicit lease. Operations

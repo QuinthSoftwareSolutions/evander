@@ -6,6 +6,7 @@ from typing import Any
 __all__ = [
     "AdoWorkItemsQueryProvider",
     "CommunicationMessagesQueryProvider",
+    "GitMergeBaseQueryProvider",
     "IssueGetQueryProvider",
     "IssueListQueryProvider",
     "ModelUsageListQueryProvider",
@@ -27,6 +28,7 @@ __all__ = [
 _EXPORT_MODULES = {
     "AdoWorkItemsQueryProvider": ".ado_work_items",
     "CommunicationMessagesQueryProvider": ".communication_messages",
+    "GitMergeBaseQueryProvider": ".git_merge_base",
     "IssueGetQueryProvider": ".issue_get",
     "IssueListQueryProvider": ".issue_list",
     "ModelUsageListQueryProvider": ".model_usage_list",

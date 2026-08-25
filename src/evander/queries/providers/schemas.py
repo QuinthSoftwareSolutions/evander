@@ -30,6 +30,14 @@ class GitPrNoteQueryDefinition(QueryDefinition):
     notes_ref: ConfigValue
 
 
+class GitMergeBaseQueryDefinition(QueryDefinition):
+    type: Literal["query:git:merge-base"]
+    managed_repo_id: ConfigValue
+    target_branch: ConfigValue
+    candidate_commit_sha: ConfigValue
+    directory_path: ConfigValue | None = None
+
+
 class SessionContextQueryDefinition(QueryDefinition):
     type: Literal["query:session-context"]
     target: ConfigValue | None = None

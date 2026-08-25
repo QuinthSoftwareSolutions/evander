@@ -1396,6 +1396,14 @@ _QUERY_OUTPUT_SCHEMAS = {
         "notes_ref": {"type": "string"},
         "commit_sha": {"type": "string"},
     },
+    "query:git:merge-base": {
+        "managed_repo_id": {"type": "string"},
+        "directory_path": {"type": "string"},
+        "target_branch": {"type": "string"},
+        "target_commit_sha": {"type": "string"},
+        "candidate_commit_sha": {"type": "string"},
+        "merge_base_commit_sha": {"type": "string"},
+    },
     "query:session-context": {
         "session_id": {"type": "string"},
         "vm_name": {"type": "string"},

@@ -95,6 +95,7 @@ class QueryProviderFactory:
             provider_config_resolver=self.provider_config_resolver,
             vm_inventory=self._provider_runtime_ports.vm_inventory
             or self._provider_runtime_ports.gate_vm_inventory,
+            git_merge_base_reader=self._provider_runtime_ports.git_merge_base_reader,
             git_pr_note_reader=self._provider_runtime_ports.git_pr_note_reader,
             issue_reader=self._provider_runtime_ports.issue_reader,
             session_lookup=self._provider_runtime_ports.session_lookup,

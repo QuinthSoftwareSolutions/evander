@@ -210,6 +210,14 @@ class AdminRuntimeProviderAdapter:
             **kwargs,
         )
 
+    def resolve_managed_git_merge_base(self, *args: Any, **kwargs: Any) -> Any:
+        return self._call_required(
+            self._managed_git_method("resolve_merge_base"),
+            "resolve_managed_git_merge_base",
+            *args,
+            **kwargs,
+        )
+
     def verify_managed_git_reference_repo_commit_transition(
         self,
         *args: Any,
@@ -480,6 +488,7 @@ def build_provider_runtime_ports(
         session_metadata_updater=_pick(provider_runtime, "session_metadata_updater", admin_adapter),
         git_branch_promoter=_pick(provider_runtime, "git_branch_promoter", admin_adapter),
         pull_request_creator=_pick(provider_runtime, "pull_request_creator", admin_adapter),
+        git_merge_base_reader=_pick(provider_runtime, "git_merge_base_reader", admin_adapter),
         git_pr_note_reader=_pick(provider_runtime, "git_pr_note_reader", admin_adapter),
         issue_reader=_pick(provider_runtime, "issue_reader", admin_adapter),
         session_context_reader=_pick(provider_runtime, "session_context_reader", admin_adapter),

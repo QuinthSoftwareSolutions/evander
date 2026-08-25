@@ -122,6 +122,10 @@ class GitPrNoteReader(Protocol):
     def git_pr_note_query(self, **kwargs: Any) -> Any: ...
 
 
+class GitMergeBaseReader(Protocol):
+    def resolve_managed_git_merge_base(self, **kwargs: Any) -> Any: ...
+
+
 class IssueReader(Protocol):
     def get_issue(self, **kwargs: Any) -> Any: ...
 
@@ -155,6 +159,7 @@ class ProviderRuntimePorts:
     session_metadata_updater: SessionMetadataUpdater | None = None
     git_branch_promoter: GitBranchPromoter | None = None
     pull_request_creator: PullRequestCreator | None = None
+    git_merge_base_reader: GitMergeBaseReader | None = None
     git_pr_note_reader: GitPrNoteReader | None = None
     issue_reader: IssueReader | None = None
     session_context_reader: SessionContextReader | None = None
