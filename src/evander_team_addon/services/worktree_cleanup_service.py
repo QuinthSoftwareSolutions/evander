@@ -5,7 +5,7 @@ import json
 import fcntl
 import os
 import re
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -29,6 +29,7 @@ from ..models import (
     TeamDispatchActivityStatus,
     TeamDispatchStatus,
     TeamState,
+    WORKTREE_CLEANUP_TRANSIENT_FAILURE_CHECKS,
     WorktreeCleanupCandidate,
     WorktreeCleanupState,
     summarize_worktree_cleanup_inventory,
@@ -40,11 +41,25 @@ from .domain.task_assessment import TaskAssessmentService
 DEFAULT_CLEANUP_GRACE_SECONDS = 300
 DEFAULT_CLEANUP_RETRY_SECONDS = 300
 DEFAULT_CLEANUP_RECOVERY_SECONDS = 900
+DEFAULT_CLEANUP_MAX_RETRY_SECONDS = 21_600
+DEFAULT_CLEANUP_MAX_AUTOMATIC_ATTEMPTS = 8
 _FULL_GIT_OBJECT_ID = re.compile(r"(?:[0-9a-f]{40}|[0-9a-f]{64})")
 _ACTIVE_DISPATCH_STATES = frozenset(
     {
         TeamDispatchStatus.PREPARING,
         TeamDispatchStatus.LEASED,
+    }
+)
+_STALE_GENERATION_FAILURE_CHECKS = frozenset(
+    {
+        "head_mismatch",
+        "retained_commit_mismatch",
+    }
+)
+_TERMINAL_CLEANUP_STATES = frozenset(
+    {
+        WorktreeCleanupState.SUCCEEDED,
+        WorktreeCleanupState.SUPERSEDED,
     }
 )
 
@@ -90,6 +105,7 @@ class WorktreeCleanupReconcileResult:
     attempted_count: int
     succeeded_count: int
     recovery_required_count: int
+    operator_action_required_count: int
     deferred_count: int
     dry_run_count: int
     reclaimed_bytes: int
@@ -103,6 +119,7 @@ class WorktreeCleanupReconcileResult:
             "attempted_count": self.attempted_count,
             "succeeded_count": self.succeeded_count,
             "recovery_required_count": self.recovery_required_count,
+            "operator_action_required_count": self.operator_action_required_count,
             "deferred_count": self.deferred_count,
             "dry_run_count": self.dry_run_count,
             "reclaimed_bytes": self.reclaimed_bytes,
@@ -121,7 +138,10 @@ class EffectTaskWorktreeCleanupBackend:
         repository: TeamStateRepository | None = None,
     ) -> None:
         self._context = context
-        self._repository = repository
+        # Keep the optional argument for callers compiled against the earlier
+        # constructor. Physical cleanup must use the scope frozen on the
+        # candidate rather than re-reading mutable project configuration.
+        _ = repository
 
     def execution_backend_for_session(
         self,
@@ -150,14 +170,13 @@ class EffectTaskWorktreeCleanupBackend:
         repo_name, worktree_name = _task_worktree_components(candidate.worktree_path)
         expected_commit_sha = _required_expected_commit_sha(candidate)
         if candidate.execution_backend == "container_worker_vm":
-            project_directory = self._candidate_project_directory(candidate)
             _selected, config = selected_execution_backend_for_target(
                 self._context,
                 {
                     "session_id": candidate.session_id,
                     "execution_backend": "container_worker_vm",
                 },
-                directory_path=project_directory,
+                directory_path=candidate.directory_path,
             )
             record = container_backend(self._context, config).cleanup_task_worktree(
                 session_id=candidate.session_id,
@@ -220,16 +239,6 @@ class EffectTaskWorktreeCleanupBackend:
         )
         return payload
 
-    def _candidate_project_directory(
-        self,
-        candidate: WorktreeCleanupCandidate,
-    ) -> str:
-        if self._repository is not None:
-            project = self._repository.read().projects.get(candidate.project_id)
-            if project is not None and project.git is not None:
-                return project.git.directory_path
-        return str(getattr(self._context, "metadata", {}).get("directory_path") or "root")
-
 
 class TeamWorktreeCleanupService:
     """Durably enqueue and reconcile task-scoped physical worktree cleanup."""
@@ -253,22 +262,47 @@ class TeamWorktreeCleanupService:
         grace = timedelta(seconds=max(0, int(grace_seconds)))
         recovery_after = timedelta(seconds=max(1, int(recovery_seconds)))
         snapshot = self._repository.read()
+        selected_context_ids = _cleanup_context_ids_to_enqueue(snapshot)
         execution_targets: dict[str, tuple[str, str]] = {}
         for context in snapshot.git_work_contexts.values():
-            task = snapshot.tasks.get(context.task_id)
-            if task is None:
+            if context.id not in selected_context_ids:
                 continue
-            project = snapshot.projects.get(task.project_id)
+            task = snapshot.tasks.get(context.task_id)
             agent = snapshot.agents.get(context.agent_id)
-            if project is None or project.git is None or agent is None:
+            if task is None or agent is None:
+                continue
+            frozen_candidate = _cleanup_candidate_for_context(
+                snapshot,
+                context=context,
+            )
+            if frozen_candidate is not None:
+                execution_targets[context.id] = (
+                    frozen_candidate.session_id,
+                    frozen_candidate.execution_backend,
+                )
                 continue
             session_id = _git_work_context_session_id(snapshot, context)
             if session_id is None:
                 continue
+            project = snapshot.projects.get(task.project_id)
+            if project is None or project.git is None:
+                continue
+            prior_candidate = _cleanup_candidate_with_context_identity(
+                snapshot,
+                context=context,
+                session_id=session_id,
+                managed_repo_id=project.git.managed_repo_id,
+            )
+            if prior_candidate is not None:
+                execution_targets[context.id] = (
+                    prior_candidate.session_id,
+                    prior_candidate.execution_backend,
+                )
+                continue
             try:
                 execution_backend = self._backend.execution_backend_for_session(
                     session_id=session_id,
-                    directory_path=project.git.directory_path,
+                    directory_path=project.directory_path,
                 )
                 execution_targets[context.id] = (session_id, execution_backend)
             except Exception:
@@ -278,13 +312,23 @@ class TeamWorktreeCleanupService:
 
         counts = {"enqueued": 0, "recovered": 0, "refreshed": 0}
 
-        def _mutate(state: TeamState) -> TeamState:
+        def _mutate(
+            state: TeamState,
+            *,
+            append_activity: Callable[[TeamDispatchActivity], object] | None = None,
+        ) -> TeamState:
             for candidate in state.worktree_cleanup_candidates.values():
                 if (
                     candidate.state == WorktreeCleanupState.PROCESSING
                     and candidate.updated_at <= effective_now - recovery_after
                 ):
-                    candidate.state = WorktreeCleanupState.RECOVERY_REQUIRED
+                    candidate.automatic_retry_count += 1
+                    if candidate.automatic_retry_count >= DEFAULT_CLEANUP_MAX_AUTOMATIC_ATTEMPTS:
+                        candidate.state = WorktreeCleanupState.OPERATOR_ACTION_REQUIRED
+                        candidate.operator_action_required_at = effective_now
+                        candidate.operator_action_reason = "automatic_retry_exhausted"
+                    else:
+                        candidate.state = WorktreeCleanupState.PENDING
                     candidate.last_safety_check = "processing_lease_expired"
                     candidate.last_error = (
                         "cleanup processing did not complete before the recovery grace"
@@ -292,8 +336,20 @@ class TeamWorktreeCleanupService:
                     candidate.eligible_at = effective_now
                     candidate.updated_at = effective_now
                     counts["recovered"] += 1
+                    if append_activity is not None:
+                        append_activity(
+                            self._audit_activity(
+                                candidate,
+                                status=TeamDispatchActivityStatus.FAILURE,
+                                failed_check="processing_lease_expired",
+                                message=candidate.last_error,
+                                now=effective_now,
+                            )
+                        )
 
             assessments = TaskAssessmentService(state)
+            _supersede_stale_cleanup_generations(state, now=effective_now)
+            selected_context_ids = _cleanup_context_ids_to_enqueue(state)
             for context in sorted(
                 state.git_work_contexts.values(),
                 key=lambda item: (
@@ -302,12 +358,16 @@ class TeamWorktreeCleanupService:
                     item.id,
                 ),
             ):
-                if context.state == GitWorkContextState.ACTIVE or context.worktree_path is None:
+                if (
+                    context.id not in selected_context_ids
+                    or context.state == GitWorkContextState.ACTIVE
+                    or context.worktree_path is None
+                ):
                     continue
                 task = state.tasks.get(context.task_id)
                 project = state.projects.get(task.project_id) if task is not None else None
                 agent = state.agents.get(context.agent_id)
-                if task is None or project is None or project.git is None or agent is None:
+                if task is None or project is None or agent is None:
                     continue
                 try:
                     resolved = (
@@ -325,6 +385,12 @@ class TeamWorktreeCleanupService:
                 session_id, execution_backend = execution_target
                 if execution_backend not in {"libvirt_vm", "container_worker_vm"}:
                     continue
+                frozen_candidate = _cleanup_candidate_for_context(
+                    state,
+                    context=context,
+                )
+                if frozen_candidate is None and project.git is None:
+                    continue
                 try:
                     _task_worktree_components(context.worktree_path)
                 except ValueError:
@@ -335,13 +401,19 @@ class TeamWorktreeCleanupService:
                     state,
                     context,
                 )
-                identity = _cleanup_candidate_identity(
-                    task_id=task.id,
-                    managed_repo_id=project.git.managed_repo_id,
-                    session_id=session_id,
-                    worktree_path=context.worktree_path,
-                )
-                existing = state.worktree_cleanup_candidates.get(identity)
+                if frozen_candidate is not None:
+                    identity = frozen_candidate.id
+                    existing = frozen_candidate
+                else:
+                    assert project.git is not None
+                    identity = _cleanup_candidate_identity(
+                        task_id=task.id,
+                        git_work_context_id=context.id,
+                        managed_repo_id=project.git.managed_repo_id,
+                        session_id=session_id,
+                        worktree_path=context.worktree_path,
+                    )
+                    existing = state.worktree_cleanup_candidates.get(identity)
                 reason = "task_resolved" if resolved else "task_reassigned"
                 if existing is not None:
                     if (
@@ -360,6 +432,9 @@ class TeamWorktreeCleanupService:
                         )
                         existing.last_safety_check = None
                         existing.last_error = None
+                        existing.automatic_retry_count = 0
+                        existing.operator_action_required_at = None
+                        existing.operator_action_reason = None
                         _set_ignored_file_evidence(existing, [])
                         existing.ignored_bytes = 0
                         existing.worktree_bytes = 0
@@ -375,22 +450,24 @@ class TeamWorktreeCleanupService:
                     ):
                         # Refreshing Git safety metadata must not erase a
                         # prior attempt's durable backoff or failure evidence.
-                        # Historical contexts can share this candidate identity
-                        # and otherwise toggle the expected head on every
-                        # maintenance pass.
+                        # One context generation may advance its recorded head
+                        # before physical cleanup runs.
                         existing.expected_head = expected_head
                         existing.retained_commit_sha = retained_commit
                         existing.reason = reason
                         existing.updated_at = effective_now
                         counts["refreshed"] += 1
                     continue
+                assert project.git is not None
                 state.worktree_cleanup_candidates[identity] = WorktreeCleanupCandidate(
                     id=identity,
                     agent_id=context.agent_id,
                     session_id=session_id,
                     task_id=task.id,
                     project_id=project.id,
+                    git_work_context_id=context.id,
                     managed_repo_id=project.git.managed_repo_id,
+                    directory_path=project.directory_path,
                     execution_backend=execution_backend,
                     worktree_path=context.worktree_path,
                     branch=context.agent_branch,
@@ -410,7 +487,12 @@ class TeamWorktreeCleanupService:
         if not any(counts.values()):
             return snapshot, counts
         counts = {"enqueued": 0, "recovered": 0, "refreshed": 0}
-        state = self._repository.update(_mutate)
+        state = self._repository.update_with_command_transaction(
+            lambda current, tx: _mutate(
+                current,
+                append_activity=tx.append_dispatch_activity,
+            )
+        )
         return state, counts
 
     def reconcile(
@@ -424,7 +506,12 @@ class TeamWorktreeCleanupService:
         dry_run: bool | None = False,
     ) -> WorktreeCleanupReconcileResult:
         effective_now = _ensure_utc(now or datetime.now(UTC))
-        _state, enqueue_counts = self.enqueue_candidates(
+        operator_action_ids_before = {
+            candidate.id
+            for candidate in self._repository.read().worktree_cleanup_candidates.values()
+            if candidate.state == WorktreeCleanupState.OPERATOR_ACTION_REQUIRED
+        }
+        enqueue_state, enqueue_counts = self.enqueue_candidates(
             now=effective_now,
             grace_seconds=grace_seconds,
             recovery_seconds=recovery_seconds,
@@ -432,6 +519,11 @@ class TeamWorktreeCleanupService:
         attempted = 0
         succeeded = 0
         recovery_required = 0
+        operator_action_required = sum(
+            candidate.state == WorktreeCleanupState.OPERATOR_ACTION_REQUIRED
+            and candidate.id not in operator_action_ids_before
+            for candidate in enqueue_state.worktree_cleanup_candidates.values()
+        )
         deferred = 0
         dry_runs = 0
         reclaimed_bytes = 0
@@ -462,6 +554,8 @@ class TeamWorktreeCleanupService:
                 dry_runs += 1
             elif status == "deferred":
                 deferred += 1
+            elif status == "operator_action_required":
+                operator_action_required += 1
             else:
                 recovery_required += 1
             if error is not None:
@@ -473,12 +567,91 @@ class TeamWorktreeCleanupService:
             attempted_count=attempted,
             succeeded_count=succeeded,
             recovery_required_count=recovery_required,
+            operator_action_required_count=operator_action_required,
             deferred_count=deferred,
             dry_run_count=dry_runs,
             reclaimed_bytes=reclaimed_bytes,
             candidate_ids=tuple(candidate_ids),
             errors=tuple(errors),
         )
+
+    def requeue_operator_action(
+        self,
+        candidate_id: str,
+        *,
+        requested_by: str,
+        reason: str,
+        now: datetime | None = None,
+        expected_revision: int | None = None,
+    ) -> tuple[TeamState, WorktreeCleanupCandidate]:
+        """Requeue one halted candidate without bypassing any cleanup safety check."""
+
+        normalized_candidate_id = str(candidate_id or "").strip()
+        normalized_actor = str(requested_by or "").strip()
+        normalized_reason = str(reason or "").strip()
+        if not normalized_candidate_id:
+            raise ValueError("cleanup candidate id is required")
+        if not normalized_actor:
+            raise ValueError("cleanup retry actor is required")
+        if not normalized_reason:
+            raise ValueError("cleanup retry reason is required")
+        if len(normalized_reason) > 1_000:
+            raise ValueError("cleanup retry reason must be at most 1000 characters")
+
+        effective_now = _ensure_utc(now or datetime.now(UTC))
+        snapshot = self._repository.read()
+        candidate = snapshot.worktree_cleanup_candidates.get(normalized_candidate_id)
+        if candidate is None:
+            raise ValueError(f"cleanup candidate {normalized_candidate_id} does not exist")
+        requeued: WorktreeCleanupCandidate | None = None
+
+        def _mutate(state: TeamState) -> TeamState:
+            nonlocal requeued
+            current = state.worktree_cleanup_candidates.get(normalized_candidate_id)
+            if current is None:
+                raise ValueError(f"cleanup candidate {normalized_candidate_id} does not exist")
+            if current.state != WorktreeCleanupState.OPERATOR_ACTION_REQUIRED:
+                raise ValueError(
+                    f"cleanup candidate {normalized_candidate_id} is {current.state.value}; "
+                    "only operator-action-required cleanup can be retried"
+                )
+            current.state = WorktreeCleanupState.PENDING
+            current.automatic_retry_count = 0
+            current.eligible_at = effective_now
+            current.operator_action_required_at = None
+            current.operator_action_reason = None
+            current.last_operator_retry_at = effective_now
+            current.last_operator_retry_by = normalized_actor
+            current.last_operator_retry_reason = normalized_reason
+            current.updated_at = effective_now
+            requeued = current.model_copy(deep=True)
+            return state
+
+        activity = TeamDispatchActivity(
+            id=f"activity-worktree-cleanup-retry-{uuid4().hex}",
+            tool_name="team_worktree_cleanup_retry",
+            caller_session_id="admin-web",
+            caller_identity=normalized_actor,
+            agent_id=candidate.agent_id,
+            status=TeamDispatchActivityStatus.SUCCESS,
+            progress_classification="none",
+            audit_record_id=candidate.id,
+            correction_context_summary=(
+                f"task={candidate.task_id}; repository={candidate.managed_repo_id}; "
+                f"path={candidate.worktree_path}; branch={candidate.branch}; "
+                f"reason={normalized_reason}"
+            ),
+            created_at=effective_now,
+            updated_at=effective_now,
+        )
+        updated = self._repository.update_with_dispatch_activity(
+            _mutate,
+            activity=activity,
+            expected_revision=expected_revision,
+        )
+        if requeued is None:  # pragma: no cover - guarded by the transaction above
+            raise RuntimeError(f"cleanup candidate {normalized_candidate_id} was not requeued")
+        return updated, requeued
 
     def _reconcile_claimed_candidate(
         self,
@@ -508,14 +681,14 @@ class TeamWorktreeCleanupService:
                 candidate,
             )
             if first_failure is not None:
-                self._record_safety_failure(
+                next_state = self._record_safety_failure(
                     candidate,
                     failure=first_failure,
                     now=now,
                     retry_seconds=retry_seconds,
                 )
                 return (
-                    "deferred" if first_failure.retryable else "recovery_required",
+                    _failure_status(next_state),
                     0,
                     first_failure.message,
                 )
@@ -524,14 +697,14 @@ class TeamWorktreeCleanupService:
                 candidate,
             )
             if second_failure is not None:
-                self._record_safety_failure(
+                next_state = self._record_safety_failure(
                     candidate,
                     failure=second_failure,
                     now=now,
                     retry_seconds=retry_seconds,
                 )
                 return (
-                    "deferred" if second_failure.retryable else "recovery_required",
+                    _failure_status(next_state),
                     0,
                     second_failure.message,
                 )
@@ -542,15 +715,15 @@ class TeamWorktreeCleanupService:
                 failure = WorktreeCleanupSafetyFailure(
                     check="backend_cleanup_failed",
                     message=str(exc) or exc.__class__.__name__,
-                    retryable=False,
+                    retryable=True,
                 )
-                self._record_safety_failure(
+                next_state = self._record_safety_failure(
                     candidate,
                     failure=failure,
                     now=now,
                     retry_seconds=retry_seconds,
                 )
-                return "recovery_required", 0, failure.message
+                return _failure_status(next_state), 0, failure.message
 
             outcome_state = str(outcome.get("state") or "").strip()
             if outcome_state in {"removed", "already_absent"}:
@@ -571,7 +744,7 @@ class TeamWorktreeCleanupService:
                 return "dry_run", 0, None
             failed_check = str(outcome.get("failed_check") or "backend_cleanup_refused").strip()
             message = _backend_refusal_message(outcome)
-            self._record_backend_refusal(
+            next_state = self._record_backend_refusal(
                 candidate,
                 outcome=outcome,
                 failed_check=failed_check,
@@ -579,7 +752,7 @@ class TeamWorktreeCleanupService:
                 now=now,
                 retry_seconds=retry_seconds,
             )
-            return "recovery_required", 0, message
+            return _failure_status(next_state), 0, message
 
     def _claim_next(
         self,
@@ -590,11 +763,7 @@ class TeamWorktreeCleanupService:
         claimed: WorktreeCleanupCandidate | None = None
         snapshot = self._repository.read()
         if not any(
-            candidate.state
-            in {
-                WorktreeCleanupState.PENDING,
-                WorktreeCleanupState.RECOVERY_REQUIRED,
-            }
+            candidate.state == WorktreeCleanupState.PENDING
             and candidate.eligible_at <= now
             and candidate.id not in excluded_ids
             for candidate in snapshot.worktree_cleanup_candidates.values()
@@ -607,11 +776,7 @@ class TeamWorktreeCleanupService:
                 (
                     candidate
                     for candidate in state.worktree_cleanup_candidates.values()
-                    if candidate.state
-                    in {
-                        WorktreeCleanupState.PENDING,
-                        WorktreeCleanupState.RECOVERY_REQUIRED,
-                    }
+                    if candidate.state == WorktreeCleanupState.PENDING
                     and candidate.eligible_at <= now
                     and candidate.id not in excluded_ids
                 ),
@@ -636,11 +801,12 @@ class TeamWorktreeCleanupService:
         failure: WorktreeCleanupSafetyFailure,
         now: datetime,
         retry_seconds: int,
-    ) -> None:
-        next_state = (
-            WorktreeCleanupState.PENDING
-            if failure.retryable
-            else WorktreeCleanupState.RECOVERY_REQUIRED
+    ) -> WorktreeCleanupState:
+        next_state, retry_delay, operator_reason = self._failure_disposition(
+            candidate,
+            retryable=failure.retryable,
+            failed_check=failure.check,
+            retry_seconds=retry_seconds,
         )
         self._update_failed_candidate(
             candidate,
@@ -651,15 +817,10 @@ class TeamWorktreeCleanupService:
             ignored_bytes=0,
             worktree_bytes=0,
             now=now,
-            retry_seconds=retry_seconds,
+            retry_delay_seconds=retry_delay,
+            operator_reason=operator_reason,
         )
-        self._append_audit(
-            candidate,
-            status=TeamDispatchActivityStatus.FAILURE,
-            failed_check=failure.check,
-            message=failure.message,
-            now=now,
-        )
+        return next_state
 
     def _record_backend_refusal(
         self,
@@ -670,25 +831,56 @@ class TeamWorktreeCleanupService:
         message: str,
         now: datetime,
         retry_seconds: int,
-    ) -> None:
+    ) -> WorktreeCleanupState:
         inventory = _string_list(outcome.get("ignored_paths"))
+        next_state, retry_delay, operator_reason = self._failure_disposition(
+            candidate,
+            retryable=failed_check in WORKTREE_CLEANUP_TRANSIENT_FAILURE_CHECKS,
+            failed_check=failed_check,
+            retry_seconds=retry_seconds,
+        )
         self._update_failed_candidate(
             candidate,
-            state=WorktreeCleanupState.RECOVERY_REQUIRED,
+            state=next_state,
             failed_check=failed_check,
             message=message,
             inventory=inventory,
             ignored_bytes=max(0, int(outcome.get("ignored_bytes") or 0)),
             worktree_bytes=max(0, int(outcome.get("worktree_bytes") or 0)),
             now=now,
-            retry_seconds=retry_seconds,
+            retry_delay_seconds=retry_delay,
+            operator_reason=operator_reason,
         )
-        self._append_audit(
-            candidate,
-            status=TeamDispatchActivityStatus.FAILURE,
-            failed_check=failed_check,
-            message=message,
-            now=now,
+        return next_state
+
+    @staticmethod
+    def _failure_disposition(
+        candidate: WorktreeCleanupCandidate,
+        *,
+        retryable: bool,
+        failed_check: str,
+        retry_seconds: int,
+    ) -> tuple[WorktreeCleanupState, int, str | None]:
+        next_retry_count = candidate.automatic_retry_count + 1
+        if not retryable:
+            return (
+                WorktreeCleanupState.OPERATOR_ACTION_REQUIRED,
+                0,
+                failed_check,
+            )
+        if next_retry_count >= DEFAULT_CLEANUP_MAX_AUTOMATIC_ATTEMPTS:
+            return (
+                WorktreeCleanupState.OPERATOR_ACTION_REQUIRED,
+                0,
+                "automatic_retry_exhausted",
+            )
+        return (
+            WorktreeCleanupState.PENDING,
+            _automatic_retry_delay_seconds(
+                retry_seconds,
+                automatic_retry_count=next_retry_count,
+            ),
+            None,
         )
 
     def _update_failed_candidate(
@@ -702,7 +894,8 @@ class TeamWorktreeCleanupService:
         ignored_bytes: int,
         worktree_bytes: int,
         now: datetime,
-        retry_seconds: int,
+        retry_delay_seconds: int,
+        operator_reason: str | None,
     ) -> None:
         def _mutate(team_state: TeamState) -> TeamState:
             current = team_state.worktree_cleanup_candidates[candidate.id]
@@ -711,14 +904,30 @@ class TeamWorktreeCleanupService:
             current.state = state
             current.last_safety_check = failed_check
             current.last_error = message
+            current.automatic_retry_count += 1
+            if state == WorktreeCleanupState.OPERATOR_ACTION_REQUIRED:
+                current.operator_action_required_at = now
+                current.operator_action_reason = operator_reason or failed_check
+            else:
+                current.operator_action_required_at = None
+                current.operator_action_reason = None
             _set_ignored_file_evidence(current, inventory)
             current.ignored_bytes = ignored_bytes
             current.worktree_bytes = worktree_bytes
-            current.eligible_at = now + timedelta(seconds=max(0, int(retry_seconds)))
+            current.eligible_at = now + timedelta(seconds=max(0, int(retry_delay_seconds)))
             current.updated_at = now
             return team_state
 
-        self._repository.update(_mutate)
+        self._repository.update_with_dispatch_activity(
+            _mutate,
+            activity=self._audit_activity(
+                candidate,
+                status=TeamDispatchActivityStatus.FAILURE,
+                failed_check=failed_check,
+                message=message,
+                now=now,
+            ),
+        )
 
     def _record_success(
         self,
@@ -739,6 +948,9 @@ class TeamWorktreeCleanupService:
             current.state = WorktreeCleanupState.SUCCEEDED
             current.last_safety_check = "passed"
             current.last_error = None
+            current.automatic_retry_count = 0
+            current.operator_action_required_at = None
+            current.operator_action_reason = None
             _set_ignored_file_evidence(current, inventory)
             current.ignored_bytes = ignored_bytes
             current.worktree_bytes = worktree_bytes
@@ -778,6 +990,9 @@ class TeamWorktreeCleanupService:
             current.state = WorktreeCleanupState.PENDING
             current.last_safety_check = "dry_run_safe"
             current.last_error = None
+            current.automatic_retry_count = 0
+            current.operator_action_required_at = None
+            current.operator_action_reason = None
             _set_ignored_file_evidence(current, inventory)
             current.ignored_bytes = ignored_bytes
             current.worktree_bytes = worktree_bytes
@@ -825,26 +1040,6 @@ class TeamWorktreeCleanupService:
             updated_at=now,
         )
 
-    def _append_audit(
-        self,
-        candidate: WorktreeCleanupCandidate,
-        *,
-        status: TeamDispatchActivityStatus,
-        failed_check: str | None,
-        message: str,
-        now: datetime,
-    ) -> None:
-        self._repository.append_dispatch_activity(
-            self._audit_activity(
-                candidate,
-                status=status,
-                failed_check=failed_check,
-                message=message,
-                now=now,
-            )
-        )
-
-
 def _team_state_safety_failure(
     state: TeamState,
     candidate: WorktreeCleanupCandidate,
@@ -870,19 +1065,10 @@ def _team_state_safety_failure(
             retryable=False,
         )
     project = state.projects.get(candidate.project_id)
-    if project is None or project.git is None:
+    if project is None:
         return WorktreeCleanupSafetyFailure(
-            check="project_repository_missing",
-            message=f"cleanup project {candidate.project_id} has no managed repository",
-            retryable=False,
-        )
-    if project.git.managed_repo_id != candidate.managed_repo_id:
-        return WorktreeCleanupSafetyFailure(
-            check="managed_repository_mismatch",
-            message=(
-                f"cleanup candidate repository {candidate.managed_repo_id} no longer "
-                f"matches project {candidate.project_id}"
-            ),
+            check="project_missing",
+            message=f"cleanup project {candidate.project_id} no longer exists",
             retryable=False,
         )
     try:
@@ -906,7 +1092,10 @@ def _team_state_safety_failure(
         (
             dispatch
             for dispatch in state.dispatches.values()
-            if dispatch.status in _ACTIVE_DISPATCH_STATES and candidate.task_id in dispatch.task_ids
+            if dispatch.status in _ACTIVE_DISPATCH_STATES
+            and dispatch.agent_id == candidate.agent_id
+            and dispatch.session_id == candidate.session_id
+            and candidate.task_id in dispatch.task_ids
         ),
         None,
     )
@@ -924,7 +1113,12 @@ def _team_state_safety_failure(
             context
             for context in state.git_work_contexts.values()
             if context.state == GitWorkContextState.ACTIVE
-            and context.worktree_path == candidate.worktree_path
+            and context.agent_id == candidate.agent_id
+            and context.worktree_path is not None
+            and _cleanup_worktree_path_identity(context.worktree_path)
+            == _cleanup_worktree_path_identity(candidate.worktree_path)
+            and context.agent_branch == candidate.branch
+            and _git_work_context_session_id(state, context) == candidate.session_id
         ),
         None,
     )
@@ -1025,9 +1219,7 @@ def _prune_cleaned_git_context_metadata(
         for context in state.git_work_contexts.values()
         if context.id not in referenced
         and context.state != GitWorkContextState.ACTIVE
-        and context.task_id == candidate.task_id
-        and context.agent_id == candidate.agent_id
-        and context.worktree_path == candidate.worktree_path
+        and context.id == candidate.git_work_context_id
     ]
     for context_id in prunable:
         del state.git_work_contexts[context_id]
@@ -1036,12 +1228,160 @@ def _prune_cleaned_git_context_metadata(
 def _cleanup_candidate_identity(
     *,
     task_id: str,
+    git_work_context_id: str,
     managed_repo_id: str,
     session_id: str,
     worktree_path: str,
 ) -> str:
-    material = "\0".join((task_id, managed_repo_id, session_id, worktree_path)).encode("utf-8")
+    material = "\0".join(
+        (
+            task_id,
+            git_work_context_id,
+            managed_repo_id,
+            session_id,
+            worktree_path,
+        )
+    ).encode("utf-8")
     return f"worktree-cleanup-{hashlib.sha256(material).hexdigest()[:32]}"
+
+
+def _cleanup_candidate_for_context(
+    state: TeamState,
+    *,
+    context: GitWorkContext,
+) -> WorktreeCleanupCandidate | None:
+    matching = sorted(
+        (
+            candidate
+            for candidate in state.worktree_cleanup_candidates.values()
+            if candidate.task_id == context.task_id
+            and candidate.agent_id == context.agent_id
+            and candidate.git_work_context_id == context.id
+            and context.worktree_path is not None
+            and _cleanup_worktree_path_identity(candidate.worktree_path)
+            == _cleanup_worktree_path_identity(context.worktree_path)
+            and candidate.branch == context.agent_branch
+        ),
+        key=lambda candidate: (_ensure_utc(candidate.created_at), candidate.id),
+    )
+    return matching[0] if matching else None
+
+
+def _cleanup_context_ids_to_enqueue(state: TeamState) -> set[str]:
+    newest_by_lineage = _newest_cleanup_contexts_by_lineage(state)
+
+    nonterminal_lineages: set[tuple[str, str, str, str]] = set()
+    for candidate in state.worktree_cleanup_candidates.values():
+        if candidate.state in _TERMINAL_CLEANUP_STATES:
+            continue
+        lineage = _cleanup_candidate_lineage(candidate)
+        newest_context = newest_by_lineage.get(lineage)
+        stale_mismatch_generation = (
+            newest_context is not None
+            and newest_context.id != candidate.git_work_context_id
+            and candidate.state == WorktreeCleanupState.OPERATOR_ACTION_REQUIRED
+            and candidate.last_safety_check in _STALE_GENERATION_FAILURE_CHECKS
+        )
+        if not stale_mismatch_generation:
+            nonterminal_lineages.add(lineage)
+
+    candidate_context_ids = {
+        candidate.git_work_context_id
+        for candidate in state.worktree_cleanup_candidates.values()
+    }
+    return {
+        context.id
+        for lineage, context in newest_by_lineage.items()
+        if context.id in candidate_context_ids or lineage not in nonterminal_lineages
+    }
+
+
+def _newest_cleanup_contexts_by_lineage(
+    state: TeamState,
+) -> dict[tuple[str, str, str, str], GitWorkContext]:
+    newest_by_lineage: dict[tuple[str, str, str, str], GitWorkContext] = {}
+    for context in state.git_work_contexts.values():
+        if context.worktree_path is None:
+            continue
+        session_id = _git_work_context_session_id(state, context)
+        if session_id is None:
+            continue
+        lineage = (
+            context.agent_id,
+            session_id,
+            _cleanup_worktree_path_identity(context.worktree_path),
+            context.agent_branch,
+        )
+        current = newest_by_lineage.get(lineage)
+        if current is None or (
+            _ensure_utc(context.created_at),
+            _ensure_utc(context.updated_at),
+            context.id,
+        ) > (
+            _ensure_utc(current.created_at),
+            _ensure_utc(current.updated_at),
+            current.id,
+        ):
+            newest_by_lineage[lineage] = context
+    return newest_by_lineage
+
+
+def _cleanup_candidate_lineage(
+    candidate: WorktreeCleanupCandidate,
+) -> tuple[str, str, str, str]:
+    return (
+        candidate.agent_id,
+        candidate.session_id,
+        _cleanup_worktree_path_identity(candidate.worktree_path),
+        candidate.branch,
+    )
+
+
+def _supersede_stale_cleanup_generations(
+    state: TeamState,
+    *,
+    now: datetime,
+) -> None:
+    newest_by_lineage = _newest_cleanup_contexts_by_lineage(state)
+    for candidate in state.worktree_cleanup_candidates.values():
+        if (
+            candidate.state != WorktreeCleanupState.OPERATOR_ACTION_REQUIRED
+            or candidate.last_safety_check not in _STALE_GENERATION_FAILURE_CHECKS
+        ):
+            continue
+        newest_context = newest_by_lineage.get(_cleanup_candidate_lineage(candidate))
+        if newest_context is None or newest_context.id == candidate.git_work_context_id:
+            continue
+        candidate.state = WorktreeCleanupState.SUPERSEDED
+        candidate.superseded_by_git_work_context_id = newest_context.id
+        candidate.completed_at = now
+        candidate.updated_at = now
+
+
+def _cleanup_candidate_with_context_identity(
+    state: TeamState,
+    *,
+    context: GitWorkContext,
+    session_id: str,
+    managed_repo_id: str,
+) -> WorktreeCleanupCandidate | None:
+    matching = sorted(
+        (
+            candidate
+            for candidate in state.worktree_cleanup_candidates.values()
+            if candidate.task_id == context.task_id
+            and candidate.agent_id == context.agent_id
+            and candidate.session_id == session_id
+            and candidate.git_work_context_id == context.id
+            and candidate.managed_repo_id == managed_repo_id
+            and context.worktree_path is not None
+            and _cleanup_worktree_path_identity(candidate.worktree_path)
+            == _cleanup_worktree_path_identity(context.worktree_path)
+            and candidate.branch == context.agent_branch
+        ),
+        key=lambda candidate: (_ensure_utc(candidate.created_at), candidate.id),
+    )
+    return matching[0] if matching else None
 
 
 def _git_work_context_session_id(
@@ -1059,6 +1399,10 @@ def _git_work_context_session_id(
         return dispatch.session_id
     agent = state.agents.get(context.agent_id)
     return agent.session_id if agent is not None else None
+
+
+def _cleanup_worktree_path_identity(worktree_path: str) -> str:
+    return str(PurePosixPath(worktree_path))
 
 
 @contextmanager
@@ -1155,8 +1499,30 @@ def _ensure_utc(value: datetime) -> datetime:
     return value.astimezone(UTC)
 
 
+def _automatic_retry_delay_seconds(
+    retry_seconds: int,
+    *,
+    automatic_retry_count: int,
+) -> int:
+    base_delay = max(0, int(retry_seconds))
+    if base_delay == 0:
+        return 0
+    exponent = max(0, min(int(automatic_retry_count) - 1, 30))
+    return min(DEFAULT_CLEANUP_MAX_RETRY_SECONDS, base_delay * (1 << exponent))
+
+
+def _failure_status(state: WorktreeCleanupState) -> str:
+    if state == WorktreeCleanupState.PENDING:
+        return "deferred"
+    if state == WorktreeCleanupState.OPERATOR_ACTION_REQUIRED:
+        return "operator_action_required"
+    return "recovery_required"
+
+
 __all__ = [
     "DEFAULT_CLEANUP_GRACE_SECONDS",
+    "DEFAULT_CLEANUP_MAX_AUTOMATIC_ATTEMPTS",
+    "DEFAULT_CLEANUP_MAX_RETRY_SECONDS",
     "DEFAULT_CLEANUP_RECOVERY_SECONDS",
     "DEFAULT_CLEANUP_RETRY_SECONDS",
     "EffectTaskWorktreeCleanupBackend",

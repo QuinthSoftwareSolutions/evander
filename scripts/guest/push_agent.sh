@@ -6,11 +6,25 @@ show_help() {
 Usage:
   push-agent
 
-Validate that the current branch contains the configured destination and base
-branches, refresh the branch-local PR summary note onto HEAD, and push the agent
-branch plus the configured PR notes ref to the agent remote.
+Validate that the current branch contains the configured destination and either
+the server-prepared immutable base commit or the current base branch, refresh
+the branch-local PR summary note onto HEAD, and push the agent branch plus the
+configured PR notes ref to the agent remote. A current branch already owned by
+this session under agents/<session-id>/ is pushed without adding another
+session namespace. Concurrent PR-note updates are merged before publication and
+retried without overwriting remote notes.
 EOF
 }
+
+NOTES_SYNC_REF=""
+
+cleanup_notes_sync_ref() {
+  if [[ -n "${NOTES_SYNC_REF}" ]]; then
+    git update-ref -d "${NOTES_SYNC_REF}" >/dev/null 2>&1 || true
+  fi
+}
+
+trap cleanup_notes_sync_ref EXIT
 
 die() {
   echo "$*" >&2
@@ -32,6 +46,21 @@ current_branch() {
   fi
   [[ -n "${branch}" ]] || die "push-agent could not determine the current branch."
   printf '%s\n' "${branch}"
+}
+
+agent_branch_ref() {
+  local session_id_value="$1"
+  local branch="$2"
+  local suffix="$3"
+
+  if [[ "${branch}" == agents/"${session_id_value}"/* ]]; then
+    printf 'refs/heads/%s\n' "${branch}"
+    return 0
+  fi
+  if [[ "${branch}" == agents/* ]]; then
+    die "Current branch ${branch} belongs to a different agent session; refusing agent push."
+  fi
+  printf 'refs/heads/agents/%s/%s-%s\n' "${session_id_value}" "${branch}" "${suffix}"
 }
 
 sanitize_suffix() {
@@ -90,6 +119,10 @@ expected_destination_branch() {
 
 base_branch() {
   config_value evander.baseBranch
+}
+
+prepared_base_commit() {
+  config_value evander.baseCommit
 }
 
 issue_number_from_value() {
@@ -220,13 +253,74 @@ EOF
 verify_publish_preconditions() {
   local destination_branch="$1"
   local base_branch="$2"
+  local prepared_base_commit="$3"
 
   if [[ -n "${destination_branch}" ]]; then
     verify_remote_branch_contained "${destination_branch}" "destination branch" "1"
   fi
-  if [[ -n "${base_branch}" && "${base_branch}" != "${destination_branch}" ]]; then
+  if [[ -n "${prepared_base_commit}" ]]; then
+    verify_prepared_base_contained "${prepared_base_commit}"
+  elif [[ -n "${base_branch}" && "${base_branch}" != "${destination_branch}" ]]; then
     verify_remote_branch_contained "${base_branch}" "base branch" "0"
   fi
+}
+
+verify_prepared_base_contained() {
+  local prepared_commit="$1"
+
+  if ! git rev-parse --verify "${prepared_commit}^{commit}" >/dev/null 2>&1; then
+    die "Configured prepared base commit ${prepared_commit} is not available locally."
+  fi
+  if ! git merge-base --is-ancestor "${prepared_commit}" HEAD >/dev/null 2>&1; then
+    die "Refusing to push: HEAD does not contain configured prepared base commit ${prepared_commit}."
+  fi
+}
+
+sync_remote_notes_ref() {
+  local remote_name="$1"
+  local notes_ref="$2"
+  local output status
+
+  set +e
+  output="$(git ls-remote --exit-code "${remote_name}" "${notes_ref}" 2>&1)"
+  status=$?
+  set -e
+
+  if [[ "${status}" -eq 2 ]]; then
+    return 0
+  fi
+  if [[ "${status}" -ne 0 ]]; then
+    die "Could not inspect managed PR notes ${remote_name}/${notes_ref}: ${output}"
+  fi
+
+  if ! output="$(git fetch "${remote_name}" "+${notes_ref}:${NOTES_SYNC_REF}" 2>&1)"; then
+    die "Could not refresh managed PR notes ${remote_name}/${notes_ref}: ${output}"
+  fi
+  if ! output="$(git notes --ref="${notes_ref}" merge -s union "${NOTES_SYNC_REF}" 2>&1)"; then
+    die "Could not merge concurrent managed PR notes from ${remote_name}/${notes_ref}: ${output}"
+  fi
+}
+
+push_notes_ref_with_retry() {
+  local remote_name="$1"
+  local notes_ref="$2"
+  local max_attempts=4
+  local attempt=1
+  local output
+
+  while (( attempt <= max_attempts )); do
+    sync_remote_notes_ref "${remote_name}" "${notes_ref}"
+    if output="$(git push "${remote_name}" "${notes_ref}:${notes_ref}" 2>&1)"; then
+      [[ -z "${output}" ]] || printf '%s\n' "${output}"
+      return 0
+    fi
+    if (( attempt == max_attempts )); then
+      die "Could not publish managed PR notes ${remote_name}/${notes_ref} after ${max_attempts} synchronized attempts: ${output}"
+    fi
+    printf 'Managed PR notes changed during publication; synchronizing and retrying (%d/%d).\n' \
+      "${attempt}" "${max_attempts}" >&2
+    attempt=$((attempt + 1))
+  done
 }
 
 main() {
@@ -240,21 +334,27 @@ main() {
 
   require_repo
 
-  local session_id_value expected_issue_number suffix notes_ref repo_root branch destination_branch base_branch_value
+  local session_id_value expected_issue_number suffix notes_ref repo_root branch destination_branch base_branch_value prepared_base_commit_value publish_ref
   session_id_value="$(session_id)"
   expected_issue_number="$(config_value evander.issueNumber)"
   verify_session_matches_issue "${session_id_value}" "${expected_issue_number}"
   suffix="$(branch_suffix)"
   notes_ref="$(pr_notes_ref)"
   branch="$(current_branch)"
+  publish_ref="$(agent_branch_ref "${session_id_value}" "${branch}" "${suffix}")"
   destination_branch="$(expected_destination_branch "${expected_issue_number}" "${session_id_value}")"
   base_branch_value="$(base_branch)"
+  prepared_base_commit_value="$(prepared_base_commit)"
 
-  verify_publish_preconditions "${destination_branch}" "${base_branch_value}"
+  verify_publish_preconditions "${destination_branch}" "${base_branch_value}" "${prepared_base_commit_value}"
 
   repo_root="$(git rev-parse --show-toplevel)"
   "${repo_root}/.evander/bin/agent-pr-note" ensure-head
-  git push agent "HEAD:refs/heads/agents/${session_id_value}/${branch}-${suffix}" "${notes_ref}"
+  NOTES_SYNC_REF="refs/evander/agent-pr-sync/$(
+    printf '%s\n' "${session_id_value}:${branch}:$$" | git hash-object --stdin
+  )"
+  git push agent "HEAD:${publish_ref}"
+  push_notes_ref_with_retry "agent" "${notes_ref}"
 }
 
 main "$@"

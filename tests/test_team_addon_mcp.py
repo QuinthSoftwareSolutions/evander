@@ -60,6 +60,11 @@ from evander_team_addon.mcp import (
     TEAM_UPDATE_GOAL_TOOL,
     TEAM_UPDATE_TASK_TOOL,
     _team_mcp_git_candidate_commit_resolver,
+    _team_mcp_git_candidate_snapshot_pinner,
+)
+from evander.review_snapshots import (
+    team_deliverable_snapshot_binding_id,
+    team_deliverable_snapshot_ref,
 )
 from evander_team_addon.chat_attachments import (
     TeamChatAttachmentPolicyService,
@@ -507,6 +512,7 @@ def test_team_git_candidate_resolver_builds_admin_authority_for_gateway_context(
     expected_commit = "d9b05522b48d4515c40537f6c6e6701f688f1575"
     build_calls: list[Path] = []
     resolve_calls: list[tuple[str, str, str]] = []
+    ancestry_calls: list[dict[str, object]] = []
 
     class _ManagedGit:
         def resolve_branch_commit(
@@ -518,6 +524,13 @@ def test_team_git_candidate_resolver_builds_admin_authority_for_gateway_context(
         ) -> str:
             resolve_calls.append((managed_repo_id, directory_path, branch))
             return expected_commit
+
+        def verify_branch_commit_ancestry(
+            self,
+            managed_repo_id: str,
+            **kwargs: object,
+        ) -> None:
+            ancestry_calls.append({"managed_repo_id": managed_repo_id, **kwargs})
 
     def _build_admin_runtime(runtime_dir: Path):
         build_calls.append(runtime_dir)
@@ -539,6 +552,7 @@ def test_team_git_candidate_resolver_builds_admin_authority_for_gateway_context(
             managed_repo_id="mr_0123456789abcdefabcd",
             directory_path="root",
             agent_branch="agents/local-coder-2/tasks/task",
+            required_ancestor_shas=["a" * 40, "b" * 40],
         )
         == expected_commit
     )
@@ -562,8 +576,65 @@ def test_team_git_candidate_resolver_builds_admin_authority_for_gateway_context(
             "agents/local-coder-2/tasks/task",
         ),
     ]
+    assert ancestry_calls == [
+        {
+            "managed_repo_id": "mr_0123456789abcdefabcd",
+            "directory_path": "root",
+            "branch": "agents/local-coder-2/tasks/task",
+            "commit_sha": expected_commit,
+            "required_ancestor_shas": ["a" * 40, "b" * 40],
+        }
+    ]
 
 
+def test_team_git_candidate_pinner_uses_deliverable_scoped_immutable_ref(
+    tmp_path: Path,
+) -> None:
+    deliverable_id = "deliverable-direct-pinned"
+    commit_sha = "a" * 40
+    expected_ref = team_deliverable_snapshot_ref(deliverable_id)
+    calls: list[dict[str, object]] = []
+
+    class _ManagedGit:
+        def pin_team_review_snapshot(
+            self,
+            managed_repo_id: str,
+            directory_path: str,
+            **kwargs: object,
+        ) -> dict[str, str]:
+            calls.append(
+                {
+                    "managed_repo_id": managed_repo_id,
+                    "directory_path": directory_path,
+                    **kwargs,
+                }
+            )
+            return {"pin_ref": expected_ref, "commit_sha": commit_sha}
+
+    pinner = _team_mcp_git_candidate_snapshot_pinner(
+        SimpleNamespace(runtime_dir=tmp_path, service=SimpleNamespace()),
+        managed_git=_ManagedGit(),
+    )
+    result = pinner(
+        managed_repo_id="mr_0123456789abcdefabcd",
+        directory_path="root",
+        deliverable_id=deliverable_id,
+        commit_sha=commit_sha,
+        source_ref="agents/session-backend/tasks/task",
+        expected_pinned_ref=expected_ref,
+    )
+
+    assert result == {"pin_ref": expected_ref, "commit_sha": commit_sha}
+    assert calls == [
+        {
+            "managed_repo_id": "mr_0123456789abcdefabcd",
+            "directory_path": "root",
+            "review_id": team_deliverable_snapshot_binding_id(deliverable_id),
+            "commit_sha": commit_sha,
+            "source_ref": "agents/session-backend/tasks/task",
+            "pinned_ref": expected_ref,
+        }
+    ]
 def test_team_addon_mcp_registers_all_plan_tool_names_as_addon_tools(
     tmp_path: Path,
 ) -> None:
@@ -588,6 +659,7 @@ def test_team_addon_mcp_registers_all_plan_tool_names_as_addon_tools(
     escalation_description = tools[TEAM_ESCALATE_OPERATOR_TOOL].description or ""
     retry_release_description = tools[TEAM_RETRY_RELEASE_GATE_TOOL].description or ""
     decide_review_description = tools[TEAM_DECIDE_REVIEW_TOOL].description or ""
+    request_release = tools[TEAM_REQUEST_RELEASE_TOOL]
     retry_review_description = tools[TEAM_RETRY_REVIEW_TOOL].description or ""
     withdraw_review_description = tools[TEAM_WITHDRAW_REVIEW_TOOL].description or ""
     retire_review_description = tools[TEAM_RETIRE_REVIEW_TOOL].description or ""
@@ -598,7 +670,7 @@ def test_team_addon_mcp_registers_all_plan_tool_names_as_addon_tools(
     )
     correction_route_description = tools[TEAM_ROUTE_HUMAN_FINDING_CORRECTION_TOOL].description or ""
     post_release_close_description = tools[TEAM_CLOSE_POST_RELEASE_CASE_TOOL].description or ""
-    assert "verification records status" in submit_description
+    assert "verification records are optional diagnostic reports" in submit_description
     assert "git_refs are provenance only" in submit_description
     assert "use commit_sha, not commit" in submit_description
     assert "does not make the human decision" in finding_resolution_description
@@ -617,6 +689,8 @@ def test_team_addon_mcp_registers_all_plan_tool_names_as_addon_tools(
     assert "concrete evidence that the failure recovered" in retry_release_description
     assert "cannot retry a failed agent-requested" in retry_release_description
     assert "all current reviews are accepted" in decide_review_description
+    assert "authoritative build/test result" in (request_release.description or "")
+    assert "verification_waivers" not in request_release.parameters["properties"]
     assert "supersedes a current blocked" in retry_review_description
     assert "pending non-release review" in withdraw_review_description
     assert "project lead or team manager" in retire_review_description

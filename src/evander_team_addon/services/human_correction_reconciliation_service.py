@@ -721,9 +721,6 @@ def _reconcile_case(
                 f"Automatic successor for {predecessor.id}; resolves "
                 f"{len(findings)} human review finding(s)."
             ),
-            "verification_waivers": [],
-            "waiver_actor_kind": "operator",
-            "waiver_actor_id": "system:human-review",
         },
         result=package_result,
         projects_to_recalc=projects_to_recalculate,

@@ -376,6 +376,13 @@ class TeamVerifyReleaseCandidateEffectDefinition(EffectDefinition):
     candidate_commit_sha: ConfigValue
 
 
+class TeamVerifyDeliverableAcceptanceEffectDefinition(EffectDefinition):
+    type: Literal["effect:team:verify-deliverable-acceptance"]
+    deliverable_id: ConfigValue
+    verification_run_id: ConfigValue
+    candidate_commit_sha: ConfigValue
+
+
 class TeamPublishReviewBranchEffectDefinition(EffectDefinition):
     type: Literal["effect:team:publish-review-branch"]
     managed_repo_id: ConfigValue
@@ -784,6 +791,14 @@ TEAM_OUTPUT_SCHEMAS: dict[str, dict[str, dict[str, Any]]] = {
         "published_event_ids": {"type": "array"},
         "error": {"type": ["string", "null"]},
     },
+    "effect:team:verify-deliverable-acceptance": {
+        "success": {"type": "boolean"},
+        "deprecated": {"type": "boolean"},
+        "deliverable_id": {"type": ["string", "null"]},
+        "verification_run_id": {"type": ["string", "null"]},
+        "candidate_commit_sha": {"type": ["string", "null"]},
+        "warning": {"type": "string"},
+    },
     "effect:team:publish-review-branch": {
         "success": {"type": "boolean"},
         "managed_repo_id": {"type": ["string", "null"]},
@@ -849,6 +864,7 @@ TEAM_OUTPUT_SCHEMAS: dict[str, dict[str, dict[str, Any]]] = {
         "projects": {"type": "object"},
         "agents": {"type": "object"},
         "tasks": {"type": "object"},
+        "external_source_evidence_snapshots": {"type": "object"},
     },
     "query:team:memory": {
         "success": {"type": "boolean"},

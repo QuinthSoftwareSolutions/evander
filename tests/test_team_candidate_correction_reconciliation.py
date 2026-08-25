@@ -11,12 +11,14 @@ from evander_team_addon.models import (
     AgentProjectAssignment,
     AgentTask,
     AgentRuntime,
+    DependencyCompositionManifest,
     DependencyGitSource,
     Deliverable,
     DeliverableGitRefs,
     DeliverableReviewManifest,
     DeliverableVerification,
     GitWorkContext,
+    GitWorkContextState,
     PersistentAgent,
     Project,
     ProjectGitConfig,
@@ -26,6 +28,7 @@ from evander_team_addon.models import (
     ReleasePackage,
     ReleaseVerificationRun,
     ReviewRequest,
+    ReviewRepositorySnapshot,
     Team,
     TeamBlocker,
     TeamBlockerEventType,
@@ -41,6 +44,7 @@ from evander_team_addon.models import (
     TeamState,
     TeamTaskState,
     TaskCancellation,
+    TaskDeliverableContract,
 )
 from evander_team_addon.repository import TeamStateRepository
 from evander_team_addon.services.candidate_correction_reconciliation_service import (
@@ -206,6 +210,203 @@ def _candidate_correction_state(
     return state
 
 
+def _accepted_composed_candidate_correction_state() -> TeamState:
+    state = _candidate_correction_state(gate_kind="review")
+    task = state.tasks["correction-task"]
+    source_task = AgentTask(
+        id="correction-source-task",
+        owner_agent_id="coder",
+        project_id="project",
+        priority=0,
+        state=TeamTaskState.FINISHED,
+        title="Correction source",
+        description="Accepted child correction retained by the aggregate.",
+        created_by_agent_id="coder",
+        originating_task_id=task.id,
+        git_base_branch=task.git_base_branch,
+        deliverable_ids=["correction-source-deliverable"],
+    )
+    source_deliverable = Deliverable(
+        id="correction-source-deliverable",
+        task_id=source_task.id,
+        producer_agent_id="coder",
+        summary="Accepted child correction source.",
+        state=TeamRecordState.ACCEPTED,
+        git_refs=DeliverableGitRefs(
+            agent_branch="agents/session-coder/correction-source",
+            commit_sha=CORRECTION_COMMIT,
+            submitted_commit_sha=CORRECTION_COMMIT,
+            reviewed_commit_sha=CORRECTION_COMMIT,
+            accepted_pinned_ref="refs/evander/team-reviews/correction-source",
+        ),
+        verification=DeliverableVerification(status="passed"),
+    )
+    state.tasks[source_task.id] = source_task
+    state.deliverables[source_deliverable.id] = source_deliverable
+    task.integration_boundary = True
+    task.dependency_task_ids = [source_task.id]
+    task.deliverable_contract = TaskDeliverableContract(
+        require_git_provenance=True,
+        required_contribution_task_ids=[source_task.id],
+    )
+    deliverable = state.deliverables["correction-deliverable"]
+    deliverable.source_deliverable_ids = [source_deliverable.id]
+    deliverable.git_refs.branch_context_id = "correction-context"
+    dependency_source = DependencyGitSource(
+        dependency_task_id=source_task.id,
+        deliverable_id=source_deliverable.id,
+        branch=source_deliverable.git_refs.agent_branch or "",
+        commit_sha=CORRECTION_COMMIT,
+        relationship_kind="required_contribution",
+        pinned_ref=source_deliverable.git_refs.accepted_pinned_ref,
+    )
+    manifest = DependencyCompositionManifest(
+        target_task_id=task.id,
+        managed_repo_id=MANAGED_REPO_ID,
+        base_branch=task.git_base_branch or "main",
+        base_commit_sha=CANDIDATE_COMMIT,
+        base_tree_hash="d" * 40,
+        dependency_git_sources=[dependency_source],
+        source_fingerprint="1" * 64,
+        frontier_commit_shas=[CORRECTION_COMMIT],
+        composed_commit_sha=CORRECTION_COMMIT,
+        composed_tree_hash="f" * 40,
+        verified_candidate_commit_sha=CORRECTION_COMMIT,
+    )
+    deliverable.dependency_composition_manifest = manifest
+    state.git_work_contexts["correction-context"] = GitWorkContext(
+        id="correction-context",
+        agent_id="coder",
+        task_id=task.id,
+        agent_branch=deliverable.git_refs.agent_branch or "",
+        base_branch=task.git_base_branch,
+        base_commit=CORRECTION_COMMIT,
+        commit_sha=CORRECTION_COMMIT,
+        dependency_git_sources=[dependency_source],
+        dependency_composition_manifest=manifest.model_copy(
+            update={"verified_candidate_commit_sha": None}
+        ),
+        state=GitWorkContextState.SUBMITTED,
+    )
+    return state
+
+
+def _legacy_reviewed_correction_state() -> TeamState:
+    state = _candidate_correction_state(gate_kind="verification", reviewed=False)
+    now = datetime(2026, 8, 24, 16, 40, tzinfo=UTC)
+    task = state.tasks["correction-task"]
+    task.state = TeamTaskState.WAITING_FOR_REVIEW
+    task.state_entered_at = now - timedelta(minutes=5)
+    task.integration_boundary = True
+    task.dependency_task_ids = ["correction-source-task"]
+    task.deliverable_contract = TaskDeliverableContract(
+        require_git_provenance=True,
+        required_contribution_task_ids=["correction-source-task"],
+    )
+    task.mutation_policy = None
+
+    source_task = AgentTask(
+        id="correction-source-task",
+        owner_agent_id="coder",
+        project_id="project",
+        priority=0,
+        state=TeamTaskState.FINISHED,
+        title="Legacy correction source wrapper",
+        description="Historical child work retained by the migration.",
+        created_by_agent_id="coder",
+        originating_task_id=task.id,
+        git_base_branch=state.release_packages["release-predecessor"].release_branch,
+        deliverable_ids=["correction-source-deliverable"],
+        created_at=now - timedelta(minutes=20),
+        updated_at=now - timedelta(minutes=10),
+        state_entered_at=now - timedelta(minutes=10),
+    )
+    source_deliverable = Deliverable(
+        id="correction-source-deliverable",
+        task_id=source_task.id,
+        producer_agent_id="coder",
+        summary="Accepted child correction source.",
+        state=TeamRecordState.ACCEPTED,
+        git_refs=DeliverableGitRefs(
+            agent_branch="agents/session-coder/correction-source",
+            commit_sha=CORRECTION_COMMIT,
+            submitted_commit_sha=CORRECTION_COMMIT,
+            reviewed_commit_sha=CORRECTION_COMMIT,
+            accepted_pinned_ref="refs/evander/team-reviews/correction-source",
+        ),
+        verification=DeliverableVerification(status="passed"),
+        created_at=now - timedelta(minutes=10),
+    )
+    state.tasks[source_task.id] = source_task
+    state.deliverables[source_deliverable.id] = source_deliverable
+
+    deliverable = state.deliverables["correction-deliverable"]
+    deliverable.state = TeamRecordState.PENDING
+    deliverable.acceptance_policy_version = 2
+    deliverable.source_deliverable_ids = [source_deliverable.id]
+    deliverable.review_cohort_id = "correction-review-cohort"
+    deliverable.review_cohort_sealed_at = now - timedelta(minutes=4)
+    deliverable.review_request_ids = ["correction-review-a", "correction-review-b"]
+    deliverable.git_refs = DeliverableGitRefs(
+        branch_context_id="correction-context",
+        agent_branch="agents/session-coder/correction",
+        commit_sha=CORRECTION_COMMIT,
+        submitted_commit_sha=CORRECTION_COMMIT,
+        reviewed_commit_sha=CORRECTION_COMMIT,
+    )
+    deliverable.review_manifest = DeliverableReviewManifest(
+        base_commit_sha=CANDIDATE_COMMIT,
+        reviewed_commit_sha=CORRECTION_COMMIT,
+        tree_hash="f" * 40,
+        commit_shas=[CORRECTION_COMMIT],
+        changed_paths=["M\tsrc/Correction.cs"],
+    )
+    for index, reviewer_id in enumerate(("reviewer", "lead")):
+        review_id = deliverable.review_request_ids[index]
+        state.review_requests[review_id] = ReviewRequest(
+            id=review_id,
+            deliverable_id=deliverable.id,
+            reviewer_agent_id=reviewer_id,
+            state=TeamRecordState.ACCEPTED,
+            reviewed_commit_sha=CORRECTION_COMMIT,
+            review_cohort_id=deliverable.review_cohort_id,
+            repository_snapshot=ReviewRepositorySnapshot(
+                managed_repo_id=MANAGED_REPO_ID,
+                directory_path="root",
+                commit_sha=CORRECTION_COMMIT,
+                pinned_ref=f"refs/evander/team-reviews/{review_id}",
+                source_kind="deliverable_candidate",
+                source_ref="agents/session-coder/correction",
+            ),
+            created_at=now - timedelta(minutes=3 - index),
+            decision_at=now - timedelta(minutes=1 - index),
+        )
+
+    dependency_source = DependencyGitSource(
+        dependency_task_id=source_task.id,
+        deliverable_id=source_deliverable.id,
+        branch=source_deliverable.git_refs.agent_branch or "",
+        commit_sha=CORRECTION_COMMIT,
+        relationship_kind="required_contribution",
+        pinned_ref=source_deliverable.git_refs.accepted_pinned_ref,
+    )
+    state.git_work_contexts["correction-context"] = GitWorkContext(
+        id="correction-context",
+        agent_id="coder",
+        task_id=task.id,
+        agent_branch="agents/session-coder/correction",
+        base_branch=task.git_base_branch,
+        base_commit=CANDIDATE_COMMIT,
+        commit_sha=CORRECTION_COMMIT,
+        dependency_git_sources=[dependency_source],
+        dependency_composition_manifest=None,
+        state=GitWorkContextState.SUBMITTED,
+        created_at=now - timedelta(minutes=8),
+        updated_at=now - timedelta(minutes=4),
+    )
+    return state
+
+
 def _submit_reviewed_replacement(state: TeamState) -> TeamState:
     original = state.deliverables["correction-deliverable"]
     original.rework_requested_at = datetime.now(UTC)
@@ -280,6 +481,232 @@ def test_resolved_generated_candidate_correction_creates_one_successor(
     assert replay["changed"] is False
     assert len(replayed_state.release_packages) == 2
     assert len(repository.list_outbox_records()) == 1
+
+
+def test_accepted_composed_correction_uses_immutable_candidate_root(
+    tmp_path: Path,
+) -> None:
+    repository = TeamStateRepository(tmp_path)
+    seeded = _accepted_composed_candidate_correction_state()
+    preserved_context = seeded.git_work_contexts["correction-context"].model_copy(deep=True)
+    repository.update(lambda _state: seeded, expected_revision=0)
+
+    result = CandidateCorrectionReconciliationService(repository).reconcile()
+    reconciled = repository.read()
+
+    successor_ids = [
+        release.id
+        for release in reconciled.release_packages.values()
+        if release.supersedes_release_package_id == "release-predecessor"
+    ]
+    assert successor_ids == result["created_successor_release_package_ids"]
+    successor = reconciled.release_packages[successor_ids[0]]
+    assert successor.deliverable_ids == ["correction-deliverable"]
+    assert successor.base_commit_sha == CANDIDATE_COMMIT
+    promotion = reconciled.git_promotions[successor.git_promotion_record_ids[0]]
+    assert promotion.base_commit_sha == CANDIDATE_COMMIT
+    assert promotion.sources[0].expected_commit_sha == CORRECTION_COMMIT
+    assert reconciled.git_work_contexts["correction-context"] == preserved_context
+
+
+@pytest.mark.parametrize(
+    "mismatch",
+    ["candidate_commit", "candidate_tree", "verified_commit", "context_manifest"],
+)
+def test_accepted_composed_correction_rejects_inconsistent_evidence(
+    tmp_path: Path,
+    mismatch: str,
+) -> None:
+    seeded = _accepted_composed_candidate_correction_state()
+    deliverable = seeded.deliverables["correction-deliverable"]
+    manifest = deliverable.dependency_composition_manifest
+    assert manifest is not None
+    context = seeded.git_work_contexts["correction-context"]
+    if mismatch == "candidate_commit":
+        manifest.base_commit_sha = RECOVERY_COMMIT
+    elif mismatch == "candidate_tree":
+        manifest.base_tree_hash = "b" * 40
+    elif mismatch == "verified_commit":
+        manifest.verified_candidate_commit_sha = RECOVERY_COMMIT
+    else:
+        assert context.dependency_composition_manifest is not None
+        context.dependency_composition_manifest.composed_tree_hash = "b" * 40
+
+    repository = TeamStateRepository(tmp_path)
+    repository.update(lambda _state: seeded, expected_revision=0)
+    result = CandidateCorrectionReconciliationService(repository).reconcile()
+    after = repository.read()
+
+    assert result.get("created_successor_release_package_ids", []) == []
+    assert result["candidate_correction_errors"] == {
+        "release-predecessor": (
+            "correction deliverable correction-deliverable base commit "
+            f"{CORRECTION_COMMIT} does not match rejected candidate {CANDIDATE_COMMIT}"
+        )
+    }
+    assert not any(
+        release.supersedes_release_package_id == "release-predecessor"
+        for release in after.release_packages.values()
+    )
+
+
+def test_legacy_reviewed_correction_normalizes_and_creates_successor_atomically(
+    tmp_path: Path,
+) -> None:
+    repository = TeamStateRepository(tmp_path)
+    seeded = _legacy_reviewed_correction_state()
+    preserved_source_task = seeded.tasks["correction-source-task"].model_copy(deep=True)
+    preserved_source_deliverable = seeded.deliverables["correction-source-deliverable"].model_copy(
+        deep=True
+    )
+    preserved_reviews = {
+        review_id: seeded.review_requests[review_id].model_copy(deep=True)
+        for review_id in ("correction-review-a", "correction-review-b")
+    }
+    preserved_context = seeded.git_work_contexts["correction-context"].model_copy(deep=True)
+    state = repository.update(lambda _state: seeded, expected_revision=0)
+
+    result = CandidateCorrectionReconciliationService(repository).reconcile()
+    normalized = repository.read()
+
+    assert result["changed"] is True
+    assert normalized.revision == state.revision + 1
+    assert result["normalized_legacy_candidate_correction_task_ids"] == ["correction-task"]
+    audit = result["legacy_candidate_correction_normalizations"]["correction-task"]
+    assert audit == {
+        "correction_deliverable_id": "correction-deliverable",
+        "source_task_id": "correction-source-task",
+        "source_deliverable_id": "correction-source-deliverable",
+        "git_work_context_id": "correction-context",
+        "reviewed_commit_sha": CORRECTION_COMMIT,
+    }
+    task = normalized.tasks["correction-task"]
+    deliverable = normalized.deliverables["correction-deliverable"]
+    assert task.state == TeamTaskState.FINISHED
+    assert task.dependency_task_ids == []
+    assert task.integration_boundary is False
+    assert task.deliverable_contract == TaskDeliverableContract(require_git_provenance=True)
+    assert task.mutation_policy is not None
+    assert task.mutation_policy.policy_id == "system-remediation-topology-v1"
+    assert deliverable.state == TeamRecordState.ACCEPTED
+    assert deliverable.source_deliverable_ids == []
+    assert deliverable.git_refs.accepted_pinned_ref in {
+        "refs/evander/team-reviews/correction-review-a",
+        "refs/evander/team-reviews/correction-review-b",
+    }
+    successor_ids = [
+        release.id
+        for release in normalized.release_packages.values()
+        if release.supersedes_release_package_id == "release-predecessor"
+    ]
+    assert successor_ids == result["created_successor_release_package_ids"]
+    assert normalized.release_packages[successor_ids[0]].deliverable_ids == [deliverable.id]
+    assert normalized.tasks["correction-source-task"] == preserved_source_task
+    assert normalized.deliverables["correction-source-deliverable"] == preserved_source_deliverable
+    assert {
+        review_id: normalized.review_requests[review_id] for review_id in preserved_reviews
+    } == preserved_reviews
+    assert normalized.git_work_contexts["correction-context"] == preserved_context
+
+
+def test_legacy_reviewed_correction_migration_is_idempotent(tmp_path: Path) -> None:
+    repository = TeamStateRepository(tmp_path)
+    repository.update(
+        lambda _state: _legacy_reviewed_correction_state(),
+        expected_revision=0,
+    )
+    first = CandidateCorrectionReconciliationService(repository).reconcile()
+    first_state = repository.read()
+
+    replay = CandidateCorrectionReconciliationService(repository).reconcile()
+    replayed_state = repository.read()
+
+    assert first["normalized_legacy_candidate_correction_task_ids"] == ["correction-task"]
+    assert replay["changed"] is False
+    assert replayed_state == first_state
+    assert (
+        len(
+            [
+                release
+                for release in replayed_state.release_packages.values()
+                if release.supersedes_release_package_id == "release-predecessor"
+            ]
+        )
+        == 1
+    )
+
+
+@pytest.mark.parametrize(
+    "near_miss",
+    [
+        "unaccepted_review",
+        "differing_source_commit",
+        "composition_manifest_present",
+        "non_system_task",
+        "multiple_ambiguous_sources",
+        "mismatched_context_source",
+    ],
+)
+def test_legacy_correction_migration_leaves_near_misses_unchanged(
+    tmp_path: Path,
+    near_miss: str,
+) -> None:
+    seeded = _legacy_reviewed_correction_state()
+    task = seeded.tasks["correction-task"]
+    deliverable = seeded.deliverables["correction-deliverable"]
+    source_deliverable = seeded.deliverables["correction-source-deliverable"]
+    if near_miss == "unaccepted_review":
+        seeded.review_requests["correction-review-b"].state = TeamRecordState.PENDING
+        seeded.review_requests["correction-review-b"].decision_at = None
+    elif near_miss == "differing_source_commit":
+        source_deliverable.git_refs.submitted_commit_sha = RECOVERY_COMMIT
+        source_deliverable.git_refs.reviewed_commit_sha = RECOVERY_COMMIT
+    elif near_miss == "composition_manifest_present":
+        dependency_source = seeded.git_work_contexts["correction-context"].dependency_git_sources[0]
+        deliverable.dependency_composition_manifest = DependencyCompositionManifest(
+            target_task_id=task.id,
+            managed_repo_id=MANAGED_REPO_ID,
+            base_branch=task.git_base_branch or "main",
+            base_commit_sha=CANDIDATE_COMMIT,
+            base_tree_hash="d" * 40,
+            dependency_git_sources=[dependency_source],
+            source_fingerprint="1" * 64,
+            frontier_commit_shas=[CORRECTION_COMMIT],
+            reduced_source_deliverable_ids=[source_deliverable.id],
+            composed_commit_sha=CORRECTION_COMMIT,
+            composed_tree_hash="f" * 40,
+            verified_candidate_commit_sha=CORRECTION_COMMIT,
+        )
+    elif near_miss == "non_system_task":
+        task.created_by_actor = "operator:legacy-repair"
+    elif near_miss == "multiple_ambiguous_sources":
+        second_source = source_deliverable.model_copy(
+            deep=True,
+            update={"id": "correction-source-deliverable-2"},
+        )
+        seeded.deliverables[second_source.id] = second_source
+        seeded.tasks["correction-source-task"].deliverable_ids.append(second_source.id)
+        deliverable.source_deliverable_ids.append(second_source.id)
+    else:
+        seeded.git_work_contexts["correction-context"].dependency_git_sources[
+            0
+        ].deliverable_id = deliverable.id
+
+    repository = TeamStateRepository(tmp_path)
+    before = repository.update(lambda _state: seeded, expected_revision=0)
+
+    result = CandidateCorrectionReconciliationService(repository).reconcile()
+    after = repository.read()
+
+    assert result["changed"] is False
+    assert after == before
+    assert after.tasks["correction-task"].integration_boundary is True
+    assert after.tasks["correction-task"].dependency_task_ids == ["correction-source-task"]
+    assert after.deliverables["correction-deliverable"].state == TeamRecordState.PENDING
+    assert not any(
+        release.supersedes_release_package_id == "release-predecessor"
+        for release in after.release_packages.values()
+    )
 
 
 def test_reviewed_rework_rebuilds_failed_pre_candidate_successor(
@@ -363,8 +790,11 @@ def test_reviewed_rework_rebuilds_failed_pre_candidate_successor(
     assert recovered["git_promotion_event_ids"] == [active_promotions[0].id]
 
 
-@pytest.mark.parametrize("verification_status", ["partial", "not_run", "unknown"])
-def test_reviewed_rework_reapplies_verification_waiver_intake_policy(
+@pytest.mark.parametrize(
+    "verification_status",
+    ["passed", "failed", "partial", "not_run", "unknown"],
+)
+def test_reviewed_rework_ignores_advisory_verification_status(
     tmp_path: Path,
     verification_status: str,
 ) -> None:
@@ -390,19 +820,15 @@ def test_reviewed_rework_reapplies_verification_waiver_intake_policy(
         return state
 
     repository.update(_submit_incomplete_replacement)
-    blocked = CandidateCorrectionReconciliationService(repository).reconcile()
+    recovered = CandidateCorrectionReconciliationService(repository).reconcile()
     state = repository.read()
     successor = state.release_packages[successor_id]
 
-    assert blocked["candidate_correction_errors"]["release-predecessor"] == (
-        f"deliverable replacement-deliverable has {verification_status} verification; "
-        "an authorized verification waiver with a reason is required"
-    )
-    assert blocked.get("recovered_successor_release_package_ids") is None
-    assert successor.state == TeamRecordState.BLOCKED
-    assert successor.deliverable_ids == ["correction-deliverable"]
+    assert recovered["recovered_successor_release_package_ids"] == [successor_id]
+    assert successor.state == TeamRecordState.PENDING
+    assert successor.deliverable_ids == ["replacement-deliverable"]
     assert successor.verification_waivers == []
-    assert state.git_promotions[failed_promotion_id].state == "failed"
+    assert state.git_promotions[failed_promotion_id].state == "retired"
 
 
 def test_reviewed_rework_records_aggregate_validation_failure_as_actionable_blocker(
@@ -781,7 +1207,7 @@ def test_operator_can_create_exact_pinned_replacement_for_owned_blocker(
     gate_kind: str,
 ) -> None:
     repository = TeamStateRepository(tmp_path)
-    seeded = _candidate_correction_state(gate_kind=gate_kind)
+    seeded = _candidate_correction_state(gate_kind=gate_kind, reviewed=False)
     seeded.deliverables["correction-deliverable"].verification = DeliverableVerification(
         status="partial", summary="The full verifier is unavailable."
     )
@@ -866,12 +1292,12 @@ def test_operator_can_create_exact_pinned_replacement_for_owned_blocker(
 
 
 @pytest.mark.parametrize("gate_kind", ["verification", "review"])
-def test_passed_downstream_recovery_deliverable_creates_successor_without_waiver(
+def test_accepted_downstream_recovery_without_agent_verification_creates_successor(
     tmp_path: Path,
     gate_kind: str,
 ) -> None:
     repository = TeamStateRepository(tmp_path)
-    seeded = _candidate_correction_state(gate_kind=gate_kind)
+    seeded = _candidate_correction_state(gate_kind=gate_kind, reviewed=False)
     seeded.deliverables["correction-deliverable"].verification = DeliverableVerification(
         status="partial", summary="Needs downstream repair."
     )
@@ -911,7 +1337,6 @@ def test_passed_downstream_recovery_deliverable_creates_successor_without_waiver
             commit_shas=[RECOVERY_COMMIT],
             changed_paths=["M\tsrc/VerifierRepair.cs"],
         ),
-        verification=DeliverableVerification(status="passed"),
         review_request_ids=["downstream-recovery-review"],
         state=TeamRecordState.ACCEPTED,
     )
@@ -944,7 +1369,7 @@ def test_passed_dependency_backed_recovery_deliverable_creates_successor(
     tmp_path: Path,
 ) -> None:
     repository = TeamStateRepository(tmp_path)
-    seeded = _candidate_correction_state(gate_kind="verification")
+    seeded = _candidate_correction_state(gate_kind="verification", reviewed=False)
     seeded.deliverables["correction-deliverable"].verification = DeliverableVerification(
         status="partial", summary="A separate client fixture still fails."
     )
@@ -1027,63 +1452,31 @@ def test_passed_dependency_backed_recovery_deliverable_creates_successor(
     assert state.blockers[blocker.id].state == TeamBlockerState.RESOLVED
 
 
+@pytest.mark.parametrize("verification_status", ["partial", "failed"])
 @pytest.mark.parametrize("gate_kind", ["verification", "review"])
-def test_operator_waiver_action_records_reason_and_creates_successor(
+def test_candidate_correction_verification_waiver_action_is_retired(
     tmp_path: Path,
     gate_kind: str,
+    verification_status: str,
 ) -> None:
     repository = TeamStateRepository(tmp_path)
-    seeded = _candidate_correction_state(gate_kind=gate_kind)
+    seeded = _candidate_correction_state(gate_kind=gate_kind, reviewed=False)
     seeded.deliverables["correction-deliverable"].verification = DeliverableVerification(
-        status="partial", summary="Environment unavailable."
+        status=verification_status, summary="Legacy diagnostic status."
     )
     repository.update(lambda _state: seeded, expected_revision=0)
     CandidateCorrectionReconciliationService(repository).reconcile()
     state = repository.read()
     blocker = next(iter(state.blockers.values()))
 
-    state, result = TeamAdminService(repository).recover_candidate_correction_successor_as_operator(
-        blocker_id=blocker.id,
-        action="authorize_verification_waiver",
-        reason="Focused verifier passed; the full environment is unavailable.",
-        operator_actor_id="jonathan",
-        expected_revision=state.revision,
-    )
-    successor = state.release_packages[result["release_package_id"]]
-
-    assert successor.supersedes_release_package_id == "release-predecessor"
-    assert len(successor.verification_waivers) == 1
-    waiver = successor.verification_waivers[0]
-    assert waiver.actor_kind == "operator"
-    assert waiver.actor_id == "jonathan"
-    assert waiver.reason == ("Focused verifier passed; the full environment is unavailable.")
-    assert state.blockers[blocker.id].state == TeamBlockerState.RESOLVED
-
-
-@pytest.mark.parametrize("gate_kind", ["verification", "review"])
-def test_operator_waiver_refuses_failed_current_correction_evidence(
-    tmp_path: Path,
-    gate_kind: str,
-) -> None:
-    repository = TeamStateRepository(tmp_path)
-    seeded = _candidate_correction_state(gate_kind=gate_kind)
-    seeded.deliverables["correction-deliverable"].verification = DeliverableVerification(
-        status="failed", summary="The focused verifier found a regression."
-    )
-    repository.update(lambda _state: seeded, expected_revision=0)
-    CandidateCorrectionReconciliationService(repository).reconcile()
-    state = repository.read()
-    blocker = next(iter(state.blockers.values()))
-
-    with pytest.raises(ValueError, match="failed verification and cannot be waived"):
+    with pytest.raises(ValueError, match="unsupported candidate correction recovery action"):
         TeamAdminService(repository).recover_candidate_correction_successor_as_operator(
             blocker_id=blocker.id,
             action="authorize_verification_waiver",
-            reason="This must not override a failed test.",
+            reason="Legacy waiver request.",
             operator_actor_id="jonathan",
             expected_revision=state.revision,
         )
-
     assert repository.read().blockers[blocker.id].state == TeamBlockerState.OPEN
 
 

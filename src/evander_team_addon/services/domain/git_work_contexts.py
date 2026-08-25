@@ -33,6 +33,10 @@ class GitWorkContextValidationError(ValueError):
 
 GitCandidateCommitResolver = Callable[..., str | None]
 
+_SERVER_VERIFIED_COMPOSITION_CANDIDATE_FIELD = (
+    "_server_verified_composition_candidate_sha"
+)
+
 
 _TERMINAL_TASK_STATES = frozenset(
     {
@@ -582,6 +586,10 @@ def bind_deliverable_git_refs_to_work_context(
             "commit_sha": authoritative_commit_sha,
             "submitted_commit_sha": authoritative_commit_sha,
         }
+        if inferred_context.dependency_composition_manifest is not None:
+            deliverable[_SERVER_VERIFIED_COMPOSITION_CANDIDATE_FIELD] = (
+                authoritative_commit_sha
+            )
         return
     if branch_context_id is None:
         raise GitWorkContextValidationError(
@@ -739,6 +747,8 @@ def bind_deliverable_git_refs_to_work_context(
                 "commit_sha": supplied_commit_sha,
                 "expected_commit_sha": authoritative_commit_sha,
                 "agent_branch": context.agent_branch,
+                "required_action": "publish_candidate_with_git_push_agent_then_retry",
+                "publish_command": "git push-agent",
             },
         )
 
@@ -763,6 +773,8 @@ def bind_deliverable_git_refs_to_work_context(
     git_refs["submitted_commit_sha"] = resolved_commit_sha
     deliverable["branch_context_id"] = context.id
     deliverable["git_refs"] = git_refs
+    if context.dependency_composition_manifest is not None:
+        deliverable[_SERVER_VERIFIED_COMPOSITION_CANDIDATE_FIELD] = resolved_commit_sha
 
 
 def _resolve_git_context_branch_commit(
@@ -774,10 +786,41 @@ def _resolve_git_context_branch_commit(
     require_live_resolution: bool,
 ) -> str:
     recorded_commit_sha = _optional_text(context.commit_sha)
+    prepared_base_commit = _optional_text(context.base_commit)
+    # New Team preparation records full object IDs. Keep legacy contexts with
+    # pre-object-ID placeholder values readable, but never treat those values
+    # as ancestry evidence for managed Git.
+    prepared_base_ancestor = (
+        prepared_base_commit.casefold()
+        if prepared_base_commit is not None
+        and re.fullmatch(r"(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})", prepared_base_commit)
+        else None
+    )
+    composition_manifest = context.dependency_composition_manifest
+    composition_ancestor_shas = (
+        [
+            composition_manifest.composed_commit_sha,
+            *[
+                source.commit_sha
+                for source in composition_manifest.dependency_git_sources
+            ],
+        ]
+        if composition_manifest is not None
+        else []
+    )
+    required_ancestor_shas = list(
+        dict.fromkeys(
+            [
+                *([prepared_base_ancestor] if prepared_base_ancestor is not None else []),
+                *composition_ancestor_shas,
+            ]
+        )
+    )
     if (
         candidate_commit_resolver is None
         and not require_live_resolution
         and recorded_commit_sha is not None
+        and not required_ancestor_shas
     ):
         return recorded_commit_sha.casefold()
     task = state.tasks.get(task_id)
@@ -810,21 +853,52 @@ def _resolve_git_context_branch_commit(
             },
         )
     try:
+        resolver_kwargs: dict[str, Any] = {
+            "managed_repo_id": project.git.managed_repo_id,
+            "directory_path": project.git.directory_path,
+            "agent_branch": context.agent_branch,
+        }
+        if required_ancestor_shas:
+            resolver_kwargs["required_ancestor_shas"] = required_ancestor_shas
         authoritative_commit_sha = candidate_commit_resolver(
-            managed_repo_id=project.git.managed_repo_id,
-            directory_path=project.git.directory_path,
-            agent_branch=context.agent_branch,
+            **resolver_kwargs,
         )
     except GitWorkContextValidationError:
         raise
     except Exception as exc:
+        ancestry_verification = bool(required_ancestor_shas)
+        composition_ancestry_verification = composition_manifest is not None
         raise GitWorkContextValidationError(
-            code="git_candidate_commit_resolution_failed",
-            message=(f"could not resolve managed Git branch {context.agent_branch!r}: {exc}"),
+            code=(
+                "git_candidate_composition_ancestry_failed"
+                if composition_ancestry_verification
+                else "git_candidate_prepared_base_ancestry_failed"
+                if ancestry_verification
+                else "git_candidate_commit_resolution_failed"
+            ),
+            message=(
+                f"could not verify dependency composition ancestry for managed Git "
+                f"branch {context.agent_branch!r}: {exc}"
+                if composition_ancestry_verification
+                else f"could not verify prepared base ancestry for managed Git "
+                f"branch {context.agent_branch!r}: {exc}"
+                if ancestry_verification
+                else f"could not resolve managed Git branch {context.agent_branch!r}: {exc}"
+            ),
             correction_context={
                 "branch_context_id": context.id,
                 "task_id": task_id,
                 "agent_branch": context.agent_branch,
+                **(
+                    {"prepared_base_commit": prepared_base_ancestor}
+                    if prepared_base_ancestor is not None
+                    else {}
+                ),
+                **(
+                    {"required_ancestor_shas": required_ancestor_shas}
+                    if ancestry_verification
+                    else {}
+                ),
             },
         ) from None
     if authoritative_commit_sha is None:
@@ -860,6 +934,7 @@ def _resolve_git_context_branch_commit(
 __all__ = [
     "GitCandidateCommitResolver",
     "GitWorkContextValidationError",
+    "_SERVER_VERIFIED_COMPOSITION_CANDIDATE_FIELD",
     "authoritative_deliverable_git_base",
     "bind_deliverable_git_refs_to_work_context",
     "finalize_active_git_work_contexts_for_dispatch",

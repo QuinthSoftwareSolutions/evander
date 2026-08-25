@@ -2,6 +2,7 @@
 Description=Evander Effect Orchestrator
 After=network-online.target
 Wants=network-online.target
+PartOf=evander-team-runtime.target
 
 [Service]
 Type=simple
@@ -9,6 +10,7 @@ User=__RUN_USER__
 WorkingDirectory=__PROJECT_DIR__
 Environment=EFFECT_ORCHESTRATOR_LOG_LEVEL=INFO
 EnvironmentFile=-__PROJECT_DIR__/secrets.env
+ExecStartPre=__PROJECT_DIR__/.venv/bin/python -m evander.runtime_generation register --project-dir __PROJECT_DIR__ --runtime-dir __PROJECT_DIR__/runtime --component effect-orchestrator
 ExecStart=__PROJECT_DIR__/.venv/bin/evander-effect-orchestrator --runtime-dir __PROJECT_DIR__/runtime --log-level ${EFFECT_ORCHESTRATOR_LOG_LEVEL}
 Restart=on-failure
 RestartSec=5

@@ -102,6 +102,20 @@ from .store import WorkerJobStore
 
 logger = logging.getLogger(__name__)
 
+_TASK_WORKTREE_HELPER_NAMES = ("agent-pr-note", "push-agent", "sync-base")
+_TASK_WORKTREE_DIRECTORY_OPEN_FLAGS = (
+    os.O_RDONLY
+    | getattr(os, "O_CLOEXEC", 0)
+    | getattr(os, "O_DIRECTORY", 0)
+    | getattr(os, "O_NOFOLLOW", 0)
+)
+_TASK_WORKTREE_HELPER_READ_FLAGS = (
+    os.O_RDONLY
+    | getattr(os, "O_CLOEXEC", 0)
+    | getattr(os, "O_NONBLOCK", 0)
+    | getattr(os, "O_NOFOLLOW", 0)
+)
+
 
 class WorkerDependencyCompositionConflict(ValueError):
     """Structured, recoverable conflict while composing exact dependency commits."""
@@ -1584,6 +1598,13 @@ class WorkerDaemon:
             candidate=target_dir,
             description="task worktree target",
         )
+        target_exists = target_dir.exists()
+        if target_exists and request.expected_base_commit_sha is None:
+            raise ValueError(
+                "existing task worktree has no authoritative server-recorded "
+                "base; preserve the checkout and use an audited provenance "
+                "recovery"
+            )
         env = _git_subprocess_env(paths.agent_home)
         self._validate_git_branch(repo_dir, request.branch, env=env)
         subprocess.run(
@@ -1596,7 +1617,29 @@ class WorkerDaemon:
         )
         created = False
         base_commit_sha: str | None = None
-        if target_dir.exists():
+        if not target_exists and request.expected_base_commit_sha is not None:
+            if request.expected_base_tree_hash is None:
+                base_commit_sha = self._resolve_authoritative_task_base_commit(
+                    repo_dir,
+                    request.base_ref,
+                    expected_base_commit_sha=request.expected_base_commit_sha,
+                    env=env,
+                )
+            else:
+                base_commit_sha = self._resolve_fresh_task_base_commit(
+                    repo_dir,
+                    request.base_ref,
+                    env=env,
+                )
+                self._verify_task_base_provenance(
+                    repo_dir=repo_dir,
+                    base_ref=request.base_ref,
+                    base_commit_sha=base_commit_sha,
+                    expected_base_commit_sha=request.expected_base_commit_sha,
+                    expected_base_tree_hash=request.expected_base_tree_hash,
+                    env=env,
+                )
+        if target_exists:
             self._make_task_worktree_metadata_portable(
                 repo_dir=repo_dir,
                 target_dir=target_dir,
@@ -1625,13 +1668,20 @@ class WorkerDaemon:
             )
             args = ["git", "worktree", "add"]
             if local_branch.returncode == 0:
+                if request.expected_base_commit_sha is None:
+                    raise ValueError(
+                        "reused task branch has no authoritative server-recorded "
+                        "base; preserve the branch and use an audited provenance "
+                        "recovery"
+                    )
                 args.extend([str(target_dir), request.branch])
             else:
-                base_commit_sha = self._resolve_fresh_task_base_commit(
-                    repo_dir,
-                    request.base_ref,
-                    env=env,
-                )
+                if base_commit_sha is None:
+                    base_commit_sha = self._resolve_fresh_task_base_commit(
+                        repo_dir,
+                        request.base_ref,
+                        env=env,
+                    )
                 self._verify_task_base_provenance(
                     repo_dir=repo_dir,
                     base_ref=request.base_ref,
@@ -1735,6 +1785,54 @@ class WorkerDaemon:
                 expected_base_tree_hash=request.expected_base_tree_hash,
                 env=env,
             )
+        composition_root_commit_sha: str | None = None
+        configured_composed_commit_sha: str | None = None
+        if request.dependency_git_sources:
+            configured_composition_root = subprocess.run(
+                [
+                    "git",
+                    "config",
+                    "--worktree",
+                    "--get",
+                    "evander.dependencyCompositionRootCommit",
+                ],
+                cwd=target_dir,
+                env=env,
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            candidate_root = configured_composition_root.stdout.strip().casefold()
+            if configured_composition_root.returncode == 0 and re.fullmatch(
+                r"(?:[0-9a-f]{40}|[0-9a-f]{64})",
+                candidate_root,
+            ):
+                composition_root_commit_sha = candidate_root
+            else:
+                composition_root_commit_sha = self._git_commit_sha(
+                    target_dir,
+                    paths.agent_home,
+                ).casefold()
+            configured_composed_commit = subprocess.run(
+                [
+                    "git",
+                    "config",
+                    "--worktree",
+                    "--get",
+                    "evander.dependencyComposedCommit",
+                ],
+                cwd=target_dir,
+                env=env,
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            candidate_composed = configured_composed_commit.stdout.strip().casefold()
+            if configured_composed_commit.returncode == 0 and re.fullmatch(
+                r"(?:[0-9a-f]{40}|[0-9a-f]{64})",
+                candidate_composed,
+            ):
+                configured_composed_commit_sha = candidate_composed
         base_commit_sha = self._compose_task_dependency_git_sources(
             repo_dir=repo_dir,
             target_dir=target_dir,
@@ -1758,6 +1856,78 @@ class WorkerDaemon:
             resolved_dependency_branch=request.resolved_dependency_branch,
             resolved_dependency_commit_sha=request.resolved_dependency_commit_sha,
         )
+        composed_commit_sha: str | None = None
+        composed_tree_hash: str | None = None
+        if composition_root_commit_sha is not None:
+            current_head = self._git_commit_sha(
+                target_dir,
+                paths.agent_home,
+            ).casefold()
+            composed_commit_sha = configured_composed_commit_sha
+            if composed_commit_sha is None:
+                candidate_composed = (base_commit_sha or current_head).casefold()
+                candidate_is_retained = all(
+                    subprocess.run(
+                        ["git", "merge-base", "--is-ancestor", ancestor, descendant],
+                        cwd=target_dir,
+                        env=env,
+                        check=False,
+                        capture_output=True,
+                        text=True,
+                    ).returncode
+                    == 0
+                    for ancestor, descendant in (
+                        (composition_root_commit_sha, candidate_composed),
+                        (candidate_composed, current_head),
+                    )
+                )
+                composed_commit_sha = candidate_composed if candidate_is_retained else current_head
+            for ancestor, descendant, label in (
+                (
+                    composition_root_commit_sha,
+                    composed_commit_sha,
+                    "composition root",
+                ),
+                (composed_commit_sha, current_head, "composed dependency base"),
+            ):
+                if (
+                    subprocess.run(
+                        ["git", "merge-base", "--is-ancestor", ancestor, descendant],
+                        cwd=target_dir,
+                        env=env,
+                        check=False,
+                        capture_output=True,
+                        text=True,
+                    ).returncode
+                    != 0
+                ):
+                    raise ValueError(
+                        f"retained {label} {ancestor} is not an ancestor of {descendant}"
+                    )
+            for key, value in (
+                ("evander.dependencyCompositionRootCommit", composition_root_commit_sha),
+                ("evander.dependencyComposedCommit", composed_commit_sha),
+            ):
+                subprocess.run(
+                    ["git", "config", "--worktree", key, value],
+                    cwd=target_dir,
+                    env=env,
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                )
+            composed_tree_hash = (
+                subprocess.run(
+                    ["git", "rev-parse", f"{composed_commit_sha}^{{tree}}"],
+                    cwd=target_dir,
+                    env=env,
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                )
+                .stdout.strip()
+                .casefold()
+            )
         if base_commit_sha is not None:
             subprocess.run(
                 ["git", "config", "--worktree", "evander.baseCommit", base_commit_sha],
@@ -1767,10 +1937,11 @@ class WorkerDaemon:
                 capture_output=True,
                 text=True,
             )
-        helper_source = repo_dir / ".evander"
-        helper_target = target_dir / ".evander"
-        if helper_source.is_dir() and not helper_target.exists():
-            shutil.copytree(helper_source, helper_target)
+        self._reconcile_task_worktree_helpers(
+            trusted_root=paths.agent_home,
+            helper_source=repo_dir / ".evander",
+            helper_target=target_dir / ".evander",
+        )
         commit_sha = self._git_commit_sha(target_dir, paths.agent_home)
         if base_commit_sha is not None and commit_sha.casefold() == base_commit_sha.casefold():
             self._publish_initial_task_branch(
@@ -1785,8 +1956,280 @@ class WorkerDaemon:
             branch=request.branch,
             commit_sha=commit_sha,
             base_commit_sha=base_commit_sha,
+            composition_root_commit_sha=composition_root_commit_sha,
+            composed_commit_sha=composed_commit_sha,
+            composed_tree_hash=composed_tree_hash,
             created=created,
         )
+
+    @classmethod
+    def _reconcile_task_worktree_helpers(
+        cls,
+        *,
+        trusted_root: Path,
+        helper_source: Path,
+        helper_target: Path,
+    ) -> None:
+        source_parts = cls._task_worktree_relative_directory_parts(
+            trusted_root=trusted_root,
+            path=helper_source,
+            label="task worktree helper source directory",
+        )
+        target_parent_parts = cls._task_worktree_relative_directory_parts(
+            trusted_root=trusted_root,
+            path=helper_target.parent,
+            label="task worktree helper parent directory",
+        )
+        root_fd = cls._open_task_worktree_directory_no_follow(
+            trusted_root,
+            label="worker session agent home",
+        )
+        opened_fds = [root_fd]
+        try:
+            source_fd = cls._open_task_worktree_relative_directory_no_follow(
+                root_fd,
+                source_parts,
+                label="task worktree helper source directory",
+                missing_ok=True,
+            )
+            if source_fd is None:
+                return
+            opened_fds.append(source_fd)
+            source_bin_fd = cls._open_task_worktree_child_directory_no_follow(
+                source_fd,
+                "bin",
+                label="task worktree helper source bin directory",
+                missing_ok=True,
+            )
+            if source_bin_fd is None:
+                return
+            opened_fds.append(source_bin_fd)
+
+            target_parent_fd = cls._open_task_worktree_relative_directory_no_follow(
+                root_fd,
+                target_parent_parts,
+                label="task worktree helper parent directory",
+            )
+            assert target_parent_fd is not None
+            opened_fds.append(target_parent_fd)
+            target_fd = cls._open_task_worktree_child_directory_no_follow(
+                target_parent_fd,
+                helper_target.name,
+                label="task worktree helper directory",
+                create=True,
+            )
+            assert target_fd is not None
+            opened_fds.append(target_fd)
+            target_bin_fd = cls._open_task_worktree_child_directory_no_follow(
+                target_fd,
+                "bin",
+                label="task worktree helper bin directory",
+                create=True,
+            )
+            assert target_bin_fd is not None
+            opened_fds.append(target_bin_fd)
+
+            for helper_name in _TASK_WORKTREE_HELPER_NAMES:
+                content = cls._read_task_worktree_helper_at(
+                    source_bin_fd,
+                    helper_name,
+                    label=f"task worktree {helper_name} source",
+                )
+                if content is None:
+                    continue
+                cls._write_task_worktree_helper_at(
+                    target_bin_fd,
+                    helper_name,
+                    content,
+                    mode=0o755,
+                    label=f"task worktree {helper_name}",
+                )
+        finally:
+            for fd in reversed(opened_fds):
+                os.close(fd)
+
+    @staticmethod
+    def _task_worktree_relative_directory_parts(
+        *,
+        trusted_root: Path,
+        path: Path,
+        label: str,
+    ) -> tuple[str, ...]:
+        root_path = Path(os.path.abspath(trusted_root))
+        candidate_path = Path(os.path.abspath(path))
+        try:
+            relative_path = candidate_path.relative_to(root_path)
+        except ValueError as exc:
+            raise ValueError(f"{label} must stay below {root_path}") from exc
+        if not relative_path.parts or any(part in {"", ".", ".."} for part in relative_path.parts):
+            raise ValueError(f"{label} must stay below {root_path}")
+        return relative_path.parts
+
+    @staticmethod
+    def _open_task_worktree_directory_no_follow(path: Path, *, label: str) -> int:
+        try:
+            fd = os.open(path, _TASK_WORKTREE_DIRECTORY_OPEN_FLAGS)
+        except OSError as exc:
+            if exc.errno in {errno.ELOOP, errno.ENOTDIR}:
+                raise ValueError(f"{label} must not be a symlink and must be a directory") from exc
+            raise
+        try:
+            if not stat.S_ISDIR(os.fstat(fd).st_mode):
+                raise ValueError(f"{label} must be a directory")
+        except Exception:
+            os.close(fd)
+            raise
+        return fd
+
+    @classmethod
+    def _open_task_worktree_relative_directory_no_follow(
+        cls,
+        root_fd: int,
+        parts: tuple[str, ...],
+        *,
+        label: str,
+        missing_ok: bool = False,
+    ) -> int | None:
+        current_fd = os.dup(root_fd)
+        try:
+            for part in parts:
+                next_fd = cls._open_task_worktree_child_directory_no_follow(
+                    current_fd,
+                    part,
+                    label=label,
+                    missing_ok=missing_ok,
+                )
+                if next_fd is None:
+                    os.close(current_fd)
+                    return None
+                os.close(current_fd)
+                current_fd = next_fd
+            return current_fd
+        except Exception:
+            os.close(current_fd)
+            raise
+
+    @staticmethod
+    def _open_task_worktree_child_directory_no_follow(
+        parent_fd: int,
+        name: str,
+        *,
+        label: str,
+        missing_ok: bool = False,
+        create: bool = False,
+    ) -> int | None:
+        while True:
+            try:
+                fd = os.open(
+                    name,
+                    _TASK_WORKTREE_DIRECTORY_OPEN_FLAGS,
+                    dir_fd=parent_fd,
+                )
+            except FileNotFoundError:
+                if create:
+                    try:
+                        os.mkdir(name, mode=0o755, dir_fd=parent_fd)
+                    except FileExistsError:
+                        pass
+                    continue
+                if missing_ok:
+                    return None
+                raise
+            except OSError as exc:
+                if exc.errno in {errno.ELOOP, errno.ENOTDIR}:
+                    raise ValueError(
+                        f"{label} must not be a symlink and must be a directory"
+                    ) from exc
+                raise
+            try:
+                if not stat.S_ISDIR(os.fstat(fd).st_mode):
+                    raise ValueError(f"{label} must be a directory")
+            except Exception:
+                os.close(fd)
+                raise
+            return fd
+
+    @staticmethod
+    def _read_task_worktree_helper_at(
+        source_bin_fd: int,
+        helper_name: str,
+        *,
+        label: str,
+    ) -> bytes | None:
+        try:
+            fd = os.open(
+                helper_name,
+                _TASK_WORKTREE_HELPER_READ_FLAGS,
+                dir_fd=source_bin_fd,
+            )
+        except FileNotFoundError:
+            return None
+        except OSError as exc:
+            if exc.errno in {errno.ELOOP, errno.EISDIR, errno.ENOTDIR}:
+                raise ValueError(f"{label} must be a regular file") from exc
+            raise
+        try:
+            if not stat.S_ISREG(os.fstat(fd).st_mode):
+                raise ValueError(f"{label} must be a regular file")
+            with os.fdopen(fd, "rb") as source_handle:
+                fd = -1
+                return source_handle.read()
+        finally:
+            if fd >= 0:
+                os.close(fd)
+
+    @staticmethod
+    def _write_task_worktree_helper_at(
+        target_bin_fd: int,
+        helper_name: str,
+        content: bytes,
+        *,
+        mode: int,
+        label: str,
+    ) -> None:
+        try:
+            target_stat = os.stat(
+                helper_name,
+                dir_fd=target_bin_fd,
+                follow_symlinks=False,
+            )
+        except FileNotFoundError:
+            pass
+        else:
+            if not stat.S_ISREG(target_stat.st_mode):
+                raise ValueError(f"{label} must be a regular file")
+
+        temp_name = f".{helper_name}-{uuid.uuid4().hex}"
+        fd = os.open(
+            temp_name,
+            os.O_WRONLY
+            | os.O_CREAT
+            | os.O_EXCL
+            | getattr(os, "O_CLOEXEC", 0)
+            | getattr(os, "O_NOFOLLOW", 0),
+            mode,
+            dir_fd=target_bin_fd,
+        )
+        try:
+            os.fchmod(fd, mode)
+            with os.fdopen(fd, "wb") as target_handle:
+                fd = -1
+                target_handle.write(content)
+                target_handle.flush()
+                os.fsync(target_handle.fileno())
+            os.replace(
+                temp_name,
+                helper_name,
+                src_dir_fd=target_bin_fd,
+                dst_dir_fd=target_bin_fd,
+            )
+        finally:
+            if fd >= 0:
+                os.close(fd)
+            try:
+                os.unlink(temp_name, dir_fd=target_bin_fd)
+            except FileNotFoundError:
+                pass
 
     @staticmethod
     def _publish_initial_task_branch(
@@ -1842,7 +2285,9 @@ class WorkerDaemon:
         """
 
         expected_rows = [
-            source.model_dump(mode="json") if hasattr(source, "model_dump") else dict(source)
+            source.model_dump(mode="json", exclude_none=True, exclude_defaults=True)
+            if hasattr(source, "model_dump")
+            else dict(source)
             for source in dependency_git_sources
         ]
         expected_json = json.dumps(
@@ -1851,9 +2296,9 @@ class WorkerDaemon:
             separators=(",", ":"),
         )
 
-        def fetch_exact_branch(branch: str, expected_commit: str) -> None:
+        def fetch_exact_ref(ref: str, expected_commit: str, *, label: str) -> None:
             subprocess.run(
-                ["git", "fetch", "--no-tags", "origin", f"refs/heads/{branch}"],
+                ["git", "fetch", "--no-tags", "origin", ref],
                 cwd=repo_dir,
                 env=env,
                 check=True,
@@ -1874,9 +2319,18 @@ class WorkerDaemon:
             )
             if fetched != expected_commit:
                 raise ValueError(
-                    f"dependency branch {branch!r} moved: expected accepted "
+                    f"dependency source {label!r} moved: expected accepted "
                     f"commit {expected_commit}, found {fetched}"
                 )
+
+        def fetch_exact_source(source: Mapping[str, Any]) -> None:
+            branch = str(source["branch"])
+            pinned_ref = str(source.get("pinned_ref") or "").strip()
+            fetch_exact_ref(
+                pinned_ref or f"refs/heads/{branch}",
+                str(source["commit_sha"]),
+                label=pinned_ref or branch,
+            )
 
         if dependency_composition_mode == "manual_recovery":
             recovery_payload = json.dumps(
@@ -1936,7 +2390,7 @@ class WorkerDaemon:
                     "authoritative base before source preparation"
                 )
             for source in expected_rows:
-                fetch_exact_branch(str(source["branch"]), str(source["commit_sha"]))
+                fetch_exact_source(source)
             subprocess.run(
                 [
                     "git",
@@ -1957,9 +2411,13 @@ class WorkerDaemon:
             if base_commit_sha is None:
                 raise ValueError("resolved dependency adoption requires an authoritative base")
             resolved_commit = str(resolved_dependency_commit_sha)
-            fetch_exact_branch(str(resolved_dependency_branch), resolved_commit)
+            fetch_exact_ref(
+                f"refs/heads/{resolved_dependency_branch}",
+                resolved_commit,
+                label=str(resolved_dependency_branch),
+            )
             for source in expected_rows:
-                fetch_exact_branch(str(source["branch"]), str(source["commit_sha"]))
+                fetch_exact_source(source)
             for required_commit, description in [
                 (base_commit_sha, "authoritative base"),
                 *[
@@ -2111,9 +2569,8 @@ class WorkerDaemon:
             )
         all_dependencies_are_ancestors = True
         for source in expected_rows:
-            branch = str(source["branch"])
             expected_commit = str(source["commit_sha"])
-            fetch_exact_branch(branch, expected_commit)
+            fetch_exact_source(source)
             ancestor = subprocess.run(
                 ["git", "merge-base", "--is-ancestor", expected_commit, head_before],
                 cwd=target_dir,
@@ -3563,6 +4020,43 @@ class WorkerDaemon:
         if local_commit.returncode != 0:
             raise ValueError(f"task worktree base ref does not resolve: {base_ref!r}")
         return normalized_local_commit
+
+    @classmethod
+    def _resolve_authoritative_task_base_commit(
+        cls,
+        repo_dir: Path,
+        base_ref: str,
+        *,
+        expected_base_commit_sha: str,
+        env: dict[str, str],
+    ) -> str:
+        """Resolve an immutable task pin while proving it belongs to the named base."""
+
+        current_base_tip = cls._resolve_fresh_task_base_commit(
+            repo_dir,
+            base_ref,
+            env=env,
+        )
+        pinned_is_ancestor = subprocess.run(
+            [
+                "git",
+                "merge-base",
+                "--is-ancestor",
+                expected_base_commit_sha,
+                current_base_tip,
+            ],
+            cwd=repo_dir,
+            env=env,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        if pinned_is_ancestor.returncode != 0:
+            raise ValueError(
+                f"authoritative Team base commit {expected_base_commit_sha} is not "
+                f"reachable from base ref {base_ref!r}"
+            )
+        return expected_base_commit_sha
 
     @staticmethod
     def _verify_task_base_provenance(

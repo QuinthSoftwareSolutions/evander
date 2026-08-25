@@ -773,7 +773,6 @@ Arguments:
 | `release_branch` | string or null | no | Release branch override. |
 | `canonical_branch` | string or null | no | Canonical branch override. |
 | `summary` | string or null | no | Release summary. |
-| `verification_waivers` | object[] | no | `{ "deliverable_id", "reason" }` for partial, not-run, unknown, or missing verification. Only a project lead or top-level team manager may supply agent waivers. |
 | `handled_inbox_item_ids` | string[] | no | Inbox items to mark handled atomically. |
 | `request_id` | string | no | Idempotency key. |
 

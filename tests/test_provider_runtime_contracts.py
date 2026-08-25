@@ -148,6 +148,45 @@ def test_admin_runtime_adapter_exposes_branch_aware_managed_git_refresh() -> Non
     ]
 
 
+def test_admin_runtime_adapter_exposes_managed_git_merge_base_resolution() -> None:
+    calls: list[tuple[str, dict[str, object]]] = []
+
+    class _ManagedGit:
+        def resolve_merge_base(
+            self,
+            managed_repo_id: str,
+            **kwargs: object,
+        ) -> dict[str, object]:
+            calls.append((managed_repo_id, kwargs))
+            return {
+                "managed_repo_id": managed_repo_id,
+                "target_commit_sha": "b" * 40,
+                "merge_base_commit_sha": "a" * 40,
+            }
+
+    adapter = AdminRuntimeProviderAdapter(SimpleNamespace(managed_git_admin=_ManagedGit()))
+
+    assert (
+        adapter.resolve_managed_git_merge_base(
+            "mr_0123456789abcdef0123",
+            target_branch="main",
+            candidate_commit_sha="c" * 40,
+            directory_path="root/team",
+        )["merge_base_commit_sha"]
+        == "a" * 40
+    )
+    assert calls == [
+        (
+            "mr_0123456789abcdef0123",
+            {
+                "target_branch": "main",
+                "candidate_commit_sha": "c" * 40,
+                "directory_path": "root/team",
+            },
+        )
+    ]
+
+
 def test_admin_runtime_adapter_exposes_reference_repo_commit_transition_verification() -> None:
     calls: list[tuple[str, dict[str, object]]] = []
 

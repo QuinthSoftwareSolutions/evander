@@ -78,6 +78,29 @@ def test_install_systemd_units_uses_only_canonical_evander_names() -> None:
     assert 'systemctl enable "${EVANDER_UNITS[@]}"' in text
 
 
+def test_team_runtime_services_register_and_restart_as_one_generation() -> None:
+    repo = Path(__file__).resolve().parents[1]
+    script = _script_text()
+    target = (repo / "systemd" / "evander-team-runtime.target.template").read_text(
+        encoding="utf-8"
+    )
+    component_templates = {
+        "gateway": "evander-gateway.service.template",
+        "admin-web": "evander-admin-web.service.template",
+        "trigger-orchestrator": "evander-trigger-orchestrator.service.template",
+        "effect-orchestrator": "evander-effect-orchestrator.service.template",
+    }
+
+    assert "evander-team-runtime.target" in script
+    assert "sudo systemctl restart evander-team-runtime.target" in script
+    assert all(filename.replace(".template", "") in target for filename in component_templates.values())
+    for component, filename in component_templates.items():
+        template = (repo / "systemd" / filename).read_text(encoding="utf-8")
+        assert "PartOf=evander-team-runtime.target" in template
+        assert "python -m evander.runtime_generation register" in template
+        assert f"--component {component}" in template
+
+
 def test_install_systemd_units_preflight_is_service_profile_aware() -> None:
     text = _script_text()
 

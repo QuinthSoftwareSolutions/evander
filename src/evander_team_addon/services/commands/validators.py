@@ -14,6 +14,7 @@ from ...models import (
     TeamConversationMessage,
     TeamInboxPriority,
     TeamState,
+    project_lead_agent_id,
 )
 from ..domain.common import _optional_text
 
@@ -160,6 +161,92 @@ def _resolve_upward_command_recipient(
     return recipient
 
 
+def _resolve_question_command_recipient(
+    state: TeamState,
+    *,
+    agent: PersistentAgent,
+    recipient_agent_id: str | None,
+    task_id: str | None,
+) -> PersistentAgent:
+    """Resolve the narrow relationship routes available to a Team question.
+
+    Questions still default to the caller's direct superior. An explicit
+    recipient can additionally be selected for a task-scoped question when the
+    recipient owns the task, owns its case, or leads its project. Dispatch
+    validation separately requires the immutable dispatch to authorize the
+    task's project before this domain relationship policy runs.
+    """
+
+    if recipient_agent_id is None or recipient_agent_id == agent.reports_to_agent_id:
+        return _resolve_upward_command_recipient(
+            state,
+            agent=agent,
+            recipient_agent_id=recipient_agent_id,
+            tool_name="team_ask_question",
+            communication_kind="questions",
+        )
+    if task_id is None:
+        return _resolve_upward_command_recipient(
+            state,
+            agent=agent,
+            recipient_agent_id=recipient_agent_id,
+            tool_name="team_ask_question",
+            communication_kind="questions",
+        )
+
+    recipient = _require_command_agent_by_id(
+        state,
+        recipient_agent_id,
+        field_name="recipient_agent_id",
+    )
+    _validate_command_recipient_active(recipient)
+    _validate_command_same_team(agent, recipient)
+
+    task = state.tasks.get(task_id)
+    if task is None:  # Defensive: task scope validation normally reports this first.
+        raise TeamCommandValidationError(
+            code="task_not_found",
+            message=f"task {task_id} does not exist",
+            correction_context={"task_id": task_id},
+        )
+    project = state.projects.get(task.project_id)
+    if project is None:  # Defensive: task scope validation normally reports this first.
+        raise TeamCommandValidationError(
+            code="task_project_not_found",
+            message=f"task {task.id} references missing project {task.project_id}",
+            correction_context={"task_id": task.id, "project_id": task.project_id},
+        )
+    case = state.cases.get(task.case_id or "")
+    relationship_recipient_ids = {
+        "task_owner": task.owner_agent_id,
+        "project_lead": project_lead_agent_id(state, project.id) or project.lead_agent_id,
+    }
+    if case is not None and case.owner_agent_id is not None:
+        relationship_recipient_ids["case_owner"] = case.owner_agent_id
+    if recipient.id not in relationship_recipient_ids.values():
+        allowed_recipient_ids = set(relationship_recipient_ids.values())
+        if agent.reports_to_agent_id is not None:
+            allowed_recipient_ids.add(agent.reports_to_agent_id)
+        raise TeamCommandValidationError(
+            code="recipient_not_task_relationship",
+            message=(
+                f"agent {recipient.id} is not the owner of task {task.id}, the owner "
+                "of its case, or the lead of its project"
+            ),
+            correction_context={
+                "caller_agent_id": agent.id,
+                "recipient_agent_id": recipient.id,
+                "task_id": task.id,
+                "case_id": task.case_id,
+                "project_id": project.id,
+                "relationship_recipient_agent_ids": relationship_recipient_ids,
+                "allowed_recipient_agent_ids": sorted(allowed_recipient_ids),
+                "direct_superior_agent_id": agent.reports_to_agent_id,
+            },
+        )
+    return recipient
+
+
 def _validate_command_project_scope(
     state: TeamState,
     *,
@@ -282,6 +369,7 @@ __all__ = [
     "_require_command_agent_by_id",
     "_validate_command_recipient_active",
     "_validate_command_same_team",
+    "_resolve_question_command_recipient",
     "_resolve_upward_command_recipient",
     "_validate_command_project_scope",
     "_validate_command_task_scope",

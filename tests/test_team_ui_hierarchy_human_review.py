@@ -20,6 +20,69 @@ from evander_team_addon.providers import (
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def test_project_git_payload_uses_visible_provider_neutral_directory_scope() -> None:
+    source = (ROOT / "src" / "evander_team_addon" / "ui_static" / "team-ui.js").read_text(
+        encoding="utf-8"
+    )
+    markup = (ROOT / "src" / "evander_team_addon" / "ui_static" / "index.html").read_text(
+        encoding="utf-8"
+    )
+    helper_source = source[
+        source.index("function gitConfigForForm(") : source.index(
+            "function releasePolicyForForm("
+        )
+    ]
+
+    assert 'name="directory_path" value="root" required' in markup
+    assert "managed_repo_directory_path" not in markup
+    assert "managed_repo_directory_path" not in source
+    assert source.count("git: gitConfigForForm(data)") >= 1
+    assert "const git = gitConfigForForm(data);" in source
+
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("node is required for Team UI payload tests")
+    script = f"""
+      const assert = require("node:assert/strict");
+      const text = (value) => String(value ?? "").trim();
+      {helper_source}
+      assert.deepEqual(
+        gitConfigForForm({{
+          managed_repo_id: "mr_0123456789abcdefabcd",
+          directory_path: "root/new-scope",
+          managed_repo_directory_path: "root/stale-scope",
+        }}),
+        {{
+          managed_repo_id: "mr_0123456789abcdefabcd",
+          directory_path: "root/new-scope",
+        }},
+      );
+      assert.equal(
+        gitConfigForForm({{ managed_repo_id: "mr_0123456789abcdefabcd" }}).directory_path,
+        "root",
+      );
+    """
+    result = subprocess.run(
+        [node, "--input-type=commonjs"],
+        input=script,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+
+
+def test_review_decision_ui_submits_criterion_evidence_references() -> None:
+    source = (ROOT / "src" / "evander_team_addon" / "ui_static" / "team-ui.js").read_text(
+        encoding="utf-8"
+    )
+
+    assert "criterion_evidence_refs__" in source
+    assert 'evidence_refs: splitList(' in source
+    assert "evidence refs format" in source
+
+
 def test_task_surfaces_receive_dispatch_and_worktree_identity_collections() -> None:
     required = {
         "dispatches",
@@ -135,7 +198,7 @@ def test_versioned_agent_guidance_explains_task_topology_and_cancellation() -> N
         agent={"id": "implementer", "display_name": "Implementer"}
     )
 
-    assert TEAM_AGENT_GUIDANCE_VERSION == 34
+    assert TEAM_AGENT_GUIDANCE_VERSION == 36
     assert "Every test command must have an explicit timeout" in content
     assert "timeout --preserve-status -k 20s <seconds> <test command>" in content
     assert "Do not retry the unchanged command indefinitely" in content
@@ -175,6 +238,30 @@ def test_versioned_agent_guidance_explains_task_topology_and_cancellation() -> N
     assert "Do not submit a coordination-parent deliverable" in content
     assert "produces no deliverable" in content
     assert "automatic successors of generated rejected-candidate" in content
+    assert "run git push-agent and require it to succeed" in content
+    assert "Confirm the managed agent branch resolves to the same commit" in content
+
+
+def test_task_cancellation_ui_exposes_atomic_dependency_replacement() -> None:
+    source = (ROOT / "src" / "evander_team_addon" / "ui_static" / "team-ui.js").read_text(
+        encoding="utf-8"
+    )
+    markup = (ROOT / "src" / "evander_team_addon" / "ui_static" / "index.html").read_text(
+        encoding="utf-8"
+    )
+
+    assert 'name="rebind_dependents"' in markup
+    assert "Replace this task in active dependencies" in markup
+    assert "required contribution" in markup
+    assert "rebind_dependents: rebindDependents" in source
+    assert "integration preparations re-armed" in source
+    assert "stale Git contexts abandoned" in source
+    assert "Select a successor before replacing active dependencies." in source
+    assert "data-repair-cancelled-task-dependencies" in source
+    assert "Repair stranded dependents" in source
+    assert "expected_dependent_task_ids: expectedDependentTaskIds" in source
+    assert "/repair-cancelled-dependencies" in source
+    assert "task_dependency_graph_repair_audit" in source
 
 
 def test_task_creation_guidance_keeps_root_authority_distinct_from_provenance() -> None:

@@ -848,6 +848,7 @@ def test_record_release_promotion_success_publishes_canonical_push(
 
     def _mutate(state):
         state.projects["project"].release_policy = ProjectReleasePolicy(allow_ungated=True)
+        state.projects["project"].directory_path = "root/team-a"
         state.projects["project"].git.directory_path = "root/team-a"
         state.git_promotions["release-promotion"] = GitPromotionRecord(
             id="release-promotion",
@@ -1054,6 +1055,7 @@ def _seed_release_verification(repo: TeamStateRepository) -> None:
 
     def _mutate(state):
         release = state.release_packages["release-1"]
+        state.projects["project"].directory_path = "root/team-a"
         state.projects["project"].git.directory_path = "root/team-a"
         release.candidate_commit_sha = "candidate-sha"
         release.verification_run_ids = ["verification-1"]
@@ -1070,13 +1072,21 @@ def _seed_release_verification(repo: TeamStateRepository) -> None:
             release_package_id=release.id,
             candidate_commit_sha="candidate-sha",
             session_id="verification-session",
-            command_results=[ReleaseVerificationCommandResult(name="frozen-check")],
-        )
-        state.projects["project"].release_policy = ProjectReleasePolicy(
+            container_image="frozen-verifier:v1",
             resource_limits={
                 "memory": "6g",
                 "cpus": 4,
                 "pids_limit": 1536,
+            },
+            verifier_settings_snapshotted=True,
+            command_results=[ReleaseVerificationCommandResult(name="frozen-check")],
+        )
+        state.projects["project"].release_policy = ProjectReleasePolicy(
+            container_image="live-verifier:v2",
+            resource_limits={
+                "memory": "12g",
+                "cpus": 8,
+                "pids_limit": 3072,
             },
             verification_commands=[
                 ReleaseVerificationCommand(
@@ -1197,6 +1207,66 @@ def test_release_verifier_executes_commands_from_frozen_manifest(
     assert ["python", "-m", "live_policy_check"] not in executed_commands
     assert recorded["verification_state"] == "passed"
     assert recorded["command_results"][0]["name"] == "frozen-check"
+
+
+def test_release_verifier_snapshots_project_settings_for_legacy_run(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    repo = _seed_team(tmp_path)
+    _seed_release_verification(repo)
+
+    def _make_run_legacy(state):
+        run = state.release_verification_runs["verification-1"]
+        run.container_image = None
+        run.resource_limits = None
+        run.verifier_settings_snapshotted = False
+        return state
+
+    repo.update(_make_run_legacy)
+    _stub_release_verifier_setup(
+        monkeypatch,
+        destroy_result={"success": True},
+    )
+    created: list[dict[str, object]] = []
+
+    def _create(self, **kwargs):
+        del kwargs
+        created.append(
+            {
+                "container_image": self.effect_definition.container_image,
+                "metadata": dict(self.effect_definition.metadata),
+            }
+        )
+        return {"success": True}
+
+    monkeypatch.setattr(AgentCreateEffectProvider, "execute", _create)
+
+    result = _verify_release_provider(tmp_path)
+
+    assert result["success"] is True
+    assert created == [
+        {
+            "container_image": "live-verifier:v2",
+            "metadata": {
+                "team_release_verification": True,
+                "release_package_id": "release-1",
+                "candidate_commit_sha": "candidate-sha",
+                "container_worker_resource_limits": {
+                    "memory": "12g",
+                    "cpus": 8.0,
+                    "pids_limit": 3072,
+                },
+            },
+        }
+    ]
+    run = repo.read().release_verification_runs["verification-1"]
+    assert run.verifier_settings_snapshotted is True
+    assert run.container_image == "live-verifier:v2"
+    assert run.resource_limits is not None
+    assert run.resource_limits.memory == "12g"
+    assert run.resource_limits.cpus == 8.0
+    assert run.resource_limits.pids_limit == 3072
 
 
 def test_release_verifier_persists_live_command_state_and_worker_job(
@@ -1857,6 +1927,19 @@ def test_mark_release_published_success(tmp_path: Path) -> None:
     assert release.canonical_branch == "releases/project/release-1"
     assert release.published_at is not None
 
+    retry_result = _mark_release_provider(
+        tmp_path,
+        release_package_id="release-1",
+        success=True,
+        canonical_branch="releases/project/release-1",
+        published_commit_sha="cafef00d",
+    )
+
+    assert retry_result["success"] is True
+    assert retry_result["state"] == TeamRecordState.ACCEPTED.value
+    assert retry_result["ignored_terminal_state"] is True
+    assert retry_result["error"] is None
+
 
 def test_mark_release_published_revalidates_current_hierarchy_scope(
     tmp_path: Path,
@@ -1904,10 +1987,9 @@ def test_mark_release_published_ignores_conflicting_late_result_for_accepted_rel
     late_result = _mark_release_provider(
         tmp_path,
         release_package_id="release-1",
-        success=False,
+        success=True,
         canonical_branch="releases/project/other",
         published_commit_sha="different-candidate",
-        error="late failure",
     )
 
     assert first_result["state"] == TeamRecordState.ACCEPTED.value

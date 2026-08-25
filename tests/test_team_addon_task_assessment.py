@@ -6,10 +6,15 @@ import pytest
 
 from evander.models import utc_now
 from evander_team_addon.models import (
+    AgentStatus,
     AgentTask,
     Deliverable,
+    DeliverableAcceptanceDecision,
     DeliverableGitRefs,
     DeliverableOutcome,
+    DeliverableVerification,
+    DependencyCompositionManifest,
+    DependencyGitSource,
     EphemeralAssignment,
     EphemeralAssignmentState,
     GitPromotionRecord,
@@ -17,6 +22,7 @@ from evander_team_addon.models import (
     GitWorkContextState,
     PersistentAgent,
     Project,
+    ProjectGitConfig,
     ReviewRequest,
     TaskAssessmentReadiness,
     TaskCancellation,
@@ -25,6 +31,7 @@ from evander_team_addon.models import (
     TaskDeliverableContract,
     TaskOutcomeContract,
     TaskResolutionStatus,
+    Team,
     TeamBlocker,
     TeamBlockerSourceKind,
     TeamRecordState,
@@ -53,16 +60,24 @@ from evander_team_addon.services.domain.deliverables import (
     _accept_deliverable_and_maybe_task,
     _superseded_deliverable_for_rework,
 )
+from evander_team_addon.services.domain.blockers import resolve_blocker
 from evander_team_addon.services.domain.ephemeral import (
     _apply_ephemeral_acceptance,
 )
 from evander_team_addon.services.domain.git_promotion import (
     _attach_promotion_success,
 )
+from evander_team_addon.services.domain.git_work_contexts import (
+    bind_deliverable_git_refs_to_work_context,
+)
 from evander_team_addon.services.domain.release_packages import (
     _build_release_package,
 )
-from evander_team_addon.services.domain.review import _cascade_review_decision
+from evander_team_addon.services.domain.review import (
+    _cascade_review_decision,
+    retry_deferred_deliverable_acceptance,
+    retry_deliverable_acceptance_if_reviewed,
+)
 
 
 def _state() -> TeamState:
@@ -1068,6 +1083,308 @@ def test_integration_boundary_requires_authoritative_pinned_git_provenance() -> 
     assert assessment.resolution_reason == "integration_deliverable_accepted"
 
 
+def test_policy_v2_git_candidate_does_not_require_manifest_for_artifact_dependency() -> None:
+    state = _state()
+    dependency = _support_task("artifact-dependency", state=TeamTaskState.FINISHED)
+    integration = AgentTask(
+        **{
+            **_support_task(
+                "integration",
+                state=TeamTaskState.WAITING_FOR_REVIEW,
+                dependency_task_ids=[dependency.id],
+            ).model_dump(),
+            "integration_boundary": True,
+            "deliverable_contract": TaskDeliverableContract(
+                require_git_provenance=True,
+            ),
+        }
+    )
+    state.tasks = {dependency.id: dependency, integration.id: integration}
+    _delivered(
+        state,
+        deliverable_id="artifact-dependency-deliverable",
+        task_id=dependency.id,
+    )
+    commit_sha = "a" * 40
+    state.git_work_contexts = {
+        "context-integration": GitWorkContext(
+            id="context-integration",
+            agent_id=integration.owner_agent_id,
+            task_id=integration.id,
+            agent_branch="agents/integration/task",
+            commit_sha=commit_sha,
+            state=GitWorkContextState.SUBMITTED,
+        )
+    }
+    candidate = Deliverable(
+        id="integration-candidate",
+        task_id=integration.id,
+        producer_agent_id=integration.owner_agent_id,
+        summary="Git candidate with an artifact-only lifecycle dependency.",
+        state=TeamRecordState.PENDING,
+        acceptance_policy_version=2,
+        git_refs=DeliverableGitRefs(
+            branch_context_id="context-integration",
+            agent_branch="agents/integration/task",
+            commit_sha=commit_sha,
+            submitted_commit_sha=commit_sha,
+        ),
+        verification=DeliverableVerification(
+            status="passed",
+            provenance="server_release_equivalent",
+            run_id="verification-artifact-dependency",
+            candidate_commit_sha=commit_sha,
+            evidence_refs=["test://artifact-dependency"],
+        ),
+    )
+    state.deliverables[candidate.id] = candidate
+    integration.deliverable_ids = [candidate.id]
+
+    require_deliverable_acceptance(state, candidate.id)
+
+
+def _policy_v2_mixed_source_candidate() -> tuple[TeamState, AgentTask, Deliverable]:
+    state = _state()
+    git_contribution = _support_task("git-contribution", state=TeamTaskState.FINISHED)
+    artifact_contribution = _support_task(
+        "artifact-contribution",
+        state=TeamTaskState.FINISHED,
+    )
+    integration = AgentTask(
+        **{
+            **_support_task(
+                "integration",
+                state=TeamTaskState.WAITING_FOR_REVIEW,
+                dependency_task_ids=[git_contribution.id, artifact_contribution.id],
+            ).model_dump(),
+            "integration_boundary": True,
+            "deliverable_contract": TaskDeliverableContract(
+                require_git_provenance=True,
+                required_contribution_task_ids=[
+                    git_contribution.id,
+                    artifact_contribution.id,
+                ],
+            ),
+        }
+    )
+    state.tasks = {
+        git_contribution.id: git_contribution,
+        artifact_contribution.id: artifact_contribution,
+        integration.id: integration,
+    }
+    source_commit = "b" * 40
+    git_source = _delivered(
+        state,
+        deliverable_id="git-source",
+        task_id=git_contribution.id,
+    )
+    git_source.git_refs = DeliverableGitRefs(
+        agent_branch="agents/source/git-contribution",
+        commit_sha=source_commit,
+        submitted_commit_sha=source_commit,
+    )
+    artifact_source = _delivered(
+        state,
+        deliverable_id="artifact-source",
+        task_id=artifact_contribution.id,
+    )
+    candidate_commit = "c" * 40
+    dependency_source = DependencyGitSource(
+        dependency_task_id=git_contribution.id,
+        deliverable_id=git_source.id,
+        branch="agents/source/git-contribution",
+        commit_sha=source_commit,
+        relationship_kind="required_contribution",
+    )
+    manifest = DependencyCompositionManifest(
+        target_task_id=integration.id,
+        managed_repo_id="mr_0123456789abcdefabcd",
+        base_branch="main",
+        base_commit_sha="a" * 40,
+        base_tree_hash="d" * 40,
+        dependency_git_sources=[dependency_source],
+        source_fingerprint="e" * 64,
+        frontier_commit_shas=[source_commit],
+        composed_commit_sha=candidate_commit,
+        composed_tree_hash="f" * 40,
+        verified_candidate_commit_sha=candidate_commit,
+    )
+    state.git_work_contexts = {
+        "context-integration": GitWorkContext(
+            id="context-integration",
+            agent_id=integration.owner_agent_id,
+            task_id=integration.id,
+            agent_branch="agents/integration/task",
+            commit_sha=candidate_commit,
+            state=GitWorkContextState.SUBMITTED,
+            dependency_git_sources=[dependency_source],
+            dependency_composition_manifest=manifest,
+        )
+    }
+    candidate = Deliverable(
+        id="mixed-source-candidate",
+        task_id=integration.id,
+        producer_agent_id=integration.owner_agent_id,
+        summary="Candidate composed from Git and artifact contributions.",
+        state=TeamRecordState.PENDING,
+        source_deliverable_ids=[git_source.id, artifact_source.id],
+        acceptance_policy_version=2,
+        dependency_composition_manifest=manifest,
+        git_refs=DeliverableGitRefs(
+            branch_context_id="context-integration",
+            agent_branch="agents/integration/task",
+            commit_sha=candidate_commit,
+            submitted_commit_sha=candidate_commit,
+        ),
+        verification=DeliverableVerification(
+            status="passed",
+            provenance="server_release_equivalent",
+            run_id="verification-mixed-sources",
+            candidate_commit_sha=candidate_commit,
+            evidence_refs=["test://mixed-sources"],
+        ),
+    )
+    state.deliverables[candidate.id] = candidate
+    integration.deliverable_ids = [candidate.id]
+
+    return state, integration, candidate
+
+
+def test_policy_v2_composition_scope_ignores_artifact_only_contribution() -> None:
+    state, _integration, candidate = _policy_v2_mixed_source_candidate()
+
+    require_deliverable_acceptance(state, candidate.id)
+
+
+def test_policy_v2_composition_requires_server_verified_candidate_ancestry() -> None:
+    state, _integration, candidate = _policy_v2_mixed_source_candidate()
+    manifest = candidate.dependency_composition_manifest
+    assert manifest is not None
+    manifest.verified_candidate_commit_sha = "9" * 40
+
+    with pytest.raises(TaskAssessmentBoundaryError) as raised:
+        require_deliverable_acceptance(state, candidate.id)
+
+    assert raised.value.code == "dependency_composition_candidate_ancestry_unverified"
+    assert raised.value.correction_context["candidate_commit_sha"] == "c" * 40
+    assert raised.value.correction_context["required_ancestor_shas"] == [
+        "c" * 40,
+        "b" * 40,
+    ]
+
+
+def test_git_submission_verifies_and_records_composition_candidate_ancestry() -> None:
+    state, integration, candidate = _policy_v2_mixed_source_candidate()
+    state.projects["project"] = Project(
+        id="project",
+        team_id="team",
+        name="Project",
+        lead_agent_id="lead",
+        git=ProjectGitConfig(
+            managed_repo_id="mr_0123456789abcdefabcd",
+            directory_path="root",
+        ),
+    )
+    context = state.git_work_contexts["context-integration"]
+    context.state = GitWorkContextState.ACTIVE
+    context.commit_sha = None
+    manifest = context.dependency_composition_manifest
+    assert manifest is not None
+    manifest.verified_candidate_commit_sha = None
+    resolver_calls: list[dict[str, object]] = []
+
+    def _resolve(**kwargs: object) -> str:
+        resolver_calls.append(kwargs)
+        return candidate.git_refs.commit_sha or ""
+
+    payload: dict[str, object] = {
+        "branch_context_id": context.id,
+        "git_refs": {
+            "branch_context_id": context.id,
+            "agent_branch": context.agent_branch,
+            "commit_sha": candidate.git_refs.commit_sha,
+        },
+    }
+    bind_deliverable_git_refs_to_work_context(
+        state,
+        agent_id=integration.owner_agent_id,
+        task_id=integration.id,
+        deliverable=payload,
+        candidate_commit_resolver=_resolve,
+    )
+
+    assert resolver_calls == [
+        {
+            "managed_repo_id": "mr_0123456789abcdefabcd",
+            "directory_path": "root",
+            "agent_branch": "agents/integration/task",
+            "required_ancestor_shas": ["c" * 40, "b" * 40],
+        }
+    ]
+    assert manifest.verified_candidate_commit_sha is None
+    assert payload["_server_verified_composition_candidate_sha"] == "c" * 40
+
+
+def test_policy_v2_composition_manifest_must_match_new_git_dependency() -> None:
+    state, integration, candidate = _policy_v2_mixed_source_candidate()
+    added_dependency = _support_task(
+        "added-git-dependency",
+        state=TeamTaskState.FINISHED,
+    )
+    state.tasks[added_dependency.id] = added_dependency
+    added_source = _delivered(
+        state,
+        deliverable_id="added-git-source",
+        task_id=added_dependency.id,
+    )
+    added_source.git_refs = DeliverableGitRefs(
+        agent_branch="agents/source/added-git-dependency",
+        commit_sha="8" * 40,
+        submitted_commit_sha="8" * 40,
+    )
+    integration.dependency_task_ids.append(added_dependency.id)
+
+    with pytest.raises(TaskAssessmentBoundaryError) as raised:
+        require_deliverable_acceptance(state, candidate.id)
+
+    assert raised.value.code == "dependency_composition_manifest_dependency_scope_mismatch"
+    assert raised.value.correction_context[
+        "manifest_dependency_source_deliverable_ids"
+    ] == []
+    assert raised.value.correction_context[
+        "current_dependency_source_deliverable_ids"
+    ] == [added_source.id]
+
+
+def test_policy_v2_composition_manifest_ignores_cancelled_git_dependency() -> None:
+    state, integration, candidate = _policy_v2_mixed_source_candidate()
+    cancelled_dependency_payload = _support_task("cancelled-git-dependency").model_dump()
+    cancelled_dependency_payload.update(
+        state=TeamTaskState.CANCELLED,
+        cancellation=TaskCancellation(
+            reason_code="obsolete",
+            reason="The integration no longer requires this dependency.",
+            actor_kind="operator",
+            actor_id="operator:test",
+        ),
+    )
+    cancelled_dependency = AgentTask.model_validate(cancelled_dependency_payload)
+    state.tasks[cancelled_dependency.id] = cancelled_dependency
+    cancelled_source = _delivered(
+        state,
+        deliverable_id="cancelled-git-source",
+        task_id=cancelled_dependency.id,
+    )
+    cancelled_source.git_refs = DeliverableGitRefs(
+        agent_branch="agents/source/cancelled-git-dependency",
+        commit_sha="8" * 40,
+        submitted_commit_sha="8" * 40,
+    )
+    integration.dependency_task_ids.append(cancelled_dependency.id)
+
+    require_deliverable_acceptance(state, candidate.id)
+
+
 def test_integration_boundary_rejects_artifact_only_submission_before_side_effects() -> None:
     state = _state()
     task = AgentTask(
@@ -1446,6 +1763,283 @@ def test_formal_review_cascade_defers_aggregate_with_unresolved_descendants() ->
     assert review.state == TeamRecordState.ACCEPTED
     assert review.decision_at is not None
     assert deliverable.state == TeamRecordState.PENDING
+
+
+def test_formal_review_cascade_routes_durable_acceptance_remediation() -> None:
+    state = _state()
+    state.teams["team"] = Team.model_construct(
+        id="team",
+        name="Team",
+        manager_agent_id="owner-parent",
+    )
+    state.projects["project"] = Project.model_construct(
+        id="project",
+        team_id="team",
+        name="Project",
+        lead_agent_id="owner-parent",
+    )
+    state.agents["owner-parent"] = PersistentAgent.model_construct(
+        id="owner-parent",
+        team_id="team",
+        session_id="session-owner-parent",
+        status=AgentStatus.ACTIVE,
+    )
+    parent = _outcome_task(
+        "parent",
+        state=TeamTaskState.WAITING_FOR_REVIEW,
+    )
+    state.tasks[parent.id] = parent
+    state.tasks["child"] = _support_task("child", parent_task_id=parent.id)
+    deliverable = _delivered(
+        state,
+        deliverable_id="deliverable-parent",
+        task_id=parent.id,
+        record_state=TeamRecordState.PENDING,
+    )
+    review = ReviewRequest(
+        id="review-parent",
+        deliverable_id=deliverable.id,
+        reviewer_agent_id="owner-parent",
+    )
+    state.review_requests[review.id] = review
+    deliverable.review_request_ids = [review.id]
+
+    result: dict[str, Any] = {"errors": []}
+    _cascade_review_decision(
+        state,
+        review=review,
+        decision_state=TeamRecordState.ACCEPTED,
+        findings=[],
+        projects_to_recalc=set(),
+        result=result,
+    )
+
+    blocker = state.blockers[result["deliverable_acceptance_deferred"]["blocker_id"]]
+    assert blocker.source_kind == TeamBlockerSourceKind.DELIVERABLE
+    assert blocker.source_id == "deliverable-parent"
+    assert blocker.task_id == parent.id
+    assert blocker.owner_agent_id == parent.owner_agent_id
+    assert blocker.affected_task_ids == ["child"]
+    assert parent.state == TeamTaskState.BLOCKED
+    assert any(
+        item.payload.get("blocker_id") == blocker.id
+        for item in state.inbox.values()
+    )
+
+    repeated: dict[str, Any] = {"events": []}
+    with pytest.raises(TaskAssessmentBoundaryError) as still_blocked:
+        retry_deferred_deliverable_acceptance(
+            state,
+            blocker_id=blocker.id,
+            actor_agent_id="owner-parent",
+            result=repeated,
+            now=utc_now(),
+        )
+    assert still_blocked.value.code == "task_boundary_blocked"
+    assert repeated["deliverable_acceptance_deferred"]["blocker_id"] == blocker.id
+    assert [item.id for item in state.blockers.values() if item.state.value == "open"] == [
+        blocker.id
+    ]
+
+    state.tasks["child"].state = TeamTaskState.CANCELLED
+    state.tasks["child"].cancellation = TaskCancellation(
+        reason_code="no_longer_required",
+        reason="The remediation proved this child is no longer required.",
+        actor_kind="operator",
+        actor_id="operator:test",
+    )
+    retried: dict[str, Any] = {"events": []}
+    assert retry_deferred_deliverable_acceptance(
+        state,
+        blocker_id=blocker.id,
+        actor_agent_id="owner-parent",
+        result=retried,
+        now=utc_now(),
+    )
+    assert blocker.state.value == "resolved"
+    assert deliverable.state == TeamRecordState.ACCEPTED
+    assert parent.state == TeamTaskState.ACCEPTED
+    assert retried["resolved_blocker_ids"] == [blocker.id]
+
+
+def test_resolving_unrelated_deliverable_blocker_reenters_accepted_review_boundary() -> None:
+    state = _state()
+    state.teams["team"] = Team.model_construct(
+        id="team",
+        name="Team",
+        manager_agent_id="owner-parent",
+    )
+    state.projects["project"] = Project.model_construct(
+        id="project",
+        team_id="team",
+        name="Project",
+        lead_agent_id="owner-parent",
+    )
+    state.agents["owner-parent"] = PersistentAgent.model_construct(
+        id="owner-parent",
+        team_id="team",
+        session_id="session-owner-parent",
+        status=AgentStatus.ACTIVE,
+    )
+    parent = _outcome_task("parent", state=TeamTaskState.WAITING_FOR_REVIEW)
+    state.tasks[parent.id] = parent
+    state.tasks["child"] = _support_task("child", parent_task_id=parent.id)
+    deliverable = _delivered(
+        state,
+        deliverable_id="deliverable-parent",
+        task_id=parent.id,
+        record_state=TeamRecordState.PENDING,
+    )
+    review = ReviewRequest(
+        id="review-parent",
+        deliverable_id=deliverable.id,
+        reviewer_agent_id="owner-parent",
+    )
+    state.review_requests[review.id] = review
+    deliverable.review_request_ids = [review.id]
+    unrelated = TeamBlocker(
+        id="blocker-unrelated",
+        team_id="team",
+        project_id="project",
+        task_id=parent.id,
+        source_kind=TeamBlockerSourceKind.DELIVERABLE,
+        source_id=deliverable.id,
+        reason_code="external_dependency_unavailable",
+        owner_agent_id=parent.owner_agent_id,
+        summary="A separate deliverable dependency is unavailable",
+    )
+    state.blockers[unrelated.id] = unrelated
+
+    initial: dict[str, Any] = {"events": []}
+    _cascade_review_decision(
+        state,
+        review=review,
+        decision_state=TeamRecordState.ACCEPTED,
+        findings=[],
+        projects_to_recalc=set(),
+        result=initial,
+    )
+
+    assert initial["deliverable_acceptance_deferred"]["blocker_ids"] == [
+        unrelated.id
+    ]
+    assert not any(
+        blocker.reason_code.startswith("deliverable_acceptance_deferred:")
+        for blocker in state.blockers.values()
+    )
+
+    now = utc_now()
+    resolve_blocker(
+        state,
+        blocker=unrelated,
+        actor_agent_id="owner-parent",
+        dispatch_id=None,
+        note="The separate dependency is now available.",
+        now=now,
+    )
+    retried: dict[str, Any] = {"events": []}
+    assert not retry_deliverable_acceptance_if_reviewed(
+        state,
+        deliverable_id=deliverable.id,
+        actor_agent_id="owner-parent",
+        result=retried,
+        now=now,
+    )
+
+    boundary_id = retried["deliverable_acceptance_deferred"]["blocker_id"]
+    assert boundary_id != unrelated.id
+    assert state.blockers[boundary_id].reason_code.startswith(
+        "deliverable_acceptance_deferred:"
+    )
+    assert deliverable.state == TeamRecordState.PENDING
+    assert parent.state == TeamTaskState.BLOCKED
+
+
+def test_acceptance_retry_waits_for_current_formal_review_after_direct_acceptance() -> None:
+    state = _state()
+    task = _outcome_task("parent", state=TeamTaskState.WAITING_FOR_REVIEW)
+    state.tasks[task.id] = task
+    deliverable = _delivered(
+        state,
+        deliverable_id="deliverable-parent",
+        task_id=task.id,
+        record_state=TeamRecordState.PENDING,
+    )
+    deliverable.acceptance_decision = DeliverableAcceptanceDecision(
+        decision="accepted",
+        decided_by_agent_id="owner-parent",
+    )
+    review = ReviewRequest(
+        id="review-parent-current",
+        deliverable_id=deliverable.id,
+        reviewer_agent_id="reviewer",
+    )
+    state.review_requests[review.id] = review
+    deliverable.review_request_ids = [review.id]
+
+    result: dict[str, Any] = {"events": []}
+    assert not retry_deliverable_acceptance_if_reviewed(
+        state,
+        deliverable_id=deliverable.id,
+        actor_agent_id="owner-parent",
+        result=result,
+        now=utc_now(),
+    )
+
+    assert review.state == TeamRecordState.PENDING
+    assert deliverable.state == TeamRecordState.PENDING
+    assert task.state == TeamTaskState.WAITING_FOR_REVIEW
+    assert "deliverable_acceptance_deferred" not in result
+
+
+def test_deferred_acceptance_retry_waits_for_current_formal_review() -> None:
+    state = _state()
+    task = _outcome_task("parent", state=TeamTaskState.BLOCKED)
+    state.tasks[task.id] = task
+    deliverable = _delivered(
+        state,
+        deliverable_id="deliverable-parent",
+        task_id=task.id,
+        record_state=TeamRecordState.PENDING,
+    )
+    deliverable.acceptance_decision = DeliverableAcceptanceDecision(
+        decision="accepted",
+        decided_by_agent_id="owner-parent",
+    )
+    review = ReviewRequest(
+        id="review-parent-current",
+        deliverable_id=deliverable.id,
+        reviewer_agent_id="reviewer",
+    )
+    state.review_requests[review.id] = review
+    deliverable.review_request_ids = [review.id]
+    blocker = TeamBlocker(
+        id="blocker-acceptance-boundary",
+        team_id="team",
+        project_id="project",
+        task_id=task.id,
+        source_kind=TeamBlockerSourceKind.DELIVERABLE,
+        source_id=deliverable.id,
+        reason_code="deliverable_acceptance_deferred:task_boundary_blocked",
+        owner_agent_id=task.owner_agent_id,
+        summary="Acceptance waits for the current formal review.",
+    )
+    state.blockers[blocker.id] = blocker
+
+    with pytest.raises(TaskAssessmentBoundaryError) as raised:
+        retry_deferred_deliverable_acceptance(
+            state,
+            blocker_id=blocker.id,
+            actor_agent_id="owner-parent",
+            result={"events": []},
+            now=utc_now(),
+        )
+
+    assert raised.value.code == "deliverable_acceptance_evidence_incomplete"
+    assert blocker.state.value == "open"
+    assert review.state == TeamRecordState.PENDING
+    assert deliverable.state == TeamRecordState.PENDING
+    assert task.state == TeamTaskState.BLOCKED
 
 
 def test_release_construction_refuses_non_top_level_or_unresolved_scope() -> None:

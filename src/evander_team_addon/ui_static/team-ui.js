@@ -508,6 +508,7 @@ const fieldTooltips = {
   "create-project-form:team_id": "Team that owns this project. The project lead and later project agents must belong to the same team.",
   "create-project-form:name": "Human-readable project name shown in project cards, filters, and timelines.",
   "create-project-form:lead_agent_id": "Existing same-team agent that will lead this project. The team manager may also be selected.",
+  "create-project-form:directory_path": "Provider-neutral configuration and access scope for this project, including projects with no Git repository.",
   "create-project-form:goal_description": "Optional initial goal for the project backlog.",
 
   "create-case-form:team_id": "Team that owns this case.",
@@ -598,7 +599,7 @@ const fieldTooltips = {
   "decide-review-form:review_request_id": "Review request to decide.",
   "decide-review-form:state": "Decision to apply to the review, deliverable, and related task state.",
   "decide-review-form:findings": "Decision findings, one per line or comma-separated.",
-  "decide-review-form:criteria": "Criterion result rows in criterion_id | state | finding format.",
+  "decide-review-form:criteria": "Criterion result rows in criterion_id | state | finding | evidence refs format. Separate evidence refs with commas.",
 
   "edit:team:name": "Rename the team without changing its immutable ID.",
   "edit:team:operator_communication_target_id": "Set or clear the external target used for operator escalations.",
@@ -1807,6 +1808,48 @@ function bindForms() {
   });
 
   document.addEventListener("click", (event) => {
+    const button = event.target?.closest?.("[data-worktree-cleanup-retry]");
+    if (!button) {
+      return;
+    }
+    event.preventDefault();
+    if (!guardTeamMutation("retry worktree cleanup")) {
+      return;
+    }
+    const reason = window.prompt(
+      "What changed since cleanup was halted? The retry will run every safety check again.",
+      "",
+    );
+    if (!text(reason)) {
+      setStatus("A cleanup retry reason is required.", "error");
+      return;
+    }
+    void retryWorktreeCleanup(button, text(reason));
+  });
+
+  document.addEventListener("click", (event) => {
+    const button = event.target?.closest?.(
+      "[data-repair-cancelled-task-dependencies]",
+    );
+    if (!button) {
+      return;
+    }
+    event.preventDefault();
+    if (!guardTeamMutation("repair cancelled-task dependencies")) {
+      return;
+    }
+    const reason = window.prompt(
+      "Why is this graph repair authorized? The original cancellation will remain unchanged.",
+      "",
+    );
+    if (!text(reason)) {
+      setStatus("A dependency repair reason is required.", "error");
+      return;
+    }
+    void repairCancelledTaskDependencies(button, text(reason));
+  });
+
+  document.addEventListener("click", (event) => {
     const button = event.target?.closest?.("[data-team-cost-budget-reset]");
     if (!button) {
       return;
@@ -2392,16 +2435,7 @@ function bindRecordEditing() {
       );
       let reason = null;
       let instruction = null;
-      if (action === "authorize_verification_waiver") {
-        reason = window.prompt(
-          "Why is a verification waiver justified? This reason is recorded on the release.",
-          "",
-        );
-        if (!text(reason)) {
-          setStatus("A verification-waiver reason is required.", "error");
-          return;
-        }
-      } else if (action === "create_verified_replacement") {
+      if (action === "create_verified_replacement") {
         instruction = window.prompt(
           "Add instructions for the verified replacement task (optional). These become part of its durable task scope.",
           "",
@@ -2952,6 +2986,11 @@ const lockedMutationControlSelectors = [
   ["[data-start-dependency-composition-recovery-id]", "start dependency composition recoveries"],
   ["[data-resolve-terminal-blocker-id]", "resolve terminal blockers"],
   ["[data-release-gate-retry]", "retry release gates"],
+  ["[data-worktree-cleanup-retry]", "retry worktree cleanup"],
+  [
+    "[data-repair-cancelled-task-dependencies]",
+    "repair cancelled-task dependencies",
+  ],
   ["form[data-post-release-report-form] button[type='submit']", "report post-release issues"],
   ["[data-human-review-resume-id]", "resume human reviews"],
   ["[data-human-review-reassign-id]", "reassign human reviews"],
@@ -8591,6 +8630,7 @@ function renderTeamInlineProjectForm(teamId) {
           projectLeadAgentOptionsForTeam(teamId),
           { placeholder: "Select unassigned team agent" },
         )}</select></label>
+        <label>Directory scope <input name="directory_path" value="root" required /></label>
         <label>Goal <textarea name="goal_description" rows="2"></textarea></label>
       </div>
       <details class="team-inline-create-advanced" ${teamDisclosureAttributes(teamDisclosureKey("people", "inline-project-create", teamId, "git"))}>
@@ -8599,7 +8639,6 @@ function renderTeamInlineProjectForm(teamId) {
           <label>Repository source <input name="repo_source" placeholder="Git URL or local checkout" /></label>
           ${gitImportControls()}
           <label>Managed repository ID <input name="managed_repo_id" placeholder="mr_..." /></label>
-          <input type="hidden" name="managed_repo_directory_path" />
           <label>Default base branch for new tasks <input name="base_branch" placeholder="main" /></label>
           <label>Canonical release branch prefix <input name="canonical_release_branch_prefix" /></label>
           <label>Agent commit author name <input name="agent_author_name" placeholder="Evander Bot" /></label>
@@ -9199,6 +9238,7 @@ function renderTeamProjectDetail(project) {
       <div class="agent-detail-grid">
         ${renderAgentDetailField("Team", team ? `${team.name || team.id} (${team.id})` : project.team_id || "None")}
         ${renderAgentDetailField("Lead", lead ? `${agentLabel(lead)} (${lead.id})` : project.lead_agent_id || "None")}
+        ${renderAgentDetailField("Directory scope", project.directory_path || "root")}
         ${renderAgentDetailField("Open tasks", `${openTasks.length} / ${projectTasks.length}`)}
         ${renderAgentDetailField("Deliverables", projectDeliverables.length)}
       </div>
@@ -13590,7 +13630,7 @@ function renderTaskBoardCard(task, focus) {
       ${renderTaskBoardBrief(task)}
       ${renderTaskBoardUnresolvedDescendants(task.id, unresolvedIds)}
       ${worktreeContexts.length ? `<div class="task-board-card-meta">Worktree: ${escapeHtml(worktreeContexts.map((row) => row.worktree_path || "Control-plane context").join(", "))}</div>` : ""}
-      ${task.cancellation ? renderTaskCancellation(task.cancellation) : ""}
+      ${task.cancellation ? renderTaskCancellation(task.cancellation, task) : ""}
       ${renderTaskBoardBlockerLine(task)}
       ${renderTaskBoardTechnicalDetails(task, unresolvedIds, worktreeContexts)}
       <div class="record-actions">${taskCancellationButton(task)}</div>
@@ -14092,11 +14132,6 @@ function renderTerminalBlockerResolveAction(blocker, extraClass = "") {
                   ${lockedAttrs("retry candidate correction recovery")}
                 >Retry packaging</button>`
           }
-          <button type="button" class="record-action"
-            data-candidate-correction-recovery-id="${escapeAttr(blocker.id)}"
-            data-candidate-correction-recovery-action="authorize_verification_waiver"
-            ${lockedAttrs("authorize candidate verification waivers")}
-          >Authorize waiver instead</button>
         </div>
       `;
     }
@@ -14112,11 +14147,6 @@ function renderTerminalBlockerResolveAction(blocker, extraClass = "") {
           data-candidate-correction-recovery-action="create_verified_replacement"
           ${lockedAttrs("create verified replacement tasks")}
         >Create verified replacement</button>
-        <button type="button" class="record-action"
-          data-candidate-correction-recovery-id="${escapeAttr(blocker.id)}"
-          data-candidate-correction-recovery-action="authorize_verification_waiver"
-          ${lockedAttrs("authorize candidate verification waivers")}
-        >Authorize waiver</button>
       </div>
     `;
   }
@@ -14950,7 +14980,77 @@ function renderPlanningTaskTechnicalDetails(task) {
   `;
 }
 
-function renderPlanningTaskCancellation(cancellation) {
+function cancelledTaskDependencyRepairEvidence(predecessorTaskId, successorTaskId) {
+  return values(state.inbox)
+    .filter(
+      (item) =>
+        text(item.payload?.kind) === "task_dependency_graph_repair_audit" &&
+        text(item.payload?.predecessor_task_id) === text(predecessorTaskId) &&
+        text(item.payload?.successor_task_id) === text(successorTaskId),
+    )
+    .sort((left, right) =>
+      text(right.created_at).localeCompare(text(left.created_at)),
+    )[0] || null;
+}
+
+function cancelledTaskDependencyRepairAffectedIds(predecessorTaskId) {
+  const normalizedPredecessorId = text(predecessorTaskId);
+  return values(state.tasks)
+    .filter((task) => !terminalTaskStates.has(text(task.state)))
+    .filter(
+      (task) =>
+        (task.dependency_task_ids || []).some(
+          (dependencyId) => text(dependencyId) === normalizedPredecessorId,
+        ) ||
+        (Boolean(task.integration_boundary) &&
+          (task.deliverable_contract?.required_contribution_task_ids || []).some(
+            (dependencyId) => text(dependencyId) === normalizedPredecessorId,
+          )),
+    )
+    .map((task) => text(task.id))
+    .filter(Boolean)
+    .sort();
+}
+
+function cancelledTaskDependencyRepairAction(task, cancellation) {
+  const successorTaskId = text(cancellation?.successor_task_id);
+  if (
+    !task ||
+    text(task.state) !== "cancelled" ||
+    !successorTaskId ||
+    Boolean(cancellation?.rebind_dependents)
+  ) {
+    return "";
+  }
+  const affectedIds = cancelledTaskDependencyRepairAffectedIds(task.id);
+  const evidence = cancelledTaskDependencyRepairEvidence(task.id, successorTaskId);
+  if (!affectedIds.length && !evidence) {
+    return "";
+  }
+  const repairedIds = evidence?.payload?.rebound_dependent_task_ids || [];
+  return `
+    <div class="record-actions task-dependency-repair-action">
+      ${
+        evidence
+          ? `<span class="meta-line">Last audited repair: ${escapeHtml(
+              repairedIds.length
+                ? `${repairedIds.length} dependent task${repairedIds.length === 1 ? "" : "s"}`
+                : "no graph changes",
+            )}${evidence.payload?.repaired_at ? ` · ${escapeHtml(formatTimelineTimestamp(evidence.payload.repaired_at))}` : ""}</span>`
+          : `<span class="meta-line">${affectedIds.length} active dependent task${affectedIds.length === 1 ? "" : "s"} still reference this predecessor.</span>`
+      }
+      <button
+        type="button"
+        class="record-action"
+        data-repair-cancelled-task-dependencies="${escapeAttr(task.id)}"
+        data-successor-task-id="${escapeAttr(successorTaskId)}"
+        ${lockedAttrs("repair cancelled-task dependencies")}
+      >${evidence && !affectedIds.length ? "Verify dependency repair" : "Repair stranded dependents"}</button>
+    </div>
+  `;
+}
+
+function renderPlanningTaskCancellation(cancellation, task) {
   const successor = cancellation.successor_task_id
     ? state.tasks?.[cancellation.successor_task_id]
     : null;
@@ -14959,10 +15059,19 @@ function renderPlanningTaskCancellation(cancellation) {
     cancellation.reason,
     cancellation.reason_code ? humanizeToken(cancellation.reason_code) : "",
     successor ? `Successor: ${successor.title}` : "",
+    cancellation.rebind_dependents
+      ? `${(cancellation.rebound_dependent_task_ids || []).length} active dependencies rebound`
+      : "",
+    (cancellation.rebound_integration_boundary_task_ids || []).length
+      ? `${cancellation.rebound_integration_boundary_task_ids.length} integration preparations re-armed`
+      : "",
+    (cancellation.invalidated_git_work_context_ids || []).length
+      ? `${cancellation.invalidated_git_work_context_ids.length} stale Git contexts abandoned`
+      : "",
     actor ? `By ${agentLabel(actor)}` : cancellation.actor_kind ? `By ${humanizeToken(cancellation.actor_kind)}` : "",
     cancellation.cancelled_at ? `Cancelled ${formatTimelineTimestamp(cancellation.cancelled_at)}` : "",
   ].filter(Boolean);
-  return `<div class="task-cancellation"><strong>Cancelled:</strong> ${escapeHtml(details.join(" · "))}</div>`;
+  return `<div class="task-cancellation"><strong>Cancelled:</strong> ${escapeHtml(details.join(" · "))}${cancelledTaskDependencyRepairAction(task, cancellation)}</div>`;
 }
 
 function renderStructuredPlanningTask(task, { depth = 0, hierarchyWarning = "" } = {}) {
@@ -15010,7 +15119,7 @@ function renderStructuredPlanningTask(task, { depth = 0, hierarchyWarning = "" }
           <section class="planning-task-section">
             <h4>Lifecycle</h4>
             ${renderPlanningTaskLifecycle(task)}
-            ${task.cancellation ? renderPlanningTaskCancellation(task.cancellation) : ""}
+            ${task.cancellation ? renderPlanningTaskCancellation(task.cancellation, task) : ""}
             ${invalidCodes.length ? `<div class="task-invalid-warning"><strong>Lifecycle repair required:</strong> ${escapeHtml(invalidCodes.map(humanizeToken).join(", "))} ${editButton("task", task.id, "Repair task")}</div>` : ""}
           </section>
           <section class="planning-task-section">
@@ -15104,7 +15213,7 @@ function renderTaskGraph(task) {
     ${acceptanceIds.length ? `<div class="meta-line">Direct acceptance: ${escapeHtml(acceptanceIds.join(", "))}</div>` : ""}
     ${reviewIds.length ? `<div class="meta-line">Formal review: ${escapeHtml(reviewIds.join(", "))}</div>` : ""}
     ${coverageBits.length ? `<div class="meta-line">Contribution composition: ${escapeHtml(coverageBits.join(" - "))}</div>` : ""}
-    ${cancellation ? renderTaskCancellation(cancellation) : ""}
+    ${cancellation ? renderTaskCancellation(cancellation, task) : ""}
     ${renderTaskBlockerDetails(task)}
     ${renderTaskWorktreeMapping(task)}
     ${
@@ -15128,7 +15237,7 @@ function taskResolutionPill(resolution) {
   return "info";
 }
 
-function renderTaskCancellation(cancellation) {
+function renderTaskCancellation(cancellation, task) {
   const parts = [
     cancellation.reason_code ? `reason ${cancellation.reason_code}` : "",
     cancellation.reason,
@@ -15136,9 +15245,18 @@ function renderTaskCancellation(cancellation) {
       ? `by ${cancellation.actor_kind} ${cancellation.actor_id}`
       : "",
     cancellation.successor_task_id ? `successor ${cancellation.successor_task_id}` : "",
+    cancellation.rebind_dependents
+      ? `rebound dependents ${(cancellation.rebound_dependent_task_ids || []).join(", ") || "none"}`
+      : "",
+    (cancellation.rebound_integration_boundary_task_ids || []).length
+      ? `re-armed integration boundaries ${cancellation.rebound_integration_boundary_task_ids.join(", ")}`
+      : "",
+    (cancellation.invalidated_git_work_context_ids || []).length
+      ? `abandoned stale Git contexts ${cancellation.invalidated_git_work_context_ids.join(", ")}`
+      : "",
     cancellation.cancelled_at ? `at ${cancellation.cancelled_at}` : "",
   ].filter(Boolean);
-  return `<div class="task-cancellation"><strong>Cancelled:</strong> ${escapeHtml(parts.join(" - "))}</div>`;
+  return `<div class="task-cancellation"><strong>Cancelled:</strong> ${escapeHtml(parts.join(" - "))}${cancelledTaskDependencyRepairAction(task, cancellation)}</div>`;
 }
 
 function renderTaskBlockerDetails(task) {
@@ -15281,13 +15399,26 @@ function renderTaskWorktreeMapping(task) {
 }
 
 function renderTaskCleanupCandidate(candidate) {
-  const recovery = text(candidate.state) === "recovery_required";
+  const operatorAction = text(candidate.state) === "operator_action_required";
+  const recovery = operatorAction || text(candidate.state) === "recovery_required";
   const ignoredCount = Number(candidate.ignored_file_count || 0);
   const ignoredSample = (candidate.ignored_file_inventory || []).slice(0, 5);
   const details = [
     `cleanup ${candidate.state}`,
     candidate.last_safety_check ? `check ${candidate.last_safety_check}` : "",
     candidate.last_error,
+    Number(candidate.automatic_retry_count || 0)
+      ? `${Number(candidate.automatic_retry_count)} consecutive automatic attempts`
+      : "",
+    candidate.operator_action_reason
+      ? `operator action ${humanizeToken(candidate.operator_action_reason)}`
+      : "",
+    candidate.operator_action_required_at
+      ? `halted ${candidate.operator_action_required_at}`
+      : "",
+    candidate.last_operator_retry_by
+      ? `last requeued by ${candidate.last_operator_retry_by}${candidate.last_operator_retry_reason ? `: ${candidate.last_operator_retry_reason}` : ""}`
+      : "",
     candidate.worktree_path,
     candidate.branch,
     ignoredCount
@@ -15299,7 +15430,130 @@ function renderTaskCleanupCandidate(candidate) {
     ignoredSample.length ? `sample ${ignoredSample.join(", ")}` : "",
     Number(candidate.reclaimed_bytes || 0) ? `reclaimed ${candidate.reclaimed_bytes} bytes` : "",
   ].filter(Boolean).join(" - ");
-  return `<div class="${recovery ? "task-cleanup-recovery" : "meta-line"}">${escapeHtml(details)}</div>`;
+  return `
+    <div class="${recovery ? "task-cleanup-recovery" : "meta-line"}">
+      <div>${escapeHtml(details)}</div>
+      ${
+        operatorAction
+          ? `<div class="record-actions">
+              <button
+                type="button"
+                class="record-action"
+                data-worktree-cleanup-retry="${escapeAttr(candidate.id)}"
+                ${lockedAttrs("retry worktree cleanup")}
+              >Retry cleanup</button>
+            </div>`
+          : ""
+      }
+    </div>
+  `;
+}
+
+async function retryWorktreeCleanup(button, reason) {
+  const candidateId = text(button?.dataset?.worktreeCleanupRetry);
+  if (!candidateId) {
+    setStatus("Worktree cleanup retry context is incomplete.", "error");
+    return;
+  }
+  button.disabled = true;
+  setStatus("Requeueing worktree cleanup.", "loading");
+  try {
+    const response = await teamFetch(
+      `${API_BASE}/worktree-cleanup-candidates/${encodeURIComponent(candidateId)}/retry`,
+      {
+        method: "POST",
+        headers: {
+          Accept: "application/json",
+          "Content-Type": "application/json",
+          "X-Team-Addon-Response-Scope": "view",
+        },
+        body: JSON.stringify({
+          reason,
+          expected_revision: state.revision,
+        }),
+      },
+    );
+    if (!response.ok) {
+      throw new Error(await responseText(response));
+    }
+    const result = await response.json();
+    await applyMutationResultPayload(result);
+    setStatus(`Cleanup ${candidateId} was requeued for a full safety pass.`, "ok");
+  } catch (error) {
+    setStatus(error instanceof Error ? error.message : "Worktree cleanup retry failed.", "error");
+  } finally {
+    button.disabled = false;
+  }
+}
+
+async function repairCancelledTaskDependencies(button, reason) {
+  const predecessorTaskId = text(
+    button?.dataset?.repairCancelledTaskDependencies,
+  );
+  const successorTaskId = text(button?.dataset?.successorTaskId);
+  const predecessor = state.tasks?.[predecessorTaskId] || null;
+  if (
+    !predecessor ||
+    text(predecessor.state) !== "cancelled" ||
+    !successorTaskId ||
+    text(predecessor.cancellation?.successor_task_id) !== successorTaskId
+  ) {
+    setStatus("Cancelled-task dependency repair context is incomplete.", "error");
+    return;
+  }
+  const currentAffectedIds = cancelledTaskDependencyRepairAffectedIds(
+    predecessorTaskId,
+  );
+  const priorEvidence = cancelledTaskDependencyRepairEvidence(
+    predecessorTaskId,
+    successorTaskId,
+  );
+  const expectedDependentTaskIds = currentAffectedIds.length
+    ? currentAffectedIds
+    : uniqueTextList(
+        priorEvidence?.payload?.expected_dependent_task_ids || [],
+      ).sort();
+  button.disabled = true;
+  setStatus("Validating and repairing the frozen dependent-task set.", "loading");
+  try {
+    const response = await teamFetch(
+      `${API_BASE}/tasks/${encodeURIComponent(predecessorTaskId)}/repair-cancelled-dependencies`,
+      {
+        method: "POST",
+        headers: {
+          Accept: "application/json",
+          "Content-Type": "application/json",
+          "X-Team-Addon-Response-Scope": "view",
+        },
+        body: JSON.stringify({
+          successor_task_id: successorTaskId,
+          expected_dependent_task_ids: expectedDependentTaskIds,
+          reason,
+          expected_revision: state.revision,
+        }),
+      },
+    );
+    if (!response.ok) {
+      throw new Error(await responseText(response));
+    }
+    const result = await response.json();
+    const repair = result.task_dependency_repair || {};
+    await applyMutationResultPayload(result);
+    const changedCount = (repair.rebound_dependent_task_ids || []).length;
+    setStatus(
+      repair.audit_evidence_reused
+        ? "The prior dependency repair was verified; no graph history was rewritten."
+        : `Dependency repair recorded; ${changedCount} dependent task${changedCount === 1 ? "" : "s"} rebound.`,
+      "ok",
+    );
+  } catch (error) {
+    setStatus(
+      error instanceof Error ? error.message : "Cancelled-task dependency repair failed.",
+      "error",
+    );
+  } finally {
+    button.disabled = false;
+  }
 }
 
 function readablePreview(value, limit = 220) {
@@ -15446,6 +15700,31 @@ function renderDeliverableEvidence(deliverable) {
   return `<ul class="deliverable-evidence-list">${[...refs].map((ref) => `<li><code>${escapeHtml(ref)}</code></li>`).join("")}</ul>`;
 }
 
+function renderDeliverableAcceptanceVerification(deliverable) {
+  const verification = deliverable.verification;
+  if (!verification) {
+    return "";
+  }
+  const status = text(verification.status || "unknown");
+  const commands = verification.command_results || [];
+  const waiver = verification.waiver;
+  return `
+    <section class="deliverable-detail-group deliverable-acceptance-verification">
+      <h4>Deliverable verification (diagnostic)</h4>
+      <div class="delivery-detail-grid">
+        <div><div class="delivery-detail-label">Status</div><div class="delivery-detail-value"><span class="state-pill ${escapeAttr(status)}">${escapeHtml(humanizeToken(status))}</span></div></div>
+        <div><div class="delivery-detail-label">Provenance</div><div class="delivery-detail-value">${escapeHtml(humanizeToken(verification.provenance || "agent_reported"))}</div></div>
+        ${verification.run_id ? `<div><div class="delivery-detail-label">Run</div><div class="delivery-detail-value">${renderIdentifierCopy(verification.run_id, { label: "Copy ID" })}</div></div>` : ""}
+        ${verification.candidate_commit_sha ? `<div><div class="delivery-detail-label">Candidate</div><div class="delivery-detail-value"><code>${escapeHtml(verification.candidate_commit_sha)}</code></div></div>` : ""}
+      </div>
+      ${verification.summary ? `<p class="meta-line">${escapeHtml(verification.summary)}</p>` : ""}
+      ${commands.length ? `<ul>${commands.map((command) => `<li><strong>${escapeHtml(command.name)}</strong> - ${escapeHtml(humanizeToken(command.state || "pending"))}${command.failure_kind ? ` (${escapeHtml(humanizeToken(command.failure_kind))})` : ""}</li>`).join("")}</ul>` : ""}
+      ${(verification.evidence_refs || []).length ? `<p class="meta-line"><strong>Evidence:</strong> ${(verification.evidence_refs || []).map((ref) => `<code>${escapeHtml(ref)}</code>`).join(" ")}</p>` : ""}
+      ${waiver ? `<p class="meta-line"><strong>Waived by ${escapeHtml(waiver.actor_id)}:</strong> ${escapeHtml(waiver.reason)}</p>` : ""}
+    </section>
+  `;
+}
+
 function renderDeliverableTechnicalDetails(deliverable) {
   const gitRefs = deliverable.git_refs || {};
   const initialRelease = deliverable.initial_release_disposition || {};
@@ -15464,6 +15743,11 @@ function renderDeliverableTechnicalDetails(deliverable) {
     ["Commit", gitRefs.commit_sha],
     ["Submitted commit", gitRefs.submitted_commit_sha],
     ["Reviewed commit", gitRefs.reviewed_commit_sha],
+    ["Accepted immutable ref", gitRefs.accepted_pinned_ref],
+    ["Acceptance policy version", deliverable.acceptance_policy_version],
+    ["Composition source fingerprint", deliverable.dependency_composition_manifest?.source_fingerprint],
+    ["Composition base commit", deliverable.dependency_composition_manifest?.base_commit_sha],
+    ["Composition frontier commits", deliverable.dependency_composition_manifest?.frontier_commit_shas || []],
     ["Promotion IDs", gitRefs.promotion_record_ids || []],
     ["Initial release package ID", initialRelease.release_package_id],
   ], {
@@ -15528,6 +15812,7 @@ function renderDeliverableCard(deliverable, { compact = false } = {}) {
             <h4>Evidence and artifacts</h4>
             ${renderDeliverableEvidence(deliverable)}
           </section>
+          ${renderDeliverableAcceptanceVerification(deliverable)}
           ${renderInitialReleaseDisposition(deliverable)}
           <section class="deliverable-detail-group">
             <h4>Reviews and decision</h4>
@@ -15662,6 +15947,9 @@ function renderReviewCriterionInputs(criteria) {
           <label>Finding
             <input name="criterion_finding__${escapeAttr(criterion.id)}" type="text" />
           </label>
+          <label>Evidence references (optional)
+            <textarea name="criterion_evidence_refs__${escapeAttr(criterion.id)}" rows="2" placeholder="Optional diagnostic references"></textarea>
+          </label>
         </div>
       `).join("")}
     </fieldset>
@@ -15701,12 +15989,12 @@ function renderReviewCriteriaHelp(criteria) {
 
 function renderReviewCriteriaPlaceholder(criteria) {
   if (!criteria.length) {
-    return "criterion_id | passed | finding";
+    return "criterion_id | passed | finding | evidence-ref";
   }
   return criteria
     .map((criterion) => {
       const finding = criterion.description || criterion.label || "finding";
-      return `${criterion.id} | passed | ${finding}`;
+      return `${criterion.id} | passed | ${finding} | evidence-ref`;
     })
     .join("\n");
 }
@@ -15720,7 +16008,10 @@ function renderCriterionResults(criteria) {
       ${criteria
         .map((criterion) => {
           const finding = criterion.finding ? ` - ${escapeHtml(criterion.finding)}` : "";
-          return `<li>${escapeHtml(criterion.criterion_id)}: ${escapeHtml(criterion.state)}${finding}</li>`;
+          const evidence = (criterion.evidence_refs || []).length
+            ? ` · evidence: ${(criterion.evidence_refs || []).map((ref) => escapeHtml(ref)).join(", ")}`
+            : "";
+          return `<li>${escapeHtml(criterion.criterion_id)}: ${escapeHtml(criterion.state)}${finding}${evidence}</li>`;
         })
         .join("")}
     </ul>
@@ -19293,6 +19584,7 @@ function renderDeliveryRowDetailBody(row, { reviewIds, releaseSummaries, gitProm
       <h4>Evidence and artifacts</h4>
       ${renderDeliverableEvidence(deliverable)}
     </section>
+    ${renderDeliverableAcceptanceVerification(deliverable)}
     ${renderInitialReleaseDisposition(deliverable)}
     <section class="deliverable-detail-group delivery-row-reviews">
       <h4>Reviews and decision</h4>
@@ -20655,7 +20947,7 @@ async function importGitRepoForForm(form, button) {
 function applyImportedGitConfig(form, git) {
   const fields = {
     managed_repo_id: git.managed_repo_id,
-    managed_repo_directory_path: git.directory_path,
+    directory_path: git.directory_path,
     base_branch: git.base_branch,
     canonical_release_branch_prefix: git.canonical_release_branch_prefix,
   };
@@ -22516,6 +22808,7 @@ function payloadForForm(form, data = formData(form)) {
       team_id: text(data.team_id),
       name: text(data.name),
       lead_agent_id: text(data.lead_agent_id),
+      directory_path: text(data.directory_path) || "root",
       goals,
     };
     const git = gitConfigForForm(data);
@@ -22699,10 +22992,8 @@ function gitConfigForForm(data) {
     return null;
   }
   const git = { managed_repo_id: managedRepoId };
-  const directoryPath = text(data.managed_repo_directory_path);
-  if (directoryPath) {
-    git.directory_path = directoryPath;
-  }
+  const directoryPath = text(data.directory_path) || "root";
+  git.directory_path = directoryPath;
   const optionalFields = [
     "base_branch",
     "canonical_release_branch_prefix",
@@ -23103,6 +23394,9 @@ function reviewCriterionResultsFromForm(form) {
         criterion_id: criterionId,
         state: stateValue,
         finding: text(row.querySelector('input[type="text"]')?.value),
+        evidence_refs: splitList(
+          row.querySelector('[name^="criterion_evidence_refs__"]')?.value,
+        ),
       };
     })
     .filter(Boolean);
@@ -23198,15 +23492,38 @@ async function submitTaskCancellation(form) {
     return;
   }
   const data = formData(form);
+  const successorTaskId = text(data.successor_task_id) || null;
+  const rebindDependents = Boolean(data.rebind_dependents);
+  if (rebindDependents && !successorTaskId) {
+    setStatus("Select a successor before replacing active dependencies.", "warning");
+    return;
+  }
+  const expectedDependentTaskIds = values(state.tasks)
+    .filter((candidate) => {
+      if (terminalTaskStates.has(candidate.state)) return false;
+      if ((candidate.dependency_task_ids || []).includes(task.id)) return true;
+      return Boolean(
+        candidate.integration_boundary
+        && (candidate.deliverable_contract?.required_contribution_task_ids || [])
+          .includes(task.id),
+      );
+    })
+    .map((candidate) => candidate.id)
+    .sort();
+  const payload = {
+    reason_code: text(data.reason_code),
+    reason: text(data.reason),
+    successor_task_id: successorTaskId,
+    rebind_dependents: rebindDependents,
+  };
+  if (rebindDependents) {
+    payload.expected_dependent_task_ids = expectedDependentTaskIds;
+  }
   const saved = await submitMutation(
     form,
     `/tasks/${encodeURIComponent(task.id)}/cancel`,
     "POST",
-    {
-      reason_code: text(data.reason_code),
-      reason: text(data.reason),
-      successor_task_id: text(data.successor_task_id) || null,
-    },
+    payload,
     { resetOnSuccess: false },
   );
   if (saved) {
@@ -23398,6 +23715,7 @@ function renderEditFields(type, record) {
       ${readonlyField("Project ID", record.id)}
       ${readonlyField("Team", record.team_id)}
       ${textField("Name", "name", record.name, { required: true })}
+      ${textField("Directory scope", "directory_path", record.directory_path || "root", { required: true })}
       ${selectField("Status", "status", "project-statuses", record.status || "active", { required: true })}
       ${textareaField("Goals", "goals", goalsToText(record.goals || []), {
         rows: 4,
@@ -23419,7 +23737,6 @@ function renderEditFields(type, record) {
       ${textField("Managed repository ID", "managed_repo_id", record.git?.managed_repo_id || "", {
         placeholder: "mr_...",
       })}
-      <input type="hidden" name="managed_repo_directory_path" value="${escapeAttr(record.git?.directory_path || "root")}" />
       ${textField("Default base branch for new tasks", "base_branch", record.git?.base_branch || "main")}
       ${textField("Canonical release branch prefix", "canonical_release_branch_prefix", record.git?.canonical_release_branch_prefix || "")}
       ${textField("Agent commit author name", "agent_author_name", record.git?.agent_author_identity?.name || "", { placeholder: "Evander Bot" })}
@@ -23649,6 +23966,7 @@ function editPayloadForForm(type, form) {
   if (type === "project") {
     return {
       name: text(data.name),
+      directory_path: text(data.directory_path) || "root",
       status: text(data.status),
       goals: parseGoals(data.goals),
       git: gitConfigForForm(data),
@@ -24627,13 +24945,14 @@ function parseCriterionResults(value) {
     .map((line) => line.trim())
     .filter(Boolean)
     .map((line) => {
-      const [criterion_id, stateValue = "passed", finding = ""] = line
+      const [criterion_id, stateValue = "passed", finding = "", evidenceRefs = ""] = line
         .split("|")
         .map((part) => part.trim());
       return {
         criterion_id,
         state: stateValue || "passed",
         finding,
+        evidence_refs: splitList(evidenceRefs),
       };
     });
 }

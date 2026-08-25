@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 from collections.abc import Iterable
+from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
@@ -9,12 +10,14 @@ from ..models import (
     AgentInboxItem,
     AgentStatus,
     AgentTask,
+    GitWorkContextState,
     GitPromotionRecord,
     ReleasePackage,
     ReleaseScopeValidation,
     TeamBlockerEventType,
     TeamBlockerResolutionScope,
     TeamBlockerSourceKind,
+    TeamBlockerState,
     TeamInboxItemState,
     TeamInboxItemType,
     TeamInboxPriority,
@@ -23,6 +26,7 @@ from ..models import (
     TeamTaskState,
     TaskCancellation,
     TaskDeliverableContract,
+    TeamTaskKind,
     project_lead_agent_id,
     utc_now,
 )
@@ -44,7 +48,16 @@ from .domain.release_packages import (
     _reviewed_commit_for_release,
     _successor_release_request_error,
 )
-from .domain.task_assessment import TaskAssessmentBoundaryError, require_task_resolved
+from .domain.release_gates import (
+    _candidate_correction_git_base,
+    _candidate_correction_mutation_policy,
+)
+from .domain.review import retry_deliverable_acceptance_if_reviewed
+from .domain.task_assessment import (
+    TaskAssessmentBoundaryError,
+    require_deliverable_acceptance,
+    require_task_resolved,
+)
 from .domain.work_due import _mark_agent_work_due
 
 
@@ -58,6 +71,28 @@ _COMPLETED_RELEASE_REVIEW_STATES = {
     TeamRecordState.ACCEPTED,
     TeamRecordState.REJECTED,
 }
+_NONTERMINAL_CORRECTION_TASK_STATES = {
+    TeamTaskState.PENDING,
+    TeamTaskState.IN_PROGRESS,
+    TeamTaskState.BLOCKED,
+    TeamTaskState.WAITING_FOR_INPUT,
+    TeamTaskState.WAITING_FOR_REVIEW,
+}
+_MISSING_COMPOSITION_REASON_CODE = "dependency_composition_manifest_missing"
+_MISSING_COMPOSITION_BLOCKER_REASON = (
+    "deliverable_acceptance_deferred:dependency_composition_manifest_missing"
+)
+
+
+@dataclass(frozen=True, slots=True)
+class _LegacyCorrectionNormalization:
+    correction_task_id: str
+    correction_deliverable_id: str
+    source_task_id: str
+    source_deliverable_id: str
+    git_work_context_id: str
+    accepted_by_agent_id: str
+    reviewed_commit_sha: str
 
 
 def is_automatic_candidate_correction_task(task: AgentTask) -> bool:
@@ -98,6 +133,259 @@ def _correction_task(
     if task is None or not is_automatic_candidate_correction_task(task):
         return None
     return task
+
+
+def _full_git_object_id(value: object) -> str | None:
+    normalized = str(value or "").strip().casefold()
+    if len(normalized) not in {40, 64} or any(
+        character not in "0123456789abcdef" for character in normalized
+    ):
+        return None
+    return normalized
+
+
+def _acceptance_failure_code(
+    state: TeamState,
+    *,
+    deliverable_id: str,
+) -> str | None:
+    """Purely identify the exact deferred boundary represented by legacy state."""
+
+    preview = state.model_copy(deep=True)
+    deliverable = preview.deliverables[deliverable_id]
+    task = preview.tasks[deliverable.task_id]
+    missing_manifest_blockers = [
+        blocker
+        for blocker in preview.blockers.values()
+        if blocker.state == TeamBlockerState.OPEN
+        and blocker.source_kind == TeamBlockerSourceKind.DELIVERABLE
+        and blocker.source_id == deliverable.id
+        and blocker.reason_code == _MISSING_COMPOSITION_BLOCKER_REASON
+    ]
+    for blocker in missing_manifest_blockers:
+        blocker.state = TeamBlockerState.RESOLVED
+    if missing_manifest_blockers and task.state == TeamTaskState.BLOCKED:
+        task.state = TeamTaskState.WAITING_FOR_REVIEW
+    try:
+        require_deliverable_acceptance(preview, deliverable.id)
+    except TaskAssessmentBoundaryError as exc:
+        return exc.code
+    return None
+
+
+def _legacy_correction_normalization(
+    state: TeamState,
+    *,
+    predecessor: ReleasePackage,
+    correction_task: AgentTask,
+) -> _LegacyCorrectionNormalization | None:
+    """Match only the stranded, reviewed legacy wrapper emitted by old workers."""
+
+    if (
+        not is_automatic_candidate_correction_task(correction_task)
+        or correction_task.state not in _NONTERMINAL_CORRECTION_TASK_STATES
+        or correction_task.project_id != predecessor.project_id
+        or correction_task.parent_task_id is not None
+        or correction_task.task_kind != TeamTaskKind.SUPPORT
+        or not correction_task.integration_boundary
+        or correction_task.deliverable_contract is None
+        or not correction_task.deliverable_contract.require_git_provenance
+        or len(correction_task.dependency_task_ids) != 1
+        or correction_task.deliverable_contract.required_contribution_task_ids
+        != correction_task.dependency_task_ids
+        or correction_task.git_base_branch != _candidate_correction_git_base(predecessor)
+    ):
+        return None
+    expected_policy = _candidate_correction_mutation_policy()
+    if (
+        correction_task.mutation_policy is not None
+        and correction_task.mutation_policy != expected_policy
+    ):
+        return None
+
+    source_task_id = correction_task.dependency_task_ids[0]
+    source_task = state.tasks.get(source_task_id)
+    if (
+        source_task is None
+        or source_task.originating_task_id != correction_task.id
+        or source_task.state not in {TeamTaskState.FINISHED, TeamTaskState.ACCEPTED}
+    ):
+        return None
+
+    current_deliverables = [
+        deliverable
+        for deliverable in state.deliverables.values()
+        if deliverable.task_id == correction_task.id
+        and deliverable.superseded_by_deliverable_id is None
+    ]
+    if len(current_deliverables) != 1:
+        return None
+    correction_deliverable = current_deliverables[0]
+    if (
+        correction_deliverable.state != TeamRecordState.PENDING
+        or correction_deliverable.acceptance_policy_version != 2
+        or correction_deliverable.dependency_composition_manifest is not None
+        or len(correction_deliverable.source_deliverable_ids) != 1
+        or any(finding.state == "open" for finding in correction_deliverable.carried_findings)
+    ):
+        return None
+
+    source_deliverable_id = correction_deliverable.source_deliverable_ids[0]
+    source_deliverable = state.deliverables.get(source_deliverable_id)
+    current_source_deliverables = [
+        deliverable
+        for deliverable in state.deliverables.values()
+        if deliverable.task_id == source_task.id
+        and deliverable.superseded_by_deliverable_id is None
+    ]
+    if (
+        source_deliverable is None
+        or source_deliverable.task_id != source_task.id
+        or source_deliverable.state != TeamRecordState.ACCEPTED
+        or source_deliverable.superseded_by_deliverable_id is not None
+        or [deliverable.id for deliverable in current_source_deliverables]
+        != [source_deliverable.id]
+    ):
+        return None
+
+    correction_commit = _full_git_object_id(correction_deliverable.git_refs.submitted_commit_sha)
+    commit_evidence = {
+        correction_commit,
+        _full_git_object_id(correction_deliverable.git_refs.commit_sha),
+        _full_git_object_id(correction_deliverable.git_refs.reviewed_commit_sha),
+        _full_git_object_id(source_deliverable.git_refs.commit_sha),
+        _full_git_object_id(source_deliverable.git_refs.submitted_commit_sha),
+        _full_git_object_id(source_deliverable.git_refs.reviewed_commit_sha),
+    }
+    if correction_commit is None or commit_evidence != {correction_commit}:
+        return None
+    if (
+        correction_deliverable.review_manifest is None
+        or _full_git_object_id(correction_deliverable.review_manifest.reviewed_commit_sha)
+        != correction_commit
+    ):
+        return None
+
+    context_id = correction_deliverable.git_refs.branch_context_id
+    context = state.git_work_contexts.get(context_id or "")
+    if (
+        context is None
+        or context.state != GitWorkContextState.SUBMITTED
+        or context.task_id != correction_task.id
+        or context.agent_id != correction_deliverable.producer_agent_id
+        or context.agent_branch != correction_deliverable.git_refs.agent_branch
+        or _full_git_object_id(context.commit_sha) != correction_commit
+        or context.dependency_composition_manifest is not None
+    ):
+        return None
+    context_sources = context.dependency_git_sources
+    if len(context_sources) != 1:
+        return None
+    context_source = context_sources[0]
+    if (
+        context_source.dependency_task_id != source_task.id
+        or context_source.deliverable_id != source_deliverable.id
+        or context_source.relationship_kind != "required_contribution"
+        or context_source.branch != source_deliverable.git_refs.agent_branch
+        or source_deliverable.git_refs.accepted_pinned_ref is None
+        or context_source.pinned_ref != source_deliverable.git_refs.accepted_pinned_ref
+        or _full_git_object_id(context_source.commit_sha) != correction_commit
+    ):
+        return None
+
+    cohort_id = correction_deliverable.review_cohort_id
+    if (
+        cohort_id is None
+        or correction_deliverable.review_cohort_sealed_at is None
+        or not correction_deliverable.review_request_ids
+        or len(set(correction_deliverable.review_request_ids))
+        != len(correction_deliverable.review_request_ids)
+    ):
+        return None
+    current_reviews = [
+        state.review_requests[review_id]
+        for review_id in correction_deliverable.review_request_ids
+        if review_id in state.review_requests
+        and state.review_requests[review_id].superseded_by_review_request_id is None
+        and state.review_requests[review_id].retired_at is None
+    ]
+    if len(current_reviews) != len(correction_deliverable.review_request_ids) or any(
+        review.deliverable_id != correction_deliverable.id
+        or review.review_cohort_id != cohort_id
+        or review.state != TeamRecordState.ACCEPTED
+        or _full_git_object_id(review.reviewed_commit_sha) != correction_commit
+        or review.repository_snapshot is None
+        or review.repository_snapshot.source_kind != "deliverable_candidate"
+        or _full_git_object_id(review.repository_snapshot.commit_sha) != correction_commit
+        for review in current_reviews
+    ):
+        return None
+    if (
+        _acceptance_failure_code(
+            state,
+            deliverable_id=correction_deliverable.id,
+        )
+        != _MISSING_COMPOSITION_REASON_CODE
+    ):
+        return None
+
+    accepted_by_agent_id = sorted(
+        current_reviews,
+        key=lambda review: (
+            (review.decision_at or review.created_at).isoformat()
+            if review.decision_at is not None or review.created_at is not None
+            else "",
+            review.id,
+        ),
+    )[-1].reviewer_agent_id
+    assert context_id is not None
+    return _LegacyCorrectionNormalization(
+        correction_task_id=correction_task.id,
+        correction_deliverable_id=correction_deliverable.id,
+        source_task_id=source_task.id,
+        source_deliverable_id=source_deliverable.id,
+        git_work_context_id=context_id,
+        accepted_by_agent_id=accepted_by_agent_id,
+        reviewed_commit_sha=correction_commit,
+    )
+
+
+def _normalize_legacy_correction_and_replay_acceptance(
+    state: TeamState,
+    *,
+    normalization: _LegacyCorrectionNormalization,
+    result: dict[str, Any],
+    now: datetime,
+) -> None:
+    """Normalize the exact legacy wrapper and reuse its durable accepted review."""
+
+    task = state.tasks[normalization.correction_task_id]
+    deliverable = state.deliverables[normalization.correction_deliverable_id]
+    task.dependency_task_ids = []
+    task.integration_boundary = False
+    task.deliverable_contract = TaskDeliverableContract(require_git_provenance=True)
+    deliverable.source_deliverable_ids = []
+    task.mutation_policy = _candidate_correction_mutation_policy()
+    task.updated_at = now
+    accepted = retry_deliverable_acceptance_if_reviewed(
+        state,
+        deliverable_id=deliverable.id,
+        actor_agent_id=normalization.accepted_by_agent_id,
+        result=result,
+        now=now,
+    )
+    if not accepted:
+        raise RuntimeError(
+            f"legacy correction {task.id} normalization did not replay accepted review"
+        )
+    result.setdefault("normalized_legacy_candidate_correction_task_ids", []).append(task.id)
+    result.setdefault("legacy_candidate_correction_normalizations", {})[task.id] = {
+        "correction_deliverable_id": deliverable.id,
+        "source_task_id": normalization.source_task_id,
+        "source_deliverable_id": normalization.source_deliverable_id,
+        "git_work_context_id": normalization.git_work_context_id,
+        "reviewed_commit_sha": normalization.reviewed_commit_sha,
+    }
 
 
 def _direct_successors(
@@ -285,7 +573,6 @@ def _refresh_blocked_successor_from_reviewed_rework(
                 "summary": successor.summary,
                 "release_branch": successor.release_branch,
                 "canonical_branch": successor.canonical_branch,
-                "verification_waivers": [],
             },
             result=preview_result,
             projects_to_recalc=set(),
@@ -414,8 +701,6 @@ def _current_successor_deliverable_ids(
         for deliverable in state.deliverables.values()
         if deliverable.state == TeamRecordState.ACCEPTED
         and deliverable.superseded_by_deliverable_id is None
-        and deliverable.verification is not None
-        and deliverable.verification.status == "passed"
         and _candidate_correction_downstream_recovery_base(
             state,
             predecessor=predecessor,
@@ -554,9 +839,15 @@ def _candidate_release_ids_for_reconciliation(state: TeamState) -> list[str]:
                 release_ids.append(predecessor.id)
             continue
         task = _correction_task(state, predecessor)
-        if (
-            task is None
-            or not _task_is_resolved(state, task)
+        if task is None:
+            continue
+        legacy_normalization = _legacy_correction_normalization(
+            state,
+            predecessor=predecessor,
+            correction_task=task,
+        )
+        if legacy_normalization is None and (
+            not _task_is_resolved(state, task)
             or not _release_review_correction_is_ready(state, predecessor, task)
         ):
             continue
@@ -773,6 +1064,21 @@ def reconcile_candidate_correction_successors(
                 )
             result.setdefault("existing_successor_release_package_ids", []).append(successor.id)
             continue
+        if correction_task is not None:
+            legacy_normalization = _legacy_correction_normalization(
+                state,
+                predecessor=predecessor,
+                correction_task=correction_task,
+            )
+            if legacy_normalization is not None:
+                _normalize_legacy_correction_and_replay_acceptance(
+                    state,
+                    normalization=legacy_normalization,
+                    result=result,
+                    now=effective_now,
+                )
+                correction_task = state.tasks[correction_task.id]
+                changed = True
         if (
             correction_task is None
             or not _task_is_resolved(state, correction_task)
@@ -845,7 +1151,6 @@ def reconcile_candidate_correction_successors(
                         f"Automatic successor for {predecessor.id} after accepted "
                         "rejected-gate correction."
                     ),
-                    "verification_waivers": [],
                 },
                 result=package_result,
                 projects_to_recalc=set(),
@@ -1032,8 +1337,9 @@ def recover_candidate_correction_successor(
                     f"Recover the failed successor packaging for {predecessor.id}. "
                     f"Start from accepted correction branch {source_branch} at exact "
                     f"commit {source_commit}. Make only the downstream correction, run "
-                    "the relevant release verification plus focused checks, and "
-                    "submit an accepted Git deliverable with verification passed. Do "
+                    "focused checks as appropriate, and submit an accepted reviewed Git "
+                    "deliverable. The frozen release candidate verification remains "
+                    "authoritative. Do "
                     "not merge or rebase another base branch and do not request a release."
                     f"{operator_instruction}"
                 ),
@@ -1097,68 +1403,7 @@ def recover_candidate_correction_successor(
         result["success"] = True
         return
 
-    deliverable_ids = _current_accepted_deliverable_ids(state, correction_task)
-    if not deliverable_ids:
-        raise ValueError(f"correction task {correction_task.id} has no accepted deliverables")
-    waivers: list[dict[str, Any]] = []
-    for deliverable_id in deliverable_ids:
-        deliverable = state.deliverables[deliverable_id]
-        status = (
-            deliverable.verification.status if deliverable.verification is not None else "unknown"
-        )
-        if status == "failed":
-            raise ValueError(
-                f"deliverable {deliverable.id} has failed verification and cannot be waived"
-            )
-        if status != "passed":
-            waivers.append({"deliverable_id": deliverable.id, "reason": reason})
-    successor_id = "release-" + _stable_token(
-        "candidate-correction-waiver",
-        predecessor.id,
-        *deliverable_ids,
-    )
-    package_result = _package_result()
-    project = state.projects[predecessor.project_id]
-    created_id = _build_release_package(
-        state,
-        project=project,
-        request={
-            "id": successor_id,
-            "project_id": project.id,
-            "deliverable_ids": deliverable_ids,
-            "supersedes_release_package_id": predecessor.id,
-            "summary": f"Operator-authorized verification-waiver successor for {predecessor.id}.",
-            "verification_waivers": waivers,
-            "waiver_actor_kind": "operator",
-            "waiver_actor_id": operator_actor_id,
-            "release_requested_by_actor": f"operator:{operator_actor_id}",
-        },
-        result=package_result,
-        projects_to_recalc=set(),
-        actor_agent_id=project.lead_agent_id,
-        team_id=project.team_id,
-    )
-    if created_id is None or package_result["errors"]:
-        raise ValueError(
-            "; ".join(package_result["errors"])
-            or "verification-waiver successor could not be created"
-        )
-    result["events"].extend(package_result.get("events") or [])
-    result["release_package_id"] = created_id
-    result["verification_waiver_count"] = len(waivers)
-    resolve_active_blockers_for_source(
-        state,
-        source_kind=TeamBlockerSourceKind.CANDIDATE_CORRECTION_SUCCESSOR,
-        source_id=blocker.source_id,
-        actor_agent_id=None,
-        dispatch_id=None,
-        note=(f"Operator {operator_actor_id} authorized verified successor {created_id}: {reason}"),
-        reference_ids=[created_id],
-        result=result,
-        now=now,
-    )
-    _recalculate_project_status(state, project.id)
-    result["success"] = True
+    raise ValueError(f"unsupported candidate correction recovery action {action!r}")
 
 
 class CandidateCorrectionReconciliationService:

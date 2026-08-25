@@ -33,6 +33,7 @@ from ..candidate_correction_reconciliation_service import (
     reconcile_candidate_correction_successors,
 )
 from ...models import (
+    TeamRecordState,
     TeamState,
     _unique_text_list,
 )
@@ -446,6 +447,9 @@ class TeamReviewCommandService(TeamCommandExecutor):
             apply_command=_apply,
             require_active_dispatch=True,
             reject_stale_high_priority_inbox=True,
+            reject_stale_source_evidence=(
+                normalized_decision["state"] == TeamRecordState.ACCEPTED.value
+            ),
         )
 
     def retry_review_command(

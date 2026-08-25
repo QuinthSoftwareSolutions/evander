@@ -19,7 +19,6 @@ from ...models import (
     Project,
     ReleasePackage,
     ReleaseScopeValidation,
-    ReleaseVerificationWaiver,
     RolePermission,
     TeamBlockerSourceKind,
     TeamBlockerState,
@@ -28,6 +27,7 @@ from ...models import (
     TeamTaskState,
     project_lead_agent_id,
 )
+from .acceptance_verification import LEGACY_VERIFICATION_WAIVERS_IGNORED_WARNING
 
 from .agent_access import (
     _agent_has_role_permission_for_project,
@@ -106,30 +106,6 @@ def allowed_release_parent_task_ids(
         ):
             allowed.add(parent.id)
     return allowed
-
-
-def _release_waiver_requests(value: object) -> list[dict[str, str]]:
-    if value is None:
-        return []
-    if not isinstance(value, list):
-        raise ValueError("verification_waivers must be a JSON array")
-    normalized: list[dict[str, str]] = []
-    for index, item in enumerate(value):
-        if not isinstance(item, dict):
-            raise ValueError(f"verification_waivers[{index}] must be a JSON object")
-        normalized.append(
-            {
-                "deliverable_id": _required_text(
-                    item.get("deliverable_id"),
-                    f"verification_waivers[{index}].deliverable_id",
-                ),
-                "reason": _required_text(
-                    item.get("reason"),
-                    f"verification_waivers[{index}].reason",
-                ),
-            }
-        )
-    return normalized
 
 
 def _reviewed_commit_for_release(
@@ -230,17 +206,6 @@ def _apply_git_release_request(
             f"agent {actor.id} is not permitted to request releases on project {project_id}"
         )
         return None
-    waiver_actor_authorized = _is_project_lead_for(state, actor.id, project_id) or (
-        _is_team_manager(state, actor) and project.team_id == actor.team_id
-    )
-    if request.get("verification_waivers") and not waiver_actor_authorized:
-        result["errors"].append(
-            "verification waivers require the project lead or top-level team manager"
-        )
-        return None
-    request["waiver_actor_authorized"] = waiver_actor_authorized
-    request["waiver_actor_kind"] = "agent"
-    request["waiver_actor_id"] = actor.id
     return _build_release_package(
         state,
         project=project,
@@ -548,6 +513,13 @@ def _build_release_package(
         )
         if predecessor is None:
             return branch, commit
+        composed_correction_base = _candidate_correction_composition_base(
+            state,
+            predecessor=predecessor,
+            deliverable=deliverable,
+        )
+        if composed_correction_base is not None:
+            branch, commit = composed_correction_base
         downstream_recovery_base = _candidate_correction_downstream_recovery_base(
             state,
             predecessor=predecessor,
@@ -643,17 +615,9 @@ def _build_release_package(
     feature_branches: list[str] = []
     feature_sources_by_task: dict[str, list[str]] = {}
     source_expected_commits: dict[str, str] = {}
-    waiver_requests = _release_waiver_requests(request.get("verification_waivers"))
-    waivers_by_deliverable = {item["deliverable_id"]: item for item in waiver_requests}
-    if len(waivers_by_deliverable) != len(waiver_requests):
-        result["errors"].append("verification_waivers contains duplicate deliverable_id")
-        return None
-    verification_waivers: list[ReleaseVerificationWaiver] = []
-    if predecessor is not None:
-        verification_waivers.extend(
-            waiver.model_copy(deep=True)
-            for waiver in predecessor.verification_waivers
-            if waiver.deliverable_id in predecessor.deliverable_ids
+    if "verification_waivers" in request:
+        result.setdefault("warnings", []).append(
+            LEGACY_VERIFICATION_WAIVERS_IGNORED_WARNING
         )
     reviewed_commit_shas: list[str] = []
     git_base_snapshots: set[tuple[str | None, str | None]] = set()
@@ -688,77 +652,6 @@ def _build_release_package(
                 deliverable=deliverable,
                 result=result,
             )
-        verification_status = (
-            deliverable.verification.status if deliverable.verification is not None else "missing"
-        )
-        waiver_request = waivers_by_deliverable.get(deliverable_id)
-        inherited_waiver = next(
-            (waiver for waiver in verification_waivers if waiver.deliverable_id == deliverable_id),
-            None,
-        )
-        if verification_status == "failed":
-            result["errors"].append(
-                f"deliverable {deliverable_id} has failed verification and cannot be released"
-            )
-            valid = False
-            continue
-        if verification_status == "passed" and waiver_request is not None:
-            result["errors"].append(
-                f"deliverable {deliverable_id} passed verification; its waiver is unnecessary"
-            )
-            valid = False
-            continue
-        if verification_status in {"partial", "not_run", "unknown", "missing"}:
-            if waiver_request is None and inherited_waiver is None:
-                result["errors"].append(
-                    f"deliverable {deliverable_id} has {verification_status} verification; "
-                    "an authorized verification waiver with a reason is required"
-                )
-                result.setdefault("verification_waiver_requirements", []).append(
-                    {
-                        "deliverable_id": deliverable_id,
-                        "verification_status": verification_status,
-                        "caller_authorized": (
-                            request.get("waiver_actor_kind") == "operator"
-                            or bool(request.get("waiver_actor_authorized"))
-                        ),
-                        "authorized_actor_roles": [
-                            "project_lead",
-                            "top_level_team_manager",
-                            "operator",
-                        ],
-                        "required_input": {
-                            "verification_waivers": [
-                                {
-                                    "deliverable_id": deliverable_id,
-                                    "reason": "<concrete evidence-based reason>",
-                                }
-                            ]
-                        },
-                        "effect": (
-                            "Admits incomplete deliverable evidence at package intake; "
-                            "configured release verification and review gates still apply."
-                        ),
-                    }
-                )
-                valid = False
-                continue
-            if waiver_request is not None:
-                actor_kind = _optional_text(request.get("waiver_actor_kind"))
-                actor_id = _optional_text(request.get("waiver_actor_id"))
-                if actor_kind not in {"agent", "operator"} or actor_id is None:
-                    result["errors"].append("verification waiver actor identity is required")
-                    valid = False
-                    continue
-                verification_waivers.append(
-                    ReleaseVerificationWaiver(
-                        deliverable_id=deliverable_id,
-                        verification_status=verification_status,
-                        reason=waiver_request["reason"],
-                        actor_kind=actor_kind,
-                        actor_id=actor_id,
-                    )
-                )
         if deliverable_id not in promotion_deliverable_ids:
             for artifact_ref in deliverable.artifact_refs:
                 artifact_refs = _append_unique(artifact_refs, artifact_ref)
@@ -886,13 +779,6 @@ def _build_release_package(
             "content so a changed candidate can enter release gates"
         )
         return None
-    unknown_waiver_ids = sorted(set(waivers_by_deliverable) - promotion_deliverable_ids)
-    if unknown_waiver_ids:
-        result["errors"].append(
-            "verification waivers reference deliverables outside the release: "
-            + ", ".join(unknown_waiver_ids)
-        )
-        return None
     release_id = _optional_text(request.get("id")) or f"release-{uuid4().hex}"
     if release_id in state.release_packages:
         result["errors"].append(
@@ -1017,7 +903,9 @@ def _build_release_package(
         canonical_base_commit_sha=canonical_base_commit_sha,
         git_promotion_record_ids=promotion_ids,
         policy_version=2,
-        verification_waivers=verification_waivers,
+        # New packages never inherit or create verification waivers. Historical
+        # predecessor records remain available on those records for audit display.
+        verification_waivers=[],
         scope_validation=(
             ReleaseScopeValidation(
                 state="pending",
@@ -1101,6 +989,72 @@ def _build_release_package(
         )
     projects_to_recalc.add(project_id)
     return release_id
+
+
+def _candidate_correction_composition_base(
+    state: TeamState,
+    *,
+    predecessor: ReleasePackage,
+    deliverable: Deliverable,
+) -> tuple[str, str] | None:
+    """Recover a rejected-candidate root from immutable composition evidence."""
+
+    failure = predecessor.gate_failure
+    manifest = deliverable.dependency_composition_manifest
+    project = state.projects.get(predecessor.project_id)
+    project_git = project.git if project is not None else None
+    candidate_branch = _release_candidate_branch(predecessor)
+    candidate_commit = predecessor.candidate_commit_sha
+    candidate_tree = predecessor.candidate_tree_hash
+    correction_task_id: str | None = None
+    if failure is not None and failure.stage == "verification" and failure.kind == "candidate":
+        run = state.release_verification_runs.get(failure.source_id or "")
+        if run is not None and run.release_package_id == predecessor.id:
+            correction_task_id = run.correction_task_id
+    elif failure is not None and failure.stage == "review" and failure.kind == "rejected":
+        correction_task_id = predecessor.review_correction_task_id
+    if (
+        manifest is None
+        or project_git is None
+        or candidate_branch is None
+        or candidate_commit is None
+        or candidate_tree is None
+        or correction_task_id is None
+        or deliverable.task_id != correction_task_id
+        or manifest.target_task_id != correction_task_id
+        or manifest.managed_repo_id != project_git.managed_repo_id
+        or manifest.directory_path != project_git.directory_path
+        or manifest.base_branch != candidate_branch
+        or manifest.base_commit_sha != candidate_commit.casefold()
+        or manifest.base_tree_hash != candidate_tree.casefold()
+    ):
+        return None
+
+    context_id = deliverable.git_refs.branch_context_id
+    context = state.git_work_contexts.get(context_id or "")
+    context_manifest = context.dependency_composition_manifest if context is not None else None
+    if (
+        context is None
+        or context.task_id != correction_task_id
+        or context_manifest is None
+        or context_manifest
+        != manifest.model_copy(update={"verified_candidate_commit_sha": None})
+    ):
+        return None
+
+    reviewed_commit, review_error = _reviewed_commit_for_release(state, deliverable)
+    submitted_commit = deliverable.git_refs.submitted_commit_sha
+    if (
+        review_error is not None
+        or not reviewed_commit
+        or manifest.verified_candidate_commit_sha != reviewed_commit
+        or context.commit_sha is None
+        or context.commit_sha.casefold() != reviewed_commit
+        or submitted_commit is None
+        or submitted_commit.casefold() != reviewed_commit
+    ):
+        return None
+    return manifest.base_branch, manifest.base_commit_sha
 
 
 def _ordered_correction_deliverable_ids(
@@ -1473,8 +1427,6 @@ def _candidate_correction_downstream_recovery_base(
         or recovery_task.parent_task_id is not None
         or deliverable.state != TeamRecordState.ACCEPTED
         or deliverable.superseded_by_deliverable_id is not None
-        or deliverable.verification is None
-        or deliverable.verification.status != "passed"
     ):
         return None
     try:

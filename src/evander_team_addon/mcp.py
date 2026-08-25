@@ -3,7 +3,7 @@ from __future__ import annotations
 import base64
 import json
 import logging
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime, timedelta
 from pathlib import PurePosixPath
 from typing import Any, Literal
@@ -24,6 +24,7 @@ from evander.effects.providers.base import EffectRuntimeContext
 from evander.effects.providers.agent_exec import AgentExecEffectProvider
 from evander.events.provider_models import AgentExecEffectDefinition
 from evander.queries.providers.base import QueryRuntimeContext
+from evander.review_snapshots import team_deliverable_snapshot_binding_id
 
 from .mcp_context import (
     TeamMcpContextResolver,
@@ -105,6 +106,12 @@ TEAM_ARCHIVE_OUTCOME_KIND_TOOL = "team_archive_outcome_kind"
 TEAM_UPDATE_TASK_TOOL = "team_update_task"
 TEAM_REOPEN_TASK_FOR_REWORK_TOOL = "team_reopen_task_for_rework"
 TEAM_CANCEL_TASK_TOOL = "team_cancel_task"
+TEAM_REPAIR_CANCELLED_TASK_DEPENDENCIES_TOOL = (
+    "team_repair_cancelled_task_dependencies"
+)
+TEAM_RECOVER_SUBMITTED_INTEGRATION_BOUNDARY_TOOL = (
+    "team_recover_submitted_integration_boundary"
+)
 TEAM_UPDATE_GOAL_TOOL = "team_update_goal"
 TEAM_STAND_DOWN_AGENT_TOOL = "team_stand_down_agent"
 TEAM_REVOKE_STAND_DOWN_TOOL = "team_revoke_stand_down"
@@ -183,6 +190,8 @@ ORDINARY_TEAM_MCP_TOOL_NAMES = (
     TEAM_UPDATE_TASK_TOOL,
     TEAM_REOPEN_TASK_FOR_REWORK_TOOL,
     TEAM_CANCEL_TASK_TOOL,
+    TEAM_REPAIR_CANCELLED_TASK_DEPENDENCIES_TOOL,
+    TEAM_RECOVER_SUBMITTED_INTEGRATION_BOUNDARY_TOOL,
     TEAM_UPDATE_GOAL_TOOL,
     TEAM_STAND_DOWN_AGENT_TOOL,
     TEAM_REVOKE_STAND_DOWN_TOOL,
@@ -266,6 +275,8 @@ IMPLEMENTED_ORDINARY_TEAM_MCP_TOOL_NAMES = (
     TEAM_UPDATE_TASK_TOOL,
     TEAM_REOPEN_TASK_FOR_REWORK_TOOL,
     TEAM_CANCEL_TASK_TOOL,
+    TEAM_REPAIR_CANCELLED_TASK_DEPENDENCIES_TOOL,
+    TEAM_RECOVER_SUBMITTED_INTEGRATION_BOUNDARY_TOOL,
     TEAM_UPDATE_GOAL_TOOL,
     TEAM_STAND_DOWN_AGENT_TOOL,
     TEAM_REVOKE_STAND_DOWN_TOOL,
@@ -324,6 +335,8 @@ MCP_TOOL_NAMES = (
     TEAM_UPDATE_TASK_TOOL,
     TEAM_REOPEN_TASK_FOR_REWORK_TOOL,
     TEAM_CANCEL_TASK_TOOL,
+    TEAM_REPAIR_CANCELLED_TASK_DEPENDENCIES_TOOL,
+    TEAM_RECOVER_SUBMITTED_INTEGRATION_BOUNDARY_TOOL,
     TEAM_UPDATE_GOAL_TOOL,
     TEAM_STAND_DOWN_AGENT_TOOL,
     TEAM_REVOKE_STAND_DOWN_TOOL,
@@ -423,6 +436,10 @@ def register_mcp_tools(server: FastMCP, context: AddonContext) -> tuple[str, ...
     deliverable_submission_commands = TeamDeliverableSubmissionCommandService(
         repo,
         git_candidate_commit_resolver=_team_mcp_git_candidate_commit_resolver(
+            context,
+            managed_git=managed_git,
+        ),
+        git_candidate_snapshot_pinner=_team_mcp_git_candidate_snapshot_pinner(
             context,
             managed_git=managed_git,
         ),
@@ -877,8 +894,12 @@ def _register_slice5_tools(
         team_ask_question,
         name=TEAM_ASK_QUESTION_TOOL,
         description=(
-            "Ask the caller's direct superior a question. Top-level managers "
-            "must use team_escalate_operator. Requires question and request_id."
+            "Ask a question, defaulting to the caller's direct superior. With "
+            "task_id, recipient_agent_id may select the active same-Team task "
+            "owner, linked case owner, or project lead when the current dispatch "
+            "authorizes that project. Top-level managers must use "
+            "team_escalate_operator for operator escalation. Requires question "
+            "and request_id."
         ),
     )
 
@@ -1769,6 +1790,8 @@ def _register_slice6_tools(
         reason: str,
         request_id: str,
         successor_task_id: str | None = None,
+        rebind_dependents: bool = False,
+        expected_dependent_task_ids: list[str] | None = None,
         handled_inbox_item_ids: list[str] | None = None,
         correlation_id: str | None = None,
         causation_id: str | None = None,
@@ -1785,6 +1808,8 @@ def _register_slice6_tools(
                 reason_code=reason_code,
                 reason=reason,
                 successor_task_id=successor_task_id,
+                rebind_dependents=rebind_dependents,
+                expected_dependent_task_ids=expected_dependent_task_ids,
                 request_id=request_id,
                 handled_inbox_item_ids=handled_inbox_item_ids,
                 correlation_id=correlation_id,
@@ -1799,7 +1824,126 @@ def _register_slice6_tools(
         name=TEAM_CANCEL_TASK_TOOL,
         description=(
             "Cancel a Team task with an audited reason and optional same-project "
-            "successor. Unresolved descendants must be handled first."
+            "successor. Set rebind_dependents=true to atomically replace every "
+            "nonterminal dependent task's edge from the cancelled task to that "
+            "successor, including required contribution frontiers. The complete "
+            "resulting graph is validated before mutation; stale active integration "
+            "Git preparations are abandoned and explicitly queued for re-preparation. "
+            "When rebinding, supply the sorted expected_dependent_task_ids from the "
+            "dispatch snapshot; concurrent graph expansion fails closed. "
+            "Only the project lead or Team manager may rebind dependents; an ordinary "
+            "task owner may still cancel without rewriting the graph. "
+            "Unresolved descendants must be handled first. When cancellation fulfills "
+            "a task-linked operator directive, include that directive ID in "
+            "handled_inbox_item_ids so disposition is atomic with cancellation."
+        ),
+    )
+
+    def team_repair_cancelled_task_dependencies(
+        predecessor_task_id: str,
+        successor_task_id: str,
+        expected_dependent_task_ids: list[str],
+        reason: str,
+        request_id: str,
+        handled_inbox_item_ids: list[str] | None = None,
+        correlation_id: str | None = None,
+        causation_id: str | None = None,
+        session_id: str | None = None,
+    ) -> dict[str, Any]:
+        caller = resolver.require_persistent_action_context(
+            session_id=session_id,
+            tool_name=TEAM_REPAIR_CANCELLED_TASK_DEPENDENCIES_TOOL,
+        )
+        try:
+            _state, result = (
+                task_update_commands.repair_cancelled_task_dependencies_command(
+                    session_id=caller.session_id,
+                    predecessor_task_id=predecessor_task_id,
+                    successor_task_id=successor_task_id,
+                    expected_dependent_task_ids=expected_dependent_task_ids,
+                    reason=reason,
+                    request_id=request_id,
+                    handled_inbox_item_ids=handled_inbox_item_ids,
+                    correlation_id=correlation_id,
+                    causation_id=causation_id,
+                )
+            )
+        except (TypeError, ValueError) as exc:
+            raise ToolError(str(exc)) from exc
+        return _team_command_mcp_result(result, caller=caller, context=context)
+
+    server.add_tool(
+        team_repair_cancelled_task_dependencies,
+        name=TEAM_REPAIR_CANCELLED_TASK_DEPENDENCIES_TOOL,
+        description=(
+            "Repair active dependent tasks stranded behind an already-cancelled "
+            "predecessor. The requested successor must exactly match the immutable "
+            "successor recorded by the original cancellation. Supply the frozen, "
+            "sorted expected_dependent_task_ids from the current task graph so a "
+            "concurrent graph expansion fails closed. The project lead or Team manager "
+            "may run this; the original cancellation and terminal history remain "
+            "unchanged, and Team stores durable repair action evidence."
+        ),
+    )
+
+    def team_recover_submitted_integration_boundary(
+        predecessor_task_id: str,
+        successor_task_id: str,
+        integration_task_id: str,
+        replacement_task_id: str,
+        expected_dependency_task_ids: list[str],
+        expected_required_contribution_task_ids: list[str],
+        reason: str,
+        request_id: str,
+        git_base_commit_sha: str | None = None,
+        git_base_branch: str | None = None,
+        handled_inbox_item_ids: list[str] | None = None,
+        correlation_id: str | None = None,
+        causation_id: str | None = None,
+        session_id: str | None = None,
+    ) -> dict[str, Any]:
+        caller = resolver.require_persistent_action_context(
+            session_id=session_id,
+            tool_name=TEAM_RECOVER_SUBMITTED_INTEGRATION_BOUNDARY_TOOL,
+        )
+        try:
+            _state, result = (
+                task_update_commands.recover_submitted_integration_boundary_command(
+                    session_id=caller.session_id,
+                    predecessor_task_id=predecessor_task_id,
+                    successor_task_id=successor_task_id,
+                    integration_task_id=integration_task_id,
+                    replacement_task_id=replacement_task_id,
+                    expected_dependency_task_ids=expected_dependency_task_ids,
+                    expected_required_contribution_task_ids=(
+                        expected_required_contribution_task_ids
+                    ),
+                    reason=reason,
+                    request_id=request_id,
+                    git_base_commit_sha=git_base_commit_sha,
+                    git_base_branch=git_base_branch,
+                    handled_inbox_item_ids=handled_inbox_item_ids,
+                    correlation_id=correlation_id,
+                    causation_id=causation_id,
+                )
+            )
+        except (TypeError, ValueError) as exc:
+            raise ToolError(str(exc)) from exc
+        return _team_command_mcp_result(result, caller=caller, context=context)
+
+    server.add_tool(
+        team_recover_submitted_integration_boundary,
+        name=TEAM_RECOVER_SUBMITTED_INTEGRATION_BOUNDARY_TOOL,
+        description=(
+            "Recover a submitted integration boundary whose immutable contribution "
+            "frontier contains an already-cancelled predecessor. The predecessor's "
+            "recorded successor must match exactly. Supply the frozen dependency and "
+            "required-contribution sets plus a caller-chosen fresh boundary ID. Team "
+            "creates a new boundary originating from the submitted one and never "
+            "rewrites old deliverables, reviews, or Git contexts. Git-provenance "
+            "boundaries require an explicit full pinned base commit; non-Git "
+            "boundaries omit Git fields. Only the project lead or Team manager may "
+            "run this operation. Exact semantic replay is a no-op."
         ),
     )
 
@@ -2109,12 +2253,15 @@ def _register_slice7_tools(
             "coordination, or acknowledgement-only work with team_update_task "
             "state=finished instead. Publishes any artifact_paths from /artifacts "
             "before recording state. Optional "
-            "verification records status passed, failed, partial, not_run, or "
-            "unknown with a summary. Git deliverables must include "
+            "verification records are optional diagnostic reports with status "
+            "passed, failed, partial, not_run, or unknown and a summary; they never "
+            "gate acceptance or release intake. Git deliverables must include "
             "branch_context_id; git_refs are provenance only and must match that "
             "context. git_refs accepts exactly branch_context_id, agent_branch, "
             "and commit_sha; use commit_sha, not commit, to pin the submitted "
-            "candidate. Call team_publish_review_branch separately only when a "
+            "candidate. Before submission, publish the local commit to the managed "
+            "agent branch with git push-agent and require the push to succeed. "
+            "Call team_publish_review_branch separately only when a "
             "durable review branch is needed. Set supersedes_deliverable_id when "
             "reworking a rejected or blocked same-task deliverable; its open "
             "findings carry forward. Use team_submit_deliverable_for_review only "
@@ -2210,7 +2357,9 @@ def _register_slice7_tools(
             "branch by themselves and must match that context. "
             "deliverable.git_refs accepts exactly branch_context_id, agent_branch, "
             "and commit_sha; use commit_sha, not commit, to pin the submitted "
-            "candidate. A rework may set "
+            "candidate. Before submission, publish the local commit to the managed "
+            "agent branch with git push-agent and require the push to succeed. "
+            "A rework may set "
             "deliverable.supersedes_deliverable_id to a rejected, blocked, or "
             "explicitly reopened accepted same-task predecessor; its open findings "
             "carry forward and fresh review requests are always created."
@@ -2349,6 +2498,9 @@ def _register_slice7_tools(
             "decisions, block_kind may identify dependency, input_unavailable, policy, "
             "system, or unspecified. An accepted review must use finding_resolutions "
             "for every open carried finding owned by its profile or reviewer role; "
+            "criterion entries may include optional evidence_refs; the immutable "
+            "repository snapshot is server-owned provenance rather than reviewer-supplied "
+            "evidence. Agent-reported verification and links are diagnostic only; "
             "acceptance cascades only when all current reviews are accepted and no "
             "finding remains open. Requires review_request_id, state, and request_id."
         ),
@@ -2570,7 +2722,6 @@ def _register_slice8_tools(
         release_branch: str | None = None,
         canonical_branch: str | None = None,
         summary: str | None = None,
-        verification_waivers: list[dict[str, Any]] | None = None,
         handled_inbox_item_ids: list[str] | None = None,
         correlation_id: str | None = None,
         causation_id: str | None = None,
@@ -2591,7 +2742,6 @@ def _register_slice8_tools(
                 release_branch=release_branch,
                 canonical_branch=canonical_branch,
                 summary=summary,
-                verification_waivers=verification_waivers,
                 request_id=request_id,
                 handled_inbox_item_ids=handled_inbox_item_ids,
                 correlation_id=correlation_id,
@@ -2606,7 +2756,9 @@ def _register_slice8_tools(
         name=TEAM_REQUEST_RELEASE_TOOL,
         description=(
             "Record asynchronous Git release-package intent from accepted "
-            "deliverables. Requires project_id, deliverable_ids, and request_id."
+            "deliverables. Candidate verification runs afterward on the frozen "
+            "candidate and is the authoritative build/test result. Requires "
+            "project_id, deliverable_ids, and request_id."
         ),
     )
 
@@ -2794,17 +2946,62 @@ def _team_mcp_git_candidate_commit_resolver(
         managed_repo_id: str,
         directory_path: str,
         agent_branch: str,
+        required_ancestor_shas: Sequence[str] | None = None,
     ) -> str | None:
         resolve_branch_commit = getattr(managed_git, "resolve_branch_commit", None)
         if not callable(resolve_branch_commit):
             raise RuntimeError("managed Git branch resolution is unavailable")
-        return resolve_branch_commit(
+        commit_sha = resolve_branch_commit(
             managed_repo_id,
             directory_path=directory_path,
             branch=agent_branch,
         )
+        if required_ancestor_shas and commit_sha is not None:
+            verify_ancestry = getattr(managed_git, "verify_branch_commit_ancestry", None)
+            if not callable(verify_ancestry):
+                raise RuntimeError("managed Git ancestry verification is unavailable")
+            verify_ancestry(
+                managed_repo_id,
+                directory_path=directory_path,
+                branch=agent_branch,
+                commit_sha=commit_sha,
+                required_ancestor_shas=required_ancestor_shas,
+            )
+        return commit_sha
 
     return _resolve
+
+
+def _team_mcp_git_candidate_snapshot_pinner(
+    context: AddonContext,
+    *,
+    managed_git=None,
+):
+    if managed_git is None:
+        managed_git = _team_mcp_managed_git_admin(context)
+
+    def _pin(
+        *,
+        managed_repo_id: str,
+        directory_path: str,
+        deliverable_id: str,
+        commit_sha: str,
+        source_ref: str | None,
+        expected_pinned_ref: str,
+    ) -> Mapping[str, Any]:
+        pin_snapshot = getattr(managed_git, "pin_team_review_snapshot", None)
+        if not callable(pin_snapshot):
+            raise RuntimeError("managed Git candidate snapshot pinning is unavailable")
+        return pin_snapshot(
+            managed_repo_id,
+            directory_path,
+            review_id=team_deliverable_snapshot_binding_id(deliverable_id),
+            commit_sha=commit_sha,
+            source_ref=source_ref,
+            pinned_ref=expected_pinned_ref,
+        )
+
+    return _pin
 
 
 def _team_mcp_git_default_branch_resolver(

@@ -18,6 +18,7 @@ from evander_team_addon.provider_schemas import (
     TeamCreateReviewRequestEffectDefinition,
     TeamDeliverableCreatedTriggerDefinition,
     TeamMemoryQueryDefinition,
+    TeamVerifyDeliverableAcceptanceEffectDefinition,
 )
 from evander_team_addon.providers import (
     TeamCreateReviewCohortEffectProvider,
@@ -27,6 +28,7 @@ from evander_team_addon.providers import (
     TeamMemoryQueryProvider,
     TeamRecordHumanReviewPreparationResultEffectProvider,
     TeamReindexMemoryEffectProvider,
+    TeamVerifyDeliverableAcceptanceEffectProvider,
     register_providers,
 )
 from evander_team_addon.repository import TeamStateRepository
@@ -172,6 +174,43 @@ def test_team_workflow_provider_registration_includes_review_primitives() -> Non
     internal_events = {entry.event_type for entry in registration.internal_event_catalog_entries}
     assert "team.release.human_review_requested" in internal_events
     assert "team.release.human_review_preparation_requested" in internal_events
+
+
+def test_legacy_deliverable_acceptance_verification_effect_is_a_safe_noop(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_team(tmp_path)
+    _record_deliverable(repo, "deliverable")
+    before = repo.read()
+    provider = TeamVerifyDeliverableAcceptanceEffectProvider()
+    provider.initialize(
+        TeamVerifyDeliverableAcceptanceEffectDefinition(
+            id="legacy-acceptance-verification",
+            display_name="Legacy acceptance verification",
+            type="effect:team:verify-deliverable-acceptance",
+            deliverable_id="deliverable",
+            verification_run_id="legacy-run",
+            candidate_commit_sha="a" * 40,
+        ),
+        EffectRuntimeContext(resolved_config={"runtime_dir": str(tmp_path)}),
+    )
+
+    result = provider.execute()
+
+    assert result == {
+        "success": True,
+        "deprecated": True,
+        "deliverable_id": "deliverable",
+        "verification_run_id": "legacy-run",
+        "candidate_commit_sha": "a" * 40,
+        "warning": (
+            "Deliverable acceptance verification was retired; the release candidate "
+            "verification run is authoritative."
+        ),
+    }
+    after = repo.read()
+    assert after.revision == before.revision
+    assert after.deliverables["deliverable"].verification is None
 
 
 def test_team_memory_query_reads_compact_canonical_records(tmp_path: Path) -> None:
@@ -323,6 +362,7 @@ def test_create_review_request_effect_uses_team_review_handoff(tmp_path: Path) -
     assert result["published_event_ids"]
     reread = repo.read()
     review = reread.review_requests[result["review_request_id"]]
+    assert reread.deliverables["deliverable"].acceptance_policy_version == 2
     assert review.deliverable_id == "deliverable"
     assert review.reviewer_agent_id == "reviewer"
     assert review.review_profile_id == "code-review"

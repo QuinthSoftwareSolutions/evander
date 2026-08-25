@@ -49,6 +49,17 @@ def _apply_operator_escalation(
         project = _require_present(state.projects, project_id, "project")
         if project.team_id != team.id:
             raise ValueError(f"project {project.id} is not in team {team.id}")
+    if task_id is not None:
+        task = _require_present(state.tasks, task_id, "task")
+        task_project = _require_present(state.projects, task.project_id, "project")
+        if task_project.team_id != team.id:
+            raise ValueError(
+                f"task {task.id} belongs to project {task_project.id} outside team {team.id}"
+            )
+        if project_id is not None and task.project_id != project_id:
+            raise ValueError(
+                f"task {task.id} belongs to project {task.project_id}, not project {project_id}"
+            )
     escalation_id = f"escalation-{uuid4().hex}"
     payload: dict[str, Any] = {
         "escalation_id": escalation_id,

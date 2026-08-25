@@ -1,5 +1,111 @@
 # Changelog
 
+## 2026-08-25 - Release PR Scope Pinning
+
+- Added a read-only managed-Git merge-base query that refreshes and pins the PR target branch
+  separately from canonical publication leases.
+- Based True APP release PR titles and descriptions on the complete candidate branch against the
+  pinned `main` target, including correction successors, and moved Tricia's packaging runs to
+  `gpt-5.6-terra`.
+
+## 2026-08-24 - Rejected Candidate Successor Recovery
+
+- Recovered automatic successor creation for reviewed correction aggregates whose retained
+  worktree starts at the correction commit, while requiring immutable server composition evidence
+  to prove the exact rejected candidate branch, commit, tree, and reviewed correction.
+
+## 2026-08-24 - Prepared Git Helper Reconciliation
+
+- Pinned guest pushes to their immutable prepared base and atomically refreshed generated Git
+  helpers through descriptor-anchored reads and replacements whenever task worktrees are prepared,
+  preserving other worktree-local control state.
+
+## 2026-08-24 - Rejected Deliverable Continuation
+
+- Continued same-task rejected-deliverable rework from its immutable retained candidate across
+  agent reassignment, using a fresh commit-suffixed branch and worktree instead of the task's
+  original base; pinned preparations now retain the verified base tree, retries reuse the recorded
+  composed base, composed candidates recover their pre-composition root, and multi-product tasks
+  retain every unsuperseded rejected candidate.
+
+## 2026-08-24 - Team Runtime Reliability And Recovery
+
+- Added immutable external-source evidence snapshots with directory-scoped access, freshness
+  metadata, bounded prompt projection, deterministic task-preparation invalidation on refresh,
+  late-evidence fences for work-committing dispatch actions, reviewer handoff hydration, and
+  natural-identity replay that adds only missing attachments.
+- Added a provider-neutral directory scope to every project, including non-Git projects, with a
+  legacy Git-derived migration so operational teams use the same ACL model.
+- Scoped questions and blocker diagnostics to explicit task, case, project-lead, or manager
+  authority instead of relying on development-specific roles or provider semantics.
+- Retained accepted reviews when acceptance-boundary remediation is required, added typed retry
+  paths, and locked workflow-owned correction topology against ordinary agent mutation.
+- Normalized the exact legacy accepted-correction wrapper that lacks composition evidence,
+  replaying retained review evidence without rewriting child, deliverable, review, or Git history.
+- Added bounded cleanup retries with explicit operator disposition, coherent multi-table SQLite
+  reads, atomic failure audit/disposition, enqueue-time repository/directory-scope snapshots for
+  physical cleanup, per-Git-context cleanup generations with stale mismatch supersession,
+  pre-freeze project repository-scope change guards, and coordinated runtime-generation checks
+  across the Team-serving processes.
+- Snapshotted verifier images and resource limits per release-verification run while preserving
+  the configured project policy when a nonterminal pre-upgrade run resumes.
+- Pinned preparation and guest pushes to an immutable server-authorized Git base, including after
+  the named base branch advances, and rejected reused branches or pre-existing worktrees without
+  authoritative provenance before they can be mutated.
+- Added audited, policy-aware dependency repair after task replacement and fresh integration-
+  boundary recovery that preserves submitted review, delivery, and provenance history; frozen
+  affected sets, dispatch scope, Team membership, directory ownership, and fresh high-priority
+  context now fail closed.
+
+## 2026-08-24 - Correction Dependency Composition
+
+- Composed newly accepted correction-task Git inputs on top of the rejected candidate and
+  recorded those exact immutable inputs in the dependency-composition manifest, so reviewed
+  correction aggregates can pass acceptance and create their deterministic successor releases.
+
+## 2026-08-24 - Task-Scoped Team Directives
+
+- Included an owned task explicitly selected by an operator directive in that
+  directive's ordinary Team dispatch scope, even while normal task readiness is
+  invalid. This preserves narrow task authority for workflow repair without
+  granting authority from ordinary handoff or observation inbox items.
+
+## 2026-08-23 - Durable Team Composition And Acceptance Gates
+
+- Retained every newly submitted Git candidate under an immutable Team deliverable ref before
+  either direct or formal handoff, retained formal review snapshots separately, and derived both
+  explicit task dependencies and required contributions from accepted provenance so later branch
+  movement cannot invalidate an accepted input.
+- Recorded ancestry-reduced dependency-composition manifests on prepared contexts and submitted
+  deliverables, including the exact base, source fingerprint, frontier, and composed commit/tree.
+- Made Git-context creation idempotent and resource-scoped so unrelated Team revisions do not
+  force a reclone, and expanded stable preparation generations to cover contribution provenance.
+- Exposed immutable refs and composition evidence in Team Admin UI and documented the prospective
+  policy-version boundary for historical accepted records.
+- Scoped composition evidence to Git-backed inputs, retained its original root across dispatches,
+  revalidated dependency generations transactionally, and materialized immutable review refs before
+  dependency checkout with legacy branch fallback.
+- Verified composed Git ancestry against the submitted candidate, rechecked manifest dependency
+  scope against the current task graph, and normalized optional provenance during context replay.
+- Kept immutable review identities and retained refs, and aligned composition validation with
+  preparation when task dependencies are cancelled.
+- Required agents to publish local commits before deliverable submission, made provenance
+  mismatches point directly to `git push-agent`, and taught the helper to preserve an already
+  session-owned Team task branch instead of double-prefixing it.
+- Retired hidden deliverable acceptance verification and verification waivers. Required review
+  criteria still need explicit pass/fail decisions and rejections still need explanations, but
+  criterion evidence, agent-reported checks, logs, and links are advisory.
+- Created each release package before its frozen candidate is verified, and gave every new
+  candidate a fresh visible server-executed verification run before release-cohort and human
+  review. Legacy waiver inputs and queued acceptance-verification effects remain safe no-ops for
+  compatibility without changing persisted historical audit data.
+- Published a generic `team.release.published` event from the generated Team runtime pack only
+  after a successful canonical push is recorded without a conflicting immutable release result,
+  so operator-owned publication and PR workflows can remain in the main pack and survive add-on
+  runtime-pack refreshes.
+- Merged concurrent managed PR-note histories before publication and retried racing note updates,
+  so a stale worktree note ref cannot block an otherwise verified Team branch handoff.
+
 ## 2026-08-23 - Single-Review Team Dispatches
 
 - Limited ordinary Team reviewer dispatches to the oldest actionable review and excluded inbox

@@ -19,6 +19,7 @@ from ...models import (
     ReviewProfile,
     ReviewProfileCriterion,
     ReviewRequest,
+    TeamBlockerState,
     TeamBlockerSourceKind,
     TeamInboxItemState,
     TeamInboxItemType,
@@ -36,6 +37,7 @@ from .agent_access import (
 from .blockers import open_or_get_blocker, resolve_active_blockers_for_source
 from .common import (
     _MANAGER_FALLBACK_PENDING_REVIEW_STATES,
+    _NON_TERMINAL_TASK_STATES,
     _append_unique,
     _generated_id,
     _list_of_mappings,
@@ -56,6 +58,7 @@ from .git_work_contexts import (
     require_authoritative_git_review_retry_candidate,
 )
 from .review_repository_snapshots import deliverable_review_repository_snapshot
+from .acceptance_verification import apply_formal_review_acceptance_policy
 from .manager_fallback import _manager_fallback_review_decision_guard_error
 from .outcome_catalog import snapshot_review_profile_outcomes
 from .review_handoff import queue_actionable_inbox_item
@@ -84,6 +87,287 @@ _REVIEW_ASSIGNMENT_INBOX_KINDS = frozenset(
         "review_retry_request",
     }
 )
+_DELIVERABLE_ACCEPTANCE_BOUNDARY_REASON_PREFIX = "deliverable_acceptance_deferred:"
+
+
+def _defer_deliverable_acceptance(
+    state: TeamState,
+    *,
+    deliverable: Deliverable,
+    task: AgentTask,
+    error: TaskAssessmentBoundaryError,
+    result: dict[str, Any] | None,
+    now: datetime,
+) -> None:
+    """Persist an aggregate-acceptance boundary as routed, retryable work."""
+
+    deliverable.state = TeamRecordState.PENDING
+    if task.state in _NON_TERMINAL_TASK_STATES:
+        _set_task_state(task, TeamTaskState.BLOCKED, now=now)
+    task.updated_at = now
+    deferred = {
+        "code": error.code,
+        **error.correction_context,
+    }
+    if result is not None:
+        result["deliverable_acceptance_deferred"] = deferred
+
+    project = state.projects.get(task.project_id)
+    if project is None or project.team_id not in state.teams:
+        # Strictly persisted TeamState snapshots cannot reach this branch. Keep
+        # pure/model_construct callers useful without hiding the boundary.
+        return
+
+    affected_task_ids = sorted(
+        {
+            str(task_id).strip()
+            for key, value in error.correction_context.items()
+            if (
+                key.endswith("task_ids")
+                or key in {"unresolved_descendant_ids", "dependency_ids"}
+            )
+            and isinstance(value, Sequence)
+            and not isinstance(value, (str, bytes))
+            for task_id in value
+            if str(task_id).strip()
+        }
+    )
+    details = (
+        f"{error.message} Correct the task or its required evidence, then retry "
+        "the existing deliverable acceptance; the accepted review evidence is retained."
+    )
+    blocker, created = open_or_get_blocker(
+        state,
+        source_kind=TeamBlockerSourceKind.DELIVERABLE,
+        source_id=deliverable.id,
+        summary=f"Deliverable {deliverable.id} cannot cross its acceptance boundary",
+        details=details,
+        reason_code=f"{_DELIVERABLE_ACCEPTANCE_BOUNDARY_REASON_PREFIX}{error.code}",
+        reporter_actor="system:deliverable-acceptance",
+        initial_owner_agent_id=task.owner_agent_id,
+        team_id=project.team_id,
+        project_id=task.project_id,
+        task_id=task.id,
+        affected_task_ids=affected_task_ids,
+        result=result,
+        now=now,
+    )
+    if not created:
+        if not blocker.reason_code.startswith(
+            _DELIVERABLE_ACCEPTANCE_BOUNDARY_REASON_PREFIX
+        ):
+            if result is not None:
+                result["deliverable_acceptance_deferred"]["blocker_id"] = blocker.id
+                result["deliverable_acceptance_deferred"][
+                    "existing_source_blocker_preserved"
+                ] = True
+            return
+        blocker.reason_code = f"{_DELIVERABLE_ACCEPTANCE_BOUNDARY_REASON_PREFIX}{error.code}"
+        blocker.details = details
+        blocker.affected_task_ids = affected_task_ids
+        blocker.updated_at = now
+    if result is not None:
+        result["deliverable_acceptance_deferred"]["blocker_id"] = blocker.id
+
+
+def _require_deliverable_acceptance_or_defer(
+    state: TeamState,
+    *,
+    deliverable: Deliverable,
+    task: AgentTask,
+    actor_agent_id: str | None,
+    result: dict[str, Any] | None,
+    now: datetime,
+) -> bool:
+    boundary_source_id = deliverable.id
+    source_blockers = [
+        blocker
+        for blocker in state.blockers.values()
+        if blocker.state == TeamBlockerState.OPEN
+        and blocker.source_kind == TeamBlockerSourceKind.DELIVERABLE
+        and blocker.source_id == boundary_source_id
+    ]
+    boundary_blockers = [
+        blocker
+        for blocker in source_blockers
+        if blocker.reason_code.startswith(_DELIVERABLE_ACCEPTANCE_BOUNDARY_REASON_PREFIX)
+    ]
+    non_boundary_source_blockers = [
+        blocker for blocker in source_blockers if blocker not in boundary_blockers
+    ]
+    if non_boundary_source_blockers:
+        deliverable.state = TeamRecordState.PENDING
+        if task.state in _NON_TERMINAL_TASK_STATES:
+            _set_task_state(task, TeamTaskState.BLOCKED, now=now)
+        if result is not None:
+            result["deliverable_acceptance_deferred"] = {
+                "code": "deliverable_acceptance_source_blocked",
+                "deliverable_id": deliverable.id,
+                "blocker_ids": [blocker.id for blocker in non_boundary_source_blockers],
+            }
+        return False
+    # The remediation record describes the failed boundary; it must not itself
+    # make the next assessment fail forever. Exclude only these exact blockers
+    # during the pure assessment and restore them before recording the outcome.
+    for blocker in boundary_blockers:
+        blocker.state = TeamBlockerState.RESOLVED
+    restore_blocked_task = bool(boundary_blockers) and task.state == TeamTaskState.BLOCKED
+    if restore_blocked_task:
+        # The task was put in BLOCKED solely to expose this remediation. The
+        # assessment must evaluate the corrected underlying lifecycle, not the
+        # state marker created by the failed attempt itself.
+        task.state = TeamTaskState.WAITING_FOR_REVIEW
+    try:
+        require_deliverable_acceptance(state, deliverable.id)
+    except TaskAssessmentBoundaryError as exc:
+        for blocker in boundary_blockers:
+            blocker.state = TeamBlockerState.OPEN
+        _defer_deliverable_acceptance(
+            state,
+            deliverable=deliverable,
+            task=task,
+            error=exc,
+            result=result,
+            now=now,
+        )
+        return False
+    except Exception:
+        for blocker in boundary_blockers:
+            blocker.state = TeamBlockerState.OPEN
+        if restore_blocked_task:
+            task.state = TeamTaskState.BLOCKED
+        raise
+    for blocker in boundary_blockers:
+        blocker.state = TeamBlockerState.OPEN
+
+    resolve_active_blockers_for_source(
+        state,
+        source_kind=TeamBlockerSourceKind.DELIVERABLE,
+        source_id=boundary_source_id,
+        actor_agent_id=actor_agent_id,
+        dispatch_id=None,
+        note="The deliverable acceptance boundary now passes.",
+        reference_ids=[deliverable.id],
+        result=result,
+        now=now,
+    )
+    return True
+
+
+def retry_deferred_deliverable_acceptance(
+    state: TeamState,
+    *,
+    blocker_id: str,
+    actor_agent_id: str | None,
+    result: dict[str, Any] | None,
+    now: datetime,
+) -> bool:
+    """Retry the exact boundary represented by a durable remediation blocker."""
+
+    blocker = state.blockers.get(blocker_id)
+    if (
+        blocker is None
+        or blocker.state != TeamBlockerState.OPEN
+        or blocker.source_kind != TeamBlockerSourceKind.DELIVERABLE
+        or not blocker.reason_code.startswith(_DELIVERABLE_ACCEPTANCE_BOUNDARY_REASON_PREFIX)
+    ):
+        return False
+    deliverable_id = blocker.source_id
+    deliverable = _require_present(state.deliverables, deliverable_id, "deliverable")
+    current_reviews = _current_deliverable_reviews(state, deliverable)
+    has_accepted_route = (
+        all(review.state == TeamRecordState.ACCEPTED for review in current_reviews)
+        if current_reviews
+        else (
+            deliverable.acceptance_decision is not None
+            and deliverable.acceptance_decision.decision == "accepted"
+        )
+    )
+    if not has_accepted_route or any(
+        finding.state == "open" for finding in deliverable.carried_findings
+    ):
+        raise TaskAssessmentBoundaryError(
+            code="deliverable_acceptance_evidence_incomplete",
+            message=(
+                f"deliverable {deliverable.id} no longer has a complete accepted review "
+                "or superior-acceptance route"
+            ),
+            correction_context={
+                "deliverable_id": deliverable.id,
+                "review_request_ids": [review.id for review in current_reviews],
+            },
+        )
+    if not retry_deliverable_acceptance_if_reviewed(
+        state,
+        deliverable_id=deliverable.id,
+        actor_agent_id=actor_agent_id,
+        result=result,
+        now=now,
+    ):
+        deferred = (result or {}).get("deliverable_acceptance_deferred") or {}
+        raise TaskAssessmentBoundaryError(
+            code=str(deferred.get("code") or "deliverable_acceptance_deferred"),
+            message=(
+                f"deliverable {deliverable.id} still cannot cross its acceptance boundary"
+            ),
+            correction_context=dict(deferred),
+        )
+    return True
+
+
+def retry_deliverable_acceptance_if_reviewed(
+    state: TeamState,
+    *,
+    deliverable_id: str,
+    actor_agent_id: str | None,
+    result: dict[str, Any] | None,
+    now: datetime,
+) -> bool:
+    """Re-enter acceptance after another deliverable blocker is resolved.
+
+    Review evidence is durable. Resolving an unrelated blocker on the same
+    deliverable must therefore either complete acceptance or materialize the
+    exact aggregate-boundary remediation that still prevents acceptance.
+    Deliverables without a complete accepted route are left unchanged.
+    """
+
+    deliverable = state.deliverables.get(deliverable_id)
+    if deliverable is None or deliverable.state == TeamRecordState.ACCEPTED:
+        return False
+    task = state.tasks.get(deliverable.task_id)
+    if task is None:
+        return False
+    current_reviews = _current_deliverable_reviews(state, deliverable)
+    has_accepted_route = (
+        all(review.state == TeamRecordState.ACCEPTED for review in current_reviews)
+        if current_reviews
+        else (
+            deliverable.acceptance_decision is not None
+            and deliverable.acceptance_decision.decision == "accepted"
+        )
+    )
+    if not has_accepted_route or any(
+        finding.state == "open" for finding in deliverable.carried_findings
+    ):
+        return False
+    if not _require_deliverable_acceptance_or_defer(
+        state,
+        deliverable=deliverable,
+        task=task,
+        actor_agent_id=actor_agent_id,
+        result=result,
+        now=now,
+    ):
+        return False
+    _accept_deliverable_and_maybe_task(
+        state,
+        deliverable=deliverable,
+        task=task,
+        now=now,
+        result=result,
+        accepted_by_agent_id=actor_agent_id,
+    )
+    return True
 
 
 def _is_team_manager_for_task_project(
@@ -262,7 +546,14 @@ def _apply_review_request(
         actor.id == deliverable.producer_agent_id
         or _supervises(state, actor.id, deliverable.producer_agent_id)
         or (project_id is not None and _is_project_lead_for(state, actor.id, project_id))
-        or _is_team_manager(state, actor)
+        or (
+            task is not None
+            and _is_team_manager_for_task_project(
+                state,
+                actor=actor,
+                task=task,
+            )
+        )
     )
     if not permitted:
         result["errors"].append(
@@ -336,6 +627,11 @@ def _apply_review_request(
             now=now,
             projects_to_recalc=projects_to_recalc,
         )
+        apply_formal_review_acceptance_policy(
+            state,
+            deliverable=deliverable,
+            result=result,
+        )
         result.setdefault("existing_review_request_ids", []).append(existing_review.id)
         return existing_review.id
     requested_cohort_id = _optional_text(request.get("review_cohort_id"))
@@ -372,6 +668,11 @@ def _apply_review_request(
     if review_id in state.review_requests:
         result["errors"].append(f"review request {review_id} already exists")
         return None
+    apply_formal_review_acceptance_policy(
+        state,
+        deliverable=deliverable,
+        result=result,
+    )
     review = ReviewRequest(
         id=review_id,
         deliverable_id=deliverable_id,
@@ -1129,24 +1430,22 @@ def _recalculate_sealed_review_cohort(
         if any(finding.state == "open" for finding in deliverable.carried_findings):
             deliverable.state = TeamRecordState.PENDING
             _set_task_state(task, TeamTaskState.WAITING_FOR_REVIEW, now=now)
-        else:
-            try:
-                require_deliverable_acceptance(state, deliverable.id)
-            except TaskAssessmentBoundaryError as exc:
-                if result is not None:
-                    result["deliverable_acceptance_deferred"] = {
-                        "code": exc.code,
-                        **exc.correction_context,
-                    }
-            else:
-                _accept_deliverable_and_maybe_task(
-                    state,
-                    deliverable=deliverable,
-                    task=task,
-                    now=now,
-                    result=result,
-                    accepted_by_agent_id=sender_agent_id,
-                )
+        elif _require_deliverable_acceptance_or_defer(
+            state,
+            deliverable=deliverable,
+            task=task,
+            actor_agent_id=sender_agent_id,
+            result=result,
+            now=now,
+        ):
+            _accept_deliverable_and_maybe_task(
+                state,
+                deliverable=deliverable,
+                task=task,
+                now=now,
+                result=result,
+                accepted_by_agent_id=sender_agent_id,
+            )
         task.updated_at = now
         return
 
@@ -1185,6 +1484,19 @@ def _recalculate_deliverable_after_review_closure(
         deliverable=deliverable,
         task=task,
     )
+    blocking_acceptance_ids = [
+        blocker_id
+        for blocker_id in active_acceptance_blocker_ids
+        if (
+            (blocker := state.blockers.get(blocker_id)) is None
+            or blocker.source_kind != TeamBlockerSourceKind.DELIVERABLE
+            or blocker.source_id
+            != deliverable.id
+            or not blocker.reason_code.startswith(
+                _DELIVERABLE_ACCEPTANCE_BOUNDARY_REASON_PREFIX
+            )
+        )
+    ]
     if any(review.state == TeamRecordState.BLOCKED for review in current_reviews):
         deliverable.state = TeamRecordState.BLOCKED
         _set_task_state(task, TeamTaskState.BLOCKED, now=now)
@@ -1197,11 +1509,17 @@ def _recalculate_deliverable_after_review_closure(
         if any(finding.state == "open" for finding in deliverable.carried_findings):
             deliverable.state = TeamRecordState.PENDING
             _set_task_state(task, TeamTaskState.WAITING_FOR_REVIEW, now=now)
-        elif active_acceptance_blocker_ids:
+        elif blocking_acceptance_ids:
             deliverable.state = TeamRecordState.PENDING
             _set_task_state(task, TeamTaskState.BLOCKED, now=now)
-        else:
-            require_deliverable_acceptance(state, deliverable.id)
+        elif _require_deliverable_acceptance_or_defer(
+            state,
+            deliverable=deliverable,
+            task=task,
+            actor_agent_id=sender_agent_id,
+            result=result,
+            now=now,
+        ):
             _accept_deliverable_and_maybe_task(
                 state,
                 deliverable=deliverable,
@@ -1230,11 +1548,17 @@ def _recalculate_deliverable_after_review_closure(
         deliverable.acceptance_decision is not None
         and deliverable.acceptance_decision.decision == "accepted"
     ):
-        if active_acceptance_blocker_ids:
+        if blocking_acceptance_ids:
             deliverable.state = TeamRecordState.PENDING
             _set_task_state(task, TeamTaskState.BLOCKED, now=now)
-        else:
-            require_deliverable_acceptance(state, deliverable.id)
+        elif _require_deliverable_acceptance_or_defer(
+            state,
+            deliverable=deliverable,
+            task=task,
+            actor_agent_id=sender_agent_id,
+            result=result,
+            now=now,
+        ):
             _accept_deliverable_and_maybe_task(
                 state,
                 deliverable=deliverable,
@@ -1243,7 +1567,7 @@ def _recalculate_deliverable_after_review_closure(
                 result=result,
                 accepted_by_agent_id=sender_agent_id,
             )
-    elif active_acceptance_blocker_ids:
+    elif blocking_acceptance_ids:
         deliverable.state = TeamRecordState.PENDING
         _set_task_state(task, TeamTaskState.BLOCKED, now=now)
     else:
@@ -1583,19 +1907,19 @@ def _apply_review_decision(
         "finding_resolutions",
     )
     findings = _string_list(decision.get("findings"), "findings")
+    criterion_results = criterion_results or []
     decision_error = _review_decision_policy_error(
         state,
         review=review,
         decision_state=decision_state,
-        criterion_results=criterion_results or [],
+        criterion_results=criterion_results,
         finding_resolutions=finding_resolutions,
         findings=findings,
     )
     if decision_error is not None:
         result["errors"].append(decision_error)
         return None
-    if criterion_results is not None:
-        review.criteria = criterion_results
+    review.criteria = criterion_results
     review.block_kind = block_kind
     _apply_finding_resolutions(
         state,
@@ -1608,7 +1932,7 @@ def _apply_review_decision(
         review=review,
         decision_state=decision_state,
         findings=findings,
-        criterion_results=criterion_results or [],
+        criterion_results=criterion_results,
     )
     _cascade_review_decision(
         state,
@@ -1664,6 +1988,10 @@ def _build_criterion_results(
                 criterion_id=criterion_id,
                 state=raw_state,
                 finding=_optional_text(entry.get("finding")) or "",
+                evidence_refs=_string_list(
+                    entry.get("evidence_refs"),
+                    "evidence_refs",
+                ),
             )
         )
     return results, None
@@ -1732,7 +2060,6 @@ def _review_decision_policy_error(
                 f"accepted review {review.id} has required criteria that did not pass: "
                 + ", ".join(not_passed)
             )
-
     if review.release_package_id is not None:
         release = _require_present(
             state.release_packages,
@@ -1747,11 +2074,13 @@ def _review_decision_policy_error(
             )
         if finding_resolutions:
             return "release review decisions do not accept carried finding resolutions"
-        if decision_state == TeamRecordState.BLOCKED and not findings:
-            return "blocked release review requires a non-empty blocker finding"
+        if decision_state in {TeamRecordState.REJECTED, TeamRecordState.BLOCKED} and not findings:
+            return f"{decision_state.value} release review requires a non-empty explanation"
         return None
 
     deliverable = _require_present(state.deliverables, review.deliverable_id, "deliverable")
+    if decision_state in {TeamRecordState.REJECTED, TeamRecordState.BLOCKED} and not findings:
+        return f"{decision_state.value} review {review.id} requires an explanation"
     if finding_resolutions and decision_state != TeamRecordState.ACCEPTED:
         return "carried findings may only be resolved by an accepted review decision"
     resolution_ids: list[str] = []
@@ -1951,27 +2280,22 @@ def _cascade_review_decision(
         no_open_findings = all(
             finding.state == "resolved" for finding in deliverable.carried_findings
         )
-        if all_accepted and no_open_findings:
-            try:
-                require_deliverable_acceptance(state, deliverable.id)
-            except TaskAssessmentBoundaryError as exc:
-                # A reviewer's decision is independent evidence. Persist it even
-                # when another boundary keeps the aggregate deliverable and task
-                # from advancing.
-                if result is not None:
-                    result["deliverable_acceptance_deferred"] = {
-                        "code": exc.code,
-                        **exc.correction_context,
-                    }
-            else:
-                _accept_deliverable_and_maybe_task(
-                    state,
-                    deliverable=deliverable,
-                    task=task,
-                    now=now,
-                    result=result,
-                    accepted_by_agent_id=review.reviewer_agent_id,
-                )
+        if all_accepted and no_open_findings and _require_deliverable_acceptance_or_defer(
+            state,
+            deliverable=deliverable,
+            task=task,
+            actor_agent_id=review.reviewer_agent_id,
+            result=result,
+            now=now,
+        ):
+            _accept_deliverable_and_maybe_task(
+                state,
+                deliverable=deliverable,
+                task=task,
+                now=now,
+                result=result,
+                accepted_by_agent_id=review.reviewer_agent_id,
+            )
     elif decision_state == TeamRecordState.REJECTED:
         deliverable.state = TeamRecordState.REJECTED
         _set_task_state(task, TeamTaskState.IN_PROGRESS, now=now)
@@ -2268,4 +2592,6 @@ __all__ = [
     "_is_review_decision_state",
     "_cascade_review_decision",
     "_cascade_release_review_decision",
+    "retry_deferred_deliverable_acceptance",
+    "retry_deliverable_acceptance_if_reviewed",
 ]

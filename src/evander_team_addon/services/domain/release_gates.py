@@ -29,6 +29,7 @@ from ...models import (
     TeamState,
     TaskCancellation,
     TaskDeliverableContract,
+    TaskMutationPolicy,
     TeamTaskKind,
     TeamTaskState,
     agent_has_project_assignment,
@@ -62,6 +63,26 @@ _TERMINAL_CANDIDATE_CORRECTION_TASK_STATES = {
     TeamTaskState.REJECTED,
     TeamTaskState.CANCELLED,
 }
+
+
+def _candidate_correction_mutation_policy() -> TaskMutationPolicy:
+    return TaskMutationPolicy(
+        policy_id="system-remediation-topology-v1",
+        reason=(
+            "This workflow-generated correction must remain one direct, "
+            "candidate-rooted task so release provenance stays reviewable."
+        ),
+        locked_fields=[
+            "dependency_task_ids",
+            "deliverable_contract",
+            "git_base_branch",
+            "integration_boundary",
+            "parent_task_id",
+            "task_kind",
+        ],
+        allow_child_tasks=False,
+        allow_agent_cancellation=False,
+    )
 
 
 def _candidate_correction_git_base(release: ReleasePackage) -> str | None:
@@ -328,16 +349,27 @@ def begin_release_gates(
         run_id = _verification_run_id(release.id, candidate_commit_sha, 1)
         run = state.release_verification_runs.get(run_id)
         if run is None:
+            now = utc_now()
             run = ReleaseVerificationRun(
                 id=run_id,
                 release_package_id=release.id,
                 candidate_commit_sha=candidate_commit_sha,
                 session_id=f"team-release-verification-{uuid4().hex}",
+                state="pending",
+                provenance="server_executed",
+                evidence_refs=[],
+                container_image=policy.container_image,
+                resource_limits=policy.resource_limits,
+                verifier_settings_snapshotted=True,
                 attempt_number=1,
                 command_results=[
                     ReleaseVerificationCommandResult(name=command.name)
                     for command in policy.verification_commands
                 ],
+                current_command_index=0,
+                created_at=now,
+                updated_at=now,
+                finished_at=None,
             )
             state.release_verification_runs[run.id] = run
         release.verification_run_ids = _append_unique(
@@ -602,6 +634,7 @@ def _materialize_candidate_verification_correction(
             deliverable_contract=TaskDeliverableContract(
                 require_git_provenance=True,
             ),
+            mutation_policy=_candidate_correction_mutation_policy(),
             title=f"Correct verification failure in {release.id}",
             description=description,
             created_by_actor="system:release-verification-correction",
@@ -619,6 +652,8 @@ def _materialize_candidate_verification_correction(
             f"reserved release verification correction task id {task_id} is already in use"
         )
     elif task.state not in _TERMINAL_CANDIDATE_CORRECTION_TASK_STATES:
+        if task.mutation_policy is None:
+            task.mutation_policy = _candidate_correction_mutation_policy()
         _reconcile_candidate_correction_task_git_base(
             state,
             task=task,
@@ -654,7 +689,9 @@ def _materialize_candidate_verification_correction(
                 "branch into this correction. Fix the verifier failure and submit the "
                 "changed Git work as the correction deliverable. After that deliverable "
                 "is accepted and reviewed, Team automatically creates the successor "
-                "release. Do "
+                "release. Keep this same task and its direct correction topology; if "
+                "another owner is needed, reassign this task instead of creating a child "
+                "or dependency wrapper. Do "
                 "not retry or resubmit the unchanged candidate. Do not finish this task "
                 "directly or request a release; its accepted reviewed Git deliverable is "
                 "required to continue the automatic release loop."
@@ -965,6 +1002,7 @@ def materialize_release_review_rejection_correction(
             deliverable_contract=TaskDeliverableContract(
                 require_git_provenance=True,
             ),
+            mutation_policy=_candidate_correction_mutation_policy(),
             title=f"Correct rejected release review in {release.id}",
             description=description,
             created_by_actor="system:release-review-correction",
@@ -987,6 +1025,8 @@ def materialize_release_review_rejection_correction(
             _set_task_state(task, TeamTaskState.PENDING, now=now)
             result.setdefault("reactivated_task_ids", []).append(task.id)
         if task.state not in _TERMINAL_CANDIDATE_CORRECTION_TASK_STATES:
+            if task.mutation_policy is None:
+                task.mutation_policy = _candidate_correction_mutation_policy()
             _reconcile_candidate_correction_task_git_base(
                 state,
                 task=task,
@@ -1755,6 +1795,8 @@ def retry_release_gate(
             )
             + 1
         )
+        project = state.projects.get(release.project_id)
+        retry_policy = project.release_policy if project is not None else None
         run = ReleaseVerificationRun(
             id=_verification_run_id(release.id, candidate, attempt_number),
             release_package_id=release.id,
@@ -1764,6 +1806,9 @@ def retry_release_gate(
             supersedes_verification_run_id=current.id,
             retry_reason=normalized_reason,
             retry_requested_by=normalized_requested_by,
+            container_image=(retry_policy.container_image if retry_policy is not None else None),
+            resource_limits=(retry_policy.resource_limits if retry_policy is not None else None),
+            verifier_settings_snapshotted=True,
             command_results=[
                 ReleaseVerificationCommandResult(name=command.name)
                 for command in verification_commands
@@ -2000,7 +2045,7 @@ def _candidate_manifest(
         HumanReviewRequirementSnapshot(
             directory_path=(
                 human_requirement.directory_path
-                or (project.git.directory_path if project.git is not None else "root")
+                or project.directory_path
             ),
             configured_group_ids=list(human_requirement.reviewer_group_ids),
             initially_eligible_user_ids=list(human_requirement.resolved_reviewer_user_ids),

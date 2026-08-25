@@ -90,6 +90,7 @@ from evander.repositories.audit_index import (
 )
 from evander.repositories.session_manifests import JsonSessionManifestRepository
 from evander.runtime import build_runtime
+from evander.runtime_generation import read_runtime_generation_status
 from evander.setup import setup_doctor_payload, setup_plan_payload
 from evander.setup.tui import run_setup_tui
 from evander.teams_meeting import TeamsMeetingService
@@ -2358,6 +2359,14 @@ def status(
         "runtime_paths": [],
         "systemd_units": [],
         "health": [],
+        "runtime_generation": {
+            "state": "not_registered",
+            "coherent": False,
+            "components": {},
+            "missing_components": [],
+            "errors": {},
+            "generations": [],
+        },
         "sessions": {
             "total": 0,
             "active": 0,
@@ -2396,6 +2405,10 @@ def status(
         units = [
             "evander-firewall.service",
             "evander-gateway.service",
+            "evander-admin-web.service",
+            "evander-trigger-orchestrator.service",
+            "evander-effect-orchestrator.service",
+            "evander-team-runtime.target",
             "evander-openai-relay.service",
             "evander-http-target-relay.service",
             "evander-discord-wake.service",
@@ -2407,6 +2420,11 @@ def status(
         for unit_status in unit_statuses:
             if unit_status.available and unit_status.state != "active":
                 report["overall"] = "degraded"
+
+        generation_status = read_runtime_generation_status(cfg.runtime_dir)
+        report["runtime_generation"] = generation_status
+        if generation_status["state"] != "coherent":
+            report["overall"] = "degraded"
 
         vm_defaults = _resolve_root_vm_defaults(cfg)
         gateway_health_url = vm_defaults.gateway_url
@@ -2496,6 +2514,17 @@ def status(
             )
             if endpoint["error"]:
                 typer.echo(f"  error: {endpoint['error']}")
+
+    generation = report["runtime_generation"]
+    typer.echo("\nTeam runtime generation")
+    typer.echo(f"- state: {generation['state']}")
+    for component, registration in sorted(generation["components"].items()):
+        typer.echo(
+            f"- {component}: {registration['generation']} "
+            f"(registered={registration.get('registered_at', 'unknown')})"
+        )
+    if generation["missing_components"]:
+        typer.echo("- missing: " + ", ".join(generation["missing_components"]))
 
     session_summary = report["sessions"]
     typer.echo("\nSessions")

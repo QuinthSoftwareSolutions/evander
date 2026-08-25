@@ -888,6 +888,16 @@ def test_candidate_verification_failure_creates_candidate_rooted_correction_task
     assert task.integration_boundary is False
     assert task.deliverable_contract is not None
     assert task.deliverable_contract.require_git_provenance is True
+    assert task.mutation_policy is not None
+    assert task.mutation_policy.policy_id == "system-remediation-topology-v1"
+    assert task.mutation_policy.allow_child_tasks is False
+    assert task.mutation_policy.allow_agent_cancellation is False
+    assert set(task.mutation_policy.locked_fields) >= {
+        "dependency_task_ids",
+        "deliverable_contract",
+        "git_base_branch",
+        "integration_boundary",
+    }
     assert "Candidate commit: candidate-sha" in task.description
     assert "Do not merge or rebase the current project base branch" in task.description
     assert "Do not amend, reset, rebase, or otherwise rewrite" in task.description
@@ -926,6 +936,7 @@ def test_candidate_verification_failure_creates_candidate_rooted_correction_task
     assert "rooted at candidate_commit_sha" in item.payload["next_action"]
     assert "Do not merge or rebase" in item.payload["next_action"]
     assert "Team automatically creates the successor release" in item.payload["next_action"]
+    assert "reassign this task instead of creating a child" in item.payload["next_action"]
     assert "create a replacement release" not in item.payload["next_action"]
     wake = next(
         event for event in result["events"] if event["event_type"] == "team.agent.wake_requested"
@@ -1088,6 +1099,10 @@ def test_rejected_release_review_creates_candidate_rooted_correction_task() -> N
     assert task.integration_boundary is False
     assert task.deliverable_contract is not None
     assert task.deliverable_contract.require_git_provenance is True
+    assert task.mutation_policy is not None
+    assert task.mutation_policy.policy_id == "system-remediation-topology-v1"
+    assert task.mutation_policy.allow_child_tasks is False
+    assert task.mutation_policy.allow_agent_cancellation is False
     assert "Release reviews: release-review" in task.description
     assert "PLC device mappings persist opcTagId 0." in task.description
     assert "Do not amend, reset, rebase, or otherwise rewrite" in task.description
@@ -1301,6 +1316,39 @@ def test_configuration_gate_rejection_routes_high_priority_team_blocker() -> Non
         event for event in result["events"] if event["event_type"] == "team.agent.wake_requested"
     )
     assert wake["payload"]["agent_id"] == "lead"
+
+
+def test_new_verification_run_marks_verifier_settings_as_snapshotted() -> None:
+    command = ReleaseVerificationCommand(name="tests", argv=["pytest", "-q"])
+    release, promotion = _release_and_promotion(verification_commands=[command])
+    state = TeamState.empty()
+    state.projects["project"] = _project(
+        release_policy=ProjectReleasePolicy(
+            container_image="verifier:v1",
+            resource_limits={"memory": "6g", "cpus": 4, "pids_limit": 1536},
+            verification_commands=[command],
+        )
+    )
+    state.release_packages[release.id] = release
+    state.git_promotions[promotion.id] = promotion
+    result = _result()
+
+    begin_release_gates(
+        state,
+        release=release,
+        release_promotion=promotion,
+        candidate_commit_sha="candidate-sha",
+        candidate_tree_hash="candidate-tree",
+        result=result,
+    )
+
+    run = state.release_verification_runs[release.verification_run_ids[0]]
+    assert run.verifier_settings_snapshotted is True
+    assert run.container_image == "verifier:v1"
+    assert run.resource_limits is not None
+    assert run.resource_limits.memory == "6g"
+    assert run.resource_limits.cpus == 4.0
+    assert run.resource_limits.pids_limit == 1536
 
 
 @pytest.mark.parametrize(
@@ -1585,6 +1633,7 @@ def test_verification_retry_uses_commands_frozen_in_release_manifest() -> None:
 
     replacement = state.release_verification_runs[str(result["replacement_gate_id"])]
     assert [item.name for item in replacement.command_results] == [frozen_command.name]
+    assert replacement.verifier_settings_snapshotted is True
     assert release.state == TeamRecordState.PENDING
 
 

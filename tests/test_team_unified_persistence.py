@@ -9,11 +9,16 @@ import pytest
 from pydantic import ValidationError
 
 from evander_team_addon.models import (
+    SCHEMA_VERSION,
     AgentInboxItem,
     AgentTask,
     Deliverable,
+    DeliverableGitRefs,
+    DeliverableVerification,
+    DependencyCompositionManifest,
     DependencyCompositionRecovery,
     DependencyGitSource,
+    GitWorkContext,
     HumanReviewAssignment,
     HumanReviewChecklistItem,
     HumanReviewDecision,
@@ -34,6 +39,7 @@ from evander_team_addon.models import (
     TaskCompletion,
     TaskCompletionKind,
     TaskDeliverableContract,
+    TaskMutationPolicy,
     TeamBlocker,
     TeamBlockerRoute,
     TeamBlockerSourceKind,
@@ -69,9 +75,39 @@ def test_persistence_registry_covers_every_collection_and_table_once() -> None:
         table for _group, specs, _writer in _PERSISTENCE_GROUPS for table, _column, _field in specs
     ]
 
-    assert len(fields) == len(set(fields)) == 38
+    assert len(fields) == len(set(fields)) == 39
     assert len(tables) == len(set(tables))
     assert set(tables) == set(_STATE_TABLES)
+
+
+def test_review_criterion_evidence_column_migrates_from_legacy_table(
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "addons" / "team-addon" / "state.db"
+    database_path.parent.mkdir(parents=True)
+    with sqlite3.connect(database_path) as connection:
+        connection.execute(
+            """
+            CREATE TABLE team_review_request_criteria (
+                review_request_id TEXT NOT NULL,
+                position INTEGER NOT NULL,
+                criterion_id TEXT NOT NULL,
+                state TEXT NOT NULL,
+                finding TEXT NOT NULL,
+                PRIMARY KEY(review_request_id, position)
+            )
+            """
+        )
+
+    repository = TeamStateRepository(tmp_path)
+
+    with repository.store._connect() as connection:
+        columns = {
+            row["name"]: row
+            for row in connection.execute("PRAGMA table_info(team_review_request_criteria)")
+        }
+    assert columns["evidence_refs_json"]["notnull"] == 1
+    assert columns["evidence_refs_json"]["dflt_value"] == "'[]'"
 
 
 def test_dependency_composition_recovery_round_trips_exact_git_evidence(
@@ -123,6 +159,133 @@ def test_dependency_composition_recovery_round_trips_exact_git_evidence(
     assert row["directory_path"] == "root"
     assert json.loads(row["dependency_git_sources_json"])[0]["commit_sha"] == "c" * 40
     assert json.loads(row["conflict_paths_json"]) == ["src/shared.py"]
+
+
+def test_task_mutation_policy_round_trips_as_immutable_workflow_metadata(
+    tmp_path: Path,
+) -> None:
+    repository = _seed_team_repository(tmp_path)
+    TeamAdminService(repository).create_or_reprioritize_task(
+        task_id="task",
+        owner_agent_id="lead",
+        project_id="project",
+        priority=1,
+        title="Managed remediation",
+        description="Preserve the workflow topology.",
+        created_by_actor="system:test",
+    )
+    policy = TaskMutationPolicy(
+        policy_id="system-remediation-topology-v1",
+        reason="Keep one direct remediation task.",
+        locked_fields=["dependency_task_ids", "integration_boundary"],
+        allow_child_tasks=False,
+        allow_agent_cancellation=False,
+    )
+
+    repository.update(
+        lambda state: (
+            setattr(state.tasks["task"], "mutation_policy", policy) or state
+        )
+    )
+
+    assert repository.read().tasks["task"].mutation_policy == policy
+    with repository.store._connect() as connection:
+        row = connection.execute(
+            "SELECT mutation_policy_json FROM team_tasks WHERE id = 'task'"
+        ).fetchone()
+    assert row is not None
+    assert json.loads(row["mutation_policy_json"])["policy_id"] == policy.policy_id
+
+
+def test_acceptance_provenance_and_composition_manifest_round_trip(
+    tmp_path: Path,
+) -> None:
+    repository = _seed_team_repository(tmp_path)
+    admin = TeamAdminService(repository)
+    admin.create_or_reprioritize_task(
+        task_id="integration",
+        owner_agent_id="lead",
+        project_id="project",
+        priority=1,
+        title="Integrate",
+        description="Compose accepted work.",
+        created_by_agent_id="lead",
+        integration_boundary=True,
+        deliverable_contract=TaskDeliverableContract(
+            require_git_provenance=True,
+        ).model_dump(mode="json"),
+    )
+    source = DependencyGitSource(
+        dependency_task_id="source-task",
+        deliverable_id="source-deliverable",
+        branch="agents/source/task",
+        commit_sha="c" * 40,
+        relationship_kind="required_contribution",
+        pinned_ref="refs/evander/team-reviews/source-review",
+    )
+    manifest = DependencyCompositionManifest(
+        target_task_id="integration",
+        managed_repo_id=MANAGED_REPO_ID,
+        directory_path="root",
+        base_branch="main",
+        base_commit_sha="a" * 40,
+        base_tree_hash="b" * 40,
+        dependency_git_sources=[source],
+        source_fingerprint="f" * 64,
+        frontier_commit_shas=["c" * 40],
+        composed_commit_sha="d" * 40,
+        composed_tree_hash="e" * 40,
+    )
+
+    def _seed(state):
+        state.git_work_contexts["context-integration"] = GitWorkContext(
+            id="context-integration",
+            agent_id="lead",
+            task_id="integration",
+            agent_branch="agents/lead/integration",
+            base_branch="main",
+            base_commit="a" * 40,
+            commit_sha="d" * 40,
+            dependency_git_sources=[source],
+            dependency_composition_manifest=manifest,
+        )
+        state.deliverables["deliverable-integration"] = Deliverable(
+            id="deliverable-integration",
+            task_id="integration",
+            producer_agent_id="lead",
+            summary="Integrated candidate",
+            git_refs=DeliverableGitRefs(
+                branch_context_id="context-integration",
+                agent_branch="agents/lead/integration",
+                commit_sha="d" * 40,
+                submitted_commit_sha="d" * 40,
+                accepted_pinned_ref="refs/evander/team-reviews/integration-review",
+            ),
+            dependency_composition_manifest=manifest,
+            acceptance_policy_version=2,
+            verification=DeliverableVerification(
+                status="not_run",
+                provenance="server_release_equivalent",
+                run_id="acceptance-verification-roundtrip",
+                candidate_commit_sha="d" * 40,
+            ),
+        )
+        state.tasks["integration"].deliverable_ids = ["deliverable-integration"]
+        return state
+
+    repository.update(_seed)
+    reloaded = TeamStateRepository(tmp_path).read()
+
+    assert (
+        reloaded.git_work_contexts["context-integration"].dependency_composition_manifest
+        == manifest
+    )
+    restored = reloaded.deliverables["deliverable-integration"]
+    assert restored.dependency_composition_manifest == manifest
+    assert restored.git_refs.accepted_pinned_ref == ("refs/evander/team-reviews/integration-review")
+    assert restored.acceptance_policy_version == 2
+    assert restored.verification is not None
+    assert restored.verification.run_id == "acceptance-verification-roundtrip"
 
 
 def test_noop_updates_and_empty_wake_checks_preserve_revision_and_skip_state_dml(
@@ -735,6 +898,7 @@ def test_repository_round_trips_unified_hierarchy_human_review_records(
             session_id="session-lead",
             task_id="cancelled-task",
             project_id="project",
+            git_work_context_id="legacy:cleanup-one",
             managed_repo_id=MANAGED_REPO_ID,
             execution_backend="container_worker_vm",
             worktree_path="/worktrees/cancelled-task",
@@ -806,6 +970,7 @@ def test_repository_round_trips_unified_hierarchy_human_review_records(
     assert finding.resolved_by_human_review_request_id == "human-request-two"
     cleanup = reloaded.worktree_cleanup_candidates["cleanup-one"]
     assert cleanup.worktree_path == "/worktrees/cancelled-task"
+    assert cleanup.directory_path == "root"
     assert cleanup.last_safety_check == "unexpected_untracked_files"
     assert cleanup.attempt_count == 2
 
@@ -1195,6 +1360,12 @@ def test_sqlite_migration_adds_unified_columns_and_backfills_relationships(
             str(row[1])
             for row in connection.execute("PRAGMA table_info(team_human_review_findings)")
         }
+        cleanup_candidate_columns = {
+            str(row[1])
+            for row in connection.execute(
+                "PRAGMA table_info(team_worktree_cleanup_candidates)"
+            )
+        }
         tables = {
             str(row[0])
             for row in connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
@@ -1278,6 +1449,7 @@ def test_sqlite_migration_adds_unified_columns_and_backfills_relationships(
     assert {"reason_code", "reporter_actor"} <= blocker_columns
     assert {"owner_agent_id", "supersedes_release_package_id"} <= release_columns
     assert "resolved_by_human_review_request_id" in finding_columns
+    assert "git_work_context_id" in cleanup_candidate_columns
     assert {
         "team_deliverable_sources",
         "team_blocker_affected_tasks",
@@ -1326,12 +1498,21 @@ def test_sqlite_migration_bounds_legacy_worktree_cleanup_inventory(
     )
 
     def _seed_candidate(state):
+        state.git_work_contexts["context-cleanup-migration"] = GitWorkContext(
+            id="context-cleanup-migration",
+            agent_id="lead",
+            task_id="task",
+            agent_branch="agents/session-lead/tasks/task-12345678",
+            worktree_path="/home/agent/worktrees/project/task-12345678",
+            state="abandoned",
+        )
         state.worktree_cleanup_candidates["cleanup"] = WorktreeCleanupCandidate(
             id="cleanup",
             agent_id="lead",
             session_id="session-lead",
             task_id="task",
             project_id="project",
+            git_work_context_id="legacy:cleanup",
             managed_repo_id=MANAGED_REPO_ID,
             execution_backend="libvirt_vm",
             worktree_path="/worktrees/task",
@@ -1375,3 +1556,281 @@ def test_sqlite_migration_bounds_legacy_worktree_cleanup_inventory(
     assert migrated.ignored_file_inventory_truncated is expected_truncated is True
     assert len(migrated.ignored_file_inventory) == 200
     assert TeamStateRepository(tmp_path).read().worktree_cleanup_candidates["cleanup"] == migrated
+
+
+def test_cleanup_candidate_model_assigns_stable_identity_to_legacy_payload() -> None:
+    payload = WorktreeCleanupCandidate(
+        id="cleanup-legacy",
+        agent_id="lead",
+        session_id="session-lead",
+        task_id="task",
+        project_id="project",
+        git_work_context_id="legacy:cleanup-legacy",
+        managed_repo_id=MANAGED_REPO_ID,
+        execution_backend="libvirt_vm",
+        worktree_path="/worktrees/task",
+        branch="agents/task",
+        reason="task_resolved",
+    ).model_dump(mode="json")
+    payload.pop("git_work_context_id")
+
+    migrated = WorktreeCleanupCandidate.model_validate(payload)
+
+    assert migrated.git_work_context_id == "legacy:cleanup-legacy"
+
+
+def test_sqlite_migration_derives_project_directory_scope_from_legacy_git(
+    tmp_path: Path,
+) -> None:
+    repository = _seed_team_repository(tmp_path)
+    legacy_directory_path = "root/departments/accounting"
+    with sqlite3.connect(repository.store.path) as connection:
+        git_payload = json.loads(
+            connection.execute(
+                "SELECT git_json FROM team_projects WHERE id = 'project'"
+            ).fetchone()[0]
+        )
+        git_payload["directory_path"] = legacy_directory_path
+        connection.execute(
+            "UPDATE team_projects SET git_json = ? WHERE id = 'project'",
+            (json.dumps(git_payload),),
+        )
+        connection.execute("ALTER TABLE team_projects DROP COLUMN directory_path")
+        connection.execute(
+            "UPDATE team_state_metadata SET value = '62' "
+            "WHERE key = 'sqlite_schema_version'"
+        )
+        connection.execute(
+            "UPDATE team_state_metadata SET value = '16' "
+            "WHERE key = 'state_schema_version'"
+        )
+
+    migrated_repository = TeamStateRepository(tmp_path)
+    migrated = migrated_repository.read()
+
+    assert migrated.projects["project"].directory_path == legacy_directory_path
+    assert migrated.projects["project"].git is not None
+    assert migrated.projects["project"].git.directory_path == legacy_directory_path
+    with migrated_repository.store._connect() as connection:
+        stored_directory_path = connection.execute(
+            "SELECT directory_path FROM team_projects WHERE id = 'project'"
+        ).fetchone()[0]
+    assert stored_directory_path == legacy_directory_path
+
+
+def test_sqlite_migration_freezes_legacy_cleanup_candidate_project_scope(
+    tmp_path: Path,
+) -> None:
+    repository = _seed_team_repository(tmp_path)
+    TeamAdminService(repository).create_or_reprioritize_task(
+        task_id="task",
+        owner_agent_id="lead",
+        project_id="project",
+        priority=10,
+        title="Completed task",
+        description="Backfill the cleanup candidate's original project scope.",
+        created_by_agent_id="lead",
+    )
+
+    def _seed_candidate(state):
+        state.git_work_contexts["context-cleanup-migration"] = GitWorkContext(
+            id="context-cleanup-migration",
+            agent_id="lead",
+            task_id="task",
+            agent_branch="agents/session-lead/tasks/task-12345678",
+            worktree_path="/home/agent/worktrees/project/task-12345678",
+            state="abandoned",
+        )
+        state.worktree_cleanup_candidates["cleanup"] = WorktreeCleanupCandidate(
+            id="cleanup",
+            agent_id="lead",
+            session_id="session-lead",
+            task_id="task",
+            project_id="project",
+            git_work_context_id="context-cleanup-migration",
+            managed_repo_id=MANAGED_REPO_ID,
+            execution_backend="container_worker_vm",
+            worktree_path="/home/agent/worktrees/project/task-12345678",
+            branch="agents/session-lead/tasks/task-12345678",
+            reason="task_resolved",
+        )
+        state.worktree_cleanup_candidates["cleanup-pruned"] = WorktreeCleanupCandidate(
+            id="cleanup-pruned",
+            agent_id="lead",
+            session_id="session-lead",
+            task_id="task",
+            project_id="project",
+            git_work_context_id="legacy:cleanup-pruned",
+            managed_repo_id=MANAGED_REPO_ID,
+            execution_backend="container_worker_vm",
+            worktree_path="/home/agent/worktrees/project/task-pruned",
+            branch="agents/session-lead/tasks/task-pruned",
+            reason="task_resolved",
+        )
+        return state
+
+    repository.update(_seed_candidate)
+    legacy_directory_path = "root/departments/accounting"
+    with sqlite3.connect(repository.store.path) as connection:
+        for candidate_id in ("cleanup", "cleanup-pruned"):
+            candidate_payload = json.loads(
+                connection.execute(
+                    "SELECT payload_json FROM team_worktree_cleanup_candidates "
+                    "WHERE id = ?",
+                    (candidate_id,),
+                ).fetchone()[0]
+            )
+            candidate_payload.pop("directory_path", None)
+            candidate_payload.pop("git_work_context_id", None)
+            connection.execute(
+                """
+                UPDATE team_worktree_cleanup_candidates
+                SET git_work_context_id = '', payload_json = ?
+                WHERE id = ?
+                """,
+                (json.dumps(candidate_payload), candidate_id),
+            )
+        git_payload = json.loads(
+            connection.execute(
+                "SELECT git_json FROM team_projects WHERE id = 'project'"
+            ).fetchone()[0]
+        )
+        git_payload["directory_path"] = legacy_directory_path
+        connection.execute(
+            "UPDATE team_projects SET directory_path = ?, git_json = ? WHERE id = 'project'",
+            (legacy_directory_path, json.dumps(git_payload)),
+        )
+        connection.execute(
+            "UPDATE team_state_metadata SET value = '63' "
+            "WHERE key = 'sqlite_schema_version'"
+        )
+
+    migrated_repository = TeamStateRepository(tmp_path)
+    migrated_candidates = migrated_repository.read().worktree_cleanup_candidates
+    migrated = migrated_candidates["cleanup"]
+
+    assert migrated.directory_path == legacy_directory_path
+    assert migrated.git_work_context_id == "context-cleanup-migration"
+    assert migrated_candidates["cleanup-pruned"].git_work_context_id == (
+        "legacy:cleanup-pruned"
+    )
+    with sqlite3.connect(migrated_repository.store.path) as connection:
+        stored_rows = {
+            row[0]: (row[1], json.loads(row[2]))
+            for row in connection.execute(
+                """
+                SELECT id, git_work_context_id, payload_json
+                FROM team_worktree_cleanup_candidates
+                ORDER BY id
+                """
+            )
+        }
+        sqlite_schema_version = connection.execute(
+            "SELECT value FROM team_state_metadata WHERE key = 'sqlite_schema_version'"
+        ).fetchone()[0]
+    assert stored_rows["cleanup"][0] == "context-cleanup-migration"
+    assert stored_rows["cleanup"][1]["directory_path"] == legacy_directory_path
+    assert stored_rows["cleanup"][1]["git_work_context_id"] == (
+        "context-cleanup-migration"
+    )
+    assert stored_rows["cleanup-pruned"][0] == "legacy:cleanup-pruned"
+    assert stored_rows["cleanup-pruned"][1]["git_work_context_id"] == (
+        "legacy:cleanup-pruned"
+    )
+    assert sqlite_schema_version == str(SQLITE_SCHEMA_VERSION)
+
+
+def test_sqlite_migration_terminalizes_deterministic_cleanup_refusals(
+    tmp_path: Path,
+) -> None:
+    repository = _seed_team_repository(tmp_path)
+    TeamAdminService(repository).create_or_reprioritize_task(
+        task_id="task",
+        owner_agent_id="lead",
+        project_id="project",
+        priority=10,
+        title="Completed task",
+        description="Task retained for cleanup retry migration evidence.",
+        created_by_agent_id="lead",
+    )
+
+    def _seed_candidates(state):
+        for candidate_id, worktree_path in (
+            ("deterministic", "/worktrees/task-deterministic"),
+            ("transient", "/worktrees/task-transient"),
+        ):
+            state.worktree_cleanup_candidates[candidate_id] = WorktreeCleanupCandidate(
+                id=candidate_id,
+                agent_id="lead",
+                session_id="session-lead",
+                task_id="task",
+                project_id="project",
+                git_work_context_id=f"legacy:{candidate_id}",
+                managed_repo_id=MANAGED_REPO_ID,
+                execution_backend="libvirt_vm",
+                worktree_path=worktree_path,
+                branch=f"agents/{candidate_id}",
+                reason="task_resolved",
+            )
+        return state
+
+    repository.update(_seed_candidates)
+    with sqlite3.connect(repository.store.path) as connection:
+        for candidate_id, failed_check in (
+            ("deterministic", "tracked_changes"),
+            ("transient", "backend_cleanup_failed"),
+        ):
+            payload = json.loads(
+                connection.execute(
+                    "SELECT payload_json FROM team_worktree_cleanup_candidates WHERE id = ?",
+                    (candidate_id,),
+                ).fetchone()[0]
+            )
+            payload.update(
+                {
+                    "state": "recovery_required",
+                    "attempt_count": 1_000,
+                    "last_safety_check": failed_check,
+                    "last_error": f"legacy {failed_check}",
+                }
+            )
+            for field_name in (
+                "automatic_retry_count",
+                "operator_action_required_at",
+                "operator_action_reason",
+            ):
+                payload.pop(field_name, None)
+            connection.execute(
+                """
+                UPDATE team_worktree_cleanup_candidates
+                SET state = 'recovery_required', payload_json = ?
+                WHERE id = ?
+                """,
+                (json.dumps(payload), candidate_id),
+            )
+            connection.execute(
+                "UPDATE team_state_metadata SET value = ? WHERE key = 'sqlite_schema_version'",
+                ("60",),
+            )
+        connection.execute(
+            "UPDATE team_state_metadata SET value = ? WHERE key = 'state_schema_version'",
+            (str(SCHEMA_VERSION - 1),),
+        )
+
+    migrated = TeamStateRepository(tmp_path).read().worktree_cleanup_candidates
+
+    assert migrated["deterministic"].state == WorktreeCleanupState.OPERATOR_ACTION_REQUIRED
+    assert migrated["deterministic"].operator_action_reason == "tracked_changes"
+    assert migrated["deterministic"].operator_action_required_at is not None
+    assert migrated["transient"].state == WorktreeCleanupState.PENDING
+    assert migrated["transient"].automatic_retry_count == 0
+    with sqlite3.connect(repository.store.path) as connection:
+        persisted_states = dict(
+            connection.execute(
+                "SELECT id, state FROM team_worktree_cleanup_candidates ORDER BY id"
+            ).fetchall()
+        )
+    assert persisted_states == {
+        "deterministic": "operator_action_required",
+        "transient": "pending",
+    }

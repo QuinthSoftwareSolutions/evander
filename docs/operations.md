@@ -257,12 +257,11 @@ tools are the only Team action path.
    start the service once in a maintenance window and confirm it exits cleanly
    before reopening wake traffic.
 
-6. Restart services with Team MCP tools as the only action path:
+6. Restart the Team control-plane services as one loaded-code generation, then start the
+   configured ingress/wake services:
 
    ```bash
-   sudo systemctl start evander-effect-orchestrator.service
-   sudo systemctl start evander-trigger-orchestrator.service
-   sudo systemctl start evander-admin-web.service
+   sudo systemctl restart evander-team-runtime.target
    sudo systemctl start evander-discord-ingest.service evander-discord-wake.service
    sudo systemctl start evander-scheduled-wake.service
    sudo systemctl start evander-teams-ingest.service evander-teams-meeting-ingest.service
@@ -2944,6 +2943,8 @@ This creates:
 - `evander-teams-meeting-ingest.service`
 - `evander-effect-orchestrator.service`
 - `evander-trigger-orchestrator.service`
+- `evander-team-runtime.target` (gateway, Admin Web, trigger orchestrator, and effect
+  orchestrator coordinated as one runtime generation)
 
 Before running install mode, ensure preflight is clean (or only warning-only), then:
 
@@ -2969,7 +2970,7 @@ Before running install mode, ensure preflight is clean (or only warning-only), t
 
 ```bash
 sudo systemctl start evander-firewall.service
-sudo systemctl start evander-gateway.service
+sudo systemctl restart evander-team-runtime.target
 sudo systemctl start evander-openai-relay.service
 sudo systemctl start evander-didww-sip-bridge.service
 sudo systemctl start evander-nuget-relay.service
@@ -2983,8 +2984,7 @@ sudo systemctl start evander-scheduled-wake.service
 sudo systemctl start evander-managed-git-refresh.service
 sudo systemctl start evander-teams-ingest.service
 sudo systemctl start evander-teams-meeting-ingest.service
-sudo systemctl start evander-effect-orchestrator.service
-sudo systemctl start evander-trigger-orchestrator.service
+sudo systemctl status evander-team-runtime.target
 sudo systemctl status evander-firewall.service
 sudo systemctl status evander-gateway.service
 sudo systemctl status evander-openai-relay.service
@@ -3286,16 +3286,17 @@ allow an eligible candidate's first pass to attempt physical removal. Leave it
 omitted for the staged default: the first pass records a safe dry run, and a
 later pass attempts physical removal only after
 `worktree_cleanup_retry_seconds`. Omitted therefore does not mean `true`.
-Regardless of mode, never bypass a deferred or `recovery_required` candidate
+Regardless of mode, never bypass a deferred or `operator_action_required` candidate
 with `git-repos maintenance` or a recursive delete.
 
-Team state schema 5 / SQLite schema 43 adds bounded cleanup evidence and
-record-level persistence. Deploy it with a coordinated Team restart: stop the
-gateway, Admin Web, trigger orchestrator, and effect orchestrator; take a
-consistent `state.db` backup; start one new-version process to run and validate
-the migration; then restart the remaining services, with the trigger
-orchestrator last. Do not run old and new Team readers concurrently during this
-migration.
+Current Team state schema 17 / SQLite schema 65 includes provider-neutral
+project directory scopes, frozen cleanup configuration scopes, bounded cleanup
+disposition evidence, and record-level persistence. Before upgrading, take a
+consistent `state.db` backup, then deploy and restart the four Team control-plane
+services together with `sudo systemctl restart evander-team-runtime.target`.
+`evander-cli status --runtime-dir runtime` treats absent, incomplete, split, or
+previous-boot generation registrations as degraded. Do not run old and new Team
+readers concurrently during a schema migration.
 
 Issue, session, and Team deletion removes bindings and SSH authorization, not the shared
 repository. Unpublished refs and repositories are retained until an operator explicitly deletes

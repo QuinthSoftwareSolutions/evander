@@ -48,6 +48,7 @@ from .domain.common import (
     _required_text,
 )
 from .domain.context_rotation import _mark_context_rotation_pending
+from .domain.dispatch_scope import external_source_evidence_snapshot_ids_for_dispatch
 from .domain.stand_down import (
     _active_stand_downs_for_agent,
     _stand_down_error_detail,
@@ -283,11 +284,7 @@ def project_scoped_team_chat_authorization(
         project_id
         for project_id in _visible_project_ids_for_agent(state, agent)
         if project_id in state.projects
-        and project_is_authorized(
-            state.projects[project_id].git.directory_path
-            if state.projects[project_id].git is not None
-            else "root"
-        )
+        and project_is_authorized(state.projects[project_id].directory_path)
     )
     if not project_ids:
         return reply_only_team_chat_authorization(
@@ -401,7 +398,11 @@ def _operator_chat_dispatch_scope(
 ) -> dict[str, list[str]]:
     authorization = _message_team_chat_mutation_authorization(message)
     if authorization is None or authorization.mode != "project_scoped":
-        return {"project_ids": [], "managed_repo_ids": []}
+        return {
+            "project_ids": [],
+            "managed_repo_ids": [],
+            "source_evidence_snapshot_ids": [],
+        }
     snapshotted_project_ids = set(authorization.project_ids)
     project_ids = sorted(
         project_id
@@ -421,6 +422,14 @@ def _operator_chat_dispatch_scope(
     return {
         "project_ids": project_ids,
         "managed_repo_ids": managed_repo_ids,
+        "source_evidence_snapshot_ids": list(
+            external_source_evidence_snapshot_ids_for_dispatch(
+                state,
+                agent=agent,
+                task_ids=(),
+                project_ids=project_ids,
+            )
+        ),
     }
 
 

@@ -9,7 +9,9 @@ from evander.events.models import (
     WorkflowNodeEnvelope,
     materialize_node_definition,
 )
+from evander.models import DirectoryPath
 from evander.provider_runtime.contracts import (
+    GitMergeBaseReader,
     GitPrNoteReader,
     IssueReader,
     ProviderRuntimeBase,
@@ -21,11 +23,27 @@ from evander.provider_runtime.contracts import (
 from evander.workflow.validation import NodeCapability, WorkflowValidationDiagnostic
 
 
+def scoped_query_directory_path(
+    context: "QueryRuntimeContext",
+    requested: object | None = None,
+) -> str:
+    """Resolve a query directory without allowing a child to claim an ancestor/sibling."""
+
+    scope = DirectoryPath(segments=str(context.metadata.get("directory_path") or "root")).as_posix()
+    target = DirectoryPath(
+        segments=str(requested).strip() if requested is not None else scope
+    ).as_posix()
+    if target != scope and not target.startswith(f"{scope}/"):
+        raise ValueError(f"directory_path {target!r} is outside workflow directory scope {scope!r}")
+    return target
+
+
 @dataclass(frozen=True)
 class QueryRuntimeContext(ProviderRuntimeBase):
     """Host-side runtime inputs used by query providers."""
 
     vm_inventory: VmInventory | None = None
+    git_merge_base_reader: GitMergeBaseReader | None = None
     git_pr_note_reader: GitPrNoteReader | None = None
     issue_reader: IssueReader | None = None
     session_lookup: SessionLookup | None = None

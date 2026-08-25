@@ -871,6 +871,17 @@ def _plan_task_creation(
         result["errors"].append(f"task {task_id} already exists")
         return None
     parent_task_id = _optional_text(creation.get("parent_task_id"))
+    parent_task = state.tasks.get(parent_task_id or "")
+    if (
+        parent_task is not None
+        and parent_task.mutation_policy is not None
+        and not parent_task.mutation_policy.allow_child_tasks
+    ):
+        result["errors"].append(
+            f"workflow-managed task {parent_task.id} does not allow child tasks; "
+            "continue or reassign that same task"
+        )
+        return None
     try:
         git_base_branch = _normalized_task_git_base_branch(creation.get("git_base_branch"))
     except ValueError as exc:
@@ -1121,6 +1132,22 @@ def _task_creation_batch_graph_errors(
 
         next_errors: dict[str, str] = {}
         for plan in valid_plans:
+            dead_end_dependency = next(
+                (
+                    dependency_id
+                    for dependency_id in plan.dependency_task_ids
+                    if task_states.get(dependency_id)
+                    in {TeamTaskState.CANCELLED, TeamTaskState.REJECTED}
+                ),
+                None,
+            )
+            if dead_end_dependency is not None:
+                dependency_state = task_states[dead_end_dependency]
+                next_errors[plan.task_id] = (
+                    f"task cannot add dependency {dead_end_dependency} because it is "
+                    f"{dependency_state.value}"
+                )
+                continue
             graph_error = _task_creation_plan_graph_error(
                 plan,
                 task_projects=task_projects,
@@ -1360,6 +1387,14 @@ def _task_graph_edit_error(
             existing_task is None or existing_task.parent_task_id != parent_task_id
         )
         if parent_edge_changed:
+            if (
+                parent.mutation_policy is not None
+                and not parent.mutation_policy.allow_child_tasks
+            ):
+                return (
+                    f"workflow-managed task {parent.id} does not allow child tasks; "
+                    "continue or reassign that same task"
+                )
             contracted_leaf_error = _contracted_leaf_child_error(
                 parent_task_id=parent.id,
                 integration_boundary=parent.integration_boundary,
@@ -1377,6 +1412,18 @@ def _task_graph_edit_error(
             return f"task references missing dependency {dependency_id}"
         if dependency.project_id != project_id:
             return f"task dependency {dependency_id} belongs to project {dependency.project_id}"
+        dependency_edge_is_new = (
+            existing_task is None
+            or dependency_id not in existing_task.dependency_task_ids
+        )
+        if dependency_edge_is_new and dependency.state in {
+            TeamTaskState.CANCELLED,
+            TeamTaskState.REJECTED,
+        }:
+            return (
+                f"task cannot add dependency {dependency_id} because it is "
+                f"{dependency.state.value}"
+            )
     proposed_parent_map = {
         existing_id: existing_task.parent_task_id
         for existing_id, existing_task in state.tasks.items()

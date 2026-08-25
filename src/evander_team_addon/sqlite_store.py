@@ -12,7 +12,7 @@ from typing import Any, Callable, TypeVar
 from uuid import uuid4
 
 from evander.addons import addon_storage_path
-from evander.models import utc_now
+from evander.models import DirectoryPath, utc_now
 from evander.repositories.orchestration_db import SQLITE_BUSY_TIMEOUT_MS
 
 from .models import (
@@ -22,12 +22,13 @@ from .models import (
     TeamOutboxRecord,
     TeamOutboxStatus,
     TeamState,
+    WORKTREE_CLEANUP_TRANSIENT_FAILURE_CHECKS,
     summarize_worktree_cleanup_inventory,
 )
 
 ADDON_ID = "team-addon"
 STATE_DB_FILE = "state.db"
-SQLITE_SCHEMA_VERSION = 58
+SQLITE_SCHEMA_VERSION = 65
 _SQLITE_WAL_ENABLE_TIMEOUT_SECONDS = 5.0
 
 T = TypeVar("T")
@@ -75,6 +76,9 @@ class TeamStateSqliteStore:
     def read_object(self) -> dict[str, Any]:
         with self._lock:
             with self._connect() as connection:
+                # _read_payload spans normalized tables. Pin one SQLite read
+                # transaction so every row belongs to the same revision.
+                connection.execute("BEGIN")
                 return self._read_payload(connection)
 
     def read_state(self) -> TeamState:
@@ -82,6 +86,10 @@ class TeamStateSqliteStore:
 
         with self._lock:
             with self._connect() as connection:
+                # Without an explicit transaction, each completed SELECT may
+                # observe a later writer commit and assemble an impossible
+                # cross-revision TeamState (for example, half a review cohort).
+                connection.execute("BEGIN")
                 return self._read_state(connection)
 
     def read_revision(self) -> int:
@@ -255,9 +263,7 @@ class TeamStateSqliteStore:
     ) -> TeamState:
         candidate_payload = candidate.model_dump(mode="json")
         candidate_updated_at = (
-            candidate.updated_at
-            if candidate.updated_at != previous_updated_at
-            else utc_now()
+            candidate.updated_at if candidate.updated_at != previous_updated_at else utc_now()
         )
         candidate_payload["updated_at"] = candidate_updated_at.isoformat()
         validated = TeamState.model_validate(candidate_payload)
@@ -1025,6 +1031,33 @@ class TeamStateSqliteStore:
                 )
                 _ensure_column(
                     connection,
+                    table_name="team_projects",
+                    column_name="directory_path",
+                    definition="TEXT NOT NULL DEFAULT 'root'",
+                )
+                if previous_schema_version < 63:
+                    for project_row in connection.execute(
+                        "SELECT id, git_json FROM team_projects"
+                    ):
+                        git_payload = (
+                            _json_loads(project_row["git_json"])
+                            if project_row["git_json"] is not None
+                            else None
+                        )
+                        git_directory_path = (
+                            str(git_payload.get("directory_path") or "").strip()
+                            if isinstance(git_payload, dict)
+                            else ""
+                        )
+                        if git_directory_path:
+                            connection.execute(
+                                "UPDATE team_projects SET directory_path = ? WHERE id = ?",
+                                (git_directory_path, project_row["id"]),
+                            )
+                if previous_schema_version < 64:
+                    _migrate_worktree_cleanup_directory_scopes(connection)
+                _ensure_column(
+                    connection,
                     table_name="team_governance_group_goals",
                     column_name="goal_name",
                     definition="TEXT NOT NULL DEFAULT ''",
@@ -1351,6 +1384,7 @@ class TeamStateSqliteStore:
                     ("cancellation_json", "TEXT"),
                     ("git_base_branch", "TEXT"),
                     ("git_base_commit_sha", "TEXT"),
+                    ("mutation_policy_json", "TEXT"),
                 ):
                     _ensure_column(
                         connection,
@@ -1358,6 +1392,24 @@ class TeamStateSqliteStore:
                         column_name=column_name,
                         definition=definition,
                     )
+                _ensure_column(
+                    connection,
+                    table_name="team_cases",
+                    column_name="source_evidence_snapshot_ids_json",
+                    definition="TEXT NOT NULL DEFAULT '[]'",
+                )
+                _ensure_column(
+                    connection,
+                    table_name="team_tasks",
+                    column_name="source_evidence_snapshot_ids_json",
+                    definition="TEXT NOT NULL DEFAULT '[]'",
+                )
+                _ensure_column(
+                    connection,
+                    table_name="team_dispatches",
+                    column_name="source_evidence_snapshot_ids_json",
+                    definition="TEXT NOT NULL DEFAULT '[]'",
+                )
                 _ensure_column(
                     connection,
                     table_name="team_deliverables",
@@ -1422,6 +1474,12 @@ class TeamStateSqliteStore:
                         column_name=column_name,
                         definition="TEXT",
                     )
+                _ensure_column(
+                    connection,
+                    table_name="team_review_request_criteria",
+                    column_name="evidence_refs_json",
+                    definition="TEXT NOT NULL DEFAULT '[]'",
+                )
                 _ensure_column(
                     connection,
                     table_name="team_deliverables",
@@ -1634,12 +1692,21 @@ class TeamStateSqliteStore:
                     column_name="worktree_path",
                     definition="TEXT",
                 )
+                _ensure_column(
+                    connection,
+                    table_name="team_worktree_cleanup_candidates",
+                    column_name="git_work_context_id",
+                    definition="TEXT",
+                )
+                if previous_schema_version < 65:
+                    _migrate_worktree_cleanup_context_ids(connection)
                 connection.execute("DROP INDEX IF EXISTS idx_team_worktree_cleanup_identity")
+                connection.execute("DROP INDEX IF EXISTS idx_team_worktree_cleanup_identity_v2")
                 connection.execute(
                     """
-                    CREATE UNIQUE INDEX IF NOT EXISTS idx_team_worktree_cleanup_identity_v2
+                    CREATE UNIQUE INDEX IF NOT EXISTS idx_team_worktree_cleanup_identity_v3
                     ON team_worktree_cleanup_candidates(
-                        task_id, managed_repo_id, session_id, worktree_path
+                        git_work_context_id, task_id, managed_repo_id, session_id, worktree_path
                     )
                     """
                 )
@@ -1674,6 +1741,30 @@ class TeamStateSqliteStore:
                     column_name="manual_dependency_git_sources_json",
                     definition="TEXT NOT NULL DEFAULT '[]'",
                 )
+                _ensure_column(
+                    connection,
+                    table_name="team_git_work_contexts",
+                    column_name="dependency_composition_manifest_json",
+                    definition="TEXT",
+                )
+                _ensure_column(
+                    connection,
+                    table_name="team_deliverables",
+                    column_name="accepted_pinned_ref",
+                    definition="TEXT",
+                )
+                _ensure_column(
+                    connection,
+                    table_name="team_deliverables",
+                    column_name="dependency_composition_manifest_json",
+                    definition="TEXT",
+                )
+                _ensure_column(
+                    connection,
+                    table_name="team_deliverables",
+                    column_name="acceptance_policy_version",
+                    definition="INTEGER NOT NULL DEFAULT 1",
+                )
                 connection.execute(
                     """
                     UPDATE team_tasks
@@ -1702,6 +1793,8 @@ class TeamStateSqliteStore:
                     _migrate_legacy_outcome_kind_definitions(connection)
                 if previous_schema_version < 43:
                     _migrate_worktree_cleanup_evidence(connection)
+                if previous_schema_version < 61:
+                    _migrate_worktree_cleanup_retry_dispositions(connection)
                 if previous_schema_version < 45:
                     _migrate_task_git_base_snapshots(connection)
                 if previous_schema_version < 46:
@@ -1810,6 +1903,7 @@ class TeamStateSqliteStore:
             "agents": {},
             "project_assignments": {},
             "agent_runtimes": {},
+            "external_source_evidence_snapshots": {},
             "cases": {},
             "tasks": {},
             "deliverables": {},
@@ -1850,6 +1944,7 @@ class TeamStateSqliteStore:
         self._read_project_assignments(connection, payload)
         self._read_stand_downs(connection, payload)
         self._read_agent_runtimes(connection, payload)
+        self._read_external_source_evidence_snapshots(connection, payload)
         self._read_cases(connection, payload)
         self._read_tasks(connection, payload)
         self._read_deliverables(connection, payload)
@@ -1895,6 +1990,10 @@ class TeamStateSqliteStore:
         self._write_project_assignments(connection, payload["project_assignments"])
         self._write_stand_downs(connection, payload["stand_downs"])
         self._write_agent_runtimes(connection, payload["agent_runtimes"])
+        self._write_external_source_evidence_snapshots(
+            connection,
+            payload["external_source_evidence_snapshots"],
+        )
         self._write_cases(connection, payload["cases"])
         self._write_tasks(connection, payload["tasks"])
         self._write_deliverables(connection, payload["deliverables"])
@@ -2387,6 +2486,7 @@ class TeamStateSqliteStore:
                 "team_id": row["team_id"],
                 "name": row["name"],
                 "lead_agent_id": row["lead_agent_id"],
+                "directory_path": row["directory_path"],
                 "goals": goals.get(row["id"], []),
                 "git": _json_loads(row["git_json"]) if row["git_json"] is not None else None,
                 "release_policy": (
@@ -2405,16 +2505,17 @@ class TeamStateSqliteStore:
             connection.execute(
                 """
                 INSERT INTO team_projects(
-                    id, team_id, name, lead_agent_id, git_json, release_policy_json,
-                    status, created_at, updated_at
+                    id, team_id, name, lead_agent_id, directory_path, git_json,
+                    release_policy_json, status, created_at, updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     project["id"],
                     project["team_id"],
                     project["name"],
                     project["lead_agent_id"],
+                    project.get("directory_path", "root"),
                     _json_dumps(project.get("git")) if project.get("git") is not None else None,
                     (
                         _json_dumps(project.get("release_policy"))
@@ -2689,6 +2790,50 @@ class TeamStateSqliteStore:
             )
 
     @staticmethod
+    def _read_external_source_evidence_snapshots(
+        connection: sqlite3.Connection,
+        payload: dict[str, Any],
+    ) -> None:
+        for row in connection.execute(
+            "SELECT id, payload_json "
+            "FROM team_external_source_evidence_snapshots ORDER BY id"
+        ):
+            payload["external_source_evidence_snapshots"][row["id"]] = _json_loads(
+                row["payload_json"]
+            )
+
+    @staticmethod
+    def _write_external_source_evidence_snapshots(
+        connection: sqlite3.Connection,
+        snapshots: dict[str, Any],
+    ) -> None:
+        for snapshot in snapshots.values():
+            connection.execute(
+                """
+                INSERT INTO team_external_source_evidence_snapshots(
+                    id, team_id, project_id, provider_type, source_type,
+                    external_identifier, external_version, fetched_at, expires_at,
+                    freshness_status, access_classification, content_digest, payload_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    snapshot["id"],
+                    snapshot["team_id"],
+                    snapshot.get("project_id"),
+                    snapshot["provider_type"],
+                    snapshot["source_type"],
+                    snapshot["external_identifier"],
+                    snapshot["external_version"],
+                    snapshot["fetched_at"],
+                    snapshot.get("expires_at"),
+                    snapshot["freshness_status"],
+                    snapshot["access_classification"],
+                    snapshot["content_digest"],
+                    _json_dumps(snapshot),
+                ),
+            )
+
+    @staticmethod
     def _read_cases(connection: sqlite3.Connection, payload: dict[str, Any]) -> None:
         for row in connection.execute("SELECT * FROM team_cases ORDER BY id"):
             payload["cases"][row["id"]] = {
@@ -2705,6 +2850,9 @@ class TeamStateSqliteStore:
                 "tags": _json_loads(row["tags_json"]),
                 "metadata": _json_loads(row["metadata_json"]),
                 "task_ids": _json_loads(row["task_ids_json"]),
+                "source_evidence_snapshot_ids": _json_loads(
+                    row["source_evidence_snapshot_ids_json"] or "[]"
+                ),
                 "created_at": row["created_at"],
                 "updated_at": row["updated_at"],
                 "closed_at": row["closed_at"],
@@ -2718,9 +2866,10 @@ class TeamStateSqliteStore:
                 INSERT INTO team_cases(
                     id, team_id, project_id, title, description, status, priority,
                     owner_agent_id, source, source_ref, tags_json, metadata_json,
-                    task_ids_json, created_at, updated_at, closed_at
+                    task_ids_json, source_evidence_snapshot_ids_json,
+                    created_at, updated_at, closed_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     case["id"],
@@ -2736,6 +2885,7 @@ class TeamStateSqliteStore:
                     _json_dumps(case.get("tags", [])),
                     _json_dumps(case.get("metadata", {})),
                     _json_dumps(case.get("task_ids", [])),
+                    _json_dumps(case.get("source_evidence_snapshot_ids", [])),
                     case["created_at"],
                     case["updated_at"],
                     case.get("closed_at"),
@@ -2788,6 +2938,11 @@ class TeamStateSqliteStore:
                 "originating_task_id": row["originating_task_id"],
                 "git_base_branch": row["git_base_branch"],
                 "git_base_commit_sha": row["git_base_commit_sha"],
+                "mutation_policy": (
+                    _json_loads(row["mutation_policy_json"])
+                    if row["mutation_policy_json"] is not None
+                    else None
+                ),
                 "cancellation": (
                     _json_loads(row["cancellation_json"])
                     if row["cancellation_json"] is not None
@@ -2795,6 +2950,9 @@ class TeamStateSqliteStore:
                 ),
                 "dependency_task_ids": dependencies.get(row["id"], []),
                 "deliverable_ids": deliverables.get(row["id"], []),
+                "source_evidence_snapshot_ids": _json_loads(
+                    row["source_evidence_snapshot_ids_json"] or "[]"
+                ),
                 "created_at": row["created_at"],
                 "updated_at": row["updated_at"],
             }
@@ -2808,11 +2966,12 @@ class TeamStateSqliteStore:
                     id, owner_agent_id, project_id, case_id, priority, state, title, description,
                     state_entered_at, created_by_agent_id, created_by_actor, parent_task_id,
                     originating_task_id, git_base_branch, git_base_commit_sha,
-                    cancellation_json, task_kind,
+                    mutation_policy_json, cancellation_json, task_kind,
                     outcome_contract_json, integration_boundary,
-                    deliverable_contract_json, completion_json, created_at, updated_at
+                    deliverable_contract_json, completion_json, created_at, updated_at,
+                    source_evidence_snapshot_ids_json
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     task["id"],
@@ -2830,6 +2989,11 @@ class TeamStateSqliteStore:
                     task.get("originating_task_id"),
                     task.get("git_base_branch"),
                     task.get("git_base_commit_sha"),
+                    (
+                        _json_dumps(task.get("mutation_policy"))
+                        if task.get("mutation_policy") is not None
+                        else None
+                    ),
                     (
                         _json_dumps(task.get("cancellation"))
                         if task.get("cancellation") is not None
@@ -2854,6 +3018,7 @@ class TeamStateSqliteStore:
                     ),
                     task["created_at"],
                     task["updated_at"],
+                    _json_dumps(task.get("source_evidence_snapshot_ids", [])),
                 ),
             )
             _insert_position_values(
@@ -2912,6 +3077,7 @@ class TeamStateSqliteStore:
                     "reviewed_commit_sha": row["reviewed_commit_sha"],
                     "feature_commit_sha": row["feature_commit_sha"],
                     "release_commit_sha": row["release_commit_sha"],
+                    "accepted_pinned_ref": row["accepted_pinned_ref"],
                     "promotion_record_ids": promotions.get(row["id"], []),
                 },
                 "verification": (
@@ -2932,6 +3098,12 @@ class TeamStateSqliteStore:
                     if row["review_manifest_json"] is not None
                     else None
                 ),
+                "dependency_composition_manifest": (
+                    _json_loads(row["dependency_composition_manifest_json"])
+                    if row["dependency_composition_manifest_json"] is not None
+                    else None
+                ),
+                "acceptance_policy_version": int(row["acceptance_policy_version"] or 1),
                 "acceptance_recipient_agent_id": row["acceptance_recipient_agent_id"],
                 "acceptance_decision": (
                     _json_loads(row["acceptance_decision_json"])
@@ -2966,9 +3138,11 @@ class TeamStateSqliteStore:
                     id, task_id, producer_agent_id, summary, state, branch_context_id,
                     agent_branch, review_branch, feature_branch, release_branch, commit_sha,
                     submitted_commit_sha, reviewed_commit_sha, feature_commit_sha,
-                    release_commit_sha, verification_json, supersedes_deliverable_id,
+                    release_commit_sha, accepted_pinned_ref, verification_json,
+                    supersedes_deliverable_id,
                     superseded_by_deliverable_id, carried_findings_json,
-                    review_manifest_json, acceptance_recipient_agent_id,
+                    review_manifest_json, dependency_composition_manifest_json,
+                    acceptance_policy_version, acceptance_recipient_agent_id,
                     acceptance_decision_json, initial_release_disposition_json,
                     supersession_reason, superseded_at,
                     superseded_by_actor, review_cohort_id,
@@ -2976,7 +3150,7 @@ class TeamStateSqliteStore:
                     rework_requested_by_agent_id, rework_reason, outcomes_json,
                     completion_json, created_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     deliverable["id"],
@@ -2994,6 +3168,7 @@ class TeamStateSqliteStore:
                     git_refs.get("reviewed_commit_sha"),
                     git_refs.get("feature_commit_sha"),
                     git_refs.get("release_commit_sha"),
+                    git_refs.get("accepted_pinned_ref"),
                     (
                         _json_dumps(deliverable.get("verification"))
                         if deliverable.get("verification") is not None
@@ -3007,6 +3182,12 @@ class TeamStateSqliteStore:
                         if deliverable.get("review_manifest") is not None
                         else None
                     ),
+                    (
+                        _json_dumps(deliverable.get("dependency_composition_manifest"))
+                        if deliverable.get("dependency_composition_manifest") is not None
+                        else None
+                    ),
+                    int(deliverable.get("acceptance_policy_version", 1)),
                     deliverable.get("acceptance_recipient_agent_id"),
                     (
                         _json_dumps(deliverable.get("acceptance_decision"))
@@ -3211,7 +3392,8 @@ class TeamStateSqliteStore:
         criteria = _grouped_rows(
             connection,
             """
-            SELECT review_request_id AS owner_id, criterion_id, state, finding
+            SELECT review_request_id AS owner_id, criterion_id, state, finding,
+                   evidence_refs_json
             FROM team_review_request_criteria
             ORDER BY review_request_id, position
             """,
@@ -3219,6 +3401,7 @@ class TeamStateSqliteStore:
                 "criterion_id": row["criterion_id"],
                 "state": row["state"],
                 "finding": row["finding"],
+                "evidence_refs": _json_loads(row["evidence_refs_json"]),
             },
         )
         for row in connection.execute("SELECT * FROM team_review_requests ORDER BY id"):
@@ -3328,9 +3511,10 @@ class TeamStateSqliteStore:
                 connection.execute(
                     """
                     INSERT INTO team_review_request_criteria(
-                        review_request_id, position, criterion_id, state, finding
+                        review_request_id, position, criterion_id, state, finding,
+                        evidence_refs_json
                     )
-                    VALUES (?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?)
                     """,
                     (
                         request["id"],
@@ -3338,6 +3522,7 @@ class TeamStateSqliteStore:
                         criterion["criterion_id"],
                         criterion["state"],
                         criterion.get("finding", ""),
+                        _json_dumps(criterion.get("evidence_refs", [])),
                     ),
                 )
 
@@ -4451,6 +4636,9 @@ class TeamStateSqliteStore:
                 "inbox_item_ids": scope_values["inbox_item_ids"].get(dispatch_id, []),
                 "project_ids": scope_values["project_ids"].get(dispatch_id, []),
                 "managed_repo_ids": scope_values["managed_repo_ids"].get(dispatch_id, []),
+                "source_evidence_snapshot_ids": _json_loads(
+                    row["source_evidence_snapshot_ids_json"] or "[]"
+                ),
                 "chat_message_ids": _json_loads(row["chat_message_ids_json"] or "[]"),
                 "review_routing_authorities": _json_loads(
                     row["review_routing_authorities_json"] or "[]"
@@ -4501,9 +4689,10 @@ class TeamStateSqliteStore:
                     wake_work_fingerprint,
                     wake_work_record_fingerprints_json,
                     action_feedback_dispatch_ids_json,
+                    source_evidence_snapshot_ids_json,
                     prepared_at, leased_at, lease_expires_at,
                     completed_at, error
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     dispatch["id"],
@@ -4526,6 +4715,7 @@ class TeamStateSqliteStore:
                     dispatch.get("wake_work_fingerprint"),
                     _json_dumps(dispatch.get("wake_work_record_fingerprints", {})),
                     _json_dumps(dispatch.get("action_feedback_dispatch_ids", [])),
+                    _json_dumps(dispatch.get("source_evidence_snapshot_ids", [])),
                     dispatch.get("prepared_at"),
                     dispatch.get("leased_at"),
                     dispatch.get("lease_expires_at"),
@@ -4573,9 +4763,9 @@ class TeamStateSqliteStore:
             connection.execute(
                 """
                 INSERT INTO team_worktree_cleanup_candidates(
-                    id, agent_id, session_id, task_id, project_id,
+                    id, agent_id, session_id, task_id, project_id, git_work_context_id,
                     managed_repo_id, worktree_path, state, eligible_at, payload_json
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     candidate["id"],
@@ -4583,6 +4773,7 @@ class TeamStateSqliteStore:
                     candidate["session_id"],
                     candidate["task_id"],
                     candidate["project_id"],
+                    candidate["git_work_context_id"],
                     candidate["managed_repo_id"],
                     candidate["worktree_path"],
                     candidate["state"],
@@ -4850,6 +5041,11 @@ class TeamStateSqliteStore:
                 "manual_dependency_git_sources": _json_loads(
                     row["manual_dependency_git_sources_json"]
                 ),
+                "dependency_composition_manifest": (
+                    _json_loads(row["dependency_composition_manifest_json"])
+                    if row["dependency_composition_manifest_json"] is not None
+                    else None
+                ),
                 "state": row["state"],
                 "created_at": row["created_at"],
                 "updated_at": row["updated_at"],
@@ -4866,9 +5062,10 @@ class TeamStateSqliteStore:
                     dependency_git_sources_json,
                     dependency_composition_recovery_id,
                     manual_dependency_git_sources_json,
+                    dependency_composition_manifest_json,
                     state, created_at, updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     context["id"],
@@ -4883,6 +5080,11 @@ class TeamStateSqliteStore:
                     _json_dumps(context.get("dependency_git_sources", [])),
                     context.get("dependency_composition_recovery_id"),
                     _json_dumps(context.get("manual_dependency_git_sources", [])),
+                    (
+                        _json_dumps(context.get("dependency_composition_manifest"))
+                        if context.get("dependency_composition_manifest") is not None
+                        else None
+                    ),
                     context.get("state", "active"),
                     context["created_at"],
                     context["updated_at"],
@@ -5466,6 +5668,155 @@ def _migrate_worktree_cleanup_evidence(connection: sqlite3.Connection) -> None:
         )
 
 
+def _migrate_worktree_cleanup_directory_scopes(connection: sqlite3.Connection) -> None:
+    rows = connection.execute(
+        """
+        SELECT candidate.id,
+               candidate.payload_json,
+               project.directory_path AS project_directory_path,
+               project.git_json AS project_git_json
+        FROM team_worktree_cleanup_candidates AS candidate
+        LEFT JOIN team_projects AS project ON project.id = candidate.project_id
+        ORDER BY candidate.id
+        """
+    ).fetchall()
+    for row in rows:
+        payload = _json_loads(row["payload_json"])
+        raw_directory_path = str(payload.get("directory_path") or "").strip()
+        if not raw_directory_path:
+            raw_directory_path = str(row["project_directory_path"] or "").strip()
+        if not raw_directory_path and row["project_git_json"] is not None:
+            git_payload = _json_loads(row["project_git_json"])
+            if isinstance(git_payload, dict):
+                raw_directory_path = str(git_payload.get("directory_path") or "").strip()
+        payload["directory_path"] = DirectoryPath(
+            segments=raw_directory_path or "root"
+        ).as_posix()
+        connection.execute(
+            "UPDATE team_worktree_cleanup_candidates SET payload_json = ? WHERE id = ?",
+            (_json_dumps(payload), row["id"]),
+        )
+
+
+def _migrate_worktree_cleanup_context_ids(connection: sqlite3.Connection) -> None:
+    rows = connection.execute(
+        """
+        SELECT id, git_work_context_id, payload_json
+        FROM team_worktree_cleanup_candidates
+        ORDER BY id
+        """
+    ).fetchall()
+    for row in rows:
+        payload = _json_loads(row["payload_json"])
+        context_id = str(
+            payload.get("git_work_context_id") or row["git_work_context_id"] or ""
+        ).strip()
+        if not context_id:
+            context_id = _legacy_cleanup_candidate_context_id(connection, payload)
+        payload["git_work_context_id"] = context_id
+        connection.execute(
+            """
+            UPDATE team_worktree_cleanup_candidates
+            SET git_work_context_id = ?, payload_json = ?
+            WHERE id = ?
+            """,
+            (context_id, _json_dumps(payload), row["id"]),
+        )
+
+
+def _legacy_cleanup_candidate_context_id(
+    connection: sqlite3.Connection,
+    candidate: Mapping[str, Any],
+) -> str:
+    rows = connection.execute(
+        """
+        SELECT id, agent_id, task_id, dispatch_id, worktree_path, agent_branch
+        FROM team_git_work_contexts
+        WHERE task_id = ?
+          AND agent_id = ?
+          AND worktree_path = ?
+          AND agent_branch = ?
+        ORDER BY id
+        """,
+        (
+            candidate.get("task_id"),
+            candidate.get("agent_id"),
+            candidate.get("worktree_path"),
+            candidate.get("branch"),
+        ),
+    ).fetchall()
+    matching_ids: list[str] = []
+    for row in rows:
+        if row["dispatch_id"] is not None:
+            dispatch = connection.execute(
+                "SELECT agent_id, session_id FROM team_dispatches WHERE id = ?",
+                (row["dispatch_id"],),
+            ).fetchone()
+            references_task = connection.execute(
+                """
+                SELECT 1
+                FROM team_dispatch_tasks
+                WHERE dispatch_id = ? AND task_id = ?
+                LIMIT 1
+                """,
+                (row["dispatch_id"], row["task_id"]),
+            ).fetchone()
+            session_id = (
+                dispatch["session_id"]
+                if dispatch is not None
+                and dispatch["agent_id"] == row["agent_id"]
+                and references_task is not None
+                else None
+            )
+        else:
+            agent = connection.execute(
+                "SELECT session_id FROM team_agents WHERE id = ?",
+                (row["agent_id"],),
+            ).fetchone()
+            session_id = agent["session_id"] if agent is not None else None
+        if session_id == candidate.get("session_id"):
+            matching_ids.append(str(row["id"]))
+    if len(matching_ids) == 1:
+        return matching_ids[0]
+    return f"legacy:{str(candidate.get('id') or 'unknown').strip() or 'unknown'}"
+
+
+def _migrate_worktree_cleanup_retry_dispositions(connection: sqlite3.Connection) -> None:
+    rows = connection.execute(
+        """
+        SELECT id, state, payload_json
+        FROM team_worktree_cleanup_candidates
+        WHERE state = 'recovery_required'
+        ORDER BY id
+        """
+    ).fetchall()
+    for row in rows:
+        payload = _json_loads(row["payload_json"])
+        failed_check = str(payload.get("last_safety_check") or "").strip()
+        if failed_check in WORKTREE_CLEANUP_TRANSIENT_FAILURE_CHECKS:
+            next_state = "pending"
+            payload["automatic_retry_count"] = 0
+        else:
+            next_state = "operator_action_required"
+            if payload.get("operator_action_required_at") is None:
+                payload["operator_action_required_at"] = (
+                    payload.get("updated_at")
+                    or payload.get("eligible_at")
+                    or utc_now().isoformat()
+                )
+            if payload.get("operator_action_reason") is None:
+                payload["operator_action_reason"] = failed_check or "legacy_recovery_required"
+        payload["state"] = next_state
+        connection.execute(
+            """
+            UPDATE team_worktree_cleanup_candidates
+            SET state = ?, payload_json = ?
+            WHERE id = ?
+            """,
+            (next_state, _json_dumps(payload), row["id"]),
+        )
+
+
 _REJECTED_ACCEPTANCE_MIGRATION_ACTOR = f"system:sqlite-migration:v{SQLITE_SCHEMA_VERSION}"
 _REJECTED_ACCEPTANCE_MIGRATION_REASON = (
     "Formal review was attached after the deliverable's authoritative direct rejection; "
@@ -5516,7 +5867,6 @@ def _normalize_rejected_acceptance_override_rows(
         )
         affected_ids.append(deliverable_id)
     return affected_ids
-
 
 
 def _reconcile_rejected_acceptance_overrides(
@@ -6659,7 +7009,6 @@ _KNOWN_OUTCOME_KIND_MIGRATIONS: dict[str, dict[str, str]] = {
 }
 
 
-
 def _migrate_legacy_outcome_kind_definitions(
     connection: sqlite3.Connection,
 ) -> None:
@@ -7081,6 +7430,7 @@ _STATE_TABLES = (
     "team_git_work_contexts",
     "team_git_promotions",
     "team_worktree_cleanup_candidates",
+    "team_external_source_evidence_snapshots",
     "team_dispatches",
     "team_human_review_decisions",
     "team_human_review_findings",
@@ -7167,6 +7517,17 @@ _PERSISTENCE_GROUPS = (
         ("agent_runtimes",),
         (("team_agent_runtimes", "agent_id", "agent_runtimes"),),
         "_write_agent_runtimes",
+    ),
+    (
+        ("external_source_evidence_snapshots",),
+        (
+            (
+                "team_external_source_evidence_snapshots",
+                "id",
+                "external_source_evidence_snapshots",
+            ),
+        ),
+        "_write_external_source_evidence_snapshots",
     ),
     (("cases",), (("team_cases", "id", "cases"),), "_write_cases"),
     (
@@ -7491,6 +7852,7 @@ CREATE TABLE IF NOT EXISTS team_projects (
     team_id TEXT NOT NULL,
     name TEXT NOT NULL,
     lead_agent_id TEXT NOT NULL,
+    directory_path TEXT NOT NULL DEFAULT 'root',
     git_json TEXT,
     release_policy_json TEXT,
     status TEXT NOT NULL,
@@ -7597,6 +7959,30 @@ CREATE TABLE IF NOT EXISTS team_agent_runtimes (
 CREATE INDEX IF NOT EXISTS idx_team_agent_runtimes_wake
     ON team_agent_runtimes(wake_leased_until, next_wake_at, active_dispatch_id);
 
+CREATE TABLE IF NOT EXISTS team_external_source_evidence_snapshots (
+    id TEXT PRIMARY KEY,
+    team_id TEXT NOT NULL,
+    project_id TEXT,
+    provider_type TEXT NOT NULL,
+    source_type TEXT NOT NULL,
+    external_identifier TEXT NOT NULL,
+    external_version TEXT NOT NULL,
+    fetched_at TEXT NOT NULL,
+    expires_at TEXT,
+    freshness_status TEXT NOT NULL,
+    access_classification TEXT NOT NULL,
+    content_digest TEXT NOT NULL,
+    payload_json TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_team_external_source_evidence_scope
+    ON team_external_source_evidence_snapshots(team_id, project_id, fetched_at, id);
+CREATE INDEX IF NOT EXISTS idx_team_external_source_evidence_identity
+    ON team_external_source_evidence_snapshots(
+        provider_type, source_type, external_identifier, external_version, id
+    );
+CREATE INDEX IF NOT EXISTS idx_team_external_source_evidence_digest
+    ON team_external_source_evidence_snapshots(content_digest, id);
+
 CREATE TABLE IF NOT EXISTS team_cases (
     id TEXT PRIMARY KEY,
     team_id TEXT NOT NULL,
@@ -7611,6 +7997,7 @@ CREATE TABLE IF NOT EXISTS team_cases (
     tags_json TEXT NOT NULL,
     metadata_json TEXT NOT NULL,
     task_ids_json TEXT NOT NULL,
+    source_evidence_snapshot_ids_json TEXT NOT NULL DEFAULT '[]',
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
     closed_at TEXT
@@ -7639,12 +8026,14 @@ CREATE TABLE IF NOT EXISTS team_tasks (
     originating_task_id TEXT,
     git_base_branch TEXT,
     git_base_commit_sha TEXT,
+    mutation_policy_json TEXT,
     cancellation_json TEXT,
     task_kind TEXT NOT NULL DEFAULT 'support',
     outcome_contract_json TEXT,
     integration_boundary INTEGER NOT NULL DEFAULT 0,
     deliverable_contract_json TEXT,
     completion_json TEXT,
+    source_evidence_snapshot_ids_json TEXT NOT NULL DEFAULT '[]',
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
@@ -7686,10 +8075,13 @@ CREATE TABLE IF NOT EXISTS team_deliverables (
     reviewed_commit_sha TEXT,
     feature_commit_sha TEXT,
     release_commit_sha TEXT,
+    accepted_pinned_ref TEXT,
     verification_json TEXT,
     outcomes_json TEXT NOT NULL DEFAULT '[]',
     carried_findings_json TEXT NOT NULL DEFAULT '[]',
     review_manifest_json TEXT,
+    dependency_composition_manifest_json TEXT,
+    acceptance_policy_version INTEGER NOT NULL DEFAULT 1,
     acceptance_recipient_agent_id TEXT,
     acceptance_decision_json TEXT,
     initial_release_disposition_json TEXT,
@@ -7837,6 +8229,7 @@ CREATE TABLE IF NOT EXISTS team_review_request_criteria (
     criterion_id TEXT NOT NULL,
     state TEXT NOT NULL,
     finding TEXT NOT NULL,
+    evidence_refs_json TEXT NOT NULL DEFAULT '[]',
     PRIMARY KEY(review_request_id, position)
 );
 
@@ -8300,6 +8693,7 @@ CREATE TABLE IF NOT EXISTS team_dispatches (
     wake_work_fingerprint TEXT,
     wake_work_record_fingerprints_json TEXT NOT NULL DEFAULT '{}',
     action_feedback_dispatch_ids_json TEXT NOT NULL DEFAULT '[]',
+    source_evidence_snapshot_ids_json TEXT NOT NULL DEFAULT '[]',
     prepared_at TEXT,
     leased_at TEXT,
     lease_expires_at TEXT,
@@ -8355,16 +8749,13 @@ CREATE TABLE IF NOT EXISTS team_worktree_cleanup_candidates (
     session_id TEXT NOT NULL,
     task_id TEXT NOT NULL,
     project_id TEXT NOT NULL,
+    git_work_context_id TEXT NOT NULL,
     managed_repo_id TEXT NOT NULL,
     worktree_path TEXT,
     state TEXT NOT NULL,
     eligible_at TEXT NOT NULL,
     payload_json TEXT NOT NULL
 );
-CREATE UNIQUE INDEX IF NOT EXISTS idx_team_worktree_cleanup_identity_v2
-    ON team_worktree_cleanup_candidates(
-        task_id, managed_repo_id, session_id, worktree_path
-    );
 CREATE INDEX IF NOT EXISTS idx_team_worktree_cleanup_state_eligible
     ON team_worktree_cleanup_candidates(state, eligible_at, id);
 
@@ -8490,6 +8881,7 @@ CREATE TABLE IF NOT EXISTS team_git_work_contexts (
     dependency_git_sources_json TEXT NOT NULL DEFAULT '[]',
     dependency_composition_recovery_id TEXT,
     manual_dependency_git_sources_json TEXT NOT NULL DEFAULT '[]',
+    dependency_composition_manifest_json TEXT,
     state TEXT NOT NULL,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL

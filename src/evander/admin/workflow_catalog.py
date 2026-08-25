@@ -813,6 +813,9 @@ _WORKFLOW_EDITOR_NODE_DESCRIPTIONS: dict[str, str] = {
     "effect:pr:create": "Create a pull request from an approved managed repository ref.",
     "effect:event:schedule": "Schedule a one-shot internal workflow event for later delivery.",
     "query:vm:run-state": "Read the current run state for a VM-backed agent target.",
+    "query:git:merge-base": (
+        "Refresh and pin a managed target branch, then resolve its merge base with an exact candidate."
+    ),
     "query:git:pr-note": (
         "Read pull-request note context for an exact commit in a managed repository."
     ),
@@ -4037,6 +4040,25 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
         fields=[
             _field("session_id", "Session ID", "string", bindable=True),
             _field("vm_name", "VM name", "string", bindable=True),
+        ],
+    ),
+    WorkflowEditorNodeCatalogEntry(
+        kind="query",
+        type="query:git:merge-base",
+        label="Git merge base",
+        fields=[
+            _field(
+                "managed_repo_id", "Managed repository ID", "string", required=True, bindable=True
+            ),
+            _field("target_branch", "Target branch", "string", required=True, bindable=True),
+            _field(
+                "candidate_commit_sha",
+                "Candidate commit SHA",
+                "string",
+                required=True,
+                bindable=True,
+            ),
+            _field("directory_path", "Directory path", "string", bindable=True),
         ],
     ),
     WorkflowEditorNodeCatalogEntry(

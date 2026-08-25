@@ -394,6 +394,12 @@ class WorkerTaskDependencyGitSource(BaseModel):
     deliverable_id: str
     branch: str
     commit_sha: str
+    relationship_kind: Literal[
+        "task_dependency",
+        "required_contribution",
+        "task_continuation",
+    ] = "task_dependency"
+    pinned_ref: str | None = None
 
     @field_validator("dependency_task_id", "deliverable_id", mode="before")
     @classmethod
@@ -417,6 +423,16 @@ class WorkerTaskDependencyGitSource(BaseModel):
         text = str(value or "").strip().casefold()
         if re.fullmatch(r"(?:[0-9a-f]{40}|[0-9a-f]{64})", text) is None:
             raise ValueError("commit_sha must be a full Git object ID")
+        return text
+
+    @field_validator("pinned_ref", mode="before")
+    @classmethod
+    def normalize_pinned_ref(cls, value: object) -> str | None:
+        if value is None:
+            return None
+        text = str(value or "").strip()
+        if re.fullmatch(r"refs/evander/team-reviews/[A-Za-z0-9_-]+", text) is None:
+            raise ValueError("pinned_ref must be an immutable Team review ref")
         return text
 
 
@@ -555,6 +571,9 @@ class WorkerTaskWorktreeRecord(BaseModel):
     branch: str
     commit_sha: str
     base_commit_sha: str | None = None
+    composition_root_commit_sha: str | None = None
+    composed_commit_sha: str | None = None
+    composed_tree_hash: str | None = None
     created: bool
 
 

@@ -60,6 +60,7 @@ from ..domain.deliverables import (
 from ..domain.git_work_contexts import (
     GitCandidateCommitResolver,
     GitWorkContextValidationError,
+    _SERVER_VERIFIED_COMPOSITION_CANDIDATE_FIELD,
     bind_deliverable_git_refs_to_work_context,
     mark_git_work_context_submitted,
 )
@@ -205,6 +206,10 @@ def _normalize_review_decision_mapping(
                 "criterion_id": _optional_text(criterion.get("criterion_id")),
                 "state": _optional_text(criterion.get("state")),
                 "finding": _optional_text(criterion.get("finding")),
+                "evidence_refs": _string_list(
+                    criterion.get("evidence_refs"),
+                    f"{field_name}.criteria.evidence_refs",
+                ),
             }
             for criterion in criteria
         ],
@@ -744,6 +749,24 @@ def _apply_command_deliverable_submission(
         if not suppress_superior_notice
         else None
     )
+    branch_context = (
+        state.git_work_contexts.get(git_refs.branch_context_id)
+        if git_refs.branch_context_id is not None
+        else None
+    )
+    dependency_composition_manifest = (
+        branch_context.dependency_composition_manifest.model_copy(
+            update={
+                "verified_candidate_commit_sha": _optional_text(
+                    deliverable.get(_SERVER_VERIFIED_COMPOSITION_CANDIDATE_FIELD)
+                )
+            },
+            deep=True,
+        )
+        if branch_context is not None
+        and branch_context.dependency_composition_manifest is not None
+        else None
+    )
     new_deliverable = Deliverable(
         id=deliverable_id,
         task_id=task.id,
@@ -767,6 +790,8 @@ def _apply_command_deliverable_submission(
             if superseded_deliverable is not None
             else []
         ),
+        dependency_composition_manifest=dependency_composition_manifest,
+        acceptance_policy_version=(2 if suppress_superior_notice else 1),
     )
     state.deliverables[new_deliverable.id] = new_deliverable
     if superseded_deliverable is not None:

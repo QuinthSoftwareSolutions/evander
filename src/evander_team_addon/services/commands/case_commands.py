@@ -384,7 +384,10 @@ class TeamCaseCommandService(TeamCommandExecutor):
             if not (
                 correction_task.owner_agent_id == actor.id
                 or _is_project_lead_for(state, actor.id, project.id)
-                or _is_team_manager(state, actor)
+                or (
+                    actor.team_id == project.team_id
+                    and _is_team_manager(state, actor)
+                )
             ):
                 raise TeamCommandValidationError(
                     code="human_finding_resolution_not_permitted",
@@ -490,7 +493,10 @@ class TeamCaseCommandService(TeamCommandExecutor):
             authorized_triage_actor = (
                 case.owner_agent_id == actor.id
                 or _is_project_lead_for(state, actor.id, project.id)
-                or _is_team_manager(state, actor)
+                or (
+                    actor.team_id == project.team_id
+                    and _is_team_manager(state, actor)
+                )
             )
             if not authorized_triage_actor:
                 raise TeamCommandValidationError(
@@ -611,7 +617,10 @@ class TeamCaseCommandService(TeamCommandExecutor):
             if not (
                 case.owner_agent_id == actor.id
                 or _is_project_lead_for(state, actor.id, project.id)
-                or _is_team_manager(state, actor)
+                or (
+                    actor.team_id == project.team_id
+                    and _is_team_manager(state, actor)
+                )
             ):
                 raise TeamCommandValidationError(
                     code="post_release_case_close_not_permitted",

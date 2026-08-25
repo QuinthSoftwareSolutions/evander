@@ -670,6 +670,7 @@ def _builtin_node_schema_resolvers() -> dict[str, Any]:
         "query:artifact-space:list": provider_models.ArtifactSpaceListQueryDefinition,
         "query:artifact-space:latest": provider_models.ArtifactSpaceLatestQueryDefinition,
         "query:vm:run-state": provider_models.VmRunStateQueryDefinition,
+        "query:git:merge-base": provider_models.GitMergeBaseQueryDefinition,
         "query:git:pr-note": provider_models.GitPrNoteQueryDefinition,
         "query:session-context": provider_models.SessionContextQueryDefinition,
         "query:session:list": provider_models.SessionListQueryDefinition,

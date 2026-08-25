@@ -1027,7 +1027,145 @@ def require_deliverable_acceptance(
                 "contribution_coverage": coverage,
             },
         )
+    task = state.tasks[deliverable.task_id]
+    submitted_git_source_ids = sorted(
+        source_deliverable_id
+        for source_deliverable_id in deliverable.source_deliverable_ids
+        if (
+            (source_deliverable := state.deliverables.get(source_deliverable_id))
+            is not None
+            and _deliverable_has_git_provenance(source_deliverable)
+        )
+    )
+    dependency_git_source_ids = sorted(
+        candidate.id
+        for candidate in state.deliverables.values()
+        if candidate.task_id in task.dependency_task_ids
+        and (
+            (dependency_task := state.tasks.get(candidate.task_id)) is not None
+            and dependency_task.state != TeamTaskState.CANCELLED
+        )
+        and candidate.state == TeamRecordState.ACCEPTED
+        and candidate.superseded_by_deliverable_id is None
+        and _deliverable_has_git_provenance(candidate)
+    )
+    requires_composition_manifest = bool(
+        task.integration_boundary
+        and (dependency_git_source_ids or submitted_git_source_ids)
+    )
+    if deliverable.acceptance_policy_version >= 2 and requires_composition_manifest:
+        manifest = deliverable.dependency_composition_manifest
+        if manifest is None:
+            raise TaskAssessmentBoundaryError(
+                code="dependency_composition_manifest_missing",
+                message=(
+                    f"deliverable {deliverable.id} requires immutable dependency "
+                    "composition evidence"
+                ),
+                correction_context={
+                    "deliverable_id": deliverable.id,
+                    "task_id": deliverable.task_id,
+                },
+            )
+        manifest_source_ids = sorted(
+            source.deliverable_id
+            for source in manifest.dependency_git_sources
+            if source.relationship_kind == "required_contribution"
+        )
+        if manifest_source_ids != submitted_git_source_ids:
+            raise TaskAssessmentBoundaryError(
+                code="dependency_composition_manifest_scope_mismatch",
+                message=(
+                    f"deliverable {deliverable.id} source list does not match its "
+                    "immutable composition manifest"
+                ),
+                correction_context={
+                    "deliverable_id": deliverable.id,
+                    "task_id": deliverable.task_id,
+                    "manifest_source_deliverable_ids": manifest_source_ids,
+                    "submitted_git_source_deliverable_ids": submitted_git_source_ids,
+                },
+            )
+        manifest_dependency_source_ids = sorted(
+            source.deliverable_id
+            for source in manifest.dependency_git_sources
+            if source.relationship_kind == "task_dependency"
+        )
+        expected_dependency_source_ids = sorted(
+            set(dependency_git_source_ids) - set(submitted_git_source_ids)
+        )
+        if manifest_dependency_source_ids != expected_dependency_source_ids:
+            raise TaskAssessmentBoundaryError(
+                code="dependency_composition_manifest_dependency_scope_mismatch",
+                message=(
+                    f"deliverable {deliverable.id} dependency composition manifest "
+                    "does not match the task's current Git-backed dependencies"
+                ),
+                correction_context={
+                    "deliverable_id": deliverable.id,
+                    "task_id": deliverable.task_id,
+                    "manifest_dependency_source_deliverable_ids": (
+                        manifest_dependency_source_ids
+                    ),
+                    "current_dependency_source_deliverable_ids": (
+                        expected_dependency_source_ids
+                    ),
+                },
+            )
+        candidate_commit_sha = (
+            deliverable.git_refs.reviewed_commit_sha
+            or deliverable.git_refs.submitted_commit_sha
+            or deliverable.git_refs.commit_sha
+        )
+        if (
+            candidate_commit_sha is None
+            or manifest.verified_candidate_commit_sha != candidate_commit_sha.casefold()
+        ):
+            raise TaskAssessmentBoundaryError(
+                code="dependency_composition_candidate_ancestry_unverified",
+                message=(
+                    f"deliverable {deliverable.id} does not carry server-verified "
+                    "proof that its candidate contains the dependency composition"
+                ),
+                correction_context={
+                    "deliverable_id": deliverable.id,
+                    "task_id": deliverable.task_id,
+                    "candidate_commit_sha": candidate_commit_sha,
+                    "verified_candidate_commit_sha": (
+                        manifest.verified_candidate_commit_sha
+                    ),
+                    "required_ancestor_shas": list(
+                        dict.fromkeys(
+                            [
+                                manifest.composed_commit_sha,
+                                *[
+                                    source.commit_sha
+                                    for source in manifest.dependency_git_sources
+                                ],
+                            ]
+                        )
+                    ),
+                },
+            )
     return assessment
+
+
+def _deliverable_has_git_provenance(deliverable: Deliverable) -> bool:
+    git_refs = deliverable.git_refs
+    return any(
+        (
+            git_refs.branch_context_id,
+            git_refs.agent_branch,
+            git_refs.review_branch,
+            git_refs.feature_branch,
+            git_refs.release_branch,
+            git_refs.commit_sha,
+            git_refs.submitted_commit_sha,
+            git_refs.reviewed_commit_sha,
+            git_refs.feature_commit_sha,
+            git_refs.release_commit_sha,
+        )
+    )
 
 
 def require_release_scope(
@@ -1832,6 +1970,36 @@ def _required_source_deliverable_ids(
     )
 
 
+def required_source_deliverable_ids_for_task(
+    state: TeamState,
+    *,
+    task_id: str,
+) -> list[str]:
+    """Return the current accepted contribution set for one task.
+
+    This is the canonical preparation-time companion to contribution coverage:
+    callers must not reconstruct integration inputs from parent/child links or
+    mutable branches independently.
+    """
+
+    task = state.tasks.get(task_id)
+    if task is None:
+        raise ValueError(f"task {task_id} does not exist")
+    direct_child_ids = sorted(
+        child.id for child in state.tasks.values() if child.parent_task_id == task.id
+    )
+    required_task_ids = _required_contribution_task_ids(
+        state,
+        task,
+        direct_child_ids=direct_child_ids,
+    )
+    return _required_source_deliverable_ids(
+        state,
+        task=task,
+        required_contribution_task_ids=required_task_ids,
+    )
+
+
 def _missing_contribution_task_ids(
     state: TeamState,
     *,
@@ -1962,6 +2130,7 @@ __all__ = [
     "task_payload_with_assessment",
     "assessment_review_ids_for_deliverable",
     "contribution_coverage_for_sources",
+    "required_source_deliverable_ids_for_task",
     "deliverable_source_lineage",
     "recursive_source_deliverable_ids",
     "require_deliverable_acceptance",

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Sequence
 from typing import Any
 from evander.models import utc_now
 from .git_release_helpers import (
@@ -408,7 +408,7 @@ class TeamGitReleaseCommandService(TeamCommandExecutor):
         release_branch: str | None = None,
         canonical_branch: str | None = None,
         summary: str | None = None,
-        verification_waivers: Sequence[Mapping[str, Any]] | None = None,
+        verification_waivers: object | None = None,
         handled_inbox_item_ids: Sequence[str] | None = None,
         correlation_id: str | None = None,
         causation_id: str | None = None,
@@ -426,7 +426,6 @@ class TeamGitReleaseCommandService(TeamCommandExecutor):
         normalized_release_branch = _optional_text(release_branch)
         normalized_canonical_branch = _optional_text(canonical_branch)
         normalized_summary = _optional_text(summary)
-        normalized_verification_waivers = [dict(item) for item in (verification_waivers or [])]
         normalized_handled_ids = _unique_text_list(
             handled_inbox_item_ids or [],
             "handled_inbox_item_ids",
@@ -448,7 +447,6 @@ class TeamGitReleaseCommandService(TeamCommandExecutor):
             release_branch=normalized_release_branch,
             canonical_branch=normalized_canonical_branch,
             summary=normalized_summary,
-            verification_waivers=normalized_verification_waivers,
             handled_inbox_item_ids=normalized_handled_ids,
             correlation_id=context.correlation_id,
             causation_id=context.causation_id,
@@ -488,21 +486,25 @@ class TeamGitReleaseCommandService(TeamCommandExecutor):
                     ),
                     correction_context={"project_id": normalized_project_id},
                 )
+            release_request = {
+                "id": normalized_release_id,
+                "supersedes_release_package_id": normalized_predecessor_id,
+                "post_release_feedback_case_id": normalized_post_release_case_id,
+                "project_id": normalized_project_id,
+                "deliverable_ids": list(normalized_deliverable_ids),
+                "release_branch": normalized_release_branch,
+                "canonical_branch": normalized_canonical_branch,
+                "summary": normalized_summary,
+                "release_requested_by_actor": f"agent:{agent.id}",
+            }
+            if verification_waivers is not None:
+                # Compatibility marker only. The retired field's contents are
+                # intentionally neither parsed nor used in release decisions.
+                release_request["verification_waivers"] = True
             release_id = _apply_git_release_request(
                 state,
                 actor=agent,
-                request={
-                    "id": normalized_release_id,
-                    "supersedes_release_package_id": normalized_predecessor_id,
-                    "post_release_feedback_case_id": (normalized_post_release_case_id),
-                    "project_id": normalized_project_id,
-                    "deliverable_ids": list(normalized_deliverable_ids),
-                    "release_branch": normalized_release_branch,
-                    "canonical_branch": normalized_canonical_branch,
-                    "summary": normalized_summary,
-                    "verification_waivers": normalized_verification_waivers,
-                    "release_requested_by_actor": f"agent:{agent.id}",
-                },
+                request=release_request,
                 result=intent_result,
                 projects_to_recalc=projects_to_recalc,
             )
@@ -538,6 +540,7 @@ class TeamGitReleaseCommandService(TeamCommandExecutor):
                     "release_package": release_payload,
                     "outbox_record_ids": outbox_ids,
                     "events": list(intent_result["events"]),
+                    "warnings": list(intent_result.get("warnings") or []),
                     "next_action_hints": list(intent_result.get("next_action_hints") or [])
                     or _release_command_next_action_hints(
                         state,

@@ -120,6 +120,7 @@ from evander.queries.providers.ado_work_items import AdoWorkItemsQueryProvider
 from evander.queries.providers.communication_messages import (
     CommunicationMessagesQueryProvider,
 )
+from evander.queries.providers.git_merge_base import GitMergeBaseQueryProvider
 from evander.queries.providers.git_pr_note import GitPrNoteQueryProvider
 from evander.queries.providers.issue_get import IssueGetQueryProvider
 from evander.queries.providers.issue_list import IssueListQueryProvider
@@ -305,6 +306,7 @@ def register_providers() -> dict[str, dict[str, type]]:
             "query:vm:run-state": VmRunStateQueryProvider,
             "query:artifact-space:list": ArtifactSpaceListQueryProvider,
             "query:artifact-space:latest": ArtifactSpaceLatestQueryProvider,
+            "query:git:merge-base": GitMergeBaseQueryProvider,
             "query:git:pr-note": GitPrNoteQueryProvider,
             "query:session-context": SessionContextQueryProvider,
             "query:session:list": SessionListQueryProvider,

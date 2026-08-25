@@ -86,6 +86,7 @@ from .models import (
     AgentStatus,
     AgentVoiceProfile,
     EphemeralAgentPolicy,
+    ExternalSourceEvidenceFreshnessStatus,
     GovernanceAgendaItemType,
     ProjectGitConfig,
     ProjectReleasePolicy,
@@ -106,6 +107,7 @@ from .models import (
     agent_project_assignment_payloads,
     agent_project_ids,
     current_failed_action_records,
+    external_source_evidence_snapshot_payload,
     project_assignments_for_agent,
     effective_role_permissions,
     runtime_operations_payload,
@@ -127,6 +129,7 @@ from .outbox_publication import (
 )
 from .sqlite_store import TeamIdempotencyConflictError
 from .services.domain.chat import CHAT_MESSAGE_QUEUED_EVENT_TYPE
+from .services.domain.acceptance_verification import ACCEPTANCE_VERIFICATION_RETIRED_WARNING
 from .services.domain.case_task import TaskGitBaseValidationError
 from .services.domain.case_events import TEAM_CASE_CLOSED_EVENT_TYPE
 from .services.domain.context_rotation import (
@@ -151,6 +154,10 @@ from .services.human_review_assignment_service import (
 )
 from .services.memory_service import list_memory_records, memory_record_payload
 from .services.runtime_service import TeamRuntimeService
+from .services.worktree_cleanup_service import (
+    EffectTaskWorktreeCleanupBackend,
+    TeamWorktreeCleanupService,
+)
 from .services.review_dispatch_steering import steer_closed_review_dispatch
 from .providers import _session_records_by_id, build_voice_reconciliation_context
 
@@ -204,6 +211,7 @@ TEAM_STATE_COLLECTION_KEYS = (
     "stand_downs",
     "cases",
     "tasks",
+    "external_source_evidence_snapshots",
     "deliverables",
     "review_requests",
     "outcome_kind_definitions",
@@ -233,6 +241,7 @@ TEAM_VIEW_COLLECTIONS: dict[str, set[str]] = {
         "agent_runtimes",
         "stand_downs",
         "tasks",
+        "external_source_evidence_snapshots",
         "inbox",
         "blockers",
         "blocker_events",
@@ -251,6 +260,7 @@ TEAM_VIEW_COLLECTIONS: dict[str, set[str]] = {
         "roles",
         "agents",
         "tasks",
+        "external_source_evidence_snapshots",
         "deliverables",
         "review_requests",
         "outcome_kind_definitions",
@@ -270,6 +280,7 @@ TEAM_VIEW_COLLECTIONS: dict[str, set[str]] = {
         "roles",
         "agents",
         "tasks",
+        "external_source_evidence_snapshots",
         "deliverables",
         "review_requests",
         "outcome_kind_definitions",
@@ -290,6 +301,7 @@ TEAM_VIEW_COLLECTIONS: dict[str, set[str]] = {
         "agents",
         "tasks",
         "cases",
+        "external_source_evidence_snapshots",
         "blockers",
         "blocker_events",
         "dependency_composition_recoveries",
@@ -297,7 +309,14 @@ TEAM_VIEW_COLLECTIONS: dict[str, set[str]] = {
         "worktree_cleanup_candidates",
         "git_work_contexts",
     },
-    "cases": {"teams", "projects", "agents", "cases", "tasks"},
+    "cases": {
+        "teams",
+        "projects",
+        "agents",
+        "cases",
+        "tasks",
+        "external_source_evidence_snapshots",
+    },
     "people": {
         "teams",
         "projects",
@@ -306,6 +325,7 @@ TEAM_VIEW_COLLECTIONS: dict[str, set[str]] = {
         "agent_runtimes",
         "stand_downs",
         "tasks",
+        "external_source_evidence_snapshots",
         "inbox",
         "dispatches",
         "worktree_cleanup_candidates",
@@ -328,6 +348,7 @@ TEAM_VIEW_COLLECTIONS: dict[str, set[str]] = {
         "projects",
         "agents",
         "tasks",
+        "external_source_evidence_snapshots",
         "deliverables",
         "review_requests",
         "review_profiles",
@@ -381,6 +402,7 @@ TEAM_VIEW_COLLECTIONS["workspace"] = {
     "agents",
     "cases",
     "tasks",
+    "external_source_evidence_snapshots",
     "deliverables",
     "review_requests",
     "inbox",
@@ -405,6 +427,7 @@ TEAM_RESOURCE_TOKEN_COLLECTIONS = (
     "agents",
     "cases",
     "tasks",
+    "external_source_evidence_snapshots",
     "deliverables",
     "review_requests",
     "outcome_kind_definitions",
@@ -530,6 +553,48 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
                     current_revision=current.revision,
                 )
             return mutate(current.revision), expected_revision
+
+    def _task_project_owner_authorization_error(
+        request: Request,
+        *,
+        state: TeamState,
+        task_id: str,
+        action: str,
+    ) -> JSONResponse | None:
+        task = state.tasks.get(task_id)
+        if task is None:
+            return JSONResponse({"error": "task not found"}, status_code=404)
+        project = state.projects.get(task.project_id)
+        if project is None:
+            return JSONResponse({"error": "task project not found"}, status_code=404)
+        return _directory_owner_authorization_error(
+            request,
+            directory_path=project.directory_path,
+            action=action,
+        )
+
+    def _directory_owner_authorization_error(
+        request: Request,
+        *,
+        directory_path: str,
+        action: str,
+    ) -> JSONResponse | None:
+        if _auth_can(
+            context.auth,
+            request,
+            ADMIN_OWNER_PERMISSION,
+            directory_path=directory_path,
+        ):
+            return None
+        return JSONResponse(
+            {
+                "error": (
+                    f"{action} requires directory owner permission for the "
+                    "affected project."
+                )
+            },
+            status_code=403,
+        )
 
     async def get_state(request: Request) -> JSONResponse:
         return JSONResponse(_state_payload(request, repository.read()))
@@ -925,10 +990,21 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
         payload = await _read_payload(request)
         goals = list(_optional_list(payload, "goals"))
         git_config = _optional_git_config(payload)
+        directory_path = normalize_directory_path(
+            _optional(payload, "directory_path")
+            or (git_config.directory_path if git_config is not None else "root")
+        )
+        authorization_error = _directory_owner_authorization_error(
+            request,
+            directory_path=directory_path,
+            action="Project creation",
+        )
+        if authorization_error is not None:
+            return authorization_error
         release_policy = _resolved_release_policy_for_admin(
             context.auth,
             payload,
-            directory_path=(git_config.directory_path if git_config is not None else "root"),
+            directory_path=directory_path,
         )
         lead_agent_id = _optional(payload, "lead_agent_id")
         lead_session_id = _optional(payload, "lead_session_id")
@@ -947,6 +1023,7 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
                 lead_role_id=_optional(payload, "lead_role_id"),
                 lead_role_name=_optional(payload, "lead_role_name"),
                 goals=goals,
+                directory_path=directory_path,
                 git=git_config,
                 release_policy=release_policy,
                 expected_revision=expected_revision,
@@ -964,6 +1041,7 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
     async def patch_project(request: Request) -> JSONResponse:
         payload = await _read_payload(request)
         has_git = "git" in payload
+        has_directory_path = "directory_path" in payload
         has_release_policy = "release_policy" in payload
         git_config = _optional_git_config(payload)
         has_goals = "goals" in payload
@@ -980,9 +1058,36 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
             if has_git
             else (current_project.git if current_project is not None else None)
         )
+        effective_directory_path = normalize_directory_path(
+            _optional(payload, "directory_path")
+            or (
+                effective_git.directory_path
+                if has_git and effective_git is not None
+                else (
+                    current_project.directory_path
+                    if current_project is not None
+                    else "root"
+                )
+            )
+        )
+        if current_project is None:
+            return JSONResponse({"error": "project not found"}, status_code=404)
+        authorization_paths = list(
+            dict.fromkeys(
+                [current_project.directory_path, effective_directory_path]
+            )
+        )
+        for authorization_path in authorization_paths:
+            authorization_error = _directory_owner_authorization_error(
+                request,
+                directory_path=authorization_path,
+                action="Project update",
+            )
+            if authorization_error is not None:
+                return authorization_error
         release_policy_payload: Mapping[str, Any] = payload
         re_resolve_existing_release_policy = (
-            has_git
+            (has_git or has_directory_path)
             and not has_release_policy
             and current_project is not None
             and current_project.release_policy is not None
@@ -995,13 +1100,15 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
         release_policy = _resolved_release_policy_for_admin(
             context.auth,
             release_policy_payload,
-            directory_path=(effective_git.directory_path if effective_git is not None else "root"),
+            directory_path=effective_directory_path,
         )
         state, rebased_from_revision = _run_ui_rebasable_mutation(
             payload,
             lambda expected_revision: admin_service.update_project(
                 project_id=project_id,
                 name=_optional(payload, "name"),
+                directory_path=effective_directory_path,
+                set_directory_path=(has_directory_path or (has_git and effective_git is not None)),
                 git=git_config,
                 set_git=has_git,
                 release_policy=release_policy,
@@ -2439,19 +2546,44 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
     async def cancel_task(request: Request) -> JSONResponse:
         payload = await _read_payload(request)
         task_id = request.path_params["task_id"]
-        state, rebased_from_revision = _run_ui_rebasable_mutation(
-            payload,
-            lambda expected_revision: admin_service.cancel_task(
+        rebind_dependents = _optional_bool(payload, "rebind_dependents") is True
+
+        def _cancel(expected_revision: int) -> TeamState:
+            return admin_service.cancel_task(
                 task_id=task_id,
                 reason_code=_required(payload, "reason_code"),
                 reason=_required(payload, "reason"),
                 actor_id=_operator_actor_from_request(context.auth, request),
                 successor_task_id=_optional(payload, "successor_task_id"),
+                rebind_dependents=rebind_dependents,
+                expected_dependent_task_ids=_optional_string_list(
+                    payload,
+                    "expected_dependent_task_ids",
+                ),
                 expected_revision=expected_revision,
-            ),
-            target_collection="tasks",
-            target_id=task_id,
-        )
+            )
+
+        if rebind_dependents:
+            current = repository.read()
+            authorization_error = _task_project_owner_authorization_error(
+                request,
+                state=current,
+                task_id=task_id,
+                action="Task dependency rebinding",
+            )
+            if authorization_error is not None:
+                return authorization_error
+            # Graph rewrites never auto-rebase: the authorization and frozen
+            # affected set both belong to this exact state revision.
+            state = _cancel(_expected_revision(payload))
+            rebased_from_revision = None
+        else:
+            state, rebased_from_revision = _run_ui_rebasable_mutation(
+                payload,
+                _cancel,
+                target_collection="tasks",
+                target_id=task_id,
+            )
         return _state_response(
             request,
             state,
@@ -2465,6 +2597,85 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
                 if task_id in state.tasks
                 else None
             ),
+        )
+
+    async def repair_cancelled_task_dependencies(request: Request) -> JSONResponse:
+        payload = await _read_payload(request)
+        predecessor_task_id = request.path_params["task_id"]
+        current = repository.read()
+        authorization_error = _task_project_owner_authorization_error(
+            request,
+            state=current,
+            task_id=predecessor_task_id,
+            action="Cancelled-task dependency repair",
+        )
+        if authorization_error is not None:
+            return authorization_error
+        expected_dependent_task_ids = _optional_string_list(
+            payload,
+            "expected_dependent_task_ids",
+        )
+        if expected_dependent_task_ids is None:
+            raise ValueError("expected_dependent_task_ids is required")
+        state, result = admin_service.repair_cancelled_task_dependencies(
+            predecessor_task_id=predecessor_task_id,
+            successor_task_id=_required(payload, "successor_task_id"),
+            expected_dependent_task_ids=expected_dependent_task_ids,
+            reason=_required(payload, "reason"),
+            actor_id=_operator_actor_from_request(context.auth, request),
+            expected_revision=_expected_revision(payload),
+        )
+        return _state_response(
+            request,
+            state,
+            extra={"task_dependency_repair": result},
+        )
+
+    async def recover_submitted_integration_boundary(
+        request: Request,
+    ) -> JSONResponse:
+        payload = await _read_payload(request)
+        integration_task_id = request.path_params["task_id"]
+        current = repository.read()
+        authorization_error = _task_project_owner_authorization_error(
+            request,
+            state=current,
+            task_id=integration_task_id,
+            action="Submitted integration-boundary recovery",
+        )
+        if authorization_error is not None:
+            return authorization_error
+        expected_dependency_task_ids = _optional_string_list(
+            payload,
+            "expected_dependency_task_ids",
+        )
+        expected_required_contribution_task_ids = _optional_string_list(
+            payload,
+            "expected_required_contribution_task_ids",
+        )
+        if expected_dependency_task_ids is None:
+            raise ValueError("expected_dependency_task_ids is required")
+        if expected_required_contribution_task_ids is None:
+            raise ValueError("expected_required_contribution_task_ids is required")
+        state, result = admin_service.recover_submitted_integration_boundary(
+            predecessor_task_id=_required(payload, "predecessor_task_id"),
+            successor_task_id=_required(payload, "successor_task_id"),
+            integration_task_id=integration_task_id,
+            replacement_task_id=_required(payload, "replacement_task_id"),
+            expected_dependency_task_ids=expected_dependency_task_ids,
+            expected_required_contribution_task_ids=(
+                expected_required_contribution_task_ids
+            ),
+            reason=_required(payload, "reason"),
+            actor_id=_operator_actor_from_request(context.auth, request),
+            git_base_commit_sha=_optional(payload, "git_base_commit_sha"),
+            git_base_branch=_optional(payload, "git_base_branch"),
+            expected_revision=_expected_revision(payload),
+        )
+        return _state_response(
+            request,
+            state,
+            extra={"submitted_integration_boundary_recovery": result},
         )
 
     async def repair_task_state(request: Request) -> JSONResponse:
@@ -2747,6 +2958,32 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
             request,
             state,
             extra=extra,
+        )
+
+    async def authorize_deliverable_acceptance_verification_waiver(
+        request: Request,
+    ) -> JSONResponse:
+        payload = await _read_payload(request)
+        deliverable_id = request.path_params["deliverable_id"]
+        state, deliverable = (
+            admin_service.authorize_deliverable_acceptance_verification_waiver_as_operator(
+                deliverable_id=deliverable_id,
+                reason=_required(payload, "reason"),
+                operator_actor_id=_operator_actor_from_request(context.auth, request),
+                expected_revision=_expected_revision(payload),
+            )
+        )
+        return _state_response(
+            request,
+            state,
+            extra={
+                "warning": ACCEPTANCE_VERIFICATION_RETIRED_WARNING,
+                "deliverable_acceptance_verification": (
+                    deliverable.verification.model_dump(mode="json", exclude_none=True)
+                    if deliverable.verification is not None
+                    else None
+                ),
+            },
         )
 
     async def recover_candidate_correction_successor(
@@ -3500,8 +3737,10 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
             canonical_branch=_optional(payload, "canonical_branch"),
             summary=_optional(payload, "summary"),
             verification_waivers=(
-                _optional_list(payload, "verification_waivers")
+                payload.get("verification_waivers")
                 if payload.get("verification_waivers") is not None
+                else []
+                if "verification_waivers" in payload
                 else None
             ),
             operator_actor_id=_operator_actor_from_request(context.auth, request),
@@ -3511,12 +3750,18 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
         published_event_ids = _publish_team_events(context, result.get("events"))
         if published_event_ids:
             response_payload["published_event_ids"] = published_event_ids
+        warnings = list(result.get("warnings") or [])
+        if warnings:
+            response_payload["warnings"] = warnings
         if _request_wants_view_scoped_response(request):
             return _state_response(
                 request,
                 state,
                 status_code=201,
-                extra={"published_event_ids": published_event_ids},
+                extra={
+                    "published_event_ids": published_event_ids,
+                    **({"warnings": warnings} if warnings else {}),
+                },
             )
         return JSONResponse(response_payload, status_code=201)
 
@@ -3568,6 +3813,50 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
             }
         )
 
+    async def retry_worktree_cleanup(request: Request) -> JSONResponse:
+        payload = await _read_payload(request)
+        candidate_id = request.path_params["cleanup_candidate_id"]
+        current = repository.read()
+        candidate = current.worktree_cleanup_candidates.get(candidate_id)
+        if candidate is None:
+            return JSONResponse(
+                {"error": "worktree cleanup candidate not found"},
+                status_code=404,
+            )
+        project = current.projects.get(candidate.project_id)
+        directory_path = project.directory_path if project is not None else "root"
+        if not _auth_can(
+            context.auth,
+            request,
+            ADMIN_OWNER_PERMISSION,
+            directory_path=directory_path,
+        ):
+            return JSONResponse(
+                {"error": "Worktree cleanup retry requires directory owner permission."},
+                status_code=403,
+            )
+        state, requeued = TeamWorktreeCleanupService(
+            repository,
+            EffectTaskWorktreeCleanupBackend(context, repository=repository),
+        ).requeue_operator_action(
+            candidate_id,
+            requested_by=_operator_actor_from_request(context.auth, request),
+            reason=_required(payload, "reason"),
+            expected_revision=_expected_revision(payload),
+        )
+        if _request_wants_view_scoped_response(request):
+            return _state_response(
+                request,
+                state,
+                extra={"worktree_cleanup_candidate": requeued.model_dump(mode="json")},
+            )
+        return JSONResponse(
+            {
+                "revision": state.revision,
+                "worktree_cleanup_candidate": requeued.model_dump(mode="json"),
+            }
+        )
+
     async def get_release_package(request: Request) -> JSONResponse:
         state = repository.read()
         release = state.release_packages.get(request.path_params["release_package_id"])
@@ -3601,11 +3890,7 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
         if release is None:
             return JSONResponse({"error": "release package not found"}, status_code=404)
         project = state.projects.get(release.project_id)
-        directory_path = (
-            project.git.directory_path
-            if project is not None and project.git is not None
-            else "root"
-        )
+        directory_path = project.directory_path if project is not None else "root"
         if not _auth_can(
             context.auth,
             request,
@@ -3644,6 +3929,167 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
         if promotion is None:
             return JSONResponse({"error": "git promotion not found"}, status_code=404)
         return JSONResponse(promotion.model_dump(mode="json"))
+
+    async def list_external_source_evidence_snapshots(request: Request) -> JSONResponse:
+        state = repository.read()
+        rows = [
+            row
+            for row in state.external_source_evidence_snapshots.values()
+            if _can_read_external_source_evidence(context.auth, request, state, row)
+        ]
+        team_id = _query_text(request, "team_id")
+        project_id = _query_text(request, "project_id")
+        provider_type = _query_text(request, "provider_type")
+        source_type = _query_text(request, "source_type")
+        external_identifier = _query_text(request, "external_identifier")
+        if team_id is not None:
+            rows = [row for row in rows if row.team_id == team_id]
+        if project_id is not None:
+            rows = [row for row in rows if row.project_id == project_id]
+        if provider_type is not None:
+            rows = [row for row in rows if row.provider_type == provider_type]
+        if source_type is not None:
+            rows = [row for row in rows if row.source_type == source_type]
+        if external_identifier is not None:
+            rows = [
+                row for row in rows if row.external_identifier == external_identifier
+            ]
+        rows.sort(key=lambda row: (row.fetched_at, row.created_at, row.id), reverse=True)
+        return JSONResponse(
+            {
+                "revision": state.revision,
+                "external_source_evidence_snapshots": [
+                    external_source_evidence_snapshot_payload(row) for row in rows
+                ],
+            }
+        )
+
+    async def get_external_source_evidence_snapshot(request: Request) -> JSONResponse:
+        state = repository.read()
+        snapshot = state.external_source_evidence_snapshots.get(
+            request.path_params["snapshot_id"]
+        )
+        if snapshot is None:
+            return JSONResponse(
+                {"error": "external source evidence snapshot not found"},
+                status_code=404,
+            )
+        if not _can_read_external_source_evidence(
+            context.auth,
+            request,
+            state,
+            snapshot,
+        ):
+            return JSONResponse(
+                {"error": "external source evidence snapshot not found"},
+                status_code=404,
+            )
+        return JSONResponse(
+            {
+                "revision": state.revision,
+                "external_source_evidence_snapshot": (
+                    external_source_evidence_snapshot_payload(snapshot)
+                ),
+            }
+        )
+
+    async def create_external_source_evidence_snapshot(request: Request) -> JSONResponse:
+        payload = await _read_payload(request)
+        current = repository.read()
+        project_id = _optional(payload, "project_id")
+        directory_path = _external_source_evidence_project_directory_path(
+            current,
+            project_id,
+        )
+        if not _auth_can(
+            context.auth,
+            request,
+            ADMIN_OWNER_PERMISSION,
+            directory_path=directory_path,
+        ):
+            return JSONResponse(
+                {
+                    "error": (
+                        "External source evidence creation requires directory owner "
+                        "permission."
+                    )
+                },
+                status_code=403,
+            )
+        raw_freshness_status = _optional(payload, "freshness_status")
+        state, snapshot = admin_service.create_external_source_evidence_snapshot(
+            snapshot_id=_optional(payload, "id") or _optional(payload, "snapshot_id"),
+            team_id=_required(payload, "team_id"),
+            project_id=project_id,
+            provider_type=_required(payload, "provider_type"),
+            source_type=_required(payload, "source_type"),
+            external_identifier=_required(payload, "external_identifier"),
+            external_version=_required(payload, "external_version"),
+            fetched_at=_required_iso_datetime(payload, "fetched_at"),
+            expires_at=_optional_iso_datetime(payload, "expires_at"),
+            freshness_status=(
+                ExternalSourceEvidenceFreshnessStatus(raw_freshness_status)
+                if raw_freshness_status is not None
+                else ExternalSourceEvidenceFreshnessStatus.UNKNOWN
+            ),
+            access_classification=_required(payload, "access_classification"),
+            title=_optional(payload, "title"),
+            body=_optional_object(payload, "body"),
+            acceptance_criteria=_optional_mapping_list(payload, "acceptance_criteria"),
+            discussion=_optional_mapping_list(payload, "discussion"),
+            links=_optional_mapping_list(payload, "links"),
+            metadata=_optional_object(payload, "metadata") or {},
+            content_digest=_optional(payload, "content_digest"),
+            case_ids=_optional_string_list(payload, "case_ids") or [],
+            task_ids=_optional_string_list(payload, "task_ids") or [],
+            created_by_actor=_operator_actor_from_request(context.auth, request),
+            expected_revision=_expected_revision(payload),
+        )
+        return JSONResponse(
+            {
+                "revision": state.revision,
+                "external_source_evidence_snapshot": (
+                    external_source_evidence_snapshot_payload(snapshot)
+                ),
+            },
+            status_code=201,
+        )
+
+    async def attach_external_source_evidence_snapshot(request: Request) -> JSONResponse:
+        payload = await _read_payload(request)
+        current = repository.read()
+        existing = current.external_source_evidence_snapshots.get(
+            request.path_params["snapshot_id"]
+        )
+        if existing is None:
+            return JSONResponse(
+                {"error": "external source evidence snapshot not found"},
+                status_code=404,
+            )
+        if not _can_read_external_source_evidence(
+            context.auth,
+            request,
+            current,
+            existing,
+        ):
+            return JSONResponse(
+                {"error": "external source evidence snapshot not found"},
+                status_code=404,
+            )
+        state, snapshot = admin_service.attach_external_source_evidence_snapshot(
+            snapshot_id=request.path_params["snapshot_id"],
+            case_ids=_optional_string_list(payload, "case_ids") or [],
+            task_ids=_optional_string_list(payload, "task_ids") or [],
+            expected_revision=_expected_revision(payload),
+        )
+        return JSONResponse(
+            {
+                "revision": state.revision,
+                "external_source_evidence_snapshot": (
+                    external_source_evidence_snapshot_payload(snapshot)
+                ),
+            }
+        )
 
     async def list_memories(request: Request) -> JSONResponse:
         state = repository.read()
@@ -3983,7 +4429,22 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
             methods=["POST"],
         ),
         route("/tasks/{task_id}/cancel", cancel_task, methods=["POST"]),
+        route(
+            "/tasks/{task_id}/repair-cancelled-dependencies",
+            repair_cancelled_task_dependencies,
+            methods=["POST"],
+        ),
+        route(
+            "/tasks/{task_id}/recover-submitted-integration-boundary",
+            recover_submitted_integration_boundary,
+            methods=["POST"],
+        ),
         route("/deliverables", record_deliverable, methods=["POST"]),
+        route(
+            "/deliverables/{deliverable_id}/acceptance-verification-waiver",
+            authorize_deliverable_acceptance_verification_waiver,
+            methods=["POST"],
+        ),
         route("/review-requests", record_review_request, methods=["POST"]),
         route(
             "/review-requests/{review_request_id}/decision",
@@ -4003,6 +4464,26 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
         route(
             "/operator-directives",
             create_operator_directive,
+            methods=["POST"],
+        ),
+        route(
+            "/external-source-evidence-snapshots",
+            list_external_source_evidence_snapshots,
+            methods=["GET"],
+        ),
+        route(
+            "/external-source-evidence-snapshots",
+            create_external_source_evidence_snapshot,
+            methods=["POST"],
+        ),
+        route(
+            "/external-source-evidence-snapshots/{snapshot_id}",
+            get_external_source_evidence_snapshot,
+            methods=["GET"],
+        ),
+        route(
+            "/external-source-evidence-snapshots/{snapshot_id}/attachments",
+            attach_external_source_evidence_snapshot,
             methods=["POST"],
         ),
         route("/memory", list_memories, methods=["GET"]),
@@ -4122,6 +4603,11 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
         route(
             "/release-packages/{release_package_id}/retry-gate",
             retry_release_gate,
+            methods=["POST"],
+        ),
+        route(
+            "/worktree-cleanup-candidates/{cleanup_candidate_id}/retry",
+            retry_worktree_cleanup,
             methods=["POST"],
         ),
         route(
@@ -4547,6 +5033,14 @@ def _team_state_payload_for_request(
             )
     apply_compact_human_review_projection(payload, state)
     _add_team_resource_tokens(payload, state)
+    _filter_external_source_evidence_payload(
+        payload,
+        allowed_snapshot_ids=_authorized_external_source_evidence_snapshot_ids(
+            auth,
+            request,
+            state,
+        ),
+    )
     if runtime_dir is not None:
         _add_context_reset_usage(payload, state, runtime_dir=runtime_dir)
     if not _can_view_all_team_chats(auth, request):
@@ -4757,6 +5251,9 @@ def _view_payload_for_request(
 
     collections = TEAM_VIEW_COLLECTIONS.get(view, TEAM_VIEW_COLLECTIONS["workspace"])
     ids_by_collection = _view_ids_by_collection(state, view)
+    ids_by_collection["external_source_evidence_snapshots"] = (
+        _authorized_external_source_evidence_snapshot_ids(auth, request, state)
+    )
     data: dict[str, Any] = {
         "state": _state_slice_payload_for_request(
             auth,
@@ -5038,8 +5535,10 @@ def _state_slice_payload_for_request(
     agent_execution_records: Mapping[str, Any] | None = None,
     session_repository: Any | None = None,
 ) -> dict[str, Any]:
-    del auth
-    scoped_ids = ids_by_collection or {}
+    scoped_ids = dict(ids_by_collection or {})
+    scoped_ids["external_source_evidence_snapshots"] = (
+        _authorized_external_source_evidence_snapshot_ids(auth, request, state)
+    )
     payload = state.model_dump(
         mode="json",
         include={"schema_version", "revision", "updated_at"},
@@ -5085,6 +5584,10 @@ def _state_slice_payload_for_request(
         state,
         collections=collections,
         ids_by_collection=scoped_ids,
+    )
+    _filter_external_source_evidence_payload(
+        payload,
+        allowed_snapshot_ids=scoped_ids["external_source_evidence_snapshots"],
     )
     _window_state_history_payload(
         payload,
@@ -5173,6 +5676,8 @@ def _state_collection_slice_payload(
             )
         elif collection == "memories":
             rows[item_id] = memory_record_payload(item, include_body=False)
+        elif collection == "external_source_evidence_snapshots":
+            rows[item_id] = external_source_evidence_snapshot_payload(item)
         elif hasattr(item, "model_dump"):
             rows[item_id] = item.model_dump(mode="json")
         else:
@@ -6116,8 +6621,7 @@ def _release_human_review_directory(
     if directory_path:
         return directory_path
     project = state.projects.get(getattr(release, "project_id", "") or "")
-    git = getattr(project, "git", None)
-    return str(getattr(git, "directory_path", "") or "root").strip() or "root"
+    return str(getattr(project, "directory_path", "") or "root").strip() or "root"
 
 
 def _release_candidate_checkout_metadata(
@@ -6201,7 +6705,6 @@ def _human_review_bundle_manifest(
         else None
     )
     requirement = getattr(human_request, "requirement_snapshot", None)
-    git = getattr(project, "git", None)
     return {
         "schema": "evander.team.human-review-bundle/v1",
         "release_package_id": str(getattr(release, "id", "") or ""),
@@ -6209,7 +6712,7 @@ def _human_review_bundle_manifest(
         "project": {
             "id": str(getattr(project, "id", "") or ""),
             "name": str(getattr(project, "name", "") or ""),
-            "directory_path": str(getattr(git, "directory_path", "") or ""),
+            "directory_path": str(getattr(project, "directory_path", "") or ""),
         },
         "candidate": {
             "source_ref": source_ref,
@@ -6278,6 +6781,82 @@ def _auth_can(
         return bool(can(request, permission, directory_path=directory_path))
     except Exception:
         return False
+
+
+def _external_source_evidence_project_directory_path(
+    state: TeamState,
+    project_id: str | None,
+) -> str:
+    project = state.projects.get(project_id or "")
+    if project is None:
+        return "root"
+    return normalize_directory_path(project.directory_path)
+
+
+def _can_read_external_source_evidence(
+    auth: Any | None,
+    request: Request,
+    state: TeamState,
+    snapshot: Any,
+) -> bool:
+    return _auth_can(
+        auth,
+        request,
+        ADMIN_OWNER_PERMISSION,
+        directory_path=_external_source_evidence_project_directory_path(
+            state,
+            getattr(snapshot, "project_id", None),
+        ),
+    )
+
+
+def _authorized_external_source_evidence_snapshot_ids(
+    auth: Any | None,
+    request: Request,
+    state: TeamState,
+) -> set[str]:
+    return {
+        snapshot.id
+        for snapshot in state.external_source_evidence_snapshots.values()
+        if _can_read_external_source_evidence(auth, request, state, snapshot)
+    }
+
+
+def _filter_external_source_evidence_payload(
+    payload: dict[str, Any],
+    *,
+    allowed_snapshot_ids: set[str],
+) -> None:
+    snapshots = payload.get("external_source_evidence_snapshots")
+    if isinstance(snapshots, dict):
+        payload["external_source_evidence_snapshots"] = {
+            snapshot_id: snapshot
+            for snapshot_id, snapshot in snapshots.items()
+            if snapshot_id in allowed_snapshot_ids
+        }
+    resource_tokens = payload.get("resource_tokens")
+    if isinstance(resource_tokens, dict):
+        snapshot_tokens = resource_tokens.get("external_source_evidence_snapshots")
+        if isinstance(snapshot_tokens, dict):
+            resource_tokens["external_source_evidence_snapshots"] = {
+                snapshot_id: token
+                for snapshot_id, token in snapshot_tokens.items()
+                if snapshot_id in allowed_snapshot_ids
+            }
+    for collection in ("cases", "tasks", "dispatches"):
+        rows = payload.get(collection)
+        if not isinstance(rows, dict):
+            continue
+        for row in rows.values():
+            if not isinstance(row, dict):
+                continue
+            snapshot_ids = row.get("source_evidence_snapshot_ids")
+            if isinstance(snapshot_ids, list):
+                row["source_evidence_snapshot_ids"] = [
+                    snapshot_id
+                    for snapshot_id in snapshot_ids
+                    if snapshot_id in allowed_snapshot_ids
+                ]
 
 
 def _session_from_request(auth: Any | None, request: Request) -> Mapping[str, Any] | None:
@@ -7405,6 +7984,35 @@ def _optional_event_datetime(value: object) -> datetime | None:
         parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
     except ValueError as exc:
         raise ValueError("run_at must be an ISO 8601 datetime") from exc
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    return parsed.astimezone(UTC)
+
+
+def _required_iso_datetime(
+    payload: Mapping[str, Any],
+    field_name: str,
+) -> datetime:
+    value = _optional_iso_datetime(payload, field_name)
+    if value is None:
+        raise ValueError(f"{field_name} is required")
+    return value
+
+
+def _optional_iso_datetime(
+    payload: Mapping[str, Any],
+    field_name: str,
+) -> datetime | None:
+    raw_value = payload.get(field_name)
+    if raw_value is None:
+        return None
+    text = str(raw_value).strip()
+    if not text:
+        return None
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise ValueError(f"{field_name} must be an ISO 8601 datetime") from exc
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=UTC)
     return parsed.astimezone(UTC)

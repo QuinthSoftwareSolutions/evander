@@ -64,6 +64,8 @@ TEAM_RUNTIME_V1: dict[str, Any] = {
                 "team-record-release-promotion",
                 "team-release-verification-requested",
                 "team-verify-release-candidate",
+                "team-deliverable-acceptance-verification-requested",
+                "team-verify-deliverable-acceptance",
                 "team-git-release-recovery-requested",
                 "team-promote-release-recovery-branch",
                 "team-record-release-recovery-promotion",
@@ -71,6 +73,8 @@ TEAM_RUNTIME_V1: dict[str, Any] = {
                 "team-push-canonical-branch",
                 "team-record-canonical-promotion",
                 "team-mark-release-published",
+                "team-gate-release-published-successfully",
+                "team-emit-release-published",
             ],
         }
     ],
@@ -171,6 +175,16 @@ TEAM_RUNTIME_V1: dict[str, Any] = {
                     "display_name": "Team release verification requested",
                     "type": "trigger:event",
                     "config": {"event_type": "team.release.verification_requested"},
+                }
+            },
+            {
+                "node": {
+                    "id": "team-deliverable-acceptance-verification-requested",
+                    "display_name": "Team deliverable acceptance verification requested",
+                    "type": "trigger:event",
+                    "config": {
+                        "event_type": "team.deliverable.acceptance_verification_requested"
+                    },
                 }
             },
             {
@@ -856,6 +870,18 @@ TEAM_RUNTIME_V1: dict[str, Any] = {
             },
             {
                 "node": {
+                    "id": "team-verify-deliverable-acceptance",
+                    "display_name": "Verify pinned deliverable before acceptance",
+                    "type": "effect:team:verify-deliverable-acceptance",
+                    "config": {
+                        "deliverable_id": "${{team-deliverable-acceptance-verification-requested.payload.deliverable_id}}",
+                        "verification_run_id": "${{team-deliverable-acceptance-verification-requested.payload.verification_run_id}}",
+                        "candidate_commit_sha": "${{team-deliverable-acceptance-verification-requested.payload.candidate_commit_sha}}",
+                    },
+                }
+            },
+            {
+                "node": {
                     "id": "team-promote-release-recovery-branch",
                     "display_name": "Validate and consolidate release recovery branch",
                     "type": "effect:team:consolidate-git-branches",
@@ -970,6 +996,60 @@ TEAM_RUNTIME_V1: dict[str, Any] = {
                             "destination_commit": "${{team-push-canonical-branch.destination_commit "
                             "?? null}}",
                             "error_code": "${{team-push-canonical-branch.reason ?? null}}",
+                        },
+                    },
+                }
+            },
+            {
+                "node": {
+                    "id": "team-gate-release-published-successfully",
+                    "display_name": "Successfully published releases only",
+                    "type": "gate:filter",
+                    "config": {
+                        "when": {
+                            "all": [
+                                {
+                                    "equals": True,
+                                    "left": "${{team-mark-release-published.success}}",
+                                },
+                                {
+                                    "equals": "accepted",
+                                    "left": "${{team-mark-release-published.state}}",
+                                },
+                                {
+                                    "equals": None,
+                                    "left": "${{team-mark-release-published.error}}",
+                                },
+                                {
+                                    "equals": "${{team-git-promotion-requested.payload.expected_commit_sha}}",
+                                    "left": "${{team-push-canonical-branch.commit_sha}}",
+                                },
+                            ]
+                        }
+                    },
+                }
+            },
+            {
+                "node": {
+                    "id": "team-emit-release-published",
+                    "display_name": "Publish release published event",
+                    "type": "effect:event:emit",
+                    "config": {
+                        "event_type": "team.release.published",
+                        "correlation_key": "${{team-git-promotion-requested.payload.release_package_id}}",
+                        "payload": {
+                            "base_commit_sha": "${{team-git-promotion-requested.payload.base_commit_sha}}",
+                            "canonical_branch": "${{team-git-promotion-requested.payload.target_branch}}",
+                            "directory_path": "${{team-git-promotion-requested.payload.directory_path ?? \"root\"}}",
+                            "expected_commit_sha": "${{team-git-promotion-requested.payload.expected_commit_sha}}",
+                            "managed_repo_id": "${{team-git-promotion-requested.payload.managed_repo_id}}",
+                            "project_id": "${{team-git-promotion-requested.payload.project_id}}",
+                            "publication_revision": "${{team-mark-release-published.revision}}",
+                            "published_commit_sha": "${{team-push-canonical-branch.commit_sha}}",
+                            "release_package_id": "${{team-git-promotion-requested.payload.release_package_id}}",
+                            "source_ref": "${{team-git-promotion-requested.payload.source_branch}}",
+                            "state": "${{team-mark-release-published.state}}",
+                            "success": "${{team-mark-release-published.success}}",
                         },
                     },
                 }
@@ -1098,6 +1178,10 @@ TEAM_RUNTIME_V1: dict[str, Any] = {
                 "target_id": "team-verify-release-candidate",
             },
             {
+                "source_id": "team-deliverable-acceptance-verification-requested",
+                "target_id": "team-verify-deliverable-acceptance",
+            },
+            {
                 "source_id": "team-git-release-recovery-requested",
                 "target_id": "team-promote-release-recovery-branch",
             },
@@ -1116,6 +1200,14 @@ TEAM_RUNTIME_V1: dict[str, Any] = {
             {
                 "source_id": "team-record-canonical-promotion",
                 "target_id": "team-mark-release-published",
+            },
+            {
+                "source_id": "team-mark-release-published",
+                "target_id": "team-gate-release-published-successfully",
+            },
+            {
+                "source_id": "team-gate-release-published-successfully",
+                "target_id": "team-emit-release-published",
             },
         ],
     },
@@ -1150,6 +1242,8 @@ _TEAM_RUNTIME_V1_LAYOUT_NODE_POSITIONS: tuple[tuple[str, float, float], ...] = (
     ("team-mark-ephemeral-cleaned-up", 1440.0, 20.0),
     ("team-mark-ephemeral-spawned", 720.0, 820.0),
     ("team-mark-release-published", 1440.0, 1600.0),
+    ("team-gate-release-published-successfully", 1800.0, 1600.0),
+    ("team-emit-release-published", 2160.0, 1600.0),
     ("team-notify-operator", 360.0, 1000.0),
     ("team-notify-operator-fallback", 720.0, 900.0),
     ("team-record-operator-escalation-delivery", 720.0, 1000.0),
@@ -1172,9 +1266,11 @@ _TEAM_RUNTIME_V1_LAYOUT_NODE_POSITIONS: tuple[tuple[str, float, float], ...] = (
     ("team-record-release-recovery-promotion", 720.0, 1940.0),
     ("team-record-review-promotion", 1080.0, 1120.0),
     ("team-release-verification-requested", 0.0, 1800.0),
+    ("team-deliverable-acceptance-verification-requested", 0.0, 2200.0),
     ("team-route-completed-session", 360.0, -80.0),
     ("team-send-external-chat-reply", 360.0, 340.0),
     ("team-verify-release-candidate", 360.0, 1800.0),
+    ("team-verify-deliverable-acceptance", 360.0, 2200.0),
     ("team-wake-due-agents", 360.0, -400.0),
     ("team-wake-governance-managers", 360.0, -320.0),
     ("team-wake-queued-chat-message", 360.0, 180.0),

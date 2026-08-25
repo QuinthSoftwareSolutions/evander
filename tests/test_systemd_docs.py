@@ -7,6 +7,7 @@ def test_operations_doc_mentions_firewall_service() -> None:
     )
     assert "evander-firewall.service" in text
     assert "evander-admin-web" in text
+    assert "evander-team-runtime.target" in text
     assert "config/firewall.env" in text
     assert "config/admin-web.env" in text
     assert "evander-npm-audit-facade.service" in text
