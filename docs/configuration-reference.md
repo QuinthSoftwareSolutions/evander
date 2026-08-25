@@ -756,8 +756,8 @@ that should use only the worker's shared read-only Git key.
 
 `effect:agent:prepare-reference-repositories` is the persistent-assistant read path. In Admin
 Web, add one managed repository row at a time and enter its optional per-repository **Main branch**.
-The stored `repositories` array uses `managed_repo_id` and an optional `branch` per entry. Existing
-workflow packs using `repo_source` remain supported. By default,
+The stored `repositories` array uses `managed_repo_id` and an optional `branch` per entry. Every
+workflow pack must register repositories first and refer to them by that managed ID. By default,
 `refresh_upstream` is `false`: preparation resolves the branch from the existing managed mirror,
 uses that cached commit to authorize a missing worker checkout, and otherwise retains the checkout's
 last trusted prepared commit. The worker records that SHA outside the writable agent home, so a

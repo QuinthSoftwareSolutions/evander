@@ -25,6 +25,7 @@ from evander.effects.providers.agent_clone_repo import (
 )
 from evander.effects.providers.agent_prepare_reference_repositories import (
     AgentPrepareReferenceRepositoriesEffectProvider,
+    _normalize_repository_inputs,
 )
 from evander.effects.providers.agent_session import (
     build_container_session_files,
@@ -646,7 +647,7 @@ def test_prepare_reference_repositories_batches_exact_read_only_checkouts(
         )
     )
     bind_calls: list[dict[str, object]] = []
-    ensure_calls: list[dict[str, object]] = []
+    lookup_calls: list[tuple[str, dict[str, object]]] = []
     refresh_calls: list[tuple[str, dict[str, object]]] = []
 
     def refresh_branch(managed_repo_id: str, **kwargs: object) -> dict[str, object]:
@@ -664,14 +665,12 @@ def test_prepare_reference_repositories_batches_exact_read_only_checkouts(
             session_repository=session_repository,
             provider_config=_ContainerResolverStub(config),
         ),
-        ensure_managed_git_repository=lambda **kwargs: (
-            ensure_calls.append(kwargs)
+        get_managed_git_repository=lambda managed_repo_id, **kwargs: (
+            lookup_calls.append((managed_repo_id, kwargs))
             or {
-                "managed_repo_id": (
-                    "mr-one" if kwargs["repo_source"].endswith("one.git") else "mr-two"
-                ),
+                "managed_repo_id": managed_repo_id,
+                "canonical_repository_url": f"https://example.invalid/{managed_repo_id}.git",
                 "default_branch": "main",
-                "refresh_reused": False,
             }
         ),
         refresh_managed_git_repository_if_branch_changed=refresh_branch,
@@ -700,8 +699,8 @@ def test_prepare_reference_repositories_batches_exact_read_only_checkouts(
             session_id="assistant-1",
             directory_path="root/personal",
             repositories=[
-                {"repo_source": "https://example.invalid/one.git"},
-                {"repo_source": "https://example.invalid/two.git"},
+                {"managed_repo_id": "mr-one"},
+                {"managed_repo_id": "mr-two"},
             ],
             refresh_upstream=True,
         ),
@@ -725,7 +724,13 @@ def test_prepare_reference_repositories_batches_exact_read_only_checkouts(
     }
     assert {call["source_ref"] for call in backend.prepared_reference_repos} == {"refs/heads/main"}
     assert all(call["update_existing"] is True for call in backend.prepared_reference_repos)
-    assert all(call["refresh"] is False for call in ensure_calls)
+    assert {
+        (managed_repo_id, str(kwargs["directory_path"]))
+        for managed_repo_id, kwargs in lookup_calls
+    } == {
+        ("mr-one", "root/personal"),
+        ("mr-two", "root/personal"),
+    }
     assert len(refresh_calls) == 2
     assert all(call[1]["branch"] is None for call in refresh_calls)
     assert len({call[1]["reuse_if_verified_after"] for call in refresh_calls}) == 1
@@ -753,6 +758,20 @@ def test_prepare_reference_repositories_batches_exact_read_only_checkouts(
     assert [call["managed_repo_id"] for call in bind_calls] == ["mr-one"]
 
 
+def test_prepare_reference_repositories_runtime_inputs_require_managed_repo_ids() -> None:
+    assert _normalize_repository_inputs(
+        [{"managed_repo_id": " mr-one ", "branch": " main "}]
+    ) == [{"managed_repo_id": "mr-one", "branch": "main"}]
+
+    with pytest.raises(
+        ValueError,
+        match="repo_source is not supported; select a managed_repo_id",
+    ):
+        _normalize_repository_inputs(
+            [{"repo_source": "https://example.invalid/legacy.git"}]
+        )
+
+
 def test_prepare_reference_repositories_reuses_cached_checkout_by_default(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -772,16 +791,17 @@ def test_prepare_reference_repositories_reuses_cached_checkout_by_default(
             expires_at=datetime.now(UTC) + timedelta(hours=1),
         )
     )
-    ensure_calls: list[dict[str, object]] = []
+    lookup_calls: list[tuple[str, dict[str, object]]] = []
     admin_service = SimpleNamespace(
         runtime=SimpleNamespace(
             session_repository=session_repository,
             provider_config=_ContainerResolverStub(config),
         ),
-        ensure_managed_git_repository=lambda **kwargs: (
-            ensure_calls.append(kwargs)
+        get_managed_git_repository=lambda managed_repo_id, **kwargs: (
+            lookup_calls.append((managed_repo_id, kwargs))
             or {
-                "managed_repo_id": "mr-one",
+                "managed_repo_id": managed_repo_id,
+                "canonical_repository_url": f"https://example.invalid/{managed_repo_id}.git",
                 "default_branch": "main",
             }
         ),
@@ -817,7 +837,7 @@ def test_prepare_reference_repositories_reuses_cached_checkout_by_default(
             type="effect:agent:prepare-reference-repositories",
             session_id="assistant-1",
             directory_path="root/personal",
-            repositories=[{"repo_source": "https://example.invalid/one.git"}],
+            repositories=[{"managed_repo_id": "mr-one"}],
         ),
         EffectRuntimeContext(
             resolved_config=config,
@@ -834,13 +854,7 @@ def test_prepare_reference_repositories_reuses_cached_checkout_by_default(
     assert result["repositories"][0]["probe_reused"] is False
     assert result["repositories"][0]["refresh_performed"] is False
     assert result["repositories"][0]["trust_reconciled"] is False
-    assert ensure_calls == [
-        {
-            "directory_path": "root/personal",
-            "repo_source": "https://example.invalid/one.git",
-            "refresh": False,
-        }
-    ]
+    assert lookup_calls == [("mr-one", {"directory_path": "root/personal"})]
     assert backend.prepared_reference_repos[0]["update_existing"] is False
 
     admin_service.resolve_managed_git_branch_commit = lambda managed_repo_id, **kwargs: None
@@ -892,7 +906,7 @@ def test_prepare_reference_repositories_resolves_selected_managed_repository_id(
     )
 
     resolved = provider._resolve_repositories(
-        [{"managed_repo_id": "mr-selected", "repo_source": None, "branch": "trunk"}],
+        [{"managed_repo_id": "mr-selected", "branch": "trunk"}],
         directory_path="root/personal",
         session_id="assistant-1",
         requested_at=datetime.now(UTC),
@@ -944,10 +958,9 @@ def test_prepare_reference_repositories_reconciles_forward_trust_transitions_in_
             session_repository=session_repository,
             provider_config=_ContainerResolverStub(config),
         ),
-        ensure_managed_git_repository=lambda **kwargs: {
-            "managed_repo_id": (
-                "mr-one" if kwargs["repo_source"].endswith("one.git") else "mr-two"
-            ),
+        get_managed_git_repository=lambda managed_repo_id, **kwargs: {
+            "managed_repo_id": managed_repo_id,
+            "canonical_repository_url": f"https://example.invalid/{managed_repo_id}.git",
             "default_branch": "main",
         },
         resolve_managed_git_branch_commit=lambda managed_repo_id, **kwargs: commits[
@@ -1006,8 +1019,8 @@ def test_prepare_reference_repositories_reconciles_forward_trust_transitions_in_
             session_id="assistant-1",
             directory_path="root/personal",
             repositories=[
-                {"repo_source": "https://example.invalid/one.git"},
-                {"repo_source": "https://example.invalid/two.git"},
+                {"managed_repo_id": "mr-one"},
+                {"managed_repo_id": "mr-two"},
             ],
         ),
         EffectRuntimeContext(
