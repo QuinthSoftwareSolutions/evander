@@ -552,10 +552,16 @@ def test_teams_ingest_worker_backs_off_only_the_failing_graph_target(
     assert first.trigger_wake_notified is True
     assert wake_calls == ["wake"]
     assert worker.store.list_all_messages(channel_targets=["team-a/good"])
-    assert any(
-        state["consecutive_failures"] == 1
-        for state in worker.store.read_raw()["poll_health"].values()
+    failed_target_health = next(
+        state
+        for key, state in worker.store.read_raw()["poll_health"].items()
+        if key.endswith("|channel|team-a/bad")
     )
+    assert failed_target_health["consecutive_failures"] == 1
+    assert (
+        datetime.fromisoformat(failed_target_health["next_attempt_at"])
+        - datetime.fromisoformat(failed_target_health["last_failed_at"])
+    ).total_seconds() == 5.0
 
     requests.clear()
     second_worker = build_teams_ingest_worker(
@@ -629,6 +635,8 @@ def test_teams_ingest_worker_resets_target_backoff_after_recovery(
             {
                 "target_backoff_initial_seconds": 0,
                 "target_backoff_max_seconds": 0,
+                "target_transient_backoff_initial_seconds": 0,
+                "target_transient_backoff_max_seconds": 0,
             }
         ),
         encoding="utf-8",
@@ -1831,6 +1839,17 @@ def test_teams_target_backoff_caps_before_large_exponentiation() -> None:
         )
         == 900
     )
+
+
+def test_teams_transient_target_backoff_uses_short_capped_progression() -> None:
+    assert [
+        _compute_target_backoff_seconds(
+            failure_count=failure_count,
+            initial_seconds=5,
+            max_seconds=30,
+        )
+        for failure_count in range(1, 6)
+    ] == [5, 10, 20, 30, 30]
 
 
 def test_teams_delegated_poll_scope_changes_with_identity(tmp_path: Path) -> None:

@@ -547,14 +547,20 @@ def test_graph_teams_service_stops_pagination_when_history_deadline_expires(
             )
         raise AssertionError(f"Unexpected request URL: {request.url}")
 
-    calls = 0
+    clock = 0.0
 
     def fake_monotonic() -> float:
-        nonlocal calls
-        calls += 1
-        return 2.0 if calls >= 5 else 0.0
+        return clock
 
-    transport = httpx.MockTransport(handler)
+    original_handler = handler
+
+    def deadline_handler(request: httpx.Request) -> httpx.Response:
+        nonlocal clock
+        response = original_handler(request)
+        clock = 2.0
+        return response
+
+    transport = httpx.MockTransport(deadline_handler)
     patch_httpx_client(monkeypatch, transport)
     monkeypatch.setattr("evander.services.time.monotonic", fake_monotonic)
     store = JsonStore(tmp_path / "teams.json", TeamsMessageEnvelope)
@@ -573,6 +579,95 @@ def test_graph_teams_service_stops_pagination_when_history_deadline_expires(
 
     assert [message.cursor for message in messages] == ["team-a/channel-1/msg-1"]
     assert len(requests) == 1
+
+
+def test_graph_teams_history_retries_after_full_request_timeout_within_scan_deadline(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    attempts = 0
+    request_timeouts: list[float] = []
+    clock = 0.0
+
+    def fake_monotonic() -> float:
+        return clock
+
+    def fake_sleep(seconds: float) -> None:
+        nonlocal clock
+        clock += seconds
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal attempts, clock
+        attempts += 1
+        request_timeouts.append(request.extensions["timeout"]["read"])
+        if attempts <= 2:
+            clock += 5.0
+            raise httpx.ReadTimeout("slow Graph history read", request=request)
+        return httpx.Response(
+            200,
+            json={
+                "value": [
+                    {
+                        "id": "msg-1",
+                        "createdDateTime": "2026-08-25T10:00:00Z",
+                        "body": {"content": "recovered", "contentType": "text"},
+                        "from": {"user": {"id": "user-1"}},
+                    }
+                ]
+            },
+            request=request,
+        )
+
+    patch_httpx_client(monkeypatch, httpx.MockTransport(handler))
+    monkeypatch.setattr("evander.services.time.monotonic", fake_monotonic)
+    monkeypatch.setattr("evander.services.time.sleep", fake_sleep)
+    monkeypatch.setattr("evander.services.random.uniform", lambda _low, _high: 0.5)
+    service = GraphTeamsService(
+        JsonStore(tmp_path / "teams.json", TeamsMessageEnvelope),
+        token="graph-token",
+        api_base_url="https://graph.microsoft.com/v1.0",
+        poll_limit=25,
+        history_deadline_seconds=15.0,
+        history_request_timeout_seconds=5.0,
+        timeout_seconds=15.0,
+        retry_count=2,
+        allowed_channel_targets_provider=lambda: ["team-a/channel-1"],
+    )
+
+    messages = service.get_messages()
+
+    assert attempts == 3
+    assert request_timeouts == [5.0, 5.0, 4.0]
+    assert [message.cursor for message in messages] == ["team-a/channel-1/msg-1"]
+    assert clock == 11.0
+
+
+def test_graph_teams_history_defers_retry_after_to_target_backoff(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    attempts = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal attempts
+        attempts += 1
+        return httpx.Response(429, headers={"Retry-After": "120"}, request=request)
+
+    patch_httpx_client(monkeypatch, httpx.MockTransport(handler))
+    service = GraphTeamsService(
+        JsonStore(tmp_path / "teams.json", TeamsMessageEnvelope),
+        token="graph-token",
+        api_base_url="https://graph.microsoft.com/v1.0",
+        poll_limit=25,
+        timeout_seconds=15.0,
+        retry_count=2,
+        allowed_channel_targets_provider=lambda: ["team-a/channel-1"],
+    )
+
+    with pytest.raises(httpx.HTTPStatusError):
+        service.get_messages()
+
+    assert attempts == 1
 
 
 def test_graph_teams_service_targeted_read_only_fetches_requested_target(

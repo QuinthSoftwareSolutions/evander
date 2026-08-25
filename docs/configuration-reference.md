@@ -2089,6 +2089,10 @@ and user lookup. Retryable failure of one target does not delay healthy targets.
 initial and maximum target cooldown with `target_backoff_initial_seconds` (default `60`) and
 `target_backoff_max_seconds` (default `900`) in `config/teams-ingest/config.json`; the older
 `backoff_seconds` remains reserved for worker-wide configuration or store failures.
+Timeouts, transport failures, and Graph `5xx` responses instead use the shorter
+`target_transient_backoff_initial_seconds` (default `5`) and
+`target_transient_backoff_max_seconds` (default `30`) progression. Graph `429` responses honor
+`Retry-After`, while authentication and other non-transient failures retain the longer cooldown.
 `max_concurrent_target_polls` in that same worker configuration bounds concurrent channel and chat
 polls across the worker (range `1`–`32`, default `1`). Directory selection, sender resolution, and
 direct-chat discovery remain serial; directories are processed one at a time, so the configured
@@ -2117,9 +2121,11 @@ Key delegated Teams provider settings now include:
   Teams auth.
 - optional `teams_delegated_authority_base_url`
 - optional `teams_delegated_credential_store_path`
-- optional `teams_history_page_cap` (default `1`) and `teams_history_deadline_seconds` (default
-  `5.0`) bound Microsoft Graph history pagination for target-scoped `teams_get_messages` and
-  Teams ingest scans
+- optional `teams_history_page_cap` (default `1`), `teams_history_request_timeout_seconds`
+  (default `5.0`), and `teams_history_deadline_seconds` (default `15.0`) bound Microsoft Graph
+  history pagination for target-scoped `teams_get_messages` and Teams ingest scans. A timed-out
+  history read can retry twice within the overall deadline; request time does not consume the
+  separate retry-backoff allowance.
 - optional `teams_read_reaction_emoji` (legacy compatibility field; read-side automatic reactions are disabled)
 - The app registration referenced by `teams_delegated_client_id` must support public client /
   device-code auth. If Microsoft returns `AADSTS7000218`, the registration currently requires a

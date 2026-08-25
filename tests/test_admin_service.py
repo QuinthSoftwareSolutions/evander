@@ -8588,6 +8588,8 @@ def test_admin_service_reads_and_writes_teams_ingest_worker_global_config(tmp_pa
     assert read_result.config["backoff_seconds"] == 60.0
     assert read_result.config["max_concurrent_target_polls"] == 1
     assert read_result.config["publish_trigger_events_directly"] is True
+    assert read_result.config["target_transient_backoff_initial_seconds"] == 5.0
+    assert read_result.config["target_transient_backoff_max_seconds"] == 30.0
 
     write_result = service.workflow_config_admin.write_worker_global_config(
         "teams-ingest",
@@ -8599,6 +8601,8 @@ def test_admin_service_reads_and_writes_teams_ingest_worker_global_config(tmp_pa
             "backoff_seconds": 90.0,
             "max_concurrent_target_polls": 2,
             "publish_trigger_events_directly": False,
+            "target_transient_backoff_initial_seconds": 4.0,
+            "target_transient_backoff_max_seconds": 24.0,
             "lock_path": None,
         },
     )
@@ -8612,12 +8616,16 @@ def test_admin_service_reads_and_writes_teams_ingest_worker_global_config(tmp_pa
     assert payload["backoff_seconds"] == 90.0
     assert payload["max_concurrent_target_polls"] == 2
     assert payload["publish_trigger_events_directly"] is False
+    assert payload["target_transient_backoff_initial_seconds"] == 4.0
+    assert payload["target_transient_backoff_max_seconds"] == 24.0
 
     reread = service.workflow_config_admin.read_worker_global_config("teams-ingest")
     assert reread.config["directories"] == ["root/team-a", "root/team-b"]
     assert reread.config["backoff_seconds"] == 90.0
     assert reread.config["max_concurrent_target_polls"] == 2
     assert reread.config["publish_trigger_events_directly"] is False
+    assert reread.config["target_transient_backoff_initial_seconds"] == 4.0
+    assert reread.config["target_transient_backoff_max_seconds"] == 24.0
 
 
 def test_worker_config_write_baselines_retyped_message_trigger(tmp_path: Path) -> None:

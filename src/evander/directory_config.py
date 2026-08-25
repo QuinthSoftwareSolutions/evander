@@ -214,6 +214,7 @@ DIRECTORY_CONFIG_DOMAIN_FIELDS: dict[str, frozenset[str]] = {
             "teams_graph_api_base_url",
             "teams_history_deadline_seconds",
             "teams_history_page_cap",
+            "teams_history_request_timeout_seconds",
             "teams_poll_limit",
             "teams_retry_base_backoff_seconds",
             "teams_retry_count",

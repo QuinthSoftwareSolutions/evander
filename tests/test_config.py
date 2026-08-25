@@ -1088,12 +1088,24 @@ def test_teams_ingest_worker_global_config_defaults_follow_runtime_dir() -> None
     assert config.directories == []
     assert config.max_concurrent_target_polls == 1
     assert config.publish_trigger_events_directly is True
+    assert config.target_transient_backoff_initial_seconds == 5.0
+    assert config.target_transient_backoff_max_seconds == 30.0
 
 
 @pytest.mark.parametrize("value", [0, 33])
 def test_teams_ingest_worker_global_config_bounds_concurrent_target_polls(value: int) -> None:
     with pytest.raises(ValueError, match="max_concurrent_target_polls"):
         TeamsIngestWorkerGlobalConfig.model_validate({"max_concurrent_target_polls": value})
+
+
+def test_teams_ingest_worker_global_config_rejects_inverted_transient_backoff() -> None:
+    with pytest.raises(ValueError, match="target_transient_backoff_max_seconds"):
+        TeamsIngestWorkerGlobalConfig.model_validate(
+            {
+                "target_transient_backoff_initial_seconds": 30,
+                "target_transient_backoff_max_seconds": 5,
+            }
+        )
 
 
 def test_teams_ingest_worker_global_config_directory_paths_are_normalized() -> None:
@@ -1123,6 +1135,14 @@ def test_teams_delegated_credential_store_path_follows_runtime_dir_default() -> 
     assert str(config.teams_delegated_credential_store_path) == (
         "/tmp/evander-runtime/teams-delegated-credentials.json"
     )
+
+
+def test_teams_graph_history_retry_defaults_are_deadline_aware() -> None:
+    config = GatewayConfig.model_validate({})
+
+    assert config.teams_history_request_timeout_seconds == 5.0
+    assert config.teams_history_deadline_seconds == 15.0
+    assert config.teams_retry_count == 2
 
 
 def test_teams_backend_accepts_delegated_graph_api_when_identity_is_bound() -> None:

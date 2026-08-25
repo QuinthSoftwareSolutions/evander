@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-08-25 - Teams Channel Poll Recovery
+
+- Added deadline-aware retries for bounded Teams history reads so a full request timeout no longer
+  consumes the separate retry-backoff allowance.
+- Applied a short capped cooldown to transient Graph timeouts, transport failures, and `5xx`
+  responses while preserving `Retry-After` throttling and longer authentication cooldowns.
+
 ## 2026-08-25 - Managed Reference Repository Inputs
 
 - Removed the legacy `repo_source` form from persistent-assistant reference repository inputs;

@@ -829,6 +829,7 @@ class TeamsIngestWorker:
             poll_limit=provider_config.teams_poll_limit,
             history_page_cap=provider_config.teams_history_page_cap,
             history_deadline_seconds=provider_config.teams_history_deadline_seconds,
+            history_request_timeout_seconds=(provider_config.teams_history_request_timeout_seconds),
             timeout_seconds=provider_config.teams_timeout_seconds,
             retry_count=provider_config.teams_retry_count,
             retry_base_backoff_seconds=provider_config.teams_retry_base_backoff_seconds,
@@ -952,13 +953,19 @@ class TeamsIngestWorker:
                     error_class,
                 )
             else:
+                selected_backoff_seconds = (
+                    (state.next_attempt_at - state.last_failed_at).total_seconds()
+                    if state.next_attempt_at is not None and state.last_failed_at is not None
+                    else 0.0
+                )
                 logger.warning(
                     "Teams Graph poll target failed target=%s failures=%d "
-                    "next_attempt_at=%s error=%s",
+                    "next_attempt_at=%s error=%s backoff_seconds=%.3f",
                     failure_key,
                     state.consecutive_failures,
                     state.next_attempt_at.isoformat() if state.next_attempt_at else None,
                     error_class,
+                    selected_backoff_seconds,
                 )
             return _GraphPollAttempt(attempted=True, succeeded=False)
 
@@ -987,10 +994,16 @@ class TeamsIngestWorker:
         failure_count = (
             previous_failure.consecutive_failures if previous_failure is not None else 0
         ) + 1
+        if _graph_poll_error_uses_transient_backoff(error_class):
+            initial_seconds = self.worker_config.target_transient_backoff_initial_seconds
+            max_seconds = self.worker_config.target_transient_backoff_max_seconds
+        else:
+            initial_seconds = self.worker_config.target_backoff_initial_seconds
+            max_seconds = self.worker_config.target_backoff_max_seconds
         computed_backoff = _compute_target_backoff_seconds(
             failure_count=failure_count,
-            initial_seconds=self.worker_config.target_backoff_initial_seconds,
-            max_seconds=self.worker_config.target_backoff_max_seconds,
+            initial_seconds=initial_seconds,
+            max_seconds=max_seconds,
         )
         backoff_seconds = max(computed_backoff, retry_after_seconds or 0.0)
         failed_at = datetime.now(UTC)
@@ -1482,6 +1495,18 @@ def _compute_target_backoff_seconds(
     if exponent >= exponent_until_cap:
         return maximum
     return min(maximum, math.ldexp(initial, exponent))
+
+
+def _graph_poll_error_uses_transient_backoff(error_class: str) -> bool:
+    if error_class in {"timeout", "transport", "retry_budget_timeout"}:
+        return True
+    if not error_class.startswith("http_"):
+        return False
+    try:
+        status_code = int(error_class.removeprefix("http_"))
+    except ValueError:
+        return False
+    return 500 <= status_code <= 599
 
 
 def _retry_after_seconds(response: httpx.Response) -> float | None:
