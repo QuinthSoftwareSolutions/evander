@@ -782,7 +782,8 @@ Storage layout for directory config:
   the gateway scopes to the required target. Cursorless reads still stay on a bounded recent path
   for that target: the gateway applies `teams_poll_limit` as the default message limit, and the
   Graph adapter caps each history scan with `teams_history_page_cap` plus
-  `teams_history_deadline_seconds`.
+  `teams_history_deadline_seconds`. Each attempt is separately capped by
+  `teams_history_request_timeout_seconds`; transient failures retry inside the overall deadline.
 
 ## VM Python Bootstrap
 

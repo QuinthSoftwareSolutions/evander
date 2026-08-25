@@ -846,7 +846,9 @@ contract. See [live-smoke-tests.md](docs/live-smoke-tests.md) for live provider 
   and `limit` arguments. Cursors can be full returned cursor values or bare message ids, which the
   gateway scopes to the required target. Cursorless reads are bounded recent reads for that target:
   the gateway defaults the call to `teams_poll_limit`, and the Graph adapter stops after
-  `teams_history_page_cap` pages or `teams_history_deadline_seconds`, whichever comes first.
+  `teams_history_page_cap` pages or `teams_history_deadline_seconds`, whichever comes first. Each
+  Graph history attempt is capped by `teams_history_request_timeout_seconds`, and transient
+  failures can retry only within the overall history deadline.
 - The `teams_get_messages` gateway tool returns normalized envelopes with:
   - `cursor`
   - `message_id`

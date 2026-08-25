@@ -129,6 +129,10 @@ class _TeamsGraphPaginationBudget:
     def remaining_seconds(self) -> float:
         return max(0.0, self.deadline_seconds - (time.monotonic() - self.started_at))
 
+    @property
+    def deadline_monotonic(self) -> float:
+        return self.started_at + self.deadline_seconds
+
     def can_request_page(self) -> bool:
         return self.pages_read < self.page_cap and self.remaining_seconds() > 0
 
@@ -2512,8 +2516,9 @@ class GraphTeamsService:
         poll_limit: int,
         timeout_seconds: float,
         history_page_cap: int = 1,
-        history_deadline_seconds: float = 5.0,
-        retry_count: int = 3,
+        history_deadline_seconds: float = 15.0,
+        history_request_timeout_seconds: float = 5.0,
+        retry_count: int = 2,
         retry_base_backoff_seconds: float = 0.5,
         retry_max_backoff_seconds: float = 5.0,
         allowed_channel_targets_provider: Callable[[], list[str]] = lambda: [],
@@ -2521,6 +2526,7 @@ class GraphTeamsService:
         user_chat_cache: dict[str, str] | None = None,
         user_chat_cache_namespace: str = "default",
         read_reaction_emoji: str = "👀",
+        defer_retry_after: bool = False,
     ) -> None:
         self.message_store = message_store
         self.token = str(token or "").strip()
@@ -2529,11 +2535,12 @@ class GraphTeamsService:
         self.poll_limit = poll_limit
         self.history_page_cap = max(1, int(history_page_cap))
         self.history_deadline_seconds = max(0.001, float(history_deadline_seconds))
+        self.history_request_timeout_seconds = max(0.001, float(history_request_timeout_seconds))
         self.timeout_seconds = timeout_seconds
         self.retry_count = retry_count
         self.retry_base_backoff_seconds = retry_base_backoff_seconds
         self.retry_max_backoff_seconds = retry_max_backoff_seconds
-        self.max_total_retry_time_seconds = sum(
+        self.max_total_retry_backoff_seconds = sum(
             min(self.retry_max_backoff_seconds, self.retry_base_backoff_seconds * (2**attempt))
             for attempt in range(self.retry_count)
         )
@@ -2542,6 +2549,7 @@ class GraphTeamsService:
         self.user_chat_cache = user_chat_cache if user_chat_cache is not None else {}
         self.user_chat_cache_namespace = str(user_chat_cache_namespace or "default")
         self.read_reaction_emoji = read_reaction_emoji
+        self.defer_retry_after = defer_retry_after
 
     def _resolve_token(self) -> str:
         try:
@@ -2814,11 +2822,34 @@ class GraphTeamsService:
         params: dict[str, Any] | None = None,
         json: dict[str, Any] | None = None,
         timeout_seconds: float | None = None,
+        deadline_monotonic: float | None = None,
     ) -> httpx.Response:
         start_time = time.monotonic()
         attempt = 0
         last_error: Exception | None = None
+        retry_backoff_seconds = 0.0
+        normalized_method = method.upper()
+        is_idempotent_request = normalized_method in {
+            "DELETE",
+            "GET",
+            "HEAD",
+            "OPTIONS",
+            "PUT",
+            "TRACE",
+        }
+        uses_history_retry_budget = is_idempotent_request and deadline_monotonic is not None
         while True:
+            effective_timeout = (
+                timeout_seconds if timeout_seconds is not None else self.timeout_seconds
+            )
+            if deadline_monotonic is not None:
+                remaining_deadline = deadline_monotonic - time.monotonic()
+                if remaining_deadline <= 0:
+                    if last_error is not None:
+                        raise last_error
+                    raise TimeoutError("Teams Graph request deadline expired before an attempt")
+                effective_timeout = min(effective_timeout, remaining_deadline)
+            attempt_started_at = time.monotonic()
             try:
                 response = client.request(
                     method,
@@ -2826,37 +2857,111 @@ class GraphTeamsService:
                     headers=self._headers(),
                     params=params,
                     json=json,
-                    timeout=timeout_seconds
-                    if timeout_seconds is not None
-                    else self.timeout_seconds,
+                    timeout=effective_timeout,
                 )
                 response.raise_for_status()
+                if attempt > 0:
+                    _LOGGER.info(
+                        "Teams Graph request recovered method=%s path=%s attempts=%d "
+                        "duration_seconds=%.3f",
+                        method,
+                        urlparse(url).path,
+                        attempt + 1,
+                        time.monotonic() - start_time,
+                    )
                 return response
             except (httpx.TimeoutException, httpx.ConnectError) as exc:
                 last_error = exc
-                if attempt >= self.retry_count:
+                timed_out_unacknowledged_write = (
+                    isinstance(exc, httpx.TimeoutException) and not is_idempotent_request
+                )
+                if timed_out_unacknowledged_write or attempt >= self.retry_count:
+                    _LOGGER.warning(
+                        "Teams Graph request failed method=%s path=%s attempts=%d "
+                        "duration_seconds=%.3f error=%s",
+                        method,
+                        urlparse(url).path,
+                        attempt + 1,
+                        time.monotonic() - start_time,
+                        "timeout" if isinstance(exc, httpx.TimeoutException) else "connect",
+                    )
                     raise
+                error_class = "timeout" if isinstance(exc, httpx.TimeoutException) else "connect"
             except httpx.HTTPStatusError as exc:
                 status_code = exc.response.status_code
                 if status_code not in {429} and not (500 <= status_code <= 599):
                     raise _augment_http_status_error(exc) from exc
+                if (
+                    status_code == 429
+                    and self.defer_retry_after
+                    and exc.response.headers.get("Retry-After")
+                ):
+                    _LOGGER.warning(
+                        "Teams Graph request deferred method=%s path=%s attempts=%d "
+                        "duration_seconds=%.3f error=http_429",
+                        method,
+                        urlparse(url).path,
+                        attempt + 1,
+                        time.monotonic() - start_time,
+                    )
+                    raise _augment_http_status_error(exc) from exc
                 if attempt >= self.retry_count:
+                    _LOGGER.warning(
+                        "Teams Graph request failed method=%s path=%s attempts=%d "
+                        "duration_seconds=%.3f error=http_%d",
+                        method,
+                        urlparse(url).path,
+                        attempt + 1,
+                        time.monotonic() - start_time,
+                        status_code,
+                    )
                     raise _augment_http_status_error(exc) from exc
                 last_error = _augment_http_status_error(exc)
+                error_class = f"http_{status_code}"
 
             planned_backoff = min(
                 self.retry_max_backoff_seconds,
                 self.retry_base_backoff_seconds * (2**attempt),
             )
             jittered_backoff = random.uniform(0.5 * planned_backoff, 1.5 * planned_backoff)
-            elapsed = time.monotonic() - start_time
-            remaining_budget = self.max_total_retry_time_seconds - elapsed
+            if uses_history_retry_budget:
+                remaining_budget = self.max_total_retry_backoff_seconds - retry_backoff_seconds
+            else:
+                remaining_budget = self.max_total_retry_backoff_seconds - (
+                    time.monotonic() - start_time
+                )
             if remaining_budget <= 0:
                 if last_error is not None:
                     raise last_error
                 raise TimeoutError("Retry budget exhausted before completing Teams API request")
             sleep_for = min(jittered_backoff, remaining_budget)
+            deadline_remaining_for_log: float | None = None
+            if deadline_monotonic is not None:
+                deadline_remaining_for_log = max(0.0, deadline_monotonic - time.monotonic())
+                if deadline_remaining_for_log <= 0:
+                    if last_error is not None:
+                        raise last_error
+                    raise TimeoutError("Teams Graph request deadline expired before retry")
+                sleep_for = min(sleep_for, deadline_remaining_for_log)
+            _LOGGER.warning(
+                "Teams Graph request retry method=%s path=%s attempt=%d/%d error=%s "
+                "attempt_duration_seconds=%.3f sleep_seconds=%.3f "
+                "deadline_remaining_seconds=%s",
+                method,
+                urlparse(url).path,
+                attempt + 1,
+                self.retry_count + 1,
+                error_class,
+                time.monotonic() - attempt_started_at,
+                sleep_for,
+                (
+                    f"{deadline_remaining_for_log:.3f}"
+                    if deadline_remaining_for_log is not None
+                    else "unbounded"
+                ),
+            )
             time.sleep(sleep_for)
+            retry_backoff_seconds += sleep_for
             attempt += 1
 
     def _is_graph_api_origin(self, url: str) -> bool:
@@ -3010,7 +3115,12 @@ class GraphTeamsService:
                 "GET",
                 next_url,
                 params=params,
-                timeout_seconds=min(self.timeout_seconds, remaining_seconds),
+                timeout_seconds=min(
+                    self.timeout_seconds,
+                    self.history_request_timeout_seconds,
+                    remaining_seconds,
+                ),
+                deadline_monotonic=budget.deadline_monotonic,
             )
             budget.record_page()
             payload = response.json()
@@ -3046,7 +3156,12 @@ class GraphTeamsService:
                 "GET",
                 next_url,
                 params=params,
-                timeout_seconds=min(self.timeout_seconds, remaining_seconds),
+                timeout_seconds=min(
+                    self.timeout_seconds,
+                    self.history_request_timeout_seconds,
+                    remaining_seconds,
+                ),
+                deadline_monotonic=budget.deadline_monotonic,
             )
             budget.record_page()
             payload = response.json()
@@ -3084,7 +3199,12 @@ class GraphTeamsService:
                 "GET",
                 next_url,
                 params=params,
-                timeout_seconds=min(self.timeout_seconds, remaining_seconds),
+                timeout_seconds=min(
+                    self.timeout_seconds,
+                    self.history_request_timeout_seconds,
+                    remaining_seconds,
+                ),
+                deadline_monotonic=budget.deadline_monotonic,
             )
             budget.record_page()
             payload = response.json()

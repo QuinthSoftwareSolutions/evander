@@ -347,9 +347,10 @@ class GatewayConfig(BaseModel):
     teams_graph_api_base_url: str = "https://graph.microsoft.com/v1.0"
     teams_poll_limit: int = Field(default=50, ge=1, le=100)
     teams_history_page_cap: int = Field(default=1, ge=1, le=100)
-    teams_history_deadline_seconds: float = Field(default=5.0, gt=0)
+    teams_history_request_timeout_seconds: float = Field(default=5.0, gt=0)
+    teams_history_deadline_seconds: float = Field(default=15.0, gt=0)
     teams_timeout_seconds: float = Field(default=15.0, gt=0)
-    teams_retry_count: int = Field(default=3, ge=0, le=10)
+    teams_retry_count: int = Field(default=2, ge=0, le=10)
     teams_retry_base_backoff_seconds: float = Field(default=0.5, gt=0)
     teams_retry_max_backoff_seconds: float = Field(default=5.0, gt=0)
     teams_read_reaction_emoji: str = "👀"
@@ -1264,6 +1265,8 @@ class TeamsIngestWorkerGlobalConfig(BaseModel):
     max_concurrent_target_polls: int = Field(default=1, ge=1, le=32)
     target_backoff_initial_seconds: float = Field(default=60.0, ge=0)
     target_backoff_max_seconds: float = Field(default=900.0, ge=0)
+    target_transient_backoff_initial_seconds: float = Field(default=5.0, ge=0)
+    target_transient_backoff_max_seconds: float = Field(default=30.0, ge=0)
     lock_path: Path | None = None
 
     @model_validator(mode="after")
@@ -1272,6 +1275,14 @@ class TeamsIngestWorkerGlobalConfig(BaseModel):
             raise ValueError(
                 "target_backoff_max_seconds must be greater than or equal to "
                 "target_backoff_initial_seconds"
+            )
+        if (
+            self.target_transient_backoff_max_seconds
+            < self.target_transient_backoff_initial_seconds
+        ):
+            raise ValueError(
+                "target_transient_backoff_max_seconds must be greater than or equal to "
+                "target_transient_backoff_initial_seconds"
             )
         return self
 

@@ -163,6 +163,9 @@ CONFIG_FIELD_TOOLTIPS: dict[str, str] = {
     "teams_history_deadline_seconds": (
         "Wall-clock deadline in seconds for one bounded Microsoft Graph Teams history scan."
     ),
+    "teams_history_request_timeout_seconds": (
+        "Per-attempt timeout in seconds for bounded Microsoft Graph Teams history reads."
+    ),
     "teams_backend": (
         "Teams adapter mode. 'stub' uses local stored messages, 'graph_api' uses a host token, and "
         "'delegated_graph_api' uses delegated Microsoft identity credentials."

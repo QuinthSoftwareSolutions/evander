@@ -8,5 +8,7 @@
   "max_concurrent_target_polls": 1,
   "target_backoff_initial_seconds": 60,
   "target_backoff_max_seconds": 900,
+  "target_transient_backoff_initial_seconds": 5,
+  "target_transient_backoff_max_seconds": 30,
   "lock_path": null
 }

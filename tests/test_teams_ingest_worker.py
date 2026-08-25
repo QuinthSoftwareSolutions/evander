@@ -552,10 +552,16 @@ def test_teams_ingest_worker_backs_off_only_the_failing_graph_target(
     assert first.trigger_wake_notified is True
     assert wake_calls == ["wake"]
     assert worker.store.list_all_messages(channel_targets=["team-a/good"])
-    assert any(
-        state["consecutive_failures"] == 1
-        for state in worker.store.read_raw()["poll_health"].values()
+    failed_target_health = next(
+        state
+        for key, state in worker.store.read_raw()["poll_health"].items()
+        if key.endswith("|channel|team-a/bad")
     )
+    assert failed_target_health["consecutive_failures"] == 1
+    assert (
+        datetime.fromisoformat(failed_target_health["next_attempt_at"])
+        - datetime.fromisoformat(failed_target_health["last_failed_at"])
+    ).total_seconds() == 5.0
 
     requests.clear()
     second_worker = build_teams_ingest_worker(
@@ -573,8 +579,12 @@ def test_teams_ingest_worker_honors_retry_after_for_only_the_throttled_target(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    throttled_attempts = 0
+
     def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal throttled_attempts
         if request.url.path.endswith("/channels/throttled/messages"):
+            throttled_attempts += 1
             return httpx.Response(
                 429,
                 headers={"Retry-After": "120"},
@@ -585,12 +595,13 @@ def test_teams_ingest_worker_honors_retry_after_for_only_the_throttled_target(
         raise AssertionError(f"Unexpected path: {request.url.path}")
 
     patch_worker_httpx_client(monkeypatch, httpx.MockTransport(handler))
+    monkeypatch.setattr("evander.services.time.sleep", lambda _seconds: None)
     monkeypatch.setenv("GRAPH_TEAMS_ACCESS_TOKEN", "graph-token")
     config = GatewayConfig.model_validate(
         {
             "runtime_dir": str(tmp_path / "runtime"),
             "teams_backend": "graph_api",
-            "teams_retry_count": 0,
+            "teams_retry_count": 2,
         }
     )
     worker = build_teams_ingest_worker(config, project_dir=tmp_path)
@@ -615,6 +626,7 @@ def test_teams_ingest_worker_honors_retry_after_for_only_the_throttled_target(
     )
     assert result.targets_failed == 1
     assert result.channel_targets_polled == 2
+    assert throttled_attempts == 1
     assert datetime.fromisoformat(unhealthy["next_attempt_at"]) >= before + timedelta(seconds=119)
 
 
@@ -629,6 +641,8 @@ def test_teams_ingest_worker_resets_target_backoff_after_recovery(
             {
                 "target_backoff_initial_seconds": 0,
                 "target_backoff_max_seconds": 0,
+                "target_transient_backoff_initial_seconds": 0,
+                "target_transient_backoff_max_seconds": 0,
             }
         ),
         encoding="utf-8",
@@ -1831,6 +1845,17 @@ def test_teams_target_backoff_caps_before_large_exponentiation() -> None:
         )
         == 900
     )
+
+
+def test_teams_transient_target_backoff_uses_short_capped_progression() -> None:
+    assert [
+        _compute_target_backoff_seconds(
+            failure_count=failure_count,
+            initial_seconds=5,
+            max_seconds=30,
+        )
+        for failure_count in range(1, 6)
+    ] == [5, 10, 20, 30, 30]
 
 
 def test_teams_delegated_poll_scope_changes_with_identity(tmp_path: Path) -> None:
