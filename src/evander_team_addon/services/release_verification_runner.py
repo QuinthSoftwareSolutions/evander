@@ -11,6 +11,7 @@ from ..models import (
     ReleaseVerificationCommand,
     ReleaseVerificationRun,
     TeamState,
+    utc_now,
 )
 from ..repository import TeamStateRepository
 from .domain.common import _optional_text
@@ -148,6 +149,29 @@ class TeamReleaseVerificationRunner:
         verification_commands = manifest.verification_commands
         if not verification_commands:
             raise ValueError("release verification run has no frozen commands")
+        if not run.verifier_settings_snapshotted:
+            state = self._repo.update(
+                lambda current: _snapshot_legacy_verifier_settings(
+                    current,
+                    release_package_id=release_package_id,
+                    verification_run_id=verification_run_id,
+                    candidate_commit_sha=candidate_commit_sha,
+                )
+            )
+            release, run = _validate_verification_request_identity(
+                state,
+                release_package_id=release_package_id,
+                verification_run_id=verification_run_id,
+                candidate_commit_sha=candidate_commit_sha,
+            )
+            project = state.projects.get(release.project_id)
+            git = project.git if project is not None else None
+            manifest = release.manifest
+            if project is None or git is None or manifest is None:
+                raise ValueError(
+                    "release project, Git configuration, or frozen candidate manifest is missing"
+                )
+            verification_commands = manifest.verification_commands
 
         state = self._release_gate_service.mark_verification_started(
             release_package_id=release_package_id,
@@ -407,6 +431,32 @@ def _validate_verification_request_identity(
     ):
         raise ValueError("release verification request does not match the pinned candidate")
     return release, run
+
+
+def _snapshot_legacy_verifier_settings(
+    state: TeamState,
+    *,
+    release_package_id: str,
+    verification_run_id: str,
+    candidate_commit_sha: str,
+) -> TeamState:
+    release, run = _validate_verification_request_identity(
+        state,
+        release_package_id=release_package_id,
+        verification_run_id=verification_run_id,
+        candidate_commit_sha=candidate_commit_sha,
+    )
+    if run.verifier_settings_snapshotted:
+        return state
+    project = state.projects.get(release.project_id)
+    if project is None:
+        raise ValueError("release project is missing")
+    policy = project.release_policy
+    run.container_image = policy.container_image if policy is not None else None
+    run.resource_limits = policy.resource_limits if policy is not None else None
+    run.verifier_settings_snapshotted = True
+    run.updated_at = utc_now()
+    return state
 
 
 def _persisted_terminal_outcome(

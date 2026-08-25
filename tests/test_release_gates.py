@@ -1318,6 +1318,39 @@ def test_configuration_gate_rejection_routes_high_priority_team_blocker() -> Non
     assert wake["payload"]["agent_id"] == "lead"
 
 
+def test_new_verification_run_marks_verifier_settings_as_snapshotted() -> None:
+    command = ReleaseVerificationCommand(name="tests", argv=["pytest", "-q"])
+    release, promotion = _release_and_promotion(verification_commands=[command])
+    state = TeamState.empty()
+    state.projects["project"] = _project(
+        release_policy=ProjectReleasePolicy(
+            container_image="verifier:v1",
+            resource_limits={"memory": "6g", "cpus": 4, "pids_limit": 1536},
+            verification_commands=[command],
+        )
+    )
+    state.release_packages[release.id] = release
+    state.git_promotions[promotion.id] = promotion
+    result = _result()
+
+    begin_release_gates(
+        state,
+        release=release,
+        release_promotion=promotion,
+        candidate_commit_sha="candidate-sha",
+        candidate_tree_hash="candidate-tree",
+        result=result,
+    )
+
+    run = state.release_verification_runs[release.verification_run_ids[0]]
+    assert run.verifier_settings_snapshotted is True
+    assert run.container_image == "verifier:v1"
+    assert run.resource_limits is not None
+    assert run.resource_limits.memory == "6g"
+    assert run.resource_limits.cpus == 4.0
+    assert run.resource_limits.pids_limit == 1536
+
+
 @pytest.mark.parametrize(
     ("verification_state", "failure_kind"),
     [
@@ -1600,6 +1633,7 @@ def test_verification_retry_uses_commands_frozen_in_release_manifest() -> None:
 
     replacement = state.release_verification_runs[str(result["replacement_gate_id"])]
     assert [item.name for item in replacement.command_results] == [frozen_command.name]
+    assert replacement.verifier_settings_snapshotted is True
     assert release.state == TeamRecordState.PENDING
 
 

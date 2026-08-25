@@ -20,6 +20,59 @@ from evander_team_addon.providers import (
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def test_project_git_payload_uses_visible_provider_neutral_directory_scope() -> None:
+    source = (ROOT / "src" / "evander_team_addon" / "ui_static" / "team-ui.js").read_text(
+        encoding="utf-8"
+    )
+    markup = (ROOT / "src" / "evander_team_addon" / "ui_static" / "index.html").read_text(
+        encoding="utf-8"
+    )
+    helper_source = source[
+        source.index("function gitConfigForForm(") : source.index(
+            "function releasePolicyForForm("
+        )
+    ]
+
+    assert 'name="directory_path" value="root" required' in markup
+    assert "managed_repo_directory_path" not in markup
+    assert "managed_repo_directory_path" not in source
+    assert source.count("git: gitConfigForForm(data)") >= 1
+    assert "const git = gitConfigForForm(data);" in source
+
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("node is required for Team UI payload tests")
+    script = f"""
+      const assert = require("node:assert/strict");
+      const text = (value) => String(value ?? "").trim();
+      {helper_source}
+      assert.deepEqual(
+        gitConfigForForm({{
+          managed_repo_id: "mr_0123456789abcdefabcd",
+          directory_path: "root/new-scope",
+          managed_repo_directory_path: "root/stale-scope",
+        }}),
+        {{
+          managed_repo_id: "mr_0123456789abcdefabcd",
+          directory_path: "root/new-scope",
+        }},
+      );
+      assert.equal(
+        gitConfigForForm({{ managed_repo_id: "mr_0123456789abcdefabcd" }}).directory_path,
+        "root",
+      );
+    """
+    result = subprocess.run(
+        [node, "--input-type=commonjs"],
+        input=script,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+
+
 def test_review_decision_ui_submits_criterion_evidence_references() -> None:
     source = (ROOT / "src" / "evander_team_addon" / "ui_static" / "team-ui.js").read_text(
         encoding="utf-8"

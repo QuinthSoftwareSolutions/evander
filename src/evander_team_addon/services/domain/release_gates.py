@@ -360,6 +360,7 @@ def begin_release_gates(
                 evidence_refs=[],
                 container_image=policy.container_image,
                 resource_limits=policy.resource_limits,
+                verifier_settings_snapshotted=True,
                 attempt_number=1,
                 command_results=[
                     ReleaseVerificationCommandResult(name=command.name)
@@ -1807,6 +1808,7 @@ def retry_release_gate(
             retry_requested_by=normalized_requested_by,
             container_image=(retry_policy.container_image if retry_policy is not None else None),
             resource_limits=(retry_policy.resource_limits if retry_policy is not None else None),
+            verifier_settings_snapshotted=True,
             command_results=[
                 ReleaseVerificationCommandResult(name=command.name)
                 for command in verification_commands

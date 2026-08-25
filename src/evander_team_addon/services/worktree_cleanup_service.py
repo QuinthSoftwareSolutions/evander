@@ -50,6 +50,18 @@ _ACTIVE_DISPATCH_STATES = frozenset(
         TeamDispatchStatus.LEASED,
     }
 )
+_STALE_GENERATION_FAILURE_CHECKS = frozenset(
+    {
+        "head_mismatch",
+        "retained_commit_mismatch",
+    }
+)
+_TERMINAL_CLEANUP_STATES = frozenset(
+    {
+        WorktreeCleanupState.SUCCEEDED,
+        WorktreeCleanupState.SUPERSEDED,
+    }
+)
 
 
 def _set_ignored_file_evidence(
@@ -336,6 +348,7 @@ class TeamWorktreeCleanupService:
                         )
 
             assessments = TaskAssessmentService(state)
+            _supersede_stale_cleanup_generations(state, now=effective_now)
             selected_context_ids = _cleanup_context_ids_to_enqueue(state)
             for context in sorted(
                 state.git_work_contexts.values(),
@@ -1255,6 +1268,37 @@ def _cleanup_candidate_for_context(
 
 
 def _cleanup_context_ids_to_enqueue(state: TeamState) -> set[str]:
+    newest_by_lineage = _newest_cleanup_contexts_by_lineage(state)
+
+    nonterminal_lineages: set[tuple[str, str, str, str]] = set()
+    for candidate in state.worktree_cleanup_candidates.values():
+        if candidate.state in _TERMINAL_CLEANUP_STATES:
+            continue
+        lineage = _cleanup_candidate_lineage(candidate)
+        newest_context = newest_by_lineage.get(lineage)
+        stale_mismatch_generation = (
+            newest_context is not None
+            and newest_context.id != candidate.git_work_context_id
+            and candidate.state == WorktreeCleanupState.OPERATOR_ACTION_REQUIRED
+            and candidate.last_safety_check in _STALE_GENERATION_FAILURE_CHECKS
+        )
+        if not stale_mismatch_generation:
+            nonterminal_lineages.add(lineage)
+
+    candidate_context_ids = {
+        candidate.git_work_context_id
+        for candidate in state.worktree_cleanup_candidates.values()
+    }
+    return {
+        context.id
+        for lineage, context in newest_by_lineage.items()
+        if context.id in candidate_context_ids or lineage not in nonterminal_lineages
+    }
+
+
+def _newest_cleanup_contexts_by_lineage(
+    state: TeamState,
+) -> dict[tuple[str, str, str, str], GitWorkContext]:
     newest_by_lineage: dict[tuple[str, str, str, str], GitWorkContext] = {}
     for context in state.git_work_contexts.values():
         if context.worktree_path is None:
@@ -1279,26 +1323,39 @@ def _cleanup_context_ids_to_enqueue(state: TeamState) -> set[str]:
             current.id,
         ):
             newest_by_lineage[lineage] = context
+    return newest_by_lineage
 
-    nonterminal_lineages = {
-        (
-            candidate.agent_id,
-            candidate.session_id,
-            _cleanup_worktree_path_identity(candidate.worktree_path),
-            candidate.branch,
-        )
-        for candidate in state.worktree_cleanup_candidates.values()
-        if candidate.state != WorktreeCleanupState.SUCCEEDED
-    }
-    candidate_context_ids = {
-        candidate.git_work_context_id
-        for candidate in state.worktree_cleanup_candidates.values()
-    }
-    return {
-        context.id
-        for lineage, context in newest_by_lineage.items()
-        if context.id in candidate_context_ids or lineage not in nonterminal_lineages
-    }
+
+def _cleanup_candidate_lineage(
+    candidate: WorktreeCleanupCandidate,
+) -> tuple[str, str, str, str]:
+    return (
+        candidate.agent_id,
+        candidate.session_id,
+        _cleanup_worktree_path_identity(candidate.worktree_path),
+        candidate.branch,
+    )
+
+
+def _supersede_stale_cleanup_generations(
+    state: TeamState,
+    *,
+    now: datetime,
+) -> None:
+    newest_by_lineage = _newest_cleanup_contexts_by_lineage(state)
+    for candidate in state.worktree_cleanup_candidates.values():
+        if (
+            candidate.state != WorktreeCleanupState.OPERATOR_ACTION_REQUIRED
+            or candidate.last_safety_check not in _STALE_GENERATION_FAILURE_CHECKS
+        ):
+            continue
+        newest_context = newest_by_lineage.get(_cleanup_candidate_lineage(candidate))
+        if newest_context is None or newest_context.id == candidate.git_work_context_id:
+            continue
+        candidate.state = WorktreeCleanupState.SUPERSEDED
+        candidate.superseded_by_git_work_context_id = newest_context.id
+        candidate.completed_at = now
+        candidate.updated_at = now
 
 
 def _cleanup_candidate_with_context_identity(

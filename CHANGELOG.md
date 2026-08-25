@@ -36,8 +36,11 @@
   replaying retained review evidence without rewriting child, deliverable, review, or Git history.
 - Added bounded cleanup retries with explicit operator disposition, coherent multi-table SQLite
   reads, atomic failure audit/disposition, enqueue-time repository/directory-scope snapshots for
-  physical cleanup, per-Git-context cleanup generations, pre-freeze project repository-scope
-  change guards, and coordinated runtime-generation checks across the Team-serving processes.
+  physical cleanup, per-Git-context cleanup generations with stale mismatch supersession,
+  pre-freeze project repository-scope change guards, and coordinated runtime-generation checks
+  across the Team-serving processes.
+- Snapshotted verifier images and resource limits per release-verification run while preserving
+  the configured project policy when a nonterminal pre-upgrade run resumes.
 - Pinned preparation and guest pushes to an immutable server-authorized Git base, including after
   the named base branch advances, and rejected reused branches or pre-existing worktrees without
   authoritative provenance before they can be mutated.

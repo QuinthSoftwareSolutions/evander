@@ -1621,6 +1621,82 @@ def test_new_context_generation_waits_while_same_checkout_candidate_is_pending(
     assert next(iter(state.worktree_cleanup_candidates.values())).id == original.id
 
 
+@pytest.mark.parametrize(
+    "failed_check",
+    ["head_mismatch", "retained_commit_mismatch"],
+)
+def test_new_context_generation_supersedes_stale_mismatch_candidate(
+    tmp_path,
+    failed_check: str,
+) -> None:
+    repository = _seed_cleanup_state(tmp_path)
+    backend = FakeCleanupBackend(
+        [
+            {
+                "state": "refused",
+                "safe_to_remove": False,
+                "failed_check": failed_check,
+                "message": f"{failed_check} prevents cleanup",
+            }
+        ]
+    )
+    now = datetime(2026, 7, 25, 12, tzinfo=UTC)
+    service = TeamWorktreeCleanupService(repository, backend)
+    first_state, first_counts = service.enqueue_candidates(now=now, grace_seconds=0)
+    original = next(iter(first_state.worktree_cleanup_candidates.values()))
+    next_commit = "4" * 40
+
+    def _add_new_generation(state: TeamState) -> TeamState:
+        state.git_work_contexts["context-next"] = GitWorkContext(
+            id="context-next",
+            agent_id="backend",
+            task_id="task",
+            agent_branch="agents/session-backend/tasks/task-12345678",
+            base_branch="main",
+            base_commit=_BASE_COMMIT,
+            commit_sha=next_commit,
+            worktree_path=_WORKTREE_PATH,
+            state=GitWorkContextState.ABANDONED,
+            created_at=now + timedelta(minutes=1),
+            updated_at=now + timedelta(minutes=1),
+        )
+        return state
+
+    repository.update(_add_new_generation)
+    mismatch_now = now + timedelta(minutes=2)
+    halted = service.reconcile(
+        now=mismatch_now,
+        grace_seconds=0,
+        retry_seconds=0,
+    )
+    halted_candidate = repository.read().worktree_cleanup_candidates[original.id]
+
+    assert halted.operator_action_required_count == 1
+    assert halted_candidate.state == WorktreeCleanupState.OPERATOR_ACTION_REQUIRED
+    assert halted_candidate.last_safety_check == failed_check
+    assert halted_candidate.operator_action_required_at == mismatch_now
+    assert len(repository.read().worktree_cleanup_candidates) == 1
+
+    next_now = now + timedelta(minutes=3)
+    state, counts = service.enqueue_candidates(now=next_now, grace_seconds=0)
+
+    assert first_counts == {"enqueued": 1, "recovered": 0, "refreshed": 0}
+    assert counts == {"enqueued": 1, "recovered": 0, "refreshed": 0}
+    candidates_by_context = {
+        candidate.git_work_context_id: candidate
+        for candidate in state.worktree_cleanup_candidates.values()
+    }
+    superseded = candidates_by_context["context"]
+    replacement = candidates_by_context["context-next"]
+    assert superseded.state == WorktreeCleanupState.SUPERSEDED
+    assert superseded.superseded_by_git_work_context_id == "context-next"
+    assert superseded.completed_at == next_now
+    assert superseded.last_safety_check == failed_check
+    assert replacement.state == WorktreeCleanupState.PENDING
+    assert replacement.expected_head == next_commit
+    assert replacement.completed_at is None
+
+
 def test_cleanup_candidate_uses_newest_context_not_opaque_id_order(
     tmp_path,
 ) -> None:

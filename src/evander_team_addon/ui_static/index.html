@@ -472,6 +472,7 @@
               <label>Team <select name="team_id" required data-options="teams"></select></label>
               <label>Name <input name="name" required /></label>
               <label>Project lead <select name="lead_agent_id" required data-options="project-lead-agents" data-placeholder="Select team agent"></select></label>
+              <label>Directory scope <input name="directory_path" value="root" required /></label>
               <label>Goal <textarea name="goal_description" rows="2"></textarea></label>
               <details>
                 <summary>Git config</summary>
@@ -481,7 +482,6 @@
                   <span class="meta-line" data-git-import-status></span>
                 </div>
                 <label>Managed repository ID <input name="managed_repo_id" placeholder="mr_..." /></label>
-                <input type="hidden" name="managed_repo_directory_path" />
                 <label>Default base branch for new tasks <input name="base_branch" placeholder="main" /></label>
                 <label>Canonical release branch prefix <input name="canonical_release_branch_prefix" /></label>
                 <label>Agent commit author name <input name="agent_author_name" placeholder="Evander Bot" /></label>

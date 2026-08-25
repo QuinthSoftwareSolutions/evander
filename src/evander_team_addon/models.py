@@ -3101,6 +3101,7 @@ class WorktreeCleanupState(str, Enum):
     PENDING = "pending"
     PROCESSING = "processing"
     SUCCEEDED = "succeeded"
+    SUPERSEDED = "superseded"
     OPERATOR_ACTION_REQUIRED = "operator_action_required"
     # Legacy persisted value. Model and SQLite migrations translate it to
     # either pending automatic retry or operator action required.
@@ -3327,6 +3328,7 @@ class WorktreeCleanupCandidate(TeamModel):
     last_error: str | None = None
     operator_action_required_at: datetime | None = None
     operator_action_reason: str | None = None
+    superseded_by_git_work_context_id: str | None = None
     last_operator_retry_at: datetime | None = None
     last_operator_retry_by: str | None = None
     last_operator_retry_reason: str | None = None
@@ -3412,6 +3414,7 @@ class WorktreeCleanupCandidate(TeamModel):
         "last_safety_check",
         "last_error",
         "operator_action_reason",
+        "superseded_by_git_work_context_id",
         "last_operator_retry_by",
         "last_operator_retry_reason",
         "ignored_file_inventory_sha256",
@@ -3440,6 +3443,13 @@ class WorktreeCleanupCandidate(TeamModel):
                 raise ValueError(
                     "operator-action-required cleanup requires operator_action_reason"
                 )
+        if self.state == WorktreeCleanupState.SUPERSEDED:
+            if self.superseded_by_git_work_context_id is None:
+                raise ValueError(
+                    "superseded cleanup requires superseded_by_git_work_context_id"
+                )
+            if self.completed_at is None:
+                raise ValueError("superseded cleanup requires completed_at")
         return self
 
 
@@ -4014,6 +4024,7 @@ class ReleaseVerificationRun(TeamModel):
     evidence_refs: list[str] = Field(default_factory=list)
     container_image: str | None = None
     resource_limits: WorkerResourceLimits | None = None
+    verifier_settings_snapshotted: bool = False
     attempt_number: int = Field(default=1, ge=1)
     failure_kind: Literal["candidate", "infrastructure", "timeout"] | None = None
     supersedes_verification_run_id: str | None = None

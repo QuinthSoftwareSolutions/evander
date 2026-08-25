@@ -5898,7 +5898,8 @@ def test_team_addon_routes_are_available_only_when_enabled(tmp_path: Path) -> No
     assert "data-chat-conversations-view" in ui.text
     assert 'name="repo_source"' in ui.text
     assert 'name="managed_repo_id"' in ui.text
-    assert 'name="managed_repo_directory_path"' in ui.text
+    assert 'name="directory_path"' in ui.text
+    assert 'name="managed_repo_directory_path"' not in ui.text
     assert 'name="bare_repo"' not in ui.text
     assert "data-agent-source-picker" in ui.text
     assert "data-id-field=" not in ui.text
@@ -5981,7 +5982,8 @@ def test_team_addon_routes_are_available_only_when_enabled(tmp_path: Path) -> No
     assert "state.projects[text(profile.project_id)] || null" in script.text
     assert "gitToBareRepo" not in script.text
     assert "managed_repo_id" in script.text
-    assert "managed_repo_directory_path: git.directory_path" in script.text
+    assert "managed_repo_directory_path" not in script.text
+    assert 'const directoryPath = text(data.directory_path) || "root";' in script.text
     assert "git.directory_path = directoryPath" in script.text
     assert "created_by_agent_id: text(data.created_by_agent_id)" in script.text
     assert "fieldTooltips" in script.text

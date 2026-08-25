@@ -828,6 +828,7 @@ def test_case_close_event_is_outboxed_once_and_not_for_initial_or_resolved_cases
         "tags": [],
         "metadata": {"source_thread": "thread-42"},
         "task_ids": [],
+        "source_evidence_snapshot_ids": [],
         "created_at": None,
         "updated_at": None,
         "closed_at": None,

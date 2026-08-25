@@ -2030,7 +2030,9 @@ deliverables are accepted and their Git provenance/composition validates, Team
 creates the release package and frozen candidate; configured release commands
 then run in order against that candidate through a fresh, visible container-worker
 verification run. Typed infrastructure retries keep the same candidate and release
-lineage while preserving every attempt. The old
+lineage while preserving every attempt. New runs freeze their verifier image and
+resource limits; pre-upgrade nonterminal runs are explicitly distinguished and
+snapshot the current project policy once before resuming. The old
 acceptance-verification event and waiver endpoint remain readable for one
 compatibility release, but new callers receive a deprecation warning and no
 hidden verifier or waiver is created.
@@ -2076,6 +2078,10 @@ Deterministic safety refusals such as `retained_commit_mismatch`,
 `operator_action_required` state instead of retrying automatically. Transient
 backend and state-race failures return to `pending` with bounded exponential
 backoff; exhausting the automatic-attempt limit also requires operator action.
+If a later Git-work-context generation has reused the same checkout and advanced
+its physical HEAD, an older generation halted by `head_mismatch` or
+`retained_commit_mismatch` is terminalized as `superseded` and records the newer
+context ID before that context receives its separately frozen cleanup candidate.
 The durable candidate retains the exact path, branch, failed check, timestamp,
 retry counts, operator-action reason, and bounded evidence. After correcting the
 cause, a directory owner may requeue it with a reason through
