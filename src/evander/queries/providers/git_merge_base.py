@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any
 
-from .base import QueryProviderBase
+from .base import QueryProviderBase, scoped_query_directory_path
 
 
 class GitMergeBaseQueryProvider(QueryProviderBase):
@@ -24,8 +24,9 @@ class GitMergeBaseQueryProvider(QueryProviderBase):
         )
 
         context = self._context()
-        directory_path = self._normalize_optional_string(payload.get("directory_path")) or str(
-            context.metadata.get("directory_path") or "root"
+        directory_path = scoped_query_directory_path(
+            context,
+            self._normalize_optional_string(payload.get("directory_path")),
         )
         query_fn = getattr(
             context.git_merge_base_reader,

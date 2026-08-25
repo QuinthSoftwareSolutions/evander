@@ -365,6 +365,37 @@ def test_git_merge_base_query_provider_returns_pinned_target_and_merge_base() ->
     assert output["merge_base_commit_sha"] == merge_base_commit
 
 
+def test_git_merge_base_query_provider_rejects_sibling_directory_scope() -> None:
+    query = GitMergeBaseQueryDefinition(
+        id="query-merge-base",
+        display_name="Git merge base",
+        type="query:git:merge-base",
+        managed_repo_id="mr_0123456789abcdefabcd",
+        target_branch="main",
+        candidate_commit_sha="c" * 40,
+        directory_path="root/team-b",
+    )
+    admin_service = _AdminServiceStub(
+        vms=[],
+        merge_base_result={"merge_base_commit_sha": "a" * 40},
+        merge_base_calls=[],
+    )
+    admin_service.managed_git_admin = SimpleNamespace(  # type: ignore[attr-defined]
+        resolve_merge_base=admin_service.resolve_managed_git_merge_base
+    )
+    provider = QueryProviderFactory(
+        provider_config_resolver=_ResolverStub(), admin_service=admin_service
+    ).build(query, directory_path="root/team-a")
+
+    with pytest.raises(
+        ValueError,
+        match="directory_path 'root/team-b' is outside workflow directory scope 'root/team-a'",
+    ):
+        provider.execute()
+
+    assert admin_service.merge_base_calls == []
+
+
 def test_session_context_query_provider_returns_metadata(tmp_path: Path) -> None:
     query = SessionContextQueryDefinition(
         id="query-session",
