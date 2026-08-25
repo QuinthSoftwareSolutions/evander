@@ -5,6 +5,7 @@ import json
 import shlex
 import subprocess
 from datetime import UTC, datetime, timedelta
+from decimal import Decimal
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -4532,6 +4533,18 @@ def test_wake_governance_managers_uses_governance_prompt_without_action_seed(
     tmp_path: Path,
 ) -> None:
     repo = _seed_team(tmp_path)
+    _team_admin_service(repo).update_team(
+        team_id="team",
+        max_cost_usd="975",
+        set_max_cost_usd=True,
+        expected_revision=repo.read().revision,
+    )
+
+    def _simulate_cap_raised_before_active_window_sync(state: TeamState) -> TeamState:
+        state.teams["team"].max_cost_usd = Decimal("2000")
+        return state
+
+    repo.update(_simulate_cap_raised_before_active_window_sync)
     _team_admin_service(repo).register_agent(
         agent_id="portfolio-manager",
         session_id="session-portfolio-manager",
@@ -4625,9 +4638,22 @@ def test_wake_governance_managers_uses_governance_prompt_without_action_seed(
     assert resumer.calls[0]["target"] == "session-portfolio-manager"
     assert "governance manager" in str(resumer.calls[0]["prompt"])
     assert "Do not take ownership of member-team project tasks" in str(resumer.calls[0]["prompt"])
+    assert "cost_warning_threshold_usd is authoritative" in str(resumer.calls[0]["prompt"])
     assert TEAM_MARK_GOVERNANCE_AGENDA_HANDLED_TOOL in str(resumer.calls[0]["prompt"])
     assert "team_update_task" not in str(resumer.calls[0]["prompt"])
     assert "team_submit_deliverable" not in str(resumer.calls[0]["prompt"])
+    governance_context = json.loads(
+        str(resumer.calls[0]["prompt"]).split("Governance context JSON:\n", maxsplit=1)[1]
+    )
+    member_team = governance_context["member_teams"][0]
+    assert member_team["team"]["cost_budget_windows"][-1]["max_cost_usd"] == 975.0
+    assert member_team["current_cost_policy"] == {
+        "budget_window_started_at": member_team["cost"]["budget_window_started_at"],
+        "cost_limit_basis": "budget_window",
+        "cost_warning_ratio": 0.8,
+        "cost_warning_threshold_usd": 1600.0,
+        "max_cost_usd": 2000.0,
+    }
     assert result["dispatches"][0]["governance_agent_guidance"] == {
         "seeded": True,
         "guidance_version": TEAM_GOVERNANCE_GUIDANCE_VERSION,

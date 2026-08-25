@@ -20,11 +20,33 @@ from .agent_access import _agent_payload
 from .common import (
     _decimal_or_none,
     _decimal_or_zero,
+    _ensure_utc,
     _generated_id,
     _mapping_or_empty,
     _optional_text,
     _priority_sort_value,
 )
+
+
+def _budget_window_estimated_cost(
+    cost: Mapping[str, Any],
+    *,
+    started_at: datetime,
+) -> Decimal | None:
+    raw_started_at = cost.get("budget_window_started_at")
+    if isinstance(raw_started_at, datetime):
+        payload_started_at = raw_started_at
+    else:
+        started_at_text = _optional_text(raw_started_at)
+        if started_at_text is None:
+            return None
+        try:
+            payload_started_at = datetime.fromisoformat(started_at_text.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+    if _ensure_utc(payload_started_at) != _ensure_utc(started_at):
+        return None
+    return _decimal_or_none(cost.get("budget_window_estimated_cost"))
 
 
 def _governance_goals_with_generated_ids(
@@ -157,11 +179,33 @@ def _governance_member_team_payload(
     ]
     manager = state.agents.get(team.manager_agent_id)
     team_costs = _mapping_or_empty((cost_payload or {}).get("team_costs"))
+    cost = dict(team_costs.get(team_id) or {})
+    max_cost = _decimal_or_none(team.max_cost_usd)
+    warning_ratio = team.cost_warning_ratio
+    active_budget_window = next(
+        (window for window in team.cost_budget_windows if window.ended_at is None),
+        None,
+    )
     return {
         "team": team.model_dump(mode="json"),
         "manager": _agent_payload(state, manager) if manager is not None else None,
         "projects": projects,
-        "cost": dict(team_costs.get(team_id) or {}),
+        "cost": cost,
+        "current_cost_policy": {
+            "max_cost_usd": float(max_cost) if max_cost is not None else None,
+            "cost_warning_ratio": float(warning_ratio),
+            "cost_warning_threshold_usd": (
+                float(max_cost * warning_ratio) if max_cost is not None else None
+            ),
+            "cost_limit_basis": (
+                "budget_window" if active_budget_window is not None else "lifetime"
+            ),
+            "budget_window_started_at": (
+                _ensure_utc(active_budget_window.started_at).isoformat().replace("+00:00", "Z")
+                if active_budget_window is not None
+                else None
+            ),
+        },
     }
 
 
@@ -229,17 +273,28 @@ def _governance_cost_signals(
         cost = team_costs.get(team_id)
         if team is None or not isinstance(cost, Mapping):
             continue
-        max_cost = _decimal_or_none(cost.get("max_cost_usd"))
-        if max_cost is None:
-            max_cost = _decimal_or_none(team.max_cost_usd)
+        max_cost = _decimal_or_none(team.max_cost_usd)
         if max_cost is None or max_cost <= 0:
             continue
+        active_budget_window = next(
+            (window for window in team.cost_budget_windows if window.ended_at is None),
+            None,
+        )
         lifetime_estimated = _decimal_or_zero(cost.get("estimated_cost"))
-        window_estimated = _decimal_or_none(cost.get("budget_window_estimated_cost"))
-        estimated = window_estimated if window_estimated is not None else lifetime_estimated
+        window_estimated = (
+            _budget_window_estimated_cost(
+                cost,
+                started_at=active_budget_window.started_at,
+            )
+            if active_budget_window is not None
+            else None
+        )
+        if active_budget_window is not None and window_estimated is None:
+            continue
+        estimated = window_estimated if active_budget_window is not None else lifetime_estimated
         remaining = max(max_cost - estimated, Decimal("0"))
         usage_ratio = estimated / max_cost
-        if bool(cost.get("cost_limit_reached")) or estimated >= max_cost:
+        if estimated >= max_cost:
             signal_type = GovernanceAgendaItemType.COST_CAP_REACHED.value
         elif usage_ratio >= team.cost_warning_ratio:
             signal_type = GovernanceAgendaItemType.COST_CAP_WARNING.value
@@ -255,7 +310,9 @@ def _governance_cost_signals(
                 "max_cost_usd": float(max_cost),
                 "remaining_cost_usd": float(remaining),
                 "usage_ratio": float(usage_ratio),
-                "cost_limit_basis": cost.get("cost_limit_basis") or "lifetime",
+                "cost_limit_basis": (
+                    "budget_window" if active_budget_window is not None else "lifetime"
+                ),
                 "coverage_status": cost.get("coverage_status"),
                 "coverage_reasons": list(cost.get("coverage_reasons") or []),
             }

@@ -11192,6 +11192,35 @@ def test_team_cost_budget_windows_persist_resets_and_monthly_renewals(
     assert reloaded.cost_budget_windows[-1].reason == "UTC monthly cost budget renewal."
 
 
+def test_updating_team_cost_cap_updates_the_active_budget_window(tmp_path: Path) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    admin = _team_admin_service(repo)
+    admin.update_team(
+        team_id="team",
+        max_cost_usd="975",
+        set_max_cost_usd=True,
+        expected_revision=repo.read().revision,
+    )
+    original_window = repo.read().teams["team"].cost_budget_windows[-1]
+
+    state = admin.update_team(
+        team_id="team",
+        max_cost_usd="2000",
+        set_max_cost_usd=True,
+        expected_revision=repo.read().revision,
+    )
+
+    active_window = state.teams["team"].cost_budget_windows[-1]
+    assert active_window.id == original_window.id
+    assert active_window.started_at == original_window.started_at
+    assert active_window.ended_at is None
+    assert active_window.max_cost_usd == 2000
+    assert (
+        TeamStateRepository(tmp_path).read().teams["team"].cost_budget_windows[-1].max_cost_usd
+        == 2000
+    )
+
+
 def test_switching_an_active_budget_to_monthly_waits_for_a_future_boundary(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -12861,19 +12890,36 @@ def test_governance_manager_skips_when_agent_runtime_is_leased(tmp_path: Path) -
 def test_governance_cost_signal_wakes_only_on_status_change(tmp_path: Path) -> None:
     repo = _seed_hierarchy(tmp_path)
     now = datetime(2026, 1, 1, tzinfo=UTC)
-    _team_admin_service(repo).create_governance_group(
+    admin = _team_admin_service(repo)
+    admin.update_team(
+        team_id="team",
+        max_cost_usd="10",
+        set_max_cost_usd=True,
+        expected_revision=repo.read().revision,
+    )
+    admin.create_governance_group(
         governance_group_id="portfolio",
         name="Portfolio",
         manager_agent_id="manager",
         member_team_ids=["team"],
         expected_revision=repo.read().revision,
     )
+    budget_window_started_at = (
+        repo.read()
+        .teams["team"]
+        .cost_budget_windows[-1]
+        .started_at.isoformat()
+        .replace("+00:00", "Z")
+    )
     over_cap_costs = {
         "team_costs": {
             "team": {
                 "estimated_cost": 12,
+                "budget_window_estimated_cost": 12,
+                "budget_window_started_at": budget_window_started_at,
                 "max_cost_usd": 10,
                 "cost_limit_reached": True,
+                "cost_limit_basis": "budget_window",
             }
         }
     }
@@ -12881,8 +12927,11 @@ def test_governance_cost_signal_wakes_only_on_status_change(tmp_path: Path) -> N
         "team_costs": {
             "team": {
                 "estimated_cost": 2,
+                "budget_window_estimated_cost": 2,
+                "budget_window_started_at": budget_window_started_at,
                 "max_cost_usd": 10,
                 "cost_limit_reached": False,
+                "cost_limit_basis": "budget_window",
             }
         }
     }
@@ -12932,6 +12981,8 @@ def test_governance_cost_warning_uses_each_member_teams_ratio(tmp_path: Path) ->
     admin = _team_admin_service(repo)
     admin.update_team(
         team_id="team",
+        max_cost_usd="100",
+        set_max_cost_usd=True,
         cost_warning_ratio="0.9",
         set_cost_warning_ratio=True,
         expected_revision=repo.read().revision,
@@ -12941,6 +12992,7 @@ def test_governance_cost_warning_uses_each_member_teams_ratio(tmp_path: Path) ->
         name="Other Team",
         manager_agent_id="other-manager",
         manager_session_id="session-other-manager",
+        max_cost_usd="100",
         cost_warning_ratio="0.6",
         expected_revision=repo.read().revision,
     )
@@ -12951,17 +13003,33 @@ def test_governance_cost_warning_uses_each_member_teams_ratio(tmp_path: Path) ->
         member_team_ids=["team", "other"],
         expected_revision=repo.read().revision,
     )
+    team_windows = {
+        team_id: (
+            repo.read()
+            .teams[team_id]
+            .cost_budget_windows[-1]
+            .started_at.isoformat()
+            .replace("+00:00", "Z")
+        )
+        for team_id in ("team", "other")
+    }
     cost_payload = {
         "team_costs": {
             "team": {
                 "estimated_cost": 80,
+                "budget_window_estimated_cost": 80,
+                "budget_window_started_at": team_windows["team"],
                 "max_cost_usd": 100,
                 "cost_limit_reached": False,
+                "cost_limit_basis": "budget_window",
             },
             "other": {
                 "estimated_cost": 70,
+                "budget_window_estimated_cost": 70,
+                "budget_window_started_at": team_windows["other"],
                 "max_cost_usd": 100,
                 "cost_limit_reached": False,
+                "cost_limit_basis": "budget_window",
             },
         }
     }
@@ -12975,6 +13043,72 @@ def test_governance_cost_warning_uses_each_member_teams_ratio(tmp_path: Path) ->
     assert leases[0]["reason"] == "cost_cap_warning"
     assert [signal["team_id"] for signal in leases[0]["cost_signals"]] == ["other"]
     assert leases[0]["cost_signals"][0]["usage_ratio"] == 0.7
+
+
+def test_governance_policy_uses_transaction_state_when_cost_snapshot_cap_is_stale(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    admin = _team_admin_service(repo)
+    admin.update_team(
+        team_id="team",
+        max_cost_usd="10",
+        set_max_cost_usd=True,
+        expected_revision=repo.read().revision,
+    )
+    stale_window = repo.read().teams["team"].cost_budget_windows[-1]
+    admin.create_governance_group(
+        governance_group_id="portfolio",
+        name="Portfolio",
+        manager_agent_id="manager",
+        member_team_ids=["team"],
+        expected_revision=repo.read().revision,
+    )
+    admin.create_governance_agenda_item(
+        agenda_item_id="agenda",
+        governance_group_id="portfolio",
+        item_type="operator_directive",
+        title="Review team policy",
+        summary="Review the current Team policy.",
+        team_id="team",
+        expected_revision=repo.read().revision,
+    )
+    admin.update_team(
+        team_id="team",
+        max_cost_usd=None,
+        set_max_cost_usd=True,
+        expected_revision=repo.read().revision,
+    )
+    stale_cost_payload = {
+        "team_costs": {
+            "team": {
+                "estimated_cost": 12,
+                "budget_window_estimated_cost": 12,
+                "max_cost_usd": 10,
+                "cost_limit_reached": True,
+                "cost_limit_basis": "budget_window",
+                "budget_window_started_at": stale_window.started_at.isoformat(),
+            }
+        }
+    }
+
+    _state, leases = _team_runtime_service(repo).lease_due_governance_managers(
+        now=datetime(2026, 1, 1, tzinfo=UTC),
+        cost_payload=stale_cost_payload,
+    )
+
+    assert len(leases) == 1
+    assert leases[0]["reason"] == "operator_directive"
+    assert leases[0]["cost_signals"] == []
+    member_team = leases[0]["member_teams"][0]
+    assert member_team["cost"]["max_cost_usd"] == 10
+    assert member_team["current_cost_policy"] == {
+        "max_cost_usd": None,
+        "cost_warning_ratio": 0.8,
+        "cost_warning_threshold_usd": None,
+        "cost_limit_basis": "lifetime",
+        "budget_window_started_at": None,
+    }
 
 
 def test_governance_blocked_signal_wakes_only_on_blocker_change(tmp_path: Path) -> None:

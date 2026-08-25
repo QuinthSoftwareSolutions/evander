@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-08-25 - Governance Cost Threshold Authority
+
+- Synchronized active Team budget-window caps when operators edit the Team cap, and made
+  governance wake context expose the authoritative current cap, warning ratio, and computed
+  warning threshold instead of inviting agents to infer policy from historical window metadata.
+
 ## 2026-08-25 - Release PR Scope Pinning
 
 - Added a read-only managed-Git merge-base query that refreshes and pins the PR target branch
