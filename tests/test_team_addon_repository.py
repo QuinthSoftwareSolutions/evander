@@ -11192,6 +11192,35 @@ def test_team_cost_budget_windows_persist_resets_and_monthly_renewals(
     assert reloaded.cost_budget_windows[-1].reason == "UTC monthly cost budget renewal."
 
 
+def test_updating_team_cost_cap_updates_the_active_budget_window(tmp_path: Path) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    admin = _team_admin_service(repo)
+    admin.update_team(
+        team_id="team",
+        max_cost_usd="975",
+        set_max_cost_usd=True,
+        expected_revision=repo.read().revision,
+    )
+    original_window = repo.read().teams["team"].cost_budget_windows[-1]
+
+    state = admin.update_team(
+        team_id="team",
+        max_cost_usd="2000",
+        set_max_cost_usd=True,
+        expected_revision=repo.read().revision,
+    )
+
+    active_window = state.teams["team"].cost_budget_windows[-1]
+    assert active_window.id == original_window.id
+    assert active_window.started_at == original_window.started_at
+    assert active_window.ended_at is None
+    assert active_window.max_cost_usd == 2000
+    assert (
+        TeamStateRepository(tmp_path).read().teams["team"].cost_budget_windows[-1].max_cost_usd
+        == 2000
+    )
+
+
 def test_switching_an_active_budget_to_monthly_waits_for_a_future_boundary(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

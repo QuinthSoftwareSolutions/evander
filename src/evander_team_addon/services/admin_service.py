@@ -1659,6 +1659,10 @@ class TeamAdminService:
                     )
                 elif previous_max_cost_usd is not None and team.max_cost_usd is None:
                     _close_active_team_cost_budget_window(team, ended_at=mutation_now)
+                elif team.max_cost_usd is not None:
+                    active_window = _active_team_cost_budget_window(team)
+                    if active_window is not None:
+                        active_window.max_cost_usd = team.max_cost_usd
             if set_cost_warning_ratio:
                 team.cost_warning_ratio = _cost_warning_ratio(cost_warning_ratio)
             if escalate_to_governance is not None:

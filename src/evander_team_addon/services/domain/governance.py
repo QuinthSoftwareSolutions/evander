@@ -157,11 +157,35 @@ def _governance_member_team_payload(
     ]
     manager = state.agents.get(team.manager_agent_id)
     team_costs = _mapping_or_empty((cost_payload or {}).get("team_costs"))
+    cost = dict(team_costs.get(team_id) or {})
+    max_cost = _decimal_or_none(cost.get("max_cost_usd"))
+    if max_cost is None:
+        max_cost = _decimal_or_none(team.max_cost_usd)
+    warning_ratio = team.cost_warning_ratio
+    active_budget_window = next(
+        (window for window in team.cost_budget_windows if window.ended_at is None),
+        None,
+    )
     return {
         "team": team.model_dump(mode="json"),
         "manager": _agent_payload(state, manager) if manager is not None else None,
         "projects": projects,
-        "cost": dict(team_costs.get(team_id) or {}),
+        "cost": cost,
+        "current_cost_policy": {
+            "max_cost_usd": float(max_cost) if max_cost is not None else None,
+            "cost_warning_ratio": float(warning_ratio),
+            "cost_warning_threshold_usd": (
+                float(max_cost * warning_ratio) if max_cost is not None else None
+            ),
+            "cost_limit_basis": cost.get("cost_limit_basis")
+            or ("budget_window" if active_budget_window is not None else "lifetime"),
+            "budget_window_started_at": cost.get("budget_window_started_at")
+            or (
+                active_budget_window.started_at.isoformat()
+                if active_budget_window is not None
+                else None
+            ),
+        },
     }
 
 
