@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-08-25 - Managed Reference Repository Inputs
+
+- Removed the legacy `repo_source` form from persistent-assistant reference repository inputs;
+  workflow validation and execution now require registered `managed_repo_id` rows so the runtime
+  and structured workflow editor use one canonical representation.
+
 ## 2026-08-25 - Governance Cost Threshold Authority
 
 - Synchronized active Team budget-window caps when operators edit the Team cap, and made

@@ -2651,10 +2651,7 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
                         "Managed repository",
                         "enum",
                         required=True,
-                        description=(
-                            "Registered managed repository to prepare. Existing workflows that "
-                            "use repo_source remain supported."
-                        ),
+                        description="Registered managed repository to prepare.",
                     ),
                     _field(
                         "branch",

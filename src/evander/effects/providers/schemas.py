@@ -367,10 +367,22 @@ class AgentPrepareReferenceRepositoriesEffectDefinition(EffectDefinition):
             raise ValueError(
                 "effect:agent:prepare-reference-repositories requires target, session_id, or vm_name"
             )
-        if isinstance(self.repositories, list) and not self.repositories:
-            raise ValueError(
-                "effect:agent:prepare-reference-repositories requires at least one repository"
-            )
+        if isinstance(self.repositories, list):
+            if not self.repositories:
+                raise ValueError(
+                    "effect:agent:prepare-reference-repositories requires at least one repository"
+                )
+            for index, repository in enumerate(self.repositories):
+                if not isinstance(repository, Mapping):
+                    raise ValueError(f"repositories[{index}] must be an object")
+                if "repo_source" in repository:
+                    raise ValueError(
+                        f"repositories[{index}].repo_source is not supported; "
+                        "select a managed_repo_id"
+                    )
+                managed_repo_id = repository.get("managed_repo_id")
+                if not isinstance(managed_repo_id, str) or not managed_repo_id.strip():
+                    raise ValueError(f"repositories[{index}].managed_repo_id is required")
         return self
 
 

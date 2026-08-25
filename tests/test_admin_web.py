@@ -2122,6 +2122,7 @@ def test_admin_web_workflow_catalog_lists_managed_reference_repositories(
         "branch",
     ]
     assert item_fields["managed_repo_id"]["kind"] == "enum"
+    assert "repo_source" not in item_fields["managed_repo_id"]["description"]
     assert item_fields["managed_repo_id"]["options"] == [
         {
             "value": "mr-project",

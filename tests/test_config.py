@@ -1697,9 +1697,9 @@ def test_personal_assistant_workflow_accepts_batched_reference_repository_prepar
                     "session_id": "personal-assistant-user-1",
                     "directory_path": "root/personal",
                     "repositories": [
-                        {"repo_source": "https://example.invalid/one.git"},
+                        {"managed_repo_id": "mr-one"},
                         {
-                            "repo_source": "https://example.invalid/two.git",
+                            "managed_repo_id": "mr-two",
                             "branch": "trunk",
                         },
                     ],
@@ -1718,6 +1718,30 @@ def test_personal_assistant_workflow_accepts_batched_reference_repository_prepar
 
     refreshed = effect.model_copy(update={"refresh_upstream": True})
     assert refreshed.refresh_upstream is True
+
+
+def test_prepare_reference_repositories_rejects_legacy_repo_source_inputs() -> None:
+    with pytest.raises(ValueError, match="repo_source is not supported; select a managed_repo_id"):
+        _validate_trigger_config(
+            {
+                "runtime_dir": "/tmp/evander-runtime",
+                "triggers": [],
+                "gates": [],
+                "effects": [
+                    {
+                        "id": "prepare-repositories",
+                        "display_name": "Prepare repositories",
+                        "type": "effect:agent:prepare-reference-repositories",
+                        "session_id": "personal-assistant-user-1",
+                        "directory_path": "root/personal",
+                        "repositories": [
+                            {"repo_source": "https://example.invalid/legacy.git"}
+                        ],
+                    }
+                ],
+                "edges": [],
+            }
+        )
 
 
 def test_trigger_orchestrator_for_gate_accepts_body_done_ports_and_cycle_return() -> None:
