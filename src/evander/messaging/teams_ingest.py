@@ -840,6 +840,7 @@ class TeamsIngestWorker:
                 provider_config,
                 directory_path=directory_path,
             ),
+            defer_retry_after=True,
         )
 
     def _resolve_direct_message_sender_refs_by_id(

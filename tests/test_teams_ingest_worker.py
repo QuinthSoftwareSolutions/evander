@@ -579,8 +579,12 @@ def test_teams_ingest_worker_honors_retry_after_for_only_the_throttled_target(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    throttled_attempts = 0
+
     def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal throttled_attempts
         if request.url.path.endswith("/channels/throttled/messages"):
+            throttled_attempts += 1
             return httpx.Response(
                 429,
                 headers={"Retry-After": "120"},
@@ -591,12 +595,13 @@ def test_teams_ingest_worker_honors_retry_after_for_only_the_throttled_target(
         raise AssertionError(f"Unexpected path: {request.url.path}")
 
     patch_worker_httpx_client(monkeypatch, httpx.MockTransport(handler))
+    monkeypatch.setattr("evander.services.time.sleep", lambda _seconds: None)
     monkeypatch.setenv("GRAPH_TEAMS_ACCESS_TOKEN", "graph-token")
     config = GatewayConfig.model_validate(
         {
             "runtime_dir": str(tmp_path / "runtime"),
             "teams_backend": "graph_api",
-            "teams_retry_count": 0,
+            "teams_retry_count": 2,
         }
     )
     worker = build_teams_ingest_worker(config, project_dir=tmp_path)
@@ -621,6 +626,7 @@ def test_teams_ingest_worker_honors_retry_after_for_only_the_throttled_target(
     )
     assert result.targets_failed == 1
     assert result.channel_targets_polled == 2
+    assert throttled_attempts == 1
     assert datetime.fromisoformat(unhealthy["next_attempt_at"]) >= before + timedelta(seconds=119)
 
 

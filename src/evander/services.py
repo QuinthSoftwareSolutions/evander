@@ -2526,6 +2526,7 @@ class GraphTeamsService:
         user_chat_cache: dict[str, str] | None = None,
         user_chat_cache_namespace: str = "default",
         read_reaction_emoji: str = "👀",
+        defer_retry_after: bool = False,
     ) -> None:
         self.message_store = message_store
         self.token = str(token or "").strip()
@@ -2548,6 +2549,7 @@ class GraphTeamsService:
         self.user_chat_cache = user_chat_cache if user_chat_cache is not None else {}
         self.user_chat_cache_namespace = str(user_chat_cache_namespace or "default")
         self.read_reaction_emoji = read_reaction_emoji
+        self.defer_retry_after = defer_retry_after
 
     def _resolve_token(self) -> str:
         try:
@@ -2826,6 +2828,16 @@ class GraphTeamsService:
         attempt = 0
         last_error: Exception | None = None
         retry_backoff_seconds = 0.0
+        normalized_method = method.upper()
+        is_idempotent_request = normalized_method in {
+            "DELETE",
+            "GET",
+            "HEAD",
+            "OPTIONS",
+            "PUT",
+            "TRACE",
+        }
+        uses_history_retry_budget = is_idempotent_request and deadline_monotonic is not None
         while True:
             effective_timeout = (
                 timeout_seconds if timeout_seconds is not None else self.timeout_seconds
@@ -2860,7 +2872,10 @@ class GraphTeamsService:
                 return response
             except (httpx.TimeoutException, httpx.ConnectError) as exc:
                 last_error = exc
-                if attempt >= self.retry_count:
+                timed_out_unacknowledged_write = (
+                    isinstance(exc, httpx.TimeoutException) and not is_idempotent_request
+                )
+                if timed_out_unacknowledged_write or attempt >= self.retry_count:
                     _LOGGER.warning(
                         "Teams Graph request failed method=%s path=%s attempts=%d "
                         "duration_seconds=%.3f error=%s",
@@ -2876,7 +2891,11 @@ class GraphTeamsService:
                 status_code = exc.response.status_code
                 if status_code not in {429} and not (500 <= status_code <= 599):
                     raise _augment_http_status_error(exc) from exc
-                if status_code == 429 and exc.response.headers.get("Retry-After"):
+                if (
+                    status_code == 429
+                    and self.defer_retry_after
+                    and exc.response.headers.get("Retry-After")
+                ):
                     _LOGGER.warning(
                         "Teams Graph request deferred method=%s path=%s attempts=%d "
                         "duration_seconds=%.3f error=http_429",
@@ -2905,7 +2924,12 @@ class GraphTeamsService:
                 self.retry_base_backoff_seconds * (2**attempt),
             )
             jittered_backoff = random.uniform(0.5 * planned_backoff, 1.5 * planned_backoff)
-            remaining_budget = self.max_total_retry_backoff_seconds - retry_backoff_seconds
+            if uses_history_retry_budget:
+                remaining_budget = self.max_total_retry_backoff_seconds - retry_backoff_seconds
+            else:
+                remaining_budget = self.max_total_retry_backoff_seconds - (
+                    time.monotonic() - start_time
+                )
             if remaining_budget <= 0:
                 if last_error is not None:
                     raise last_error

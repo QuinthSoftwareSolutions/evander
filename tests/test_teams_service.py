@@ -662,10 +662,81 @@ def test_graph_teams_history_defers_retry_after_to_target_backoff(
         timeout_seconds=15.0,
         retry_count=2,
         allowed_channel_targets_provider=lambda: ["team-a/channel-1"],
+        defer_retry_after=True,
     )
 
     with pytest.raises(httpx.HTTPStatusError):
         service.get_messages()
+
+    assert attempts == 1
+
+
+def test_graph_teams_direct_history_retries_retry_after_response(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    attempts = 0
+    sleeps: list[float] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            return httpx.Response(429, headers={"Retry-After": "120"}, request=request)
+        return httpx.Response(200, json={"value": []}, request=request)
+
+    patch_httpx_client(monkeypatch, httpx.MockTransport(handler))
+    monkeypatch.setattr("evander.services.time.sleep", sleeps.append)
+    monkeypatch.setattr("evander.services.random.uniform", lambda _low, _high: 0.5)
+    service = GraphTeamsService(
+        JsonStore(tmp_path / "teams.json", TeamsMessageEnvelope),
+        token="graph-token",
+        api_base_url="https://graph.microsoft.com/v1.0",
+        poll_limit=25,
+        timeout_seconds=15.0,
+        retry_count=2,
+        allowed_channel_targets_provider=lambda: ["team-a/channel-1"],
+    )
+
+    assert service.get_messages() == []
+    assert attempts == 2
+    assert sleeps == [0.5]
+
+
+@pytest.mark.parametrize("operation", ["post_status", "post_file"])
+def test_graph_teams_outbound_write_does_not_retry_after_unacknowledged_timeout(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    operation: str,
+) -> None:
+    attempts = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal attempts
+        attempts += 1
+        raise httpx.ReadTimeout("response timed out after Graph received the write", request=request)
+
+    patch_httpx_client(monkeypatch, httpx.MockTransport(handler))
+    service = GraphTeamsService(
+        JsonStore(tmp_path / "teams.json", TeamsMessageEnvelope),
+        token="graph-token",
+        api_base_url="https://graph.microsoft.com/v1.0",
+        poll_limit=25,
+        timeout_seconds=15.0,
+        retry_count=2,
+        allowed_channel_targets_provider=lambda: ["team-a/channel-1"],
+    )
+
+    with pytest.raises(httpx.ReadTimeout):
+        if operation == "post_status":
+            service.post_status("status", "team-a/channel-1", "session-1")
+        else:
+            service.post_file(
+                "file",
+                "team-a/channel-1",
+                "session-1",
+                [{"filename": "image.png", "mime_type": "image/png", "content": b"image"}],
+            )
 
     assert attempts == 1
 
