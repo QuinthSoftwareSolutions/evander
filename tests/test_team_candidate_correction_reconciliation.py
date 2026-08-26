@@ -53,6 +53,7 @@ from evander_team_addon.services.candidate_correction_reconciliation_service imp
 from evander_team_addon.services.commands import TeamReviewCommandService
 from evander_team_addon.services.admin_service import TeamAdminService
 from evander_team_addon.services.domain.review import _cascade_review_decision
+from evander_team_addon.services.domain.release_packages import _build_release_package
 from evander_team_addon.services.domain.task_assessment import assess_task
 from evander_team_addon.services.git_release_service import TeamGitReleaseService
 
@@ -61,6 +62,61 @@ MANAGED_REPO_ID = "mr_0123456789abcdefabcd"
 CANDIDATE_COMMIT = "c" * 40
 CORRECTION_COMMIT = "e" * 40
 RECOVERY_COMMIT = "a" * 40
+
+
+def _independent_remediation(
+    state: TeamState,
+    *,
+    suffix: str = "",
+    commit_sha: str = RECOVERY_COMMIT,
+) -> Deliverable:
+    task_id = f"independent-remediation-task{suffix}"
+    deliverable_id = f"independent-remediation-deliverable{suffix}"
+    review_id = f"independent-remediation-review{suffix}"
+    task = AgentTask(
+        id=task_id,
+        owner_agent_id="coder",
+        project_id="project",
+        priority=0,
+        state=TeamTaskState.FINISHED,
+        title="Repair a second failure on the rejected candidate",
+        description="Independent remediation rooted at the exact release candidate.",
+        created_by_agent_id="lead",
+        git_base_branch="team/team/releases/release-predecessor",
+        git_base_commit_sha=CANDIDATE_COMMIT,
+        deliverable_ids=[deliverable_id],
+    )
+    deliverable = Deliverable(
+        id=deliverable_id,
+        task_id=task.id,
+        producer_agent_id="coder",
+        summary="Repaired the additional candidate failure.",
+        git_refs=DeliverableGitRefs(
+            agent_branch=f"agents/session-coder/independent-remediation{suffix}",
+            commit_sha=commit_sha,
+            submitted_commit_sha=commit_sha,
+        ),
+        review_manifest=DeliverableReviewManifest(
+            base_commit_sha=CANDIDATE_COMMIT,
+            reviewed_commit_sha=commit_sha,
+            tree_hash="b" * 40,
+            commit_shas=[commit_sha],
+            changed_paths=["M\tsrc/IndependentRemediation.cs"],
+        ),
+        verification=DeliverableVerification(status="passed"),
+        review_request_ids=[review_id],
+        state=TeamRecordState.ACCEPTED,
+    )
+    state.tasks[task.id] = task
+    state.deliverables[deliverable.id] = deliverable
+    state.review_requests[review_id] = ReviewRequest(
+        id=review_id,
+        deliverable_id=deliverable.id,
+        reviewer_agent_id="reviewer",
+        state=TeamRecordState.ACCEPTED,
+        reviewed_commit_sha=commit_sha,
+    )
+    return deliverable
 
 
 def _candidate_correction_state(
@@ -289,6 +345,132 @@ def _accepted_composed_candidate_correction_state() -> TeamState:
         state=GitWorkContextState.SUBMITTED,
     )
     return state
+
+
+def test_independent_exact_base_remediation_auto_joins_release_lineage() -> None:
+    state = _candidate_correction_state(gate_kind="review")
+    remediation = _independent_remediation(state)
+    result: dict[str, object] = {"errors": [], "events": [], "git_promotion_event_ids": []}
+
+    release_id = _build_release_package(
+        state,
+        project=state.projects["project"],
+        request={
+            "id": "release-independent-remediation",
+            "deliverable_ids": [remediation.id],
+        },
+        result=result,
+        projects_to_recalc=set(),
+        actor_agent_id="lead",
+        team_id="team",
+    )
+
+    assert release_id == "release-independent-remediation"
+    assert result["release_lineage_auto_joined"] is True
+    assert result["inferred_predecessor_release_package_id"] == "release-predecessor"
+    assert state.tasks["independent-remediation-task"].release_base_package_id == (
+        "release-predecessor"
+    )
+    successor = state.release_packages[release_id]
+    assert successor.supersedes_release_package_id == "release-predecessor"
+    assert successor.lineage_root_release_package_id == "release-predecessor"
+    assert successor.lineage_sequence == 1
+
+
+def test_settled_parallel_remediations_are_combined_into_one_successor() -> None:
+    state = _candidate_correction_state(gate_kind="review")
+    first = _independent_remediation(state)
+    second = _independent_remediation(state, suffix="-second", commit_sha="b" * 40)
+    result: dict[str, object] = {"errors": [], "events": [], "git_promotion_event_ids": []}
+
+    release_id = _build_release_package(
+        state,
+        project=state.projects["project"],
+        request={"id": "release-combined-remediations", "deliverable_ids": [first.id]},
+        result=result,
+        projects_to_recalc=set(),
+        actor_agent_id="lead",
+        team_id="team",
+    )
+
+    assert release_id == "release-combined-remediations"
+    assert result["correction_deliverable_ids"] == [first.id, second.id]
+    successor = state.release_packages[release_id]
+    assert successor.supersedes_release_package_id == "release-predecessor"
+    assert successor.deliverable_ids == [first.id, second.id]
+    assert len(
+        [
+            release
+            for release in state.release_packages.values()
+            if release.supersedes_release_package_id == "release-predecessor"
+        ]
+    ) == 1
+
+
+def test_release_lineage_waits_for_other_exactly_bound_task() -> None:
+    state = _candidate_correction_state(gate_kind="review")
+    remediation = _independent_remediation(state)
+    state.tasks["parallel-remediation-task"] = AgentTask(
+        id="parallel-remediation-task",
+        owner_agent_id="coder",
+        project_id="project",
+        priority=0,
+        state=TeamTaskState.IN_PROGRESS,
+        title="Parallel candidate repair",
+        description="Another task explicitly bound to the same candidate.",
+        created_by_agent_id="lead",
+        release_base_package_id="release-predecessor",
+        git_base_branch="team/team/releases/release-predecessor",
+        git_base_commit_sha=CANDIDATE_COMMIT,
+    )
+    result: dict[str, object] = {"errors": [], "events": [], "git_promotion_event_ids": []}
+
+    release_id = _build_release_package(
+        state,
+        project=state.projects["project"],
+        request={
+            "id": "release-must-wait",
+            "deliverable_ids": [remediation.id],
+        },
+        result=result,
+        projects_to_recalc=set(),
+        actor_agent_id="lead",
+        team_id="team",
+    )
+
+    assert release_id is None
+    assert result["error_code"] == "release_lineage_waiting_tasks"
+    assert result["release_lineage_waiting_task_ids"] == ["parallel-remediation-task"]
+    assert "release-must-wait" not in state.release_packages
+
+
+def test_ambiguous_exact_candidate_provenance_does_not_auto_join() -> None:
+    state = _candidate_correction_state(gate_kind="review")
+    remediation = _independent_remediation(state)
+    state.release_packages["release-historical-fork"] = ReleasePackage(
+        id="release-historical-fork",
+        project_id="project",
+        release_branch="team/team/releases/release-predecessor",
+        candidate_commit_sha=CANDIDATE_COMMIT,
+        candidate_tree_hash="d" * 40,
+        state=TeamRecordState.REJECTED,
+    )
+    result: dict[str, object] = {"errors": [], "events": [], "git_promotion_event_ids": []}
+
+    release_id = _build_release_package(
+        state,
+        project=state.projects["project"],
+        request={"id": "release-ambiguous", "deliverable_ids": [remediation.id]},
+        result=result,
+        projects_to_recalc=set(),
+        actor_agent_id="lead",
+        team_id="team",
+    )
+
+    assert release_id is None
+    assert result["error_code"] == "release_lineage_ambiguous"
+    assert result["release_lineage_ambiguous_task_ids"] == ["independent-remediation-task"]
+    assert "release-ambiguous" not in state.release_packages
 
 
 def _legacy_reviewed_correction_state() -> TeamState:

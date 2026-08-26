@@ -22839,32 +22839,10 @@ def test_candidate_verification_failure_rejects_unchanged_release_content(
             ],
         },
     )
-    replacement_promotion_id = replacement["git_promotion_event_ids"][0]
-    state, unchanged_result = _team_git_release_service(repo).record_git_promotion_result(
-        promotion_id=replacement_promotion_id,
-        success=True,
-        commit_sha="candidate-new-commit",
-        outputs={"base_commit_sha": "base-main", "tree_hash": "unchanged-tree"},
-    )
-    unchanged = state.release_packages["release-unchanged"]
-    assert unchanged.state == TeamRecordState.REJECTED
-    assert unchanged.verification_run_ids == []
-    assert unchanged.gate_failure is not None
-    assert unchanged.gate_failure.kind == "candidate"
-    assert "unchanged from failed release release-broken" in (unchanged.error or "")
-    remediation_blocker = state.blockers[unchanged_result["release_remediation_blocker_id"]]
-    assert remediation_blocker.owner_agent_id == "lead"
-    assert remediation_blocker.priority == TeamInboxPriority.HIGH
-    assert "escalate it to an operator" in remediation_blocker.details
-    remediation_wake = next(
-        event
-        for event in unchanged_result["events"]
-        if event["event_type"] == AGENT_WAKE_REQUESTED_EVENT_TYPE
-    )
-    assert any(
-        record.idempotency_key == remediation_wake["idempotency_key"]
-        for record in repo.list_outbox_records(intent_type=AGENT_WAKE_REQUESTED_EVENT_TYPE)
-    )
+    assert replacement["duplicate"] is True
+    assert replacement["existing_release_package_id"] == "release-broken"
+    assert replacement["git_promotion_event_ids"] == []
+    assert "release-unchanged" not in state.release_packages
 
 
 def test_transient_verification_retry_creates_linked_attempt_for_same_candidate(
@@ -23242,15 +23220,10 @@ def test_rejected_release_review_requires_changed_candidate_content(
             ],
         },
     )
-    state, _ = _team_git_release_service(repo).record_git_promotion_result(
-        promotion_id=replacement["git_promotion_event_ids"][0],
-        success=True,
-        commit_sha="different-commit-same-tree",
-        outputs={"tree_hash": "review-rejected-tree"},
-    )
-    unchanged = state.release_packages["release-same-rejected-content"]
-    assert unchanged.state == TeamRecordState.REJECTED
-    assert "unchanged from failed release release-rejected-review" in (unchanged.error or "")
+    assert replacement["duplicate"] is True
+    assert replacement["existing_release_package_id"] == "release-rejected-review"
+    assert replacement["git_promotion_event_ids"] == []
+    assert "release-same-rejected-content" not in state.release_packages
 
 
 def test_operator_can_retry_rejected_review_for_explicit_immutable_candidate_exception(
@@ -23498,6 +23471,57 @@ def test_git_release_request_reuses_active_package_for_same_deliverables(
     assert any(
         "already covers this deliverable set" in hint for hint in duplicate["next_action_hints"]
     )
+
+
+def test_git_release_request_reuses_terminal_package_for_same_deliverables(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _set_project_git(repo)
+    _seed_accepted_feature_deliverable(
+        repo,
+        deliverable_id="deliverable",
+        task_id="task",
+        feature="team/team/features/task-backend",
+    )
+    state, created = _team_agent_action_service(repo).apply_agent_action(
+        action={
+            "agent_id": "lead",
+            "git_release_requests": [
+                {
+                    "id": "rel-terminal",
+                    "project_id": "project",
+                    "deliverable_ids": ["deliverable"],
+                }
+            ],
+        },
+    )
+    assert created["success"] is True
+    assert state.release_packages["rel-terminal"].lineage_root_release_package_id == "rel-terminal"
+    assert state.release_packages["rel-terminal"].lineage_sequence == 0
+
+    def _reject(current):
+        current.release_packages["rel-terminal"].state = TeamRecordState.REJECTED
+        return current
+
+    repo.update(_reject, expected_revision=state.revision)
+    state, duplicate = _team_agent_action_service(repo).apply_agent_action(
+        action={
+            "agent_id": "lead",
+            "git_release_requests": [
+                {
+                    "id": "rel-accidental-fork",
+                    "project_id": "project",
+                    "deliverable_ids": ["deliverable"],
+                }
+            ],
+        },
+    )
+
+    assert duplicate["success"] is True
+    assert duplicate["duplicate"] is True
+    assert duplicate["existing_release_package_id"] == "rel-terminal"
+    assert "rel-accidental-fork" not in state.release_packages
 
 
 def test_apply_agent_action_git_release_recovery_emits_recovery_event(

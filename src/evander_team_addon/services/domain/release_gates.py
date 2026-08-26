@@ -51,7 +51,7 @@ from .human_reviews import (
     human_review_request_for_release,
 )
 from .git_work_contexts import finalize_active_git_work_contexts_for_task
-from .release_packages import allowed_release_parent_task_ids
+from .release_packages import allowed_release_parent_task_ids, release_lineage_gate_error
 from .task_assessment import deliverable_source_lineage, require_release_scope
 
 
@@ -250,6 +250,17 @@ def begin_release_gates(
     candidate_tree_hash: str | None,
     result: dict[str, Any],
 ) -> None:
+    lineage_error = release_lineage_gate_error(state, release)
+    if lineage_error is not None:
+        _block_release_gate(
+            state,
+            release,
+            stage="lineage",
+            kind="convergence",
+            error=lineage_error,
+            result=result,
+        )
+        return
     project = state.projects.get(release.project_id)
     if project is None:
         _reject_release(
@@ -626,6 +637,7 @@ def _materialize_candidate_verification_correction(
             id=task_id,
             owner_agent_id=owner_agent_id,
             project_id=release.project_id,
+            release_base_package_id=release.id,
             git_base_branch=_candidate_correction_git_base(release),
             priority=0,
             state=TeamTaskState.PENDING,
@@ -662,6 +674,14 @@ def _materialize_candidate_verification_correction(
             now=now,
         )
         _require_candidate_correction_deliverable(task, now=now)
+    if task.release_base_package_id is None:
+        task.release_base_package_id = release.id
+        task.updated_at = now
+    elif task.release_base_package_id != release.id:
+        raise ValueError(
+            f"correction task {task.id} is bound to release "
+            f"{task.release_base_package_id}, not {release.id}"
+        )
     run.correction_task_id = task.id
 
     queue_actionable_inbox_item(
@@ -994,6 +1014,7 @@ def materialize_release_review_rejection_correction(
             id=task_id,
             owner_agent_id=owner_agent_id,
             project_id=release.project_id,
+            release_base_package_id=release.id,
             git_base_branch=_candidate_correction_git_base(release),
             priority=0,
             state=TeamTaskState.PENDING,
@@ -1037,6 +1058,15 @@ def materialize_release_review_rejection_correction(
             _require_candidate_correction_deliverable(task, now=now)
         task.description = description
         task.updated_at = now
+
+    if task.release_base_package_id is None:
+        task.release_base_package_id = release.id
+        task.updated_at = now
+    elif task.release_base_package_id != release.id:
+        raise ValueError(
+            f"correction task {task.id} is bound to release "
+            f"{task.release_base_package_id}, not {release.id}"
+        )
 
     late_rework_deliverable_ids: list[str] = []
     review_decision_at = review.decision_at or now
@@ -1239,6 +1269,18 @@ def advance_release_gates(
     release_promotion: GitPromotionRecord | None = None,
 ) -> None:
     """Idempotently create only the next missing release gate in policy order."""
+
+    lineage_error = release_lineage_gate_error(state, release)
+    if lineage_error is not None:
+        _block_release_gate(
+            state,
+            release,
+            stage="lineage",
+            kind="convergence",
+            error=lineage_error,
+            result=result,
+        )
+        return
 
     manifest = release.manifest
     if manifest is None or release.candidate_commit_sha is None:

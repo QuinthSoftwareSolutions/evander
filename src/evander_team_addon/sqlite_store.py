@@ -28,7 +28,7 @@ from .models import (
 
 ADDON_ID = "team-addon"
 STATE_DB_FILE = "state.db"
-SQLITE_SCHEMA_VERSION = 65
+SQLITE_SCHEMA_VERSION = 66
 _SQLITE_WAL_ENABLE_TIMEOUT_SECONDS = 5.0
 
 T = TypeVar("T")
@@ -1381,6 +1381,7 @@ class TeamStateSqliteStore:
                     ("deliverable_contract_json", "TEXT"),
                     ("completion_json", "TEXT"),
                     ("originating_task_id", "TEXT"),
+                    ("release_base_package_id", "TEXT"),
                     ("cancellation_json", "TEXT"),
                     ("git_base_branch", "TEXT"),
                     ("git_base_commit_sha", "TEXT"),
@@ -1681,6 +1682,18 @@ class TeamStateSqliteStore:
                 )
                 _ensure_column(
                     connection,
+                    table_name="team_release_packages",
+                    column_name="lineage_root_release_package_id",
+                    definition="TEXT",
+                )
+                _ensure_column(
+                    connection,
+                    table_name="team_release_packages",
+                    column_name="lineage_sequence",
+                    definition="INTEGER NOT NULL DEFAULT 0",
+                )
+                _ensure_column(
+                    connection,
                     table_name="team_human_review_findings",
                     column_name="resolved_by_human_review_request_id",
                     definition="TEXT",
@@ -1810,6 +1823,8 @@ class TeamStateSqliteStore:
                           AND reason_code = 'candidate_correction_successor_failed'
                         """
                     )
+                if previous_schema_version < 66:
+                    _migrate_release_lineage(connection)
                 if (
                     previous_schema_version < SQLITE_SCHEMA_VERSION
                     or previous_state_schema_version < SCHEMA_VERSION
@@ -2936,6 +2951,7 @@ class TeamStateSqliteStore:
                 "created_by_actor": row["created_by_actor"],
                 "parent_task_id": row["parent_task_id"],
                 "originating_task_id": row["originating_task_id"],
+                "release_base_package_id": row["release_base_package_id"],
                 "git_base_branch": row["git_base_branch"],
                 "git_base_commit_sha": row["git_base_commit_sha"],
                 "mutation_policy": (
@@ -2965,13 +2981,14 @@ class TeamStateSqliteStore:
                 INSERT INTO team_tasks(
                     id, owner_agent_id, project_id, case_id, priority, state, title, description,
                     state_entered_at, created_by_agent_id, created_by_actor, parent_task_id,
-                    originating_task_id, git_base_branch, git_base_commit_sha,
+                    originating_task_id, release_base_package_id,
+                    git_base_branch, git_base_commit_sha,
                     mutation_policy_json, cancellation_json, task_kind,
                     outcome_contract_json, integration_boundary,
                     deliverable_contract_json, completion_json, created_at, updated_at,
                     source_evidence_snapshot_ids_json
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     task["id"],
@@ -2987,6 +3004,7 @@ class TeamStateSqliteStore:
                     task.get("created_by_actor"),
                     task.get("parent_task_id"),
                     task.get("originating_task_id"),
+                    task.get("release_base_package_id"),
                     task.get("git_base_branch"),
                     task.get("git_base_commit_sha"),
                     (
@@ -4215,6 +4233,8 @@ class TeamStateSqliteStore:
                 "owner_agent_id": row["owner_agent_id"],
                 "summary": row["summary"],
                 "supersedes_release_package_id": row["supersedes_release_package_id"],
+                "lineage_root_release_package_id": row["lineage_root_release_package_id"],
+                "lineage_sequence": row["lineage_sequence"],
                 "deliverable_ids": deliverables.get(row["id"], []),
                 "artifact_refs": artifacts.get(row["id"], []),
                 "feature_branches": branches.get(row["id"], []),
@@ -4260,6 +4280,7 @@ class TeamStateSqliteStore:
                 """
                 INSERT INTO team_release_packages(
                     id, project_id, owner_agent_id, summary, supersedes_release_package_id,
+                    lineage_root_release_package_id, lineage_sequence,
                     release_branch, canonical_branch, git_base_branch,
                     published_commit_sha,
                     base_commit_sha, canonical_base_commit_sha,
@@ -4271,7 +4292,7 @@ class TeamStateSqliteStore:
                     state, published_at, error, policy_version,
                     verification_waivers_json, scope_validation_json, created_at, updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     package["id"],
@@ -4279,6 +4300,8 @@ class TeamStateSqliteStore:
                     package.get("owner_agent_id"),
                     package.get("summary"),
                     package.get("supersedes_release_package_id"),
+                    package.get("lineage_root_release_package_id"),
+                    int(package.get("lineage_sequence", 0)),
                     package.get("release_branch"),
                     package.get("canonical_branch"),
                     package.get("git_base_branch"),
@@ -6946,6 +6969,85 @@ def _migrate_release_canonical_base_snapshots(
     )
 
 
+def _migrate_release_lineage(connection: sqlite3.Connection) -> None:
+    """Backfill only explicit successor ancestry and unique exact task bases."""
+
+    connection.execute(
+        """
+        UPDATE team_release_packages
+        SET lineage_root_release_package_id = id,
+            lineage_sequence = 0
+        WHERE supersedes_release_package_id IS NULL
+          AND lineage_root_release_package_id IS NULL
+        """
+    )
+    while True:
+        rows = connection.execute(
+            """
+            SELECT child.id,
+                   predecessor.lineage_root_release_package_id AS lineage_root,
+                   predecessor.lineage_sequence AS predecessor_sequence
+            FROM team_release_packages AS child
+            JOIN team_release_packages AS predecessor
+              ON predecessor.id = child.supersedes_release_package_id
+            WHERE child.lineage_root_release_package_id IS NULL
+              AND predecessor.lineage_root_release_package_id IS NOT NULL
+            ORDER BY child.created_at, child.id
+            """
+        ).fetchall()
+        if not rows:
+            break
+        for row in rows:
+            connection.execute(
+                """
+                UPDATE team_release_packages
+                SET lineage_root_release_package_id = ?,
+                    lineage_sequence = ?
+                WHERE id = ? AND lineage_root_release_package_id IS NULL
+                """,
+                (row["lineage_root"], int(row["predecessor_sequence"]) + 1, row["id"]),
+            )
+
+    releases_by_exact_base: dict[tuple[str, str, str], list[str]] = {}
+    for row in connection.execute(
+        """
+        SELECT id, project_id, release_branch, manifest_json, candidate_commit_sha
+        FROM team_release_packages
+        WHERE candidate_commit_sha IS NOT NULL
+        ORDER BY created_at, id
+        """
+    ):
+        manifest = _json_loads(row["manifest_json"] or "{}")
+        manifest_branch = manifest.get("release_branch") if isinstance(manifest, dict) else None
+        branch = row["release_branch"] or manifest_branch
+        if not branch:
+            continue
+        key = (row["project_id"], branch, str(row["candidate_commit_sha"]).casefold())
+        releases_by_exact_base.setdefault(key, []).append(row["id"])
+
+    for task in connection.execute(
+        """
+        SELECT id, project_id, git_base_branch, git_base_commit_sha
+        FROM team_tasks
+        WHERE release_base_package_id IS NULL
+          AND git_base_branch IS NOT NULL
+          AND git_base_commit_sha IS NOT NULL
+        ORDER BY id
+        """
+    ):
+        key = (
+            task["project_id"],
+            task["git_base_branch"],
+            str(task["git_base_commit_sha"]).casefold(),
+        )
+        release_ids = releases_by_exact_base.get(key, [])
+        if len(release_ids) == 1:
+            connection.execute(
+                "UPDATE team_tasks SET release_base_package_id = ? WHERE id = ?",
+                (release_ids[0], task["id"]),
+            )
+
+
 def _backfill_position_values(
     connection: sqlite3.Connection,
     *,
@@ -8024,6 +8126,7 @@ CREATE TABLE IF NOT EXISTS team_tasks (
     created_by_actor TEXT,
     parent_task_id TEXT,
     originating_task_id TEXT,
+    release_base_package_id TEXT,
     git_base_branch TEXT,
     git_base_commit_sha TEXT,
     mutation_policy_json TEXT,
@@ -8501,6 +8604,8 @@ CREATE TABLE IF NOT EXISTS team_release_packages (
     owner_agent_id TEXT,
     summary TEXT,
     supersedes_release_package_id TEXT,
+    lineage_root_release_package_id TEXT,
+    lineage_sequence INTEGER NOT NULL DEFAULT 0,
     release_branch TEXT,
     canonical_branch TEXT,
     git_base_branch TEXT,

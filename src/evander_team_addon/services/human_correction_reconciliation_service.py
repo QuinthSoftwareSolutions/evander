@@ -5,6 +5,8 @@ from datetime import datetime
 from typing import Any
 
 from ..models import (
+    AgentStatus,
+    AgentTask,
     HumanReviewFinding,
     TaskCancellation,
     TeamCase,
@@ -14,6 +16,7 @@ from ..models import (
     TeamRecordState,
     TeamDispatchStatus,
     TeamTaskState,
+    TaskDeliverableContract,
     project_lead_agent_id,
     utc_now,
 )
@@ -41,6 +44,7 @@ from .domain.task_assessment import (
     TaskAssessmentBoundaryError,
     require_task_resolved,
 )
+from .domain.work_due import _mark_agent_work_due
 
 
 HUMAN_CORRECTION_AGGREGATION_TASK_METADATA_KEY = HUMAN_CORRECTION_AGGREGATION_TASK_ID_KEY
@@ -507,6 +511,61 @@ def _open_aggregation_blocker(
     result.setdefault("aggregation_blocker_ids", []).append(blocker.id)
     if created:
         result.setdefault("created_aggregation_blocker_ids", []).append(blocker.id)
+    predecessor = state.release_packages.get(request.release_package_id)
+    lead_id = project_lead_agent_id(state, project.id)
+    lead = state.agents.get(lead_id) if lead_id is not None else None
+    convergence_failure = any(
+        marker in details.casefold()
+        for marker in ("conflict", "composition", "mixed_git_base", "ancestry")
+    )
+    if (
+        convergence_failure
+        and predecessor is not None
+        and predecessor.candidate_commit_sha is not None
+        and lead is not None
+        and lead.status == AgentStatus.ACTIVE
+    ):
+        task_id = "task-release-lineage-recovery-" + _stable_token(
+            predecessor.id,
+            case.id,
+            length=24,
+        )
+        recovery_task = state.tasks.get(task_id)
+        if recovery_task is None:
+            recovery_task = AgentTask(
+                id=task_id,
+                owner_agent_id=lead.id,
+                project_id=project.id,
+                case_id=case.id,
+                priority=0,
+                state=TeamTaskState.PENDING,
+                title=f"Converge release lineage for {predecessor.id}",
+                description=(
+                    f"Recover the single blocked successor for {predecessor.id}. Start "
+                    f"from its exact candidate {predecessor.candidate_commit_sha}, combine "
+                    "the reviewed correction work already recorded on this case, and submit "
+                    "one reviewed Git deliverable. Do not request another release package."
+                ),
+                created_by_actor="system:release-lineage-recovery",
+                release_base_package_id=predecessor.id,
+                git_base_branch=(predecessor.release_branch or predecessor.git_base_branch),
+                git_base_commit_sha=predecessor.candidate_commit_sha,
+                deliverable_contract=TaskDeliverableContract(require_git_provenance=True),
+                created_at=now,
+                updated_at=now,
+            )
+            state.tasks[recovery_task.id] = recovery_task
+            if recovery_task.id not in case.task_ids:
+                case.task_ids.append(recovery_task.id)
+                case.updated_at = now
+            blocker.affected_task_ids = sorted(set(blocker.affected_task_ids) | {recovery_task.id})
+            blocker.updated_at = now
+            _mark_agent_work_due(state, agent_id=lead.id, now=now)
+            result.setdefault("created_release_lineage_recovery_task_ids", []).append(
+                recovery_task.id
+            )
+    elif predecessor is not None:
+        result.setdefault("release_lineage_recovery_assignment_required", []).append(predecessor.id)
 
 
 def _reviews_ready(state: Any, deliverable: Any) -> tuple[bool, str | None]:

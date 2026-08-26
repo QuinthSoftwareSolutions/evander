@@ -1,5 +1,14 @@
 # Changelog
 
+## 2026-08-26 - Linear Release Correction Lineages
+
+- Bound correction and remediation work to exact release-candidate provenance and automatically
+  joined it to one persisted release lineage instead of allowing another initial package.
+- Reused terminal packages for identical deliverables, enforced a unique successor frontier, and
+  stopped verification or review while explicitly bound work remained unsettled.
+- Added deterministic project-lead recovery tasks and typed lineage blockers for convergence
+  failures, with conservative schema backfill that leaves ambiguous historical forks untouched.
+
 ## 2026-08-26 - Team Chat In-Dispatch Delivery
 
 - Queued text-only operator messages for relay injection on a busy Team agent's next model call,

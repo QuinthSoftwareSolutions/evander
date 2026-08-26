@@ -406,6 +406,8 @@ def test_repository_round_trips_sealed_release_review_cohort_without_legacy_back
         state.release_packages["release-cohort"] = ReleasePackage(
             id="release-cohort",
             project_id="project",
+            lineage_root_release_package_id="release-cohort",
+            lineage_sequence=0,
             candidate_commit_sha="c" * 40,
             release_branch="team/team/releases/release-cohort",
             manifest=ReleaseCandidateManifest(
@@ -424,6 +426,20 @@ def test_repository_round_trips_sealed_release_review_cohort_without_legacy_back
             review_cohort_id=cohort_id,
             review_cohort_sealed_at=NOW,
             created_at=NOW,
+        )
+        state.tasks["release-bound-task"] = AgentTask(
+            id="release-bound-task",
+            owner_agent_id="lead",
+            project_id="project",
+            priority=0,
+            title="Correct the release candidate",
+            description="Persist exact release lineage binding.",
+            created_by_agent_id="lead",
+            release_base_package_id="release-cohort",
+            git_base_branch="team/team/releases/release-cohort",
+            git_base_commit_sha="c" * 40,
+            created_at=NOW,
+            updated_at=NOW,
         )
         state.review_requests["release-review-cohort"] = ReviewRequest(
             id="release-review-cohort",
@@ -444,6 +460,9 @@ def test_repository_round_trips_sealed_release_review_cohort_without_legacy_back
     review = reloaded.review_requests["release-review-cohort"]
     assert release.review_cohort_id == cohort_id
     assert release.review_cohort_sealed_at == NOW
+    assert release.lineage_root_release_package_id == "release-cohort"
+    assert release.lineage_sequence == 0
+    assert reloaded.tasks["release-bound-task"].release_base_package_id == "release-cohort"
     assert review.review_cohort_id == cohort_id
 
 
