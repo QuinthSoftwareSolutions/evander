@@ -1,5 +1,10 @@
 # Changelog
 
+## 2026-08-26 - Team Chat Stream Reconciliation
+
+- Kept idle Team Chat conversation streams on their revision-only cache path while reconciling
+  mid-dispatch relay receipts against the already-cached Team state.
+
 ## 2026-08-26 - Retention and Test Contract Repairs
 
 - Expired delivered completion envelopes now leave the durable trigger queue in bounded batches

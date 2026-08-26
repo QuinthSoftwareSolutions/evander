@@ -136,10 +136,13 @@ def queue_operator_chat_steering(
 
 def reconcile_operator_chat_steering_deliveries(
     repository: TeamStateRepository,
+    *,
+    state: TeamState | None = None,
 ) -> TeamState:
     """Project relay delivery receipts into Team Chat message state."""
 
-    state = repository.read()
+    if state is None:
+        state = repository.read()
     steering_store = operator_steering_note_store(repository.runtime_dir)
     receipts: dict[str, Any] = {}
     for message in state.conversation_messages.values():

@@ -1118,7 +1118,7 @@ def test_operator_message_next_call_delivery_requires_explicit_completion(
         provider="openai",
         provider_endpoint="responses",
     )
-    delivered = reconcile_operator_chat_steering_deliveries(repo)
+    delivered = reconcile_operator_chat_steering_deliveries(repo, state=queued_state)
     assert delivered.conversation_messages[message.id].status == "delivered_in_dispatch"
     assert delivered.conversation_messages[message.id].seen_dispatch_id == "dispatch-backend"
 

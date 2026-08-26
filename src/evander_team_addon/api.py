@@ -7264,7 +7264,7 @@ async def _conversation_snapshot_events(
             break
         await asyncio.sleep(max(0.0, poll_interval_seconds))
         try:
-            await run_in_threadpool(_reconciled_chat_state, repository)
+            state = await run_in_threadpool(_reconciled_chat_state, repository, state=state)
             revision = await run_in_threadpool(repository.read_revision)
             if revision != state.revision:
                 state, snapshot = await run_in_threadpool(
@@ -7294,9 +7294,13 @@ async def _conversation_snapshot_events(
         yield f"event: snapshot\ndata: {serialized}\n\n"
 
 
-def _reconciled_chat_state(repository: TeamStateRepository) -> TeamState:
+def _reconciled_chat_state(
+    repository: TeamStateRepository,
+    *,
+    state: TeamState | None = None,
+) -> TeamState:
     try:
-        return reconcile_operator_chat_steering_deliveries(repository)
+        return reconcile_operator_chat_steering_deliveries(repository, state=state)
     except Exception:
         return repository.read()
 
