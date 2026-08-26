@@ -5,7 +5,8 @@
 - Removed the host-wide agent-completion polling trigger and correlated completion through the
   dispatch-owning prompt effect or wake monitor instead. Team ephemeral cleanup now continues
   directly from its prompt's completed output, while persistent Team dispatches use the existing
-  effect lifecycle finalizer.
+  effect lifecycle finalizer. Legacy configurations that name the retired completion transform
+  remain accepted as a no-op.
 - Migrated configured non-default legacy event stores before retiring their path settings, and
   allowed empty deployments to complete config-only SQLite cutovers.
 - Rebound trigger and effect provider metadata, internal-event executors, and wake notifications

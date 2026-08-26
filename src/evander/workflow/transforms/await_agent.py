@@ -1,7 +1,15 @@
 from __future__ import annotations
 
+from evander.config import TriggerOrchestratorWorkerGlobalConfig
 from evander.events.models import effective_node_output_schema
 from evander.workflow.validation import WorkflowValidationDiagnostic
+
+
+def augment_await_agent_completion(
+    worker_config: TriggerOrchestratorWorkerGlobalConfig,
+) -> TriggerOrchestratorWorkerGlobalConfig:
+    """Accept the retired transform name without rewriting the workflow."""
+    return worker_config
 
 
 def validate_await_agent_gate(

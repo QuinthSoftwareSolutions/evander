@@ -443,7 +443,7 @@ def test_get_latest_detects_hidden_system_workflow_pack_change(tmp_path: Path) -
     assert enqueue_effect.display_name == "Enqueue updated chat assistant prompt"
 
 
-def test_load_config_keeps_await_agent_completion_internal(tmp_path: Path) -> None:
+def test_load_config_accepts_legacy_await_agent_completion_as_noop(tmp_path: Path) -> None:
     runtime_dir = tmp_path / "runtime"
     project_dir = tmp_path
     path = _config_path(project_dir)
@@ -481,6 +481,7 @@ def test_load_config_keeps_await_agent_completion_internal(tmp_path: Path) -> No
                     {"source_id": "cron-1", "target_id": "effect-1"},
                     {"source_id": "effect-1", "target_id": "await-agent-1"},
                 ],
+                "workflow_transforms": ["await_agent_completion"],
             }
         ),
         encoding="utf-8",
