@@ -2,6 +2,8 @@
 
 ## 2026-08-26 - SQLite Events, Team Chat, And Release Reliability
 
+- Stopped the host-observable agent-completion trigger from polling libvirt inventory on
+  container-worker deployments; container completions remain event-driven.
 - Migrated configured non-default legacy event stores before retiring their path settings, and
   allowed empty deployments to complete config-only SQLite cutovers.
 - Rebound trigger and effect provider metadata, internal-event executors, and wake notifications

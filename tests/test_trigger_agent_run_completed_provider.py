@@ -24,9 +24,17 @@ class _AdminServiceStub:
         return []
 
 
-def _runtime_context(tmp_path: Path, admin_service: _AdminServiceStub) -> TriggerRuntimeContext:
+def _runtime_context(
+    tmp_path: Path,
+    admin_service: _AdminServiceStub,
+    *,
+    execution_backend: str = "libvirt_vm",
+) -> TriggerRuntimeContext:
     return TriggerRuntimeContext(
-        resolved_config=GatewayConfig(runtime_dir=tmp_path / "runtime"),
+        resolved_config=GatewayConfig(
+            runtime_dir=tmp_path / "runtime",
+            execution_backend=execution_backend,
+        ),
         admin_service=admin_service,
         env={},
         metadata={"directory_path": "root/team-a"},
@@ -40,6 +48,28 @@ def _trigger_definition() -> SimpleNamespace:
         type="trigger:agent:run:completed",
         vm_user="agent",
     )
+
+
+def test_agent_run_completed_skips_vm_polling_for_container_worker_backend(
+    tmp_path: Path,
+) -> None:
+    admin_service = _AdminServiceStub(responses=[], calls=[])
+    provider = AgentRunCompletedTriggerProvider()
+    provider.initialize(
+        _trigger_definition(),
+        _runtime_context(
+            tmp_path,
+            admin_service,
+            execution_backend="container_worker_vm",
+        ),
+    )
+
+    assert provider.poll() == []
+    assert provider.poll() == []
+    assert admin_service.calls == []
+    assert not (
+        tmp_path / "runtime" / "trigger-cursors-agent-run-completed.json"
+    ).exists()
 
 
 def test_agent_run_completed_emits_once_on_running_to_idle_transition(tmp_path: Path) -> None:
