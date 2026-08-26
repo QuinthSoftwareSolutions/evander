@@ -17,6 +17,8 @@ class AgentRunCompletedTriggerProvider(TriggerProviderBase):
 
     def poll(self) -> list[TriggerEvent]:
         trigger = self._trigger()
+        if self._execution_backend() == "container_worker_vm":
+            return []
         cursor_store = self._cursor_store()
         state = cursor_store.get(trigger.id)
         seen_by_vm = state.get("seen_by_vm", {})
@@ -187,6 +189,14 @@ class AgentRunCompletedTriggerProvider(TriggerProviderBase):
 
     def _runtime_dir(self) -> Path:
         return self._context().resolved_config.runtime_dir
+
+    def _execution_backend(self) -> str:
+        return (
+            self._normalize_optional_string(
+                getattr(self._context().resolved_config, "execution_backend", None)
+            )
+            or "libvirt_vm"
+        )
 
     def _cursor_store(self) -> TriggerCursorStore:
         return TriggerCursorStore(self._runtime_dir() / self._CURSOR_FILENAME)
