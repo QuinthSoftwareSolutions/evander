@@ -26,7 +26,7 @@ from evander_team_addon.git_naming import (
     validate_branch_name,
 )
 
-SCHEMA_VERSION = 17
+SCHEMA_VERSION = 18
 DEFAULT_TEAM_COST_WARNING_RATIO = Decimal("0.8")
 WORKTREE_CLEANUP_INVENTORY_SAMPLE_LIMIT = 200
 TEAM_CHAT_ATTACHMENT_DEFAULT_MIME_TYPES = (
@@ -1718,6 +1718,7 @@ class AgentTask(TeamModel):
     created_by_actor: str | None = None
     parent_task_id: str | None = None
     originating_task_id: str | None = None
+    release_base_package_id: str | None = None
     git_base_branch: str | None = None
     git_base_commit_sha: str | None = None
     mutation_policy: TaskMutationPolicy | None = None
@@ -1754,6 +1755,7 @@ class AgentTask(TeamModel):
         "created_by_actor",
         "parent_task_id",
         "originating_task_id",
+        "release_base_package_id",
         "git_base_commit_sha",
         mode="before",
     )
@@ -3702,6 +3704,8 @@ class TeamConversationMessage(TeamModel):
         "queued",
         "running",
         "seen",
+        "delivered_in_dispatch",
+        "acknowledged",
         "replied",
         "failed",
         "sent",
@@ -4085,7 +4089,7 @@ class ReleaseVerificationRun(TeamModel):
 
 
 class ReleaseGateFailure(TeamModel):
-    stage: Literal["verification", "review", "human_review", "configuration"]
+    stage: Literal["verification", "review", "human_review", "configuration", "lineage"]
     kind: Literal[
         "candidate",
         "infrastructure",
@@ -4094,6 +4098,7 @@ class ReleaseGateFailure(TeamModel):
         "rejected",
         "changes_requested",
         "configuration",
+        "convergence",
     ]
     source_id: str | None = None
     message: str
@@ -4515,6 +4520,8 @@ class ReleasePackage(TeamModel):
     owner_agent_id: str | None = None
     summary: str | None = None
     supersedes_release_package_id: str | None = None
+    lineage_root_release_package_id: str | None = None
+    lineage_sequence: int = Field(default=0, ge=0)
     deliverable_ids: list[str] = Field(default_factory=list)
     artifact_refs: list[str] = Field(default_factory=list)
     feature_branches: list[str] = Field(default_factory=list)
@@ -4582,6 +4589,7 @@ class ReleasePackage(TeamModel):
         "canonical_branch",
         "owner_agent_id",
         "supersedes_release_package_id",
+        "lineage_root_release_package_id",
         "published_commit_sha",
         "base_commit_sha",
         "canonical_base_commit_sha",

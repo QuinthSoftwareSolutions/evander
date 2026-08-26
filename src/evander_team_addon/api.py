@@ -45,11 +45,10 @@ from evander.admin.web.user_store import normalize_admin_web_login
 from evander.events.internal import (
     InternalEventSource,
 )
-from evander.events.scheduled import (
-    ScheduledInternalEventStore,
-    scheduled_internal_event_store_path,
+from evander.orchestration.internal_events import (
+    build_internal_event_bus_for_runtime,
+    build_scheduled_internal_event_store_for_runtime,
 )
-from evander.orchestration.internal_events import build_internal_event_bus_for_runtime
 from evander.execution.container_worker_client import (
     ContainerWorkerClient,
     ContainerWorkerClientError,
@@ -126,6 +125,10 @@ from .repository import TeamStateConflictError, TeamStateRepository
 from .outbox_publication import (
     request_team_outbox_publication as _request_team_outbox_publication,
     request_team_outbox_publication_for_records,
+)
+from .operator_chat_steering import (
+    queue_operator_chat_steering,
+    reconcile_operator_chat_steering_deliveries,
 )
 from .sqlite_store import TeamIdempotencyConflictError
 from .services.domain.chat import CHAT_MESSAGE_QUEUED_EVENT_TYPE
@@ -587,12 +590,7 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
         ):
             return None
         return JSONResponse(
-            {
-                "error": (
-                    f"{action} requires directory owner permission for the "
-                    "affected project."
-                )
-            },
+            {"error": (f"{action} requires directory owner permission for the affected project.")},
             status_code=403,
         )
 
@@ -1063,19 +1061,13 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
             or (
                 effective_git.directory_path
                 if has_git and effective_git is not None
-                else (
-                    current_project.directory_path
-                    if current_project is not None
-                    else "root"
-                )
+                else (current_project.directory_path if current_project is not None else "root")
             )
         )
         if current_project is None:
             return JSONResponse({"error": "project not found"}, status_code=404)
         authorization_paths = list(
-            dict.fromkeys(
-                [current_project.directory_path, effective_directory_path]
-            )
+            dict.fromkeys([current_project.directory_path, effective_directory_path])
         )
         for authorization_path in authorization_paths:
             authorization_error = _directory_owner_authorization_error(
@@ -1452,7 +1444,7 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
         return _state_response(request, state)
 
     async def list_conversations(request: Request) -> JSONResponse:
-        state = await run_in_threadpool(repository.read)
+        state = await run_in_threadpool(_reconciled_chat_state, repository)
         scope = _chat_list_scope(context.auth, request, state)
         scope = _add_team_chat_mutation_modes(
             scope,
@@ -1501,7 +1493,7 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
         return JSONResponse(response_payload, status_code=201 if created else 200)
 
     async def get_conversation(request: Request) -> JSONResponse:
-        state = await run_in_threadpool(repository.read)
+        state = await run_in_threadpool(_reconciled_chat_state, repository)
         conversation_id = request.path_params["conversation_id"]
         conversation = state.conversations.get(conversation_id)
         if conversation is None:
@@ -1538,7 +1530,7 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
         )
 
     async def list_conversation_messages(request: Request) -> JSONResponse:
-        state = await run_in_threadpool(repository.read)
+        state = await run_in_threadpool(_reconciled_chat_state, repository)
         conversation_id = request.path_params["conversation_id"]
         conversation = state.conversations.get(conversation_id)
         if conversation is None:
@@ -1676,12 +1668,21 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
                 attachment.id for attachment in prepared_attachments
             )
             raise
+        try:
+            state, message, steering = queue_operator_chat_steering(
+                repository,
+                message_id=message.id,
+            )
+        except Exception:
+            steering = None
         dispatch_payload: dict[str, Any] = {
             "success": False,
             "queued": True,
             "dispatch_id": dispatch_id,
             "message": "Chat message queued for asynchronous agent dispatch.",
         }
+        if steering is not None:
+            dispatch_payload["delivery"] = "next_model_call"
         conversation = state.conversations[conversation_id]
         agent = state.agents[conversation.agent_id]
         published_event_ids = _publish_team_events(
@@ -2663,9 +2664,7 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
             integration_task_id=integration_task_id,
             replacement_task_id=_required(payload, "replacement_task_id"),
             expected_dependency_task_ids=expected_dependency_task_ids,
-            expected_required_contribution_task_ids=(
-                expected_required_contribution_task_ids
-            ),
+            expected_required_contribution_task_ids=(expected_required_contribution_task_ids),
             reason=_required(payload, "reason"),
             actor_id=_operator_actor_from_request(context.auth, request),
             git_base_commit_sha=_optional(payload, "git_base_commit_sha"),
@@ -3951,9 +3950,7 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
         if source_type is not None:
             rows = [row for row in rows if row.source_type == source_type]
         if external_identifier is not None:
-            rows = [
-                row for row in rows if row.external_identifier == external_identifier
-            ]
+            rows = [row for row in rows if row.external_identifier == external_identifier]
         rows.sort(key=lambda row: (row.fetched_at, row.created_at, row.id), reverse=True)
         return JSONResponse(
             {
@@ -3966,9 +3963,7 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
 
     async def get_external_source_evidence_snapshot(request: Request) -> JSONResponse:
         state = repository.read()
-        snapshot = state.external_source_evidence_snapshots.get(
-            request.path_params["snapshot_id"]
-        )
+        snapshot = state.external_source_evidence_snapshots.get(request.path_params["snapshot_id"])
         if snapshot is None:
             return JSONResponse(
                 {"error": "external source evidence snapshot not found"},
@@ -4010,8 +4005,7 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
             return JSONResponse(
                 {
                     "error": (
-                        "External source evidence creation requires directory owner "
-                        "permission."
+                        "External source evidence creation requires directory owner permission."
                     )
                 },
                 status_code=403,
@@ -7121,7 +7115,7 @@ def _conversation_snapshot_state_and_payload(
     request: Request | None = None,
     context: AddonContext | None = None,
 ) -> tuple[TeamState, dict[str, Any]]:
-    state = _conversation_stream_state(repository.read(), conversation_id)
+    state = _conversation_stream_state(_reconciled_chat_state(repository), conversation_id)
     return state, _conversation_snapshot_payload_from_state(
         state,
         conversation_id,
@@ -7270,6 +7264,7 @@ async def _conversation_snapshot_events(
             break
         await asyncio.sleep(max(0.0, poll_interval_seconds))
         try:
+            state = await run_in_threadpool(_reconciled_chat_state, repository, state=state)
             revision = await run_in_threadpool(repository.read_revision)
             if revision != state.revision:
                 state, snapshot = await run_in_threadpool(
@@ -7297,6 +7292,17 @@ async def _conversation_snapshot_events(
             continue
         last_serialized = serialized
         yield f"event: snapshot\ndata: {serialized}\n\n"
+
+
+def _reconciled_chat_state(
+    repository: TeamStateRepository,
+    *,
+    state: TeamState | None = None,
+) -> TeamState:
+    try:
+        return reconcile_operator_chat_steering_deliveries(repository, state=state)
+    except Exception:
+        return repository.read()
 
 
 async def _state_snapshot_events(
@@ -7892,8 +7898,10 @@ def _publish_team_events(context: AddonContext, events: object) -> list[str]:
         project_dir=context.project_dir,
         base_config=context.config,
     )
-    scheduled_store = ScheduledInternalEventStore(
-        scheduled_internal_event_store_path(context.runtime_dir)
+    scheduled_store = build_scheduled_internal_event_store_for_runtime(
+        context.runtime_dir,
+        project_dir=context.project_dir,
+        base_config=context.config,
     )
     published_ids: list[str] = []
     for event in events:

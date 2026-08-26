@@ -7,11 +7,9 @@ from evander.effects.providers.base import EffectRuntimeContext
 from evander.admin.user_notifications import AdminUserNotificationStore
 from evander.admin.web.rbac import TEAM_HUMAN_REVIEWS_DECIDE_PERMISSION
 from evander.admin.web.user_store import AdminWebUserStore
-from evander.events.internal import InternalEventBus, internal_event_store_path
-from evander.events.scheduled import (
-    ScheduledInternalEventStore,
-    scheduled_internal_event_store_path,
-)
+from evander.events.internal import InternalEventBus
+from evander.events.scheduled import ScheduledInternalEventStore
+from internal_event_test_support import default_orchestration_database_path
 from evander_team_addon.models import (
     HumanReviewAssignment,
     HumanReviewRequest,
@@ -157,7 +155,7 @@ def test_publish_outbox_events_claims_publishes_and_completes_record(
     assert len(result["published_event_ids"]) == 1
     completed = repo.list_outbox_records(status=TeamOutboxStatus.COMPLETED)
     assert [record.id for record in completed] == ["outbox-1"]
-    events = InternalEventBus(internal_event_store_path(tmp_path)).list_events()
+    events = InternalEventBus(default_orchestration_database_path(tmp_path)).list_events()
     assert [event.event_type for event in events] == ["team.ephemeral.requested"]
     assert events[0].payload["assignment_id"] == "assignment-1"
 
@@ -199,7 +197,7 @@ def test_publish_outbox_event_preserves_absolute_run_at(tmp_path: Path) -> None:
     result = provider.execute()
 
     assert result["success"] is True
-    scheduled = ScheduledInternalEventStore(scheduled_internal_event_store_path(tmp_path)).list_due(
+    scheduled = ScheduledInternalEventStore(default_orchestration_database_path(tmp_path)).list_due(
         run_at
     )
     assert len(scheduled) == 1

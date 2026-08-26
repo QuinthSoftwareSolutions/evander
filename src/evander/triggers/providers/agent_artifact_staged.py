@@ -11,8 +11,6 @@ from evander.triggers.providers.event import EventTriggerProvider
 class AgentArtifactStagedTriggerProvider(EventTriggerProvider):
     """Publish activations for successful agent ``stage_artifact`` calls."""
 
-    _CURSOR_FILENAME = "trigger-cursors-agent-artifact-staged.json"
-
     @classmethod
     def validate_definition(
         cls, trigger_definition: TriggerDefinitionDiscriminated
@@ -50,6 +48,21 @@ class AgentArtifactStagedTriggerProvider(EventTriggerProvider):
                 f"{trigger.path_prefix}/"
             )
         return True
+
+    def _subscription_event_type(self) -> str:
+        return "agent.artifact.staged"
+
+    def _subscription_filter_payload(self) -> dict[str, object]:
+        trigger = self._trigger()
+        directory_path = "root"
+        if self.runtime_context is not None:
+            directory_path = str(self.runtime_context.metadata.get("directory_path") or "root")
+        return {
+            "event_type": self._subscription_event_type(),
+            "directory_path": directory_path,
+            "artifact_path": trigger.artifact_path,
+            "path_prefix": trigger.path_prefix,
+        }
 
     def _event_directory_is_in_scope(self, event: InternalEvent) -> bool:
         if self.runtime_context is None:

@@ -352,6 +352,15 @@ class TeamCommandExecutor:
             dispatch.cause_kind == "team_chat"
             and not dispatch.project_ids
             and resolved.context.tool_name != "team_reply_to_chat"
+            and not (
+                resolved.context.tool_name
+                in {
+                    "team_send_operator_chat_message",
+                    "team_acknowledge_operator_chat_messages",
+                }
+                and bool(normalized_payload.get("source_message_ids"))
+                and not normalized_payload.get("attachment_ids")
+            )
         ):
             raise _dispatch_scope_error(
                 dispatch,

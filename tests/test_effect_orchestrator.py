@@ -51,6 +51,7 @@ from evander.daemons.effect_orchestrator import (
     EffectOrchestratorCycleResult,
     main,
 )
+from evander.events.internal import InternalEventBus, InternalEventSubscriptionSpec
 from evander.events.scheduled import ScheduledInternalEventStore
 from evander.messaging.agent_prompt_queue import (
     AgentPromptQueueStore,
@@ -65,7 +66,7 @@ from evander.local_inference_capacity import (
     LocalInferenceCapacityStore,
 )
 from evander.model_usage.runtime import model_usage_store
-from evander.orchestration.host_polling import HostFileLockManager
+from evander.orchestration.host_polling import HostFileLockManager, wake_socket_path_for_lock
 from evander.events.models import TriggerEvent
 from evander.messaging.wake_store import WakeRequestStore
 from evander.models import (
@@ -1028,74 +1029,63 @@ def test_effect_orchestrator_run_once_uses_reloaded_worker_config_for_sleep(tmp_
     assert result.next_sleep_seconds == 13
 
 
-def test_event_schedule_effect_uses_reloaded_scheduled_store_path(tmp_path: Path) -> None:
+@pytest.mark.parametrize("binding", ["store", "trigger_lock"])
+def test_effect_orchestrator_rebinds_event_publishers_after_bus_binding_change(
+    tmp_path: Path,
+    binding: str,
+) -> None:
     runtime_dir = tmp_path / "runtime"
-    old_store_path = runtime_dir / "old-scheduled-events.json"
-    new_store_path = runtime_dir / "new-scheduled-events.json"
     config = GatewayConfig(runtime_dir=runtime_dir)
-    base_worker_config = {
+    initial_payload = {
         "runtime_dir": runtime_dir,
-        "poll_interval_seconds": 1,
-        "jitter_seconds": 0,
-        "triggers": [
-            {
-                "id": "trigger-1",
-                "display_name": "Trigger",
-                "type": "trigger:cron",
-                "expression": "* * * * *",
-            }
-        ],
-        "effects": [
-            {
-                "id": "schedule-plan",
-                "display_name": "Schedule plan",
-                "type": "effect:event:schedule",
-                "event_type": "custom.operator_event",
-                "payload": {"value": "ok"},
-                "run_at": "2026-05-25T12:05:00Z",
-            }
-        ],
-        "edges": [_edge("trigger-1", "schedule-plan")],
+        "orchestration_store_path": runtime_dir / "old-orchestration.db",
+        "lock_path": runtime_dir / "old-trigger.lock",
+        "triggers": [],
     }
-    worker_config = canonical_worker_config(
-        {
-            **base_worker_config,
-            "scheduled_internal_event_store_path": old_store_path,
-        }
-    )
-    updated_config = canonical_worker_config(
-        {
-            **base_worker_config,
-            "scheduled_internal_event_store_path": new_store_path,
-        }
-    )
+    updated_payload = dict(initial_payload)
+    if binding == "store":
+        updated_payload["orchestration_store_path"] = runtime_dir / "new-orchestration.db"
+    else:
+        updated_payload["lock_path"] = runtime_dir / "new-trigger.lock"
+    initial_config = canonical_worker_config(initial_payload)
+    updated_config = canonical_worker_config(updated_payload)
     worker = EffectOrchestratorWorker(
         config=config,
-        worker_config=worker_config,
+        worker_config=initial_config,
         config_reloader=_StaticReloader(updated_config, changed=True),
         runtime=None,  # type: ignore[arg-type]
     )
-    worker.event_queue.publish(
-        TriggerEvent(
-            event_id="input-event-1",
-            trigger_id="trigger-1",
-            trigger_type="trigger:cron",
-            occurred_at=datetime.now(timezone.utc),
-            trace_id="trace-1",
-            payload={},
-        )
+    initial_factory = worker.provider_factory
+    initial_emit_executor = worker.effect_executor_registry.resolve("effect:event:emit")
+
+    worker.run_once()
+
+    assert worker.provider_factory is not initial_factory
+    assert worker.provider_factory.metadata["orchestration_store_path"] == str(
+        updated_config.orchestration_store_path
+    )
+    assert worker.provider_factory.metadata["trigger_lock_path"] == str(updated_config.lock_path)
+    emit_executor = worker.effect_executor_registry.resolve("effect:event:emit")
+    assert emit_executor is not initial_emit_executor
+    assert emit_executor.internal_event_bus.path == updated_config.orchestration_store_path
+    assert emit_executor.internal_event_bus._wake_notifier.path == wake_socket_path_for_lock(
+        updated_config.lock_path
     )
 
-    worker.run_once()
-    worker._wait_for_inflight_completion(timeout_seconds=2)
-    worker.run_once()
 
-    assert not old_store_path.exists()
-    scheduled_events = json.loads(new_store_path.read_text(encoding="utf-8"))
-    scheduled = next(iter(scheduled_events.values()))
-    assert scheduled["event_type"] == "custom.operator_event"
-    assert scheduled["payload"] == {"value": "ok"}
-    assert scheduled["run_at"] == "2026-05-25T12:05:00Z"
+def test_worker_config_rejects_retired_scheduled_internal_event_store_path(
+    tmp_path: Path,
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    with pytest.raises(ValueError, match="scheduled_internal_event_store_path"):
+        canonical_worker_config(
+            {
+                "runtime_dir": runtime_dir,
+                "scheduled_internal_event_store_path": (
+                    runtime_dir / "retired-scheduled-events.json"
+                ),
+            }
+        )
 
 
 def test_effect_orchestrator_uses_shared_host_lock_manager(tmp_path: Path) -> None:
@@ -12097,14 +12087,15 @@ def test_event_emit_effect_evaluates_payload_and_writes_internal_event(tmp_path:
     worker._wait_for_inflight_completion(timeout_seconds=2)
     worker.run_once()
 
-    events = json.loads(worker_config.internal_event_store_path.read_text(encoding="utf-8"))
+    events = InternalEventBus(worker_config.orchestration_store_path).list_events()
     assert len(events) == 1
-    emitted = next(iter(events.values()))
-    assert emitted["event_type"] == "issue.plan_committed"
-    assert emitted["payload"] == {"issue_id": "ISSUE-1", "plan_version": 7}
-    assert emitted["correlation_key"] == "issue:ISSUE-1"
-    assert emitted["source"]["workflow_run_id"] == "trace-1"
-    assert emitted["source"]["node_id"] == "emit-plan"
+    [emitted] = events
+    assert emitted.event_type == "issue.plan_committed"
+    assert emitted.payload == {"issue_id": "ISSUE-1", "plan_version": 7}
+    assert emitted.correlation_key == "issue:ISSUE-1"
+    assert emitted.source is not None
+    assert emitted.source.workflow_run_id == "trace-1"
+    assert emitted.source.node_id == "emit-plan"
     journal = workflow_event_payload(worker_config)
     assert "workflow.internal_event.published" in {event["event_type"] for event in journal}
 
@@ -12230,6 +12221,18 @@ def test_event_emit_effect_can_start_event_trigger_workflow(tmp_path: Path) -> N
             "edges": [_edge("source-trigger", "emit-custom")],
         }
     )
+    InternalEventBus(worker_config.orchestration_store_path).reconcile_subscription(
+        InternalEventSubscriptionSpec(
+            trigger_id="event-trigger",
+            trigger_type="trigger:event",
+            event_type="custom.operator_event",
+            filter_payload={
+                "event_type": "custom.operator_event",
+                "correlation_key": None,
+            },
+        ),
+        config_revision="test",
+    )
     effect_worker = EffectOrchestratorWorker(
         config=config, worker_config=worker_config, runtime=None
     )  # type: ignore[arg-type]
@@ -12313,7 +12316,7 @@ def test_event_emit_effect_invalid_event_type_fails_clearly(tmp_path: Path) -> N
     ]
     assert executions[-1].status == "failed"
     assert "event_type" in (executions[-1].error or "")
-    assert json.loads(worker_config.internal_event_store_path.read_text(encoding="utf-8")) == {}
+    assert InternalEventBus(worker_config.orchestration_store_path).list_events() == []
 
 
 def test_event_emit_effect_retry_uses_idempotency_key(tmp_path: Path) -> None:
@@ -12358,9 +12361,7 @@ def test_event_emit_effect_retry_uses_idempotency_key(tmp_path: Path) -> None:
 
     worker.run_once()
     worker._wait_for_inflight_completion(timeout_seconds=2)
-    first_worker_events = json.loads(
-        worker_config.internal_event_store_path.read_text(encoding="utf-8")
-    )
+    first_worker_events = InternalEventBus(worker_config.orchestration_store_path).list_events()
     assert len(first_worker_events) == 1
     worker_retry = EffectOrchestratorWorker(
         config=config, worker_config=worker_config, runtime=None
@@ -12369,7 +12370,7 @@ def test_event_emit_effect_retry_uses_idempotency_key(tmp_path: Path) -> None:
     worker_retry._wait_for_inflight_completion(timeout_seconds=2)
     worker_retry.run_once()
 
-    events = json.loads(worker_config.internal_event_store_path.read_text(encoding="utf-8"))
+    events = InternalEventBus(worker_config.orchestration_store_path).list_events()
     assert len(events) == 1
 
 
@@ -12445,23 +12446,24 @@ def test_event_schedule_effect_resolves_bindings_and_writes_pending_record(
     assert executions[-1].outputs["created"] is True
     assert executions[-1].outputs["run_at"] == "2026-05-25T12:05:00Z"
 
-    scheduled_events = json.loads(
-        worker_config.scheduled_internal_event_store_path.read_text(encoding="utf-8")
-    )
+    scheduled_events = ScheduledInternalEventStore(
+        worker_config.orchestration_store_path
+    ).list_all()
     assert len(scheduled_events) == 1
-    scheduled = next(iter(scheduled_events.values()))
-    assert scheduled["event_type"] == "custom.operator_event"
-    assert scheduled["payload"] == {"case_id": "CASE-1", "summary": "ready"}
-    assert scheduled["correlation_key"] == "case:CASE-1"
-    assert scheduled["run_at"] == "2026-05-25T12:05:00Z"
-    assert scheduled["status"] == "pending"
-    assert scheduled["source"]["source_type"] == "scheduled_internal_event"
-    assert scheduled["source"]["workflow_run_id"] == "trace-1"
-    assert scheduled["source"]["workflow_event_id"] == "input-event-1"
-    assert scheduled["source"]["workflow_trace_id"] == "trace-1"
-    assert scheduled["source"]["node_id"] == "schedule-plan"
-    assert scheduled["source"]["node_type"] == "effect:event:schedule"
-    assert json.loads(worker_config.internal_event_store_path.read_text(encoding="utf-8")) == {}
+    [scheduled] = scheduled_events
+    assert scheduled.event_type == "custom.operator_event"
+    assert scheduled.payload == {"case_id": "CASE-1", "summary": "ready"}
+    assert scheduled.correlation_key == "case:CASE-1"
+    assert scheduled.run_at == datetime(2026, 5, 25, 12, 5, tzinfo=timezone.utc)
+    assert scheduled.status == "pending"
+    assert scheduled.source is not None
+    assert scheduled.source.source_type == "scheduled_internal_event"
+    assert scheduled.source.workflow_run_id == "trace-1"
+    assert scheduled.source.workflow_event_id == "input-event-1"
+    assert scheduled.source.workflow_trace_id == "trace-1"
+    assert scheduled.source.node_id == "schedule-plan"
+    assert scheduled.source.node_type == "effect:event:schedule"
+    assert InternalEventBus(worker_config.orchestration_store_path).list_events() == []
 
 
 def test_event_schedule_effect_duplicate_idempotency_returns_original_record_without_mutation(
@@ -12516,10 +12518,8 @@ def test_event_schedule_effect_duplicate_idempotency_returns_original_record_wit
     worker._wait_for_inflight_completion(timeout_seconds=2)
     worker.run_once()
 
-    first_schedule = json.loads(
-        worker_config.scheduled_internal_event_store_path.read_text(encoding="utf-8")
-    )
-    first_schedule_record = next(iter(first_schedule.values()))
+    first_schedule = ScheduledInternalEventStore(worker_config.orchestration_store_path).list_all()
+    [first_schedule_record] = first_schedule
 
     worker.event_queue.publish(
         TriggerEvent(
@@ -12535,10 +12535,8 @@ def test_event_schedule_effect_duplicate_idempotency_returns_original_record_wit
     worker._wait_for_inflight_completion(timeout_seconds=2)
     worker.run_once()
 
-    second_schedule = json.loads(
-        worker_config.scheduled_internal_event_store_path.read_text(encoding="utf-8")
-    )
-    second_schedule_record = next(iter(second_schedule.values()))
+    second_schedule = ScheduledInternalEventStore(worker_config.orchestration_store_path).list_all()
+    [second_schedule_record] = second_schedule
 
     executions = [
         record
@@ -12549,16 +12547,14 @@ def test_event_schedule_effect_duplicate_idempotency_returns_original_record_wit
     assert sorted(record.outputs["created"] for record in executions) == [False, True]
     assert first_schedule == second_schedule
     assert second_schedule_record == first_schedule_record
-    assert json.loads(worker_config.internal_event_store_path.read_text(encoding="utf-8")) == {}
+    assert InternalEventBus(worker_config.orchestration_store_path).list_events() == []
 
 
 def test_event_schedule_effect_prepare_resolved_config_normalizes_delay_seconds(
     tmp_path: Path,
 ) -> None:
     executor = EventScheduleEffectExecutor(
-        scheduled_internal_event_store=ScheduledInternalEventStore(
-            tmp_path / "scheduled-internal-events.json"
-        )
+        scheduled_internal_event_store=ScheduledInternalEventStore(tmp_path / "orchestration.db")
     )
 
     resolved = executor.prepare_resolved_config(
@@ -12648,9 +12644,7 @@ def test_event_schedule_effect_prepare_resolved_config_rejects_invalid_values(
     tmp_path: Path, resolved_config: dict[str, object], message: str
 ) -> None:
     executor = EventScheduleEffectExecutor(
-        scheduled_internal_event_store=ScheduledInternalEventStore(
-            tmp_path / "scheduled-internal-events.json"
-        )
+        scheduled_internal_event_store=ScheduledInternalEventStore(tmp_path / "orchestration.db")
     )
 
     with pytest.raises(ValueError, match=message):

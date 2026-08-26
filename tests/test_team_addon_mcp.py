@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
-import json
 import threading
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -15,13 +14,18 @@ from evander.addons import AddonLoaderConfig
 from evander.config import GatewayConfig
 from evander.directories import DirectoryService
 from evander.effects.providers.agent_exec import AgentExecEffectProvider
-from evander.events.scheduled import scheduled_internal_event_store_path
+from evander.events.scheduled import ScheduledInternalEventStore
 from evander.gateway import create_server
 from evander.models import ApprovalStatus, SessionManifest, ToolName, tool_name_value
+from evander.model_usage.models import ModelUsageCorrelationContext
+from evander.model_usage.runtime import model_usage_store
+from evander.operator_steering import operator_steering_note_store
 from evander.runtime import build_runtime
 import evander_team_addon.mcp as team_addon_mcp
+from internal_event_test_support import default_orchestration_database_path
 from evander_team_addon.mcp import (
     MCP_TOOL_NAMES,
+    TEAM_ACKNOWLEDGE_OPERATOR_CHAT_MESSAGES_TOOL,
     TEAM_CLOSE_POST_RELEASE_CASE_TOOL,
     TEAM_CREATE_CASE_TOOL,
     TEAM_ROUTE_HUMAN_FINDING_CORRECTION_TOOL,
@@ -85,6 +89,7 @@ from evander_team_addon.models import (
     ReviewRequest,
     TeamBlockerRoute,
     TeamBlockerState,
+    TeamChatMutationAuthorization,
     TeamDispatch,
     TeamDispatchStatus,
     TeamInboxItemState,
@@ -94,6 +99,10 @@ from evander_team_addon.models import (
 from evander_team_addon.repository import (
     ADDON_ID,
     TeamStateRepository,
+)
+from evander_team_addon.operator_chat_steering import (
+    queue_operator_chat_steering,
+    reconcile_operator_chat_steering_deliveries,
 )
 from evander_team_addon.services.domain.wake import AGENT_WAKE_REQUESTED_EVENT_TYPE
 from evander_team_addon.services.admin_service import TeamAdminService
@@ -635,6 +644,8 @@ def test_team_git_candidate_pinner_uses_deliverable_scoped_immutable_ref(
             "pinned_ref": expected_ref,
         }
     ]
+
+
 def test_team_addon_mcp_registers_all_plan_tool_names_as_addon_tools(
     tmp_path: Path,
 ) -> None:
@@ -744,7 +755,7 @@ def test_teamless_governance_agent_can_reply_to_active_team_chat(
     assert reply.body == "Understood."
 
 
-def test_active_team_mcp_result_surfaces_plain_operator_attention_once(
+def test_active_team_mcp_result_repeats_plain_operator_attention_without_consuming_it(
     tmp_path: Path,
 ) -> None:
     context = _runtime(tmp_path, allowed_tools=[])
@@ -752,7 +763,7 @@ def test_active_team_mcp_result_surfaces_plain_operator_attention_once(
     _upsert_session(
         context,
         session_id="session-backend",
-        allowed_tools=[TEAM_LIST_TASKS_TOOL],
+        allowed_tools=[TEAM_LIST_TASKS_TOOL, TEAM_SEND_OPERATOR_CHAT_MESSAGE_TOOL],
     )
     _lease_agent(repo, agent_id="backend", dispatch_id="dispatch-backend")
     chat = TeamChatService(repo)
@@ -766,6 +777,7 @@ def test_active_team_mcp_result_surfaces_plain_operator_attention_once(
         conversation_id=conversation.id,
         body="Please keep the interface stable while you work.",
         created_by="operator:operator@example.com",
+        mutation_authorization=_authorized_chat_mutation(repo, "backend"),
         expected_revision=state.revision,
     )
     chat.queue_chat_message_dispatch(
@@ -780,23 +792,43 @@ def test_active_team_mcp_result_surfaces_plain_operator_attention_once(
         {"session_id": "session-backend"},
     )
 
-    assert result["attention"]["seen_message_ids"] == [message.id]
+    assert result["attention"]["message_ids"] == [message.id]
+    assert "team_send_operator_chat_message" in result["attention"]["required_action"]
     attention_message = result["attention"]["messages"]
     assert len(attention_message) == 1
     assert attention_message[0]["message_id"] == message.id
     assert attention_message[0]["conversation_id"] == conversation.id
     assert attention_message[0]["body"] == "Please keep the interface stable while you work."
+    assert attention_message[0]["operator_user_id"] == "operator@example.com"
+    assert attention_message[0]["operator_display_name"] == "Operator"
+    assert attention_message[0]["status"] == "delivered_in_dispatch"
     assert attention_message[0]["created_at"]
     stored = repo.read()
-    assert stored.conversation_messages[message.id].status == "seen"
+    assert stored.conversation_messages[message.id].status == "delivered_in_dispatch"
     assert stored.conversation_messages[message.id].seen_dispatch_id == "dispatch-backend"
+    delivered_revision = stored.revision
 
     replay = _call_tool(
         server,
         TEAM_LIST_TASKS_TOOL,
         {"session_id": "session-backend"},
     )
-    assert "attention" not in replay
+    assert replay["attention"]["message_ids"] == [message.id]
+    assert repo.read().revision == delivered_revision
+
+    reply = _call_tool(
+        server,
+        TEAM_SEND_OPERATOR_CHAT_MESSAGE_TOOL,
+        {
+            "session_id": "session-backend",
+            "recipient_operator_user_id": "operator@example.com",
+            "body": "Understood; I will keep it stable.",
+            "source_message_ids": [message.id],
+            "request_id": "reply-to-tool-attention-1",
+        },
+    )
+    assert reply["success"] is True
+    assert repo.read().conversation_messages[message.id].status == "replied"
 
 
 def test_active_team_mcp_result_leaves_operator_attachment_for_chat_dispatch(
@@ -842,6 +874,287 @@ def test_active_team_mcp_result_leaves_operator_attachment_for_chat_dispatch(
 
     assert "attention" not in result
     assert repo.read().conversation_messages[message.id].status == "queued"
+
+
+@pytest.mark.parametrize("authorization_kind", ["reply_only", "different_project"])
+def test_insufficiently_authorized_operator_message_is_not_delivered_into_mutation_dispatch(
+    tmp_path: Path,
+    authorization_kind: str,
+) -> None:
+    context = _runtime(tmp_path, allowed_tools=[])
+    repo = _seed_planning_state(context.config.runtime_dir)
+    _lease_agent(repo, agent_id="backend", dispatch_id="dispatch-backend")
+    chat = TeamChatService(repo)
+    state, conversation, _created = chat.create_or_get_conversation(
+        agent_id="backend",
+        operator_user_id="operator@example.com",
+        expected_revision=repo.read().revision,
+    )
+    state, message = chat.record_operator_chat_message(
+        conversation_id=conversation.id,
+        body="Try to mutate through the active project dispatch.",
+        created_by="operator:operator@example.com",
+        mutation_authorization=(
+            TeamChatMutationAuthorization(
+                mode="project_scoped",
+                source="internal",
+                principal_id="operator@example.com",
+                recipient_directory_path="root",
+                project_ids=["different-project"],
+            )
+            if authorization_kind == "different_project"
+            else None
+        ),
+        expected_revision=state.revision,
+    )
+    chat.queue_chat_message_dispatch(
+        message_id=message.id,
+        dispatch_id=f"team-chat:{message.id}",
+    )
+    model_usage_store(context.config.runtime_dir).upsert_correlation_context(
+        ModelUsageCorrelationContext(
+            session_id="session-backend",
+            dispatch_id="dispatch-backend",
+            agent_harness="codex",
+            expires_at=datetime(2099, 1, 1, tzinfo=UTC),
+        )
+    )
+
+    _state, pending = chat.list_pending_operator_attention_messages(
+        agent_id="backend",
+        dispatch_id="dispatch-backend",
+    )
+    _state, queued_message, steering = queue_operator_chat_steering(
+        repo,
+        message_id=message.id,
+    )
+
+    assert pending == []
+    assert steering is None
+    assert queued_message.status == "queued"
+    assert "operator_steering" not in queued_message.metadata
+
+
+def test_reply_only_chat_dispatch_completes_only_source_bound_attention(
+    tmp_path: Path,
+) -> None:
+    context = _runtime(tmp_path, allowed_tools=[])
+    repo = _seed_planning_state(context.config.runtime_dir)
+    TeamChatAttachmentPolicyService(repo).set_override(
+        directory_path="root",
+        values={"agent_send_requires_approval": False},
+        updated_by="test",
+        expected_revision=repo.read().revision,
+    )
+    _upsert_session(
+        context,
+        session_id="session-backend",
+        allowed_tools=[TEAM_SEND_OPERATOR_CHAT_MESSAGE_TOOL],
+    )
+    chat = TeamChatService(repo)
+    state, conversation, _created = chat.create_or_get_conversation(
+        agent_id="backend",
+        operator_user_id="operator@example.com",
+        expected_revision=repo.read().revision,
+    )
+    state, active_message = chat.record_operator_chat_message(
+        conversation_id=conversation.id,
+        body="This is the current reply-only batch.",
+        expected_revision=state.revision,
+    )
+    active_dispatch_id = f"team-chat:{active_message.id}"
+    state, _active_message = chat.begin_chat_message_dispatch(
+        message_id=active_message.id,
+        dispatch_id=active_dispatch_id,
+    )
+    state, attention_message = chat.record_operator_chat_message(
+        conversation_id=conversation.id,
+        body="This arrived during the reply-only batch.",
+        expected_revision=state.revision,
+    )
+    chat.queue_chat_message_dispatch(
+        message_id=attention_message.id,
+        dispatch_id=f"team-chat:{attention_message.id}",
+    )
+    _state, delivered = chat.mark_operator_attention_messages_delivered(
+        agent_id="backend",
+        dispatch_id=active_dispatch_id,
+        message_ids=[attention_message.id],
+    )
+    assert [message.id for message in delivered] == [attention_message.id]
+
+    server = create_server(context)
+    staged = TeamChatAttachmentStorage(context.config.runtime_dir).stage_agent_file(
+        session_id="session-backend",
+        source_path="/home/agent/attention.txt",
+        content=b"must remain unavailable",
+        filename="attention.txt",
+        mime_type="text/plain",
+    )
+    attachment_reply = _call_tool(
+        server,
+        TEAM_SEND_OPERATOR_CHAT_MESSAGE_TOOL,
+        {
+            "session_id": "session-backend",
+            "recipient_operator_user_id": "operator@example.com",
+            "body": "This source-bound reply must remain text-only.",
+            "attachment_ids": [staged.id],
+            "source_message_ids": [attention_message.id],
+            "request_id": "reply-only-source-bound-attachment",
+        },
+    )
+    reply = _call_tool(
+        server,
+        TEAM_SEND_OPERATOR_CHAT_MESSAGE_TOOL,
+        {
+            "session_id": "session-backend",
+            "recipient_operator_user_id": "operator@example.com",
+            "body": "I handled the newly delivered attention.",
+            "source_message_ids": [attention_message.id],
+            "request_id": "reply-only-source-bound-attention",
+        },
+    )
+    proactive = _call_tool(
+        server,
+        TEAM_SEND_OPERATOR_CHAT_MESSAGE_TOOL,
+        {
+            "session_id": "session-backend",
+            "recipient_operator_user_id": "operator@example.com",
+            "body": "This proactive send must remain denied.",
+            "request_id": "reply-only-proactive-send",
+        },
+    )
+
+    assert attachment_reply["success"] is False
+    assert attachment_reply["errors"][0]["code"] == "dispatch_scope_forbidden"
+    assert repo.read().chat_attachments == {}
+    assert reply["success"] is True
+    assert repo.read().conversation_messages[attention_message.id].status == "replied"
+    assert proactive["success"] is False
+    assert proactive["errors"][0]["code"] == "dispatch_scope_forbidden"
+
+
+@pytest.mark.parametrize(
+    ("tool_name", "expected_status"),
+    [
+        (TEAM_SEND_OPERATOR_CHAT_MESSAGE_TOOL, "replied"),
+        (TEAM_ACKNOWLEDGE_OPERATOR_CHAT_MESSAGES_TOOL, "acknowledged"),
+    ],
+)
+def test_operator_message_next_call_delivery_requires_explicit_completion(
+    tmp_path: Path,
+    tool_name: str,
+    expected_status: str,
+) -> None:
+    context = _runtime(tmp_path, allowed_tools=[])
+    repo = _seed_planning_state(context.config.runtime_dir)
+    _upsert_session(
+        context,
+        session_id="session-backend",
+        allowed_tools=[tool_name],
+    )
+    _lease_agent(repo, agent_id="backend", dispatch_id="dispatch-backend")
+    chat = TeamChatService(repo)
+    state, conversation, _created = chat.create_or_get_conversation(
+        agent_id="backend",
+        operator_user_id="operator@example.com",
+        operator_display_name="Operator",
+        expected_revision=repo.read().revision,
+    )
+    state, message = chat.record_operator_chat_message(
+        conversation_id=conversation.id,
+        body="Please preserve the public interface.",
+        created_by="operator:operator@example.com",
+        mutation_authorization=_authorized_chat_mutation(repo, "backend"),
+        expected_revision=state.revision,
+    )
+    chat.queue_chat_message_dispatch(
+        message_id=message.id,
+        dispatch_id=f"team-chat:{message.id}",
+    )
+    if tool_name == TEAM_SEND_OPERATOR_CHAT_MESSAGE_TOOL:
+        def _mark_external_origin(state):
+            state.conversation_messages[message.id].metadata["external_origin"] = {
+                "provider": "teams",
+                "communication_target_id": "operator-chat",
+                "source_thread_id": "thread-1",
+            }
+            return state
+
+        repo.update(_mark_external_origin)
+    model_usage_store(context.config.runtime_dir).upsert_correlation_context(
+        ModelUsageCorrelationContext(
+            session_id="session-backend",
+            dispatch_id="dispatch-backend",
+            agent_harness="codex",
+            expires_at=datetime(2099, 1, 1, tzinfo=UTC),
+        )
+    )
+
+    queued_state, queued_message, link = queue_operator_chat_steering(
+        repo,
+        message_id=message.id,
+    )
+
+    assert link is not None
+    assert queued_message.status == "queued"
+    assert queued_state.conversation_messages[message.id].metadata["operator_steering"][
+        "dispatch_id"
+    ] == "dispatch-backend"
+    _replay_state, _replay_message, replay_link = queue_operator_chat_steering(
+        repo,
+        message_id=message.id,
+    )
+    assert replay_link is not None
+    assert replay_link["note_id"] == link["note_id"]
+    steering_store = operator_steering_note_store(context.config.runtime_dir)
+    note = steering_store.claim_next_pending(
+        session_id="session-backend",
+        dispatch_id="dispatch-backend",
+    )
+    assert note is not None
+    steering_store.mark_delivered(
+        note.note_id,
+        provider="openai",
+        provider_endpoint="responses",
+    )
+    delivered = reconcile_operator_chat_steering_deliveries(repo, state=queued_state)
+    assert delivered.conversation_messages[message.id].status == "delivered_in_dispatch"
+    assert delivered.conversation_messages[message.id].seen_dispatch_id == "dispatch-backend"
+
+    server = create_server(context)
+    if tool_name == TEAM_SEND_OPERATOR_CHAT_MESSAGE_TOOL:
+        result = _call_tool(
+            server,
+            tool_name,
+            {
+                "session_id": "session-backend",
+                "recipient_operator_user_id": "operator@example.com",
+                "body": "Understood; I kept it stable.",
+                "source_message_ids": [message.id],
+                "request_id": "reply-to-steering-1",
+            },
+        )
+        reply = repo.read().conversation_messages[result["chat_message_id"]]
+        assert reply.source_message_id == message.id
+        assert reply.source_message_ids == [message.id]
+        assert len(repo.read().external_chat_deliveries) == 1
+        assert result["events"][0]["event_type"] == "team.chat.external_reply_requested"
+    else:
+        result = _call_tool(
+            server,
+            tool_name,
+            {
+                "session_id": "session-backend",
+                "message_ids": [message.id],
+                "disposition": "acted_no_reply",
+                "summary": "Kept the public interface stable.",
+                "request_id": "ack-steering-1",
+            },
+        )
+        assert result["acknowledged_message_ids"] == [message.id]
+
+    assert repo.read().conversation_messages[message.id].status == expected_status
 
 
 def test_reply_only_team_chat_cannot_stage_attachment(
@@ -1619,19 +1932,17 @@ def test_team_addon_mcp_slice6_tools_use_command_implementation(
     ]
     assert len(created_wake_outbox) == 1
     assert created_wake_outbox[0].status.value == "completed"
-    scheduled = json.loads(
-        scheduled_internal_event_store_path(context.config.runtime_dir).read_text(
-            encoding="utf-8",
-        )
-    )
+    scheduled = ScheduledInternalEventStore(
+        default_orchestration_database_path(context.config.runtime_dir)
+    ).list_all()
     scheduled_wakes = [
         record
-        for record in scheduled.values()
-        if record["event_type"] == AGENT_WAKE_REQUESTED_EVENT_TYPE
-        and record["payload"]["agent_id"] == "backend"
+        for record in scheduled
+        if record.event_type == AGENT_WAKE_REQUESTED_EVENT_TYPE
+        and record.payload["agent_id"] == "backend"
     ]
     assert scheduled_wakes
-    assert all(record["status"] == "pending" for record in scheduled_wakes)
+    assert all(record.status == "pending" for record in scheduled_wakes)
     assert created_tasks["created_task_ids"] == [
         "task-mcp-batch-a",
         "task-mcp-batch-b",

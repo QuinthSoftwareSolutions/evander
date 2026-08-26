@@ -992,6 +992,74 @@ def _open_reconciliation_blocker(
         changed = True
     if created:
         result.setdefault("created_candidate_correction_blocker_ids", []).append(blocker.id)
+    accepted_sources = sorted(
+        (
+            deliverable
+            for deliverable in state.deliverables.values()
+            if deliverable.task_id == correction_task.id
+            and deliverable.state == TeamRecordState.ACCEPTED
+            and deliverable.superseded_by_deliverable_id is None
+            and deliverable.git_refs.agent_branch is not None
+            and (deliverable.git_refs.submitted_commit_sha or deliverable.git_refs.commit_sha)
+            is not None
+            and any(
+                (review := state.review_requests.get(review_id)) is not None
+                and review.state == TeamRecordState.ACCEPTED
+                and review.superseded_by_review_request_id is None
+                for review_id in deliverable.review_request_ids
+            )
+        ),
+        key=lambda deliverable: (deliverable.created_at, deliverable.id),
+        reverse=True,
+    )
+    lead_id = project_lead_agent_id(state, project.id)
+    lead = state.agents.get(lead_id) if lead_id is not None else None
+    if accepted_sources and lead is not None and lead.status == AgentStatus.ACTIVE:
+        source = accepted_sources[0]
+        source_branch = source.git_refs.agent_branch
+        source_commit = source.git_refs.submitted_commit_sha or source.git_refs.commit_sha
+        assert source_branch is not None and source_commit is not None
+        recovery_task_id = "task-candidate-recovery-" + _stable_token(
+            predecessor.id,
+            correction_task.id,
+            source_commit,
+            length=24,
+        )
+        recovery_task = state.tasks.get(recovery_task_id)
+        if recovery_task is None:
+            recovery_task = AgentTask(
+                id=recovery_task_id,
+                owner_agent_id=lead.id,
+                project_id=project.id,
+                priority=correction_task.priority,
+                state=TeamTaskState.PENDING,
+                title=f"Converge release lineage for {predecessor.id}",
+                description=(
+                    f"Recover the single blocked successor for {predecessor.id}. Start "
+                    f"from accepted correction branch {source_branch} at exact commit "
+                    f"{source_commit}. Resolve only the packaging or composition failure, "
+                    "submit reviewed Git work, and do not request another release package."
+                ),
+                created_by_actor="system:release-lineage-recovery",
+                originating_task_id=correction_task.id,
+                release_base_package_id=predecessor.id,
+                git_base_branch=source_branch,
+                git_base_commit_sha=source_commit,
+                dependency_task_ids=[],
+                deliverable_contract=TaskDeliverableContract(require_git_provenance=True),
+                created_at=now,
+                updated_at=now,
+            )
+            state.tasks[recovery_task.id] = recovery_task
+            blocker.affected_task_ids = sorted(set(blocker.affected_task_ids) | {recovery_task.id})
+            blocker.updated_at = now
+            _mark_agent_work_due(state, agent_id=lead.id, now=now)
+            result.setdefault("created_release_lineage_recovery_task_ids", []).append(
+                recovery_task.id
+            )
+            changed = True
+    elif accepted_sources:
+        result.setdefault("release_lineage_recovery_assignment_required", []).append(predecessor.id)
     return changed
 
 
@@ -1345,6 +1413,7 @@ def recover_candidate_correction_successor(
                 ),
                 created_by_actor="system:candidate-correction-recovery",
                 originating_task_id=correction_task.id,
+                release_base_package_id=predecessor.id,
                 git_base_branch=source_branch,
                 git_base_commit_sha=source_commit,
                 dependency_task_ids=[],

@@ -9310,13 +9310,6 @@ def test_workflow_event_api_published_event_is_consumed_by_event_trigger(
     monkeypatch.setattr(
         "evander.admin.services.workflow_config_service.notify_wake_socket_for_lock", _fake_notify
     )
-    token = client.post("/api/workflow-events/token").json()["access_token"]
-    publish_response = client.post(
-        "/api/workflow-events",
-        headers={"Authorization": f"Bearer {token}"},
-        json={"event_type": "deploy_requested", "payload": {"target": "demo"}},
-    )
-
     worker_config = canonical_worker_config(
         canonical_workflow_payload(
             {
@@ -9338,6 +9331,14 @@ def test_workflow_event_api_published_event_is_consumed_by_event_trigger(
         config=GatewayConfig(runtime_dir=runtime_dir),
         worker_config=worker_config,
         runtime=None,  # type: ignore[arg-type]
+    )
+    assert worker.run_once().events_published == 0
+
+    token = client.post("/api/workflow-events/token").json()["access_token"]
+    publish_response = client.post(
+        "/api/workflow-events",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"event_type": "deploy_requested", "payload": {"target": "demo"}},
     )
     result = worker.run_once()
     pending = SqliteTriggerEventQueue(runtime_dir / "orchestration.db").list_pending(
@@ -9420,7 +9421,7 @@ def test_workflow_webhook_ingress_publishes_internal_event_and_bypasses_auth(
     assert response.json()["payload"]["received_at"].endswith("Z")
     assert response.json()["payload"]["remote_addr"]
 
-    events = InternalEventBus(tmp_path / "runtime" / "internal-events.json").list_events()
+    events = InternalEventBus(tmp_path / "runtime" / "orchestration.db").list_events()
     assert len(events) == 1
     assert events[0].event_id == response.json()["event_id"]
     assert {event.event_type for event in events} == {"external.webhook.build-notify"}
@@ -9468,7 +9469,7 @@ def test_workflow_webhook_ingress_keeps_distinct_query_envelopes(
     assert first.json()["event_id"] == repeat.json()["event_id"]
     assert first.json()["event_id"] != second.json()["event_id"]
 
-    events = InternalEventBus(tmp_path / "runtime" / "internal-events.json").list_events()
+    events = InternalEventBus(tmp_path / "runtime" / "orchestration.db").list_events()
     assert len(events) == 2
     assert [event.payload["query"] for event in events] == [
         {"source": "ci"},
@@ -9514,7 +9515,7 @@ def test_workflow_webhook_ingress_rejects_query_mutation_replay(
     assert replay.status_code == 401
     assert replay.json()["error"] == "Webhook signature is invalid or missing"
 
-    events = InternalEventBus(tmp_path / "runtime" / "internal-events.json").list_events()
+    events = InternalEventBus(tmp_path / "runtime" / "orchestration.db").list_events()
     assert len(events) == 1
     assert events[0].payload["query"] == {"source": "ci"}
 
@@ -9571,7 +9572,7 @@ def test_workflow_webhook_ingress_does_not_dedupe_same_body_across_slugs(
     assert deploy_response.status_code == 202
     assert build_response.json()["event_id"] != deploy_response.json()["event_id"]
 
-    events = InternalEventBus(tmp_path / "runtime" / "internal-events.json").list_events()
+    events = InternalEventBus(tmp_path / "runtime" / "orchestration.db").list_events()
     assert len(events) == 2
     assert {event.event_id for event in events} == {
         build_response.json()["event_id"],
@@ -9676,7 +9677,7 @@ def test_workflow_webhook_ingress_rejects_missing_or_stale_timestamp(
     assert missing_timestamp.json()["error"] == "Webhook timestamp is invalid or stale"
     assert stale_timestamp.status_code == 401
     assert stale_timestamp.json()["error"] == "Webhook timestamp is invalid or stale"
-    events = InternalEventBus(tmp_path / "runtime" / "internal-events.json").list_events()
+    events = InternalEventBus(tmp_path / "runtime" / "orchestration.db").list_events()
     assert events == []
 
 

@@ -1174,10 +1174,6 @@ def test_trigger_orchestrator_worker_global_config_defaults_follow_runtime_dir()
         == "/tmp/evander-runtime/trigger-orchestrator-cursors.json"
     )
     assert (
-        str(config.scheduled_internal_event_store_path)
-        == "/tmp/evander-runtime/scheduled-internal-events.json"
-    )
-    assert (
         str(config.gate_cursor_store_path) == "/tmp/evander-runtime/gate-orchestrator-cursors.json"
     )
     assert (
@@ -1186,6 +1182,22 @@ def test_trigger_orchestrator_worker_global_config_defaults_follow_runtime_dir()
     )
     assert str(config.effect_lock_path) == "/tmp/evander-runtime/effect-orchestrator.lock"
     assert config.triggers == []
+
+
+@pytest.mark.parametrize(
+    "legacy_key",
+    ["internal_event_store_path", "scheduled_internal_event_store_path"],
+)
+def test_trigger_orchestrator_worker_global_config_rejects_legacy_event_store_paths(
+    legacy_key: str,
+) -> None:
+    with pytest.raises(ValueError, match=legacy_key):
+        _validate_trigger_config(
+            {
+                "runtime_dir": "/tmp/evander-runtime",
+                legacy_key: "/tmp/legacy-events.json",
+            }
+        )
 
 
 def test_trigger_orchestrator_worker_config_accepts_stale_explicit_sqlite_backend() -> None:
@@ -1754,9 +1766,7 @@ def test_prepare_reference_repositories_rejects_legacy_repo_source_inputs() -> N
                         "type": "effect:agent:prepare-reference-repositories",
                         "session_id": "personal-assistant-user-1",
                         "directory_path": "root/personal",
-                        "repositories": [
-                            {"repo_source": "https://example.invalid/legacy.git"}
-                        ],
+                        "repositories": [{"repo_source": "https://example.invalid/legacy.git"}],
                     }
                 ],
                 "edges": [],

@@ -40,6 +40,7 @@ from evander_team_addon.models import (
 )
 from evander_team_addon.services.domain.release_gates import (
     _materialize_candidate_verification_correction,
+    advance_release_gates,
     begin_release_gates,
     create_release_reviews_or_approve,
     materialize_release_review_rejection_correction,
@@ -115,6 +116,85 @@ def _release_and_promotion(
 
 def _result() -> dict[str, list[object]]:
     return {"events": [], "git_promotion_event_ids": []}
+
+
+def test_terminal_release_replay_ignores_non_leaf_lineage_state() -> None:
+    release, promotion = _release_and_promotion()
+    release.state = TeamRecordState.ACCEPTED
+    release.approved_commit_sha = "candidate-sha"
+    release.published_commit_sha = "candidate-sha"
+    release.lineage_root_release_package_id = release.id
+    successor = ReleasePackage(
+        id="successor",
+        project_id="project",
+        supersedes_release_package_id=release.id,
+        lineage_root_release_package_id=release.id,
+        lineage_sequence=1,
+    )
+    state = TeamState.empty()
+    state.release_packages[release.id] = release
+    state.release_packages[successor.id] = successor
+    state.git_promotions[promotion.id] = promotion
+    result = _result()
+
+    begin_release_gates(
+        state,
+        release=release,
+        release_promotion=promotion,
+        candidate_commit_sha="candidate-sha",
+        candidate_tree_hash="candidate-tree",
+        result=result,
+    )
+    advance_release_gates(
+        state,
+        release=release,
+        release_promotion=promotion,
+        result=result,
+    )
+
+    assert release.state == TeamRecordState.ACCEPTED
+    assert release.approved_commit_sha == "candidate-sha"
+    assert release.published_commit_sha == "candidate-sha"
+    assert release.gate_failure is None
+    assert release.error is None
+    assert state.blockers == {}
+
+
+def test_lineage_wait_pins_candidate_and_enters_successor_recovery_path() -> None:
+    state, release, promotion, _reviews = _release_review_cohort_fixture()
+    release.lineage_root_release_package_id = release.id
+    release.lineage_sequence = 0
+    state.tasks["parallel-remediation"] = AgentTask(
+        id="parallel-remediation",
+        owner_agent_id="lead",
+        project_id="project",
+        priority=0,
+        state=TeamTaskState.IN_PROGRESS,
+        title="Parallel remediation",
+        description="Complete the candidate-bound remediation.",
+        created_by_agent_id="lead",
+        release_base_package_id=release.id,
+    )
+    result = _result()
+
+    begin_release_gates(
+        state,
+        release=release,
+        release_promotion=promotion,
+        candidate_commit_sha="candidate-sha",
+        candidate_tree_hash="candidate-tree",
+        result=result,
+    )
+
+    assert release.state == TeamRecordState.REJECTED
+    assert release.candidate_commit_sha == "candidate-sha"
+    assert release.candidate_tree_hash == "candidate-tree"
+    assert release.gate_failure is not None
+    assert release.gate_failure.stage == "lineage"
+    assert release.gate_failure.kind == "convergence"
+    assert "single successor" in (release.error or "")
+    blocker = state.blockers[result["release_remediation_blocker_id"]]
+    assert blocker.reason_code == "release_gate_lineage_convergence"
 
 
 def _release_review_cohort_fixture() -> tuple[
@@ -1600,6 +1680,89 @@ def test_resolved_release_review_correction_can_create_successor_release() -> No
     assert aggregate.promotion_kind == "correction_aggregate"
     assert aggregate.outputs["required_source_ancestor_commit_sha"] == "c" * 40
     assert result["events"][0]["payload"]["base_commit_sha"] == "c" * 40
+
+    successor.state = TeamRecordState.REJECTED
+    successor.candidate_commit_sha = "1" * 40
+    successor.candidate_tree_hash = "2" * 40
+    successor.gate_failure = ReleaseGateFailure(
+        stage="review",
+        kind="rejected",
+        source_id="second-release-review",
+        message="A later review found another issue.",
+    )
+    second_commit = "3" * 40
+    second_task = AgentTask(
+        id="second-review-correction-task",
+        owner_agent_id="coder",
+        project_id="project",
+        priority=0,
+        state=TeamTaskState.FINISHED,
+        title="Correct the successor review",
+        description="Fix the later review finding.",
+        created_by_agent_id="lead",
+        release_base_package_id=successor.id,
+        git_base_branch=successor.release_branch,
+        git_base_commit_sha=successor.candidate_commit_sha,
+        deliverable_ids=["second-review-correction-deliverable"],
+    )
+    second_deliverable = Deliverable(
+        id="second-review-correction-deliverable",
+        task_id=second_task.id,
+        producer_agent_id="coder",
+        summary="Corrected the successor review finding",
+        state=TeamRecordState.ACCEPTED,
+        git_refs=DeliverableGitRefs(
+            agent_branch="agents/coder/second-review-correction",
+            commit_sha=second_commit,
+            submitted_commit_sha=second_commit,
+        ),
+        review_manifest=DeliverableReviewManifest(
+            base_commit_sha=successor.candidate_commit_sha,
+            reviewed_commit_sha=second_commit,
+            tree_hash="4" * 40,
+            commit_shas=[second_commit],
+            changed_paths=["M\tsrc/SecondCorrection.cs"],
+        ),
+        verification=DeliverableVerification(status="passed"),
+        review_request_ids=["second-correction-review"],
+    )
+    state.tasks[second_task.id] = second_task
+    state.deliverables[second_deliverable.id] = second_deliverable
+    state.review_requests["second-correction-review"] = ReviewRequest(
+        id="second-correction-review",
+        deliverable_id=second_deliverable.id,
+        reviewer_agent_id="reviewer",
+        state=TeamRecordState.ACCEPTED,
+        reviewed_commit_sha=second_commit,
+    )
+    second_result: dict[str, object] = {
+        "errors": [],
+        "events": [],
+        "git_promotion_event_ids": [],
+    }
+
+    second_successor_id = _build_release_package(
+        state,
+        project=state.projects["project"],
+        request={
+            "id": "second-review-correction-successor",
+            "deliverable_ids": [second_deliverable.id],
+            "supersedes_release_package_id": successor.id,
+        },
+        result=second_result,
+        projects_to_recalc=set(),
+        actor_agent_id="coder",
+        team_id="team",
+    )
+
+    assert second_successor_id == "second-review-correction-successor"
+    assert second_result["errors"] == []
+    assert second_result["correction_deliverable_ids"] == [second_deliverable.id]
+    second_successor = state.release_packages[second_successor_id]
+    assert second_successor.deliverable_ids == [
+        *successor.deliverable_ids,
+        second_deliverable.id,
+    ]
 
 
 def test_verification_retry_uses_commands_frozen_in_release_manifest() -> None:

@@ -132,9 +132,10 @@ boundary, and recovery procedure.
 The workflow orchestrators share runtime state under `runtime/` (or your configured
 `runtime_dir`):
 
-- `orchestration.db`: authoritative trigger queue, workflow-event journal, gate/effect execution
-  history, compact node-execution query history, and workflow configuration snapshots. JSON
-  orchestration stores are no longer supported. Completed full records default to 30 days;
+- `orchestration.db`: authoritative trigger queue, internal events, event-trigger subscriptions and
+  delivery state, scheduled internal events, workflow-event journal, gate/effect execution history,
+  compact node-execution query history, and workflow configuration snapshots. JSON orchestration
+  and internal-event stores are no longer supported. Completed full records default to 30 days;
   sanitized compact inputs/outputs, typed scalar indexes, and source provenance default to 365
   days. Existing retained rows are copied in bounded idle-worker batches and the originals expire
   normally. Retention reuses freed SQLite pages and does not run `VACUUM` automatically.
@@ -159,6 +160,33 @@ The workflow orchestrators share runtime state under `runtime/` (or your configu
 - `trigger-orchestrator.lock` / `gate-orchestrator.lock`: single-instance lock files.
 - `trigger-conformance-report.json` and `effect-conformance-report.json`: conformance snapshots
   written by the trigger and effect suites under the configured `runtime_dir`.
+
+### Internal-event SQLite cutover
+
+This release requires a maintenance-window cutover on deployments that still contain
+`internal-events.json`, `scheduled-internal-events.json`, or the event/webhook/artifact trigger
+cursor JSON files. Do not start the new trigger, effect, Admin Web, or gateway processes against
+those files before applying the migration.
+
+For each deployment, stop the services that can publish or consume internal events, then run:
+
+```bash
+evander-cli migrate-internal-events-to-sqlite --runtime-dir runtime --check
+evander-cli migrate-internal-events-to-sqlite --runtime-dir runtime --apply
+```
+
+The apply step acquires the trigger and effect locks, imports legacy events and scheduled records,
+preserves acknowledged delivery state for currently configured triggers, and leaves other matching
+legacy events pending. It copies source JSON into
+`runtime/archives/internal-event-sqlite-v1/<timestamp>/`, writes a migration marker under
+`runtime/migrations/`, removes the active JSON files, and removes the retired
+`internal_event_store_path` and `scheduled_internal_event_store_path` keys from the trigger
+orchestrator config after archiving its original contents. It is restartable after an interrupted
+archive/finalization step and idempotent after completion.
+
+After applying, start the services and verify the marker reports `state: complete`, the legacy
+files are absent, and the trigger worker can consume a newly published test event. A completed
+deployment fails closed if a legacy file reappears.
 
 Gate execution state is useful when debugging workflow gates:
 
@@ -2814,8 +2842,10 @@ Failure recovery:
   wake signals for newly queued work over derived Unix sockets
   (`runtime/trigger-orchestrator.wake.sock` and `runtime/effect-orchestrator.wake.sock`). Each
   completed in-process effect or query future also wakes the effect worker so its next cycle can
-  finalize durable execution state and dispatch downstream work promptly. Durable state remains the
-  source of truth; a missing wake socket falls back to the normal polling interval.
+  finalize durable execution state and dispatch downstream work promptly. Internal-event publication
+  and scheduled-event creation wake the trigger worker on its primary socket after the SQLite commit.
+  Durable state remains the source of truth; a missing wake socket falls back to the normal polling
+  interval.
 
 Run one cycle for validation/debug:
 

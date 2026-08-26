@@ -1,15 +1,15 @@
 {
   "edition": "1.0",
-  "generated_at": "2026-08-24T12:47:02.846265+00:00",
+  "generated_at": "2026-08-26T03:12:39.051556+00:00",
   "outputs": {
-    "docs/evander-user-manual.docx": "55be967c209e75e390c4553f9a5e7b5b812f257ff78f415d904a2202b26aa776",
-    "docs/evander-user-manual.html": "123d0c8d5c206607dedaa9d8bf2e640c1d917b0b668b79d46eb550a0112e4941",
-    "docs/evander-user-manual.md": "34b68714f20cdb6034d0263d428b4ea086f60665a1f3cd79de4e8cc5f1b80d92",
-    "docs/evander-user-manual.pdf": "aac2cc1189715ce07ad3c5fd5b8ad9d53f64e7966be62b8008ea159bf576071d"
+    "docs/evander-user-manual.docx": "b7a30f0103d6d594334f96ed3fe1f52e98a450022c5ce5965325375011478844",
+    "docs/evander-user-manual.html": "3aad7ca2f2ed2f50bd17d2009ec28360f3460fe0abe761f5e8f4d82c17e7542b",
+    "docs/evander-user-manual.md": "e26811095069f747d23fc8d05a60dfb42e4119550b868f852e05eed54995a59d",
+    "docs/evander-user-manual.pdf": "69eb8618d231a2e4253c410cf0773b49f4fb4e119f0ff3812b6b5dd09ebf96e1"
   },
   "project_version": "0.3.1",
   "schema_version": 1,
-  "source_fingerprint": "d65c66a2e4a86d1f5ccfb6bce7670cd0f7c03f712e640f065e51c4bacbae136a",
+  "source_fingerprint": "59e12c69d86acd6afe44160b37be21c5388894ea77b88f9e9d56b1b54a4e8621",
   "sources": {
     "docs/assets/evander-user-manual/diagrams/01-system-context.png": "88b5f56516d2fb85a84d3489717a4d48e14aa4192a1b5e51af64e4abb4a75ed9",
     "docs/assets/evander-user-manual/diagrams/01-system-context.svg": "18d491c26e0ce3a23714ed59cbbd78c14a912c2c209dfd906eebcece38c470de",
@@ -87,7 +87,7 @@
     "docs/evander-user-manual/chapters/25-team-governance-memory-cost-internals.md": "53ec9bd0f5087a633a47eadedf03e55ffeab9bfe8f328b7e03f4df40a93d1b0d",
     "docs/evander-user-manual/chapters/26-engineering-extension.md": "c39a9d57c8e7bd7ecbf8d2c560fa036c0c0f7fc4e6bb0f32f71a9b5906f1b653",
     "docs/evander-user-manual/chapters/27-design-history.md": "8416ddbb00e95e5a9b9780689de38d0e7c3739898312a0e4e3d14e5ffceee847",
-    "docs/evander-user-manual/chapters/28-system-reference.md": "98949dde60c7110a7abd5599e490528ed3f2532018dba312b77f3de697063424",
+    "docs/evander-user-manual/chapters/28-system-reference.md": "f172eff332ed02784fa676744e069395acaaba67555e8b2af857078b72935885",
     "docs/evander-user-manual/chapters/29-troubleshooting-decision-tables.md": "62289a7160f29d96119c07559042ec8dc8dec793e798e1f018732a6eef52f687",
     "docs/evander-user-manual/chapters/30-glossary.md": "d1b84757c3b6a8fcac7d481163718e164c490f6d7f47bce58fe3dd88ad7e4587",
     "docs/evander-user-manual/diagrams/01-system-context.mmd": "3ce362341cd03218f3b1c24279c93639defcfe622ed6bb8dc736db460939b649",

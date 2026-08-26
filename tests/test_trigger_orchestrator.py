@@ -1039,6 +1039,42 @@ def test_trigger_orchestrator_reloads_provider_factory_after_provider_loader_cha
     assert list(queue_payload.keys()) == ["reload-event-1"]
 
 
+def test_trigger_orchestrator_rebinds_provider_factory_after_store_change(
+    tmp_path: Path,
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    config = GatewayConfig(runtime_dir=runtime_dir)
+    initial_config = canonical_worker_config(
+        {
+            "runtime_dir": runtime_dir,
+            "orchestration_store_path": runtime_dir / "old-orchestration.db",
+            "triggers": [],
+        }
+    )
+    updated_config = canonical_worker_config(
+        {
+            "runtime_dir": runtime_dir,
+            "orchestration_store_path": runtime_dir / "new-orchestration.db",
+            "triggers": [],
+        }
+    )
+    worker = TriggerOrchestratorWorker(
+        config=config,
+        worker_config=initial_config,
+        config_reloader=_StaticReloader(updated_config, changed=True),
+        runtime=None,  # type: ignore[arg-type]
+    )
+    initial_factory = worker.provider_factory
+
+    worker.run_once()
+
+    assert worker.provider_factory is not initial_factory
+    assert worker.provider_factory.metadata["orchestration_store_path"] == str(
+        updated_config.orchestration_store_path
+    )
+    assert worker.event_queue.path == updated_config.orchestration_store_path
+
+
 def test_due_scheduled_internal_event_publishes_before_event_trigger_poll(
     tmp_path: Path,
 ) -> None:
@@ -1059,7 +1095,7 @@ def test_due_scheduled_internal_event_publishes_before_event_trigger_poll(
             ],
         }
     )
-    scheduled_store = ScheduledInternalEventStore(worker_config.scheduled_internal_event_store_path)
+    scheduled_store = ScheduledInternalEventStore(worker_config.orchestration_store_path)
     scheduled_event, created = scheduled_store.schedule_event(
         event_type="issue.plan_committed",
         payload={"issue_id": "ISSUE-1", "plan_version": 3},
@@ -1082,7 +1118,7 @@ def test_due_scheduled_internal_event_publishes_before_event_trigger_poll(
     assert created is True
     assert result.events_published == 1
 
-    internal_events = InternalEventBus(worker_config.internal_event_store_path).list_events()
+    internal_events = InternalEventBus(worker_config.orchestration_store_path).list_events()
     assert len(internal_events) == 1
     published_event = internal_events[0]
     assert published_event.event_type == "issue.plan_committed"
@@ -1106,12 +1142,9 @@ def test_due_scheduled_internal_event_publishes_before_event_trigger_poll(
     assert record["payload"]["source"]["source_type"] == "scheduled_internal_event"
     assert record["payload"]["source"]["workflow_run_id"] == "run-1"
 
-    schedule_payload = json.loads(
-        worker_config.scheduled_internal_event_store_path.read_text(encoding="utf-8")
-    )
-    scheduled_record = schedule_payload[scheduled_event.schedule_id]
-    assert scheduled_record["status"] == "published"
-    assert scheduled_record["published_event_id"] == published_event.event_id
+    [scheduled_record] = scheduled_store.list_all()
+    assert scheduled_record.status == "published"
+    assert scheduled_record.published_event_id == published_event.event_id
 
 
 def test_events_scheduled_during_trigger_poll_are_delivered_same_cycle_without_external_repoll(
@@ -1140,7 +1173,7 @@ def test_events_scheduled_during_trigger_poll_are_delivered_same_cycle_without_e
             ],
         }
     )
-    scheduled_store = ScheduledInternalEventStore(worker_config.scheduled_internal_event_store_path)
+    scheduled_store = ScheduledInternalEventStore(worker_config.orchestration_store_path)
     worker = TriggerOrchestratorWorker(
         config=config,
         worker_config=worker_config,
@@ -1181,7 +1214,7 @@ def test_events_scheduled_during_trigger_poll_are_delivered_same_cycle_without_e
     assert first_result.events_published == 2
     assert first_result.next_sleep_seconds == 0.0
     assert external_poll_count == 1
-    internal_events = InternalEventBus(worker_config.internal_event_store_path).list_events()
+    internal_events = InternalEventBus(worker_config.orchestration_store_path).list_events()
     assert [event.payload["issue_id"] for event in internal_events] == [
         "ISSUE-EARLIER",
         "ISSUE-LATER",
@@ -1215,7 +1248,7 @@ def test_future_scheduled_internal_event_stays_pending_until_due(
             "triggers": [],
         }
     )
-    scheduled_store = ScheduledInternalEventStore(worker_config.scheduled_internal_event_store_path)
+    scheduled_store = ScheduledInternalEventStore(worker_config.orchestration_store_path)
     scheduled_event, created = scheduled_store.schedule_event(
         event_type="issue.plan_committed",
         payload={"issue_id": "ISSUE-2"},
@@ -1236,15 +1269,13 @@ def test_future_scheduled_internal_event_stays_pending_until_due(
 
     assert created is True
     assert result.events_published == 0
-    assert not worker_config.internal_event_store_path.exists()
+    assert InternalEventBus(worker_config.orchestration_store_path).list_events() == []
 
-    schedule_payload = json.loads(
-        worker_config.scheduled_internal_event_store_path.read_text(encoding="utf-8")
-    )
-    scheduled_record = schedule_payload[scheduled_event.schedule_id]
-    assert scheduled_record["status"] == "pending"
-    assert scheduled_record["published_event_id"] is None
-    assert scheduled_record["published_at"] is None
+    [scheduled_record] = scheduled_store.list_all()
+    assert scheduled_record.schedule_id == scheduled_event.schedule_id
+    assert scheduled_record.status == "pending"
+    assert scheduled_record.published_event_id is None
+    assert scheduled_record.published_at is None
 
 
 def test_trigger_cycle_sleep_is_capped_at_next_scheduled_event_due_time() -> None:
@@ -1288,7 +1319,7 @@ def test_due_scheduled_internal_event_is_published_once_across_cycles(
             "triggers": [],
         }
     )
-    scheduled_store = ScheduledInternalEventStore(worker_config.scheduled_internal_event_store_path)
+    scheduled_store = ScheduledInternalEventStore(worker_config.orchestration_store_path)
     scheduled_event, created = scheduled_store.schedule_event(
         event_type="issue.plan_committed",
         payload={"issue_id": "ISSUE-3"},
@@ -1312,16 +1343,13 @@ def test_due_scheduled_internal_event_is_published_once_across_cycles(
     assert first_cycle.events_published == 0
     assert second_cycle.events_published == 0
 
-    internal_events = InternalEventBus(worker_config.internal_event_store_path).list_events()
+    internal_events = InternalEventBus(worker_config.orchestration_store_path).list_events()
     assert len(internal_events) == 1
     assert internal_events[0].idempotency_key == f"scheduled-event:{scheduled_event.schedule_id}"
 
-    schedule_payload = json.loads(
-        worker_config.scheduled_internal_event_store_path.read_text(encoding="utf-8")
-    )
-    scheduled_record = schedule_payload[scheduled_event.schedule_id]
-    assert scheduled_record["status"] == "published"
-    assert scheduled_record["published_event_id"] == internal_events[0].event_id
+    [scheduled_record] = scheduled_store.list_all()
+    assert scheduled_record.status == "published"
+    assert scheduled_record.published_event_id == internal_events[0].event_id
 
 
 def test_trigger_orchestrator_direct_worker_does_not_reload_from_cwd(
@@ -1475,15 +1503,15 @@ def test_event_trigger_matches_internal_event_and_preserves_payload(tmp_path: Pa
             ],
         }
     )
-    bus = InternalEventBus(worker_config.internal_event_store_path)
+    bus = InternalEventBus(worker_config.orchestration_store_path)
+    worker = TriggerOrchestratorWorker(config=config, worker_config=worker_config, runtime=None)  # type: ignore[arg-type]
+    assert worker.run_once().events_published == 0
     internal = bus.publish(
         event_type="issue.plan_committed",
         payload={"issue_id": "ISSUE-1", "plan_version": 3},
         correlation_key="issue:ISSUE-1",
         idempotency_key="test-event-1",
     )
-    worker = TriggerOrchestratorWorker(config=config, worker_config=worker_config, runtime=None)  # type: ignore[arg-type]
-
     result = worker.run_once()
 
     assert result.events_published == 1
@@ -1494,6 +1522,65 @@ def test_event_trigger_matches_internal_event_and_preserves_payload(tmp_path: Pa
     assert record["payload"]["event_type"] == "issue.plan_committed"
     assert record["payload"]["payload"] == {"issue_id": "ISSUE-1", "plan_version": 3}
     assert record["payload"]["correlation_key"] == "issue:ISSUE-1"
+
+
+def test_event_trigger_pending_delivery_survives_transient_provider_initialization_failure(
+    tmp_path: Path,
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    config = GatewayConfig(runtime_dir=runtime_dir)
+    worker_config = canonical_worker_config(
+        {
+            "runtime_dir": runtime_dir,
+            "poll_interval_seconds": 1,
+            "jitter_seconds": 0,
+            "triggers": [
+                {
+                    "id": "event-listener",
+                    "display_name": "Plan committed",
+                    "type": "trigger:event",
+                    "event_type": "issue.plan_committed",
+                }
+            ],
+        }
+    )
+    bus = InternalEventBus(worker_config.orchestration_store_path)
+    worker = TriggerOrchestratorWorker(
+        config=config,
+        worker_config=worker_config,
+        runtime=None,  # type: ignore[arg-type]
+    )
+    original_build = worker.provider_factory.build
+    original_queue = worker.event_queue
+
+    assert worker.run_once().events_published == 0
+    internal = bus.publish(
+        event_type="issue.plan_committed",
+        payload={"issue_id": "ISSUE-1"},
+        idempotency_key="pending-across-provider-failure",
+    )
+    worker.event_queue = _FailingEventQueue()  # type: ignore[assignment]
+
+    with pytest.raises(RuntimeError, match="queue publish failed"):
+        worker.run_once()
+
+    def fail_provider_initialization(*_args, **_kwargs):
+        raise RuntimeError("transient provider initialization failure")
+
+    worker.event_queue = original_queue
+    worker.provider_factory.build = fail_provider_initialization  # type: ignore[assignment]
+
+    failed_cycle = worker.run_once()
+
+    assert failed_cycle.events_published == 0
+
+    worker.provider_factory.build = original_build  # type: ignore[assignment]
+    recovered_cycle = worker.run_once()
+
+    assert recovered_cycle.events_published == 1
+    assert list(trigger_queue_payload(worker_config)) == [
+        f"event-listener:{internal.event_id}"
+    ]
 
 
 def test_event_trigger_ignores_non_matching_type_and_correlation_key(tmp_path: Path) -> None:
@@ -1517,7 +1604,9 @@ def test_event_trigger_ignores_non_matching_type_and_correlation_key(tmp_path: P
             ],
         }
     )
-    bus = InternalEventBus(worker_config.internal_event_store_path)
+    bus = InternalEventBus(worker_config.orchestration_store_path)
+    worker = TriggerOrchestratorWorker(config=config, worker_config=worker_config, runtime=None)  # type: ignore[arg-type]
+    assert worker.run_once().events_published == 0
     bus.publish(event_type="issue.step_completed", payload={}, idempotency_key="wrong-type")
     bus.publish(
         event_type="issue.plan_committed",
@@ -1525,8 +1614,6 @@ def test_event_trigger_ignores_non_matching_type_and_correlation_key(tmp_path: P
         correlation_key="issue:other",
         idempotency_key="wrong-correlation",
     )
-    worker = TriggerOrchestratorWorker(config=config, worker_config=worker_config, runtime=None)  # type: ignore[arg-type]
-
     result = worker.run_once()
 
     assert result.events_published == 0
@@ -1559,14 +1646,14 @@ def test_multiple_event_triggers_can_listen_to_same_internal_event(tmp_path: Pat
             ],
         }
     )
-    bus = InternalEventBus(worker_config.internal_event_store_path)
+    bus = InternalEventBus(worker_config.orchestration_store_path)
+    worker = TriggerOrchestratorWorker(config=config, worker_config=worker_config, runtime=None)  # type: ignore[arg-type]
+    assert worker.run_once().events_published == 0
     event = bus.publish(
         event_type="human.question_answered",
         payload={"answer": "yes"},
         idempotency_key="answer-1",
     )
-    worker = TriggerOrchestratorWorker(config=config, worker_config=worker_config, runtime=None)  # type: ignore[arg-type]
-
     result = worker.run_once()
 
     assert result.events_published == 2
@@ -1580,14 +1667,7 @@ def test_multiple_event_triggers_can_listen_to_same_internal_event(tmp_path: Pat
 def test_event_trigger_acknowledges_internal_event_after_publish(tmp_path: Path) -> None:
     runtime_dir = tmp_path / "runtime"
     config = GatewayConfig(runtime_dir=runtime_dir)
-    event_bus = InternalEventBus(runtime_dir / "internal-events.json")
-    internal = event_bus.publish(
-        event_type="issue.plan_committed",
-        payload={"issue_id": "ISSUE-1", "plan_version": 3},
-        correlation_key="issue:ISSUE-1",
-        idempotency_key="internal-event-1",
-    )
-
+    event_bus = InternalEventBus(runtime_dir / "orchestration.db")
     provider = EventTriggerProvider()
     provider.initialize(
         EventTriggerDefinition.model_validate(
@@ -1600,22 +1680,24 @@ def test_event_trigger_acknowledges_internal_event_after_publish(tmp_path: Path)
         ),
         TriggerRuntimeContext(resolved_config=config, env={}),
     )
+    assert provider.poll() == []
+    internal = event_bus.publish(
+        event_type="issue.plan_committed",
+        payload={"issue_id": "ISSUE-1", "plan_version": 3},
+        correlation_key="issue:ISSUE-1",
+        idempotency_key="internal-event-1",
+    )
 
     first = provider.poll()
-    cursor_path = runtime_dir / "trigger-cursors-event.json"
-    cursor_payload = json.loads(cursor_path.read_text(encoding="utf-8"))
 
     assert len(first) == 1
     assert first[0].payload["event_id"] == internal.event_id
-    assert cursor_payload == {}
 
     provider.acknowledge_published_event(first[0])
 
     second = provider.poll()
-    cursor_payload = json.loads(cursor_path.read_text(encoding="utf-8"))
 
     assert second == []
-    assert cursor_payload["event-listener"]["emitted_internal_event_ids"] == [internal.event_id]
 
 
 def _webhook_trigger_definition(
@@ -1649,7 +1731,7 @@ def _webhook_provider(runtime_dir: Path, *, trigger_id: str, slug: str) -> Webho
 
 
 def _webhook_event_bus(runtime_dir: Path) -> InternalEventBus:
-    return InternalEventBus(runtime_dir / "internal-events.json")
+    return InternalEventBus(runtime_dir / "orchestration.db")
 
 
 def test_webhook_trigger_emits_only_matching_signed_webhook_events(
@@ -1657,6 +1739,8 @@ def test_webhook_trigger_emits_only_matching_signed_webhook_events(
 ) -> None:
     runtime_dir = tmp_path / "runtime"
     bus = _webhook_event_bus(runtime_dir)
+    provider = _webhook_provider(runtime_dir, trigger_id="webhook-1", slug="build-notify")
+    assert provider.poll() == []
     matched = bus.publish(
         event_type="external.webhook.build-notify",
         payload={
@@ -1694,8 +1778,6 @@ def test_webhook_trigger_emits_only_matching_signed_webhook_events(
         },
     )
 
-    provider = _webhook_provider(runtime_dir, trigger_id="webhook-1", slug="build-notify")
-
     first = provider.poll()
     assert len(first) == 1
     assert first[0].event_id == f"webhook-1:{matched.event_id}"
@@ -1704,20 +1786,21 @@ def test_webhook_trigger_emits_only_matching_signed_webhook_events(
     assert first[0].trace_id == "trace-123"
     assert first[0].payload == dict(matched.payload)
 
-    cursor_path = runtime_dir / "trigger-cursors-http-webhook.json"
-    assert json.loads(cursor_path.read_text(encoding="utf-8")) == {}
-
     provider.acknowledge_published_event(first[0])
     second = provider.poll()
 
-    cursor_payload = json.loads(cursor_path.read_text(encoding="utf-8"))
     assert second == []
-    assert cursor_payload["webhook-1"]["emitted_internal_event_ids"] == [matched.event_id]
 
 
 def test_webhook_trigger_does_not_cross_deliver_between_slugs(tmp_path: Path) -> None:
     runtime_dir = tmp_path / "runtime"
     bus = _webhook_event_bus(runtime_dir)
+    build_provider = _webhook_provider(runtime_dir, trigger_id="webhook-build", slug="build-notify")
+    deploy_provider = _webhook_provider(
+        runtime_dir, trigger_id="webhook-deploy", slug="deploy-notify"
+    )
+    assert build_provider.poll() == []
+    assert deploy_provider.poll() == []
     first_event = bus.publish(
         event_type="external.webhook.build-notify",
         payload={"slug": "build-notify", "body": {"target": "build"}},
@@ -1739,11 +1822,6 @@ def test_webhook_trigger_does_not_cross_deliver_between_slugs(tmp_path: Path) ->
         },
     )
 
-    build_provider = _webhook_provider(runtime_dir, trigger_id="webhook-build", slug="build-notify")
-    deploy_provider = _webhook_provider(
-        runtime_dir, trigger_id="webhook-deploy", slug="deploy-notify"
-    )
-
     build_events = build_provider.poll()
     deploy_events = deploy_provider.poll()
 
@@ -1760,26 +1838,6 @@ def test_trigger_orchestrator_publishes_webhook_events_and_keeps_cursor_state(
 ) -> None:
     runtime_dir = tmp_path / "runtime"
     bus = _webhook_event_bus(runtime_dir)
-    internal = bus.publish(
-        event_type="external.webhook.build-notify",
-        payload={
-            "slug": "build-notify",
-            "headers": {"content-type": "application/json"},
-            "query": {},
-            "body": {"target": "demo"},
-            "received_at": "2026-04-03T12:00:00Z",
-            "remote_addr": "198.51.100.10",
-            "signature_header": "sha256=body-hash",
-        },
-        source={
-            "source_type": "webhook",
-            "source_name": "build-notify",
-            "node_id": "webhook-1",
-            "node_type": "trigger:http:webhook",
-        },
-        idempotency_key="sha256=body-hash",
-        created_at=datetime(2026, 4, 3, 12, 0, tzinfo=UTC),
-    )
     config = GatewayConfig(runtime_dir=runtime_dir)
     worker_config = canonical_worker_config(
         {
@@ -1800,6 +1858,28 @@ def test_trigger_orchestrator_publishes_webhook_events_and_keeps_cursor_state(
     worker = TriggerOrchestratorWorker(config=config, worker_config=worker_config, runtime=None)  # type: ignore[arg-type]
     provider = _webhook_provider(runtime_dir, trigger_id="webhook-1", slug="build-notify")
     worker.provider_factory.build = lambda trigger, **_: provider  # type: ignore[assignment]
+    initialized = worker.run_once()
+    assert initialized.events_published == 0
+    internal = bus.publish(
+        event_type="external.webhook.build-notify",
+        payload={
+            "slug": "build-notify",
+            "headers": {"content-type": "application/json"},
+            "query": {},
+            "body": {"target": "demo"},
+            "received_at": "2026-04-03T12:00:00Z",
+            "remote_addr": "198.51.100.10",
+            "signature_header": "sha256=body-hash",
+        },
+        source={
+            "source_type": "webhook",
+            "source_name": "build-notify",
+            "node_id": "webhook-1",
+            "node_type": "trigger:http:webhook",
+        },
+        idempotency_key="sha256=body-hash",
+        created_at=datetime(2026, 4, 3, 12, 0, tzinfo=UTC),
+    )
 
     first = worker.run_once()
     second = worker.run_once()
@@ -1813,8 +1893,3 @@ def test_trigger_orchestrator_publishes_webhook_events_and_keeps_cursor_state(
     queue_payload = trigger_queue_payload(worker_config)
     assert list(queue_payload) == [f"webhook-1:{internal.event_id}"]
     assert queue_payload[f"webhook-1:{internal.event_id}"]["trace_id"]
-
-    provider_cursor = json.loads(
-        (runtime_dir / "trigger-cursors-http-webhook.json").read_text(encoding="utf-8")
-    )
-    assert provider_cursor["webhook-1"]["emitted_internal_event_ids"] == [internal.event_id]

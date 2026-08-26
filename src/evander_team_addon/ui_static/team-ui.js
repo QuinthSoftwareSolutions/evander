@@ -10369,6 +10369,8 @@ function chatStatusLabel(status) {
     dispatching: "Dispatching",
     queued: "Queued",
     running: "Sent",
+    delivered_in_dispatch: "Delivered",
+    acknowledged: "Handled",
     replied: "Replied",
     failed: "Failed",
     sent: "Sent",

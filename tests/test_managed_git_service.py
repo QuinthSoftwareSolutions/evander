@@ -2723,6 +2723,150 @@ def test_push_branch_creates_missing_destination_from_reviewed_base(tmp_path: Pa
     )
 
 
+def test_push_branch_retries_transient_transport_failure_with_backoff(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source, upstream, reviewed_base = _source_repository(tmp_path)
+    service = _service(tmp_path)
+    record = service.register_repository("root", str(source))
+    repo_id = record["managed_repo_id"]
+    bare = _bare_path(service, repo_id)
+    approved = _commit(source, "approved.txt", "approved\n", "approved")
+    _run("git", f"--git-dir={bare}", "fetch", str(source), f"{approved}:refs/heads/review/topic")
+
+    original_run_git = service._run_git
+    push_attempts = 0
+    delays: list[float] = []
+
+    def fail_first_push(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        nonlocal push_attempts
+        if len(command) > 2 and command[2] == "push":
+            push_attempts += 1
+            if push_attempts == 1:
+                return subprocess.CompletedProcess(
+                    command,
+                    128,
+                    stdout="",
+                    stderr="fatal: unable to access remote: Recv failure: Connection reset by peer",
+                )
+        return original_run_git(command, **kwargs)
+
+    monkeypatch.setattr(service, "_run_git", fail_first_push)
+    monkeypatch.setattr(
+        "evander.admin.services.managed_git_service._managed_git_push_sleep",
+        lambda seconds: delays.append(seconds),
+    )
+
+    result = service.push_branch(
+        repo_id,
+        "review/topic",
+        approved,
+        "new-release",
+        "root",
+        expected_destination_commit_sha=reviewed_base,
+    )
+
+    assert result["success"] is True
+    assert push_attempts == 2
+    assert delays == [1.0]
+    assert _run("git", f"--git-dir={upstream}", "rev-parse", "refs/heads/new-release") == approved
+
+
+def test_push_branch_reconciles_ambiguous_success_without_a_second_push(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source, upstream, reviewed_base = _source_repository(tmp_path)
+    service = _service(tmp_path)
+    record = service.register_repository("root", str(source))
+    repo_id = record["managed_repo_id"]
+    bare = _bare_path(service, repo_id)
+    approved = _commit(source, "approved.txt", "approved\n", "approved")
+    _run("git", f"--git-dir={bare}", "fetch", str(source), f"{approved}:refs/heads/review/topic")
+
+    original_run_git = service._run_git
+    push_attempts = 0
+
+    def lose_success_response(
+        command: list[str], **kwargs: object
+    ) -> subprocess.CompletedProcess[str]:
+        nonlocal push_attempts
+        if len(command) > 2 and command[2] == "push":
+            push_attempts += 1
+            original_run_git(command, **kwargs)
+            return subprocess.CompletedProcess(
+                command,
+                128,
+                stdout="",
+                stderr="fatal: unable to access remote: Recv failure: Connection reset by peer",
+            )
+        return original_run_git(command, **kwargs)
+
+    monkeypatch.setattr(service, "_run_git", lose_success_response)
+
+    result = service.push_branch(
+        repo_id,
+        "review/topic",
+        approved,
+        "new-release",
+        "root",
+        expected_destination_commit_sha=reviewed_base,
+    )
+
+    assert result["success"] is True
+    assert push_attempts == 1
+    assert _run("git", f"--git-dir={upstream}", "rev-parse", "refs/heads/new-release") == approved
+
+
+def test_push_branch_does_not_retry_nontransient_push_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source, _upstream, reviewed_base = _source_repository(tmp_path)
+    service = _service(tmp_path)
+    record = service.register_repository("root", str(source))
+    repo_id = record["managed_repo_id"]
+    bare = _bare_path(service, repo_id)
+    approved = _commit(source, "approved.txt", "approved\n", "approved")
+    _run("git", f"--git-dir={bare}", "fetch", str(source), f"{approved}:refs/heads/review/topic")
+
+    original_run_git = service._run_git
+    push_attempts = 0
+    delays: list[float] = []
+
+    def reject_push(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        nonlocal push_attempts
+        if len(command) > 2 and command[2] == "push":
+            push_attempts += 1
+            return subprocess.CompletedProcess(
+                command,
+                1,
+                stdout="",
+                stderr="! [rejected] new-release -> new-release (stale info)",
+            )
+        return original_run_git(command, **kwargs)
+
+    monkeypatch.setattr(service, "_run_git", reject_push)
+    monkeypatch.setattr(
+        "evander.admin.services.managed_git_service._managed_git_push_sleep",
+        lambda seconds: delays.append(seconds),
+    )
+
+    with pytest.raises(RuntimeError, match="stale info"):
+        service.push_branch(
+            repo_id,
+            "review/topic",
+            approved,
+            "new-release",
+            "root",
+            expected_destination_commit_sha=reviewed_base,
+        )
+
+    assert push_attempts == 1
+    assert delays == []
+
+
 def test_push_branch_rejects_missing_destination_with_unrelated_reviewed_base(
     tmp_path: Path,
 ) -> None:

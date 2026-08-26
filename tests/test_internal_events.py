@@ -1,121 +1,164 @@
 from __future__ import annotations
 
-import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from threading import Barrier, Thread
 
-from pytest import MonkeyPatch
+from config_helpers import canonical_worker_config
+import pytest
 
-from evander.events.internal import InternalEventBus
-from evander.events.scheduled import (
-    ScheduledInternalEventStore,
-    scheduled_internal_event_wake_socket_path,
+from evander.events.internal import InternalEventBus, InternalEventSubscriptionSpec
+from evander.events.scheduled import ScheduledInternalEventStore
+from evander.orchestration import internal_events as internal_event_builders
+from evander.orchestration.host_polling import wake_socket_path_for_lock
+from evander.orchestration.internal_events import (
+    build_internal_event_bus,
+    build_scheduled_internal_event_store,
 )
-from evander.orchestration.host_polling import HostWakeSleeper
-from evander.storage import JsonStore
+from evander.repositories.orchestration_db import run_orchestration_retention
 from evander.workflow.events import SqliteWorkflowEventJournal
 
 
-def test_internal_event_publish_uses_single_store_update(
-    tmp_path: Path, monkeypatch: MonkeyPatch
-) -> None:
-    bus = InternalEventBus(tmp_path / "internal-events.json")
+class _RecordingNotifier:
+    def __init__(self) -> None:
+        self.calls = 0
 
-    def fail_write_all(*args, **kwargs) -> None:
-        raise AssertionError("publish must not use split read/write store updates")
+    def notify(self) -> None:
+        self.calls += 1
 
-    monkeypatch.setattr(bus._store, "write_all", fail_write_all)
+
+def _subscription(
+    *, trigger_id: str = "listener", correlation_key: str | None = None
+) -> InternalEventSubscriptionSpec:
+    return InternalEventSubscriptionSpec(
+        trigger_id=trigger_id,
+        trigger_type="trigger:event",
+        event_type="custom.operator_event",
+        filter_payload={
+            "event_type": "custom.operator_event",
+            "correlation_key": correlation_key,
+        },
+    )
+
+
+def test_internal_event_publish_is_atomic_with_workflow_journal(tmp_path: Path) -> None:
+    database_path = tmp_path / "orchestration.db"
+    bus = InternalEventBus(database_path)
 
     event = bus.publish(event_type="custom.operator_event", payload={"value": "ok"})
 
     assert [stored.event_id for stored in bus.list_events()] == [event.event_id]
+    journal_events, _ = SqliteWorkflowEventJournal(database_path).read_after(0)
+    assert [entry.event_type for entry in journal_events] == ["workflow.internal_event.published"]
+    assert journal_events[0].subject_id == event.event_id
 
 
-def test_concurrent_internal_event_publish_preserves_both_events(
-    tmp_path: Path, monkeypatch: MonkeyPatch
-) -> None:
-    event_path = tmp_path / "internal-events.json"
+def test_concurrent_internal_event_publish_preserves_both_events(tmp_path: Path) -> None:
     database_path = tmp_path / "orchestration.db"
     start = Barrier(3)
-    read_barrier = Barrier(2)
     failures: list[str] = []
-    original_read_all = JsonStore.read_all
-
-    def delayed_read_all(self):
-        items = original_read_all(self)
-        if self.path == event_path:
-            read_barrier.wait(timeout=2)
-        return items
 
     def publish(value: str) -> None:
         try:
-            bus = InternalEventBus(
-                event_path,
-                journal=SqliteWorkflowEventJournal(database_path),
-            )
-            start.wait(timeout=2)
+            bus = InternalEventBus(database_path)
+            start.wait(timeout=10)
             bus.publish(event_type="custom.concurrent", payload={"value": value})
         except BaseException as exc:  # pragma: no cover - surfaced by assertion below
             failures.append(repr(exc))
 
-    with monkeypatch.context() as context:
-        context.setattr(JsonStore, "read_all", delayed_read_all)
-        threads = [
-            Thread(target=publish, args=("one",)),
-            Thread(target=publish, args=("two",)),
-        ]
-        for thread in threads:
-            thread.start()
-        start.wait(timeout=2)
-        for thread in threads:
-            thread.join(timeout=3)
-            assert not thread.is_alive()
+    threads = [
+        Thread(target=publish, args=("one",)),
+        Thread(target=publish, args=("two",)),
+    ]
+    for thread in threads:
+        thread.start()
+    start.wait(timeout=10)
+    for thread in threads:
+        thread.join(timeout=10)
+        assert not thread.is_alive()
 
     assert failures == []
-    events = InternalEventBus(
-        event_path,
-        journal=SqliteWorkflowEventJournal(database_path),
-    ).list_events()
+    events = InternalEventBus(database_path).list_events()
     assert sorted(event.payload["value"] for event in events) == ["one", "two"]
-
     journal_events, _ = SqliteWorkflowEventJournal(database_path).read_after(0)
     assert [event.event_type for event in journal_events].count(
         "workflow.internal_event.published"
     ) == 2
 
 
-def test_scheduled_internal_event_store_uses_single_store_update(
-    tmp_path: Path, monkeypatch: MonkeyPatch
-) -> None:
-    store = ScheduledInternalEventStore(tmp_path / "scheduled-internal-events.json")
+def test_internal_event_publish_notifies_only_for_new_event(tmp_path: Path) -> None:
+    notifier = _RecordingNotifier()
+    bus = InternalEventBus(tmp_path / "orchestration.db", wake_notifier=notifier)
 
-    def fail_write_all(*args, **kwargs) -> None:
-        raise AssertionError("schedule_event must not use split read/write store updates")
-
-    monkeypatch.setattr(store._store, "write_all", fail_write_all)
-
-    scheduled, created = store.schedule_event(
+    first = bus.publish(
         event_type="custom.operator_event",
-        payload={"value": "ok"},
-        run_at=datetime.now(UTC),
-        idempotency_key="schedule-1",
+        idempotency_key="operator-event-1",
     )
-    published = store.mark_published(
-        scheduled.schedule_id,
-        "evt-1",
-        datetime.now(UTC),
+    duplicate = bus.publish(
+        event_type="custom.changed_event",
+        idempotency_key="operator-event-1",
     )
 
-    assert created is True
-    assert published.status == "published"
-    assert published.published_event_id == "evt-1"
+    assert duplicate == first
+    assert notifier.calls == 1
+
+
+def test_new_subscription_is_future_only_and_acknowledges_delivery(tmp_path: Path) -> None:
+    bus = InternalEventBus(tmp_path / "orchestration.db")
+    spec = _subscription()
+    bus.publish(event_type=spec.event_type, payload={"value": "before"})
+    bus.reconcile_subscription(spec, config_revision="revision-1")
+
+    assert bus.poll_subscription(spec, matcher=lambda _event: True) == []
+
+    after = bus.publish(event_type=spec.event_type, payload={"value": "after"})
+    assert [
+        event.event_id for event in bus.poll_subscription(spec, matcher=lambda _event: True)
+    ] == [after.event_id]
+
+    bus.acknowledge_delivery(spec.trigger_id, after.event_id)
+    assert bus.poll_subscription(spec, matcher=lambda _event: True) == []
+
+
+def test_legacy_subscription_keeps_unacknowledged_history(tmp_path: Path) -> None:
+    bus = InternalEventBus(tmp_path / "orchestration.db")
+    spec = _subscription()
+    delivered = bus.publish(event_type=spec.event_type, payload={"value": "delivered"})
+    pending = bus.publish(event_type=spec.event_type, payload={"value": "pending"})
+
+    bus.seed_legacy_subscription(spec, config_revision="migration")
+    bus.seed_delivered_event(spec.trigger_id, delivered.event_id)
+
+    assert [
+        event.event_id for event in bus.poll_subscription(spec, matcher=lambda _event: True)
+    ] == [pending.event_id]
+
+
+def test_changed_subscription_starts_at_current_tail(tmp_path: Path) -> None:
+    bus = InternalEventBus(tmp_path / "orchestration.db")
+    original = _subscription(correlation_key="one")
+    bus.reconcile_subscription(original, config_revision="revision-1")
+    old_event = bus.publish(
+        event_type=original.event_type,
+        correlation_key="one",
+    )
+    assert bus.poll_subscription(original, matcher=lambda _event: True) == [old_event]
+
+    changed = _subscription(correlation_key="two")
+    bus.reconcile_subscription(changed, config_revision="revision-2")
+    assert bus.poll_subscription(changed, matcher=lambda _event: True) == []
+
+    new_event = bus.publish(
+        event_type=changed.event_type,
+        correlation_key="two",
+    )
+    assert bus.poll_subscription(changed, matcher=lambda _event: True) == [new_event]
 
 
 def test_duplicate_schedule_idempotency_returns_original_record_without_mutation(
     tmp_path: Path,
 ) -> None:
-    store = ScheduledInternalEventStore(tmp_path / "scheduled-internal-events.json")
+    store = ScheduledInternalEventStore(tmp_path / "orchestration.db")
     run_at = datetime(2030, 1, 1, 12, 0, tzinfo=UTC)
 
     original, created = store.schedule_event(
@@ -138,77 +181,154 @@ def test_duplicate_schedule_idempotency_returns_original_record_without_mutation
     assert created is True
     assert duplicate_created is False
     assert duplicate == original
-    assert duplicate.event_type == "custom.operator_event"
-    assert duplicate.payload == {"value": "original"}
-    assert duplicate.correlation_key == "corr-1"
-    assert duplicate.run_at == run_at
 
 
-def test_due_scheduled_events_are_sorted_by_run_at_then_created_at(tmp_path: Path) -> None:
-    store = ScheduledInternalEventStore(tmp_path / "scheduled-internal-events.json")
+def test_due_scheduled_events_are_sorted_and_next_pending_is_indexed(tmp_path: Path) -> None:
+    store = ScheduledInternalEventStore(tmp_path / "orchestration.db")
     now = datetime(2030, 1, 1, 12, 0, tzinfo=UTC)
-
-    store.schedule_event(
-        event_type="custom.operator_event",
-        payload={"value": "third"},
-        run_at=now - timedelta(minutes=15),
-        idempotency_key="third",
-        created_at=now - timedelta(minutes=30),
-    )
-    store.schedule_event(
-        event_type="custom.operator_event",
-        payload={"value": "first"},
-        run_at=now - timedelta(minutes=10),
-        idempotency_key="first",
-        created_at=now - timedelta(minutes=20),
-    )
-    store.schedule_event(
-        event_type="custom.operator_event",
-        payload={"value": "second"},
-        run_at=now - timedelta(minutes=10),
-        idempotency_key="second",
-        created_at=now - timedelta(minutes=10),
-    )
-
-    due = store.list_due(now)
-
-    assert [event.payload["value"] for event in due] == ["third", "first", "second"]
-
-
-def test_next_pending_run_at_returns_earliest_unpublished_event(tmp_path: Path) -> None:
-    store = ScheduledInternalEventStore(tmp_path / "scheduled-internal-events.json")
-    now = datetime(2030, 1, 1, 12, 0, tzinfo=UTC)
-    first, _ = store.schedule_event(
-        event_type="custom.operator_event",
-        run_at=now + timedelta(seconds=1),
-        idempotency_key="first",
-    )
-    store.schedule_event(
-        event_type="custom.operator_event",
-        run_at=now + timedelta(seconds=2),
-        idempotency_key="second",
-    )
-
-    assert store.next_pending_run_at() == now + timedelta(seconds=1)
-
-    store.mark_published(first.schedule_id, "event-first", now)
-
-    assert store.next_pending_run_at() == now + timedelta(seconds=2)
-
-
-def test_new_scheduled_event_notifies_store_wake_socket(tmp_path: Path) -> None:
-    store_path = tmp_path / "scheduled-internal-events.json"
-    sleeper = HostWakeSleeper(scheduled_internal_event_wake_socket_path(store_path))
-    sleeper.start()
-    try:
-        ScheduledInternalEventStore(store_path).schedule_event(
+    for value, run_at, created_at in (
+        ("third", now - timedelta(minutes=15), now - timedelta(minutes=30)),
+        ("first", now - timedelta(minutes=10), now - timedelta(minutes=20)),
+        ("second", now - timedelta(minutes=10), now - timedelta(minutes=10)),
+    ):
+        store.schedule_event(
             event_type="custom.operator_event",
-            run_at=datetime.now(UTC) + timedelta(seconds=1),
-            idempotency_key="wake-trigger-worker",
+            payload={"value": value},
+            run_at=run_at,
+            idempotency_key=value,
+            created_at=created_at,
         )
-        started = time.monotonic()
-        sleeper.sleep(10.0)
-    finally:
-        sleeper.close()
 
-    assert time.monotonic() - started < 0.5
+    assert [event.payload["value"] for event in store.list_due(now)] == [
+        "third",
+        "first",
+        "second",
+    ]
+    assert store.next_pending_run_at() == now - timedelta(minutes=15)
+
+
+def test_scheduling_notifies_primary_trigger_wake_surface(tmp_path: Path) -> None:
+    notifier = _RecordingNotifier()
+    store = ScheduledInternalEventStore(
+        tmp_path / "orchestration.db",
+        wake_notifier=notifier,
+    )
+
+    store.schedule_event(
+        event_type="custom.operator_event",
+        run_at=datetime.now(UTC) + timedelta(seconds=1),
+        idempotency_key="wake-trigger-worker",
+    )
+    store.schedule_event(
+        event_type="custom.operator_event",
+        run_at=datetime.now(UTC) + timedelta(seconds=2),
+        idempotency_key="wake-trigger-worker",
+    )
+
+    assert notifier.calls == 1
+
+
+def test_runtime_internal_event_publish_uses_primary_trigger_wake_socket(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    worker_config = canonical_worker_config({"runtime_dir": tmp_path / "runtime"})
+    notifier = _RecordingNotifier()
+    paths: list[Path] = []
+
+    def notifier_factory(path: Path | str) -> _RecordingNotifier:
+        paths.append(Path(path))
+        return notifier
+
+    monkeypatch.setattr(internal_event_builders, "HostWakeNotifier", notifier_factory)
+
+    build_internal_event_bus(worker_config).publish(event_type="custom.operator_event")
+
+    assert paths == [wake_socket_path_for_lock(worker_config.lock_path)]
+    assert notifier.calls == 1
+
+
+def test_runtime_schedule_creation_uses_same_trigger_worker_socket(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    worker_config = canonical_worker_config({"runtime_dir": tmp_path / "runtime"})
+    notifier = _RecordingNotifier()
+    paths: list[Path] = []
+
+    def notifier_factory(path: Path | str) -> _RecordingNotifier:
+        paths.append(Path(path))
+        return notifier
+
+    monkeypatch.setattr(internal_event_builders, "HostWakeNotifier", notifier_factory)
+
+    build_scheduled_internal_event_store(worker_config).schedule_event(
+        event_type="custom.operator_event",
+        run_at=datetime.now(UTC) + timedelta(minutes=1),
+    )
+
+    assert paths == [wake_socket_path_for_lock(worker_config.lock_path)]
+    assert notifier.calls == 1
+
+
+def test_due_schedule_publication_and_completion_are_atomic(tmp_path: Path) -> None:
+    database_path = tmp_path / "orchestration.db"
+    notifier = _RecordingNotifier()
+    store = ScheduledInternalEventStore(database_path)
+    scheduled, _ = store.schedule_event(
+        event_type="custom.operator_event",
+        payload={"value": "ready"},
+        run_at=datetime.now(UTC) - timedelta(seconds=1),
+        idempotency_key="schedule-ready",
+    )
+    bus = InternalEventBus(database_path, wake_notifier=notifier)
+
+    published, created = bus.publish_scheduled(scheduled.schedule_id)
+    duplicate, duplicate_created = bus.publish_scheduled(scheduled.schedule_id)
+
+    assert created is True
+    assert duplicate_created is False
+    assert duplicate == published
+    assert notifier.calls == 1
+    stored_schedule = store.list_all()[0]
+    assert stored_schedule.status == "published"
+    assert stored_schedule.published_event_id == published.event_id
+
+
+def test_retention_preserves_unscanned_events_and_pending_schedules(tmp_path: Path) -> None:
+    database_path = tmp_path / "orchestration.db"
+    bus = InternalEventBus(database_path)
+    old = datetime.now(UTC) - timedelta(days=60)
+    retained = bus.publish(
+        event_type="custom.operator_event",
+        created_at=old,
+    )
+    bus.publish(event_type="custom.unobserved", created_at=old)
+    spec = _subscription()
+    bus.seed_legacy_subscription(spec, config_revision="migration")
+    schedules = ScheduledInternalEventStore(database_path)
+    schedules.schedule_event(
+        event_type="custom.operator_event",
+        run_at=datetime.now(UTC) + timedelta(days=1),
+        created_at=old,
+        idempotency_key="pending-old",
+    )
+    published_schedule, _ = schedules.schedule_event(
+        event_type="custom.operator_event",
+        run_at=old,
+        created_at=old,
+        idempotency_key="published-old",
+    )
+    schedules.mark_published(published_schedule.schedule_id, retained.event_id, old)
+
+    result = run_orchestration_retention(
+        database_path,
+        retention_days=30,
+        compact_history_retention_days=365,
+    )
+
+    assert result.internal_events_deleted == 1
+    assert result.scheduled_internal_events_deleted == 1
+    assert [event.event_id for event in bus.list_events()] == [retained.event_id]
+    assert [event.status for event in schedules.list_all()] == ["pending"]
+    assert bus.poll_subscription(spec, matcher=lambda _event: True) == [retained]

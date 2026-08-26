@@ -19,10 +19,11 @@ from evander.consultations import (
 )
 from evander.effects.providers.base import EffectRuntimeContext
 from evander.effects.providers.code_consultation import CodeConsultationEffectProvider
-from evander.events.internal import InternalEventBus, internal_event_store_path
+from evander.events.internal import InternalEventBus
 from evander.events.provider_models import CodeConsultationEffectDefinition
 from evander.orchestration.adapters.provider_factories import build_effect_provider_factory
 from evander.provider_config import ProviderConfigResolver
+from internal_event_test_support import default_orchestration_database_path
 
 
 def _record(config: GatewayConfig, *, directory_path: str = "root"):
@@ -276,7 +277,7 @@ def test_prepare_failure_cleans_up_and_releases_capacity(tmp_path, monkeypatch) 
 
     assert store.get("consult-one").cleanup_status == "completed"
     assert store.get("consult-two").status == "provisioning"
-    events = InternalEventBus(internal_event_store_path(config.runtime_dir)).list_events()
+    events = InternalEventBus(default_orchestration_database_path(config.runtime_dir)).list_events()
     assert [event.payload["consultation_id"] for event in events] == ["consult-two"]
     assert events[0].source is not None
     assert events[0].source.source_type == "workflow_effect"

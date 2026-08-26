@@ -1650,6 +1650,50 @@ def init_state(config: ConfigOption = CLI_DEFAULT_RUNTIME_DIR) -> None:
     typer.echo(f"Initialized runtime state under {host_cfg.runtime_dir}")
 
 
+@app.command(
+    "migrate-internal-events-to-sqlite",
+    rich_help_panel="Health and State",
+    short_help="Check or apply the offline internal-event SQLite cutover.",
+)
+def migrate_internal_events_to_sqlite(
+    config: ConfigOption = CLI_DEFAULT_RUNTIME_DIR,
+    check: Annotated[
+        bool,
+        typer.Option("--check", help="Validate legacy stores without changing them."),
+    ] = False,
+    apply_migration: Annotated[
+        bool,
+        typer.Option("--apply", help="Import, archive, and remove the legacy stores."),
+    ] = False,
+    project_dir: Annotated[
+        Path | None,
+        typer.Option(
+            "--project-dir",
+            help="Evander deployment root. Defaults to the runtime directory parent.",
+        ),
+    ] = None,
+) -> None:
+    from evander.orchestration.internal_event_migration import (
+        apply_internal_event_migration,
+        check_internal_event_migration,
+    )
+
+    if check and apply_migration:
+        raise typer.BadParameter("choose either --check or --apply")
+    runtime_dir = _runtime_dir_for_config_option(config)
+    try:
+        report = (
+            apply_internal_event_migration(runtime_dir, project_dir=project_dir)
+            if apply_migration
+            else check_internal_event_migration(runtime_dir, project_dir=project_dir)
+        )
+    except (OSError, RuntimeError, ValueError) as exc:
+        raise typer.BadParameter(str(exc)) from exc
+    typer.echo(json.dumps(report.payload(), indent=2, sort_keys=True))
+    if report.errors:
+        raise typer.Exit(code=1)
+
+
 @setup_app.callback()
 def setup_callback(
     ctx: typer.Context,

@@ -61,6 +61,18 @@ from .task_assessment import (
 GIT_RELEASE_RECOVERY_EVENT_TYPE = "team.git.release_recovery_requested"
 _TERMINAL_RELEASE_STATES = {TeamRecordState.ACCEPTED, TeamRecordState.REJECTED}
 _HUMAN_CORRECTION_AGGREGATION_TASK_ID_KEY = "human_correction_aggregation_task_id"
+_SYSTEM_CORRECTION_TASK_ACTORS = {
+    "system:human-review",
+    "system:release-review-correction",
+    "system:release-verification-correction",
+}
+_NONTERMINAL_LINEAGE_TASK_STATES = {
+    TeamTaskState.PENDING,
+    TeamTaskState.IN_PROGRESS,
+    TeamTaskState.BLOCKED,
+    TeamTaskState.WAITING_FOR_INPUT,
+    TeamTaskState.WAITING_FOR_REVIEW,
+}
 
 
 class ReleasePackageValidationError(ValueError):
@@ -68,6 +80,223 @@ class ReleasePackageValidationError(ValueError):
         super().__init__(message)
         self.code = code
         self.message = message
+
+
+def release_lineage_root_id(state: TeamState, release: ReleasePackage) -> str:
+    """Return the persisted root, falling back to explicit predecessor ancestry."""
+
+    if release.lineage_root_release_package_id:
+        return release.lineage_root_release_package_id
+    current = release
+    visited: set[str] = set()
+    while current.supersedes_release_package_id is not None:
+        if current.id in visited:
+            return release.id
+        visited.add(current.id)
+        predecessor = state.release_packages.get(current.supersedes_release_package_id)
+        if predecessor is None:
+            break
+        current = predecessor
+    return current.id
+
+
+def release_lineage_sequence(state: TeamState, release: ReleasePackage) -> int:
+    """Return a sequence compatible with legacy packages that predate lineage fields."""
+
+    if release.lineage_root_release_package_id is not None:
+        return release.lineage_sequence
+    sequence = 0
+    current = release
+    visited: set[str] = set()
+    while current.supersedes_release_package_id is not None:
+        if current.id in visited:
+            break
+        visited.add(current.id)
+        predecessor = state.release_packages.get(current.supersedes_release_package_id)
+        if predecessor is None:
+            break
+        sequence += 1
+        current = predecessor
+    return sequence
+
+
+def _release_lineage_leaves(state: TeamState, root_id: str) -> list[ReleasePackage]:
+    releases = [
+        release
+        for release in state.release_packages.values()
+        if release_lineage_root_id(state, release) == root_id
+    ]
+    predecessor_ids = {
+        release.supersedes_release_package_id
+        for release in releases
+        if release.supersedes_release_package_id is not None
+    }
+    return sorted(
+        (release for release in releases if release.id not in predecessor_ids),
+        key=lambda release: (
+            release_lineage_sequence(state, release),
+            release.created_at,
+            release.id,
+        ),
+    )
+
+
+def _release_for_exact_task_base(
+    state: TeamState,
+    *,
+    task: Any,
+) -> ReleasePackage | None:
+    matches = _releases_for_exact_task_base(state, task=task)
+    if len(matches) != 1:
+        return None
+    if task.release_base_package_id is None:
+        task.release_base_package_id = matches[0].id
+        task.updated_at = utc_now()
+    return matches[0]
+
+
+def _releases_for_exact_task_base(
+    state: TeamState,
+    *,
+    task: Any,
+) -> list[ReleasePackage]:
+    if task.release_base_package_id is not None:
+        release = state.release_packages.get(task.release_base_package_id)
+        if release is not None and release.project_id == task.project_id:
+            return [release]
+        return []
+    if task.git_base_branch is None or task.git_base_commit_sha is None:
+        return []
+    return [
+        release
+        for release in state.release_packages.values()
+        if release.project_id == task.project_id
+        and _release_candidate_branch(release) == task.git_base_branch
+        and release.candidate_commit_sha is not None
+        and release.candidate_commit_sha.casefold() == task.git_base_commit_sha.casefold()
+    ]
+
+
+def _ambiguous_exact_base_task_ids(
+    state: TeamState,
+    deliverable_ids: list[str],
+) -> list[str]:
+    ambiguous: list[str] = []
+    for deliverable_id in deliverable_ids:
+        deliverable = state.deliverables.get(deliverable_id)
+        task = state.tasks.get(deliverable.task_id) if deliverable is not None else None
+        if task is not None and len(_releases_for_exact_task_base(state, task=task)) > 1:
+            ambiguous.append(task.id)
+    return sorted(set(ambiguous))
+
+
+def _release_lineage_roots_for_inputs(
+    state: TeamState,
+    *,
+    project_id: str,
+    deliverable_ids: list[str],
+) -> set[str]:
+    roots: set[str] = set()
+    for deliverable_id in deliverable_ids:
+        deliverable = state.deliverables.get(deliverable_id)
+        task = state.tasks.get(deliverable.task_id) if deliverable is not None else None
+        base = _release_for_exact_task_base(state, task=task) if task is not None else None
+        if base is not None and base.project_id == project_id:
+            roots.add(release_lineage_root_id(state, base))
+    return roots
+
+
+def _lineage_waiting_task_ids(
+    state: TeamState,
+    *,
+    root_id: str,
+    requested_deliverable_ids: list[str],
+) -> list[str]:
+    requested_task_ids = {
+        deliverable.task_id
+        for deliverable_id in requested_deliverable_ids
+        if (deliverable := state.deliverables.get(deliverable_id)) is not None
+    }
+    waiting: list[str] = []
+    for task in state.tasks.values():
+        if task.id in requested_task_ids or task.state not in _NONTERMINAL_LINEAGE_TASK_STATES:
+            continue
+        base = _release_for_exact_task_base(state, task=task)
+        if base is not None and release_lineage_root_id(state, base) == root_id:
+            waiting.append(task.id)
+    return sorted(waiting)
+
+
+def _settled_lineage_deliverable_ids(
+    state: TeamState,
+    *,
+    root_id: str,
+    predecessor: ReleasePackage,
+    requested_deliverable_ids: list[str],
+) -> list[str]:
+    predecessor_deliverable_ids = set(predecessor.deliverable_ids)
+    deliverable_ids = [
+        deliverable_id
+        for deliverable_id in requested_deliverable_ids
+        if deliverable_id not in predecessor_deliverable_ids
+    ]
+    for task in sorted(state.tasks.values(), key=lambda item: (item.created_at, item.id)):
+        if task.state in _NONTERMINAL_LINEAGE_TASK_STATES or task.state == TeamTaskState.CANCELLED:
+            continue
+        base = _release_for_exact_task_base(state, task=task)
+        if base is None or release_lineage_root_id(state, base) != root_id:
+            continue
+        for deliverable_id in task.deliverable_ids:
+            deliverable = state.deliverables.get(deliverable_id)
+            if (
+                deliverable is not None
+                and deliverable.state == TeamRecordState.ACCEPTED
+                and deliverable.superseded_by_deliverable_id is None
+                and deliverable_id not in predecessor_deliverable_ids
+                and deliverable_id not in deliverable_ids
+            ):
+                deliverable_ids.append(deliverable_id)
+    return deliverable_ids
+
+
+def _deliverable_is_bound_to_lineage(
+    state: TeamState,
+    *,
+    deliverable: Deliverable,
+    predecessor: ReleasePackage,
+) -> bool:
+    task = state.tasks.get(deliverable.task_id)
+    base = _release_for_exact_task_base(state, task=task) if task is not None else None
+    return (
+        base is not None
+        and release_lineage_root_id(state, base) == release_lineage_root_id(state, predecessor)
+    )
+
+
+def release_lineage_gate_error(state: TeamState, release: ReleasePackage) -> str | None:
+    """Fail closed before verification or review if a lineage is no longer settled."""
+
+    root_id = release_lineage_root_id(state, release)
+    leaves = _release_lineage_leaves(state, root_id)
+    if len(leaves) != 1 or leaves[0].id != release.id:
+        frontier_ids = ", ".join(item.id for item in leaves) or "none"
+        return (
+            f"release_lineage_forked: release {release.id} is not the unique frontier "
+            f"of lineage {root_id}; frontier(s): {frontier_ids}"
+        )
+    if release.lineage_root_release_package_id is None:
+        return None
+    waiting_task_ids = _lineage_waiting_task_ids(
+        state,
+        root_id=root_id,
+        requested_deliverable_ids=release.deliverable_ids,
+    )
+    if waiting_task_ids:
+        return (
+            "release_lineage_waiting_tasks: release gates are waiting for "
+            "lineage-bound tasks to settle: " + ", ".join(waiting_task_ids)
+        )
+    return None
 
 
 def allowed_release_parent_task_ids(
@@ -454,15 +683,133 @@ def _build_release_package(
         result["errors"].append("post_release_feedback_case_id requires a predecessor release")
         return None
     predecessor: ReleasePackage | None = None
+    configuration_retry = False
     correction_deliverable_ids = list(requested_deliverable_ids)
+    historical_matches = (
+        _release_packages_for_deliverables(
+            state,
+            project_id=project_id,
+            deliverable_ids=requested_deliverable_ids,
+        )
+        if supersedes_release_package_id is None
+        else []
+    )
+    historical_root_ids = {
+        release_lineage_root_id(state, release) for release in historical_matches
+    }
+    if len(historical_root_ids) > 1:
+        result["error_code"] = "release_lineage_ambiguous"
+        result["release_lineage_root_ids"] = sorted(historical_root_ids)
+        result["historical_release_package_ids"] = [release.id for release in historical_matches]
+        result["errors"].append(
+            "release_lineage_ambiguous: this deliverable set exists in multiple "
+            "historical release lineages; an operator must select the canonical predecessor"
+        )
+        return None
+    historical_duplicate = historical_matches[0] if historical_matches else None
     if supersedes_release_package_id is not None:
         predecessor = state.release_packages.get(supersedes_release_package_id)
+        if predecessor is None:
+            result["errors"].append("superseded release package does not exist")
+            return None
+    elif historical_duplicate is None:
+        ambiguous_task_ids = _ambiguous_exact_base_task_ids(
+            state,
+            requested_deliverable_ids,
+        )
+        if ambiguous_task_ids:
+            result["error_code"] = "release_lineage_ambiguous"
+            result["release_lineage_ambiguous_task_ids"] = ambiguous_task_ids
+            result["errors"].append(
+                "release_lineage_ambiguous: exact task provenance matches multiple "
+                "release candidates; an operator must select the canonical predecessor"
+            )
+            return None
+        lineage_root_ids = _release_lineage_roots_for_inputs(
+            state,
+            project_id=project_id,
+            deliverable_ids=requested_deliverable_ids,
+        )
+        if len(lineage_root_ids) > 1:
+            result["error_code"] = "release_lineage_ambiguous"
+            result["release_lineage_root_ids"] = sorted(lineage_root_ids)
+            result["errors"].append(
+                "release_lineage_ambiguous: release inputs belong to multiple "
+                "historical release lineages; an operator must select the canonical lineage"
+            )
+            return None
+        if lineage_root_ids:
+            lineage_root_id = next(iter(lineage_root_ids))
+            leaves = _release_lineage_leaves(state, lineage_root_id)
+            if len(leaves) != 1:
+                result["error_code"] = "release_lineage_forked"
+                result["release_lineage_root_id"] = lineage_root_id
+                result["release_lineage_frontier_ids"] = [release.id for release in leaves]
+                result["errors"].append(
+                    f"release_lineage_forked: lineage {lineage_root_id} has "
+                    f"{len(leaves)} frontiers; resolve the historical fork before publication"
+                )
+                return None
+            predecessor = leaves[0]
+            result["release_lineage_auto_joined"] = True
+            result["release_lineage_root_id"] = lineage_root_id
+            result["inferred_predecessor_release_package_id"] = predecessor.id
+
+    if predecessor is not None:
+        lineage_root_id = release_lineage_root_id(state, predecessor)
+        waiting_task_ids = _lineage_waiting_task_ids(
+            state,
+            root_id=lineage_root_id,
+            requested_deliverable_ids=correction_deliverable_ids,
+        )
+        if waiting_task_ids:
+            result["error_code"] = "release_lineage_waiting_tasks"
+            result["release_lineage_waiting_task_ids"] = waiting_task_ids
+            result["errors"].append(
+                "release_lineage_waiting_tasks: successor creation is waiting for "
+                "lineage-bound tasks to settle: " + ", ".join(waiting_task_ids)
+            )
+            return None
+        correction_deliverable_ids = _settled_lineage_deliverable_ids(
+            state,
+            root_id=lineage_root_id,
+            predecessor=predecessor,
+            requested_deliverable_ids=correction_deliverable_ids,
+        )
+        matching_successors = _matching_direct_successors(
+            state,
+            predecessor=predecessor,
+            correction_deliverable_ids=correction_deliverable_ids,
+        )
+        if len(matching_successors) > 1:
+            result["error_code"] = "release_lineage_forked"
+            result["release_lineage_frontier_ids"] = [release.id for release in matching_successors]
+            result["errors"].append(
+                f"release_lineage_forked: predecessor {predecessor.id} has multiple "
+                "matching successors; resolve the historical fork before retrying"
+            )
+            return None
+        if matching_successors and _release_package_requires_recreation(matching_successors[0]):
+            original_predecessor = predecessor
+            predecessor = matching_successors[0]
+            result["requested_predecessor_release_package_id"] = original_predecessor.id
+            correction_deliverable_ids = _settled_lineage_deliverable_ids(
+                state,
+                root_id=lineage_root_id,
+                predecessor=predecessor,
+                requested_deliverable_ids=correction_deliverable_ids,
+            )
+        if _release_package_requires_recreation(predecessor):
+            configuration_retry = True
+            result["configuration_retry_predecessor_release_package_id"] = predecessor.id
         successor_error = _successor_release_request_error(
             state,
             project_id=project_id,
             predecessor=predecessor,
             correction_deliverable_ids=correction_deliverable_ids,
-            post_release_feedback_case_id=post_release_feedback_case_id,
+            post_release_feedback_case_id=(
+                None if configuration_retry else post_release_feedback_case_id
+            ),
         )
         if successor_error is not None:
             result["errors"].append(successor_error)
@@ -511,7 +858,7 @@ def _build_release_package(
             state,
             deliverable=deliverable,
         )
-        if predecessor is None:
+        if predecessor is None or configuration_retry:
             return branch, commit
         composed_correction_base = _candidate_correction_composition_base(
             state,
@@ -623,7 +970,9 @@ def _build_release_package(
     git_base_snapshots: set[tuple[str | None, str | None]] = set()
     valid = True
     promotion_deliverable_ids = set(
-        correction_deliverable_ids if predecessor is not None else deliverable_ids
+        deliverable_ids
+        if predecessor is None or configuration_retry
+        else correction_deliverable_ids
     )
     for deliverable_id in deliverable_ids:
         deliverable = state.deliverables.get(deliverable_id)
@@ -785,7 +1134,7 @@ def _build_release_package(
             _duplicate_release_package_error(state.release_packages[release_id])
         )
         return None
-    duplicate = _active_release_package_for_deliverables(
+    duplicate = _release_package_for_deliverables(
         state,
         project_id=project_id,
         deliverable_ids=deliverable_ids,
@@ -864,6 +1213,11 @@ def _build_release_package(
                 predecessor.gate_failure.stage == "review"
                 and predecessor.gate_failure.kind == "rejected"
             )
+            or (
+                predecessor.gate_failure.stage == "lineage"
+                and predecessor.gate_failure.kind == "convergence"
+                and predecessor.gate_failure.message.startswith("release_lineage_waiting_tasks:")
+            )
         )
     )
     if feature_sources_by_task and not is_candidate_correction_successor:
@@ -889,16 +1243,26 @@ def _build_release_package(
         owner_agent_id=actor_agent_id,
         summary=_optional_text(request.get("summary")),
         supersedes_release_package_id=(predecessor.id if predecessor is not None else None),
+        lineage_root_release_package_id=(
+            release_lineage_root_id(state, predecessor) if predecessor is not None else release_id
+        ),
+        lineage_sequence=(
+            release_lineage_sequence(state, predecessor) + 1 if predecessor is not None else 0
+        ),
         deliverable_ids=deliverable_ids,
         artifact_refs=artifact_refs,
         feature_branches=feature_branches,
         release_branch=target_release_branch,
         canonical_branch=target_canonical_branch,
         git_base_branch=(
-            predecessor_candidate_branch if predecessor is not None else release_git_base_branch
+            predecessor_candidate_branch
+            if predecessor is not None and not configuration_retry
+            else release_git_base_branch
         ),
         base_commit_sha=(
-            predecessor.candidate_commit_sha if predecessor is not None else release_base_commit_sha
+            predecessor.candidate_commit_sha
+            if predecessor is not None and not configuration_retry
+            else release_base_commit_sha
         ),
         canonical_base_commit_sha=canonical_base_commit_sha,
         git_promotion_record_ids=promotion_ids,
@@ -1228,6 +1592,7 @@ def _successor_release_request_error(
             f"{predecessor.project_id}, not {project_id}"
         )
     requested_correction_set = set(correction_deliverable_ids)
+    matching_direct_successor = False
     for successor in sorted(
         state.release_packages.values(),
         key=lambda item: (item.created_at, item.id),
@@ -1235,16 +1600,27 @@ def _successor_release_request_error(
         if (
             successor.id == ignore_successor_release_package_id
             or successor.supersedes_release_package_id != predecessor.id
-            or successor.state in _TERMINAL_RELEASE_STATES
         ):
             continue
         existing_correction_set = set(successor.deliverable_ids) - set(predecessor.deliverable_ids)
-        if existing_correction_set != requested_correction_set:
+        if existing_correction_set == requested_correction_set:
+            matching_direct_successor = True
+        else:
             return (
                 f"predecessor release {predecessor.id} already has active "
                 f"successor {successor.id}; complete or recover it before "
                 "requesting a different successor"
             )
+    if matching_direct_successor:
+        return None
+    root_id = release_lineage_root_id(state, predecessor)
+    leaves = _release_lineage_leaves(state, root_id)
+    if len(leaves) != 1 or leaves[0].id != predecessor.id:
+        frontier_ids = ", ".join(release.id for release in leaves) or "none"
+        return (
+            f"release {predecessor.id} is not the unique frontier of lineage {root_id}; "
+            f"current frontier(s): {frontier_ids}. New work must join the lineage frontier"
+        )
     if predecessor.state == TeamRecordState.ACCEPTED:
         return _post_release_successor_request_error(
             state,
@@ -1254,6 +1630,20 @@ def _successor_release_request_error(
         )
     if post_release_feedback_case_id is not None:
         return "post_release_feedback_case_id can authorize only a successor of a published release"
+    if _release_package_requires_recreation(predecessor):
+        if correction_deliverable_ids:
+            return (
+                f"configuration retry for release {predecessor.id} must preserve its exact "
+                "deliverable scope"
+            )
+        return None
+    lineage_bound_error = _lineage_bound_correction_request_error(
+        state,
+        predecessor=predecessor,
+        correction_deliverable_ids=correction_deliverable_ids,
+    )
+    if lineage_bound_error is not None:
+        return None if lineage_bound_error == "" else lineage_bound_error
     if (
         predecessor.state == TeamRecordState.REJECTED
         and predecessor.gate_failure is not None
@@ -1390,12 +1780,72 @@ def _successor_release_request_error(
                 f"successor correction deliverable {deliverable_id} is not a "
                 "current accepted deliverable"
             )
-        if deliverable_id not in proposed_correction_deliverable_ids:
+        if deliverable_id not in proposed_correction_deliverable_ids and not (
+            _deliverable_is_bound_to_lineage(
+                state,
+                deliverable=deliverable,
+                predecessor=predecessor,
+            )
+        ):
             return (
                 f"successor correction deliverable {deliverable_id} is not "
                 f"authorized by human review case {correction_case.id}"
             )
     return None
+
+
+def _matching_direct_successors(
+    state: TeamState,
+    *,
+    predecessor: ReleasePackage,
+    correction_deliverable_ids: list[str],
+) -> list[ReleasePackage]:
+    requested_correction_set = set(correction_deliverable_ids)
+    predecessor_deliverable_set = set(predecessor.deliverable_ids)
+    return sorted(
+        (
+            successor
+            for successor in state.release_packages.values()
+            if successor.supersedes_release_package_id == predecessor.id
+            and set(successor.deliverable_ids) - predecessor_deliverable_set
+            == requested_correction_set
+        ),
+        key=lambda item: (item.created_at, item.id),
+    )
+
+
+def _lineage_bound_correction_request_error(
+    state: TeamState,
+    *,
+    predecessor: ReleasePackage,
+    correction_deliverable_ids: list[str],
+) -> str | None:
+    """Authorize independently created remediation only through exact lineage binding."""
+
+    if predecessor.state != TeamRecordState.REJECTED or not correction_deliverable_ids:
+        return None
+    tasks = []
+    for deliverable_id in correction_deliverable_ids:
+        deliverable = state.deliverables.get(deliverable_id)
+        task = state.tasks.get(deliverable.task_id) if deliverable is not None else None
+        if task is None or task.created_by_actor in _SYSTEM_CORRECTION_TASK_ACTORS:
+            return None
+        base = _release_for_exact_task_base(state, task=task)
+        if base is None or release_lineage_root_id(state, base) != release_lineage_root_id(
+            state, predecessor
+        ):
+            return None
+        tasks.append(task)
+    for task in tasks:
+        try:
+            require_task_resolved(
+                state,
+                task.id,
+                boundary=f"lineage successor for release {predecessor.id}",
+            )
+        except TaskAssessmentBoundaryError as exc:
+            return exc.message
+    return ""
 
 
 def _candidate_correction_downstream_recovery_base(
@@ -1556,6 +2006,11 @@ def _verification_correction_successor_request_error(
                 deliverable=deliverable,
             )
             is None
+            and not _deliverable_is_bound_to_lineage(
+                state,
+                deliverable=deliverable,
+                predecessor=predecessor,
+            )
         ):
             invalid_ids.append(deliverable_id)
     if invalid_ids:
@@ -1629,6 +2084,11 @@ def _release_review_correction_successor_request_error(
                 deliverable=deliverable,
             )
             is None
+            and not _deliverable_is_bound_to_lineage(
+                state,
+                deliverable=deliverable,
+                predecessor=predecessor,
+            )
         )
     )
     if invalid_ids:
@@ -1711,25 +2171,49 @@ def _post_release_successor_request_error(
     return None
 
 
-def _active_release_package_for_deliverables(
+def _release_package_for_deliverables(
     state: TeamState,
     *,
     project_id: str,
     deliverable_ids: list[str],
 ) -> ReleasePackage | None:
+    matches = _release_packages_for_deliverables(
+        state,
+        project_id=project_id,
+        deliverable_ids=deliverable_ids,
+    )
+    return matches[0] if matches else None
+
+
+def _release_packages_for_deliverables(
+    state: TeamState,
+    *,
+    project_id: str,
+    deliverable_ids: list[str],
+) -> list[ReleasePackage]:
     normalized = _normalized_release_deliverable_set(deliverable_ids)
-    for release in sorted(
-        state.release_packages.values(),
-        key=lambda item: (item.created_at, item.id),
-        reverse=True,
-    ):
-        if release.project_id != project_id:
-            continue
-        if release.state in _TERMINAL_RELEASE_STATES:
-            continue
-        if _normalized_release_deliverable_set(release.deliverable_ids) == normalized:
-            return release
-    return None
+    return [
+        release
+        for release in sorted(
+            state.release_packages.values(),
+            key=lambda item: (item.created_at, item.id),
+            reverse=True,
+        )
+        if release.project_id == project_id
+        and not _release_package_requires_recreation(release)
+        and _normalized_release_deliverable_set(release.deliverable_ids) == normalized
+    ]
+
+
+def _release_package_requires_recreation(release: ReleasePackage) -> bool:
+    """Return whether same-scope dedup must leave a supported replacement path."""
+
+    return (
+        release.state in _TERMINAL_RELEASE_STATES
+        and release.state == TeamRecordState.REJECTED
+        and release.gate_failure is not None
+        and release.gate_failure.stage == "configuration"
+    )
 
 
 def _normalized_release_deliverable_set(deliverable_ids: list[str]) -> tuple[str, ...]:

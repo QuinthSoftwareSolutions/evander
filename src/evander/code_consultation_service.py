@@ -29,12 +29,12 @@ from evander.consultations import (
     utc_now,
     verify_consultation_token,
 )
-from evander.events.internal import InternalEventBus, InternalEventSource, internal_event_store_path
-from evander.orchestration.internal_events import build_internal_event_bus_for_runtime
-from evander.events.scheduled import (
-    ScheduledInternalEventStore,
-    scheduled_internal_event_store_path,
+from evander.events.internal import InternalEventBus, InternalEventSource
+from evander.orchestration.internal_events import (
+    build_internal_event_bus_for_runtime,
+    build_scheduled_internal_event_store_for_runtime,
 )
+from evander.events.scheduled import ScheduledInternalEventStore
 
 
 class ConsultationSnapshotPort(Protocol):
@@ -86,9 +86,9 @@ class CodeConsultationEventDispatcher:
         event_bus: InternalEventBus | None = None,
         scheduled_events: ScheduledInternalEventStore | None = None,
     ) -> None:
-        self._event_bus = event_bus or InternalEventBus(internal_event_store_path(runtime_dir))
-        self._scheduled_events = scheduled_events or ScheduledInternalEventStore(
-            scheduled_internal_event_store_path(runtime_dir)
+        self._event_bus = event_bus or build_internal_event_bus_for_runtime(runtime_dir)
+        self._scheduled_events = (
+            scheduled_events or build_scheduled_internal_event_store_for_runtime(runtime_dir)
         )
 
     def publish_requested(

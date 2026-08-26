@@ -1,7 +1,11 @@
 from __future__ import annotations
 
 from datetime import UTC
-from evander.events.internal import InternalEvent, InternalEventBus
+from evander.events.internal import (
+    InternalEvent,
+    InternalEventBus,
+    InternalEventSubscriptionSpec,
+)
 from evander.orchestration.internal_events import build_internal_event_bus_from_metadata
 from evander.events.models import (
     TriggerDefinitionDiscriminated,
@@ -9,12 +13,13 @@ from evander.events.models import (
     WorkflowNodeEnvelope,
 )
 from evander.events.provider_models import WebhookTriggerDefinition
-from evander.triggers.providers._cursor_state import TriggerCursorStore, merge_cursor_ids
 from evander.triggers.providers.base import TriggerProviderBase
 
 
 class WebhookTriggerProvider(TriggerProviderBase):
-    _CURSOR_FILENAME = "trigger-cursors-http-webhook.json"
+    def __init__(self) -> None:
+        super().__init__()
+        self._cached_event_bus: InternalEventBus | None = None
 
     @classmethod
     def validate_definition(
@@ -34,19 +39,15 @@ class WebhookTriggerProvider(TriggerProviderBase):
 
     def poll(self) -> list[TriggerEvent]:
         trigger = self._trigger()
-        cursor_store = self._cursor_store()
-        state = cursor_store.get(trigger.id)
-        emitted_ids = {
-            str(value).strip()
-            for value in state.get("emitted_internal_event_ids", [])
-            if str(value).strip()
-        }
-
-        matched = [event for event in self._event_bus().list_events() if _matches(trigger, event)]
+        bus = self._event_bus()
+        spec = self.subscription_spec()
+        bus.reconcile_subscription(spec, config_revision=None)
+        matched = bus.poll_subscription(
+            spec,
+            matcher=lambda event: _matches(trigger, event),
+        )
         events: list[TriggerEvent] = []
         for event in matched:
-            if event.event_id in emitted_ids:
-                continue
             events.append(
                 TriggerEvent(
                     event_id=f"{trigger.id}:{event.event_id}",
@@ -67,9 +68,22 @@ class WebhookTriggerProvider(TriggerProviderBase):
         internal_event_id = _internal_event_id_from_trigger_event_id(event.event_id, trigger.id)
         if not internal_event_id:
             return
-        self._cursor_store().update(
-            trigger.id,
-            lambda state: _acknowledge_internal_event_id(state, internal_event_id),
+        self._event_bus().acknowledge_delivery(trigger.id, internal_event_id)
+
+    def subscription_spec(self) -> InternalEventSubscriptionSpec:
+        trigger = self._trigger()
+        event_type = f"external.{trigger.event_type}"
+        return InternalEventSubscriptionSpec(
+            trigger_id=trigger.id,
+            trigger_type=trigger.type,
+            event_type=event_type,
+            filter_payload={
+                "event_type": event_type,
+                "source_type": "webhook",
+                "source_name": trigger.slug,
+                "node_type": "trigger:http:webhook",
+                "node_id": trigger.id,
+            },
         )
 
     def _trigger(self) -> WebhookTriggerDefinition:
@@ -80,17 +94,12 @@ class WebhookTriggerProvider(TriggerProviderBase):
     def _event_bus(self) -> InternalEventBus:
         if self.runtime_context is None:
             raise RuntimeError("WebhookTriggerProvider has no runtime context")
-        return build_internal_event_bus_from_metadata(
-            self.runtime_context.metadata,
-            runtime_dir=self.runtime_context.resolved_config.runtime_dir,
-        )
-
-    def _cursor_store(self) -> TriggerCursorStore:
-        if self.runtime_context is None:
-            raise RuntimeError("WebhookTriggerProvider has no runtime context")
-        return TriggerCursorStore(
-            self.runtime_context.resolved_config.runtime_dir / self._CURSOR_FILENAME
-        )
+        if self._cached_event_bus is None:
+            self._cached_event_bus = build_internal_event_bus_from_metadata(
+                self.runtime_context.metadata,
+                runtime_dir=self.runtime_context.resolved_config.runtime_dir,
+            )
+        return self._cached_event_bus
 
 
 def _matches(trigger: WebhookTriggerDefinition, event: InternalEvent) -> bool:
@@ -115,13 +124,3 @@ def _internal_event_id_from_trigger_event_id(event_id: str, trigger_id: str) -> 
         return None
     internal_event_id = event_id[len(prefix) :].strip()
     return internal_event_id or None
-
-
-def _acknowledge_internal_event_id(
-    state: dict[str, object], internal_event_id: str
-) -> dict[str, object]:
-    state["emitted_internal_event_ids"] = merge_cursor_ids(
-        state.get("emitted_internal_event_ids"),
-        [internal_event_id],
-    )
-    return state

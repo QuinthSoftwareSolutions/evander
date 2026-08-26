@@ -30,6 +30,7 @@ from ...chat_attachments import PreparedChatAttachment
 from ..domain.chat import (
     EXTERNAL_CHAT_REPLY_REQUESTED_EVENT_TYPE,
     _chat_preview,
+    _chat_return_path_key,
     _publish_admin_chat_notifications,
     _touch_conversation,
 )
@@ -322,6 +323,7 @@ class TeamChatCommandService(TeamCommandExecutor):
         request_id: str,
         attachments: Sequence[PreparedChatAttachment] = (),
         source_attachment_ids: Sequence[str] = (),
+        source_message_ids: Sequence[str] = (),
         summary: str | None = None,
         handled_inbox_item_ids: Sequence[str] | None = None,
         correlation_id: str | None = None,
@@ -336,6 +338,10 @@ class TeamChatCommandService(TeamCommandExecutor):
         normalized_source_attachment_ids = _unique_text_list(
             source_attachment_ids,
             "attachment_ids",
+        )
+        normalized_source_message_ids = _unique_text_list(
+            source_message_ids,
+            "source_message_ids",
         )
         if len(prepared_attachments) != len(normalized_source_attachment_ids):
             raise ValueError("prepared attachments must match attachment_ids")
@@ -355,6 +361,7 @@ class TeamChatCommandService(TeamCommandExecutor):
             recipient_operator_user_id=normalized_operator_id,
             body=normalized_body,
             attachment_ids=normalized_source_attachment_ids,
+            source_message_ids=normalized_source_message_ids,
             summary=normalized_summary,
             handled_inbox_item_ids=normalized_handled_ids,
             correlation_id=context.correlation_id,
@@ -400,6 +407,13 @@ class TeamChatCommandService(TeamCommandExecutor):
                         "operator_user_ids": operator_user_ids,
                     },
                 )
+            source_messages = _require_active_delivery_source_messages(
+                state,
+                conversation_id=conversation.id,
+                message_ids=normalized_source_message_ids,
+                active_dispatch_id=resolved.dispatch_id,
+            )
+            _require_one_chat_return_path(source_messages)
             _require_unclaimed_chat_attachments(state, prepared_attachments)
             now = utc_now()
             known_display_name = conversation.operator_display_name
@@ -412,6 +426,8 @@ class TeamChatCommandService(TeamCommandExecutor):
                 metadata["recipient_operator_display_name"] = known_display_name
             if normalized_summary is not None:
                 metadata["summary"] = normalized_summary
+            if normalized_source_message_ids:
+                metadata["source_kind"] = "operator_message_during_dispatch"
             state.conversation_messages[message_id] = TeamConversationMessage(
                 id=message_id,
                 conversation_id=conversation.id,
@@ -420,6 +436,12 @@ class TeamChatCommandService(TeamCommandExecutor):
                 body=body_text,
                 attachment_ids=[attachment.id for attachment in prepared_attachments],
                 status="sent",
+                source_message_id=(
+                    normalized_source_message_ids[-1]
+                    if normalized_source_message_ids
+                    else None
+                ),
+                source_message_ids=normalized_source_message_ids,
                 metadata=metadata,
                 created_at=now,
                 updated_at=now,
@@ -438,15 +460,93 @@ class TeamChatCommandService(TeamCommandExecutor):
                 now=now,
                 preview=_chat_message_preview(body_text, len(prepared_attachments)),
             )
+            for source_message in source_messages:
+                source_message.status = "replied"
+                source_message.error = None
+                source_message.updated_at = now
+            events: list[dict[str, Any]] = []
+            if source_messages:
+                external_origin = source_messages[-1].metadata.get("external_origin")
+                if isinstance(external_origin, dict):
+                    provider = _optional_text(external_origin.get("provider"))
+                    communication_target_id = _optional_text(
+                        external_origin.get("communication_target_id")
+                    )
+                    if provider is not None and communication_target_id is not None:
+                        delivery_id = f"external-chat-delivery-{uuid4().hex}"
+                        state.external_chat_deliveries[delivery_id] = ExternalChatDeliveryRecord(
+                            id=delivery_id,
+                            agent_reply_message_id=message_id,
+                            operator_message_id=source_messages[-1].id,
+                            provider=provider,
+                            communication_target_id=communication_target_id,
+                            source_thread_id=_optional_text(
+                                external_origin.get("source_thread_id")
+                            ),
+                            created_at=now,
+                            updated_at=now,
+                        )
+                        metadata["external_delivery"] = {
+                            "delivery_id": delivery_id,
+                            "provider": provider,
+                            "communication_target_id": communication_target_id,
+                            "state": "pending",
+                            "attempt_count": 0,
+                        }
+                        state.conversation_messages[message_id].metadata = metadata
+                        events.append(
+                            {
+                                "event_type": EXTERNAL_CHAT_REPLY_REQUESTED_EVENT_TYPE,
+                                "correlation_key": delivery_id,
+                                "idempotency_key": (
+                                    f"team-chat-external-reply:{message_id}:"
+                                    f"{communication_target_id}"
+                                ),
+                                "payload": {
+                                    "delivery_id": delivery_id,
+                                    "conversation_id": conversation.id,
+                                    "operator_message_id": source_messages[-1].id,
+                                    "operator_message_ids": normalized_source_message_ids,
+                                    "agent_reply_message_id": message_id,
+                                    "agent_id": agent.id,
+                                    "sender_session_id": normalized_session_id,
+                                    "provider": provider,
+                                    "communication_target_id": communication_target_id,
+                                    "source_thread_id": _optional_text(
+                                        external_origin.get("source_thread_id")
+                                    ),
+                                    "body": _external_chat_reply_body(
+                                        body_text,
+                                        prepared_attachments,
+                                    ),
+                                    "team_chat_body": body_text,
+                                    "attachment_ids": [
+                                        attachment.id for attachment in prepared_attachments
+                                    ],
+                                    "attachments": [
+                                        attachment.payload() for attachment in prepared_attachments
+                                    ],
+                                },
+                            }
+                        )
             return TeamCommandApplyResult(
                 response_payload={
                     "chat_message_id": message_id,
                     "conversation_id": conversation.id,
                     "conversation_created": False,
                     "created_operator_chat_message_ids": [message_id],
+                    "replied_chat_message_ids": normalized_source_message_ids,
                     "progress_made": True,
+                    "events": events,
                 },
-                created_domain_ids=[message_id],
+                created_domain_ids=[
+                    message_id,
+                    *[
+                        str(event["correlation_key"])
+                        for event in events
+                        if event.get("correlation_key") is not None
+                    ],
+                ],
             )
 
         state, response = self._execute_team_command(
@@ -465,6 +565,106 @@ class TeamChatCommandService(TeamCommandExecutor):
             ],
         )
         return state, response
+
+    def acknowledge_operator_chat_messages_command(
+        self,
+        *,
+        session_id: str,
+        message_ids: Sequence[str],
+        disposition: str,
+        summary: str,
+        request_id: str,
+        correlation_id: str | None = None,
+        causation_id: str | None = None,
+    ) -> tuple[TeamState, dict[str, Any]]:
+        normalized_session_id = _required_text(session_id, "session_id")
+        normalized_message_ids = _unique_text_list(message_ids, "message_ids")
+        if not normalized_message_ids:
+            raise ValueError("message_ids is required")
+        normalized_disposition = _required_text(disposition, "disposition").lower()
+        if normalized_disposition != "acted_no_reply":
+            raise ValueError("disposition must be acted_no_reply")
+        normalized_summary = _required_text(summary, "summary")
+        context = TeamCommandContext(
+            ambient_session_id=normalized_session_id,
+            tool_name="team_acknowledge_operator_chat_messages",
+            request_id=_required_text(request_id, "request_id"),
+            correlation_id=_optional_text(correlation_id),
+            causation_id=_optional_text(causation_id),
+            progress_classification="operator_chat_acknowledgement",
+        )
+        normalized_payload = {
+            "message_ids": sorted(normalized_message_ids),
+            "source_message_ids": sorted(normalized_message_ids),
+            "disposition": normalized_disposition,
+            "summary": normalized_summary,
+            "correlation_id": context.correlation_id,
+            "causation_id": context.causation_id,
+        }
+
+        def _apply(
+            state: TeamState,
+            resolved: _ResolvedTeamCommandContext,
+        ) -> TeamCommandApplyResult:
+            agent = _require_command_agent(
+                resolved,
+                "team_acknowledge_operator_chat_messages",
+            )
+            source_messages: list[TeamConversationMessage] = []
+            conversation_ids: set[str] = set()
+            for message_id in normalized_message_ids:
+                message = state.conversation_messages.get(message_id)
+                if message is None:
+                    raise TeamCommandValidationError(
+                        code="chat_message_not_found",
+                        message=f"conversation message {message_id} was not found",
+                    )
+                conversation = state.conversations.get(message.conversation_id)
+                if conversation is None or conversation.agent_id != agent.id:
+                    raise TeamCommandValidationError(
+                        code="operator_chat_not_member",
+                        message=f"message {message_id} is outside the caller's operator chats",
+                    )
+                source_messages.extend(
+                    _require_active_delivery_source_messages(
+                        state,
+                        conversation_id=conversation.id,
+                        message_ids=[message_id],
+                        active_dispatch_id=resolved.dispatch_id,
+                    )
+                )
+                conversation_ids.add(conversation.id)
+            now = utc_now()
+            for message in source_messages:
+                metadata = dict(message.metadata)
+                metadata["operator_attention_acknowledgement"] = {
+                    "dispatch_id": resolved.dispatch_id,
+                    "disposition": normalized_disposition,
+                    "summary": normalized_summary,
+                    "acknowledged_at": now.isoformat(),
+                }
+                message.metadata = metadata
+                message.status = "acknowledged"
+                message.error = None
+                message.updated_at = now
+            return TeamCommandApplyResult(
+                response_payload={
+                    "acknowledged_message_ids": normalized_message_ids,
+                    "conversation_ids": sorted(conversation_ids),
+                    "disposition": normalized_disposition,
+                    "summary": normalized_summary,
+                    "progress_made": True,
+                },
+                created_domain_ids=normalized_message_ids,
+            )
+
+        return self._execute_team_command(
+            context=context,
+            normalized_payload=normalized_payload,
+            handled_inbox_item_ids=[],
+            apply_command=_apply,
+            require_active_dispatch=True,
+        )
 
 
 __all__ = ["TeamChatCommandService"]
@@ -526,5 +726,68 @@ def _require_unclaimed_chat_attachments(
         correction_context={
             "attachment_ids": attachment_ids,
             "message_ids": message_ids,
+        },
+    )
+
+
+def _require_active_delivery_source_messages(
+    state: TeamState,
+    *,
+    conversation_id: str,
+    message_ids: Sequence[str],
+    active_dispatch_id: str | None,
+) -> list[TeamConversationMessage]:
+    messages: list[TeamConversationMessage] = []
+    for message_id in message_ids:
+        message = _require_command_chat_message(
+            state,
+            message_id=message_id,
+            conversation_id=conversation_id,
+        )
+        if message.sender != "operator":
+            raise TeamCommandValidationError(
+                code="chat_message_not_operator",
+                message=f"message {message.id} is not an operator message",
+            )
+        if message.status in {"replied", "acknowledged"}:
+            raise TeamCommandValidationError(
+                code="chat_message_already_handled",
+                message=f"message {message.id} has already been handled",
+            )
+        delivery = message.metadata.get("operator_steering")
+        delivery_dispatch_id = (
+            _optional_text(delivery.get("dispatch_id")) if isinstance(delivery, dict) else None
+        )
+        if (
+            message.status not in {"queued", "delivered_in_dispatch"}
+            or delivery_dispatch_id is None
+            or delivery_dispatch_id != active_dispatch_id
+        ):
+            raise TeamCommandValidationError(
+                code="chat_message_not_delivered_in_dispatch",
+                message=(
+                    f"message {message.id} was not delivered into the current active dispatch"
+                ),
+                correction_context={
+                    "message_id": message.id,
+                    "active_dispatch_id": active_dispatch_id,
+                    "delivery_dispatch_id": delivery_dispatch_id,
+                    "status": message.status,
+                },
+            )
+        messages.append(message)
+    return messages
+
+
+def _require_one_chat_return_path(messages: Sequence[TeamConversationMessage]) -> None:
+    return_path_keys = {_chat_return_path_key(message) for message in messages}
+    if len(return_path_keys) <= 1:
+        return
+    raise TeamCommandValidationError(
+        code="chat_return_path_mismatch",
+        message="source_message_ids must share one Team Chat return path",
+        correction_context={
+            "source_message_ids": [message.id for message in messages],
+            "return_paths": [list(key) for key in sorted(return_path_keys)],
         },
     )

@@ -1,5 +1,51 @@
 # Changelog
 
+## 2026-08-26 - SQLite Events, Team Chat, And Release Reliability
+
+- Migrated configured non-default legacy event stores before retiring their path settings, and
+  allowed empty deployments to complete config-only SQLite cutovers.
+- Rebound trigger and effect provider metadata, internal-event executors, and wake notifications
+  whenever hot reload changes the orchestration database or trigger lock.
+- Kept later release successors beyond the inherited deliverable frontier and chained
+  configuration retries from the rejected successor instead of forking its predecessor.
+- Kept idle Team Chat conversation streams on their revision-only cache path while reconciling
+  mid-dispatch relay receipts against the already-cached Team state.
+- Expired delivered completion envelopes now leave the durable trigger queue in bounded batches
+  without creating duplicate execution-history entries.
+- Aligned status, Team directory-scope, and packaged workflow-pack tests with their current
+  runtime contracts, and made the concurrent internal-event test less timing-sensitive.
+- Moved internal events, event-trigger subscription and delivery state, and scheduled internal
+  events into the shared orchestration SQLite database with indexed future-only subscriptions,
+  atomic scheduled publication, and retention that preserves pending work.
+- Preserved pending internal-event deliveries when a configured trigger provider fails to
+  initialize transiently, so reconciliation cannot mistake the trigger for removed configuration.
+- Woke the trigger worker after durable event publication and scheduled-event creation so
+  discovery-to-support handoffs no longer wait for the normal polling interval.
+- Added a fail-closed, restartable offline migration that validates, imports, archives, and removes
+  the retired JSON stores and config keys while preserving pending work for configured triggers.
+- Closed shared orchestration SQLite connections at context exit so increased event activity does
+  not accumulate database descriptors.
+- Bound correction and remediation work to exact release-candidate provenance and automatically
+  joined it to one persisted release lineage instead of allowing another initial package.
+- Reused terminal packages for identical deliverables, enforced a unique successor frontier, and
+  stopped verification or review while explicitly bound work remained unsettled.
+- Added deterministic project-lead recovery tasks and typed lineage blockers for convergence
+  failures, with conservative schema backfill that leaves ambiguous historical forks untouched.
+- Queued text-only operator messages for relay injection on a busy Team agent's next model call,
+  without interrupting its container or consuming the durable Team Chat fallback.
+- Added source-linked operator replies and explicit acted-without-reply acknowledgements, with
+  delivered-but-unhandled messages requeued when the active dispatch completes.
+- Kept attachment messages on dedicated Team Chat wakes and made in-dispatch delivery visible as
+  `Delivered` in the operator UI.
+- Restricted in-dispatch delivery to authorization-compatible leases, requeued unhandled messages
+  on abnormal lease termination, and kept external source batches on one return path.
+- Retried only transient managed-Git publication transport failures with bounded exponential
+  backoff, while reconciling the remote ref after ambiguous failures and preserving the exact
+  source and destination lease checks.
+- Stopped showing persistent `ERROR_ROUTED` badges on workflow canvas nodes after their configured
+  error paths have handled the execution; routed-failure details remain available in run history
+  and inspection views.
+
 ## 2026-08-25 - Teams Channel Poll Recovery
 
 - Added deadline-aware retries for bounded Teams history reads so a full request timeout no longer

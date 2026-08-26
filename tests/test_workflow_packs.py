@@ -566,14 +566,11 @@ def test_team_runtime_pack_uses_dispatch_finalizer_completion_path() -> None:
     )
 
 
-def test_checked_in_team_runtime_pack_preserves_git_promotion_evidence() -> None:
-    project_dir = Path(__file__).resolve().parents[1]
-    pack = json.loads(
-        (project_dir / "config" / "workflow-packs" / "team-runtime.v1.json").read_text(
-            encoding="utf-8"
-        )
-    )
-    nodes = {node["id"]: node for item in pack["ir"]["nodes"] for node in [item.get("node", item)]}
+def test_packaged_team_runtime_pack_preserves_git_promotion_evidence() -> None:
+    from evander_team_addon.workflow_packs import team_runtime_v1
+
+    pack = WorkflowPack.model_validate(team_runtime_v1())
+    nodes = {item.node.id: item.node.model_dump(mode="json") for item in pack.ir.nodes}
     required_result_outputs = {
         "base_commit_sha",
         "source_manifests",

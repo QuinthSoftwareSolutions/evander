@@ -22,12 +22,11 @@ from evander.admin.services.managed_git_common import ManagedGitConflictError
 from evander.admin.composition import build_admin_runtime
 from evander.admin.web.app import create_app
 from evander.config import GatewayConfig
-from evander.events.internal import InternalEventBus, internal_event_store_path
-from evander.events.scheduled import (
-    ScheduledInternalEventStore,
-    scheduled_internal_event_store_path,
-)
-from evander.model_usage.models import ModelInferenceUsageEvent
+from evander.events.internal import InternalEventBus
+from evander.events.scheduled import ScheduledInternalEventStore
+from evander.model_usage.models import ModelInferenceUsageEvent, ModelUsageCorrelationContext
+from evander.model_usage.runtime import model_usage_store
+from evander.operator_steering import operator_steering_note_store
 from evander.model_usage.store import ModelUsageStore
 from evander.messaging.targets import (
     SqliteCommunicationTargetsRepository,
@@ -39,6 +38,7 @@ from evander_team_addon import api as team_addon_api
 from evander_team_addon import outbox_publication as team_outbox_publication
 import evander_team_addon.costs as team_costs_module
 import evander_team_addon.services.admin_service as admin_service_module
+from internal_event_test_support import default_orchestration_database_path
 from evander_team_addon.api import (
     _bootstrap_payload_for_request,
     _conversation_snapshot_events,
@@ -78,6 +78,7 @@ from evander_team_addon.models import (
     ReleaseScopeValidation,
     ReviewRequest,
     TeamConversationMessage,
+    TeamDispatch,
     TeamBlocker,
     TeamBlockerEventType,
     TeamBlockerRoute,
@@ -87,6 +88,7 @@ from evander_team_addon.models import (
     TeamCaseStatus,
     TeamDispatchActivity,
     TeamDispatchActivityStatus,
+    TeamDispatchStatus,
     TeamInboxItemState,
     TeamInboxItemType,
     TeamOutboxRecord,
@@ -173,9 +175,7 @@ def _invoke_team_json_route(
     method: str = "POST",
 ):
     endpoint = next(
-        route.endpoint
-        for route in routes
-        if route.path == route_path and method in route.methods
+        route.endpoint for route in routes if route.path == route_path and method in route.methods
     )
     return asyncio.run(
         endpoint(
@@ -216,7 +216,9 @@ def test_team_outbox_publication_wake_is_durable_and_notifies_trigger_worker(
         correlation_key="candidate-correction-recovery:blocker-1:12",
     )
 
-    events = InternalEventBus(internal_event_store_path(context.runtime_dir)).list_events()
+    events = InternalEventBus(
+        default_orchestration_database_path(context.runtime_dir)
+    ).list_events()
     assert first["event_ids"] == second["event_ids"]
     assert first["wake_notified"] is True
     assert second["wake_notified"] is True
@@ -307,9 +309,7 @@ def test_legacy_release_manifest_uses_provider_neutral_project_directory() -> No
         ),
     )
 
-    assert team_addon_api._release_human_review_directory(state, release) == (
-        directory_path
-    )
+    assert team_addon_api._release_human_review_directory(state, release) == (directory_path)
 
 
 def test_non_owner_cannot_create_project_in_nested_directory(tmp_path: Path) -> None:
@@ -435,15 +435,11 @@ def test_directory_only_project_move_re_resolves_human_review_scope(
     )
     auth.user_store = SimpleNamespace(
         get_group=lambda group_id: (
-            SimpleNamespace(group_id=group_id)
-            if group_id == "finance-reviewers"
-            else None
+            SimpleNamespace(group_id=group_id) if group_id == "finance-reviewers" else None
         ),
         list_user_group_assignments=lambda _login=None: [assignment],
         get_user=lambda login: (
-            SimpleNamespace(login=reviewer)
-            if str(login).casefold() == reviewer
-            else None
+            SimpleNamespace(login=reviewer) if str(login).casefold() == reviewer else None
         ),
         can=lambda login, permission, directory_path=None: (
             str(login).casefold() == reviewer
@@ -492,7 +488,7 @@ def test_directory_only_project_move_re_resolves_human_review_scope(
             "root/new-project",
             "new-reviewer@example.com",
         ),
-        (None, "root", "root-reviewer@example.com"),
+        (None, "root/old-project", "old-reviewer@example.com"),
     ],
 )
 def test_project_git_patch_re_resolves_existing_human_review_scope(
@@ -1219,9 +1215,7 @@ def test_admin_api_repairs_dependencies_after_plain_task_cancellation(
         actor_id="operator:original",
         successor_task_id="replacement-task",
     )
-    cancellation_before = state.tasks["dependency-task"].cancellation.model_dump(
-        mode="json"
-    )
+    cancellation_before = state.tasks["dependency-task"].cancellation.model_dump(mode="json")
     client = _client(tmp_path)
 
     response = client.post(
@@ -1421,9 +1415,7 @@ def test_project_directory_owner_recovers_submitted_non_git_boundary_via_api(
 
     assert response.status_code == 200, response.body.decode()
     reread = repository.read()
-    assert reread.tasks["integration-recovery"].dependency_task_ids == [
-        "replacement-task"
-    ]
+    assert reread.tasks["integration-recovery"].dependency_task_ids == ["replacement-task"]
     assert reread.tasks[
         "integration-recovery"
     ].deliverable_contract.required_contribution_task_ids == ["replacement-task"]
@@ -1750,6 +1742,7 @@ def test_human_review_api_is_strict_scoped_and_projects_release_detail(
     repo = _seed_runtime_operations_state(runtime_dir)
 
     def _attach_project_git(state):
+        state.projects["project"].directory_path = "root/team"
         state.projects["project"].git = ProjectGitConfig(
             managed_repo_id="mr_0123456789abcdefabcd",
             directory_path="root/team",
@@ -1927,6 +1920,7 @@ def test_human_review_bundle_download_is_pinned_and_scoped(tmp_path: Path) -> No
     repo = _seed_runtime_operations_state(runtime_dir)
 
     def _attach_project_git(state):
+        state.projects["project"].directory_path = "root/team"
         state.projects["project"].git = ProjectGitConfig(
             managed_repo_id="mr_0123456789abcdefabcd",
             directory_path="root/team",
@@ -2280,7 +2274,9 @@ def test_human_review_changes_requested_publishes_correction_wake_before_cron(
     assert len(decided_payload["published_event_ids"]) == 1
     wake_events = [
         event
-        for event in InternalEventBus(internal_event_store_path(runtime_dir)).list_events()
+        for event in InternalEventBus(
+            default_orchestration_database_path(runtime_dir)
+        ).list_events()
         if event.event_type == "team.agent.wake_requested"
     ]
     assert len(wake_events) == 1
@@ -2299,7 +2295,9 @@ def test_human_review_changes_requested_publishes_correction_wake_before_cron(
     assert replay_payload["published_event_ids"] == decided_payload["published_event_ids"]
     replay_wake_events = [
         event
-        for event in InternalEventBus(internal_event_store_path(runtime_dir)).list_events()
+        for event in InternalEventBus(
+            default_orchestration_database_path(runtime_dir)
+        ).list_events()
         if event.event_type == "team.agent.wake_requested"
     ]
     assert len(replay_wake_events) == 1
@@ -2645,7 +2643,9 @@ def test_post_release_report_api_uses_session_identity_and_idempotency(
     assert set(reported_state.release_packages) == release_ids_before
     wake_events = [
         event
-        for event in InternalEventBus(internal_event_store_path(runtime_dir)).list_events()
+        for event in InternalEventBus(
+            default_orchestration_database_path(runtime_dir)
+        ).list_events()
         if event.event_type == "team.agent.wake_requested"
     ]
     assert len(wake_events) == 1
@@ -2690,7 +2690,9 @@ def test_post_release_report_api_uses_session_identity_and_idempotency(
         len(
             [
                 event
-                for event in InternalEventBus(internal_event_store_path(runtime_dir)).list_events()
+                for event in InternalEventBus(
+                    default_orchestration_database_path(runtime_dir)
+                ).list_events()
                 if event.event_type == "team.agent.wake_requested"
             ]
         )
@@ -3213,7 +3215,10 @@ def test_operator_api_resolves_non_task_terminal_blocker_without_publication_wak
 
     assert response.status_code == 200
     assert "outbox_publication_wake" not in response.json()
-    assert InternalEventBus(internal_event_store_path(tmp_path / "runtime")).list_events() == []
+    assert (
+        InternalEventBus(default_orchestration_database_path(tmp_path / "runtime")).list_events()
+        == []
+    )
     reread = repo.read()
     assert reread.blockers[blocker.id].state == TeamBlockerState.RESOLVED
     resolution_event = next(
@@ -3269,7 +3274,7 @@ def test_operator_api_resolving_task_blocker_prompts_outbox_publication(
     payload = response.json()
     publication_wake = payload["outbox_publication_wake"]
     assert publication_wake["wake_notified"] is True
-    published = InternalEventBus(internal_event_store_path(runtime_dir)).list_events()
+    published = InternalEventBus(default_orchestration_database_path(runtime_dir)).list_events()
     assert len(published) == 1
     assert published[0].event_type == TEAM_OUTBOX_PUBLISH_REQUESTED_EVENT_TYPE
     assert published[0].correlation_key == (
@@ -3343,7 +3348,7 @@ def test_operator_api_blocker_publication_failure_keeps_task_wake_pending(
         "wake_notified": False,
         "error": "trigger workflow configuration is unavailable",
     }
-    assert InternalEventBus(internal_event_store_path(runtime_dir)).list_events() == []
+    assert InternalEventBus(default_orchestration_database_path(runtime_dir)).list_events() == []
     reread = repo.read()
     assert reread.blockers[blocker_id].state == TeamBlockerState.RESOLVED
     assert reread.tasks["blocked-task"].state == TeamTaskState.IN_PROGRESS
@@ -3690,7 +3695,9 @@ def test_team_addon_admin_api_conversation_queues_without_inline_dispatch_and_re
     assert message["metadata"]["sender_kind"] == "human_operator"
     assert message["metadata"]["operator_user_id"] == "admin"
     assert resume_calls == []
-    events = InternalEventBus(internal_event_store_path(tmp_path / "runtime")).list_events()
+    events = InternalEventBus(
+        default_orchestration_database_path(tmp_path / "runtime")
+    ).list_events()
     assert len(events) == 1
     assert events[0].event_type == CHAT_MESSAGE_QUEUED_EVENT_TYPE
     assert events[0].correlation_key == message["dispatch_id"]
@@ -3775,10 +3782,12 @@ def test_team_chat_mutation_scope_requires_operator_rbac_and_snapshots_projects(
     )
 
     def _bind_project_directory(state):
+        state.projects["project"].directory_path = "root/team-a"
         state.projects["project"].git = ProjectGitConfig(
             managed_repo_id="mr_0123456789abcdefabcd",
             directory_path="root/team-a",
         )
+        state.projects["other-project"].directory_path = "root/team-b"
         state.projects["other-project"].git = ProjectGitConfig(
             managed_repo_id="mr_11111111111111111111",
             directory_path="root/team-b",
@@ -4095,6 +4104,73 @@ def test_team_addon_admin_api_queues_chat_when_agent_has_active_dispatch(
     reread = TeamStateRepository(tmp_path / "runtime").read()
     assert reread.conversation_messages[message["id"]].status == "queued"
     assert reread.agent_runtimes["backend"].active_dispatch_id == "dispatch-backend"
+
+
+def test_team_addon_admin_api_queues_busy_agent_chat_for_next_model_call(
+    tmp_path: Path,
+) -> None:
+    config_path = _write_config(tmp_path, enable_team_addon=True)
+    repo = _seed_runtime_operations_state(tmp_path / "runtime")
+    def _record_dispatch(state):
+        state.dispatches["dispatch-backend"] = TeamDispatch(
+            id="dispatch-backend",
+            agent_id="backend",
+            session_id="session-backend",
+            cause_kind="scheduled",
+            project_ids=["project"],
+            task_ids=["dependency-task"],
+            status=TeamDispatchStatus.LEASED,
+            prepared_at=datetime(2026, 1, 1, tzinfo=UTC),
+            leased_at=datetime(2026, 1, 1, tzinfo=UTC),
+            lease_expires_at=datetime(2099, 1, 1, tzinfo=UTC),
+        )
+        return state
+
+    repo.update(_record_dispatch)
+    service = build_admin_runtime(config_path)
+    service.runtime.session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-backend",
+            vm_id="vm-backend",
+            directory_path="root",
+            model="gpt-5",
+            allowed_tools=[],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        )
+    )
+    model_usage_store(tmp_path / "runtime").upsert_correlation_context(
+        ModelUsageCorrelationContext(
+            session_id="session-backend",
+            dispatch_id="dispatch-backend",
+            agent_harness="codex",
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        )
+    )
+    client = TestClient(create_app(service))
+    _unlock_privileged_operations(client)
+    created = client.post(
+        "/api/addons/team-addon/conversations",
+        json={"agent_id": "backend", "expected_revision": repo.read().revision},
+    )
+    conversation = created.json()["conversations"][0]
+
+    sent = client.post(
+        f"/api/addons/team-addon/conversations/{conversation['id']}/messages",
+        json={"body": "Please keep the public API stable."},
+    )
+
+    assert sent.status_code == 202
+    payload = sent.json()
+    assert payload["dispatch"]["delivery"] == "next_model_call"
+    message = repo.read().conversation_messages[payload["message"]["id"]]
+    assert message.status == "queued"
+    steering = message.metadata["operator_steering"]
+    assert steering["dispatch_id"] == "dispatch-backend"
+    note = operator_steering_note_store(tmp_path / "runtime").get_note(steering["note_id"])
+    assert note is not None
+    assert note.status == "pending"
+    assert message.id in note.message
+    assert "team_acknowledge_operator_chat_messages" in note.message
 
 
 def test_team_addon_conversation_messages_are_paginated(tmp_path: Path) -> None:
@@ -7358,7 +7434,9 @@ def test_team_addon_admin_api_case_flow(
     publication_wake = state["outbox_publication_wake"]
     assert publication_wake["wake_notified"] is True
     assert len(publication_wake["outbox_record_ids"]) == 1
-    events = InternalEventBus(internal_event_store_path(tmp_path / "runtime")).list_events()
+    events = InternalEventBus(
+        default_orchestration_database_path(tmp_path / "runtime")
+    ).list_events()
     assert len(events) == 1
     assert events[0].event_type == TEAM_OUTBOX_PUBLISH_REQUESTED_EVENT_TYPE
     assert publication_wake["event_ids"] == [events[0].event_id]
@@ -7666,7 +7744,7 @@ def test_team_addon_admin_api_agent_context_clearing_toggle(tmp_path: Path) -> N
     assert runtime["context_rotation_pending"] is False
     assert len(body["published_event_ids"]) == 1
     scheduled = ScheduledInternalEventStore(
-        scheduled_internal_event_store_path(runtime_dir)
+        default_orchestration_database_path(runtime_dir)
     ).list_due(datetime.now(UTC) + timedelta(hours=2))
     assert len(scheduled) == 1
     assert scheduled[0].event_type == "team.agent.wake_requested"
@@ -7764,7 +7842,7 @@ def test_team_addon_admin_task_idle_transition_requests_prompt_outbox_publicatio
     assert body["outbox_publication_wake"]["event_ids"]
     [idle_outbox] = repo.list_outbox_records(intent_type="team.agent.wake_requested")
     assert idle_outbox.payload["run_at"] == due_at.replace("+00:00", "Z")
-    published = InternalEventBus(internal_event_store_path(runtime_dir)).list_events()
+    published = InternalEventBus(default_orchestration_database_path(runtime_dir)).list_events()
     assert [event.event_type for event in published] == [TEAM_OUTBOX_PUBLISH_REQUESTED_EVENT_TYPE]
 
 
@@ -8687,7 +8765,7 @@ def test_team_addon_admin_api_creates_operator_directive(tmp_path: Path) -> None
     assert body["agent_runtimes"]["manager"]["next_wake_at"] is None
     assert len(body["published_event_ids"]) == 1
     scheduled = ScheduledInternalEventStore(
-        scheduled_internal_event_store_path(tmp_path / "runtime")
+        default_orchestration_database_path(tmp_path / "runtime")
     ).list_due(datetime.now(UTC) + timedelta(minutes=1))
     assert len(scheduled) == 1
     assert scheduled[0].schedule_id == body["published_event_ids"][0]
@@ -9081,7 +9159,9 @@ def test_team_addon_admin_api_review_decision_and_release_flow(tmp_path: Path) -
         "are retired; release-candidate verification is authoritative."
     ]
     assert len(payload["published_event_ids"]) == 1
-    events = InternalEventBus(internal_event_store_path(tmp_path / "runtime")).list_events()
+    events = InternalEventBus(
+        default_orchestration_database_path(tmp_path / "runtime")
+    ).list_events()
     assert len(events) == 1
     assert events[0].event_type == "team.git.promotion_requested"
     assert events[0].payload["promotion_kind"] == "release"
@@ -9810,7 +9890,7 @@ def test_team_addon_admin_api_rejects_stale_stand_down_revoke_when_hold_changed(
         AgentStandDownSource.SUPERIOR,
     }
     assert repo.list_outbox_records() == []
-    assert InternalEventBus(internal_event_store_path(runtime_dir)).list_events() == []
+    assert InternalEventBus(default_orchestration_database_path(runtime_dir)).list_events() == []
 
 
 def test_team_addon_admin_api_requires_expected_revision(tmp_path: Path) -> None:

@@ -51,6 +51,7 @@ from evander_team_addon.models import (
     ReleaseVerificationCommand,
     ProjectGoal,
     ProjectStatus,
+    ReleaseGateFailure,
     ReleasePackage,
     ReviewBlockKind,
     ReviewCriterionResult,
@@ -2271,6 +2272,73 @@ def test_repository_coalesces_external_chat_messages_with_one_return_path(
     assert event["payload"]["operator_message_ids"] == claims[0]["message_ids"]
     assert event["payload"]["agent_id"] == "backend"
     assert event["payload"]["sender_session_id"] == "session-backend"
+
+
+def test_source_linked_operator_reply_rejects_mixed_external_return_paths(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _lease_agent_dispatch(repo, agent_id="backend", dispatch_id="dispatch-operator-attention")
+    chat = _team_chat_service(repo)
+    state, first = chat.enqueue_external_operator_chat_message(
+        conversation_id=None,
+        agent_id="backend",
+        operator_user_id="operator-alice",
+        operator_display_name="Operator Alice",
+        body="First threaded follow-up.",
+        provider="discord",
+        communication_target_id="codex-discord",
+        source_message_id="discord-mixed-return-1",
+        source_thread_id="thread-1",
+        source_author_id="discord-operator",
+        source_author_name="Operator Alice",
+    )
+    state, second = chat.enqueue_external_operator_chat_message(
+        conversation_id=first["conversation_id"],
+        agent_id=None,
+        operator_user_id="operator-alice",
+        operator_display_name="Operator Alice",
+        body="Second threaded follow-up.",
+        provider="discord",
+        communication_target_id="codex-discord",
+        source_message_id="discord-mixed-return-2",
+        source_thread_id="thread-2",
+        source_author_id="discord-operator",
+        source_author_name="Operator Alice",
+    )
+    source_message_ids = [first["message_id"], second["message_id"]]
+
+    def _mark_delivered(state_model):
+        for message_id in source_message_ids:
+            message = state_model.conversation_messages[message_id]
+            message.status = "delivered_in_dispatch"
+            message.seen_dispatch_id = "dispatch-operator-attention"
+            message.metadata["operator_steering"] = {
+                "dispatch_id": "dispatch-operator-attention",
+                "state": "delivered",
+            }
+        return state_model
+
+    repo.update(_mark_delivered)
+    state, result = _command_service(repo).send_operator_chat_message_command(
+        session_id="session-backend",
+        recipient_operator_user_id="operator-alice",
+        body="One reply must not be routed to only one thread.",
+        source_message_ids=source_message_ids,
+        request_id="reply-to-mixed-return-paths",
+    )
+
+    assert result["success"] is False
+    assert result["errors"][0]["code"] == "chat_return_path_mismatch"
+    assert result["errors"][0]["correction_context"]["source_message_ids"] == (
+        source_message_ids
+    )
+    assert state.external_chat_deliveries == {}
+    assert all(
+        state.conversation_messages[message_id].status == "delivered_in_dispatch"
+        for message_id in source_message_ids
+    )
+    assert not any(message.sender == "agent" for message in state.conversation_messages.values())
 
 
 def test_external_chat_reply_creates_delivery_event_and_records_failure(
@@ -8518,8 +8586,10 @@ def test_repository_queued_chat_dispatch_respects_current_wake_blockers(
     assert runtime is None or runtime.active_dispatch_id is None
 
 
+@pytest.mark.parametrize("message_status", ["queued", "delivered_in_dispatch"])
 def test_repository_reemits_chat_event_when_active_dispatch_releases(
     tmp_path: Path,
+    message_status: str,
 ) -> None:
     repo = _seed_hierarchy(tmp_path)
     now = datetime(2026, 1, 1, tzinfo=UTC)
@@ -8551,6 +8621,20 @@ def test_repository_reemits_chat_event_when_active_dispatch_releases(
         dispatch_id=queued_dispatch_id,
         reason="agent backend already has active Team dispatch team-dispatch-active",
     )
+    if message_status == "delivered_in_dispatch":
+        def _mark_delivered(state):
+            delivered_message = state.conversation_messages[message.id]
+            delivered_message.status = "delivered_in_dispatch"
+            delivered_message.seen_at = now
+            delivered_message.seen_dispatch_id = active_dispatch_id
+            delivered_message.metadata["operator_steering"] = {
+                "dispatch_id": active_dispatch_id,
+                "note_id": "steer-test",
+                "state": "delivered",
+            }
+            return state
+
+        repo.update(_mark_delivered)
 
     state, result = _team_agent_action_service(repo).apply_agent_action(
         action={"agent_id": "backend", "dispatch_id": active_dispatch_id},
@@ -22823,32 +22907,10 @@ def test_candidate_verification_failure_rejects_unchanged_release_content(
             ],
         },
     )
-    replacement_promotion_id = replacement["git_promotion_event_ids"][0]
-    state, unchanged_result = _team_git_release_service(repo).record_git_promotion_result(
-        promotion_id=replacement_promotion_id,
-        success=True,
-        commit_sha="candidate-new-commit",
-        outputs={"base_commit_sha": "base-main", "tree_hash": "unchanged-tree"},
-    )
-    unchanged = state.release_packages["release-unchanged"]
-    assert unchanged.state == TeamRecordState.REJECTED
-    assert unchanged.verification_run_ids == []
-    assert unchanged.gate_failure is not None
-    assert unchanged.gate_failure.kind == "candidate"
-    assert "unchanged from failed release release-broken" in (unchanged.error or "")
-    remediation_blocker = state.blockers[unchanged_result["release_remediation_blocker_id"]]
-    assert remediation_blocker.owner_agent_id == "lead"
-    assert remediation_blocker.priority == TeamInboxPriority.HIGH
-    assert "escalate it to an operator" in remediation_blocker.details
-    remediation_wake = next(
-        event
-        for event in unchanged_result["events"]
-        if event["event_type"] == AGENT_WAKE_REQUESTED_EVENT_TYPE
-    )
-    assert any(
-        record.idempotency_key == remediation_wake["idempotency_key"]
-        for record in repo.list_outbox_records(intent_type=AGENT_WAKE_REQUESTED_EVENT_TYPE)
-    )
+    assert replacement["duplicate"] is True
+    assert replacement["existing_release_package_id"] == "release-broken"
+    assert replacement["git_promotion_event_ids"] == []
+    assert "release-unchanged" not in state.release_packages
 
 
 def test_transient_verification_retry_creates_linked_attempt_for_same_candidate(
@@ -23226,15 +23288,10 @@ def test_rejected_release_review_requires_changed_candidate_content(
             ],
         },
     )
-    state, _ = _team_git_release_service(repo).record_git_promotion_result(
-        promotion_id=replacement["git_promotion_event_ids"][0],
-        success=True,
-        commit_sha="different-commit-same-tree",
-        outputs={"tree_hash": "review-rejected-tree"},
-    )
-    unchanged = state.release_packages["release-same-rejected-content"]
-    assert unchanged.state == TeamRecordState.REJECTED
-    assert "unchanged from failed release release-rejected-review" in (unchanged.error or "")
+    assert replacement["duplicate"] is True
+    assert replacement["existing_release_package_id"] == "release-rejected-review"
+    assert replacement["git_promotion_event_ids"] == []
+    assert "release-same-rejected-content" not in state.release_packages
 
 
 def test_operator_can_retry_rejected_review_for_explicit_immutable_candidate_exception(
@@ -23482,6 +23539,210 @@ def test_git_release_request_reuses_active_package_for_same_deliverables(
     assert any(
         "already covers this deliverable set" in hint for hint in duplicate["next_action_hints"]
     )
+
+
+def test_git_release_request_reuses_terminal_package_for_same_deliverables(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _set_project_git(repo)
+    _seed_accepted_feature_deliverable(
+        repo,
+        deliverable_id="deliverable",
+        task_id="task",
+        feature="team/team/features/task-backend",
+    )
+    state, created = _team_agent_action_service(repo).apply_agent_action(
+        action={
+            "agent_id": "lead",
+            "git_release_requests": [
+                {
+                    "id": "rel-terminal",
+                    "project_id": "project",
+                    "deliverable_ids": ["deliverable"],
+                }
+            ],
+        },
+    )
+    assert created["success"] is True
+    assert state.release_packages["rel-terminal"].lineage_root_release_package_id == "rel-terminal"
+    assert state.release_packages["rel-terminal"].lineage_sequence == 0
+
+    def _reject(current):
+        current.release_packages["rel-terminal"].state = TeamRecordState.REJECTED
+        return current
+
+    repo.update(_reject, expected_revision=state.revision)
+    state, duplicate = _team_agent_action_service(repo).apply_agent_action(
+        action={
+            "agent_id": "lead",
+            "git_release_requests": [
+                {
+                    "id": "rel-accidental-fork",
+                    "project_id": "project",
+                    "deliverable_ids": ["deliverable"],
+                }
+            ],
+        },
+    )
+
+    assert duplicate["success"] is True
+    assert duplicate["duplicate"] is True
+    assert duplicate["existing_release_package_id"] == "rel-terminal"
+    assert "rel-accidental-fork" not in state.release_packages
+
+
+def test_git_release_request_recreates_terminal_configuration_failure(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _set_project_git(repo)
+    _seed_accepted_feature_deliverable(
+        repo,
+        deliverable_id="deliverable",
+        task_id="task",
+        feature="team/team/features/task-backend",
+    )
+    state, created = _team_agent_action_service(repo).apply_agent_action(
+        action={
+            "agent_id": "lead",
+            "git_release_requests": [
+                {
+                    "id": "rel-configuration-failed",
+                    "project_id": "project",
+                    "deliverable_ids": ["deliverable"],
+                }
+            ],
+        },
+    )
+
+    def _remove_policy(current):
+        current.projects["project"].release_policy = None
+        return current
+
+    repo.update(_remove_policy, expected_revision=state.revision)
+    state, _failed = _team_git_release_service(repo).record_git_promotion_result(
+        promotion_id=created["git_promotion_event_ids"][0],
+        success=True,
+        commit_sha="candidate-before-policy-repair",
+        outputs={"tree_hash": "candidate-tree"},
+    )
+    failed = state.release_packages["rel-configuration-failed"]
+    assert failed.state == TeamRecordState.REJECTED
+    assert failed.gate_failure is not None
+    assert failed.gate_failure.stage == "configuration"
+
+    def _restore_policy(current):
+        current.projects["project"].release_policy = ProjectReleasePolicy(allow_ungated=True)
+        return current
+
+    repo.update(_restore_policy, expected_revision=state.revision)
+    state, replacement = _team_agent_action_service(repo).apply_agent_action(
+        action={
+            "agent_id": "lead",
+            "git_release_requests": [
+                {
+                    "id": "rel-after-configuration-repair",
+                    "project_id": "project",
+                    "deliverable_ids": ["deliverable"],
+                }
+            ],
+        },
+    )
+
+    assert replacement["success"] is True
+    assert replacement["created"] is True
+    assert replacement["duplicate"] is False
+    assert replacement["release_package_ids"] == ["rel-after-configuration-repair"]
+    assert state.release_packages["rel-after-configuration-repair"].state == (
+        TeamRecordState.PENDING
+    )
+
+
+@pytest.mark.parametrize(
+    "requested_predecessor_id",
+    ["root-release", "configuration-rejected-successor"],
+)
+def test_explicit_configuration_retry_chains_from_rejected_successor(
+    tmp_path: Path,
+    requested_predecessor_id: str,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _set_project_git(repo)
+    _seed_accepted_feature_deliverable(
+        repo,
+        deliverable_id="base-deliverable",
+        task_id="base-task",
+        feature="team/team/features/base-task",
+    )
+    _seed_accepted_feature_deliverable(
+        repo,
+        deliverable_id="correction-deliverable",
+        task_id="correction-task",
+        feature="team/team/features/correction-task",
+    )
+
+    def _seed_rejected_successor(state):
+        state.release_packages["root-release"] = ReleasePackage(
+            id="root-release",
+            project_id="project",
+            deliverable_ids=["base-deliverable"],
+            release_branch="team/team/releases/root-release",
+            canonical_branch="releases/project/root-release",
+            lineage_root_release_package_id="root-release",
+            lineage_sequence=0,
+        )
+        state.release_packages["configuration-rejected-successor"] = ReleasePackage(
+            id="configuration-rejected-successor",
+            project_id="project",
+            deliverable_ids=["base-deliverable", "correction-deliverable"],
+            release_branch="team/team/releases/configuration-rejected-successor",
+            canonical_branch="releases/project/root-release",
+            supersedes_release_package_id="root-release",
+            lineage_root_release_package_id="root-release",
+            lineage_sequence=1,
+            state=TeamRecordState.REJECTED,
+            gate_failure=ReleaseGateFailure(
+                stage="configuration",
+                kind="configuration",
+                message="release policy was temporarily unavailable",
+            ),
+        )
+        state.tasks["correction-task"].release_base_package_id = "root-release"
+        return state
+
+    repo.update(_seed_rejected_successor)
+
+    state, retry = _team_agent_action_service(repo).apply_agent_action(
+        action={
+            "agent_id": "lead",
+            "git_release_requests": [
+                {
+                    "id": "configuration-retry",
+                    "project_id": "project",
+                    "deliverable_ids": ["correction-deliverable"],
+                    "supersedes_release_package_id": requested_predecessor_id,
+                }
+            ],
+        },
+    )
+
+    assert retry["success"] is True
+    assert retry["created"] is True
+    assert retry["configuration_retry_predecessor_release_package_id"] == (
+        "configuration-rejected-successor"
+    )
+    replacement = state.release_packages["configuration-retry"]
+    assert replacement.supersedes_release_package_id == "configuration-rejected-successor"
+    assert replacement.deliverable_ids == ["base-deliverable", "correction-deliverable"]
+    assert [
+        release.id
+        for release in state.release_packages.values()
+        if not any(
+            candidate.supersedes_release_package_id == release.id
+            for candidate in state.release_packages.values()
+        )
+    ] == ["configuration-retry"]
 
 
 def test_apply_agent_action_git_release_recovery_emits_recovery_event(

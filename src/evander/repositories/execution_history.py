@@ -522,11 +522,11 @@ def archive_records_for_retention(
     cutoff: str,
     batch_size: int = EXECUTION_HISTORY_RETENTION_BATCH_SIZE,
 ) -> list[tuple[str, str]]:
-    """Archive one bounded retention batch and return its source row keys.
+    """Process one bounded retention batch and return its source row keys.
 
-    The caller must delete precisely these source rows in the same transaction.
-    Deleting each completed batch makes the remaining ordered source keys the
-    cursor for the following batch without loading an expired backlog at once.
+    Execution records are archived before their source rows are deleted.
+    Completion transport envelopes do not represent a separate execution, so
+    they are returned for deletion without creating a duplicate history row.
     """
     if batch_size < 1 or batch_size > 10_000:
         raise ValueError("batch_size must be between 1 and 10000")
@@ -537,6 +537,13 @@ def archive_records_for_retention(
         FROM trigger_events
         WHERE delivery_state = 'delivered'
           AND trigger_type LIKE 'trigger:%'
+          AND COALESCE(delivered_at, occurred_at) < ?
+        UNION ALL
+        SELECT 'transport' AS execution_kind, event_id AS source_id, payload_json,
+               occurred_at AS sort_at
+        FROM trigger_events
+        WHERE delivery_state = 'delivered'
+          AND trigger_type NOT LIKE 'trigger:%'
           AND COALESCE(delivered_at, occurred_at) < ?
         UNION ALL
         SELECT 'effect', execution_id, payload_json, started_at
@@ -563,9 +570,11 @@ def archive_records_for_retention(
         ORDER BY sort_at ASC, execution_kind ASC, source_id ASC
         LIMIT ?
         """,
-        (cutoff, cutoff, cutoff, cutoff, cutoff, batch_size),
+        (cutoff, cutoff, cutoff, cutoff, cutoff, cutoff, batch_size),
     ).fetchall()
     for row in rows:
+        if row["execution_kind"] == "transport":
+            continue
         archive_execution_record(
             connection,
             kind=str(row["execution_kind"]),
