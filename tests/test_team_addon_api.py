@@ -27,7 +27,9 @@ from evander.events.scheduled import (
     ScheduledInternalEventStore,
     scheduled_internal_event_store_path,
 )
-from evander.model_usage.models import ModelInferenceUsageEvent
+from evander.model_usage.models import ModelInferenceUsageEvent, ModelUsageCorrelationContext
+from evander.model_usage.runtime import model_usage_store
+from evander.operator_steering import operator_steering_note_store
 from evander.model_usage.store import ModelUsageStore
 from evander.messaging.targets import (
     SqliteCommunicationTargetsRepository,
@@ -78,6 +80,7 @@ from evander_team_addon.models import (
     ReleaseScopeValidation,
     ReviewRequest,
     TeamConversationMessage,
+    TeamDispatch,
     TeamBlocker,
     TeamBlockerEventType,
     TeamBlockerRoute,
@@ -87,6 +90,7 @@ from evander_team_addon.models import (
     TeamCaseStatus,
     TeamDispatchActivity,
     TeamDispatchActivityStatus,
+    TeamDispatchStatus,
     TeamInboxItemState,
     TeamInboxItemType,
     TeamOutboxRecord,
@@ -4095,6 +4099,73 @@ def test_team_addon_admin_api_queues_chat_when_agent_has_active_dispatch(
     reread = TeamStateRepository(tmp_path / "runtime").read()
     assert reread.conversation_messages[message["id"]].status == "queued"
     assert reread.agent_runtimes["backend"].active_dispatch_id == "dispatch-backend"
+
+
+def test_team_addon_admin_api_queues_busy_agent_chat_for_next_model_call(
+    tmp_path: Path,
+) -> None:
+    config_path = _write_config(tmp_path, enable_team_addon=True)
+    repo = _seed_runtime_operations_state(tmp_path / "runtime")
+    def _record_dispatch(state):
+        state.dispatches["dispatch-backend"] = TeamDispatch(
+            id="dispatch-backend",
+            agent_id="backend",
+            session_id="session-backend",
+            cause_kind="scheduled",
+            project_ids=["project"],
+            task_ids=["dependency-task"],
+            status=TeamDispatchStatus.LEASED,
+            prepared_at=datetime(2026, 1, 1, tzinfo=UTC),
+            leased_at=datetime(2026, 1, 1, tzinfo=UTC),
+            lease_expires_at=datetime(2099, 1, 1, tzinfo=UTC),
+        )
+        return state
+
+    repo.update(_record_dispatch)
+    service = build_admin_runtime(config_path)
+    service.runtime.session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-backend",
+            vm_id="vm-backend",
+            directory_path="root",
+            model="gpt-5",
+            allowed_tools=[],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        )
+    )
+    model_usage_store(tmp_path / "runtime").upsert_correlation_context(
+        ModelUsageCorrelationContext(
+            session_id="session-backend",
+            dispatch_id="dispatch-backend",
+            agent_harness="codex",
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        )
+    )
+    client = TestClient(create_app(service))
+    _unlock_privileged_operations(client)
+    created = client.post(
+        "/api/addons/team-addon/conversations",
+        json={"agent_id": "backend", "expected_revision": repo.read().revision},
+    )
+    conversation = created.json()["conversations"][0]
+
+    sent = client.post(
+        f"/api/addons/team-addon/conversations/{conversation['id']}/messages",
+        json={"body": "Please keep the public API stable."},
+    )
+
+    assert sent.status_code == 202
+    payload = sent.json()
+    assert payload["dispatch"]["delivery"] == "next_model_call"
+    message = repo.read().conversation_messages[payload["message"]["id"]]
+    assert message.status == "queued"
+    steering = message.metadata["operator_steering"]
+    assert steering["dispatch_id"] == "dispatch-backend"
+    note = operator_steering_note_store(tmp_path / "runtime").get_note(steering["note_id"])
+    assert note is not None
+    assert note.status == "pending"
+    assert message.id in note.message
+    assert "team_acknowledge_operator_chat_messages" in note.message
 
 
 def test_team_addon_conversation_messages_are_paginated(tmp_path: Path) -> None:

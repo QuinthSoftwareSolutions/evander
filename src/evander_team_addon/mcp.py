@@ -36,6 +36,7 @@ from .repository import (
     TeamStateRepository,
 )
 from .outbox_publication import request_team_outbox_publication_for_records
+from .operator_chat_steering import reconcile_operator_chat_steering_deliveries
 from .chat_attachments import (
     PreparedChatAttachment,
     TeamChatAttachmentPolicyService,
@@ -89,6 +90,7 @@ TEAM_SEND_PROGRESS_REPORT_TOOL = "team_send_progress_report"
 TEAM_REPLY_TO_CHAT_TOOL = "team_reply_to_chat"
 TEAM_STAGE_CHAT_ATTACHMENT_TOOL = "team_stage_chat_attachment"
 TEAM_SEND_OPERATOR_CHAT_MESSAGE_TOOL = "team_send_operator_chat_message"
+TEAM_ACKNOWLEDGE_OPERATOR_CHAT_MESSAGES_TOOL = "team_acknowledge_operator_chat_messages"
 TEAM_ESCALATE_OPERATOR_TOOL = "team_escalate_operator"
 TEAM_REPORT_BLOCKER_TOOL = "team_report_blocker"
 TEAM_UPDATE_BLOCKER_TOOL = "team_update_blocker"
@@ -172,6 +174,7 @@ ORDINARY_TEAM_MCP_TOOL_NAMES = (
     TEAM_ASK_QUESTION_TOOL,
     TEAM_SEND_PROGRESS_REPORT_TOOL,
     TEAM_SEND_OPERATOR_CHAT_MESSAGE_TOOL,
+    TEAM_ACKNOWLEDGE_OPERATOR_CHAT_MESSAGES_TOOL,
     TEAM_STAGE_CHAT_ATTACHMENT_TOOL,
     TEAM_ESCALATE_OPERATOR_TOOL,
     TEAM_REPORT_BLOCKER_TOOL,
@@ -257,6 +260,7 @@ IMPLEMENTED_ORDINARY_TEAM_MCP_TOOL_NAMES = (
     TEAM_ASK_QUESTION_TOOL,
     TEAM_SEND_PROGRESS_REPORT_TOOL,
     TEAM_SEND_OPERATOR_CHAT_MESSAGE_TOOL,
+    TEAM_ACKNOWLEDGE_OPERATOR_CHAT_MESSAGES_TOOL,
     TEAM_STAGE_CHAT_ATTACHMENT_TOOL,
     TEAM_ESCALATE_OPERATOR_TOOL,
     TEAM_REPORT_BLOCKER_TOOL,
@@ -318,6 +322,7 @@ MCP_TOOL_NAMES = (
     TEAM_REPLY_TO_CHAT_TOOL,
     TEAM_STAGE_CHAT_ATTACHMENT_TOOL,
     TEAM_SEND_OPERATOR_CHAT_MESSAGE_TOOL,
+    TEAM_ACKNOWLEDGE_OPERATOR_CHAT_MESSAGES_TOOL,
     TEAM_ESCALATE_OPERATOR_TOOL,
     TEAM_REPORT_BLOCKER_TOOL,
     TEAM_UPDATE_BLOCKER_TOOL,
@@ -381,6 +386,10 @@ _MCP_TOOL_CATALOG_DESCRIPTIONS = {
         "Reply to the specific human operator message that started the current Team Chat "
         "dispatch. Available only while that dispatch is active; use "
         "team_send_operator_chat_message for proactive messages to listed operators."
+    ),
+    TEAM_ACKNOWLEDGE_OPERATOR_CHAT_MESSAGES_TOOL: (
+        "Confirm that operator messages injected into the current dispatch were acted on "
+        "and require no human-facing reply."
     ),
     TEAM_STAGE_CHAT_ATTACHMENT_TOOL: (
         "Stage one regular file from the current agent workspace for a Team Chat reply "
@@ -1102,6 +1111,7 @@ def _register_slice5_tools(
         body: str,
         request_id: str,
         attachment_ids: list[str] | None = None,
+        source_message_ids: list[str] | None = None,
         approval_request_id: str | None = None,
         summary: str | None = None,
         handled_inbox_item_ids: list[str] | None = None,
@@ -1126,6 +1136,7 @@ def _register_slice5_tools(
                 "recipient_operator_user_id": recipient_operator_user_id,
                 "body": body,
                 "attachment_ids": normalized_attachment_ids,
+                "source_message_ids": list(source_message_ids or []),
             },
         )
         newly_promoted_attachments = [
@@ -1140,6 +1151,7 @@ def _register_slice5_tools(
                 body=body,
                 attachments=prepared_attachments,
                 source_attachment_ids=normalized_attachment_ids,
+                source_message_ids=source_message_ids or [],
                 summary=summary,
                 request_id=request_id,
                 handled_inbox_item_ids=handled_inbox_item_ids,
@@ -1166,8 +1178,47 @@ def _register_slice5_tools(
         name=TEAM_SEND_OPERATOR_CHAT_MESSAGE_TOOL,
         description=(
             "Send a Team Chat message to an operator in the caller's existing direct "
-            "conversation. Requires "
-            "recipient_operator_user_id, body, and request_id."
+            "conversation. Requires recipient_operator_user_id, body, and request_id. "
+            "When responding to operator attention injected during this dispatch, pass "
+            "the exact source_message_ids from the attention notice so those messages are "
+            "atomically marked replied."
+        ),
+    )
+
+    def team_acknowledge_operator_chat_messages(
+        message_ids: list[str],
+        summary: str,
+        request_id: str,
+        disposition: str = "acted_no_reply",
+        correlation_id: str | None = None,
+        causation_id: str | None = None,
+        session_id: str | None = None,
+    ) -> dict[str, Any]:
+        caller = resolver.require_persistent_action_context(
+            session_id=session_id,
+            tool_name=TEAM_ACKNOWLEDGE_OPERATOR_CHAT_MESSAGES_TOOL,
+        )
+        try:
+            _state, result = chat_commands.acknowledge_operator_chat_messages_command(
+                session_id=caller.session_id,
+                message_ids=message_ids,
+                disposition=disposition,
+                summary=summary,
+                request_id=request_id,
+                correlation_id=correlation_id,
+                causation_id=causation_id,
+            )
+        except (TypeError, ValueError) as exc:
+            raise ToolError(str(exc)) from exc
+        return _team_command_mcp_result(result, caller=caller, context=context)
+
+    server.add_tool(
+        team_acknowledge_operator_chat_messages,
+        name=TEAM_ACKNOWLEDGE_OPERATOR_CHAT_MESSAGES_TOOL,
+        description=(
+            "Acknowledge that text-only operator messages injected into the current dispatch "
+            "were acted on and need no human-facing reply. Requires the exact message_ids, "
+            "disposition='acted_no_reply', a short summary, and request_id."
         ),
     )
 
@@ -4146,10 +4197,27 @@ def _team_mcp_result_with_attention(
     if not agent_id or not dispatch_id or not isinstance(repository, TeamStateRepository):
         return payload
     try:
-        state, messages = TeamChatService(repository).claim_pending_operator_attention_messages(
+        reconcile_operator_chat_steering_deliveries(repository)
+        state, messages = TeamChatService(repository).list_pending_operator_attention_messages(
             agent_id=agent_id,
             dispatch_id=dispatch_id,
         )
+        queued_message_ids = [
+            message.id for message in messages if message.status == "queued"
+        ]
+        if queued_message_ids:
+            state, _delivered_messages = TeamChatService(
+                repository
+            ).mark_operator_attention_messages_delivered(
+                agent_id=agent_id,
+                dispatch_id=dispatch_id,
+                message_ids=queued_message_ids,
+            )
+            messages = [
+                state.conversation_messages[message.id]
+                for message in messages
+                if message.id in state.conversation_messages
+            ]
     except Exception as exc:  # Attention must never hide the primary tool result.
         payload["attention_error"] = str(exc)
         return payload
@@ -4157,13 +4225,25 @@ def _team_mcp_result_with_attention(
         return payload
     payload["revision"] = state.revision
     payload["attention"] = {
-        "seen_message_ids": [message.id for message in messages],
+        "message_ids": [message.id for message in messages],
+        "required_action": (
+            "Account for every operator message before finishing this dispatch. Reply with "
+            "team_send_operator_chat_message and the exact source_message_ids, or acknowledge "
+            "acted-without-reply messages with team_acknowledge_operator_chat_messages."
+        ),
         "messages": [
             {
                 "message_id": message.id,
                 "conversation_id": message.conversation_id,
                 "body": message.body,
                 "created_at": message.created_at.isoformat(),
+                "operator_user_id": state.conversations[
+                    message.conversation_id
+                ].operator_user_id,
+                "operator_display_name": state.conversations[
+                    message.conversation_id
+                ].operator_display_name,
+                "status": message.status,
             }
             for message in messages
         ],

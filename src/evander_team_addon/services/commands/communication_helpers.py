@@ -95,6 +95,7 @@ def _team_operator_chat_normalized_payload(
     recipient_operator_user_id: str,
     body: str,
     attachment_ids: Sequence[str],
+    source_message_ids: Sequence[str],
     summary: str | None,
     handled_inbox_item_ids: Sequence[str],
     correlation_id: str | None,
@@ -104,6 +105,9 @@ def _team_operator_chat_normalized_payload(
         "recipient_operator_user_id": _normalize_operator_user_id(recipient_operator_user_id),
         "body": _optional_text(body) or "",
         "attachment_ids": sorted(_unique_text_list(attachment_ids, "attachment_ids")),
+        "source_message_ids": sorted(
+            _unique_text_list(source_message_ids, "source_message_ids")
+        ),
         "summary": _optional_text(summary),
         "handled_inbox_item_ids": sorted(
             _unique_text_list(handled_inbox_item_ids, "handled_inbox_item_ids")

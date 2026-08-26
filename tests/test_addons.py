@@ -105,6 +105,15 @@ def test_team_addon_ui_distinguishes_acceptance_from_review_waiting() -> None:
     assert ".state-pill.waiting_for_acceptance" in stylesheet
 
 
+def test_team_addon_ui_labels_in_dispatch_operator_delivery() -> None:
+    source = (PROJECT_ROOT / "src/evander_team_addon/ui_static/team-ui.js").read_text(
+        encoding="utf-8"
+    )
+
+    assert 'delivered_in_dispatch: "Delivered"' in source
+    assert 'acknowledged: "Handled"' in source
+
+
 def test_bundled_bokio_addon_packaging_contract_is_declared() -> None:
     pyproject = tomllib.loads((PROJECT_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
 

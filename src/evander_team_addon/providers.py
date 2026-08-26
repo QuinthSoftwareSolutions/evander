@@ -101,6 +101,7 @@ from .mcp import (
     MCP_TOOL_NAMES,
     ORDINARY_TEAM_MCP_TOOL_NAMES,
     READ_TEAM_MCP_TOOL_NAMES,
+    TEAM_ACKNOWLEDGE_OPERATOR_CHAT_MESSAGES_TOOL,
     TEAM_ACCEPT_EPHEMERAL_RESULT_TOOL,
     TEAM_ASK_QUESTION_TOOL,
     TEAM_CANCEL_TASK_TOOL,
@@ -150,6 +151,7 @@ from .mcp import (
     TEAM_UPDATE_TASK_TOOL,
 )
 from .human_review_projection import apply_compact_human_review_projection
+from .operator_chat_steering import queue_operator_chat_steering
 from .models import (
     AgentStatus,
     RolePermission,
@@ -335,7 +337,7 @@ from .services.worktree_cleanup_service import (
 
 logger = logging.getLogger(__name__)
 
-TEAM_AGENT_GUIDANCE_VERSION = 36
+TEAM_AGENT_GUIDANCE_VERSION = 37
 TEAM_AGENT_GUIDANCE_PATH = "/home/agent/AGENTS.md"
 TEAM_AGENT_GUIDANCE_SECTION_ID = "evander-team-addon"
 LEGACY_TEAM_AGENT_GUIDANCE_SECTION_IDS = ("truman-team-addon",)
@@ -3917,6 +3919,15 @@ class TeamEnqueueOperatorChatMessageEffectProvider(EffectProviderBase):
             mutation_authorization=mutation_authorization,
         )
         if not result.get("duplicate"):
+            try:
+                state, _message, steering = queue_operator_chat_steering(
+                    repo,
+                    message_id=result["message_id"],
+                )
+            except Exception:
+                steering = None
+            if steering is not None:
+                result["delivery"] = "next_model_call"
             conversation = state.conversations[result["conversation_id"]]
             agent = state.agents[conversation.agent_id]
             published_event_ids = _publish_team_events(
@@ -7524,6 +7535,13 @@ def _team_agent_guidance_content(*, agent: Mapping[str, Any]) -> str:
         "Team context. "
         "Each wake's operator_chat_participants list replaces every prior wake's list; "
         "an empty list revokes all proactive Team Chat recipients.\n"
+        "- A text-only Team Chat message can be injected into the next model call of an "
+        "already-running dispatch. Account for it before finishing. Reply with "
+        f"{TEAM_SEND_OPERATOR_CHAT_MESSAGE_TOOL} and the exact source_message_ids from the "
+        "notice, or, after acting when no human-facing reply is needed, call "
+        f"{TEAM_ACKNOWLEDGE_OPERATOR_CHAT_MESSAGES_TOOL} with those message_ids, "
+        "disposition acted_no_reply, and a short summary. Operator messages with attachments "
+        "remain on the dedicated Team Chat wake path.\n"
         f"- Use {TEAM_REQUEST_EPHEMERAL_AGENT_TOOL} or "
         f"{TEAM_REQUEST_EPHEMERAL_AGENTS_TOOL} for scoped worker delegation, then "
         f"{TEAM_ACCEPT_EPHEMERAL_RESULT_TOOL} or {TEAM_REJECT_EPHEMERAL_RESULT_TOOL} "

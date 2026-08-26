@@ -3702,6 +3702,8 @@ class TeamConversationMessage(TeamModel):
         "queued",
         "running",
         "seen",
+        "delivered_in_dispatch",
+        "acknowledged",
         "replied",
         "failed",
         "sent",

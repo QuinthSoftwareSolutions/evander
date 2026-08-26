@@ -27,6 +27,7 @@ from ..models import (
     TeamChatAttachment,
     TeamOutboxRecord,
     TeamState,
+    _unique_text_list,
     agent_has_project_assignment,
 )
 from .domain.agent_access import (
@@ -1009,7 +1010,7 @@ class TeamChatService:
             raise RuntimeError("conversation message dispatch was not queued")
         return state, state.conversation_messages[resolved_message_id]
 
-    def claim_pending_operator_attention_messages(
+    def list_pending_operator_attention_messages(
         self,
         *,
         agent_id: str,
@@ -1017,15 +1018,64 @@ class TeamChatService:
         limit: int = 5,
         now: datetime | None = None,
     ) -> tuple[TeamState, list[TeamConversationMessage]]:
-        """Atomically surface queued text-only operator messages to an active lease once."""
+        """Surface text-only operator messages without consuming their durable state."""
 
         normalized_agent_id = _required_text(agent_id, "agent_id")
         normalized_dispatch_id = _required_text(dispatch_id, "dispatch_id")
         normalized_limit = max(0, int(limit))
         effective_now = _ensure_utc(now or utc_now())
-        claimed_ids: list[str] = []
         if normalized_limit == 0:
             return self._repository.read(), []
+        state = self._repository.read()
+        agent = _require_present(state.agents, normalized_agent_id, "agent")
+        runtime = state.agent_runtimes.get(agent.id)
+        dispatch = state.dispatches.get(normalized_dispatch_id)
+        if (
+            runtime is None
+            or runtime.active_dispatch_id != normalized_dispatch_id
+            or runtime.wake_leased_until is None
+            or _ensure_utc(runtime.wake_leased_until) <= effective_now
+            or dispatch is None
+            or dispatch.agent_id != agent.id
+            or dispatch.session_id != agent.session_id
+            or dispatch.status != TeamDispatchStatus.LEASED
+            or dispatch.lease_expires_at is None
+            or _ensure_utc(dispatch.lease_expires_at) <= effective_now
+        ):
+            return state, []
+        messages: list[TeamConversationMessage] = []
+        for message in sorted(
+            state.conversation_messages.values(),
+            key=lambda item: (item.created_at, item.id),
+        ):
+            if len(messages) >= normalized_limit:
+                break
+            if (
+                message.sender != "operator"
+                or message.message_type != "text"
+                or message.status not in {"queued", "delivered_in_dispatch"}
+                or message.attachment_ids
+            ):
+                continue
+            conversation = state.conversations.get(message.conversation_id)
+            if conversation is not None and conversation.agent_id == agent.id:
+                messages.append(message)
+        return state, messages
+
+    def mark_operator_attention_messages_delivered(
+        self,
+        *,
+        agent_id: str,
+        dispatch_id: str,
+        message_ids: Sequence[str],
+        now: datetime | None = None,
+    ) -> tuple[TeamState, list[TeamConversationMessage]]:
+        """Record actual Team-tool-result delivery without consuming the messages."""
+
+        normalized_agent_id = _required_text(agent_id, "agent_id")
+        normalized_dispatch_id = _required_text(dispatch_id, "dispatch_id")
+        normalized_message_ids = _unique_text_list(message_ids, "message_ids")
+        effective_now = _ensure_utc(now or utc_now())
 
         def _mutate(state: TeamState) -> TeamState:
             agent = _require_present(state.agents, normalized_agent_id, "agent")
@@ -1044,32 +1094,49 @@ class TeamChatService:
                 or _ensure_utc(dispatch.lease_expires_at) <= effective_now
             ):
                 return state
-            for message in sorted(
-                state.conversation_messages.values(),
-                key=lambda item: (item.created_at, item.id),
-            ):
-                if len(claimed_ids) >= normalized_limit:
-                    break
+            for message_id in normalized_message_ids:
+                message = state.conversation_messages.get(message_id)
                 if (
-                    message.sender != "operator"
+                    message is None
+                    or message.sender != "operator"
                     or message.message_type != "text"
-                    or message.status != "queued"
+                    or message.status not in {"queued", "delivered_in_dispatch"}
                     or message.attachment_ids
                 ):
                     continue
                 conversation = state.conversations.get(message.conversation_id)
                 if conversation is None or conversation.agent_id != agent.id:
                     continue
-                message.status = "seen"
+                if message.status == "delivered_in_dispatch":
+                    continue
+                metadata = dict(message.metadata)
+                raw_delivery = metadata.get("operator_steering")
+                delivery = dict(raw_delivery) if isinstance(raw_delivery, dict) else {}
+                delivery.update(
+                    {
+                        "dispatch_id": normalized_dispatch_id,
+                        "session_id": agent.session_id,
+                        "state": "delivered",
+                        "delivery_channel": "team_mcp_result",
+                        "delivered_at": effective_now.isoformat(),
+                    }
+                )
+                metadata["operator_steering"] = delivery
+                message.status = "delivered_in_dispatch"
                 message.seen_at = effective_now
                 message.seen_dispatch_id = normalized_dispatch_id
                 message.error = None
+                message.metadata = metadata
                 message.updated_at = effective_now
-                claimed_ids.append(message.id)
             return state
 
         state = self._repository.update(_mutate)
-        return state, [state.conversation_messages[message_id] for message_id in claimed_ids]
+        return state, [
+            state.conversation_messages[message_id]
+            for message_id in normalized_message_ids
+            if message_id in state.conversation_messages
+            and state.conversation_messages[message_id].status == "delivered_in_dispatch"
+        ]
 
     def claim_pending_chat_message_dispatches(
         self,

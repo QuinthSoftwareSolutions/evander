@@ -8518,8 +8518,10 @@ def test_repository_queued_chat_dispatch_respects_current_wake_blockers(
     assert runtime is None or runtime.active_dispatch_id is None
 
 
+@pytest.mark.parametrize("message_status", ["queued", "delivered_in_dispatch"])
 def test_repository_reemits_chat_event_when_active_dispatch_releases(
     tmp_path: Path,
+    message_status: str,
 ) -> None:
     repo = _seed_hierarchy(tmp_path)
     now = datetime(2026, 1, 1, tzinfo=UTC)
@@ -8551,6 +8553,20 @@ def test_repository_reemits_chat_event_when_active_dispatch_releases(
         dispatch_id=queued_dispatch_id,
         reason="agent backend already has active Team dispatch team-dispatch-active",
     )
+    if message_status == "delivered_in_dispatch":
+        def _mark_delivered(state):
+            delivered_message = state.conversation_messages[message.id]
+            delivered_message.status = "delivered_in_dispatch"
+            delivered_message.seen_at = now
+            delivered_message.seen_dispatch_id = active_dispatch_id
+            delivered_message.metadata["operator_steering"] = {
+                "dispatch_id": active_dispatch_id,
+                "note_id": "steer-test",
+                "state": "delivered",
+            }
+            return state
+
+        repo.update(_mark_delivered)
 
     state, result = _team_agent_action_service(repo).apply_agent_action(
         action={"agent_id": "backend", "dispatch_id": active_dispatch_id},

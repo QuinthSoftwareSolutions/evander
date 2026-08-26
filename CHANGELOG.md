@@ -1,5 +1,14 @@
 # Changelog
 
+## 2026-08-26 - Team Chat In-Dispatch Delivery
+
+- Queued text-only operator messages for relay injection on a busy Team agent's next model call,
+  without interrupting its container or consuming the durable Team Chat fallback.
+- Added source-linked operator replies and explicit acted-without-reply acknowledgements, with
+  delivered-but-unhandled messages requeued when the active dispatch completes.
+- Kept attachment messages on dedicated Team Chat wakes and made in-dispatch delivery visible as
+  `Delivered` in the operator UI.
+
 ## 2026-08-26 - Workflow Error-Route Badge Cleanup
 
 - Stopped showing persistent `ERROR_ROUTED` badges on workflow canvas nodes after their configured

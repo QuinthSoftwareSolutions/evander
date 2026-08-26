@@ -127,6 +127,10 @@ from .outbox_publication import (
     request_team_outbox_publication as _request_team_outbox_publication,
     request_team_outbox_publication_for_records,
 )
+from .operator_chat_steering import (
+    queue_operator_chat_steering,
+    reconcile_operator_chat_steering_deliveries,
+)
 from .sqlite_store import TeamIdempotencyConflictError
 from .services.domain.chat import CHAT_MESSAGE_QUEUED_EVENT_TYPE
 from .services.domain.acceptance_verification import ACCEPTANCE_VERIFICATION_RETIRED_WARNING
@@ -1452,7 +1456,7 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
         return _state_response(request, state)
 
     async def list_conversations(request: Request) -> JSONResponse:
-        state = await run_in_threadpool(repository.read)
+        state = await run_in_threadpool(_reconciled_chat_state, repository)
         scope = _chat_list_scope(context.auth, request, state)
         scope = _add_team_chat_mutation_modes(
             scope,
@@ -1501,7 +1505,7 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
         return JSONResponse(response_payload, status_code=201 if created else 200)
 
     async def get_conversation(request: Request) -> JSONResponse:
-        state = await run_in_threadpool(repository.read)
+        state = await run_in_threadpool(_reconciled_chat_state, repository)
         conversation_id = request.path_params["conversation_id"]
         conversation = state.conversations.get(conversation_id)
         if conversation is None:
@@ -1538,7 +1542,7 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
         )
 
     async def list_conversation_messages(request: Request) -> JSONResponse:
-        state = await run_in_threadpool(repository.read)
+        state = await run_in_threadpool(_reconciled_chat_state, repository)
         conversation_id = request.path_params["conversation_id"]
         conversation = state.conversations.get(conversation_id)
         if conversation is None:
@@ -1676,12 +1680,21 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
                 attachment.id for attachment in prepared_attachments
             )
             raise
+        try:
+            state, message, steering = queue_operator_chat_steering(
+                repository,
+                message_id=message.id,
+            )
+        except Exception:
+            steering = None
         dispatch_payload: dict[str, Any] = {
             "success": False,
             "queued": True,
             "dispatch_id": dispatch_id,
             "message": "Chat message queued for asynchronous agent dispatch.",
         }
+        if steering is not None:
+            dispatch_payload["delivery"] = "next_model_call"
         conversation = state.conversations[conversation_id]
         agent = state.agents[conversation.agent_id]
         published_event_ids = _publish_team_events(
@@ -7121,7 +7134,7 @@ def _conversation_snapshot_state_and_payload(
     request: Request | None = None,
     context: AddonContext | None = None,
 ) -> tuple[TeamState, dict[str, Any]]:
-    state = _conversation_stream_state(repository.read(), conversation_id)
+    state = _conversation_stream_state(_reconciled_chat_state(repository), conversation_id)
     return state, _conversation_snapshot_payload_from_state(
         state,
         conversation_id,
@@ -7270,6 +7283,7 @@ async def _conversation_snapshot_events(
             break
         await asyncio.sleep(max(0.0, poll_interval_seconds))
         try:
+            await run_in_threadpool(_reconciled_chat_state, repository)
             revision = await run_in_threadpool(repository.read_revision)
             if revision != state.revision:
                 state, snapshot = await run_in_threadpool(
@@ -7297,6 +7311,13 @@ async def _conversation_snapshot_events(
             continue
         last_serialized = serialized
         yield f"event: snapshot\ndata: {serialized}\n\n"
+
+
+def _reconciled_chat_state(repository: TeamStateRepository) -> TeamState:
+    try:
+        return reconcile_operator_chat_steering_deliveries(repository)
+    except Exception:
+        return repository.read()
 
 
 async def _state_snapshot_events(

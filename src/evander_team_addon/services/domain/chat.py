@@ -134,6 +134,11 @@ def _append_pending_chat_message_queued_event_for_agent(
     completed_dispatch_id: str,
     result: dict[str, Any],
 ) -> None:
+    _requeue_unacknowledged_in_dispatch_messages(
+        state,
+        agent=agent,
+        completed_dispatch_id=completed_dispatch_id,
+    )
     pending_message: TeamConversationMessage | None = None
     pending_conversation: TeamConversation | None = None
     for message in sorted(
@@ -175,6 +180,53 @@ def _append_pending_chat_message_queued_event_for_agent(
             },
         }
     )
+
+
+def _requeue_unacknowledged_in_dispatch_messages(
+    state: TeamState,
+    *,
+    agent: PersistentAgent,
+    completed_dispatch_id: str,
+) -> list[str]:
+    """Return delivered-but-unhandled steering messages to normal Team Chat delivery."""
+
+    now = utc_now()
+    requeued: list[str] = []
+    for message in state.conversation_messages.values():
+        if (
+            message.sender != "operator"
+            or message.message_type != "text"
+            or message.status != "delivered_in_dispatch"
+            or message.seen_dispatch_id != completed_dispatch_id
+        ):
+            continue
+        conversation = state.conversations.get(message.conversation_id)
+        if conversation is None or conversation.agent_id != agent.id:
+            continue
+        metadata = dict(message.metadata)
+        delivery = metadata.get("operator_steering")
+        if isinstance(delivery, dict):
+            delivery = dict(delivery)
+            delivery["state"] = "requeued"
+            delivery["requeued_at"] = now.isoformat()
+            metadata["operator_steering"] = delivery
+        metadata["queued_at"] = now.isoformat()
+        metadata["queued_reason"] = (
+            f"active dispatch {completed_dispatch_id} completed without replying or acknowledging"
+        )
+        message.status = "queued"
+        message.seen_at = None
+        message.seen_dispatch_id = None
+        message.error = None
+        message.metadata = metadata
+        message.updated_at = now
+        _touch_conversation(
+            conversation,
+            now=now,
+            preview=f"Queued: {_chat_preview(message.body)}",
+        )
+        requeued.append(message.id)
+    return requeued
 
 
 def _apply_chat_reply(
@@ -431,6 +483,7 @@ __all__ = [
     "_publish_admin_chat_notifications",
     "_touch_conversation",
     "_append_pending_chat_message_queued_event_for_agent",
+    "_requeue_unacknowledged_in_dispatch_messages",
     "_apply_chat_reply",
     "_apply_operator_chat_message",
     "_mark_chat_dispatch_message_failed",
