@@ -455,7 +455,6 @@ class GateDedupeDefinition(GateDefinition):
 
 class GateAwaitAgentDefinition(GateDefinition):
     type: Literal["gate:await-agent"]
-    completion_trigger_id: str | None = None
     session_id: ConfigValue | None = None
     vm_name: ConfigValue | None = None
 

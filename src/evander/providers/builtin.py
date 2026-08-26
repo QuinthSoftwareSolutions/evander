@@ -141,7 +141,9 @@ from evander.queries.providers.session_list import SessionListQueryProvider
 from evander.queries.providers.vm_run_state import VmRunStateQueryProvider
 from evander.triggers.providers.agent_prompt_new import AgentPromptNewTriggerProvider
 from evander.triggers.providers.agent_artifact_staged import AgentArtifactStagedTriggerProvider
-from evander.triggers.providers.agent_run_completed import AgentRunCompletedTriggerProvider
+from evander.triggers.providers.agent_run_completed_event import (
+    AgentRunCompletedEventTriggerProvider,
+)
 from evander.triggers.providers.ado_work_item_matching import (
     AdoWorkItemMatchingTriggerProvider,
 )
@@ -219,7 +221,7 @@ def register_providers() -> dict[str, dict[str, type]]:
             "trigger:host-directory:file-added": HostDirectoryFileAddedTriggerProvider,
             "trigger:ci:run:completed": CiRunCompletedTriggerProvider,
             "trigger:agent:prompt:new": AgentPromptNewTriggerProvider,
-            "trigger:agent:run:completed": AgentRunCompletedTriggerProvider,
+            "trigger:agent:run:completed": AgentRunCompletedEventTriggerProvider,
         },
         gate_providers={
             "gate:aggregate": AggregateGateProvider,

@@ -155,7 +155,7 @@ For orchestration-only deployments, use `config/trigger-orchestrator/orchestrati
 | `workflow_packs` | `config/trigger-orchestrator/config.json` | Ordered workflow-pack filenames under `config/workflow-packs/` to compose into executable IR. |
 | `workflow_ir` | `config/trigger-orchestrator/config.json` | Optional inline IR overlay (`version`, `nodes`, `edges`) merged after pack composition. |
 | `workflow_graphs` | `config/trigger-orchestrator/config.json` | Optional editor metadata for connected graphs when using inline/non-pack workflows (`id`, `name`, `description`, `directory_path`, `user_ids`, `node_ids`). Each graph has exactly one canonical directory. `user_ids` are ownership/audit metadata, not a visibility boundary; Admin Web group assignments and direct workflow grants control graph visibility. Pack-backed workflows store the same metadata as `graphs` inside the pack file. The retired plural `directory_paths` field is rejected. |
-| `workflow_transforms` | `config/trigger-orchestrator/config.json` | Optional ordered transform plugin names (for example `await_agent_completion`) applied after structural compile/validation. |
+| `workflow_transforms` | `config/trigger-orchestrator/config.json` | Optional ordered transform plugin names supplied by installed add-ons and applied after structural compile/validation. |
 | `triggers` | `config/trigger-orchestrator/config.json` | Trigger orchestrator definition list; event envelopes live in `src/evander/events/models.py`, while trigger-specific schemas and implementations live under `src/evander/triggers/`. |
 | `gate_cursor_store_path` | `config/trigger-orchestrator/config.json` | Gate orchestrator cursor/checkpoint path. |
 | `gate_lock_path` | `config/trigger-orchestrator/config.json` | Gate orchestrator single-instance lock file path. |
@@ -2219,8 +2219,9 @@ The following environment variables are consumed directly by scripts as runtime 
 ## Workflow Completion Gate
 
 `gate:await-agent` pauses a workflow until the selected agent run completes. Configure at least one
-of `session_id` or `vm_name`; `completion_trigger_id` may select the completion trigger explicitly.
-Connect an agent prompt's `started` output to this gate when downstream work must wait for completion.
+of `session_id` or `vm_name`. Completion is correlated to the prompt's dispatch ID internally; no
+polling trigger is required. Connect an agent prompt's `started` output to this gate when downstream
+work must wait for completion.
 
 ## Communication Trigger Provider Coverage
 

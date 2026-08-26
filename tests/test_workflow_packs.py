@@ -486,7 +486,7 @@ def test_packaged_hidden_system_workflow_pack_matches_repo_config() -> None:
     )
 
 
-def test_team_runtime_pack_uses_dispatch_finalizer_completion_path() -> None:
+def test_team_runtime_pack_routes_ephemeral_prompt_completion_without_polling() -> None:
     from evander_team_addon.workflow_packs import team_runtime_v1
 
     pack = WorkflowPack.model_validate(team_runtime_v1())
@@ -497,9 +497,7 @@ def test_team_runtime_pack_uses_dispatch_finalizer_completion_path() -> None:
         "recover_missing_action",
     )
     required_edges = {
-        ("team-agent-run-completed", "team-route-completed-session"),
-        ("team-route-completed-session", "team-completed-persistent"),
-        ("team-completed-persistent", "team-finalize-persistent-dispatch"),
+        ("team-prompt-ephemeral-agent", "team-route-completed-session"),
         ("team-route-completed-session", "team-completed-ephemeral"),
         ("team-completed-ephemeral", "team-destroy-ephemeral-agent"),
         ("team-destroy-ephemeral-agent", "team-mark-ephemeral-cleaned-up"),
@@ -516,14 +514,18 @@ def test_team_runtime_pack_uses_dispatch_finalizer_completion_path() -> None:
     assert "team-read-ephemeral-action" not in nodes
     assert "team-apply-persistent-action" not in nodes
     assert "team-apply-ephemeral-action" not in nodes
-    finalizer = nodes["team-finalize-persistent-dispatch"]
-    assert finalizer["type"] == "effect:team:finalize-agent-dispatch"
-    assert finalizer["config"] == {
-        "agent_id": "${{team-route-completed-session.agent_id ?? null}}",
-        "dispatch_id": "${{team-route-completed-session.dispatch_id}}",
-        "session_id": "${{team-route-completed-session.session_id}}",
-    }
+    assert "team-agent-run-completed" not in nodes
+    assert "team-completed-persistent" not in nodes
+    assert "team-finalize-persistent-dispatch" not in nodes
+    assert "team-publish-outbox-after-dispatch" not in nodes
     assert required_edges.issubset(edges)
+    prompt_completion_edge = next(
+        edge
+        for edge in pack.ir.edges
+        if edge.source_id == "team-prompt-ephemeral-agent"
+        and edge.target_id == "team-route-completed-session"
+    )
+    assert prompt_completion_edge.source_port == "completed"
     assert ("team-completed-persistent", "team-read-persistent-action") not in edges
     assert ("team-read-persistent-action", "team-apply-persistent-action") not in edges
     assert ("team-completed-ephemeral", "team-read-ephemeral-action") not in edges

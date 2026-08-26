@@ -4991,11 +4991,9 @@ class TeamRequestEphemeralAgentsEffectProvider(EffectProviderBase):
 class TeamAgentPromptCompletionFinalizeHook(EffectLifecycleHookBase):
     """Renew and finalize Team leases for standalone prompt executions.
 
-    Team wakes are dispatched through standalone admin prompt effects in some
-    paths, so their completion does not always flow through the Team runtime
-    pack's trigger:agent:run:completed node. This hook keeps the lease lifecycle
-    owned by the add-on, extends it only while the exact execution is active,
-    and reuses the same repository finalizer.
+    Team wakes are dispatched through standalone admin prompt effects. This hook
+    keeps the lease lifecycle owned by the add-on, extends it only while the
+    exact execution is active, and reuses the same repository finalizer.
     """
 
     _LEASE_RENEWAL_SECONDS = MAX_AGENT_DISPATCH_LEASE_RENEWAL_SECONDS

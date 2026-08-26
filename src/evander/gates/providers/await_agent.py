@@ -256,7 +256,6 @@ class AwaitAgentGateProvider(GateProviderBase):
             resolved_config={
                 **resolved_config,
                 "dispatch_id": dispatch_id,
-                "completion_trigger_id": getattr(gate, "completion_trigger_id", None),
             },
             outputs={},
             inputs_by_source={queue_record.trigger_id: dict(queue_record.payload)},
@@ -311,7 +310,6 @@ class AwaitAgentGateProvider(GateProviderBase):
             started_at=started_at,
             resolved_config={
                 "dispatch_id": dispatch_id,
-                "completion_trigger_id": getattr(gate, "completion_trigger_id", None),
             },
             outputs=outputs,
             inputs_by_source={

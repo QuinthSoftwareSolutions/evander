@@ -2,12 +2,9 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
-from .await_agent import augment_await_agent_completion
 from .base import WorkflowTransform
 
-BUILTIN_WORKFLOW_TRANSFORMS: dict[str, WorkflowTransform] = {
-    "await_agent_completion": augment_await_agent_completion,
-}
+BUILTIN_WORKFLOW_TRANSFORMS: dict[str, WorkflowTransform] = {}
 
 
 def resolve_workflow_transforms(transform_names: Sequence[str]) -> list[WorkflowTransform]:

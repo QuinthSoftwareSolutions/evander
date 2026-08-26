@@ -2,8 +2,10 @@
 
 ## 2026-08-26 - SQLite Events, Team Chat, And Release Reliability
 
-- Stopped the host-observable agent-completion trigger from polling libvirt inventory on
-  container-worker deployments; container completions remain event-driven.
+- Removed the host-wide agent-completion polling trigger and correlated completion through the
+  dispatch-owning prompt effect or wake monitor instead. Team ephemeral cleanup now continues
+  directly from its prompt's completed output, while persistent Team dispatches use the existing
+  effect lifecycle finalizer.
 - Migrated configured non-default legacy event stores before retiring their path settings, and
   allowed empty deployments to complete config-only SQLite cutovers.
 - Rebound trigger and effect provider metadata, internal-event executors, and wake notifications

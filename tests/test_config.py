@@ -1610,52 +1610,6 @@ def test_trigger_orchestrator_switch_gate_rejects_invalid_cases(
         _validate_trigger_config(payload)
 
 
-def test_trigger_orchestrator_await_agent_gate_accepts_completion_trigger_reference() -> None:
-    config = _validate_trigger_config(
-        {
-            "runtime_dir": "/tmp/evander-runtime",
-            "triggers": [
-                {
-                    "id": "trigger-1",
-                    "display_name": "Tick",
-                    "type": "trigger:cron",
-                    "expression": "* * * * *",
-                },
-                {
-                    "id": "agent-complete",
-                    "display_name": "Agent completed",
-                    "type": "trigger:agent:run:completed",
-                },
-            ],
-            "gates": [
-                {
-                    "id": "await-agent-1",
-                    "display_name": "Await agent",
-                    "type": "gate:await-agent",
-                    "completion_trigger_id": "agent-complete",
-                    "session_id": "session-1",
-                    "outputs": {},
-                }
-            ],
-            "effects": [
-                {
-                    "id": "effect-prompt",
-                    "display_name": "Prompt",
-                    "type": "effect:agent:prompt",
-                    "session_id": "session-1",
-                    "prompt": "continue",
-                }
-            ],
-            "edges": [
-                {"source_id": "trigger-1", "target_id": "effect-prompt"},
-                {"source_id": "effect-prompt", "target_id": "await-agent-1"},
-            ],
-        }
-    )
-
-    assert config.gates[0].type == "gate:await-agent"
-
-
 def test_trigger_orchestrator_await_agent_gate_accepts_linear_flow_without_completion_trigger() -> (
     None
 ):

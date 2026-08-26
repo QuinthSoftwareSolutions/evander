@@ -18,7 +18,6 @@ from evander.events.provider_models import (
     AdoWorkItemMatchingTriggerDefinition,
     AgentEnqueuePromptEffectDefinition,
     AgentPromptNewTriggerDefinition,
-    AgentRunCompletedTriggerDefinition,
     ApprovalPendingCreatedTriggerDefinition,
     ArtifactImportPublishedEffectDefinition,
     ArtifactPublishArtifactsEffectDefinition,
@@ -1325,18 +1324,6 @@ def test_http_request_effect_rejects_invalid_allowed_url_patterns() -> None:
                 "allowed_url_patterns": [42],
             },
         )
-
-
-def test_agent_run_completed_trigger_accepts_default_vm_user() -> None:
-    trigger = AgentRunCompletedTriggerDefinition.model_validate(
-        {
-            "id": "t-agent-done",
-            "display_name": "Agent completed",
-            "type": "trigger:agent:run:completed",
-        }
-    )
-
-    assert trigger.vm_user == "agent"
 
 
 def test_vm_exec_effect_accepts_command_list() -> None:
