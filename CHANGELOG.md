@@ -27,6 +27,8 @@
   the retired JSON stores and config keys while preserving pending work for configured triggers.
 - Closed shared orchestration SQLite connections at context exit so increased event activity does
   not accumulate database descriptors.
+- Serialized Team agent lease planning per database outside SQLite, moved full-state validation
+  and row-delta discovery before the writer lock, and committed with revision-guarded retries.
 - Bound correction and remediation work to exact release-candidate provenance and automatically
   joined it to one persisted release lineage instead of allowing another initial package.
 - Reused terminal packages for identical deliverables, enforced a unique successor frontier, and

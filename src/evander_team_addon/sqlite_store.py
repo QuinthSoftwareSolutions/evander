@@ -5,6 +5,7 @@ import json
 import sqlite3
 import time
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from threading import RLock
@@ -32,6 +33,14 @@ SQLITE_SCHEMA_VERSION = 66
 _SQLITE_WAL_ENABLE_TIMEOUT_SECONDS = 5.0
 
 T = TypeVar("T")
+
+
+@dataclass(frozen=True)
+class _PreparedTeamStateUpdate:
+    state: TeamState
+    current_payload: dict[str, Any]
+    changed_by_field: dict[str, set[str]]
+    state_changed: bool
 
 
 class TeamIdempotencyConflictError(RuntimeError):
@@ -214,6 +223,52 @@ class TeamStateSqliteStore:
                 )
                 return _replace_state_result(result, persisted_state)
 
+    def commit_prepared_state_with_command_transaction(
+        self,
+        *,
+        previous_payload: Mapping[str, Any],
+        candidate: TeamState,
+        command_writer: Callable[[TeamStateSqliteCommandTransaction], None],
+    ) -> tuple[bool, int, TeamState | None]:
+        """Commit a precomputed Team-state delta under a short revision CAS.
+
+        Full candidate validation and record-delta discovery intentionally happen
+        before ``BEGIN IMMEDIATE``. The write transaction only verifies that the
+        planning snapshot is still current, applies the prepared row changes, and
+        persists command-side records atomically. Callers must replan when the
+        returned committed flag is false.
+        """
+
+        baseline = dict(previous_payload)
+        expected_revision = int(baseline.get("revision", 0))
+        previous_schema_version = int(baseline.get("schema_version", SCHEMA_VERSION))
+        previous_updated_at = _datetime_value(baseline.get("updated_at"))
+        prepared = self._prepare_updated_state(
+            previous_payload=baseline,
+            previous_schema_version=previous_schema_version,
+            previous_revision=expected_revision,
+            previous_updated_at=previous_updated_at,
+            candidate=candidate,
+        )
+
+        with self._lock:
+            with self._connect() as connection:
+                connection.execute("BEGIN IMMEDIATE")
+                current_revision = self._read_revision_from_connection(connection)
+                if current_revision != expected_revision:
+                    return False, current_revision, None
+                transaction = TeamStateSqliteCommandTransaction(self, connection)
+                command_writer(transaction)
+                if prepared.state_changed:
+                    self._write_state_delta_payloads(
+                        connection,
+                        previous=baseline,
+                        current=prepared.current_payload,
+                        state=prepared.state,
+                        changed_by_field=prepared.changed_by_field,
+                    )
+                return True, current_revision, prepared.state
+
     def _persist_updated_payload(
         self,
         connection: sqlite3.Connection,
@@ -261,6 +316,32 @@ class TeamStateSqliteStore:
         previous_updated_at: datetime,
         candidate: TeamState,
     ) -> TeamState:
+        prepared = self._prepare_updated_state(
+            previous_payload=previous_payload,
+            previous_schema_version=previous_schema_version,
+            previous_revision=previous_revision,
+            previous_updated_at=previous_updated_at,
+            candidate=candidate,
+        )
+        if prepared.state_changed:
+            self._write_state_delta_payloads(
+                connection,
+                previous=previous_payload,
+                current=prepared.current_payload,
+                state=prepared.state,
+                changed_by_field=prepared.changed_by_field,
+            )
+        return prepared.state
+
+    def _prepare_updated_state(
+        self,
+        *,
+        previous_payload: Mapping[str, Any],
+        previous_schema_version: int,
+        previous_revision: int,
+        previous_updated_at: datetime,
+        candidate: TeamState,
+    ) -> _PreparedTeamStateUpdate:
         candidate_payload = candidate.model_dump(mode="json")
         candidate_updated_at = (
             candidate.updated_at if candidate.updated_at != previous_updated_at else utc_now()
@@ -270,12 +351,17 @@ class TeamStateSqliteStore:
         current_payload = validated.model_dump(mode="json")
         state_changed = _state_content_changed(previous_payload, current_payload)
         if not state_changed:
-            return validated.model_copy(
-                update={
-                    "schema_version": previous_schema_version,
-                    "revision": previous_revision,
-                    "updated_at": previous_updated_at,
-                }
+            return _PreparedTeamStateUpdate(
+                state=validated.model_copy(
+                    update={
+                        "schema_version": previous_schema_version,
+                        "revision": previous_revision,
+                        "updated_at": previous_updated_at,
+                    }
+                ),
+                current_payload=current_payload,
+                changed_by_field={},
+                state_changed=False,
             )
         state = validated.model_copy(
             update={
@@ -291,13 +377,40 @@ class TeamStateSqliteStore:
                 "updated_at": state.updated_at.isoformat(),
             }
         )
-        self._write_state_delta_payloads(
-            connection,
-            previous=previous_payload,
-            current=current_payload,
+        return _PreparedTeamStateUpdate(
             state=state,
+            current_payload=current_payload,
+            changed_by_field=self._changed_state_record_ids(
+                previous=previous_payload,
+                current=current_payload,
+            ),
+            state_changed=True,
         )
-        return state
+
+    @staticmethod
+    def _read_revision_from_connection(connection: sqlite3.Connection) -> int:
+        row = connection.execute(
+            "SELECT value FROM team_state_metadata WHERE key = 'revision'"
+        ).fetchone()
+        return int(row["value"]) if row is not None else 0
+
+    @staticmethod
+    def _changed_state_record_ids(
+        *,
+        previous: Mapping[str, Any],
+        current: Mapping[str, Any],
+    ) -> dict[str, set[str]]:
+        changed_by_field: dict[str, set[str]] = {}
+        for fields, _delete_specs, _writer_name in _PERSISTENCE_GROUPS:
+            for field_name in fields:
+                before = previous[field_name]
+                after = current[field_name]
+                changed_by_field[field_name] = {
+                    record_id
+                    for record_id in set(before) | set(after)
+                    if _json_dumps(before.get(record_id)) != _json_dumps(after.get(record_id))
+                }
+        return changed_by_field
 
     def append_dispatch_activity(
         self,
@@ -2083,20 +2196,16 @@ class TeamStateSqliteStore:
         self,
         connection: sqlite3.Connection,
         *,
-        previous: dict[str, Any],
-        current: dict[str, Any],
+        previous: Mapping[str, Any],
+        current: Mapping[str, Any],
         state: TeamState,
+        changed_by_field: Mapping[str, set[str]] | None = None,
     ) -> None:
-        changed_by_field: dict[str, set[str]] = {}
-        for fields, _delete_specs, _writer_name in _PERSISTENCE_GROUPS:
-            for field_name in fields:
-                before = previous[field_name]
-                after = current[field_name]
-                changed_by_field[field_name] = {
-                    record_id
-                    for record_id in set(before) | set(after)
-                    if _json_dumps(before.get(record_id)) != _json_dumps(after.get(record_id))
-                }
+        if changed_by_field is None:
+            changed_by_field = self._changed_state_record_ids(
+                previous=previous,
+                current=current,
+            )
 
         for fields, delete_specs, writer_name in _PERSISTENCE_GROUPS:
             if not any(changed_by_field[field_name] for field_name in fields):
@@ -5280,6 +5389,13 @@ def _optional_text(value: Any) -> str | None:
 
 def _datetime_text(value: datetime) -> str:
     return value.isoformat().replace("+00:00", "Z")
+
+
+def _datetime_value(value: Any) -> datetime:
+    if isinstance(value, datetime):
+        return value
+    text = _required_text(value, "updated_at")
+    return datetime.fromisoformat(text.replace("Z", "+00:00"))
 
 
 def _idempotency_key_values(
