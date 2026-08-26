@@ -30,6 +30,7 @@ from ...chat_attachments import PreparedChatAttachment
 from ..domain.chat import (
     EXTERNAL_CHAT_REPLY_REQUESTED_EVENT_TYPE,
     _chat_preview,
+    _chat_return_path_key,
     _publish_admin_chat_notifications,
     _touch_conversation,
 )
@@ -412,6 +413,7 @@ class TeamChatCommandService(TeamCommandExecutor):
                 message_ids=normalized_source_message_ids,
                 active_dispatch_id=resolved.dispatch_id,
             )
+            _require_one_chat_return_path(source_messages)
             _require_unclaimed_chat_attachments(state, prepared_attachments)
             now = utc_now()
             known_display_name = conversation.operator_display_name
@@ -775,3 +777,17 @@ def _require_active_delivery_source_messages(
             )
         messages.append(message)
     return messages
+
+
+def _require_one_chat_return_path(messages: Sequence[TeamConversationMessage]) -> None:
+    return_path_keys = {_chat_return_path_key(message) for message in messages}
+    if len(return_path_keys) <= 1:
+        return
+    raise TeamCommandValidationError(
+        code="chat_return_path_mismatch",
+        message="source_message_ids must share one Team Chat return path",
+        correction_context={
+            "source_message_ids": [message.id for message in messages],
+            "return_paths": [list(key) for key in sorted(return_path_keys)],
+        },
+    )

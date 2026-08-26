@@ -17,6 +17,8 @@
   delivered-but-unhandled messages requeued when the active dispatch completes.
 - Kept attachment messages on dedicated Team Chat wakes and made in-dispatch delivery visible as
   `Delivered` in the operator UI.
+- Restricted in-dispatch delivery to authorization-compatible leases, requeued unhandled messages
+  on abnormal lease termination, and kept external source batches on one return path.
 
 ## 2026-08-26 - Workflow Error-Route Badge Cleanup
 

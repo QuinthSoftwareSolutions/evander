@@ -38,6 +38,8 @@ from .domain.agent_access import (
 from .domain.chat import (
     CHAT_MESSAGE_QUEUED_EVENT_TYPE,
     _chat_preview,
+    _chat_return_path_key,
+    _requeue_unacknowledged_in_dispatch_messages,
     _touch_conversation,
 )
 from .domain.common import (
@@ -332,17 +334,6 @@ def _matching_team_chat_dispatch(
     )
 
 
-def _chat_return_path_key(message: TeamConversationMessage) -> tuple[str, str, str]:
-    external_origin = message.metadata.get("external_origin")
-    if not isinstance(external_origin, dict):
-        return ("internal", "", "")
-    return (
-        _optional_text(external_origin.get("provider")) or "",
-        _optional_text(external_origin.get("communication_target_id")) or "",
-        _optional_text(external_origin.get("source_thread_id")) or "",
-    )
-
-
 def _chat_mutation_scope_key(message: TeamConversationMessage) -> tuple[object, ...]:
     authorization = _message_team_chat_mutation_authorization(message)
     if authorization is None:
@@ -389,6 +380,28 @@ def team_chat_mutation_scope_lost(
         and _matching_team_chat_dispatch(message, dispatch)
         and not dispatch.project_ids
     )
+
+
+def team_chat_in_dispatch_delivery_allowed(
+    message: TeamConversationMessage,
+    dispatch: TeamDispatch,
+) -> bool:
+    """Require the message's server-issued scope to contain the active dispatch."""
+
+    authorization = _message_team_chat_mutation_authorization(message)
+    if authorization is None:
+        return False
+    if (
+        dispatch.cause_kind == "team_chat"
+        and not dispatch.project_ids
+        and not dispatch.managed_repo_ids
+    ):
+        return True
+    if authorization.mode != "project_scoped" or not dispatch.project_ids:
+        return False
+    return set(dispatch.project_ids).issubset(authorization.project_ids) and set(
+        dispatch.managed_repo_ids
+    ).issubset(authorization.managed_repo_ids)
 
 
 def _operator_chat_dispatch_scope(
@@ -1058,7 +1071,11 @@ class TeamChatService:
             ):
                 continue
             conversation = state.conversations.get(message.conversation_id)
-            if conversation is not None and conversation.agent_id == agent.id:
+            if (
+                conversation is not None
+                and conversation.agent_id == agent.id
+                and team_chat_in_dispatch_delivery_allowed(message, dispatch)
+            ):
                 messages.append(message)
         return state, messages
 
@@ -1106,6 +1123,8 @@ class TeamChatService:
                     continue
                 conversation = state.conversations.get(message.conversation_id)
                 if conversation is None or conversation.agent_id != agent.id:
+                    continue
+                if not team_chat_in_dispatch_delivery_allowed(message, dispatch):
                     continue
                 if message.status == "delivered_in_dispatch":
                     continue
@@ -1400,6 +1419,13 @@ class TeamChatService:
                 TeamDispatchStatus.PREPARING,
                 TeamDispatchStatus.LEASED,
             }:
+                agent = state.agents.get(conversation.agent_id)
+                if agent is not None:
+                    _requeue_unacknowledged_in_dispatch_messages(
+                        state,
+                        agent=agent,
+                        completed_dispatch_id=dispatch.id,
+                    )
                 dispatch.status = TeamDispatchStatus.FAILED
                 dispatch.completed_at = now
                 dispatch.error = normalized_error

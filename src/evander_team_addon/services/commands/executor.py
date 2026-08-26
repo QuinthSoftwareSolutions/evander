@@ -359,6 +359,7 @@ class TeamCommandExecutor:
                     "team_acknowledge_operator_chat_messages",
                 }
                 and bool(normalized_payload.get("source_message_ids"))
+                and not normalized_payload.get("attachment_ids")
             )
         ):
             raise _dispatch_scope_error(

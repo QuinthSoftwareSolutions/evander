@@ -72,6 +72,7 @@ from .domain.chat import (
     _mark_chat_dispatch_message_failed,
     _mark_chat_dispatch_message_replied_from_activity,
     _operator_chat_participant_payloads,
+    _requeue_unacknowledged_in_dispatch_messages,
 )
 from .domain.blockers import (
     assign_blockers_to_dispatch,
@@ -2971,6 +2972,13 @@ def _mark_dispatch_terminal(
         TeamDispatchStatus.FAILED,
     }:
         return
+    agent = state.agents.get(dispatch.agent_id)
+    if agent is not None:
+        _requeue_unacknowledged_in_dispatch_messages(
+            state,
+            agent=agent,
+            completed_dispatch_id=dispatch.id,
+        )
     dispatch.status = status
     dispatch.completed_at = completed_at
     dispatch.error = error if status == TeamDispatchStatus.FAILED else None

@@ -68,6 +68,19 @@ def _chat_preview(value: object, *, limit: int = 160) -> str:
     return f"{text[: max(0, limit - 1)].rstrip()}..."
 
 
+def _chat_return_path_key(message: TeamConversationMessage) -> tuple[str, str, str]:
+    """Identify the single internal or external route for one operator message."""
+
+    external_origin = message.metadata.get("external_origin")
+    if not isinstance(external_origin, dict):
+        return ("internal", "", "")
+    return (
+        _optional_text(external_origin.get("provider")) or "",
+        _optional_text(external_origin.get("communication_target_id")) or "",
+        _optional_text(external_origin.get("source_thread_id")) or "",
+    )
+
+
 def _publish_admin_chat_notification(
     *,
     runtime_dir: Path,
@@ -445,6 +458,13 @@ def _clear_completed_chat_dispatch_lease(
         TeamDispatchStatus.PREPARING,
         TeamDispatchStatus.LEASED,
     }:
+        agent = state.agents.get(dispatch.agent_id)
+        if agent is not None:
+            _requeue_unacknowledged_in_dispatch_messages(
+                state,
+                agent=agent,
+                completed_dispatch_id=dispatch.id,
+            )
         failed_message = next((message for message in messages if message.status == "failed"), None)
         dispatch.status = (
             TeamDispatchStatus.FAILED
@@ -479,6 +499,7 @@ __all__ = [
     "EXTERNAL_CHAT_REPLY_REQUESTED_EVENT_TYPE",
     "_operator_chat_participant_payloads",
     "_chat_preview",
+    "_chat_return_path_key",
     "_publish_admin_chat_notification",
     "_publish_admin_chat_notifications",
     "_touch_conversation",

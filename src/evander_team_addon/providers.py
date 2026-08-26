@@ -3090,6 +3090,13 @@ def _dispatch_queued_team_chat_messages(
             if mutation_allowed:
                 chat_tool_names.append(TEAM_STAGE_CHAT_ATTACHMENT_TOOL)
                 chat_tool_names.extend(_ordinary_team_tools_for_agent(agent_payload))
+            else:
+                chat_tool_names.extend(
+                    [
+                        TEAM_SEND_OPERATOR_CHAT_MESSAGE_TOOL,
+                        TEAM_ACKNOWLEDGE_OPERATOR_CHAT_MESSAGES_TOOL,
+                    ]
+                )
             tool_grant_result = _set_session_team_mcp_tools(
                 context,
                 session_id=agent.session_id,
@@ -8030,9 +8037,12 @@ def _build_team_chat_prompt(
         "tool grants are per-dispatch. Do not mutate Team state for a thank-you, "
         "acknowledgement, or no-op reply.\n\n"
         if mutation_allowed
-        else "This chat wake is reply-only. Do not mutate Team state; use only "
-        f"{TEAM_REPLY_TO_CHAT_TOOL}. File attachments are unavailable in reply-only "
-        "chat. If the operator "
+        else "This chat wake is reply-only. Do not mutate Team state; use "
+        f"{TEAM_REPLY_TO_CHAT_TOOL} for the current chat batch. The source-restricted "
+        f"{TEAM_SEND_OPERATOR_CHAT_MESSAGE_TOOL} and "
+        f"{TEAM_ACKNOWLEDGE_OPERATOR_CHAT_MESSAGES_TOOL} tools may be used only for separate "
+        "operator attention explicitly delivered during this dispatch. File attachments are "
+        "unavailable in reply-only chat. If the operator "
         "asks you to create, assign, "
         "request review, mark, or otherwise change Team state, state clearly that "
         "no Team state change was performed in this dispatch and that the request "
@@ -11955,6 +11965,12 @@ def _active_team_mcp_tools_for_other_dispatches(
             continue
         if _optional_text(getattr(runtime, "wake_reason", None)) == "team_chat":
             tool_names.append(TEAM_REPLY_TO_CHAT_TOOL)
+            tool_names.extend(
+                [
+                    TEAM_SEND_OPERATOR_CHAT_MESSAGE_TOOL,
+                    TEAM_ACKNOWLEDGE_OPERATOR_CHAT_MESSAGES_TOOL,
+                ]
+            )
             active_dispatch = state.dispatches.get(active_dispatch_id)
             if active_dispatch is not None and active_dispatch.project_ids:
                 tool_names.append(TEAM_STAGE_CHAT_ATTACHMENT_TOOL)

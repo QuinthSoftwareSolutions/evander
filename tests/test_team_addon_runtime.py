@@ -42,11 +42,13 @@ from evander_team_addon.mcp import (
     GOVERNANCE_TEAM_MCP_TOOL_NAMES,
     ORDINARY_TEAM_MCP_TOOL_NAMES,
     READ_TEAM_MCP_TOOL_NAMES,
+    TEAM_ACKNOWLEDGE_OPERATOR_CHAT_MESSAGES_TOOL,
     TEAM_CREATE_CASE_TOOL,
     TEAM_DECIDE_DELIVERABLE_TOOL,
     TEAM_DECIDE_REVIEW_TOOL,
     TEAM_MARK_GOVERNANCE_AGENDA_HANDLED_TOOL,
     TEAM_REPLY_TO_CHAT_TOOL,
+    TEAM_SEND_OPERATOR_CHAT_MESSAGE_TOOL,
     TEAM_STAGE_CHAT_ATTACHMENT_TOOL,
 )
 from evander_team_addon.models import (
@@ -4136,11 +4138,20 @@ def test_wake_due_agents_provider_grants_reply_only_chat_tool_when_mutation_disa
 
     assert result["success"] is True
     chat_tools = result["chat_dispatches"][0]["team_chat_mcp_tools"]
-    assert chat_tools["requested_tools"] == [TEAM_REPLY_TO_CHAT_TOOL]
-    assert chat_tools["already_allowed_tools"] == []
+    completion_tools = [
+        TEAM_SEND_OPERATOR_CHAT_MESSAGE_TOOL,
+        TEAM_ACKNOWLEDGE_OPERATOR_CHAT_MESSAGES_TOOL,
+    ]
+    assert chat_tools["requested_tools"] == [TEAM_REPLY_TO_CHAT_TOOL, *completion_tools]
+    assert chat_tools["already_allowed_tools"] == completion_tools
     assert chat_tools["granted_tools"] == [TEAM_REPLY_TO_CHAT_TOOL]
-    assert chat_tools["removed_tools"] == list(ORDINARY_TEAM_MCP_TOOL_NAMES)
-    assert session_store.sessions["session-backend"].allowed_tools == [TEAM_REPLY_TO_CHAT_TOOL]
+    assert chat_tools["removed_tools"] == [
+        tool for tool in ORDINARY_TEAM_MCP_TOOL_NAMES if tool not in completion_tools
+    ]
+    assert session_store.sessions["session-backend"].allowed_tools == [
+        TEAM_REPLY_TO_CHAT_TOOL,
+        *completion_tools,
+    ]
     prompt = str(resumer.calls[0]["prompt"])
     assert "reply-only" in prompt
     assert "File attachments are unavailable" in prompt
@@ -8865,6 +8876,55 @@ def test_dependency_git_preparation_failure_routes_blocker_without_lease(
     )
     assert len(repeated_leases) == 1
     assert repo.read().blockers[blocker.id].state == TeamBlockerState.RESOLVED
+
+
+def test_wake_failure_requeues_delivered_operator_attention(tmp_path: Path) -> None:
+    repo = _seed_team(tmp_path)
+    _state, leases = _team_runtime_service(repo).lease_due_agents(
+        agent_id="backend",
+        now=datetime(2026, 1, 1, tzinfo=UTC),
+        respect_wake_interval=False,
+    )
+    lease = leases[0]
+    dispatch_id = str(lease["dispatch_id"])
+    chat = _team_chat_service(repo)
+    state, conversation, _created = chat.create_or_get_conversation(
+        agent_id="backend",
+        operator_user_id="operator@example.com",
+        expected_revision=repo.read().revision,
+    )
+    state, message = chat.record_operator_chat_message(
+        conversation_id=conversation.id,
+        body="Keep this durable if prompt delivery fails.",
+        mutation_authorization=_authorized_chat_mutation(repo, "backend"),
+        expected_revision=state.revision,
+    )
+    chat.queue_chat_message_dispatch(
+        message_id=message.id,
+        dispatch_id=f"team-chat:{message.id}",
+    )
+
+    def _mark_delivered(state_model: TeamState) -> TeamState:
+        delivered = state_model.conversation_messages[message.id]
+        delivered.status = "delivered_in_dispatch"
+        delivered.seen_dispatch_id = dispatch_id
+        delivered.metadata["operator_steering"] = {
+            "dispatch_id": dispatch_id,
+            "state": "delivered",
+        }
+        return state_model
+
+    repo.update(_mark_delivered)
+    failed = _record_wake_failure(
+        repo,
+        lease=lease,
+        error="prompt delivery failed after attention delivery",
+    )
+
+    assert failed.dispatches[dispatch_id].status == TeamDispatchStatus.FAILED
+    assert failed.agent_runtimes["backend"].active_dispatch_id is None
+    assert failed.conversation_messages[message.id].status == "queued"
+    assert failed.conversation_messages[message.id].seen_dispatch_id is None
 
 
 def test_dependency_git_composition_conflict_persists_typed_recovery(

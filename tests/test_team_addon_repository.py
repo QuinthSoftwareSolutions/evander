@@ -2273,6 +2273,73 @@ def test_repository_coalesces_external_chat_messages_with_one_return_path(
     assert event["payload"]["sender_session_id"] == "session-backend"
 
 
+def test_source_linked_operator_reply_rejects_mixed_external_return_paths(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _lease_agent_dispatch(repo, agent_id="backend", dispatch_id="dispatch-operator-attention")
+    chat = _team_chat_service(repo)
+    state, first = chat.enqueue_external_operator_chat_message(
+        conversation_id=None,
+        agent_id="backend",
+        operator_user_id="operator-alice",
+        operator_display_name="Operator Alice",
+        body="First threaded follow-up.",
+        provider="discord",
+        communication_target_id="codex-discord",
+        source_message_id="discord-mixed-return-1",
+        source_thread_id="thread-1",
+        source_author_id="discord-operator",
+        source_author_name="Operator Alice",
+    )
+    state, second = chat.enqueue_external_operator_chat_message(
+        conversation_id=first["conversation_id"],
+        agent_id=None,
+        operator_user_id="operator-alice",
+        operator_display_name="Operator Alice",
+        body="Second threaded follow-up.",
+        provider="discord",
+        communication_target_id="codex-discord",
+        source_message_id="discord-mixed-return-2",
+        source_thread_id="thread-2",
+        source_author_id="discord-operator",
+        source_author_name="Operator Alice",
+    )
+    source_message_ids = [first["message_id"], second["message_id"]]
+
+    def _mark_delivered(state_model):
+        for message_id in source_message_ids:
+            message = state_model.conversation_messages[message_id]
+            message.status = "delivered_in_dispatch"
+            message.seen_dispatch_id = "dispatch-operator-attention"
+            message.metadata["operator_steering"] = {
+                "dispatch_id": "dispatch-operator-attention",
+                "state": "delivered",
+            }
+        return state_model
+
+    repo.update(_mark_delivered)
+    state, result = _command_service(repo).send_operator_chat_message_command(
+        session_id="session-backend",
+        recipient_operator_user_id="operator-alice",
+        body="One reply must not be routed to only one thread.",
+        source_message_ids=source_message_ids,
+        request_id="reply-to-mixed-return-paths",
+    )
+
+    assert result["success"] is False
+    assert result["errors"][0]["code"] == "chat_return_path_mismatch"
+    assert result["errors"][0]["correction_context"]["source_message_ids"] == (
+        source_message_ids
+    )
+    assert state.external_chat_deliveries == {}
+    assert all(
+        state.conversation_messages[message_id].status == "delivered_in_dispatch"
+        for message_id in source_message_ids
+    )
+    assert not any(message.sender == "agent" for message in state.conversation_messages.values())
+
+
 def test_external_chat_reply_creates_delivery_event_and_records_failure(
     tmp_path: Path,
 ) -> None:

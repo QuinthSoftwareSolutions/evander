@@ -12,6 +12,7 @@ from evander.operator_steering import (
 
 from .models import TeamConversationMessage, TeamDispatchStatus, TeamState
 from .repository import TeamStateRepository
+from .services.chat_service import team_chat_in_dispatch_delivery_allowed
 from .services.domain.common import _ensure_utc, _optional_text
 
 
@@ -266,6 +267,7 @@ def _active_delivery_target(
         or dispatch.agent_id != agent.id
         or dispatch.session_id != agent.session_id
         or dispatch.status != TeamDispatchStatus.LEASED
+        or not team_chat_in_dispatch_delivery_allowed(message, dispatch)
         or runtime.wake_leased_until is None
         or dispatch.lease_expires_at is None
         or _ensure_utc(runtime.wake_leased_until) <= _ensure_utc(now)

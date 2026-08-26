@@ -129,6 +129,44 @@ def _begin_project_lead_chat_dispatch(
     )
 
 
+def _queue_delivered_operator_attention(
+    repository: TeamStateRepository,
+    *,
+    agent_id: str,
+    active_dispatch_id: str,
+) -> str:
+    chat = TeamChatService(repository)
+    state, conversation, _created = chat.create_or_get_conversation(
+        agent_id=agent_id,
+        operator_user_id="operator@example.com",
+        expected_revision=repository.read().revision,
+    )
+    state, message = chat.record_operator_chat_message(
+        conversation_id=conversation.id,
+        body="Preserve this attention across abnormal dispatch release.",
+        mutation_authorization=_authorized_chat_mutation(repository, agent_id),
+        expected_revision=state.revision,
+    )
+    chat.queue_chat_message_dispatch(
+        message_id=message.id,
+        dispatch_id=f"team-chat:{message.id}",
+    )
+
+    def _mark_delivered(state_model):
+        delivered = state_model.conversation_messages[message.id]
+        delivered.status = "delivered_in_dispatch"
+        delivered.seen_at = LEASE_NOW
+        delivered.seen_dispatch_id = active_dispatch_id
+        delivered.metadata["operator_steering"] = {
+            "dispatch_id": active_dispatch_id,
+            "state": "delivered",
+        }
+        return state_model
+
+    repository.update(_mark_delivered)
+    return message.id
+
+
 def _seed_agent_with_task(tmp_path: Path) -> TeamStateRepository:
     repository = TeamStateRepository(tmp_path)
     admin = TeamAdminService(repository)
@@ -3795,6 +3833,61 @@ def test_dispatch_failure_and_expiry_are_durable_terminal_states(
     assert expired_dispatch.status == TeamDispatchStatus.EXPIRED
     assert expired_dispatch.completed_at == LEASE_NOW + timedelta(seconds=61)
     assert expired_state.agent_runtimes["worker"].active_dispatch_id is None
+
+
+@pytest.mark.parametrize("terminal_path", ["failure", "expiry", "context_handoff"])
+def test_terminal_dispatch_release_requeues_delivered_operator_attention(
+    tmp_path: Path,
+    terminal_path: str,
+) -> None:
+    repository = _seed_agent_with_task(tmp_path)
+    runtime = TeamRuntimeService(repository)
+    if terminal_path == "context_handoff":
+        runtime.request_agent_context_rotation(
+            agent_id="worker",
+            requested_by="operator:test",
+        )
+    _state, leases = runtime.lease_due_agents(
+        agent_id="worker",
+        now=LEASE_NOW,
+        respect_wake_interval=False,
+        lease_seconds=60,
+    )
+    dispatch_id = str(leases[0]["dispatch_id"])
+    if terminal_path == "context_handoff":
+        assert leases[0]["reason"] == "context_handoff"
+    message_id = _queue_delivered_operator_attention(
+        repository,
+        agent_id="worker",
+        active_dispatch_id=dispatch_id,
+    )
+
+    if terminal_path == "failure":
+        runtime.fail_agent_dispatch(
+            agent_id="worker",
+            dispatch_id=dispatch_id,
+            error="dispatch failed after attention delivery",
+            now=LEASE_NOW + timedelta(seconds=1),
+        )
+    elif terminal_path == "expiry":
+        runtime.lease_due_agents(
+            agent_id="not-an-agent",
+            now=LEASE_NOW + timedelta(seconds=61),
+        )
+    else:
+        runtime.record_agent_context_handoff(
+            agent_id="worker",
+            dispatch_id=dispatch_id,
+            summary="Continue after preserving durable operator attention.",
+        )
+
+    state = repository.read()
+    message = state.conversation_messages[message_id]
+    assert message.status == "queued"
+    assert message.seen_at is None
+    assert message.seen_dispatch_id is None
+    assert message.metadata["operator_steering"]["state"] == "requeued"
+    assert state.agent_runtimes["worker"].active_dispatch_id is None
 
 
 def test_preparation_failure_does_not_consume_fresh_exhausted_inbox_attempt(

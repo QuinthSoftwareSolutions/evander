@@ -89,6 +89,7 @@ from evander_team_addon.models import (
     ReviewRequest,
     TeamBlockerRoute,
     TeamBlockerState,
+    TeamChatMutationAuthorization,
     TeamDispatch,
     TeamDispatchStatus,
     TeamInboxItemState,
@@ -774,6 +775,7 @@ def test_active_team_mcp_result_repeats_plain_operator_attention_without_consumi
         conversation_id=conversation.id,
         body="Please keep the interface stable while you work.",
         created_by="operator:operator@example.com",
+        mutation_authorization=_authorized_chat_mutation(repo, "backend"),
         expected_revision=state.revision,
     )
     chat.queue_chat_message_dispatch(
@@ -872,6 +874,164 @@ def test_active_team_mcp_result_leaves_operator_attachment_for_chat_dispatch(
     assert repo.read().conversation_messages[message.id].status == "queued"
 
 
+@pytest.mark.parametrize("authorization_kind", ["reply_only", "different_project"])
+def test_insufficiently_authorized_operator_message_is_not_delivered_into_mutation_dispatch(
+    tmp_path: Path,
+    authorization_kind: str,
+) -> None:
+    context = _runtime(tmp_path, allowed_tools=[])
+    repo = _seed_planning_state(context.config.runtime_dir)
+    _lease_agent(repo, agent_id="backend", dispatch_id="dispatch-backend")
+    chat = TeamChatService(repo)
+    state, conversation, _created = chat.create_or_get_conversation(
+        agent_id="backend",
+        operator_user_id="operator@example.com",
+        expected_revision=repo.read().revision,
+    )
+    state, message = chat.record_operator_chat_message(
+        conversation_id=conversation.id,
+        body="Try to mutate through the active project dispatch.",
+        created_by="operator:operator@example.com",
+        mutation_authorization=(
+            TeamChatMutationAuthorization(
+                mode="project_scoped",
+                source="internal",
+                principal_id="operator@example.com",
+                recipient_directory_path="root",
+                project_ids=["different-project"],
+            )
+            if authorization_kind == "different_project"
+            else None
+        ),
+        expected_revision=state.revision,
+    )
+    chat.queue_chat_message_dispatch(
+        message_id=message.id,
+        dispatch_id=f"team-chat:{message.id}",
+    )
+    model_usage_store(context.config.runtime_dir).upsert_correlation_context(
+        ModelUsageCorrelationContext(
+            session_id="session-backend",
+            dispatch_id="dispatch-backend",
+            agent_harness="codex",
+            expires_at=datetime(2099, 1, 1, tzinfo=UTC),
+        )
+    )
+
+    _state, pending = chat.list_pending_operator_attention_messages(
+        agent_id="backend",
+        dispatch_id="dispatch-backend",
+    )
+    _state, queued_message, steering = queue_operator_chat_steering(
+        repo,
+        message_id=message.id,
+    )
+
+    assert pending == []
+    assert steering is None
+    assert queued_message.status == "queued"
+    assert "operator_steering" not in queued_message.metadata
+
+
+def test_reply_only_chat_dispatch_completes_only_source_bound_attention(
+    tmp_path: Path,
+) -> None:
+    context = _runtime(tmp_path, allowed_tools=[])
+    repo = _seed_planning_state(context.config.runtime_dir)
+    TeamChatAttachmentPolicyService(repo).set_override(
+        directory_path="root",
+        values={"agent_send_requires_approval": False},
+        updated_by="test",
+        expected_revision=repo.read().revision,
+    )
+    _upsert_session(
+        context,
+        session_id="session-backend",
+        allowed_tools=[TEAM_SEND_OPERATOR_CHAT_MESSAGE_TOOL],
+    )
+    chat = TeamChatService(repo)
+    state, conversation, _created = chat.create_or_get_conversation(
+        agent_id="backend",
+        operator_user_id="operator@example.com",
+        expected_revision=repo.read().revision,
+    )
+    state, active_message = chat.record_operator_chat_message(
+        conversation_id=conversation.id,
+        body="This is the current reply-only batch.",
+        expected_revision=state.revision,
+    )
+    active_dispatch_id = f"team-chat:{active_message.id}"
+    state, _active_message = chat.begin_chat_message_dispatch(
+        message_id=active_message.id,
+        dispatch_id=active_dispatch_id,
+    )
+    state, attention_message = chat.record_operator_chat_message(
+        conversation_id=conversation.id,
+        body="This arrived during the reply-only batch.",
+        expected_revision=state.revision,
+    )
+    chat.queue_chat_message_dispatch(
+        message_id=attention_message.id,
+        dispatch_id=f"team-chat:{attention_message.id}",
+    )
+    _state, delivered = chat.mark_operator_attention_messages_delivered(
+        agent_id="backend",
+        dispatch_id=active_dispatch_id,
+        message_ids=[attention_message.id],
+    )
+    assert [message.id for message in delivered] == [attention_message.id]
+
+    server = create_server(context)
+    staged = TeamChatAttachmentStorage(context.config.runtime_dir).stage_agent_file(
+        session_id="session-backend",
+        source_path="/home/agent/attention.txt",
+        content=b"must remain unavailable",
+        filename="attention.txt",
+        mime_type="text/plain",
+    )
+    attachment_reply = _call_tool(
+        server,
+        TEAM_SEND_OPERATOR_CHAT_MESSAGE_TOOL,
+        {
+            "session_id": "session-backend",
+            "recipient_operator_user_id": "operator@example.com",
+            "body": "This source-bound reply must remain text-only.",
+            "attachment_ids": [staged.id],
+            "source_message_ids": [attention_message.id],
+            "request_id": "reply-only-source-bound-attachment",
+        },
+    )
+    reply = _call_tool(
+        server,
+        TEAM_SEND_OPERATOR_CHAT_MESSAGE_TOOL,
+        {
+            "session_id": "session-backend",
+            "recipient_operator_user_id": "operator@example.com",
+            "body": "I handled the newly delivered attention.",
+            "source_message_ids": [attention_message.id],
+            "request_id": "reply-only-source-bound-attention",
+        },
+    )
+    proactive = _call_tool(
+        server,
+        TEAM_SEND_OPERATOR_CHAT_MESSAGE_TOOL,
+        {
+            "session_id": "session-backend",
+            "recipient_operator_user_id": "operator@example.com",
+            "body": "This proactive send must remain denied.",
+            "request_id": "reply-only-proactive-send",
+        },
+    )
+
+    assert attachment_reply["success"] is False
+    assert attachment_reply["errors"][0]["code"] == "dispatch_scope_forbidden"
+    assert repo.read().chat_attachments == {}
+    assert reply["success"] is True
+    assert repo.read().conversation_messages[attention_message.id].status == "replied"
+    assert proactive["success"] is False
+    assert proactive["errors"][0]["code"] == "dispatch_scope_forbidden"
+
+
 @pytest.mark.parametrize(
     ("tool_name", "expected_status"),
     [
@@ -903,6 +1063,7 @@ def test_operator_message_next_call_delivery_requires_explicit_completion(
         conversation_id=conversation.id,
         body="Please preserve the public interface.",
         created_by="operator:operator@example.com",
+        mutation_authorization=_authorized_chat_mutation(repo, "backend"),
         expected_revision=state.revision,
     )
     chat.queue_chat_message_dispatch(
