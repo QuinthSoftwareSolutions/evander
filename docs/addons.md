@@ -1247,6 +1247,7 @@ Ordinary persistent Team wakes may receive these tools:
 
 - `team_record_note`
 - `team_mark_inbox_handled`
+- `team_acknowledge_operator_chat_messages`
 - `team_request_status`
 - `team_ask_question`
 - `team_send_progress_report`
