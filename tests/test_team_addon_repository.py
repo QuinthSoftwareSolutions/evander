@@ -51,6 +51,7 @@ from evander_team_addon.models import (
     ReleaseVerificationCommand,
     ProjectGoal,
     ProjectStatus,
+    ReleaseGateFailure,
     ReleasePackage,
     ReviewBlockKind,
     ReviewCriterionResult,
@@ -23656,6 +23657,92 @@ def test_git_release_request_recreates_terminal_configuration_failure(
     assert state.release_packages["rel-after-configuration-repair"].state == (
         TeamRecordState.PENDING
     )
+
+
+@pytest.mark.parametrize(
+    "requested_predecessor_id",
+    ["root-release", "configuration-rejected-successor"],
+)
+def test_explicit_configuration_retry_chains_from_rejected_successor(
+    tmp_path: Path,
+    requested_predecessor_id: str,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _set_project_git(repo)
+    _seed_accepted_feature_deliverable(
+        repo,
+        deliverable_id="base-deliverable",
+        task_id="base-task",
+        feature="team/team/features/base-task",
+    )
+    _seed_accepted_feature_deliverable(
+        repo,
+        deliverable_id="correction-deliverable",
+        task_id="correction-task",
+        feature="team/team/features/correction-task",
+    )
+
+    def _seed_rejected_successor(state):
+        state.release_packages["root-release"] = ReleasePackage(
+            id="root-release",
+            project_id="project",
+            deliverable_ids=["base-deliverable"],
+            release_branch="team/team/releases/root-release",
+            canonical_branch="releases/project/root-release",
+            lineage_root_release_package_id="root-release",
+            lineage_sequence=0,
+        )
+        state.release_packages["configuration-rejected-successor"] = ReleasePackage(
+            id="configuration-rejected-successor",
+            project_id="project",
+            deliverable_ids=["base-deliverable", "correction-deliverable"],
+            release_branch="team/team/releases/configuration-rejected-successor",
+            canonical_branch="releases/project/root-release",
+            supersedes_release_package_id="root-release",
+            lineage_root_release_package_id="root-release",
+            lineage_sequence=1,
+            state=TeamRecordState.REJECTED,
+            gate_failure=ReleaseGateFailure(
+                stage="configuration",
+                kind="configuration",
+                message="release policy was temporarily unavailable",
+            ),
+        )
+        state.tasks["correction-task"].release_base_package_id = "root-release"
+        return state
+
+    repo.update(_seed_rejected_successor)
+
+    state, retry = _team_agent_action_service(repo).apply_agent_action(
+        action={
+            "agent_id": "lead",
+            "git_release_requests": [
+                {
+                    "id": "configuration-retry",
+                    "project_id": "project",
+                    "deliverable_ids": ["correction-deliverable"],
+                    "supersedes_release_package_id": requested_predecessor_id,
+                }
+            ],
+        },
+    )
+
+    assert retry["success"] is True
+    assert retry["created"] is True
+    assert retry["configuration_retry_predecessor_release_package_id"] == (
+        "configuration-rejected-successor"
+    )
+    replacement = state.release_packages["configuration-retry"]
+    assert replacement.supersedes_release_package_id == "configuration-rejected-successor"
+    assert replacement.deliverable_ids == ["base-deliverable", "correction-deliverable"]
+    assert [
+        release.id
+        for release in state.release_packages.values()
+        if not any(
+            candidate.supersedes_release_package_id == release.id
+            for candidate in state.release_packages.values()
+        )
+    ] == ["configuration-retry"]
 
 
 def test_apply_agent_action_git_release_recovery_emits_recovery_event(

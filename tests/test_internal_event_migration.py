@@ -167,6 +167,87 @@ def test_offline_migration_preserves_pending_delivery_and_archives_sources(
     assert len(InternalEventBus(config.orchestration_store_path).list_events()) == 2
 
 
+def test_offline_migration_uses_configured_legacy_store_paths(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    config = _legacy_config(runtime_dir)
+    monkeypatch.setattr(migration, "_worker_config", lambda *_args, **_kwargs: config)
+    delivered, pending = _legacy_sources(runtime_dir)
+    custom_event_path = tmp_path / "legacy" / "custom-events.json"
+    custom_schedule_path = tmp_path / "legacy" / "custom-schedules.json"
+    custom_event_path.parent.mkdir(parents=True)
+    (runtime_dir / "internal-events.json").replace(custom_event_path)
+    (runtime_dir / "scheduled-internal-events.json").replace(custom_schedule_path)
+    config_path = runtime_dir.parent / "config" / "trigger-orchestrator" / "config.json"
+    config_payload = json.loads(config_path.read_text(encoding="utf-8"))
+    config_payload["internal_event_store_path"] = "legacy/custom-events.json"
+    config_payload["scheduled_internal_event_store_path"] = str(custom_schedule_path)
+    _write_json(config_path, config_payload)
+
+    checked = migration.check_internal_event_migration(runtime_dir)
+
+    assert checked.safe_to_apply is True
+    assert checked.internal_event_count == 2
+    assert checked.scheduled_event_count == 2
+
+    applied = migration.apply_internal_event_migration(runtime_dir)
+
+    assert applied.marker_state == "complete"
+    assert not custom_event_path.exists()
+    assert not custom_schedule_path.exists()
+    marker = json.loads(migration.migration_marker_path(runtime_dir).read_text(encoding="utf-8"))
+    assert marker["source_paths"]["internal-events.json"] == str(custom_event_path)
+    assert marker["source_paths"]["scheduled-internal-events.json"] == str(custom_schedule_path)
+    archive_path = Path(marker["archive_path"])
+    assert (archive_path / "internal-events.json").is_file()
+    assert (archive_path / "scheduled-internal-events.json").is_file()
+    assert [
+        event.event_id for event in InternalEventBus(config.orchestration_store_path).list_events()
+    ] == [
+        delivered.event_id,
+        pending.event_id,
+    ]
+
+
+def test_offline_migration_allows_config_only_cutover(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    config = _legacy_config(runtime_dir)
+    monkeypatch.setattr(migration, "_worker_config", lambda *_args, **_kwargs: config)
+    config_path = runtime_dir.parent / "config" / "trigger-orchestrator" / "config.json"
+    _write_json(
+        config_path,
+        {
+            "runtime_dir": str(runtime_dir),
+            "internal_event_store_path": str(runtime_dir / "never-created-events.json"),
+            "scheduled_internal_event_store_path": str(
+                runtime_dir / "never-created-schedules.json"
+            ),
+        },
+    )
+
+    checked = migration.check_internal_event_migration(runtime_dir)
+
+    assert checked.safe_to_apply is True
+    assert checked.source_hashes == {}
+    assert checked.retired_config_keys == (
+        "internal_event_store_path",
+        "scheduled_internal_event_store_path",
+    )
+
+    applied = migration.apply_internal_event_migration(runtime_dir)
+
+    assert applied.marker_state == "complete"
+    assert applied.internal_event_count == 0
+    sanitized = json.loads(config_path.read_text(encoding="utf-8"))
+    assert "internal_event_store_path" not in sanitized
+    assert "scheduled_internal_event_store_path" not in sanitized
+
+
 def test_cutover_guard_fails_closed_for_legacy_or_incomplete_state(tmp_path: Path) -> None:
     runtime_dir = tmp_path / "runtime"
     _write_json(runtime_dir / "internal-events.json", {})

@@ -231,9 +231,15 @@ def _settled_lineage_deliverable_ids(
     state: TeamState,
     *,
     root_id: str,
+    predecessor: ReleasePackage,
     requested_deliverable_ids: list[str],
 ) -> list[str]:
-    deliverable_ids = list(requested_deliverable_ids)
+    predecessor_deliverable_ids = set(predecessor.deliverable_ids)
+    deliverable_ids = [
+        deliverable_id
+        for deliverable_id in requested_deliverable_ids
+        if deliverable_id not in predecessor_deliverable_ids
+    ]
     for task in sorted(state.tasks.values(), key=lambda item: (item.created_at, item.id)):
         if task.state in _NONTERMINAL_LINEAGE_TASK_STATES or task.state == TeamTaskState.CANCELLED:
             continue
@@ -246,6 +252,7 @@ def _settled_lineage_deliverable_ids(
                 deliverable is not None
                 and deliverable.state == TeamRecordState.ACCEPTED
                 and deliverable.superseded_by_deliverable_id is None
+                and deliverable_id not in predecessor_deliverable_ids
                 and deliverable_id not in deliverable_ids
             ):
                 deliverable_ids.append(deliverable_id)
@@ -676,6 +683,7 @@ def _build_release_package(
         result["errors"].append("post_release_feedback_case_id requires a predecessor release")
         return None
     predecessor: ReleasePackage | None = None
+    configuration_retry = False
     correction_deliverable_ids = list(requested_deliverable_ids)
     historical_matches = (
         _release_packages_for_deliverables(
@@ -765,14 +773,43 @@ def _build_release_package(
         correction_deliverable_ids = _settled_lineage_deliverable_ids(
             state,
             root_id=lineage_root_id,
+            predecessor=predecessor,
             requested_deliverable_ids=correction_deliverable_ids,
         )
+        matching_successors = _matching_direct_successors(
+            state,
+            predecessor=predecessor,
+            correction_deliverable_ids=correction_deliverable_ids,
+        )
+        if len(matching_successors) > 1:
+            result["error_code"] = "release_lineage_forked"
+            result["release_lineage_frontier_ids"] = [release.id for release in matching_successors]
+            result["errors"].append(
+                f"release_lineage_forked: predecessor {predecessor.id} has multiple "
+                "matching successors; resolve the historical fork before retrying"
+            )
+            return None
+        if matching_successors and _release_package_requires_recreation(matching_successors[0]):
+            original_predecessor = predecessor
+            predecessor = matching_successors[0]
+            result["requested_predecessor_release_package_id"] = original_predecessor.id
+            correction_deliverable_ids = _settled_lineage_deliverable_ids(
+                state,
+                root_id=lineage_root_id,
+                predecessor=predecessor,
+                requested_deliverable_ids=correction_deliverable_ids,
+            )
+        if _release_package_requires_recreation(predecessor):
+            configuration_retry = True
+            result["configuration_retry_predecessor_release_package_id"] = predecessor.id
         successor_error = _successor_release_request_error(
             state,
             project_id=project_id,
             predecessor=predecessor,
             correction_deliverable_ids=correction_deliverable_ids,
-            post_release_feedback_case_id=post_release_feedback_case_id,
+            post_release_feedback_case_id=(
+                None if configuration_retry else post_release_feedback_case_id
+            ),
         )
         if successor_error is not None:
             result["errors"].append(successor_error)
@@ -821,7 +858,7 @@ def _build_release_package(
             state,
             deliverable=deliverable,
         )
-        if predecessor is None:
+        if predecessor is None or configuration_retry:
             return branch, commit
         composed_correction_base = _candidate_correction_composition_base(
             state,
@@ -933,7 +970,9 @@ def _build_release_package(
     git_base_snapshots: set[tuple[str | None, str | None]] = set()
     valid = True
     promotion_deliverable_ids = set(
-        correction_deliverable_ids if predecessor is not None else deliverable_ids
+        deliverable_ids
+        if predecessor is None or configuration_retry
+        else correction_deliverable_ids
     )
     for deliverable_id in deliverable_ids:
         deliverable = state.deliverables.get(deliverable_id)
@@ -1216,10 +1255,14 @@ def _build_release_package(
         release_branch=target_release_branch,
         canonical_branch=target_canonical_branch,
         git_base_branch=(
-            predecessor_candidate_branch if predecessor is not None else release_git_base_branch
+            predecessor_candidate_branch
+            if predecessor is not None and not configuration_retry
+            else release_git_base_branch
         ),
         base_commit_sha=(
-            predecessor.candidate_commit_sha if predecessor is not None else release_base_commit_sha
+            predecessor.candidate_commit_sha
+            if predecessor is not None and not configuration_retry
+            else release_base_commit_sha
         ),
         canonical_base_commit_sha=canonical_base_commit_sha,
         git_promotion_record_ids=promotion_ids,
@@ -1587,6 +1630,13 @@ def _successor_release_request_error(
         )
     if post_release_feedback_case_id is not None:
         return "post_release_feedback_case_id can authorize only a successor of a published release"
+    if _release_package_requires_recreation(predecessor):
+        if correction_deliverable_ids:
+            return (
+                f"configuration retry for release {predecessor.id} must preserve its exact "
+                "deliverable scope"
+            )
+        return None
     lineage_bound_error = _lineage_bound_correction_request_error(
         state,
         predecessor=predecessor,
@@ -1742,6 +1792,26 @@ def _successor_release_request_error(
                 f"authorized by human review case {correction_case.id}"
             )
     return None
+
+
+def _matching_direct_successors(
+    state: TeamState,
+    *,
+    predecessor: ReleasePackage,
+    correction_deliverable_ids: list[str],
+) -> list[ReleasePackage]:
+    requested_correction_set = set(correction_deliverable_ids)
+    predecessor_deliverable_set = set(predecessor.deliverable_ids)
+    return sorted(
+        (
+            successor
+            for successor in state.release_packages.values()
+            if successor.supersedes_release_package_id == predecessor.id
+            and set(successor.deliverable_ids) - predecessor_deliverable_set
+            == requested_correction_set
+        ),
+        key=lambda item: (item.created_at, item.id),
+    )
 
 
 def _lineage_bound_correction_request_error(

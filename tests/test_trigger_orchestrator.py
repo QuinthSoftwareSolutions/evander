@@ -1039,6 +1039,42 @@ def test_trigger_orchestrator_reloads_provider_factory_after_provider_loader_cha
     assert list(queue_payload.keys()) == ["reload-event-1"]
 
 
+def test_trigger_orchestrator_rebinds_provider_factory_after_store_change(
+    tmp_path: Path,
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    config = GatewayConfig(runtime_dir=runtime_dir)
+    initial_config = canonical_worker_config(
+        {
+            "runtime_dir": runtime_dir,
+            "orchestration_store_path": runtime_dir / "old-orchestration.db",
+            "triggers": [],
+        }
+    )
+    updated_config = canonical_worker_config(
+        {
+            "runtime_dir": runtime_dir,
+            "orchestration_store_path": runtime_dir / "new-orchestration.db",
+            "triggers": [],
+        }
+    )
+    worker = TriggerOrchestratorWorker(
+        config=config,
+        worker_config=initial_config,
+        config_reloader=_StaticReloader(updated_config, changed=True),
+        runtime=None,  # type: ignore[arg-type]
+    )
+    initial_factory = worker.provider_factory
+
+    worker.run_once()
+
+    assert worker.provider_factory is not initial_factory
+    assert worker.provider_factory.metadata["orchestration_store_path"] == str(
+        updated_config.orchestration_store_path
+    )
+    assert worker.event_queue.path == updated_config.orchestration_store_path
+
+
 def test_due_scheduled_internal_event_publishes_before_event_trigger_poll(
     tmp_path: Path,
 ) -> None:

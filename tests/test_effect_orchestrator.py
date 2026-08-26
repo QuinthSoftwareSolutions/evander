@@ -66,7 +66,7 @@ from evander.local_inference_capacity import (
     LocalInferenceCapacityStore,
 )
 from evander.model_usage.runtime import model_usage_store
-from evander.orchestration.host_polling import HostFileLockManager
+from evander.orchestration.host_polling import HostFileLockManager, wake_socket_path_for_lock
 from evander.events.models import TriggerEvent
 from evander.messaging.wake_store import WakeRequestStore
 from evander.models import (
@@ -1027,6 +1027,50 @@ def test_effect_orchestrator_run_once_uses_reloaded_worker_config_for_sleep(tmp_
     result = worker.run_once()
 
     assert result.next_sleep_seconds == 13
+
+
+@pytest.mark.parametrize("binding", ["store", "trigger_lock"])
+def test_effect_orchestrator_rebinds_event_publishers_after_bus_binding_change(
+    tmp_path: Path,
+    binding: str,
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    config = GatewayConfig(runtime_dir=runtime_dir)
+    initial_payload = {
+        "runtime_dir": runtime_dir,
+        "orchestration_store_path": runtime_dir / "old-orchestration.db",
+        "lock_path": runtime_dir / "old-trigger.lock",
+        "triggers": [],
+    }
+    updated_payload = dict(initial_payload)
+    if binding == "store":
+        updated_payload["orchestration_store_path"] = runtime_dir / "new-orchestration.db"
+    else:
+        updated_payload["lock_path"] = runtime_dir / "new-trigger.lock"
+    initial_config = canonical_worker_config(initial_payload)
+    updated_config = canonical_worker_config(updated_payload)
+    worker = EffectOrchestratorWorker(
+        config=config,
+        worker_config=initial_config,
+        config_reloader=_StaticReloader(updated_config, changed=True),
+        runtime=None,  # type: ignore[arg-type]
+    )
+    initial_factory = worker.provider_factory
+    initial_emit_executor = worker.effect_executor_registry.resolve("effect:event:emit")
+
+    worker.run_once()
+
+    assert worker.provider_factory is not initial_factory
+    assert worker.provider_factory.metadata["orchestration_store_path"] == str(
+        updated_config.orchestration_store_path
+    )
+    assert worker.provider_factory.metadata["trigger_lock_path"] == str(updated_config.lock_path)
+    emit_executor = worker.effect_executor_registry.resolve("effect:event:emit")
+    assert emit_executor is not initial_emit_executor
+    assert emit_executor.internal_event_bus.path == updated_config.orchestration_store_path
+    assert emit_executor.internal_event_bus._wake_notifier.path == wake_socket_path_for_lock(
+        updated_config.lock_path
+    )
 
 
 def test_worker_config_rejects_retired_scheduled_internal_event_store_path(

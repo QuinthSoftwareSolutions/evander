@@ -1681,6 +1681,89 @@ def test_resolved_release_review_correction_can_create_successor_release() -> No
     assert aggregate.outputs["required_source_ancestor_commit_sha"] == "c" * 40
     assert result["events"][0]["payload"]["base_commit_sha"] == "c" * 40
 
+    successor.state = TeamRecordState.REJECTED
+    successor.candidate_commit_sha = "1" * 40
+    successor.candidate_tree_hash = "2" * 40
+    successor.gate_failure = ReleaseGateFailure(
+        stage="review",
+        kind="rejected",
+        source_id="second-release-review",
+        message="A later review found another issue.",
+    )
+    second_commit = "3" * 40
+    second_task = AgentTask(
+        id="second-review-correction-task",
+        owner_agent_id="coder",
+        project_id="project",
+        priority=0,
+        state=TeamTaskState.FINISHED,
+        title="Correct the successor review",
+        description="Fix the later review finding.",
+        created_by_agent_id="lead",
+        release_base_package_id=successor.id,
+        git_base_branch=successor.release_branch,
+        git_base_commit_sha=successor.candidate_commit_sha,
+        deliverable_ids=["second-review-correction-deliverable"],
+    )
+    second_deliverable = Deliverable(
+        id="second-review-correction-deliverable",
+        task_id=second_task.id,
+        producer_agent_id="coder",
+        summary="Corrected the successor review finding",
+        state=TeamRecordState.ACCEPTED,
+        git_refs=DeliverableGitRefs(
+            agent_branch="agents/coder/second-review-correction",
+            commit_sha=second_commit,
+            submitted_commit_sha=second_commit,
+        ),
+        review_manifest=DeliverableReviewManifest(
+            base_commit_sha=successor.candidate_commit_sha,
+            reviewed_commit_sha=second_commit,
+            tree_hash="4" * 40,
+            commit_shas=[second_commit],
+            changed_paths=["M\tsrc/SecondCorrection.cs"],
+        ),
+        verification=DeliverableVerification(status="passed"),
+        review_request_ids=["second-correction-review"],
+    )
+    state.tasks[second_task.id] = second_task
+    state.deliverables[second_deliverable.id] = second_deliverable
+    state.review_requests["second-correction-review"] = ReviewRequest(
+        id="second-correction-review",
+        deliverable_id=second_deliverable.id,
+        reviewer_agent_id="reviewer",
+        state=TeamRecordState.ACCEPTED,
+        reviewed_commit_sha=second_commit,
+    )
+    second_result: dict[str, object] = {
+        "errors": [],
+        "events": [],
+        "git_promotion_event_ids": [],
+    }
+
+    second_successor_id = _build_release_package(
+        state,
+        project=state.projects["project"],
+        request={
+            "id": "second-review-correction-successor",
+            "deliverable_ids": [second_deliverable.id],
+            "supersedes_release_package_id": successor.id,
+        },
+        result=second_result,
+        projects_to_recalc=set(),
+        actor_agent_id="coder",
+        team_id="team",
+    )
+
+    assert second_successor_id == "second-review-correction-successor"
+    assert second_result["errors"] == []
+    assert second_result["correction_deliverable_ids"] == [second_deliverable.id]
+    second_successor = state.release_packages[second_successor_id]
+    assert second_successor.deliverable_ids == [
+        *successor.deliverable_ids,
+        second_deliverable.id,
+    ]
+
 
 def test_verification_retry_uses_commands_frozen_in_release_manifest() -> None:
     frozen_command = ReleaseVerificationCommand(name="frozen-tests", argv=["pytest", "-q"])

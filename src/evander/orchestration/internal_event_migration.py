@@ -98,6 +98,25 @@ def check_internal_event_migration(
     config = _worker_config(runtime_path, project_dir=project_dir)
     config_path = _worker_config_path(runtime_path, project_dir=project_dir)
     errors: list[str] = []
+    config_payload: dict[str, Any] = {}
+    if config_path.exists():
+        try:
+            config_payload = _read_json_object(config_path)
+        except Exception as exc:
+            errors.append(f"trigger orchestrator config: {exc}")
+    retired_config_keys = tuple(
+        key
+        for key in (
+            "internal_event_store_path",
+            "scheduled_internal_event_store_path",
+        )
+        if key in config_payload
+    )
+    source_paths = _legacy_source_paths(
+        runtime_path,
+        project_dir=project_dir,
+        config_payload=config_payload,
+    )
     marker_path = migration_marker_path(runtime_path)
     marker_payload: dict[str, Any] = {}
     marker_state: str | None = None
@@ -112,7 +131,7 @@ def check_internal_event_migration(
     source_hashes: dict[str, str] = {}
     missing_sources: list[str] = []
     for filename in LEGACY_INTERNAL_EVENT_FILENAMES:
-        path = runtime_path / filename
+        path = source_paths[filename]
         if not path.exists():
             missing_sources.append(filename)
             continue
@@ -122,12 +141,12 @@ def check_internal_event_migration(
         source_hashes[filename] = _sha256(path)
 
     try:
-        events = _read_internal_events(runtime_path / "internal-events.json")
+        events = _read_internal_events(source_paths["internal-events.json"])
     except Exception as exc:
         errors.append(f"internal-events.json: {exc}")
         events = []
     try:
-        schedules = _read_scheduled_events(runtime_path / "scheduled-internal-events.json")
+        schedules = _read_scheduled_events(source_paths["scheduled-internal-events.json"])
     except Exception as exc:
         errors.append(f"scheduled-internal-events.json: {exc}")
         schedules = []
@@ -158,20 +177,6 @@ def check_internal_event_migration(
     if marker_state == "complete" and source_hashes:
         errors.append("completed migration marker coexists with legacy source files")
     use_marker_counts = marker_state == "complete" and not source_hashes
-    retired_config_keys: tuple[str, ...] = ()
-    if config_path.exists():
-        try:
-            config_payload = _read_json_object(config_path)
-            retired_config_keys = tuple(
-                key
-                for key in (
-                    "internal_event_store_path",
-                    "scheduled_internal_event_store_path",
-                )
-                if key in config_payload
-            )
-        except Exception as exc:
-            errors.append(f"trigger orchestrator config: {exc}")
     return InternalEventMigrationReport(
         runtime_dir=str(runtime_path),
         database_path=str(config.orchestration_store_path),
@@ -204,7 +209,7 @@ def check_internal_event_migration(
         safe_to_apply=(
             not errors
             and marker_state != "complete"
-            and (bool(source_hashes) or marker_state == "archived")
+            and (bool(source_hashes) or bool(retired_config_keys) or marker_state == "archived")
         ),
         errors=tuple(errors),
     )
@@ -244,8 +249,15 @@ def apply_internal_event_migration(
         if not report.safe_to_apply:
             reasons = report.errors or ("no legacy internal-event stores found",)
             raise RuntimeError("internal-event SQLite migration is blocked: " + "; ".join(reasons))
-        events = _read_internal_events(runtime_path / "internal-events.json")
-        schedules = _read_scheduled_events(runtime_path / "scheduled-internal-events.json")
+        config_path = _worker_config_path(runtime_path, project_dir=project_dir)
+        config_payload = _read_json_object(config_path) if config_path.exists() else {}
+        source_paths = _legacy_source_paths(
+            runtime_path,
+            project_dir=project_dir,
+            config_payload=config_payload,
+        )
+        events = _read_internal_events(source_paths["internal-events.json"])
+        schedules = _read_scheduled_events(source_paths["scheduled-internal-events.json"])
         specs = _subscription_specs(config)
         cursors = _read_legacy_cursors(runtime_path)
 
@@ -266,8 +278,6 @@ def apply_internal_event_migration(
             config_revision=config_revision,
         )
 
-        config_path = _worker_config_path(runtime_path, project_dir=project_dir)
-        config_payload = _read_json_object(config_path) if config_path.exists() else {}
         retired_config_keys = tuple(
             key
             for key in (
@@ -288,6 +298,7 @@ def apply_internal_event_migration(
         archive_path = _archive_sources(
             runtime_path,
             report.source_hashes,
+            source_paths=source_paths,
             config_path=config_path if retired_config_keys else None,
         )
         marker_payload = {
@@ -298,6 +309,9 @@ def apply_internal_event_migration(
             "database_path": str(config.orchestration_store_path),
             "archive_path": str(archive_path),
             "source_hashes": report.source_hashes,
+            "source_paths": {
+                filename: str(source_paths[filename]) for filename in report.source_hashes
+            },
             "internal_event_count": report.internal_event_count,
             "scheduled_event_count": report.scheduled_event_count,
             "pending_schedule_count": report.pending_schedule_count,
@@ -383,6 +397,28 @@ def _worker_config_path(
         / "trigger-orchestrator"
         / "config.json"
     )
+
+
+def _legacy_source_paths(
+    runtime_dir: Path,
+    *,
+    project_dir: Path | str | None,
+    config_payload: dict[str, Any],
+) -> dict[str, Path]:
+    resolved_project_dir = _resolved_project_dir(runtime_dir, project_dir=project_dir)
+    configured_keys = {
+        "internal-events.json": "internal_event_store_path",
+        "scheduled-internal-events.json": "scheduled_internal_event_store_path",
+    }
+    paths: dict[str, Path] = {}
+    for filename in LEGACY_INTERNAL_EVENT_FILENAMES:
+        config_key = configured_keys.get(filename)
+        raw_path = config_payload.get(config_key) if config_key is not None else None
+        path = Path(str(raw_path)).expanduser() if raw_path is not None else runtime_dir / filename
+        if not path.is_absolute():
+            path = resolved_project_dir / path
+        paths[filename] = path.resolve()
+    return paths
 
 
 def _subscription_specs(
@@ -495,13 +531,14 @@ def _archive_sources(
     runtime_dir: Path,
     source_hashes: dict[str, str],
     *,
+    source_paths: dict[str, Path],
     config_path: Path | None,
 ) -> Path:
     timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S%fZ")
     archive_path = runtime_dir / "archives" / MIGRATION_NAME / timestamp
     archive_path.mkdir(parents=True, exist_ok=False)
     for filename in source_hashes:
-        shutil.copy2(runtime_dir / filename, archive_path / filename)
+        shutil.copy2(source_paths[filename], archive_path / filename)
     config_hash = None
     if config_path is not None:
         shutil.copy2(config_path, archive_path / "trigger-orchestrator-config.json")
@@ -511,6 +548,7 @@ def _archive_sources(
         {
             "migration": MIGRATION_NAME,
             "source_hashes": source_hashes,
+            "source_paths": {filename: str(source_paths[filename]) for filename in source_hashes},
             "trigger_orchestrator_config_hash": config_hash,
         },
     )
@@ -523,9 +561,20 @@ def _finish_archived_migration(
     marker_payload: dict[str, Any],
 ) -> None:
     raw_hashes = marker_payload.get("source_hashes")
-    if not isinstance(raw_hashes, dict) or not raw_hashes:
-        raise RuntimeError("archived migration marker has no source hashes")
+    if not isinstance(raw_hashes, dict):
+        raise RuntimeError("archived migration marker has invalid source hashes")
     source_hashes = {str(key): str(value) for key, value in raw_hashes.items()}
+    if not source_hashes and not str(marker_payload.get("config_path") or "").strip():
+        raise RuntimeError("archived migration marker has no sources or config migration")
+    raw_source_paths = marker_payload.get("source_paths", {})
+    if not isinstance(raw_source_paths, dict):
+        raise RuntimeError("archived migration marker has invalid source paths")
+    source_paths = {
+        filename: Path(str(raw_source_paths.get(filename) or runtime_dir / filename))
+        .expanduser()
+        .resolve()
+        for filename in source_hashes
+    }
     archive_value = str(marker_payload.get("archive_path") or "").strip()
     if not archive_value:
         raise RuntimeError("archived migration marker has no archive path")
@@ -540,7 +589,7 @@ def _finish_archived_migration(
             raise RuntimeError(f"archived migration source is missing: {filename}")
         if _sha256(archived_source) != expected_hash:
             raise RuntimeError(f"archived migration source hash changed: {filename}")
-        active_source = runtime_dir / filename
+        active_source = source_paths[filename]
         if active_source.exists():
             if not active_source.is_file() or active_source.is_symlink():
                 raise RuntimeError(f"legacy migration source is unsafe: {filename}")

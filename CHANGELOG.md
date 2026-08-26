@@ -1,5 +1,14 @@
 # Changelog
 
+## 2026-08-26 - SQLite Cutover And Release Lineage Review Repairs
+
+- Migrated configured non-default legacy event stores before retiring their path settings, and
+  allowed empty deployments to complete config-only SQLite cutovers.
+- Rebound trigger and effect provider metadata, internal-event executors, and wake notifications
+  whenever hot reload changes the orchestration database or trigger lock.
+- Kept later release successors beyond the inherited deliverable frontier and chained
+  configuration retries from the rejected successor instead of forking its predecessor.
+
 ## 2026-08-26 - Team Chat Stream Reconciliation
 
 - Kept idle Team Chat conversation streams on their revision-only cache path while reconciling
