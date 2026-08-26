@@ -1,7 +1,7 @@
 {{ evander_admin_web_caddy_hostname }} {
 {% if evander_teams_notifications_public_base_url | length > 0 %}
 	handle /msgraph/teams/* {
-		reverse_proxy {{ evander_teams_notifications_listener_host }}:{{ evander_teams_notifications_listener_port }}
+		reverse_proxy {{ evander_teams_notifications_listener_endpoint_host }}:{{ evander_teams_notifications_listener_port }}
 	}
 
 {% endif %}

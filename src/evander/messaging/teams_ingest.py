@@ -878,6 +878,9 @@ class TeamsIngestWorker:
         store = self._notification_store
         if reconciler is None or store is None:
             return
+        # Disabling notifications deliberately resets subscription retry delays so a
+        # later false-to-true transition reconciles every desired target immediately.
+        store.clear_subscription_reconciliation_states()
         subscriptions_by_directory: dict[str, list[Any]] = {}
         for subscription in store.list_owned_subscriptions():
             subscriptions_by_directory.setdefault(subscription.directory_path, []).append(
@@ -1115,6 +1118,7 @@ class TeamsIngestWorker:
                 [message],
                 channel_target=target,
                 cursor_state=self.store.get_cursor_state(target),
+                allow_pre_cursor_unseen=True,
                 direct_message_sender_refs_by_id=direct_sender_refs_by_id,
                 store_unmatched_direct_messages=store_unmatched,
                 trigger_snapshot=trigger_snapshot,
@@ -1444,6 +1448,7 @@ class TeamsIngestWorker:
         *,
         channel_target: str,
         cursor_state: Any | None,
+        allow_pre_cursor_unseen: bool = False,
         direct_message_sender_refs_by_id: dict[str, set[str]] | None = None,
         store_unmatched_direct_messages: bool = False,
         trigger_snapshot: _TeamsTriggerConfigSnapshot,
@@ -1454,11 +1459,9 @@ class TeamsIngestWorker:
         for message in candidates:
             if not message.message_id or message.metadata.get("source") != "teams_graph_api":
                 continue
-            if (
-                not _message_is_after_cursor_state(message, cursor_state)
-                and self.store.get_message(message.cursor) is not None
-            ):
-                continue
+            if not _message_is_after_cursor_state(message, cursor_state):
+                if not allow_pre_cursor_unseen or self.store.get_message(message.cursor) is not None:
+                    continue
             latest_seen_message = message
             if direct_message_sender_refs_by_id is not None:
                 message = _mark_direct_message(message)

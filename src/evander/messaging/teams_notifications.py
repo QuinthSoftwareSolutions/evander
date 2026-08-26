@@ -21,11 +21,13 @@ from evander.config import GatewayConfig, TeamsIngestWorkerGlobalConfig
 from evander.messaging.teams_inbox_store import (
     TeamsInboxStore,
     TeamsNotificationQueueEntry,
+    TeamsOwnedSubscription,
 )
 from evander.messaging.teams_ingest import _load_teams_ingest_worker_global_config
 
 logger = logging.getLogger(__name__)
 _MAX_NOTIFICATION_REQUEST_BYTES = 256 * 1024
+_MAX_NOTIFICATION_BATCH_ITEMS = 100
 _CLIENT_STATE_HASH_LENGTH = 64
 _LIFECYCLE_EVENTS = {"missed", "reauthorizationRequired", "subscriptionRemoved"}
 
@@ -45,7 +47,12 @@ class TeamsNotificationsService:
     ) -> None:
         self.config = config
         self.project_dir = Path(project_dir)
-        self.store = store or TeamsInboxStore(config.runtime_dir / "teams-inbox-store.db")
+        if store is None:
+            worker_runtime_dir = Path(self.worker_config().runtime_dir)
+            if not worker_runtime_dir.is_absolute():
+                worker_runtime_dir = self.project_dir / worker_runtime_dir
+            store = TeamsInboxStore(worker_runtime_dir / "teams-inbox-store.db")
+        self.store = store
         self.owner_id = self.store.notification_owner_id()
         self.max_request_bytes = max(1, int(max_request_bytes))
 
@@ -108,16 +115,48 @@ class TeamsNotificationsService:
                 {"error": "request body must contain a notification value array"},
                 status_code=400,
             )
+        items = payload["value"]
+        if len(items) > _MAX_NOTIFICATION_BATCH_ITEMS:
+            return JSONResponse(
+                {
+                    "error": (
+                        "notification batch must contain at most "
+                        f"{_MAX_NOTIFICATION_BATCH_ITEMS} items"
+                    )
+                },
+                status_code=413,
+            )
 
         worker_config = self.worker_config()
         accepted = 0
+        rejected = 0
         if worker_config.change_notifications_enabled:
-            for item in payload["value"]:
+            subscription_ids = {
+                str(item.get("subscriptionId") or "").strip()
+                for item in items
+                if isinstance(item, dict) and str(item.get("subscriptionId") or "").strip()
+            }
+            subscriptions_by_id = self.store.get_owned_subscriptions(subscription_ids)
+            for item in items:
                 if not isinstance(item, dict):
+                    rejected += 1
                     continue
-                entry = self._validated_queue_entry(item, notification_kind=notification_kind)
+                subscription_id = str(item.get("subscriptionId") or "").strip()
+                entry = self._validated_queue_entry(
+                    item,
+                    notification_kind=notification_kind,
+                    subscription=subscriptions_by_id.get(subscription_id),
+                )
                 if entry is not None and self.store.enqueue_notification(entry):
                     accepted += 1
+                elif entry is None:
+                    rejected += 1
+        if rejected:
+            logger.warning(
+                "Ignored invalid Teams Graph notification items kind=%s count=%d",
+                notification_kind,
+                rejected,
+            )
         return JSONResponse({"status": "accepted", "accepted": accepted}, status_code=202)
 
     async def _bounded_body(self, request: Request) -> bytes:
@@ -141,12 +180,12 @@ class TeamsNotificationsService:
         item: dict[str, Any],
         *,
         notification_kind: str,
+        subscription: TeamsOwnedSubscription | None,
     ) -> TeamsNotificationQueueEntry | None:
         subscription_id = str(item.get("subscriptionId") or "").strip()
         tenant_id = str(item.get("tenantId") or "").strip()
         client_state = str(item.get("clientState") or "")
         resource = str(item.get("resource") or "").strip()
-        subscription = self.store.get_owned_subscription(subscription_id)
         received_hash = hashlib.sha256(client_state.encode("utf-8")).hexdigest()
         expected_hash = (
             subscription.client_state_sha256
@@ -161,11 +200,6 @@ class TeamsNotificationsService:
             or tenant_id != subscription.tenant_id
             or not client_state_valid
         ):
-            logger.warning(
-                "Ignored invalid Teams Graph notification kind=%s known_subscription=%s",
-                notification_kind,
-                subscription is not None,
-            )
             return None
 
         change_type = str(item.get("changeType") or "").strip() or None

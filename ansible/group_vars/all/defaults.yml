@@ -304,6 +304,10 @@ evander_teams_notifications_public_base_url: >-
   {{ evander_teams_ingest_config.get('change_notification_public_base_url', '') | default('', true) }}
 evander_teams_notifications_listener_host: >-
   {{ evander_teams_ingest_config.get('change_notification_listener_host', '127.0.0.1') }}
+evander_teams_notifications_listener_endpoint_host: >-
+  {{ ('[' ~ evander_teams_notifications_listener_host ~ ']')
+     if ':' in evander_teams_notifications_listener_host
+     else evander_teams_notifications_listener_host }}
 evander_teams_notifications_listener_port: >-
   {{ evander_teams_ingest_config.get('change_notification_listener_port', 11882) }}
 evander_admin_web_caddy_validate_config: true

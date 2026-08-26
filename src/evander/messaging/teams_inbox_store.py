@@ -75,6 +75,15 @@ class TeamsOwnedSubscription(BaseModel):
     cleanup_attempted: bool = False
 
 
+class TeamsSubscriptionReconciliationState(BaseModel):
+    directory_path: str
+    target: str
+    consecutive_failures: int = Field(default=0, ge=0)
+    next_attempt_at: datetime
+    last_error: str | None = None
+    updated_at: datetime
+
+
 class TeamsNotificationQueueEntry(BaseModel):
     idempotency_key: str
     notification_kind: str
@@ -205,6 +214,34 @@ class TeamsInboxStore:
             return None
         return TeamsOwnedSubscription.model_validate_json(row["payload_json"])
 
+    def get_owned_subscriptions(
+        self,
+        subscription_ids: set[str],
+    ) -> dict[str, TeamsOwnedSubscription]:
+        normalized_ids = {
+            str(subscription_id or "").strip()
+            for subscription_id in subscription_ids
+            if str(subscription_id or "").strip()
+        }
+        if not normalized_ids:
+            return {}
+        placeholders = ", ".join("?" for _ in normalized_ids)
+        with self._lock, self._connect() as connection:
+            rows = connection.execute(
+                f"""
+                SELECT subscription_id, payload_json
+                FROM teams_inbox_subscriptions
+                WHERE subscription_id IN ({placeholders})
+                """,
+                sorted(normalized_ids),
+            ).fetchall()
+        return {
+            str(row["subscription_id"]): TeamsOwnedSubscription.model_validate_json(
+                row["payload_json"]
+            )
+            for row in rows
+        }
+
     def list_owned_subscriptions(
         self,
         *,
@@ -281,6 +318,101 @@ class TeamsInboxStore:
                 ),
             )
 
+    def get_subscription_reconciliation_state(
+        self,
+        *,
+        directory_path: str,
+        target: str,
+    ) -> TeamsSubscriptionReconciliationState | None:
+        with self._lock, self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT payload_json
+                FROM teams_inbox_subscription_reconciliation
+                WHERE directory_path = ? AND target = ?
+                """,
+                (directory_path, target),
+            ).fetchone()
+        if row is None:
+            return None
+        return TeamsSubscriptionReconciliationState.model_validate_json(row["payload_json"])
+
+    def record_subscription_reconciliation_failure(
+        self,
+        *,
+        directory_path: str,
+        target: str,
+        failed_at: datetime,
+        error: str,
+        initial_backoff_seconds: float,
+        max_backoff_seconds: float,
+    ) -> TeamsSubscriptionReconciliationState:
+        with self._lock, self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                """
+                SELECT payload_json
+                FROM teams_inbox_subscription_reconciliation
+                WHERE directory_path = ? AND target = ?
+                """,
+                (directory_path, target),
+            ).fetchone()
+            previous = (
+                TeamsSubscriptionReconciliationState.model_validate_json(row["payload_json"])
+                if row is not None
+                else None
+            )
+            failure_count = (previous.consecutive_failures if previous is not None else 0) + 1
+            exponent = min(failure_count - 1, 30)
+            backoff_seconds = min(
+                max(0.0, float(max_backoff_seconds)),
+                max(0.0, float(initial_backoff_seconds)) * (2**exponent),
+            )
+            state = TeamsSubscriptionReconciliationState(
+                directory_path=directory_path,
+                target=target,
+                consecutive_failures=failure_count,
+                next_attempt_at=failed_at + timedelta(seconds=backoff_seconds),
+                last_error=self._sanitize_error(error) or None,
+                updated_at=failed_at,
+            )
+            connection.execute(
+                """
+                INSERT INTO teams_inbox_subscription_reconciliation(
+                    directory_path, target, next_attempt_at, payload_json
+                ) VALUES (?, ?, ?, ?)
+                ON CONFLICT(directory_path, target) DO UPDATE SET
+                    next_attempt_at = excluded.next_attempt_at,
+                    payload_json = excluded.payload_json
+                """,
+                (
+                    directory_path,
+                    target,
+                    self._datetime_to_storage(state.next_attempt_at),
+                    _json_dumps(state.model_dump(mode="json")),
+                ),
+            )
+        return state
+
+    def clear_subscription_reconciliation_state(
+        self,
+        *,
+        directory_path: str,
+        target: str,
+    ) -> None:
+        with self._lock, self._connect() as connection:
+            connection.execute(
+                """
+                DELETE FROM teams_inbox_subscription_reconciliation
+                WHERE directory_path = ? AND target = ?
+                """,
+                (directory_path, target),
+            )
+
+    def clear_subscription_reconciliation_states(self) -> None:
+        with self._lock, self._connect() as connection:
+            connection.execute("DELETE FROM teams_inbox_subscription_reconciliation")
+
     def replace_notification_target_health(
         self,
         *,
@@ -302,9 +434,23 @@ class TeamsInboxStore:
                     """,
                     (directory_path, *sorted(desired)),
                 )
+                connection.execute(
+                    f"""
+                    DELETE FROM teams_inbox_subscription_reconciliation
+                    WHERE directory_path = ? AND target NOT IN ({placeholders})
+                    """,
+                    (directory_path, *sorted(desired)),
+                )
             else:
                 connection.execute(
                     "DELETE FROM teams_inbox_notification_targets WHERE directory_path = ?",
+                    (directory_path,),
+                )
+                connection.execute(
+                    """
+                    DELETE FROM teams_inbox_subscription_reconciliation
+                    WHERE directory_path = ?
+                    """,
                     (directory_path,),
                 )
             connection.executemany(
@@ -868,6 +1014,15 @@ class TeamsInboxStore:
                 );
                 CREATE INDEX IF NOT EXISTS idx_teams_inbox_subscriptions_target
                     ON teams_inbox_subscriptions(directory_path, tenant_id, target, expires_at);
+                CREATE TABLE IF NOT EXISTS teams_inbox_subscription_reconciliation (
+                    directory_path TEXT NOT NULL,
+                    target TEXT NOT NULL,
+                    next_attempt_at TEXT NOT NULL,
+                    payload_json TEXT NOT NULL,
+                    PRIMARY KEY(directory_path, target)
+                );
+                CREATE INDEX IF NOT EXISTS idx_teams_inbox_subscription_reconciliation_attempt
+                    ON teams_inbox_subscription_reconciliation(next_attempt_at, directory_path, target);
                 CREATE TABLE IF NOT EXISTS teams_inbox_notification_targets (
                     directory_path TEXT NOT NULL,
                     target TEXT NOT NULL,

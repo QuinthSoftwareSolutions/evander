@@ -95,6 +95,23 @@ def test_ansible_admin_web_caddy_role_proxies_branded_entrypoints() -> None:
     assert "handle /msgraph/teams/*" in caddyfile
     assert "evander_teams_notifications_public_base_url | length > 0" in caddyfile
     assert "evander_teams_notifications_listener_port" in caddyfile
+    assert "evander_teams_notifications_listener_endpoint_host" in defaults
+    assert "if ':' in evander_teams_notifications_listener_host" in defaults
+    assert (
+        "reverse_proxy {{ evander_teams_notifications_listener_endpoint_host }}:"
+        "{{ evander_teams_notifications_listener_port }}"
+        in caddyfile
+    )
+    assert (
+        'url: "http://{{ evander_teams_notifications_listener_endpoint_host }}:'
+        '{{ evander_teams_notifications_listener_port }}/healthz"'
+        in verification
+    )
+    assert (
+        "reverse_proxy {{ evander_teams_notifications_listener_host }}:"
+        "{{ evander_teams_notifications_listener_port }}"
+        not in caddyfile
+    )
     assert "handle /public/*" in caddyfile
     assert "handle /addons/*" in caddyfile
     assert "handle /healthz" in caddyfile

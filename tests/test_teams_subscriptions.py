@@ -175,7 +175,96 @@ def test_subscription_permission_failure_keeps_target_on_fast_fallback(tmp_path)
         now=now,
     )
     assert status["targets_on_fast_fallback"] == ["team-a/channel-a"]
-    assert status["degraded_reasons"] == ["subscription missing"]
+    assert len(status["degraded_reasons"]) == 1
+    assert "403" in status["degraded_reasons"][0]
+
+
+def test_subscription_reconciliation_failure_uses_persistent_target_backoff(tmp_path) -> None:
+    database_path = tmp_path / "runtime" / "teams-inbox-store.db"
+    worker_config = _worker_config()
+    request_count = 0
+    now = datetime.now(UTC)
+
+    def fail_once_then_create(request: httpx.Request) -> httpx.Response:
+        nonlocal request_count
+        request_count += 1
+        if request_count == 1:
+            return httpx.Response(
+                403,
+                request=request,
+                json={"error": {"code": "Forbidden"}},
+            )
+        return httpx.Response(
+            201,
+            request=request,
+            json={
+                "id": "owned-subscription",
+                "expirationDateTime": (now + timedelta(hours=48)).isoformat(),
+            },
+        )
+
+    first_store = TeamsInboxStore(database_path)
+    first_reconciler = TeamsSubscriptionReconciler(
+        store=first_store,
+        worker_config=worker_config,
+    )
+    with httpx.Client(transport=httpx.MockTransport(fail_once_then_create)) as client:
+        assert (
+            first_reconciler.reconcile_directory(
+                client,
+                service=_FakeGraphService(),
+                provider_config=_provider_config(tmp_path),
+                directory_path="root",
+                targets={"team-a/channel-a"},
+                now=now,
+            )
+            == set()
+        )
+        state = first_store.get_subscription_reconciliation_state(
+            directory_path="root",
+            target="team-a/channel-a",
+        )
+        assert state is not None
+        assert state.consecutive_failures == 1
+        assert state.next_attempt_at == now + timedelta(
+            seconds=worker_config.target_backoff_initial_seconds
+        )
+
+        restarted_store = TeamsInboxStore(database_path)
+        restarted_reconciler = TeamsSubscriptionReconciler(
+            store=restarted_store,
+            worker_config=worker_config,
+        )
+        assert (
+            restarted_reconciler.reconcile_directory(
+                client,
+                service=_FakeGraphService(),
+                provider_config=_provider_config(tmp_path),
+                directory_path="root",
+                targets={"team-a/channel-a"},
+                now=now + timedelta(seconds=2),
+            )
+            == set()
+        )
+        assert request_count == 1
+
+        assert restarted_reconciler.reconcile_directory(
+            client,
+            service=_FakeGraphService(),
+            provider_config=_provider_config(tmp_path),
+            directory_path="root",
+            targets={"team-a/channel-a"},
+            now=state.next_attempt_at,
+        ) == {"team-a/channel-a"}
+
+    assert request_count == 2
+    assert (
+        restarted_store.get_subscription_reconciliation_state(
+            directory_path="root",
+            target="team-a/channel-a",
+        )
+        is None
+    )
 
 
 def test_reauthorization_lifecycle_event_reauthorizes_and_renews(tmp_path) -> None:

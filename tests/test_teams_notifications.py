@@ -193,6 +193,127 @@ def test_teams_notifications_rejects_malformed_and_oversized_requests(tmp_path) 
     assert oversized.status_code == 413
 
 
+def test_teams_notifications_rejects_oversized_batch_before_subscription_lookup(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    client, store, _client_state = _configured_service(tmp_path)
+    lookup_calls = 0
+
+    def unexpected_lookup(_subscription_ids):
+        nonlocal lookup_calls
+        lookup_calls += 1
+        raise AssertionError("oversized batch must be rejected before SQLite lookup")
+
+    monkeypatch.setattr(store, "get_owned_subscriptions", unexpected_lookup)
+    response = client.post(
+        "/msgraph/teams/notifications",
+        json={
+            "value": [
+                {"subscriptionId": f"unknown-{index}"}
+                for index in range(101)
+            ]
+        },
+    )
+
+    assert response.status_code == 413
+    assert "at most 100 items" in response.json()["error"]
+    assert lookup_calls == 0
+
+
+def test_teams_notifications_bulk_loads_subscriptions_once_for_invalid_batch(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    client, store, _client_state = _configured_service(tmp_path)
+    original_lookup = store.get_owned_subscriptions
+    lookup_calls = 0
+
+    def recording_lookup(subscription_ids):
+        nonlocal lookup_calls
+        lookup_calls += 1
+        return original_lookup(subscription_ids)
+
+    monkeypatch.setattr(store, "get_owned_subscriptions", recording_lookup)
+    response = client.post(
+        "/msgraph/teams/notifications",
+        json={
+            "value": [
+                {
+                    "subscriptionId": f"unknown-{index}",
+                    "tenantId": "tenant-a",
+                    "clientState": "invalid",
+                    "changeType": "created",
+                    "resource": "chats('chat-a')/messages('message-a')",
+                }
+                for index in range(100)
+            ]
+        },
+    )
+
+    assert response.status_code == 202
+    assert response.json()["accepted"] == 0
+    assert lookup_calls == 1
+
+
+def test_teams_notifications_uses_worker_configured_runtime_database(tmp_path) -> None:
+    bootstrap_runtime = tmp_path / "bootstrap-runtime"
+    worker_runtime = tmp_path / "worker-runtime"
+    config_dir = tmp_path / "config" / "teams-ingest"
+    config_dir.mkdir(parents=True)
+    config_dir.joinpath("config.json").write_text(
+        json.dumps(
+            {
+                "runtime_dir": "worker-runtime",
+                "change_notifications_enabled": True,
+                "change_notification_public_base_url": "https://notifications.example.test",
+            }
+        ),
+        encoding="utf-8",
+    )
+    store = TeamsInboxStore(worker_runtime / "teams-inbox-store.db")
+    client_state = "worker-runtime-client-state"
+    now = datetime.now(UTC)
+    store.upsert_owned_subscription(
+        TeamsOwnedSubscription(
+            subscription_id="worker-runtime-subscription",
+            owner_id=store.notification_owner_id(),
+            target="chat:chat-a",
+            resource="/chats/chat-a/messages",
+            directory_path="root",
+            tenant_id="tenant-a",
+            expires_at=now + timedelta(hours=48),
+            client_state_sha256=hashlib.sha256(client_state.encode()).hexdigest(),
+            created_at=now,
+            updated_at=now,
+        )
+    )
+    app = create_app(
+        GatewayConfig.model_validate({"runtime_dir": bootstrap_runtime}),
+        project_dir=tmp_path,
+    )
+
+    response = TestClient(app).post(
+        "/msgraph/teams/notifications",
+        json={
+            "value": [
+                {
+                    "subscriptionId": "worker-runtime-subscription",
+                    "tenantId": "tenant-a",
+                    "clientState": client_state,
+                    "changeType": "created",
+                    "resource": "chats('chat-a')/messages('message-a')",
+                }
+            ]
+        },
+    )
+
+    assert response.status_code == 202
+    assert response.json()["accepted"] == 1
+    assert len(store.lease_notifications(now=datetime.now(UTC))) == 1
+    assert not (bootstrap_runtime / "teams-inbox-store.db").exists()
+
+
 def test_teams_notifications_health_is_secret_free(tmp_path) -> None:
     client, _store, client_state = _configured_service(tmp_path)
 

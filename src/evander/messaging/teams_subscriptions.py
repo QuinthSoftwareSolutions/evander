@@ -73,7 +73,16 @@ class TeamsSubscriptionReconciler:
         tenant_id = tenant_id_from_graph_token(service, provider_config)
         desired = {target for target in targets if parse_teams_target(target).kind != "user"}
         for target in sorted(desired):
-            self._ensure_subscription(
+            reconciliation_state = self.store.get_subscription_reconciliation_state(
+                directory_path=directory_path,
+                target=target,
+            )
+            if (
+                reconciliation_state is not None
+                and _utc(reconciliation_state.next_attempt_at) > now
+            ):
+                continue
+            succeeded, error = self._ensure_subscription(
                 client,
                 service=service,
                 directory_path=directory_path,
@@ -81,6 +90,20 @@ class TeamsSubscriptionReconciler:
                 target=target,
                 now=now,
             )
+            if succeeded:
+                self.store.clear_subscription_reconciliation_state(
+                    directory_path=directory_path,
+                    target=target,
+                )
+            else:
+                self.store.record_subscription_reconciliation_failure(
+                    directory_path=directory_path,
+                    target=target,
+                    failed_at=now,
+                    error=error or "subscription reconciliation failed",
+                    initial_backoff_seconds=self.worker_config.target_backoff_initial_seconds,
+                    max_backoff_seconds=self.worker_config.target_backoff_max_seconds,
+                )
         for subscription in self.store.list_owned_subscriptions(directory_path=directory_path):
             if subscription.owner_id != self.owner_id or subscription.tenant_id != tenant_id:
                 continue
@@ -96,6 +119,13 @@ class TeamsSubscriptionReconciler:
             for item in self.store.list_owned_subscriptions(directory_path=directory_path)
             if item.owner_id == self.owner_id and item.tenant_id == tenant_id
         }
+        reconciliation_by_target = {
+            target: self.store.get_subscription_reconciliation_state(
+                directory_path=directory_path,
+                target=target,
+            )
+            for target in desired
+        }
         self.store.replace_notification_target_health(
             directory_path=directory_path,
             desired_targets=desired,
@@ -104,7 +134,11 @@ class TeamsSubscriptionReconciler:
                 target: (
                     current_by_target[target].last_error
                     if target in current_by_target
-                    else "subscription missing"
+                    else (
+                        reconciliation_by_target[target].last_error
+                        if reconciliation_by_target[target] is not None
+                        else "subscription missing"
+                    )
                 )
                 for target in desired
             },
@@ -163,6 +197,10 @@ class TeamsSubscriptionReconciler:
                 }
             )
         )
+        self.store.clear_subscription_reconciliation_state(
+            directory_path=subscription.directory_path,
+            target=subscription.target,
+        )
 
     def _ensure_subscription(
         self,
@@ -173,14 +211,14 @@ class TeamsSubscriptionReconciler:
         tenant_id: str,
         target: str,
         now: datetime,
-    ) -> None:
+    ) -> tuple[bool, str | None]:
         existing = self.store.find_owned_subscription(
             directory_path=directory_path,
             tenant_id=tenant_id,
             target=target,
         )
         if existing is not None and existing.owner_id != self.owner_id:
-            return
+            return False, "subscription is owned by another deployment"
         if existing is not None and existing.health == "reauthorization_required":
             try:
                 service._request_with_retries(
@@ -191,7 +229,7 @@ class TeamsSubscriptionReconciler:
                 )
             except Exception as exc:
                 self._mark_degraded(existing, now=now, error=exc)
-                return
+                return False, _safe_error(exc)
         renewal_deadline = now + timedelta(
             hours=self.worker_config.change_notification_renewal_margin_hours
         )
@@ -200,13 +238,14 @@ class TeamsSubscriptionReconciler:
             and existing.health == "active"
             and _utc(existing.expires_at) > renewal_deadline
         ):
-            return
+            return True, None
         if existing is not None and existing.health != "removed":
             if self._renew(client, service=service, subscription=existing, now=now):
-                return
+                return True, None
             if _utc(existing.expires_at) > now:
-                return
-        self._create(
+                refreshed = self.store.get_owned_subscription(existing.subscription_id)
+                return False, refreshed.last_error if refreshed is not None else None
+        return self._create(
             client,
             service=service,
             directory_path=directory_path,
@@ -226,10 +265,10 @@ class TeamsSubscriptionReconciler:
         target: str,
         existing: TeamsOwnedSubscription | None,
         now: datetime,
-    ) -> None:
+    ) -> tuple[bool, str | None]:
         base_url = str(self.worker_config.change_notification_public_base_url or "").rstrip("/")
         if not base_url:
-            return
+            return False, "change notification public base URL is not configured"
         client_state = secrets.token_urlsafe(48)[:96]
         requested_expiry = now + timedelta(
             hours=self.worker_config.change_notification_subscription_lifetime_hours
@@ -260,8 +299,9 @@ class TeamsSubscriptionReconciler:
             )
         except httpx.HTTPStatusError as exc:
             if exc.response.status_code == 409 and existing is not None:
-                self._renew(client, service=service, subscription=existing, now=now)
-                return
+                renewed = self._renew(client, service=service, subscription=existing, now=now)
+                refreshed = self.store.get_owned_subscription(existing.subscription_id)
+                return renewed, refreshed.last_error if refreshed is not None else None
             if existing is not None:
                 self._mark_degraded(existing, now=now, error=exc)
             else:
@@ -271,7 +311,7 @@ class TeamsSubscriptionReconciler:
                     target,
                     _safe_error(exc),
                 )
-            return
+            return False, _safe_error(exc)
         except Exception as exc:
             if existing is not None:
                 self._mark_degraded(existing, now=now, error=exc)
@@ -282,7 +322,7 @@ class TeamsSubscriptionReconciler:
                     target,
                     _safe_error(exc),
                 )
-            return
+            return False, _safe_error(exc)
         self.store.upsert_owned_subscription(
             TeamsOwnedSubscription(
                 subscription_id=subscription_id,
@@ -305,6 +345,7 @@ class TeamsSubscriptionReconciler:
                     update={"health": "expired", "updated_at": now, "last_error": None}
                 )
             )
+        return True, None
 
     def _renew(
         self,

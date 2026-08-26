@@ -200,7 +200,35 @@ def test_healthy_notification_target_uses_reconciliation_poll_interval(tmp_path:
     )
 
 
-def test_delayed_unseen_message_is_ingested_without_regressing_target_cursor(
+def test_disabling_notifications_resets_subscription_reconciliation_backoff(
+    tmp_path: Path,
+) -> None:
+    worker = build_teams_ingest_worker(
+        GatewayConfig.model_validate({"runtime_dir": tmp_path / "runtime"}),
+        project_dir=tmp_path,
+    )
+    now = datetime.now(UTC)
+    worker.store.record_subscription_reconciliation_failure(
+        directory_path="root",
+        target="team-a/channel-a",
+        failed_at=now,
+        error="forbidden",
+        initial_backoff_seconds=60,
+        max_backoff_seconds=900,
+    )
+
+    worker._cleanup_owned_subscriptions(now=now)
+
+    assert (
+        worker.store.get_subscription_reconciliation_state(
+            directory_path="root",
+            target="team-a/channel-a",
+        )
+        is None
+    )
+
+
+def test_exact_notification_ingests_delayed_unseen_message_without_regressing_cursor(
     tmp_path: Path,
 ) -> None:
     worker = build_teams_ingest_worker(
@@ -231,6 +259,7 @@ def test_delayed_unseen_message_is_ingested_without_regressing_target_cursor(
         [delayed],
         channel_target=target,
         cursor_state=worker.store.get_cursor_state(target),
+        allow_pre_cursor_unseen=True,
         trigger_snapshot=snapshot,
     )
 
@@ -239,6 +268,50 @@ def test_delayed_unseen_message_is_ingested_without_regressing_target_cursor(
     cursor_state = worker.store.get_cursor_state(target)
     assert cursor_state is not None
     assert cursor_state.cursor == f"{target}/newer"
+
+
+def test_reconciliation_poll_does_not_republish_compacted_pre_cursor_message(
+    tmp_path: Path,
+) -> None:
+    worker = build_teams_ingest_worker(
+        GatewayConfig.model_validate({"runtime_dir": tmp_path / "runtime"}),
+        project_dir=tmp_path,
+    )
+    target = "team-a/channel-a"
+    now = datetime.now(UTC)
+    worker.store.set_cursor(
+        target,
+        f"{target}/newer",
+        created_at=now,
+    )
+    historical = TeamsInboxMessage(
+        cursor=f"{target}/historical",
+        message_id="historical",
+        team_id="team-a",
+        channel_id="channel-a",
+        thread_id="historical",
+        author_id="operator-a",
+        content="retained Graph history",
+        created_at=now - timedelta(days=100),
+        metadata={"source": "teams_graph_api", "target": target},
+    )
+    assert worker.store.add_message_if_new(historical) is True
+    assert worker.store.get_message(historical.cursor) is None
+    snapshot = worker._capture_trigger_config_snapshot(captured_at=now)
+
+    for _ in range(2):
+        assert (
+            worker._ingest_message_candidates(
+                [historical],
+                channel_target=target,
+                cursor_state=worker.store.get_cursor_state(target),
+                trigger_snapshot=snapshot,
+            )
+            == 0
+        )
+
+    assert worker.store.get_message(historical.cursor) is None
+    assert worker.store.get_cursor(target) == f"{target}/newer"
 
 
 def test_disabled_worker_finishes_already_queued_lifecycle_notifications(tmp_path: Path) -> None:
