@@ -4813,12 +4813,24 @@ def test_status_json_reports_healthy_state(tmp_path: Path, monkeypatch) -> None:
             error=None,
         ),
     )
+    monkeypatch.setattr(
+        "evander.cli.read_runtime_generation_status",
+        lambda _runtime_dir: {
+            "state": "coherent",
+            "coherent": True,
+            "components": {},
+            "missing_components": [],
+            "errors": {},
+            "generations": ["test-generation"],
+        },
+    )
 
     result = runner.invoke(app, ["status", "--config", str(config_path), "--json"])
 
     assert result.exit_code == 0
     payload = json.loads(result.stdout)
     assert payload["overall"] == "ok"
+    assert payload["runtime_generation"]["state"] == "coherent"
     assert payload["config"]["loaded"] is True
     assert payload["sessions"]["total"] == 2
     assert payload["sessions"]["active"] == 1

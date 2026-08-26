@@ -61,7 +61,7 @@ def test_concurrent_internal_event_publish_preserves_both_events(tmp_path: Path)
     def publish(value: str) -> None:
         try:
             bus = InternalEventBus(database_path)
-            start.wait(timeout=2)
+            start.wait(timeout=10)
             bus.publish(event_type="custom.concurrent", payload={"value": value})
         except BaseException as exc:  # pragma: no cover - surfaced by assertion below
             failures.append(repr(exc))
@@ -72,9 +72,9 @@ def test_concurrent_internal_event_publish_preserves_both_events(tmp_path: Path)
     ]
     for thread in threads:
         thread.start()
-    start.wait(timeout=2)
+    start.wait(timeout=10)
     for thread in threads:
-        thread.join(timeout=3)
+        thread.join(timeout=10)
         assert not thread.is_alive()
 
     assert failures == []

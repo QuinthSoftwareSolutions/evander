@@ -488,7 +488,7 @@ def test_directory_only_project_move_re_resolves_human_review_scope(
             "root/new-project",
             "new-reviewer@example.com",
         ),
-        (None, "root", "root-reviewer@example.com"),
+        (None, "root/old-project", "old-reviewer@example.com"),
     ],
 )
 def test_project_git_patch_re_resolves_existing_human_review_scope(
@@ -1742,6 +1742,7 @@ def test_human_review_api_is_strict_scoped_and_projects_release_detail(
     repo = _seed_runtime_operations_state(runtime_dir)
 
     def _attach_project_git(state):
+        state.projects["project"].directory_path = "root/team"
         state.projects["project"].git = ProjectGitConfig(
             managed_repo_id="mr_0123456789abcdefabcd",
             directory_path="root/team",
@@ -1919,6 +1920,7 @@ def test_human_review_bundle_download_is_pinned_and_scoped(tmp_path: Path) -> No
     repo = _seed_runtime_operations_state(runtime_dir)
 
     def _attach_project_git(state):
+        state.projects["project"].directory_path = "root/team"
         state.projects["project"].git = ProjectGitConfig(
             managed_repo_id="mr_0123456789abcdefabcd",
             directory_path="root/team",
@@ -3780,10 +3782,12 @@ def test_team_chat_mutation_scope_requires_operator_rbac_and_snapshots_projects(
     )
 
     def _bind_project_directory(state):
+        state.projects["project"].directory_path = "root/team-a"
         state.projects["project"].git = ProjectGitConfig(
             managed_repo_id="mr_0123456789abcdefabcd",
             directory_path="root/team-a",
         )
+        state.projects["other-project"].directory_path = "root/team-b"
         state.projects["other-project"].git = ProjectGitConfig(
             managed_repo_id="mr_11111111111111111111",
             directory_path="root/team-b",

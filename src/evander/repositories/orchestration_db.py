@@ -622,9 +622,10 @@ def run_orchestration_retention(
     effect_deleted = 0
     gate_deleted = 0
     while True:
-        # Keep retention writes bounded: each compact archival and matching
-        # source deletion commits before the next source-key batch is read.
-        # A source row therefore cannot disappear without its compact copy.
+        # Keep retention writes bounded: each batch commits before the next
+        # source-key batch is read. Execution rows receive a compact history
+        # copy; completion transport envelopes are deliberately not archived
+        # because they must not create a duplicate node-history entry.
         with connect_orchestration_db(path) as connection:
             # Import locally to keep the low-level schema module independent
             # of the history query surface at import time.
@@ -638,7 +639,7 @@ def run_orchestration_retention(
             if not archived_sources:
                 break
             deleted_by_kind = _delete_archived_execution_sources(connection, archived_sources)
-            trigger_deleted += deleted_by_kind["trigger"]
+            trigger_deleted += deleted_by_kind["trigger"] + deleted_by_kind["transport"]
             effect_deleted += deleted_by_kind["effect"]
             gate_deleted += deleted_by_kind["gate"]
 
@@ -723,10 +724,11 @@ def _delete_archived_execution_sources(
     connection: sqlite3.Connection,
     sources: list[tuple[str, str]],
 ) -> dict[str, int]:
-    """Delete source rows that were compacted in this transaction."""
-    deleted = {"trigger": 0, "effect": 0, "gate": 0}
+    """Delete one processed retention batch in the current transaction."""
+    deleted = {"trigger": 0, "transport": 0, "effect": 0, "gate": 0}
     source_tables = {
         "trigger": ("trigger_events", "event_id"),
+        "transport": ("trigger_events", "event_id"),
         "effect": ("effect_executions", "execution_id"),
         "gate": ("gate_executions", "execution_id"),
     }

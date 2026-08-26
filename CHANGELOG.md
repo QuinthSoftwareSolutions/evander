@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-08-26 - Retention and Test Contract Repairs
+
+- Expired delivered completion envelopes now leave the durable trigger queue in bounded batches
+  without creating duplicate execution-history entries.
+- Aligned status, Team directory-scope, and packaged workflow-pack tests with their current
+  runtime contracts, and made the concurrent internal-event test less timing-sensitive.
+
 ## 2026-08-26 - SQLite Internal Event Delivery
 
 - Moved internal events, event-trigger subscription and delivery state, and scheduled internal
