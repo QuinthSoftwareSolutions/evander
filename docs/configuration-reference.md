@@ -2110,6 +2110,26 @@ trigger orchestrator is still notified and remains authoritative for cursor adva
 Set the field to `false` and restart `evander-teams-ingest.service` to restore the prior
 persist-and-wake path without direct queue publication.
 
+Teams Graph change notifications are optional and disabled by default. Set
+`change_notifications_enabled` to `true` together with an HTTPS
+`change_notification_public_base_url` to subscribe each authorized channel, explicit chat, and
+discovered one-on-one chat. `evander-teams-notifications.service` listens only on
+`change_notification_listener_host` and `change_notification_listener_port` (defaults
+`127.0.0.1:11882`); the managed Caddy configuration exposes only `/msgraph/teams/*` when a public
+callback base URL is configured. The defaults request a 48-hour subscription, renew 24 hours before
+expiry, and retain a 60-second reconciliation poll for healthy targets. Targets without a confirmed
+healthy subscription continue polling at `poll_interval_seconds` (two seconds by default) without a
+restart. Turning notifications off restores fast polling immediately, stops creation and renewal,
+and best-effort deletes only subscriptions recorded as owned by this deployment.
+
+The callback validates endpoint challenges, tenant, owned subscription ID, and constant-time
+`clientState` hashes before durably acknowledging notifications. The ingest worker then fetches the
+exact message through Graph and uses the same authorization, direct-sender filtering, self-message
+suppression, inbox deduplication, trigger publication, and wake path as polling. Completed queue rows
+are kept for seven days, exhausted failures for 30 days, and transient retrieval failures retry for
+up to 24 hours. Admin Web worker detail and the listener `/healthz` expose secret-free subscription,
+fallback, queue, notification, ingestion, and degradation status.
+
 Key delegated Teams provider settings now include:
 
 - `teams_backend: delegated_graph_api`

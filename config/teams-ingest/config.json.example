@@ -10,5 +10,12 @@
   "target_backoff_max_seconds": 900,
   "target_transient_backoff_initial_seconds": 5,
   "target_transient_backoff_max_seconds": 30,
+  "change_notifications_enabled": false,
+  "change_notification_public_base_url": null,
+  "change_notification_listener_host": "127.0.0.1",
+  "change_notification_listener_port": 11882,
+  "change_notification_subscription_lifetime_hours": 48,
+  "change_notification_renewal_margin_hours": 24,
+  "change_notification_reconciliation_poll_interval_seconds": 60,
   "lock_path": null
 }

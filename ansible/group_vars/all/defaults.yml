@@ -7,6 +7,7 @@ evander_repo_accept_newhostkey: true
 evander_repo_ssh_private_key: ""
 evander_repo_ssh_private_key_path: "/home/{{ evander_run_user }}/.ssh/evander-repo-deploy-key"
 evander_manage_workflow_config: true
+evander_manage_teams_ingest_config: false
 evander_repo_managed_base_tracked_config_paths:
   - config/admin-web.env
   - config/firewall.env
@@ -299,6 +300,12 @@ evander_admin_web_caddy_hostname: >-
   }}
 evander_admin_web_caddy_upstream_host: "127.0.0.1"
 evander_admin_web_caddy_upstream_port: "{{ evander_admin_web_env.get('ADMIN_WEB_PORT', '8100') }}"
+evander_teams_notifications_public_base_url: >-
+  {{ evander_teams_ingest_config.get('change_notification_public_base_url', '') | default('', true) }}
+evander_teams_notifications_listener_host: >-
+  {{ evander_teams_ingest_config.get('change_notification_listener_host', '127.0.0.1') }}
+evander_teams_notifications_listener_port: >-
+  {{ evander_teams_ingest_config.get('change_notification_listener_port', 11882) }}
 evander_admin_web_caddy_validate_config: true
 evander_admin_web_caddy_verification_connect_timeout_seconds: 5
 evander_admin_web_caddy_verification_max_time_seconds: 20
@@ -448,9 +455,22 @@ evander_scheduled_wake_config:
 evander_teams_ingest_config:
   runtime_dir: "runtime"
   directories: []
+  publish_trigger_events_directly: true
   poll_interval_seconds: 2
   jitter_seconds: 5
   backoff_seconds: 60
+  max_concurrent_target_polls: 1
+  target_backoff_initial_seconds: 60
+  target_backoff_max_seconds: 900
+  target_transient_backoff_initial_seconds: 5
+  target_transient_backoff_max_seconds: 30
+  change_notifications_enabled: false
+  change_notification_public_base_url: null
+  change_notification_listener_host: "127.0.0.1"
+  change_notification_listener_port: 11882
+  change_notification_subscription_lifetime_hours: 48
+  change_notification_renewal_margin_hours: 24
+  change_notification_reconciliation_poll_interval_seconds: 60
   lock_path: null
 
 evander_teams_meeting_ingest_config:
@@ -495,6 +515,7 @@ evander_services:
   scheduled_wake: true
   managed_git_refresh: true
   teams_ingest: true
+  teams_notifications: true
   teams_meeting_ingest: true
   effect_orchestrator: true
   trigger_orchestrator: true

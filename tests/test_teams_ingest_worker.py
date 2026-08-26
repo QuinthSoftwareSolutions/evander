@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import json
 import logging
 import threading
@@ -24,8 +25,16 @@ from evander.models import SessionManifest, TeamsMessageEnvelope, ToolName
 from evander.messaging.teams_ingest import (
     _classify_graph_poll_error,
     _compute_target_backoff_seconds,
+    _notification_message_locator,
+    _notification_resource_target,
     _teams_graph_poll_scope,
+    _teams_poll_health_key,
     build_teams_ingest_worker,
+)
+from evander.messaging.teams_inbox_store import (
+    TeamsInboxMessage,
+    TeamsNotificationQueueEntry,
+    TeamsOwnedSubscription,
 )
 from evander.orchestration.host_polling import HostWakeSleeper, wake_socket_path_for_lock
 from evander.services import TeamsAuthenticationError
@@ -95,6 +104,351 @@ def write_teams_ingest_worker_config(
     config_path.write_text(
         json.dumps({"max_concurrent_target_polls": max_concurrent_target_polls}),
         encoding="utf-8",
+    )
+
+
+@pytest.mark.parametrize(
+    ("resource", "expected"),
+    [
+        (
+            "teams('team-a')/channels('channel-a')/messages('root-message')",
+            ("root-message", None),
+        ),
+        (
+            "teams('team-a')/channels('channel-a')/messages('root')/replies('reply')",
+            ("reply", "root"),
+        ),
+        ("chats('chat-a')/messages('chat-message')", ("chat-message", None)),
+    ],
+)
+def test_notification_message_locator_supports_channel_roots_replies_and_chats(
+    resource: str,
+    expected: tuple[str, str | None],
+) -> None:
+    assert _notification_message_locator(resource) == expected
+
+
+@pytest.mark.parametrize(
+    ("resource", "expected"),
+    [
+        (
+            "teams('team-a')/channels('channel-a')/messages('message-a')",
+            "team-a/channel-a",
+        ),
+        ("/teams/team-a/channels/channel-a/messages/message-a", "team-a/channel-a"),
+        ("chats('chat-a')/messages('message-a')", "chat:chat-a"),
+    ],
+)
+def test_notification_resource_target_supports_graph_resource_shapes(
+    resource: str,
+    expected: str,
+) -> None:
+    assert _notification_resource_target(resource) == expected
+
+
+def test_healthy_notification_target_uses_reconciliation_poll_interval(tmp_path: Path) -> None:
+    config_path = tmp_path / "config" / "teams-ingest" / "config.json"
+    config_path.parent.mkdir(parents=True)
+    config_path.write_text(
+        json.dumps(
+            {
+                "change_notifications_enabled": True,
+                "change_notification_public_base_url": "https://notifications.example.test",
+                "change_notification_reconciliation_poll_interval_seconds": 60,
+            }
+        ),
+        encoding="utf-8",
+    )
+    worker = build_teams_ingest_worker(
+        GatewayConfig.model_validate({"runtime_dir": tmp_path / "runtime"}),
+        project_dir=tmp_path,
+    )
+    now = datetime.now(UTC)
+    poll_scope = "root:test"
+    target = "team-a/channel-a"
+
+    assert worker._reconciliation_poll_due(
+        poll_scope=poll_scope,
+        target_kind="channel",
+        target=target,
+        now=now,
+    )
+    worker.store.record_poll_success(
+        _teams_poll_health_key(poll_scope, "channel", target),
+        succeeded_at=now,
+    )
+    assert not worker._reconciliation_poll_due(
+        poll_scope=poll_scope,
+        target_kind="channel",
+        target=target,
+        now=now + timedelta(seconds=59),
+    )
+    assert worker._reconciliation_poll_due(
+        poll_scope=poll_scope,
+        target_kind="channel",
+        target=target,
+        now=now + timedelta(seconds=60),
+    )
+    worker.worker_config = worker.worker_config.model_copy(
+        update={"change_notifications_enabled": False}
+    )
+    assert worker._reconciliation_poll_due(
+        poll_scope=poll_scope,
+        target_kind="channel",
+        target=target,
+        now=now + timedelta(seconds=1),
+    )
+
+
+def test_delayed_unseen_message_is_ingested_without_regressing_target_cursor(
+    tmp_path: Path,
+) -> None:
+    worker = build_teams_ingest_worker(
+        GatewayConfig.model_validate({"runtime_dir": tmp_path / "runtime"}),
+        project_dir=tmp_path,
+    )
+    target = "team-a/channel-a"
+    newer_at = datetime(2026, 8, 26, 12, 0, tzinfo=UTC)
+    worker.store.set_cursor(
+        target,
+        f"{target}/newer",
+        created_at=newer_at,
+    )
+    delayed = TeamsInboxMessage(
+        cursor=f"{target}/delayed",
+        message_id="delayed",
+        team_id="team-a",
+        channel_id="channel-a",
+        thread_id="delayed",
+        author_id="operator-a",
+        content="arrived out of order",
+        created_at=newer_at - timedelta(minutes=1),
+        metadata={"source": "teams_graph_api", "target": target},
+    )
+    snapshot = worker._capture_trigger_config_snapshot(captured_at=datetime.now(UTC))
+
+    discovered = worker._ingest_message_candidates(
+        [delayed],
+        channel_target=target,
+        cursor_state=worker.store.get_cursor_state(target),
+        trigger_snapshot=snapshot,
+    )
+
+    assert discovered == 1
+    assert worker.store.get_message(delayed.cursor) is not None
+    cursor_state = worker.store.get_cursor_state(target)
+    assert cursor_state is not None
+    assert cursor_state.cursor == f"{target}/newer"
+
+
+def test_disabled_worker_finishes_already_queued_lifecycle_notifications(tmp_path: Path) -> None:
+    worker = build_teams_ingest_worker(
+        GatewayConfig.model_validate({"runtime_dir": tmp_path / "runtime"}),
+        project_dir=tmp_path,
+    )
+    now = datetime.now(UTC)
+    store = worker._notification_store
+    assert store is not None
+    store.upsert_owned_subscription(
+        TeamsOwnedSubscription(
+            subscription_id="owned-subscription",
+            owner_id=store.notification_owner_id(),
+            target="chat:chat-a",
+            resource="/chats/chat-a/messages",
+            directory_path="root",
+            tenant_id="tenant-a",
+            expires_at=now + timedelta(hours=48),
+            client_state_sha256="0" * 64,
+            created_at=now,
+            updated_at=now,
+        )
+    )
+    store.enqueue_notification(
+        TeamsNotificationQueueEntry(
+            idempotency_key="lifecycle-queued-before-disable",
+            notification_kind="lifecycle",
+            subscription_id="owned-subscription",
+            tenant_id="tenant-a",
+            resource="/chats/chat-a/messages",
+            lifecycle_event="missed",
+            received_at=now,
+            next_attempt_at=now,
+        )
+    )
+
+    result = worker.run_once()
+
+    assert result.notifications_processed == 1
+    assert store.lease_notifications(now=datetime.now(UTC)) == []
+
+
+@pytest.mark.parametrize(
+    ("target", "resource", "expected_path", "expected_thread_id"),
+    [
+        (
+            "team-a/channel-a",
+            "teams('team-a')/channels('channel-a')/messages('root-message')",
+            "/v1.0/teams/team-a/channels/channel-a/messages/root-message",
+            "root-message",
+        ),
+        (
+            "team-a/channel-a",
+            "teams('team-a')/channels('channel-a')/messages('root-message')/replies('reply')",
+            "/v1.0/teams/team-a/channels/channel-a/messages/root-message/replies/reply",
+            "root-message",
+        ),
+        (
+            "chat:chat-a",
+            "chats('chat-a')/messages('chat-message')",
+            "/v1.0/chats/chat-a/messages/chat-message",
+            None,
+        ),
+    ],
+)
+def test_message_notification_fetches_exact_authorized_message_through_shared_ingestor(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    target: str,
+    resource: str,
+    expected_path: str,
+    expected_thread_id: str | None,
+) -> None:
+    tenant_payload = base64.urlsafe_b64encode(json.dumps({"tid": "tenant-a"}).encode()).decode()
+    monkeypatch.setenv(
+        "GRAPH_TEAMS_ACCESS_TOKEN",
+        f"header.{tenant_payload.rstrip('=')}.signature",
+    )
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        assert request.url.path == expected_path
+        message_id = expected_path.rsplit("/", 1)[-1]
+        return httpx.Response(
+            200,
+            request=request,
+            json={
+                "id": message_id,
+                "createdDateTime": "2026-08-26T12:00:00Z",
+                "body": {"content": "notification message", "contentType": "text"},
+                "from": {"user": {"id": "operator-a", "displayName": "Ada"}},
+            },
+        )
+
+    patch_worker_httpx_client(monkeypatch, httpx.MockTransport(handler))
+    config = GatewayConfig.model_validate(
+        {
+            "runtime_dir": tmp_path / "runtime",
+            "teams_backend": "graph_api",
+        }
+    )
+    worker = build_teams_ingest_worker(config, project_dir=tmp_path)
+    worker.runtime.directories.ensure_root()
+    session = SessionManifest(
+        session_id="session-1",
+        directory_path="root",
+        allowed_tools=[ToolName.TEAMS_GET_MESSAGES],
+        teams_channel_allowlist=[target],
+        expires_at=datetime.now(UTC) + timedelta(hours=1),
+    )
+    worker.session_repository.upsert_session(session)
+    store = worker._notification_store
+    assert store is not None
+    now = datetime.now(UTC)
+    store.upsert_owned_subscription(
+        TeamsOwnedSubscription(
+            subscription_id="owned-subscription",
+            owner_id=store.notification_owner_id(),
+            target=target,
+            resource="unused",
+            directory_path="root",
+            tenant_id="tenant-a",
+            expires_at=now + timedelta(hours=48),
+            client_state_sha256="0" * 64,
+            created_at=now,
+            updated_at=now,
+        )
+    )
+    entry = TeamsNotificationQueueEntry(
+        idempotency_key="notification-1",
+        notification_kind="message",
+        subscription_id="owned-subscription",
+        tenant_id="tenant-a",
+        resource=resource,
+        change_type="created",
+        received_at=now,
+        next_attempt_at=now,
+    )
+    snapshot = worker._capture_trigger_config_snapshot(captured_at=now)
+
+    discovered = worker._process_message_notification(
+        entry,
+        active_sessions=[session],
+        trigger_snapshot=snapshot,
+        directories=["root"],
+    )
+
+    assert discovered == 1
+    assert len(requests) == 1
+    messages = worker.store.list_all_messages(channel_targets=[target])
+    assert len(messages) == 1
+    assert messages[0].thread_id == expected_thread_id
+
+
+def test_message_notification_does_not_fetch_removed_or_unauthorized_target(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    tenant_payload = base64.urlsafe_b64encode(json.dumps({"tid": "tenant-a"}).encode()).decode()
+    monkeypatch.setenv(
+        "GRAPH_TEAMS_ACCESS_TOKEN",
+        f"header.{tenant_payload.rstrip('=')}.signature",
+    )
+    config = GatewayConfig.model_validate(
+        {
+            "runtime_dir": tmp_path / "runtime",
+            "teams_backend": "graph_api",
+        }
+    )
+    worker = build_teams_ingest_worker(config, project_dir=tmp_path)
+    worker.runtime.directories.ensure_root()
+    store = worker._notification_store
+    assert store is not None
+    now = datetime.now(UTC)
+    store.upsert_owned_subscription(
+        TeamsOwnedSubscription(
+            subscription_id="removed-target-subscription",
+            owner_id=store.notification_owner_id(),
+            target="team-a/removed-channel",
+            resource="/teams/team-a/channels/removed-channel/messages",
+            directory_path="root",
+            tenant_id="tenant-a",
+            expires_at=now + timedelta(hours=48),
+            client_state_sha256="0" * 64,
+            created_at=now,
+            updated_at=now,
+        )
+    )
+    entry = TeamsNotificationQueueEntry(
+        idempotency_key="unauthorized-notification",
+        notification_kind="message",
+        subscription_id="removed-target-subscription",
+        tenant_id="tenant-a",
+        resource="teams('team-a')/channels('removed-channel')/messages('message-a')",
+        change_type="created",
+        received_at=now,
+        next_attempt_at=now,
+    )
+    snapshot = worker._capture_trigger_config_snapshot(captured_at=now)
+
+    assert (
+        worker._process_message_notification(
+            entry,
+            active_sessions=[],
+            trigger_snapshot=snapshot,
+            directories=["root"],
+        )
+        == 0
     )
 
 

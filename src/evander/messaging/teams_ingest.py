@@ -6,6 +6,7 @@ import json
 import logging
 import math
 import os
+import re
 from collections.abc import Callable, Iterator, Mapping
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
@@ -15,6 +16,7 @@ from pathlib import Path
 from threading import RLock
 from types import MappingProxyType
 from typing import Any
+from urllib.parse import quote, unquote
 
 import httpx
 
@@ -63,7 +65,16 @@ from evander.services import (
     normalize_teams_target,
     parse_teams_target,
 )
-from evander.messaging.teams_inbox_store import TeamsInboxMessage, TeamsInboxPollHealth
+from evander.messaging.teams_inbox_store import (
+    TeamsInboxMessage,
+    TeamsInboxPollHealth,
+    TeamsInboxStore,
+    TeamsNotificationQueueEntry,
+)
+from evander.messaging.teams_subscriptions import (
+    TeamsSubscriptionReconciler,
+    tenant_id_from_graph_token,
+)
 from evander.triggers.providers.teams_message_events import (
     CommunicationTeamsMessageEventMatcher,
     TeamsDirectMessageEventMatcher,
@@ -105,6 +116,7 @@ class TeamsIngestCycleResult:
     publication_failures: int = 0
     effect_wake_notified: bool = False
     workflow_config_revision: str | None = None
+    notifications_processed: int = 0
 
 
 @dataclass(frozen=True)
@@ -188,6 +200,15 @@ class TeamsIngestWorker:
         self.store = store or JsonTeamsInboxCursorRepository(
             config.runtime_dir / "teams-inbox-store.db"
         )
+        self._notification_store = self.store if isinstance(self.store, TeamsInboxStore) else None
+        self._subscription_reconciler = (
+            TeamsSubscriptionReconciler(
+                store=self._notification_store,
+                worker_config=self.worker_config,
+            )
+            if self._notification_store is not None
+            else None
+        )
         self._trigger_wake_notifier = trigger_wake_notifier
         self._effect_wake_notifier = effect_wake_notifier
         self._event_queue_override = event_queue
@@ -252,6 +273,13 @@ class TeamsIngestWorker:
             include_default_directory=bool(direct_sender_refs),
             include_directories=set(trigger_targets_by_directory),
         )
+        notifications_processed = self._process_notification_queue(
+            active_sessions=active_sessions,
+            trigger_snapshot=trigger_snapshot,
+            directories=directories,
+        )
+        if not self.worker_config.change_notifications_enabled:
+            self._cleanup_owned_subscriptions(now=now)
         try:
             for directory_path in directories:
                 channel_targets = self._channel_targets_for_directory(
@@ -259,8 +287,6 @@ class TeamsIngestWorker:
                     active_sessions=active_sessions,
                     trigger_targets_by_directory=trigger_targets_by_directory,
                 )
-                if not channel_targets and not direct_sender_refs:
-                    continue
                 channel_targets_polled += len(channel_targets)
                 directory_result = self._poll_directory(
                     directory_path,
@@ -270,6 +296,11 @@ class TeamsIngestWorker:
                 )
                 direct_chats_polled += directory_result.direct_chats_polled
                 new_messages_discovered += directory_result.new_messages_discovered
+            if self.worker_config.change_notifications_enabled:
+                self._cleanup_orphaned_subscriptions(
+                    active_directories=set(directories),
+                    now=now,
+                )
         finally:
             self._notify_effect_orchestrator_if_needed(trigger_snapshot=trigger_snapshot)
         if self.worker_config.directories:
@@ -314,6 +345,7 @@ class TeamsIngestWorker:
             publication_failures=publication_failures,
             effect_wake_notified=effect_wake_notified,
             workflow_config_revision=trigger_snapshot.revision,
+            notifications_processed=notifications_processed,
         )
 
     def _log_start(self) -> None:
@@ -338,7 +370,7 @@ class TeamsIngestWorker:
                 "messages_matched=%d events_created=%d events_deduplicated=%d "
                 "publication_failures=%d effect_wake_notified=%s trigger_wake_notified=%s "
                 "workflow_config_revision=%s targets_skipped_backoff=%d targets_failed=%d "
-                "targets_recovered=%d sleep_seconds=%.3f"
+                "targets_recovered=%d notifications_processed=%d sleep_seconds=%.3f"
             ),
             result.directories_polled,
             result.channel_targets_polled,
@@ -355,6 +387,7 @@ class TeamsIngestWorker:
             result.targets_skipped_backoff,
             result.targets_failed,
             result.targets_recovered,
+            result.notifications_processed,
             result.next_sleep_seconds,
         )
 
@@ -671,26 +704,31 @@ class TeamsIngestWorker:
                 poll_scope=poll_scope,
             )
             if direct_sender_refs_by_id:
-                discovery = self._run_graph_poll_target(
+                discovered_targets = self.store.get_discovered_chat_targets(poll_scope)
+                if self._reconciliation_poll_due(
                     poll_scope=poll_scope,
                     target_kind="discovery",
                     target="/me/chats",
-                    operation=lambda: list(
-                        service._iter_one_on_one_chats(
-                            client,
-                            budget=service.new_pagination_budget(),
-                        )
-                    ),
-                )
-                if discovery.succeeded:
-                    discovered_targets = _one_on_one_chat_targets(discovery.value)
-                    self.store.replace_discovered_chat_targets(
-                        poll_scope,
-                        discovered_targets,
-                        discovered_at=datetime.now(UTC),
+                    now=datetime.now(UTC),
+                ):
+                    discovery = self._run_graph_poll_target(
+                        poll_scope=poll_scope,
+                        target_kind="discovery",
+                        target="/me/chats",
+                        operation=lambda: list(
+                            service._iter_one_on_one_chats(
+                                client,
+                                budget=service.new_pagination_budget(),
+                            )
+                        ),
                     )
-                else:
-                    discovered_targets = self.store.get_discovered_chat_targets(poll_scope)
+                    if discovery.succeeded:
+                        discovered_targets = _one_on_one_chat_targets(discovery.value)
+                        self.store.replace_discovered_chat_targets(
+                            poll_scope,
+                            discovered_targets,
+                            discovered_at=datetime.now(UTC),
+                        )
                 direct_targets = discovered_targets | {
                     target for target in channel_targets if target.startswith("chat:")
                 }
@@ -729,6 +767,24 @@ class TeamsIngestWorker:
                         ),
                     )
                 )
+            healthy_notification_targets = self._reconcile_subscriptions(
+                client,
+                service=service,
+                provider_config=provider_config,
+                directory_path=directory_path,
+                targets={request.target for request in target_poll_requests},
+            )
+            target_poll_requests = [
+                request
+                for request in target_poll_requests
+                if request.target not in healthy_notification_targets
+                or self._reconciliation_poll_due(
+                    poll_scope=poll_scope,
+                    target_kind=request.target_kind,
+                    target=request.target,
+                    now=datetime.now(UTC),
+                )
+            ]
             for target_poll_request, attempt in self._run_target_poll_requests(
                 poll_scope=poll_scope,
                 target_poll_requests=target_poll_requests,
@@ -746,6 +802,326 @@ class TeamsIngestWorker:
             direct_chats_polled=direct_chats_polled,
             new_messages_discovered=new_messages_discovered,
         )
+
+    def _reconcile_subscriptions(
+        self,
+        client: httpx.Client,
+        *,
+        service: GraphTeamsService,
+        provider_config: GatewayConfig,
+        directory_path: str,
+        targets: set[str],
+    ) -> set[str]:
+        reconciler = self._subscription_reconciler
+        if not self.worker_config.change_notifications_enabled or reconciler is None:
+            return set()
+        try:
+            tenant_id = tenant_id_from_graph_token(service, provider_config)
+            healthy_before_reconciliation = reconciler.healthy_targets(
+                directory_path=directory_path,
+                tenant_id=tenant_id,
+                now=datetime.now(UTC),
+            )
+            healthy_after_reconciliation = reconciler.reconcile_directory(
+                client,
+                service=service,
+                provider_config=provider_config,
+                directory_path=directory_path,
+                targets=targets,
+                now=datetime.now(UTC),
+            )
+            # A newly created or lifecycle-repaired subscription gets one immediate
+            # polling reconciliation before the target moves to the slow cadence.
+            return healthy_before_reconciliation & healthy_after_reconciliation
+        except Exception:
+            if self._notification_store is not None:
+                self._notification_store.replace_notification_target_health(
+                    directory_path=directory_path,
+                    desired_targets=targets,
+                    healthy_targets=set(),
+                    errors_by_target={
+                        target: "subscription reconciliation failed" for target in targets
+                    },
+                    updated_at=datetime.now(UTC),
+                )
+            logger.warning(
+                "Teams Graph subscription reconciliation failed directory=%s; "
+                "keeping fast polling fallback",
+                directory_path,
+                exc_info=True,
+            )
+            return set()
+
+    def _reconciliation_poll_due(
+        self,
+        *,
+        poll_scope: str,
+        target_kind: str,
+        target: str,
+        now: datetime,
+    ) -> bool:
+        if not self.worker_config.change_notifications_enabled:
+            return True
+        health = self.store.get_poll_health(_teams_poll_health_key(poll_scope, target_kind, target))
+        if health is None or health.last_success_at is None:
+            return True
+        return (
+            _coerce_utc(health.last_success_at)
+            + timedelta(
+                seconds=self.worker_config.change_notification_reconciliation_poll_interval_seconds
+            )
+            <= now
+        )
+
+    def _cleanup_owned_subscriptions(self, *, now: datetime) -> None:
+        reconciler = self._subscription_reconciler
+        store = self._notification_store
+        if reconciler is None or store is None:
+            return
+        subscriptions_by_directory: dict[str, list[Any]] = {}
+        for subscription in store.list_owned_subscriptions():
+            subscriptions_by_directory.setdefault(subscription.directory_path, []).append(
+                subscription
+            )
+        self._cleanup_subscription_groups(
+            subscriptions_by_directory,
+            now=now,
+            retain_fallback_targets=True,
+        )
+
+    def _cleanup_orphaned_subscriptions(
+        self,
+        *,
+        active_directories: set[str],
+        now: datetime,
+    ) -> None:
+        store = self._notification_store
+        if store is None:
+            return
+        subscriptions_by_directory: dict[str, list[Any]] = {}
+        for subscription in store.list_owned_subscriptions():
+            if subscription.directory_path not in active_directories:
+                subscriptions_by_directory.setdefault(
+                    subscription.directory_path, []
+                ).append(subscription)
+        self._cleanup_subscription_groups(
+            subscriptions_by_directory,
+            now=now,
+            retain_fallback_targets=False,
+        )
+
+    def _cleanup_subscription_groups(
+        self,
+        subscriptions_by_directory: dict[str, list[Any]],
+        *,
+        now: datetime,
+        retain_fallback_targets: bool,
+    ) -> None:
+        reconciler = self._subscription_reconciler
+        store = self._notification_store
+        if reconciler is None or store is None:
+            return
+        for directory_path, subscriptions in subscriptions_by_directory.items():
+            store.replace_notification_target_health(
+                directory_path=directory_path,
+                desired_targets=(
+                    {item.target for item in subscriptions}
+                    if retain_fallback_targets
+                    else set()
+                ),
+                healthy_targets=set(),
+                errors_by_target={
+                    item.target: "notifications disabled" for item in subscriptions
+                },
+                updated_at=now,
+            )
+            provider_config = self.runtime.provider_config.resolve_for_directory(directory_path)
+            if provider_config.teams_backend not in {"graph_api", "delegated_graph_api"}:
+                continue
+            try:
+                service = self._build_graph_service(
+                    provider_config=provider_config,
+                    channel_targets=[item.target for item in subscriptions],
+                    directory_path=directory_path,
+                )
+                with httpx.Client(timeout=provider_config.teams_timeout_seconds) as client:
+                    reconciler.cleanup_directory(
+                        client,
+                        service=service,
+                        directory_path=directory_path,
+                        now=now,
+                    )
+            except Exception as exc:
+                logger.warning(
+                    "Unable to clean up owned Teams Graph subscriptions directory=%s; "
+                    "subscriptions will be allowed to expire",
+                    directory_path,
+                    exc_info=True,
+                )
+                for subscription in subscriptions:
+                    store.upsert_owned_subscription(
+                        subscription.model_copy(
+                            update={
+                                "health": "abandoned",
+                                "cleanup_attempted": True,
+                                "updated_at": now,
+                                "last_error": " ".join(str(exc).split())[:500],
+                            }
+                        )
+                    )
+
+    def _process_notification_queue(
+        self,
+        *,
+        active_sessions: list[SessionManifest],
+        trigger_snapshot: _TeamsTriggerConfigSnapshot,
+        directories: list[str],
+    ) -> int:
+        store = self._notification_store
+        reconciler = self._subscription_reconciler
+        if store is None or reconciler is None:
+            return 0
+        processed = 0
+        now = datetime.now(UTC)
+        for entry in store.lease_notifications(now=now, limit=100, lease_seconds=60):
+            try:
+                if entry.notification_kind == "lifecycle":
+                    reconciler.apply_lifecycle_event(entry, now=datetime.now(UTC))
+                    store.complete_notification(entry, completed_at=datetime.now(UTC))
+                    processed += 1
+                    continue
+                discovered = self._process_message_notification(
+                    entry,
+                    active_sessions=active_sessions,
+                    trigger_snapshot=trigger_snapshot,
+                    directories=directories,
+                )
+                self._notify_trigger_orchestrator_if_needed(
+                    discovered,
+                    trigger_snapshot=trigger_snapshot,
+                )
+                store.complete_notification(entry, completed_at=datetime.now(UTC))
+                processed += 1
+            except Exception as exc:
+                retryable = _notification_error_is_retryable(exc)
+                age = datetime.now(UTC) - _coerce_utc(entry.received_at)
+                if retryable and age < timedelta(hours=24):
+                    backoff_seconds = min(900.0, float(2 ** min(entry.attempt_count, 9)))
+                    store.retry_notification(
+                        entry,
+                        next_attempt_at=datetime.now(UTC) + timedelta(seconds=backoff_seconds),
+                        error=str(exc),
+                    )
+                else:
+                    store.fail_notification(
+                        entry,
+                        failed_at=datetime.now(UTC),
+                        error=str(exc),
+                    )
+                logger.warning(
+                    "Teams notification processing failed subscription=%s retryable=%s",
+                    entry.subscription_id,
+                    retryable,
+                    exc_info=True,
+                )
+        return processed
+
+    def _process_message_notification(
+        self,
+        entry: TeamsNotificationQueueEntry,
+        *,
+        active_sessions: list[SessionManifest],
+        trigger_snapshot: _TeamsTriggerConfigSnapshot,
+        directories: list[str],
+    ) -> int:
+        store = self._notification_store
+        if store is None:
+            return 0
+        subscription = store.get_owned_subscription(entry.subscription_id)
+        if subscription is None or subscription.directory_path not in set(directories):
+            return 0
+        directory_path = subscription.directory_path
+        channel_targets = self._channel_targets_for_directory(
+            directory_path,
+            active_sessions=active_sessions,
+            trigger_targets_by_directory=trigger_snapshot.poll_targets_by_directory,
+        )
+        provider_config = self.runtime.provider_config.resolve_for_directory(directory_path)
+        if provider_config.teams_backend not in {"graph_api", "delegated_graph_api"}:
+            return 0
+        poll_scope = _teams_graph_poll_scope(provider_config, directory_path=directory_path)
+        discovered_chats = self.store.get_discovered_chat_targets(poll_scope)
+        target = subscription.target
+        direct_sender_refs = set(trigger_snapshot.direct_sender_refs)
+        if target not in channel_targets and not (
+            target.startswith("chat:") and target in discovered_chats and direct_sender_refs
+        ):
+            return 0
+        service = self._build_graph_service(
+            provider_config=provider_config,
+            channel_targets=[target],
+            directory_path=directory_path,
+        )
+        parsed_target = parse_teams_target(target)
+        with httpx.Client(timeout=provider_config.teams_timeout_seconds) as client:
+            resolved_tenant = tenant_id_from_graph_token(service, provider_config)
+            if resolved_tenant != subscription.tenant_id:
+                raise PermissionError("Teams notification tenant no longer matches credentials")
+            notified_target = _notification_resource_target(entry.resource)
+            if normalize_teams_target(notified_target) != normalize_teams_target(target):
+                raise ValueError("Teams notification resource does not match its subscription")
+            message_id, thread_id = _notification_message_locator(entry.resource)
+            if parsed_target.kind == "chat":
+                url = (
+                    f"{service.api_base_url}/chats/{quote(parsed_target.chat_id or '', safe='')}"
+                    f"/messages/{quote(message_id, safe='')}"
+                )
+            elif thread_id:
+                url = (
+                    f"{service.api_base_url}/teams/{quote(parsed_target.team_id or '', safe='')}"
+                    f"/channels/{quote(parsed_target.channel_id or '', safe='')}"
+                    f"/messages/{quote(thread_id, safe='')}/replies/"
+                    f"{quote(message_id, safe='')}"
+                )
+            else:
+                url = (
+                    f"{service.api_base_url}/teams/{quote(parsed_target.team_id or '', safe='')}"
+                    f"/channels/{quote(parsed_target.channel_id or '', safe='')}"
+                    f"/messages/{quote(message_id, safe='')}"
+                )
+            response = service._request_with_retries(client, "GET", url)
+            payload = response.json()
+            if not isinstance(payload, dict):
+                raise RuntimeError("Teams Graph message response was not an object")
+            message = self._normalize_message(
+                service._to_envelope(
+                    payload,
+                    target=parsed_target,
+                    reply_to_id=thread_id,
+                )
+            )
+            direct_sender_refs_by_id = None
+            store_unmatched = False
+            if parsed_target.kind == "chat":
+                direct_sender_refs_by_id = self._resolve_direct_message_sender_refs_by_id(
+                    client,
+                    service=service,
+                    sender_refs=direct_sender_refs,
+                    directory_path=directory_path,
+                    poll_scope=poll_scope,
+                )
+                store_unmatched = target in channel_targets
+            discovered = self._ingest_message_candidates(
+                [message],
+                channel_target=target,
+                cursor_state=self.store.get_cursor_state(target),
+                direct_message_sender_refs_by_id=direct_sender_refs_by_id,
+                store_unmatched_direct_messages=store_unmatched,
+                trigger_snapshot=trigger_snapshot,
+            )
+            if discovered > 0:
+                store.record_notification_ingestion(ingested_at=datetime.now(UTC))
+            return discovered
 
     def _run_target_poll_requests(
         self,
@@ -1029,8 +1405,6 @@ class TeamsIngestWorker:
     ) -> int:
         target = parse_teams_target(channel_target)
         cursor_state = self.store.get_cursor_state(channel_target)
-        discovered: list[TeamsInboxMessage] = []
-        latest_seen_message: TeamsInboxMessage | None = None
         candidates: list[TeamsInboxMessage] = []
         if target.kind == "chat":
             iterator = service._iter_chat_messages(
@@ -1055,11 +1429,35 @@ class TeamsIngestWorker:
                 candidates.append(
                     self._normalize_message(service._to_envelope(reply_payload, target=target))
                 )
+        return self._ingest_message_candidates(
+            candidates,
+            channel_target=channel_target,
+            cursor_state=cursor_state,
+            direct_message_sender_refs_by_id=direct_message_sender_refs_by_id,
+            store_unmatched_direct_messages=store_unmatched_direct_messages,
+            trigger_snapshot=trigger_snapshot,
+        )
+
+    def _ingest_message_candidates(
+        self,
+        candidates: list[TeamsInboxMessage],
+        *,
+        channel_target: str,
+        cursor_state: Any | None,
+        direct_message_sender_refs_by_id: dict[str, set[str]] | None = None,
+        store_unmatched_direct_messages: bool = False,
+        trigger_snapshot: _TeamsTriggerConfigSnapshot,
+    ) -> int:
+        discovered: list[TeamsInboxMessage] = []
+        latest_seen_message: TeamsInboxMessage | None = None
         candidates.sort(key=lambda item: (item.created_at, item.cursor))
         for message in candidates:
             if not message.message_id or message.metadata.get("source") != "teams_graph_api":
                 continue
-            if not _message_is_after_cursor_state(message, cursor_state):
+            if (
+                not _message_is_after_cursor_state(message, cursor_state)
+                and self.store.get_message(message.cursor) is not None
+            ):
                 continue
             latest_seen_message = message
             if direct_message_sender_refs_by_id is not None:
@@ -1226,16 +1624,15 @@ class TeamsIngestWorker:
             or str(metadata.get("author_name") or "").strip()
         )
         author_id = str(metadata.get("author_id", envelope.author_id)).strip() or envelope.author_id
-        team_id = str(metadata.get("team_id", envelope.team_id)).strip() or envelope.team_id
-        channel_id = (
-            str(metadata.get("channel_id", envelope.channel_id)).strip() or envelope.channel_id
-        )
+        raw_team_id = metadata.get("team_id", envelope.team_id)
+        team_id = str(raw_team_id or envelope.team_id or "").strip()
+        raw_channel_id = metadata.get("channel_id", envelope.channel_id)
+        channel_id = str(raw_channel_id or envelope.channel_id or "").strip()
         raw_chat_id = metadata.get("chat_id", envelope.chat_id)
         chat_id = str(raw_chat_id).strip() if raw_chat_id is not None else ""
         chat_id = chat_id or None
-        thread_id = (
-            str(metadata.get("thread_id", envelope.thread_id or "")).strip() or envelope.thread_id
-        )
+        raw_thread_id = metadata.get("thread_id", envelope.thread_id)
+        thread_id = str(raw_thread_id or envelope.thread_id or "").strip() or None
         target = _target_from_envelope(envelope, metadata=metadata)
         metadata.setdefault("target", target)
         metadata.setdefault("target_type", "chat" if chat_id else "channel")
@@ -1532,6 +1929,62 @@ def _coerce_utc(value: datetime) -> datetime:
     return value.astimezone(UTC)
 
 
+def _notification_message_locator(resource: str) -> tuple[str, str | None]:
+    normalized = unquote(str(resource or "").strip())
+    reply_match = re.search(
+        r"/messages(?:\('([^']+)'\)|/([^/]+))/replies(?:\('([^']+)'\)|/([^/]+))/?$",
+        normalized,
+        flags=re.IGNORECASE,
+    )
+    if reply_match is not None:
+        thread_id = next(value for value in reply_match.groups()[:2] if value)
+        message_id = next(value for value in reply_match.groups()[2:] if value)
+        return message_id, thread_id
+    message_match = re.search(
+        r"/messages(?:\('([^']+)'\)|/([^/]+))/?$",
+        normalized,
+        flags=re.IGNORECASE,
+    )
+    if message_match is None:
+        raise ValueError("Teams notification resource does not identify a message")
+    message_id = next(value for value in message_match.groups() if value)
+    return message_id, None
+
+
+def _notification_resource_target(resource: str) -> str:
+    normalized = unquote(str(resource or "").strip())
+    channel_match = re.search(
+        r"(?:^|/)teams(?:\('([^']+)'\)|/([^/]+))/channels"
+        r"(?:\('([^']+)'\)|/([^/]+))/messages",
+        normalized,
+        flags=re.IGNORECASE,
+    )
+    if channel_match is not None:
+        team_id = next(value for value in channel_match.groups()[:2] if value)
+        channel_id = next(value for value in channel_match.groups()[2:] if value)
+        return f"{team_id}/{channel_id}"
+    chat_match = re.search(
+        r"(?:^|/)chats(?:\('([^']+)'\)|/([^/]+))/messages",
+        normalized,
+        flags=re.IGNORECASE,
+    )
+    if chat_match is not None:
+        chat_id = next(value for value in chat_match.groups() if value)
+        return f"chat:{chat_id}"
+    raise ValueError("Teams notification resource does not identify a target")
+
+
+def _notification_error_is_retryable(exc: BaseException) -> bool:
+    if isinstance(exc, (httpx.TimeoutException, httpx.TransportError, TimeoutError)):
+        return True
+    if isinstance(exc, TeamsAuthenticationError):
+        return True
+    if isinstance(exc, httpx.HTTPStatusError):
+        status_code = exc.response.status_code
+        return status_code in {401, 404, 408, 409, 425, 429} or status_code >= 500
+    return False
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run the Teams ingest worker.")
     parser.add_argument("--runtime-dir", default="runtime")
@@ -1567,6 +2020,7 @@ def main() -> None:
             f"targets_skipped_backoff={result.targets_skipped_backoff} "
             f"targets_failed={result.targets_failed} "
             f"targets_recovered={result.targets_recovered} "
+            f"notifications_processed={result.notifications_processed} "
             f"sleep_seconds={result.next_sleep_seconds:.3f}"
         )
         return

@@ -2899,6 +2899,11 @@ compatibility with older live workflow packs and should not be used for new prov
   host-side Teams ingest worker that polls Microsoft Graph on the host and writes into the Teams
   message store consumed by trigger orchestration.
 - The ingest worker uses the same delegated Teams auth settings described above.
+- Optional Teams Graph change notifications use the loopback-only
+  `evander-teams-notifications.service`. The callback durably queues deliveries; the ingest worker
+  owns subscription reconciliation and exact-message retrieval. Polling remains the automatic
+  per-target fallback when notification mode is disabled, creation or renewal fails, a lifecycle
+  event marks a subscription unhealthy, or the subscription expires.
 - Graph retry cooldowns are stored per logical endpoint/target. Inspect the Teams inbox
   `poll_health` diagnostics before changing service-wide polling; an unhealthy channel, chat,
   discovery request, or user lookup must not back off unrelated targets.
@@ -2971,6 +2976,7 @@ This creates:
 - `evander-scheduled-wake.service`
 - `evander-managed-git-refresh.service`
 - `evander-teams-ingest.service`
+- `evander-teams-notifications.service`
 - `evander-teams-meeting-ingest.service`
 - `evander-effect-orchestrator.service`
 - `evander-trigger-orchestrator.service`
@@ -3014,6 +3020,7 @@ sudo systemctl start evander-discord-wake.service
 sudo systemctl start evander-scheduled-wake.service
 sudo systemctl start evander-managed-git-refresh.service
 sudo systemctl start evander-teams-ingest.service
+sudo systemctl start evander-teams-notifications.service
 sudo systemctl start evander-teams-meeting-ingest.service
 sudo systemctl status evander-team-runtime.target
 sudo systemctl status evander-firewall.service
@@ -3030,6 +3037,7 @@ sudo systemctl status evander-discord-wake.service
 sudo systemctl status evander-scheduled-wake.service
 sudo systemctl status evander-managed-git-refresh.service
 sudo systemctl status evander-teams-ingest.service
+sudo systemctl status evander-teams-notifications.service
 sudo systemctl status evander-teams-meeting-ingest.service
 sudo systemctl status evander-effect-orchestrator.service
 sudo systemctl status evander-trigger-orchestrator.service

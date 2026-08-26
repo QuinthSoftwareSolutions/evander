@@ -89,6 +89,25 @@ def test_teams_inbox_store_persists_and_resumes_channel_cursor_state(tmp_path: P
     assert cursor_state.created_at == datetime(2026, 3, 30, 11, 2, tzinfo=timezone.utc)
 
 
+def test_teams_inbox_store_cursor_advancement_is_monotonic(tmp_path: Path) -> None:
+    store = TeamsInboxStore(tmp_path / "runtime" / "teams-inbox-store.db")
+    store.set_cursor(
+        "team-a/channel-1",
+        "team-a/channel-1/newer",
+        created_at=datetime(2026, 3, 30, 11, 2, tzinfo=timezone.utc),
+    )
+
+    store.set_cursor(
+        "team-a/channel-1",
+        "team-a/channel-1/delayed",
+        created_at=datetime(2026, 3, 30, 11, 1, tzinfo=timezone.utc),
+    )
+
+    cursor_state = store.get_cursor_state("team-a/channel-1")
+    assert cursor_state is not None
+    assert cursor_state.cursor == "team-a/channel-1/newer"
+
+
 def test_teams_inbox_store_compacts_old_messages_once_channel_cursor_has_advanced(
     tmp_path: Path,
 ) -> None:
