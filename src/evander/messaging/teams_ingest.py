@@ -73,7 +73,7 @@ from evander.messaging.teams_inbox_store import (
 )
 from evander.messaging.teams_subscriptions import (
     TeamsSubscriptionReconciler,
-    tenant_id_from_graph_token,
+    resolve_graph_tenant_id,
 )
 from evander.triggers.providers.teams_message_events import (
     CommunicationTeamsMessageEventMatcher,
@@ -161,10 +161,15 @@ class _CapturedTeamsMessageMatcher:
     directory_path: str
     matcher: _TeamsMessageMatcher
 
-    def events_for(self, message: TeamsInboxMessage) -> tuple[TriggerEvent, ...]:
+    def events_for(
+        self,
+        message: TeamsInboxMessage,
+        *,
+        bypass_cursor: bool = False,
+    ) -> tuple[TriggerEvent, ...]:
         if isinstance(self.matcher, CommunicationTeamsMessageEventMatcher):
-            return self.matcher.events_for(message)
-        event = self.matcher.event_for(message)
+            return self.matcher.events_for(message, bypass_cursor=bypass_cursor)
+        event = self.matcher.event_for(message, bypass_cursor=bypass_cursor)
         return (event,) if event is not None else ()
 
 
@@ -177,6 +182,10 @@ class _TeamsTriggerConfigSnapshot:
     poll_targets_by_directory: Mapping[str, frozenset[str]]
     matchers: tuple[_CapturedTeamsMessageMatcher, ...]
     event_queue: _TriggerEventQueue | None
+
+
+class _VerifiedNotificationPublicationError(RuntimeError):
+    pass
 
 
 class TeamsIngestWorker:
@@ -536,7 +545,10 @@ class TeamsIngestWorker:
                     direct_sender_refs.update(
                         value.strip() for value in materialized.sender_user_ids if value.strip()
                     )
-                    if not self.worker_config.publish_trigger_events_directly:
+                    if not (
+                        self.worker_config.publish_trigger_events_directly
+                        or self.worker_config.change_notifications_enabled
+                    ):
                         continue
                     matcher = TeamsDirectMessageEventMatcher.from_cursor_state(
                         materialized,
@@ -547,7 +559,10 @@ class TeamsIngestWorker:
                         missing_cursor_baseline=captured_at,
                     )
                 elif isinstance(materialized, TeamsNewMessageTriggerDefinition):
-                    if not self.worker_config.publish_trigger_events_directly:
+                    if not (
+                        self.worker_config.publish_trigger_events_directly
+                        or self.worker_config.change_notifications_enabled
+                    ):
                         continue
                     matcher = TeamsNewMessageEventMatcher.from_cursor_state(
                         materialized,
@@ -587,7 +602,10 @@ class TeamsIngestWorker:
                         targets_by_directory.setdefault(directory_path, set()).update(
                             matcher.teams_targets_by_address
                         )
-                    if not self.worker_config.publish_trigger_events_directly:
+                    if not (
+                        self.worker_config.publish_trigger_events_directly
+                        or self.worker_config.change_notifications_enabled
+                    ):
                         continue
                 else:
                     continue
@@ -619,7 +637,10 @@ class TeamsIngestWorker:
                 )
 
         event_queue = None
-        if self.worker_config.publish_trigger_events_directly and matchers:
+        if (
+            self.worker_config.publish_trigger_events_directly
+            or self.worker_config.change_notifications_enabled
+        ) and matchers:
             try:
                 event_queue = self._event_queue_for(trigger_config)
             except Exception:
@@ -816,7 +837,11 @@ class TeamsIngestWorker:
         if not self.worker_config.change_notifications_enabled or reconciler is None:
             return set()
         try:
-            tenant_id = tenant_id_from_graph_token(service, provider_config)
+            tenant_id = resolve_graph_tenant_id(
+                client,
+                service=service,
+                provider_config=provider_config,
+            )
             healthy_before_reconciliation = reconciler.healthy_targets(
                 directory_path=directory_path,
                 tenant_id=tenant_id,
@@ -829,6 +854,7 @@ class TeamsIngestWorker:
                 directory_path=directory_path,
                 targets=targets,
                 now=datetime.now(UTC),
+                tenant_id=tenant_id,
             )
             # A newly created or lifecycle-repaired subscription gets one immediate
             # polling reconciliation before the target moves to the slow cadence.
@@ -1067,7 +1093,11 @@ class TeamsIngestWorker:
         )
         parsed_target = parse_teams_target(target)
         with httpx.Client(timeout=provider_config.teams_timeout_seconds) as client:
-            resolved_tenant = tenant_id_from_graph_token(service, provider_config)
+            resolved_tenant = resolve_graph_tenant_id(
+                client,
+                service=service,
+                provider_config=provider_config,
+            )
             if resolved_tenant != subscription.tenant_id:
                 raise PermissionError("Teams notification tenant no longer matches credentials")
             notified_target = _notification_resource_target(entry.resource)
@@ -1118,7 +1148,7 @@ class TeamsIngestWorker:
                 [message],
                 channel_target=target,
                 cursor_state=self.store.get_cursor_state(target),
-                allow_pre_cursor_unseen=True,
+                verified_notification_delivery=True,
                 direct_message_sender_refs_by_id=direct_sender_refs_by_id,
                 store_unmatched_direct_messages=store_unmatched,
                 trigger_snapshot=trigger_snapshot,
@@ -1448,7 +1478,7 @@ class TeamsIngestWorker:
         *,
         channel_target: str,
         cursor_state: Any | None,
-        allow_pre_cursor_unseen: bool = False,
+        verified_notification_delivery: bool = False,
         direct_message_sender_refs_by_id: dict[str, set[str]] | None = None,
         store_unmatched_direct_messages: bool = False,
         trigger_snapshot: _TeamsTriggerConfigSnapshot,
@@ -1460,7 +1490,7 @@ class TeamsIngestWorker:
             if not message.message_id or message.metadata.get("source") != "teams_graph_api":
                 continue
             if not _message_is_after_cursor_state(message, cursor_state):
-                if not allow_pre_cursor_unseen or self.store.get_message(message.cursor) is not None:
+                if not verified_notification_delivery:
                     continue
             latest_seen_message = message
             if direct_message_sender_refs_by_id is not None:
@@ -1478,11 +1508,17 @@ class TeamsIngestWorker:
                     )
             if self._is_known_status_post(message.cursor):
                 continue
-            if self.store.add_message_if_new(message):
+            added = self.store.add_message_if_new(message)
+            if added:
                 discovered.append(message)
+            if verified_notification_delivery or (
+                added and self.worker_config.publish_trigger_events_directly
+            ):
                 self._publish_matching_trigger_events(
                     message,
                     trigger_snapshot=trigger_snapshot,
+                    bypass_cursor=verified_notification_delivery,
+                    fail_on_error=verified_notification_delivery,
                 )
         latest = (
             latest_seen_message
@@ -1504,16 +1540,26 @@ class TeamsIngestWorker:
         message: TeamsInboxMessage,
         *,
         trigger_snapshot: _TeamsTriggerConfigSnapshot,
+        bypass_cursor: bool = False,
+        fail_on_error: bool = False,
     ) -> None:
         event_queue = trigger_snapshot.event_queue
-        if event_queue is None or not trigger_snapshot.matchers:
+        if not trigger_snapshot.matchers:
+            return
+        if event_queue is None:
+            if fail_on_error:
+                raise _VerifiedNotificationPublicationError(
+                    "verified Teams notification trigger queue is unavailable"
+                )
             return
 
         message_matched = False
+        failures: list[Exception] = []
         for captured_matcher in trigger_snapshot.matchers:
             try:
-                events = captured_matcher.events_for(message)
-            except Exception:
+                events = captured_matcher.events_for(message, bypass_cursor=bypass_cursor)
+            except Exception as exc:
+                failures.append(exc)
                 with self._cycle_state_lock:
                     self._cycle_publication_failures += 1
                 logger.warning(
@@ -1547,7 +1593,8 @@ class TeamsIngestWorker:
                         raise RuntimeError(
                             "trigger queue returned a record for a different deterministic event id"
                         )
-                except Exception:
+                except Exception as exc:
+                    failures.append(exc)
                     with self._cycle_state_lock:
                         self._cycle_publication_failures += 1
                     logger.warning(
@@ -1571,6 +1618,10 @@ class TeamsIngestWorker:
         if message_matched:
             with self._cycle_state_lock:
                 self._cycle_messages_matched += 1
+        if fail_on_error and failures:
+            raise _VerifiedNotificationPublicationError(
+                "verified Teams notification trigger publication failed"
+            ) from failures[0]
 
     def _poll_direct_chats(
         self,
@@ -1978,6 +2029,8 @@ def _notification_resource_target(resource: str) -> str:
 
 
 def _notification_error_is_retryable(exc: BaseException) -> bool:
+    if isinstance(exc, _VerifiedNotificationPublicationError):
+        return True
     if isinstance(exc, (httpx.TimeoutException, httpx.TransportError, TimeoutError)):
         return True
     if isinstance(exc, TeamsAuthenticationError):

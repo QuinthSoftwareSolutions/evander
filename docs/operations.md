@@ -755,7 +755,7 @@ Storage layout for directory config:
   - `teams_delegated_client_id`
   - optional `teams_delegated_tenant_id`, `teams_delegated_scopes`,
     `teams_delegated_authority_base_url`, and `teams_delegated_credential_store_path`
-  - the default delegated scope set includes channel read/send and `Chat.ReadWrite`
+  - the default delegated scope set includes `User.Read`, channel read/send, and `Chat.ReadWrite`
   - Teams direct-message sender mail/UPN resolution and outbound mention lookup may require adding
     a Graph user-read scope such as `User.ReadBasic.All` or `User.Read`
 - The Entra app behind `teams_delegated_client_id` must be configured for public client /
@@ -2925,7 +2925,10 @@ compatibility with older live workflow packs and should not be used for new prov
   cursors; the trigger orchestrator still reconciles and acknowledges events and recovers any message
   missed because matching, queue publication, or a wake notification failed.
 - To roll back the fast path, set `publish_trigger_events_directly` to `false` and restart
-  `evander-teams-ingest.service`. Inspect the Teams ingest cycle log fields `messages_matched`,
+  `evander-teams-ingest.service`. This disables direct publication for polling; verified exact
+  notifications still use deterministic queue publication to preserve out-of-order messages, so
+  disable change notifications too when every direct publication path must be removed. Inspect the
+  Teams ingest cycle log fields `messages_matched`,
   `events_created`, `events_deduplicated`, `publication_failures`, `effect_wake_notified`,
   `trigger_wake_notified`, and `workflow_config_revision` when diagnosing delivery.
 - This polling path is independent from the wake workers; Discord/scheduled wake behavior now stays with

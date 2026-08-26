@@ -2108,7 +2108,9 @@ Teams targets of `trigger:communication:new-message`. Newly persisted matching m
 atomically to the configured orchestration queue and wake the effect orchestrator once per cycle. The
 trigger orchestrator is still notified and remains authoritative for cursor advancement and recovery.
 Set the field to `false` and restart `evander-teams-ingest.service` to restore the prior
-persist-and-wake path without direct queue publication.
+persist-and-wake path for polling. Verified exact change-notification deliveries still publish
+through the deterministic event queue so an out-of-order message cannot fall behind a time cursor;
+disable change notifications as well to remove every direct publication path.
 
 Teams Graph change notifications are optional and disabled by default. Set
 `change_notifications_enabled` to `true` together with an HTTPS
@@ -2121,6 +2123,12 @@ expiry, and retain a 60-second reconciliation poll for healthy targets. Targets 
 healthy subscription continue polling at `poll_interval_seconds` (two seconds by default) without a
 restart. Turning notifications off restores fast polling immediately, stops creation and renewal,
 and best-effort deletes only subscriptions recorded as owned by this deployment.
+Subscription reconciliation uses a concrete `teams_delegated_tenant_id` when configured and
+otherwise resolves the tenant with Graph `GET /organization?$select=id`; it never depends on the
+access-token encoding. The default delegated scopes include `User.Read` for that lookup. A static
+application token must either allow `Organization.Read.All` or use a concrete tenant setting.
+Persisted callback URLs are compared during reconciliation, and changing the public base URL
+replaces the old Graph subscriptions before they can be treated as healthy.
 
 The callback validates endpoint challenges, tenant, owned subscription ID, and constant-time
 `clientState` hashes before durably acknowledging notifications. The ingest worker then fetches the
@@ -2136,7 +2144,7 @@ Key delegated Teams provider settings now include:
 - `teams_delegated_identity_id`
 - `teams_delegated_client_id`
 - optional `teams_delegated_tenant_id`
-- optional `teams_delegated_scopes` (default includes `offline_access`,
+- optional `teams_delegated_scopes` (default includes `offline_access`, `User.Read`,
   `ChannelMessage.Read.All`, `ChannelMessage.Send`, and `Chat.ReadWrite`)
 - Resolving Teams direct-message sender mail addresses and outbound mention targets may require
   adding a Graph user-read scope such as `User.ReadBasic.All` or `User.Read.All` and rerunning

@@ -8,6 +8,9 @@
   subscription, and constant-time client state before exact-message ingestion.
 - Kept two-second per-target polling as the disabled or degraded fallback, with 60-second
   reconciliation polling for healthy subscriptions and monotonic cursor advancement.
+- Preserved out-of-order verified deliveries with deterministic trigger-event deduplication,
+  resolved opaque-token tenants through configuration or Graph, and replaced subscriptions when
+  callback URLs change.
 - Added secret-free Admin and health status, Caddy routing, systemd and Ansible deployment wiring,
   and a CI/CD-owned Truman configuration while local deployments remain polling-only by default.
 

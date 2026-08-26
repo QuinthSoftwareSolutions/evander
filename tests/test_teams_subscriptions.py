@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import base64
 import json
 from datetime import UTC, datetime, timedelta
 
@@ -15,22 +14,21 @@ from evander.messaging.teams_inbox_store import (
 from evander.messaging.teams_subscriptions import TeamsSubscriptionReconciler
 
 
-def _jwt(tenant_id: str) -> str:
-    payload = base64.urlsafe_b64encode(json.dumps({"tid": tenant_id}).encode()).decode().rstrip("=")
-    return f"header.{payload}.signature"
+_NOTIFICATION_URL = "https://notifications.example.test/msgraph/teams/notifications"
+_LIFECYCLE_NOTIFICATION_URL = "https://notifications.example.test/msgraph/teams/lifecycle"
 
 
 class _FakeGraphService:
     api_base_url = "https://graph.example.test/v1.0"
 
-    def __init__(self, tenant_id: str = "tenant-a") -> None:
-        self.token = _jwt(tenant_id)
+    def __init__(self) -> None:
+        self.token = "opaque-access-token"
 
     def _resolve_token(self) -> str:
         return self.token
 
-    def _request_with_retries(self, client, method, url, *, json=None):
-        response = client.request(method, url, json=json)
+    def _request_with_retries(self, client, method, url, *, params=None, json=None):
+        response = client.request(method, url, params=params, json=json)
         response.raise_for_status()
         return response
 
@@ -49,6 +47,7 @@ def _provider_config(tmp_path) -> GatewayConfig:
         {
             "runtime_dir": tmp_path / "runtime",
             "teams_backend": "graph_api",
+            "teams_delegated_tenant_id": "tenant-a",
         }
     )
 
@@ -112,6 +111,53 @@ def test_subscription_reconciler_creates_and_renews_owned_subscription(tmp_path)
     assert create_payload["resource"] == "/teams/team-a/channels/channel-a/messages"
     assert create_payload["lifecycleNotificationUrl"].endswith("/msgraph/teams/lifecycle")
     assert [method for method, _payload in requests] == ["POST", "PATCH"]
+
+
+def test_subscription_reconciler_resolves_opaque_token_tenant_through_graph(tmp_path) -> None:
+    store = TeamsInboxStore(tmp_path / "runtime" / "teams-inbox-store.db")
+    reconciler = TeamsSubscriptionReconciler(store=store, worker_config=_worker_config())
+    requests: list[httpx.Request] = []
+    now = datetime.now(UTC)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if request.url.path == "/v1.0/organization":
+            assert request.url.params["$select"] == "id"
+            return httpx.Response(
+                200,
+                request=request,
+                json={"value": [{"id": "tenant-from-graph"}]},
+            )
+        return httpx.Response(
+            201,
+            request=request,
+            json={
+                "id": "opaque-token-subscription",
+                "expirationDateTime": (now + timedelta(hours=48)).isoformat(),
+            },
+        )
+
+    provider_config = GatewayConfig.model_validate(
+        {
+            "runtime_dir": tmp_path / "runtime",
+            "teams_backend": "graph_api",
+        }
+    )
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        healthy = reconciler.reconcile_directory(
+            client,
+            service=_FakeGraphService(),
+            provider_config=provider_config,
+            directory_path="root",
+            targets={"team-a/channel-a"},
+            now=now,
+        )
+
+    assert healthy == {"team-a/channel-a"}
+    assert [request.method for request in requests] == ["GET", "POST"]
+    subscription = store.get_owned_subscription("opaque-token-subscription")
+    assert subscription is not None
+    assert subscription.tenant_id == "tenant-from-graph"
 
 
 def test_subscription_reconciler_never_adopts_foreign_subscription(tmp_path) -> None:
@@ -281,6 +327,8 @@ def test_reauthorization_lifecycle_event_reauthorizes_and_renews(tmp_path) -> No
             tenant_id="tenant-a",
             expires_at=now + timedelta(hours=48),
             health="reauthorization_required",
+            notification_url=_NOTIFICATION_URL,
+            lifecycle_notification_url=_LIFECYCLE_NOTIFICATION_URL,
             client_state_sha256="0" * 64,
             created_at=now,
             updated_at=now,
@@ -328,6 +376,8 @@ def test_duplicate_creation_recovers_only_recorded_owned_subscription(tmp_path) 
             directory_path="root",
             tenant_id="tenant-a",
             expires_at=now - timedelta(minutes=1),
+            notification_url=_NOTIFICATION_URL,
+            lifecycle_notification_url=_LIFECYCLE_NOTIFICATION_URL,
             client_state_sha256="0" * 64,
             created_at=now - timedelta(days=2),
             updated_at=now - timedelta(days=2),
@@ -359,6 +409,71 @@ def test_duplicate_creation_recovers_only_recorded_owned_subscription(tmp_path) 
 
     assert calls == ["PATCH", "POST", "PATCH"]
     assert healthy == {"team-a/channel-a"}
+
+
+def test_subscription_reconciler_recreates_subscription_after_callback_url_change(
+    tmp_path,
+) -> None:
+    store = TeamsInboxStore(tmp_path / "runtime" / "teams-inbox-store.db")
+    now = datetime.now(UTC)
+    store.upsert_owned_subscription(
+        TeamsOwnedSubscription(
+            subscription_id="old-callback-subscription",
+            owner_id=store.notification_owner_id(),
+            target="team-a/channel-a",
+            resource="/teams/team-a/channels/channel-a/messages",
+            directory_path="root",
+            tenant_id="tenant-a",
+            expires_at=now + timedelta(hours=48),
+            notification_url="https://old.example.test/msgraph/teams/notifications",
+            lifecycle_notification_url="https://old.example.test/msgraph/teams/lifecycle",
+            client_state_sha256="0" * 64,
+            created_at=now - timedelta(days=1),
+            updated_at=now - timedelta(days=1),
+        )
+    )
+    reconciler = TeamsSubscriptionReconciler(store=store, worker_config=_worker_config())
+    assert reconciler.healthy_targets(
+        directory_path="root",
+        tenant_id="tenant-a",
+        now=now,
+    ) == set()
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if request.method == "DELETE":
+            return httpx.Response(204, request=request)
+        payload = json.loads(request.content)
+        assert payload["notificationUrl"] == _NOTIFICATION_URL
+        assert payload["lifecycleNotificationUrl"] == _LIFECYCLE_NOTIFICATION_URL
+        return httpx.Response(
+            201,
+            request=request,
+            json={
+                "id": "new-callback-subscription",
+                "expirationDateTime": (now + timedelta(hours=48)).isoformat(),
+            },
+        )
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        healthy = reconciler.reconcile_directory(
+            client,
+            service=_FakeGraphService(),
+            provider_config=_provider_config(tmp_path),
+            directory_path="root",
+            targets={"team-a/channel-a"},
+            now=now,
+        )
+
+    assert healthy == {"team-a/channel-a"}
+    assert [request.method for request in requests] == ["DELETE", "POST"]
+    previous = store.get_owned_subscription("old-callback-subscription")
+    replacement = store.get_owned_subscription("new-callback-subscription")
+    assert previous is not None and previous.health == "deleted"
+    assert replacement is not None
+    assert replacement.notification_url == _NOTIFICATION_URL
+    assert replacement.lifecycle_notification_url == _LIFECYCLE_NOTIFICATION_URL
 
 
 def test_failed_owned_subscription_cleanup_is_attempted_once_then_abandoned(tmp_path) -> None:

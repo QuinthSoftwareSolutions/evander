@@ -771,7 +771,7 @@ contract. See [live-smoke-tests.md](docs/live-smoke-tests.md) for live provider 
   - `teams_delegated_client_id: <ENTRA_APP_CLIENT_ID>`
   - optional `teams_delegated_tenant_id`, `teams_delegated_scopes`,
     `teams_delegated_authority_base_url`, and `teams_delegated_credential_store_path`
-  - default delegated scopes now include channel read/send plus `Chat.ReadWrite` for group chats
+  - default delegated scopes now include `User.Read`, channel read/send, and `Chat.ReadWrite`
   - Teams direct-message sender mail/UPN resolution and outbound mention lookup may require adding
     a Graph user-read scope such as `User.ReadBasic.All` or `User.Read`
 - The Entra app registration used for `teams_delegated_client_id` must allow public client /

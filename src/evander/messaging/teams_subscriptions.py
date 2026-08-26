@@ -1,8 +1,6 @@
 from __future__ import annotations
 
-import base64
 import hashlib
-import json
 import logging
 import secrets
 from datetime import UTC, datetime, timedelta
@@ -20,6 +18,8 @@ from evander.services import GraphTeamsService, parse_teams_target
 
 logger = logging.getLogger(__name__)
 
+_NON_CONCRETE_TENANT_IDS = {"organizations", "common", "consumers"}
+
 
 def notification_resource_for_target(target: str) -> str:
     parsed = parse_teams_target(target)
@@ -30,23 +30,32 @@ def notification_resource_for_target(target: str) -> str:
     raise ValueError("Teams user targets cannot be subscribed before chat discovery")
 
 
-def tenant_id_from_graph_token(service: GraphTeamsService, provider_config: GatewayConfig) -> str:
-    token = service._resolve_token()
-    parts = token.split(".")
-    if len(parts) >= 2:
-        try:
-            encoded = parts[1] + "=" * (-len(parts[1]) % 4)
-            payload = json.loads(base64.urlsafe_b64decode(encoded).decode("utf-8"))
-        except (ValueError, UnicodeDecodeError, json.JSONDecodeError):
-            payload = {}
-        if isinstance(payload, dict):
-            tenant_id = str(payload.get("tid") or "").strip()
-            if tenant_id:
-                return tenant_id
-    fallback = str(provider_config.teams_delegated_tenant_id or "").strip()
-    if fallback and fallback not in {"organizations", "common", "consumers"}:
-        return fallback
-    raise RuntimeError("Teams Graph access token does not identify a concrete tenant")
+def resolve_graph_tenant_id(
+    client: httpx.Client,
+    *,
+    service: GraphTeamsService,
+    provider_config: GatewayConfig,
+) -> str:
+    configured = str(provider_config.teams_delegated_tenant_id or "").strip()
+    if configured and configured.casefold() not in _NON_CONCRETE_TENANT_IDS:
+        return configured
+
+    response = service._request_with_retries(
+        client,
+        "GET",
+        f"{service.api_base_url}/organization",
+        params={"$select": "id"},
+    )
+    payload = response.json()
+    values = payload.get("value") if isinstance(payload, dict) else None
+    tenant_ids = {
+        str(item.get("id") or "").strip()
+        for item in values or []
+        if isinstance(item, dict) and str(item.get("id") or "").strip()
+    }
+    if len(tenant_ids) != 1:
+        raise RuntimeError("Teams Graph organization lookup did not identify one tenant")
+    return tenant_ids.pop()
 
 
 class TeamsSubscriptionReconciler:
@@ -69,8 +78,13 @@ class TeamsSubscriptionReconciler:
         directory_path: str,
         targets: set[str],
         now: datetime,
+        tenant_id: str | None = None,
     ) -> set[str]:
-        tenant_id = tenant_id_from_graph_token(service, provider_config)
+        tenant_id = tenant_id or resolve_graph_tenant_id(
+            client,
+            service=service,
+            provider_config=provider_config,
+        )
         desired = {target for target in targets if parse_teams_target(target).kind != "user"}
         for target in sorted(desired):
             reconciliation_state = self.store.get_subscription_reconciliation_state(
@@ -172,6 +186,7 @@ class TeamsSubscriptionReconciler:
             and item.tenant_id == tenant_id
             and item.health == "active"
             and _utc(item.expires_at) > now
+            and self._uses_current_callback_urls(item)
         }
 
     def apply_lifecycle_event(
@@ -219,6 +234,16 @@ class TeamsSubscriptionReconciler:
         )
         if existing is not None and existing.owner_id != self.owner_id:
             return False, "subscription is owned by another deployment"
+        if existing is not None and not self._uses_current_callback_urls(existing):
+            if not self._delete_owned(
+                client,
+                service=service,
+                subscription=existing,
+                now=now,
+            ):
+                refreshed = self.store.get_owned_subscription(existing.subscription_id)
+                return False, refreshed.last_error if refreshed is not None else None
+            existing = None
         if existing is not None and existing.health == "reauthorization_required":
             try:
                 service._request_with_retries(
@@ -266,8 +291,8 @@ class TeamsSubscriptionReconciler:
         existing: TeamsOwnedSubscription | None,
         now: datetime,
     ) -> tuple[bool, str | None]:
-        base_url = str(self.worker_config.change_notification_public_base_url or "").rstrip("/")
-        if not base_url:
+        notification_url, lifecycle_notification_url = self._callback_urls()
+        if not notification_url or not lifecycle_notification_url:
             return False, "change notification public base URL is not configured"
         client_state = secrets.token_urlsafe(48)[:96]
         requested_expiry = now + timedelta(
@@ -275,8 +300,8 @@ class TeamsSubscriptionReconciler:
         )
         payload = {
             "changeType": "created",
-            "notificationUrl": f"{base_url}/msgraph/teams/notifications",
-            "lifecycleNotificationUrl": f"{base_url}/msgraph/teams/lifecycle",
+            "notificationUrl": notification_url,
+            "lifecycleNotificationUrl": lifecycle_notification_url,
             "resource": notification_resource_for_target(target),
             "expirationDateTime": _iso(requested_expiry),
             "clientState": client_state,
@@ -333,6 +358,8 @@ class TeamsSubscriptionReconciler:
                 tenant_id=tenant_id,
                 expires_at=expires_at,
                 health="active",
+                notification_url=notification_url,
+                lifecycle_notification_url=lifecycle_notification_url,
                 client_state_sha256=hashlib.sha256(client_state.encode("utf-8")).hexdigest(),
                 created_at=now,
                 updated_at=now,
@@ -393,9 +420,9 @@ class TeamsSubscriptionReconciler:
         service: GraphTeamsService,
         subscription: TeamsOwnedSubscription,
         now: datetime,
-    ) -> None:
+    ) -> bool:
         if subscription.cleanup_attempted:
-            return
+            return subscription.health == "deleted"
         try:
             service._request_with_retries(
                 client,
@@ -415,7 +442,7 @@ class TeamsSubscriptionReconciler:
                         }
                     )
                 )
-                return
+                return False
         except Exception as exc:
             self.store.upsert_owned_subscription(
                 subscription.model_copy(
@@ -427,7 +454,7 @@ class TeamsSubscriptionReconciler:
                     }
                 )
             )
-            return
+            return False
         self.store.upsert_owned_subscription(
             subscription.model_copy(
                 update={
@@ -437,6 +464,24 @@ class TeamsSubscriptionReconciler:
                     "last_error": None,
                 }
             )
+        )
+        return True
+
+    def _callback_urls(self) -> tuple[str, str]:
+        base_url = str(self.worker_config.change_notification_public_base_url or "").rstrip("/")
+        if not base_url:
+            return "", ""
+        return (
+            f"{base_url}/msgraph/teams/notifications",
+            f"{base_url}/msgraph/teams/lifecycle",
+        )
+
+    def _uses_current_callback_urls(self, subscription: TeamsOwnedSubscription) -> bool:
+        notification_url, lifecycle_notification_url = self._callback_urls()
+        return (
+            bool(notification_url)
+            and subscription.notification_url == notification_url
+            and subscription.lifecycle_notification_url == lifecycle_notification_url
         )
 
     def _mark_degraded(

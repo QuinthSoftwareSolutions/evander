@@ -366,6 +366,7 @@ class GatewayConfig(BaseModel):
     teams_delegated_scopes: list[str] = Field(
         default_factory=lambda: [
             "offline_access",
+            "https://graph.microsoft.com/User.Read",
             "https://graph.microsoft.com/ChannelMessage.Read.All",
             "https://graph.microsoft.com/ChannelMessage.Send",
             "https://graph.microsoft.com/Chat.ReadWrite",

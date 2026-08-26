@@ -67,6 +67,8 @@ class TeamsOwnedSubscription(BaseModel):
     tenant_id: str
     expires_at: datetime
     health: str = "active"
+    notification_url: str | None = None
+    lifecycle_notification_url: str | None = None
     client_state_sha256: str
     created_at: datetime
     updated_at: datetime

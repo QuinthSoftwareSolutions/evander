@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import base64
 import json
 import logging
 import threading
@@ -231,9 +230,30 @@ def test_disabling_notifications_resets_subscription_reconciliation_backoff(
 def test_exact_notification_ingests_delayed_unseen_message_without_regressing_cursor(
     tmp_path: Path,
 ) -> None:
+    trigger = {
+        "id": "teams-delayed",
+        "display_name": "Delayed Teams message",
+        "type": "trigger:teams:new-message",
+        "targets": [{"target": "team-a/channel-a"}],
+    }
+    write_trigger_config(tmp_path, [trigger])
+    teams_config_path = tmp_path / "config" / "teams-ingest" / "config.json"
+    teams_config_path.parent.mkdir(parents=True, exist_ok=True)
+    teams_config_path.write_text(
+        json.dumps(
+            {
+                "publish_trigger_events_directly": False,
+                "change_notifications_enabled": True,
+                "change_notification_public_base_url": "https://notifications.example.test",
+            }
+        ),
+        encoding="utf-8",
+    )
+    queue = SqliteTriggerEventQueue(tmp_path / "runtime" / "direct-events.db")
     worker = build_teams_ingest_worker(
         GatewayConfig.model_validate({"runtime_dir": tmp_path / "runtime"}),
         project_dir=tmp_path,
+        event_queue=queue,
     )
     target = "team-a/channel-a"
     newer_at = datetime(2026, 8, 26, 12, 0, tzinfo=UTC)
@@ -241,6 +261,18 @@ def test_exact_notification_ingests_delayed_unseen_message_without_regressing_cu
         target,
         f"{target}/newer",
         created_at=newer_at,
+    )
+    trigger_cursor_path = tmp_path / "runtime" / "trigger-cursors-teams.json"
+    trigger_cursor_path.write_text(
+        json.dumps(
+            {
+                "teams-delayed": {
+                    "last_created_at": newer_at.isoformat(),
+                    "recent_cursors": [],
+                }
+            }
+        ),
+        encoding="utf-8",
     )
     delayed = TeamsInboxMessage(
         cursor=f"{target}/delayed",
@@ -259,12 +291,23 @@ def test_exact_notification_ingests_delayed_unseen_message_without_regressing_cu
         [delayed],
         channel_target=target,
         cursor_state=worker.store.get_cursor_state(target),
-        allow_pre_cursor_unseen=True,
+        verified_notification_delivery=True,
+        trigger_snapshot=snapshot,
+    )
+    duplicate = worker._ingest_message_candidates(
+        [delayed],
+        channel_target=target,
+        cursor_state=worker.store.get_cursor_state(target),
+        verified_notification_delivery=True,
         trigger_snapshot=snapshot,
     )
 
     assert discovered == 1
+    assert duplicate == 0
     assert worker.store.get_message(delayed.cursor) is not None
+    assert [record.event_id for record in queue.list_pending()] == [
+        f"teams-delayed:{delayed.cursor}"
+    ]
     cursor_state = worker.store.get_cursor_state(target)
     assert cursor_state is not None
     assert cursor_state.cursor == f"{target}/newer"
@@ -386,11 +429,7 @@ def test_message_notification_fetches_exact_authorized_message_through_shared_in
     expected_path: str,
     expected_thread_id: str | None,
 ) -> None:
-    tenant_payload = base64.urlsafe_b64encode(json.dumps({"tid": "tenant-a"}).encode()).decode()
-    monkeypatch.setenv(
-        "GRAPH_TEAMS_ACCESS_TOKEN",
-        f"header.{tenant_payload.rstrip('=')}.signature",
-    )
+    monkeypatch.setenv("GRAPH_TEAMS_ACCESS_TOKEN", "opaque-access-token")
     requests: list[httpx.Request] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -413,6 +452,7 @@ def test_message_notification_fetches_exact_authorized_message_through_shared_in
         {
             "runtime_dir": tmp_path / "runtime",
             "teams_backend": "graph_api",
+            "teams_delegated_tenant_id": "tenant-a",
         }
     )
     worker = build_teams_ingest_worker(config, project_dir=tmp_path)
@@ -472,15 +512,12 @@ def test_message_notification_does_not_fetch_removed_or_unauthorized_target(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    tenant_payload = base64.urlsafe_b64encode(json.dumps({"tid": "tenant-a"}).encode()).decode()
-    monkeypatch.setenv(
-        "GRAPH_TEAMS_ACCESS_TOKEN",
-        f"header.{tenant_payload.rstrip('=')}.signature",
-    )
+    monkeypatch.setenv("GRAPH_TEAMS_ACCESS_TOKEN", "opaque-access-token")
     config = GatewayConfig.model_validate(
         {
             "runtime_dir": tmp_path / "runtime",
             "teams_backend": "graph_api",
+            "teams_delegated_tenant_id": "tenant-a",
         }
     )
     worker = build_teams_ingest_worker(config, project_dir=tmp_path)
