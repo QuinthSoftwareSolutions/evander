@@ -250,8 +250,39 @@ def begin_release_gates(
     candidate_tree_hash: str | None,
     result: dict[str, Any],
 ) -> None:
+    if release.state in {TeamRecordState.ACCEPTED, TeamRecordState.REJECTED}:
+        return
     lineage_error = release_lineage_gate_error(state, release)
     if lineage_error is not None:
+        if lineage_error.startswith("release_lineage_waiting_tasks:"):
+            if release.candidate_commit_sha not in {None, candidate_commit_sha}:
+                _reject_release(
+                    state,
+                    release,
+                    stage="configuration",
+                    kind="configuration",
+                    error=(
+                        f"release candidate is already pinned to "
+                        f"{release.candidate_commit_sha}, not {candidate_commit_sha}"
+                    ),
+                    result=result,
+                )
+                return
+            release.candidate_commit_sha = candidate_commit_sha
+            release.candidate_tree_hash = candidate_tree_hash
+            _reject_release(
+                state,
+                release,
+                stage="lineage",
+                kind="convergence",
+                error=(
+                    f"{lineage_error}. The current candidate is pinned as the rejected "
+                    "lineage base; after the bound tasks settle, package their accepted "
+                    "reviewed deliverables into its single successor"
+                ),
+                result=result,
+            )
+            return
         _block_release_gate(
             state,
             release,
@@ -1270,8 +1301,24 @@ def advance_release_gates(
 ) -> None:
     """Idempotently create only the next missing release gate in policy order."""
 
+    if release.state in {TeamRecordState.ACCEPTED, TeamRecordState.REJECTED}:
+        return
     lineage_error = release_lineage_gate_error(state, release)
     if lineage_error is not None:
+        if lineage_error.startswith("release_lineage_waiting_tasks:"):
+            _reject_release(
+                state,
+                release,
+                stage="lineage",
+                kind="convergence",
+                error=(
+                    f"{lineage_error}. The current candidate remains the rejected "
+                    "lineage base; after the bound tasks settle, package their accepted "
+                    "reviewed deliverables into its single successor"
+                ),
+                result=result,
+            )
+            return
         _block_release_gate(
             state,
             release,
@@ -1292,8 +1339,6 @@ def advance_release_gates(
             error="release gate configuration is incomplete",
             result=result,
         )
-        return
-    if release.state in {TeamRecordState.ACCEPTED, TeamRecordState.REJECTED}:
         return
     if manifest.verification_commands:
         current_run = _current_verification_run(state, release)

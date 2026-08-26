@@ -57,7 +57,13 @@ REGISTRY_FILENAME = "managed-git-repositories.json"
 DEFAULT_HOST_COMMIT_NAME = DEFAULT_AGENT_GIT_IDENTITY.name
 DEFAULT_HOST_COMMIT_EMAIL = DEFAULT_AGENT_GIT_IDENTITY.email
 DEFAULT_GIT_OPERATION_TIMEOUT_SECONDS = 5 * 60
+_MANAGED_GIT_PUSH_MAX_ATTEMPTS = 3
+_MANAGED_GIT_PUSH_INITIAL_BACKOFF_SECONDS = 1.0
+_MANAGED_GIT_PUSH_MAX_BACKOFF_SECONDS = 4.0
+_managed_git_push_sleep = time.sleep
 _RESERVED_BRANCH_ROOTS = frozenset({"agents", "review", "team"})
+
+
 def _parse_optional_utc_datetime(value: object) -> datetime | None:
     if isinstance(value, datetime):
         parsed = value
@@ -72,6 +78,8 @@ def _parse_optional_utc_datetime(value: object) -> datetime | None:
     if parsed.tzinfo is None:
         return parsed.replace(tzinfo=UTC)
     return parsed.astimezone(UTC)
+
+
 _MAX_CONSULTATION_EVIDENCE_BLOB_BYTES = 5 * 1024 * 1024
 _AZURE_PR_DESCRIPTION_MAX_CHARS = 4000
 _AZURE_PR_SOURCE_CONFIRMATION_TIMEOUT_SECONDS = 10.0
@@ -2551,16 +2559,14 @@ class ManagedGitAdminService:
                     if destination_commit
                     else f"--force-with-lease={destination_ref}:"
                 )
-                self._run_git(
-                    [
-                        "git",
-                        f"--git-dir={bare_path}",
-                        "push",
-                        lease,
-                        remote_url,
-                        f"{expected}:{destination_ref}",
-                    ],
+                self._push_branch_with_transient_retry(
+                    bare_path=bare_path,
+                    remote_url=remote_url,
                     env=auth_env,
+                    lease=lease,
+                    expected_commit_sha=expected,
+                    destination_ref=destination_ref,
+                    expected_destination_commit_sha=destination_commit,
                 )
             finally:
                 if destination_commit:
@@ -4460,6 +4466,94 @@ class ManagedGitAdminService:
             if separator and advertised_ref == ref_name and _HEX_OBJECT_ID.fullmatch(object_id):
                 return object_id.lower()
         return None
+
+    def _push_branch_with_transient_retry(
+        self,
+        *,
+        bare_path: Path,
+        remote_url: str,
+        env: Mapping[str, str],
+        lease: str,
+        expected_commit_sha: str,
+        destination_ref: str,
+        expected_destination_commit_sha: str | None,
+    ) -> None:
+        """Push an immutable source with bounded retries for transport failures only.
+
+        A lost response can leave a push committed remotely.  Before deciding to retry or
+        fail, reconcile the exact destination ref: the expected approved commit is success;
+        any other observed movement remains a hard, non-retryable failure.  The original
+        force-with-lease protects every retry from publishing over a changed destination.
+        """
+
+        command = [
+            "git",
+            f"--git-dir={bare_path}",
+            "push",
+            lease,
+            remote_url,
+            f"{expected_commit_sha}:{destination_ref}",
+        ]
+        for attempt in range(1, _MANAGED_GIT_PUSH_MAX_ATTEMPTS + 1):
+            result = self._run_git(command, env=env, check=False)
+            if result.returncode == 0:
+                return
+
+            # A connection can fail after the remote accepts the update.  Treat only the
+            # exact approved SHA as success; a different observed value is never retried.
+            try:
+                advertised_commit = self._ls_remote_branch(
+                    remote_url,
+                    destination_ref,
+                    env=env,
+                )
+            except RuntimeError as probe_error:
+                if not self._is_transient_git_transport_message(str(probe_error)):
+                    raise
+                advertised_commit = None
+            else:
+                if advertised_commit == expected_commit_sha:
+                    return
+                if advertised_commit != expected_destination_commit_sha:
+                    self._raise_git_failure(result)
+
+            if not self._is_transient_git_transport_failure(result):
+                self._raise_git_failure(result)
+            if attempt >= _MANAGED_GIT_PUSH_MAX_ATTEMPTS:
+                self._raise_git_failure(result)
+
+            # If reconciliation failed too, a subsequent leased attempt is still safe: it
+            # can only write while the destination remains at the reviewed base.
+            delay_seconds = min(
+                _MANAGED_GIT_PUSH_INITIAL_BACKOFF_SECONDS * (2 ** (attempt - 1)),
+                _MANAGED_GIT_PUSH_MAX_BACKOFF_SECONDS,
+            )
+            _managed_git_push_sleep(delay_seconds)
+
+    @staticmethod
+    def _is_transient_git_transport_failure(result: subprocess.CompletedProcess[str]) -> bool:
+        return ManagedGitAdminService._is_transient_git_transport_message(
+            result.stderr or result.stdout or ""
+        )
+
+    @staticmethod
+    def _is_transient_git_transport_message(message: str) -> bool:
+        normalized_message = str(message or "").casefold()
+        transient_markers = (
+            "connection reset",
+            "connection timed out",
+            "could not resolve host",
+            "temporary failure",
+            "failed to connect",
+            "network is unreachable",
+            "connection refused",
+            "recv failure",
+            "send failure",
+            "http 502",
+            "http 503",
+            "http 504",
+        )
+        return any(marker in normalized_message for marker in transient_markers)
 
     def _assert_secret_free_bare_config(self, bare_path: Path) -> None:
         result = self._run_git(["git", f"--git-dir={bare_path}", "config", "--local", "--list"])

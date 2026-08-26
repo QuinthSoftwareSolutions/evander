@@ -40,6 +40,7 @@ from evander_team_addon.models import (
 )
 from evander_team_addon.services.domain.release_gates import (
     _materialize_candidate_verification_correction,
+    advance_release_gates,
     begin_release_gates,
     create_release_reviews_or_approve,
     materialize_release_review_rejection_correction,
@@ -115,6 +116,85 @@ def _release_and_promotion(
 
 def _result() -> dict[str, list[object]]:
     return {"events": [], "git_promotion_event_ids": []}
+
+
+def test_terminal_release_replay_ignores_non_leaf_lineage_state() -> None:
+    release, promotion = _release_and_promotion()
+    release.state = TeamRecordState.ACCEPTED
+    release.approved_commit_sha = "candidate-sha"
+    release.published_commit_sha = "candidate-sha"
+    release.lineage_root_release_package_id = release.id
+    successor = ReleasePackage(
+        id="successor",
+        project_id="project",
+        supersedes_release_package_id=release.id,
+        lineage_root_release_package_id=release.id,
+        lineage_sequence=1,
+    )
+    state = TeamState.empty()
+    state.release_packages[release.id] = release
+    state.release_packages[successor.id] = successor
+    state.git_promotions[promotion.id] = promotion
+    result = _result()
+
+    begin_release_gates(
+        state,
+        release=release,
+        release_promotion=promotion,
+        candidate_commit_sha="candidate-sha",
+        candidate_tree_hash="candidate-tree",
+        result=result,
+    )
+    advance_release_gates(
+        state,
+        release=release,
+        release_promotion=promotion,
+        result=result,
+    )
+
+    assert release.state == TeamRecordState.ACCEPTED
+    assert release.approved_commit_sha == "candidate-sha"
+    assert release.published_commit_sha == "candidate-sha"
+    assert release.gate_failure is None
+    assert release.error is None
+    assert state.blockers == {}
+
+
+def test_lineage_wait_pins_candidate_and_enters_successor_recovery_path() -> None:
+    state, release, promotion, _reviews = _release_review_cohort_fixture()
+    release.lineage_root_release_package_id = release.id
+    release.lineage_sequence = 0
+    state.tasks["parallel-remediation"] = AgentTask(
+        id="parallel-remediation",
+        owner_agent_id="lead",
+        project_id="project",
+        priority=0,
+        state=TeamTaskState.IN_PROGRESS,
+        title="Parallel remediation",
+        description="Complete the candidate-bound remediation.",
+        created_by_agent_id="lead",
+        release_base_package_id=release.id,
+    )
+    result = _result()
+
+    begin_release_gates(
+        state,
+        release=release,
+        release_promotion=promotion,
+        candidate_commit_sha="candidate-sha",
+        candidate_tree_hash="candidate-tree",
+        result=result,
+    )
+
+    assert release.state == TeamRecordState.REJECTED
+    assert release.candidate_commit_sha == "candidate-sha"
+    assert release.candidate_tree_hash == "candidate-tree"
+    assert release.gate_failure is not None
+    assert release.gate_failure.stage == "lineage"
+    assert release.gate_failure.kind == "convergence"
+    assert "single successor" in (release.error or "")
+    blocker = state.blockers[result["release_remediation_blocker_id"]]
+    assert blocker.reason_code == "release_gate_lineage_convergence"
 
 
 def _release_review_cohort_fixture() -> tuple[

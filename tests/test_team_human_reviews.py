@@ -2208,6 +2208,80 @@ def test_successor_rejects_unrelated_work_and_derives_exact_candidate_baseline()
     assert "different-successor" not in state.release_packages
 
 
+def test_human_correction_task_cannot_bypass_finding_resolution_evidence() -> None:
+    state, predecessor, promotion = _human_state(eligible_user_ids=["reviewer"])
+    state.deliverables["source-deliverable"].artifact_refs = ["artifact:source"]
+    state.deliverables["source-deliverable"].verification = DeliverableVerification(status="passed")
+    advance_release_gates(
+        state,
+        release=predecessor,
+        release_promotion=promotion,
+        result={"events": []},
+    )
+    request = next(iter(state.human_review_requests.values()))
+    record_human_review_decision(
+        state,
+        human_review_request_id=request.id,
+        reviewer_user_id="reviewer",
+        reviewer_display_name="Reviewer",
+        decision="changes_requested",
+        request_id="changes-missing-evidence",
+        expected_revision=request.revision,
+        checklist_results={"smoke": True},
+        findings=[
+            {
+                "text": "Correct the latched alarm.",
+                "target_deliverable_ids": ["source-deliverable"],
+            }
+        ],
+        result={"events": []},
+    )
+    finding = next(iter(state.human_review_findings.values()))
+    correction_task = state.tasks[finding.correction_task_id]
+    assert correction_task.created_by_actor == "system:human-review"
+    assert correction_task.release_base_package_id == predecessor.id
+    correction_task.state = TeamTaskState.FINISHED
+    correction = Deliverable(
+        id="correction-without-finding-evidence",
+        task_id=correction_task.id,
+        producer_agent_id=correction_task.owner_agent_id,
+        artifact_refs=["artifact:correction"],
+        summary="Corrected alarm behavior without proposing finding evidence.",
+        state=TeamRecordState.ACCEPTED,
+        verification=DeliverableVerification(status="passed"),
+    )
+    state.deliverables[correction.id] = correction
+    correction_task.deliverable_ids.append(correction.id)
+    _mark_deliverable_as_reviewed_git_correction(
+        state,
+        deliverable=correction,
+        commit_sha="c" * 40,
+    )
+    result: dict[str, object] = {
+        "errors": [],
+        "events": [],
+        "git_promotion_event_ids": [],
+    }
+
+    release_id = _build_release_package(
+        state,
+        project=state.projects["project"],
+        request={
+            "id": "successor-without-finding-evidence",
+            "deliverable_ids": [correction.id],
+            "supersedes_release_package_id": predecessor.id,
+        },
+        result=result,
+        projects_to_recalc=set(),
+        actor_agent_id="lead",
+        team_id="team",
+    )
+
+    assert release_id is None
+    assert result["errors"] == [f"human finding {finding.id} has no proposed resolution"]
+    assert "successor-without-finding-evidence" not in state.release_packages
+
+
 def test_post_release_successor_without_findings_follows_current_human_policy() -> None:
     state, predecessor, _promotion = _human_state(eligible_user_ids=["reviewer"])
     state.deliverables["source-deliverable"].verification = DeliverableVerification(status="passed")

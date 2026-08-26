@@ -23591,6 +23591,73 @@ def test_git_release_request_reuses_terminal_package_for_same_deliverables(
     assert "rel-accidental-fork" not in state.release_packages
 
 
+def test_git_release_request_recreates_terminal_configuration_failure(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _set_project_git(repo)
+    _seed_accepted_feature_deliverable(
+        repo,
+        deliverable_id="deliverable",
+        task_id="task",
+        feature="team/team/features/task-backend",
+    )
+    state, created = _team_agent_action_service(repo).apply_agent_action(
+        action={
+            "agent_id": "lead",
+            "git_release_requests": [
+                {
+                    "id": "rel-configuration-failed",
+                    "project_id": "project",
+                    "deliverable_ids": ["deliverable"],
+                }
+            ],
+        },
+    )
+
+    def _remove_policy(current):
+        current.projects["project"].release_policy = None
+        return current
+
+    repo.update(_remove_policy, expected_revision=state.revision)
+    state, _failed = _team_git_release_service(repo).record_git_promotion_result(
+        promotion_id=created["git_promotion_event_ids"][0],
+        success=True,
+        commit_sha="candidate-before-policy-repair",
+        outputs={"tree_hash": "candidate-tree"},
+    )
+    failed = state.release_packages["rel-configuration-failed"]
+    assert failed.state == TeamRecordState.REJECTED
+    assert failed.gate_failure is not None
+    assert failed.gate_failure.stage == "configuration"
+
+    def _restore_policy(current):
+        current.projects["project"].release_policy = ProjectReleasePolicy(allow_ungated=True)
+        return current
+
+    repo.update(_restore_policy, expected_revision=state.revision)
+    state, replacement = _team_agent_action_service(repo).apply_agent_action(
+        action={
+            "agent_id": "lead",
+            "git_release_requests": [
+                {
+                    "id": "rel-after-configuration-repair",
+                    "project_id": "project",
+                    "deliverable_ids": ["deliverable"],
+                }
+            ],
+        },
+    )
+
+    assert replacement["success"] is True
+    assert replacement["created"] is True
+    assert replacement["duplicate"] is False
+    assert replacement["release_package_ids"] == ["rel-after-configuration-repair"]
+    assert state.release_packages["rel-after-configuration-repair"].state == (
+        TeamRecordState.PENDING
+    )
+
+
 def test_apply_agent_action_git_release_recovery_emits_recovery_event(
     tmp_path: Path,
 ) -> None:

@@ -53,7 +53,6 @@ from .git_work_contexts import authoritative_deliverable_git_base
 from .initial_release import mark_initial_release_requested
 from .task_assessment import (
     TaskAssessmentBoundaryError,
-    deliverable_source_lineage,
     require_release_scope,
     require_task_resolved,
 )
@@ -63,6 +62,7 @@ GIT_RELEASE_RECOVERY_EVENT_TYPE = "team.git.release_recovery_requested"
 _TERMINAL_RELEASE_STATES = {TeamRecordState.ACCEPTED, TeamRecordState.REJECTED}
 _HUMAN_CORRECTION_AGGREGATION_TASK_ID_KEY = "human_correction_aggregation_task_id"
 _SYSTEM_CORRECTION_TASK_ACTORS = {
+    "system:human-review",
     "system:release-review-correction",
     "system:release-verification-correction",
 }
@@ -196,18 +196,12 @@ def _release_lineage_roots_for_inputs(
     project_id: str,
     deliverable_ids: list[str],
 ) -> set[str]:
-    lineage = deliverable_source_lineage(state, deliverable_ids)
-    evidence_ids = set(lineage["ordered_deliverable_ids"])
-    roots = {
-        release_lineage_root_id(state, release)
-        for release in state.release_packages.values()
-        if release.project_id == project_id and evidence_ids.intersection(release.deliverable_ids)
-    }
+    roots: set[str] = set()
     for deliverable_id in deliverable_ids:
         deliverable = state.deliverables.get(deliverable_id)
         task = state.tasks.get(deliverable.task_id) if deliverable is not None else None
         base = _release_for_exact_task_base(state, task=task) if task is not None else None
-        if base is not None:
+        if base is not None and base.project_id == project_id:
             roots.add(release_lineage_root_id(state, base))
     return roots
 
@@ -1180,6 +1174,11 @@ def _build_release_package(
                 predecessor.gate_failure.stage == "review"
                 and predecessor.gate_failure.kind == "rejected"
             )
+            or (
+                predecessor.gate_failure.stage == "lineage"
+                and predecessor.gate_failure.kind == "convergence"
+                and predecessor.gate_failure.message.startswith("release_lineage_waiting_tasks:")
+            )
         )
     )
     if feature_sources_by_task and not is_candidate_correction_successor:
@@ -2131,8 +2130,20 @@ def _release_packages_for_deliverables(
             reverse=True,
         )
         if release.project_id == project_id
+        and not _release_package_requires_recreation(release)
         and _normalized_release_deliverable_set(release.deliverable_ids) == normalized
     ]
+
+
+def _release_package_requires_recreation(release: ReleasePackage) -> bool:
+    """Return whether same-scope dedup must leave a supported replacement path."""
+
+    return (
+        release.state in _TERMINAL_RELEASE_STATES
+        and release.state == TeamRecordState.REJECTED
+        and release.gate_failure is not None
+        and release.gate_failure.stage == "configuration"
+    )
 
 
 def _normalized_release_deliverable_set(deliverable_ids: list[str]) -> tuple[str, ...]:

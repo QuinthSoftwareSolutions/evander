@@ -32,6 +32,12 @@
 - Restricted in-dispatch delivery to authorization-compatible leases, requeued unhandled messages
   on abnormal lease termination, and kept external source batches on one return path.
 
+## 2026-08-26 - Managed Git Publication Retry
+
+- Retried only transient managed-Git publication transport failures with bounded exponential
+  backoff, while reconciling the remote ref after ambiguous failures and preserving the exact
+  source and destination lease checks.
+
 ## 2026-08-26 - Workflow Error-Route Badge Cleanup
 
 - Stopped showing persistent `ERROR_ROUTED` badges on workflow canvas nodes after their configured

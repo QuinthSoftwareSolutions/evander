@@ -53,7 +53,10 @@ from evander_team_addon.services.candidate_correction_reconciliation_service imp
 from evander_team_addon.services.commands import TeamReviewCommandService
 from evander_team_addon.services.admin_service import TeamAdminService
 from evander_team_addon.services.domain.review import _cascade_review_decision
-from evander_team_addon.services.domain.release_packages import _build_release_package
+from evander_team_addon.services.domain.release_packages import (
+    _build_release_package,
+    _release_lineage_roots_for_inputs,
+)
 from evander_team_addon.services.domain.task_assessment import assess_task
 from evander_team_addon.services.git_release_service import TeamGitReleaseService
 
@@ -375,6 +378,63 @@ def test_independent_exact_base_remediation_auto_joins_release_lineage() -> None
     assert successor.supersedes_release_package_id == "release-predecessor"
     assert successor.lineage_root_release_package_id == "release-predecessor"
     assert successor.lineage_sequence == 1
+
+
+def test_source_deliverable_evidence_does_not_imply_correction_lineage() -> None:
+    state = _candidate_correction_state(gate_kind="review")
+    predecessor = state.release_packages["release-predecessor"]
+    predecessor.deliverable_ids = ["correction-deliverable"]
+    integration = _independent_remediation(state)
+    integration.source_deliverable_ids = ["correction-deliverable"]
+    integration_task = state.tasks[integration.task_id]
+    integration_task.git_base_branch = "main"
+    integration_task.git_base_commit_sha = "b" * 40
+    integration.review_manifest = integration.review_manifest.model_copy(
+        update={"base_commit_sha": "b" * 40}
+    )
+
+    roots = _release_lineage_roots_for_inputs(
+        state,
+        project_id="project",
+        deliverable_ids=[integration.id],
+    )
+
+    assert roots == set()
+    assert integration.source_deliverable_ids == ["correction-deliverable"]
+
+
+def test_settled_lineage_wait_work_can_form_single_correction_successor() -> None:
+    state = _candidate_correction_state(gate_kind="review")
+    predecessor = state.release_packages["release-predecessor"]
+    predecessor.gate_failure = ReleaseGateFailure(
+        stage="lineage",
+        kind="convergence",
+        message="release_lineage_waiting_tasks: wait for candidate-bound work.",
+    )
+    remediation = _independent_remediation(state)
+    result: dict[str, object] = {"errors": [], "events": [], "git_promotion_event_ids": []}
+
+    release_id = _build_release_package(
+        state,
+        project=state.projects["project"],
+        request={
+            "id": "release-after-lineage-wait",
+            "deliverable_ids": [remediation.id],
+        },
+        result=result,
+        projects_to_recalc=set(),
+        actor_agent_id="lead",
+        team_id="team",
+    )
+
+    assert release_id == "release-after-lineage-wait"
+    successor = state.release_packages[release_id]
+    assert successor.supersedes_release_package_id == predecessor.id
+    assert successor.lineage_root_release_package_id == predecessor.id
+    promotions = [
+        state.git_promotions[promotion_id] for promotion_id in successor.git_promotion_record_ids
+    ]
+    assert [promotion.promotion_kind for promotion in promotions] == ["correction_aggregate"]
 
 
 def test_settled_parallel_remediations_are_combined_into_one_successor() -> None:
