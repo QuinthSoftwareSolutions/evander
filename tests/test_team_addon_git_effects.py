@@ -14,7 +14,8 @@ from evander.effects.providers.agent_create import AgentCreateEffectProvider
 from evander.effects.providers.agent_destroy import AgentDestroyEffectProvider
 from evander.effects.providers.agent_exec import AgentExecEffectProvider
 from evander.effects.providers.base import EffectRuntimeContext
-from evander.events.internal import InternalEventBus, internal_event_store_path
+from evander.events.internal import InternalEventBus
+from internal_event_test_support import default_orchestration_database_path
 from evander.events.models import WorkflowNodeEnvelope
 from evander_team_addon.models import (
     AgentInboxItem,
@@ -883,7 +884,7 @@ def test_record_release_promotion_success_publishes_canonical_push(
     release = state.release_packages["release-1"]
     assert release.git_promotion_record_ids == ["release-promotion", canonical_id]
 
-    events = InternalEventBus(internal_event_store_path(tmp_path)).list_events()
+    events = InternalEventBus(default_orchestration_database_path(tmp_path)).list_events()
     assert len(events) == 1
     assert events[0].event_type == "team.git.promotion_requested"
     assert events[0].payload["promotion_id"] == canonical_id

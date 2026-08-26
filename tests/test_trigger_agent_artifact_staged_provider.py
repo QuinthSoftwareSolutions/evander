@@ -53,7 +53,13 @@ def _publish_staged_event(
 
 def test_agent_artifact_staged_trigger_accepts_only_trusted_exact_path(tmp_path: Path) -> None:
     runtime_dir = tmp_path / "runtime"
-    bus = InternalEventBus(runtime_dir / "internal-events.json")
+    bus = InternalEventBus(runtime_dir / "orchestration.db")
+    provider = AgentArtifactStagedTriggerProvider()
+    provider.initialize(
+        _trigger(artifact_path=" handoffs/support-ticket.json "),
+        TriggerRuntimeContext(resolved_config=GatewayConfig(runtime_dir=runtime_dir), env={}),
+    )
+    assert provider.poll() == []
     _publish_staged_event(bus, artifact_path="handoffs/support-ticket.json")
     _publish_staged_event(bus, artifact_path="handoffs/diagnostics.json")
     bus.publish(
@@ -63,12 +69,6 @@ def test_agent_artifact_staged_trigger_accepts_only_trusted_exact_path(tmp_path:
             "artifact_path": "handoffs/support-ticket.json",
         },
         source=InternalEventSource(source_type="workflow", source_name="event-emit"),
-    )
-
-    provider = AgentArtifactStagedTriggerProvider()
-    provider.initialize(
-        _trigger(artifact_path=" handoffs/support-ticket.json "),
-        TriggerRuntimeContext(resolved_config=GatewayConfig(runtime_dir=runtime_dir), env={}),
     )
 
     events = provider.poll()
@@ -83,15 +83,15 @@ def test_agent_artifact_staged_trigger_accepts_only_trusted_exact_path(tmp_path:
 
 def test_agent_artifact_staged_trigger_matches_path_prefix_boundary(tmp_path: Path) -> None:
     runtime_dir = tmp_path / "runtime"
-    bus = InternalEventBus(runtime_dir / "internal-events.json")
-    _publish_staged_event(bus, artifact_path="handoffs/a.json")
-    _publish_staged_event(bus, artifact_path="handoffs-archive/a.json")
-
+    bus = InternalEventBus(runtime_dir / "orchestration.db")
     provider = AgentArtifactStagedTriggerProvider()
     provider.initialize(
         _trigger(path_prefix="handoffs"),
         TriggerRuntimeContext(resolved_config=GatewayConfig(runtime_dir=runtime_dir), env={}),
     )
+    assert provider.poll() == []
+    _publish_staged_event(bus, artifact_path="handoffs/a.json")
+    _publish_staged_event(bus, artifact_path="handoffs-archive/a.json")
 
     events = provider.poll()
 
@@ -100,7 +100,17 @@ def test_agent_artifact_staged_trigger_matches_path_prefix_boundary(tmp_path: Pa
 
 def test_agent_artifact_staged_trigger_enforces_graph_directory_scope(tmp_path: Path) -> None:
     runtime_dir = tmp_path / "runtime"
-    bus = InternalEventBus(runtime_dir / "internal-events.json")
+    bus = InternalEventBus(runtime_dir / "orchestration.db")
+    provider = AgentArtifactStagedTriggerProvider()
+    provider.initialize(
+        _trigger(path_prefix="handoffs"),
+        TriggerRuntimeContext(
+            resolved_config=GatewayConfig(runtime_dir=runtime_dir),
+            env={},
+            metadata={"directory_path": "root/team-a"},
+        ),
+    )
+    assert provider.poll() == []
     _publish_staged_event(
         bus,
         artifact_path="handoffs/exact.json",
@@ -127,16 +137,6 @@ def test_agent_artifact_staged_trigger_enforces_graph_directory_scope(tmp_path: 
         source=InternalEventSource(
             source_type=AGENT_ARTIFACT_STAGED_EVENT_SOURCE_TYPE,
             source_name="stage_artifact",
-        ),
-    )
-
-    provider = AgentArtifactStagedTriggerProvider()
-    provider.initialize(
-        _trigger(path_prefix="handoffs"),
-        TriggerRuntimeContext(
-            resolved_config=GatewayConfig(runtime_dir=runtime_dir),
-            env={},
-            metadata={"directory_path": "root/team-a"},
         ),
     )
 
@@ -173,9 +173,10 @@ def test_agent_artifact_staged_trigger_publishes_through_orchestrator(tmp_path: 
             ],
         }
     )
-    bus = InternalEventBus(worker_config.internal_event_store_path)
-    _publish_staged_event(bus, artifact_path="handoffs/support-ticket.json")
+    bus = InternalEventBus(worker_config.orchestration_store_path)
     worker = TriggerOrchestratorWorker(config=config, worker_config=worker_config, runtime=None)  # type: ignore[arg-type]
+    assert worker.run_once().events_published == 0
+    _publish_staged_event(bus, artifact_path="handoffs/support-ticket.json")
 
     result = worker.run_once()
     queue = SqliteTriggerEventQueue(worker_config.orchestration_store_path)

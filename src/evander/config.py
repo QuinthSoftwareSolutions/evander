@@ -44,9 +44,6 @@ from evander.models import (
 )
 from evander.provider_profiles import DEFAULT_PROVIDER_PROFILE_NAME, resolve_provider_profile
 from evander.container_worker_images import normalize_container_worker_images
-from evander.events.scheduled import (
-    scheduled_internal_event_store_path as runtime_scheduled_internal_event_store_path,
-)
 from evander.events.models import (
     EdgeDefinition,
     EffectDefinitionDiscriminated,
@@ -1357,8 +1354,6 @@ class OrchestrationCoreConfig(BaseModel):
     orchestration_wal_checkpoint_busy_timeout_ms: int = Field(default=1_000, ge=0)
     lock_path: Path | None = None
     event_queue_cursor_store_path: Path | None = None
-    internal_event_store_path: Path | None = None
-    scheduled_internal_event_store_path: Path | None = None
     gate_cursor_store_path: Path | None = None
     effect_cursor_store_path: Path | None = None
     effect_lock_path: Path | None = None
@@ -1379,6 +1374,17 @@ class OrchestrationCoreConfig(BaseModel):
     def reject_legacy_json_orchestration_backend(cls, value: object) -> object:
         if not isinstance(value, dict):
             return value
+        legacy_path_keys = sorted(
+            key
+            for key in ("internal_event_store_path", "scheduled_internal_event_store_path")
+            if key in value
+        )
+        if legacy_path_keys:
+            raise ValueError(
+                "Legacy internal-event store settings are no longer supported: "
+                f"{', '.join(legacy_path_keys)}. Internal and scheduled events use "
+                "orchestration_store_path."
+            )
         backend = value.get("orchestration_store_backend")
         if backend is not None and str(backend).strip().casefold() != "sqlite":
             raise ValueError(
@@ -1451,12 +1457,6 @@ class OrchestrationCoreConfig(BaseModel):
         if self.event_queue_cursor_store_path is None:
             self.event_queue_cursor_store_path = (
                 self.runtime_dir / "trigger-orchestrator-cursors.json"
-            )
-        if self.internal_event_store_path is None:
-            self.internal_event_store_path = self.runtime_dir / "internal-events.json"
-        if self.scheduled_internal_event_store_path is None:
-            self.scheduled_internal_event_store_path = runtime_scheduled_internal_event_store_path(
-                self.runtime_dir
             )
         if self.gate_cursor_store_path is None:
             self.gate_cursor_store_path = self.runtime_dir / "gate-orchestrator-cursors.json"

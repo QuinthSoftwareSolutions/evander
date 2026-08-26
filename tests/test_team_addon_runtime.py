@@ -16,8 +16,8 @@ from evander.admin.user_notifications import AdminUserNotificationStore
 from evander.config import GatewayConfig
 from evander.directories import DirectoryService, DirectoryStore
 from evander.artifact_spaces import ArtifactSpaceStore
-from evander.events.internal import InternalEventBus, internal_event_store_path
-from evander.events.scheduled import scheduled_internal_event_store_path
+from evander.events.internal import InternalEventBus
+from evander.events.scheduled import ScheduledInternalEventStore
 from evander.effects.providers.agent_exec import AgentExecEffectProvider
 from evander.effects.providers.agent_prompt import AgentPromptEffectProvider
 from evander.effects.providers.base import EffectRuntimeContext
@@ -37,6 +37,7 @@ from evander.workflow.packs import WorkflowPack
 from evander.workflow.binding import resolve_workflow_bindings
 from evander.workflow.runtime_config import load_trigger_orchestrator_worker_global_config
 import evander_team_addon.outbox_publication as team_outbox_publication
+from internal_event_test_support import default_orchestration_database_path
 from evander_team_addon.chat_attachments import TeamChatAttachmentStorage
 from evander_team_addon.mcp import (
     GOVERNANCE_TEAM_MCP_TOOL_NAMES,
@@ -907,7 +908,7 @@ def test_operator_stand_down_revocation_immediately_wakes_newly_eligible_agents(
     assert lead_wake.idempotency_key is not None
     assert lead_wake.idempotency_key.endswith(f":stand-down-revocation:{subtree_stand_down_id}")
     assert lead_wake.status.value == "completed"
-    published = InternalEventBus(internal_event_store_path(tmp_path)).list_events()
+    published = InternalEventBus(default_orchestration_database_path(tmp_path)).list_events()
     assert len(published) == 1
     assert published[0].payload["agent_id"] == "lead"
 
@@ -928,7 +929,7 @@ def test_operator_stand_down_revocation_immediately_wakes_newly_eligible_agents(
     assert backend_wake.idempotency_key is not None
     assert backend_wake.idempotency_key.endswith(f":stand-down-revocation:{backend_stand_down_id}")
     assert backend_wake.status.value == "completed"
-    published = InternalEventBus(internal_event_store_path(tmp_path)).list_events()
+    published = InternalEventBus(default_orchestration_database_path(tmp_path)).list_events()
     assert len(published) == 2
     assert {event.payload["agent_id"] for event in published} == {"lead", "backend"}
 
@@ -968,7 +969,7 @@ def test_operator_stand_down_revocation_does_not_wake_workflow_paused_task(
     assert resumed.tasks["task"].state == TeamTaskState.WAITING_FOR_INPUT
     assert resumed.agent_runtimes["backend"].next_wake_at is None
     assert repo.list_outbox_records(intent_type=AGENT_WAKE_REQUESTED_EVENT_TYPE) == []
-    assert InternalEventBus(internal_event_store_path(tmp_path)).list_events() == []
+    assert InternalEventBus(default_orchestration_database_path(tmp_path)).list_events() == []
 
 
 def test_operator_stand_down_revocation_rolls_back_when_wake_outbox_fails(
@@ -1005,7 +1006,7 @@ def test_operator_stand_down_revocation_rolls_back_when_wake_outbox_fails(
     assert state.revision == stood_down.revision
     assert state.stand_downs[stand_down_id].active is True
     assert repo.list_outbox_records(intent_type=AGENT_WAKE_REQUESTED_EVENT_TYPE) == []
-    assert InternalEventBus(internal_event_store_path(tmp_path)).list_events() == []
+    assert InternalEventBus(default_orchestration_database_path(tmp_path)).list_events() == []
 
 
 def test_operator_stand_down_revocation_keeps_outbox_pending_when_fast_publish_fails(
@@ -1892,9 +1893,7 @@ def test_agent_action_cannot_pause_task_waiting_for_external_input(tmp_path: Pat
     )
 
     assert result["success"] is False
-    assert result["errors"] == [
-        "waiting_for_input is reserved for operator-owned workflows"
-    ]
+    assert result["errors"] == ["waiting_for_input is reserved for operator-owned workflows"]
     assert state.tasks["task"].state == TeamTaskState.PENDING
 
 
@@ -1934,8 +1933,7 @@ def test_agent_action_cannot_resume_workflow_paused_task_from_stale_dispatch(
 
     assert result["success"] is False
     assert result["errors"] == [
-        "task task is waiting_for_input and can only be resumed by an "
-        "operator-owned workflow"
+        "task task is waiting_for_input and can only be resumed by an operator-owned workflow"
     ]
     assert state.tasks["task"].state == TeamTaskState.WAITING_FOR_INPUT
 
@@ -6862,22 +6860,17 @@ def test_admin_task_replacement_persists_rebound_dependents_and_ready_wake(
     assert cancellation.invalidated_git_work_context_ids == ["integration-context"]
     assert state.tasks["dependent"].dependency_task_ids == ["successor"]
     assert state.tasks["integration"].dependency_task_ids == ["successor"]
-    assert state.tasks[
-        "integration"
-    ].deliverable_contract.required_contribution_task_ids == ["successor"]
-    assert (
-        state.git_work_contexts["integration-context"].state
-        == GitWorkContextState.ABANDONED
-    )
+    assert state.tasks["integration"].deliverable_contract.required_contribution_task_ids == [
+        "successor"
+    ]
+    assert state.git_work_contexts["integration-context"].state == GitWorkContextState.ABANDONED
     recovery_items = [
         item
         for item in state.inbox.values()
         if item.payload.get("kind") == "task_replacement_preparation_recovery"
     ]
     assert [item.task_id for item in recovery_items] == ["integration"]
-    assert recovery_items[0].payload["invalidated_git_work_context_ids"] == [
-        "integration-context"
-    ]
+    assert recovery_items[0].payload["invalidated_git_work_context_ids"] == ["integration-context"]
     ready_wakes = [
         record
         for record in repo.list_outbox_records(intent_type=AGENT_WAKE_REQUESTED_EVENT_TYPE)
@@ -6932,9 +6925,7 @@ def test_admin_repairs_plain_cancelled_task_dependencies_with_audit_evidence(
     assert result["repair_applied"] is True
     assert result["rebound_dependent_task_ids"] == ["dependent"]
     assert state.tasks["dependent"].dependency_task_ids == ["successor"]
-    assert state.tasks["task"].cancellation.model_dump(mode="json") == (
-        cancellation_before
-    )
+    assert state.tasks["task"].cancellation.model_dump(mode="json") == (cancellation_before)
     evidence = state.inbox[result["audit_action_evidence_id"]]
     assert evidence.state == TeamInboxItemState.HANDLED
     assert evidence.payload["kind"] == "task_dependency_graph_repair_audit"
@@ -7019,9 +7010,7 @@ def test_admin_recovers_non_git_submitted_integration_without_git_pin(
         successor_task_id="successor",
         expected_revision=repo.read().revision,
     )
-    old_deliverable = state.deliverables["integration-deliverable"].model_dump(
-        mode="json"
-    )
+    old_deliverable = state.deliverables["integration-deliverable"].model_dump(mode="json")
     old_review = state.review_requests["integration-review"].model_dump(mode="json")
 
     state, result = admin.recover_submitted_integration_boundary(
@@ -7049,18 +7038,12 @@ def test_admin_recovers_non_git_submitted_integration_without_git_pin(
     assert replacement.git_base_branch is None
     assert replacement.git_base_commit_sha is None
     assert replacement.deliverable_ids == []
-    assert state.deliverables["integration-deliverable"].model_dump(
-        mode="json"
-    ) == old_deliverable
-    assert state.review_requests["integration-review"].model_dump(
-        mode="json"
-    ) == old_review
+    assert state.deliverables["integration-deliverable"].model_dump(mode="json") == old_deliverable
+    assert state.review_requests["integration-review"].model_dump(mode="json") == old_review
     assert result["retained_deliverable_ids"] == ["integration-deliverable"]
     assert result["retained_review_request_ids"] == ["integration-review"]
     assert result["retained_git_work_context_ids"] == []
-    assert state.inbox[result["audit_action_evidence_id"]].state == (
-        TeamInboxItemState.HANDLED
-    )
+    assert state.inbox[result["audit_action_evidence_id"]].state == (TeamInboxItemState.HANDLED)
 
     revision_before_replay = state.revision
     runtime_before_replay = state.agent_runtimes["lead"].model_dump(mode="json")
@@ -7081,19 +7064,13 @@ def test_admin_recovers_non_git_submitted_integration_without_git_pin(
     assert replayed["recovery_applied"] is False
     assert replayed["replayed"] is True
     assert state.revision == revision_before_replay
-    assert state.agent_runtimes["lead"].model_dump(mode="json") == (
-        runtime_before_replay
-    )
+    assert state.agent_runtimes["lead"].model_dump(mode="json") == (runtime_before_replay)
     assert len(repo.list_outbox_records()) == outbox_count_before_replay
     assert state.tasks["integration-recovery"].model_dump(mode="json") == (
         replacement_before_replay
     )
-    assert state.deliverables["integration-deliverable"].model_dump(
-        mode="json"
-    ) == old_deliverable
-    assert state.review_requests["integration-review"].model_dump(
-        mode="json"
-    ) == old_review
+    assert state.deliverables["integration-deliverable"].model_dump(mode="json") == old_deliverable
+    assert state.review_requests["integration-review"].model_dump(mode="json") == old_review
 
 
 def test_stale_idle_context_grace_expiry_does_not_handoff_active_work(
@@ -8218,7 +8195,7 @@ def test_libvirt_dependency_git_composition_command_is_valid_shell() -> None:
     assert "export GIT_COMMITTER_EMAIL=team-dependencies@evander.invalid" in command
     assert "evander.dependencyCompositionRootCommit" in command
     assert "evander.dependencyComposedCommit" in command
-    assert 'EVANDER_COMPOSITION_ROOT_COMMIT=$composition_root_commit' in command
+    assert "EVANDER_COMPOSITION_ROOT_COMMIT=$composition_root_commit" in command
     assert (
         'if [ "$created" != 1 ] && [ -z "$expected_prior_base" ] '
         '&& [ -z "$pinned_base_commit" ]; then'
@@ -8243,10 +8220,7 @@ def test_libvirt_dependency_git_composition_command_is_valid_shell() -> None:
     assert 'helper_temp="$(mktemp "$target/.evander/bin/.${helper_name}.XXXXXX")"' in command
     assert 'mv -f "$helper_temp" "$target/.evander/bin/$helper_name"' in command
     assert 'test ! -L "$target/.evander/bin"' in command
-    assert (
-        'base_commit="$(git -C "$target" config --worktree --get evander.baseCommit)"'
-        in command
-    )
+    assert 'base_commit="$(git -C "$target" config --worktree --get evander.baseCommit)"' in command
     assert "evander.baseCommit || git -C" not in command
 
 
@@ -8325,9 +8299,7 @@ def test_libvirt_reused_worktree_without_server_base_authority_fails_closed(
         f"target={shlex.quote(str(target))}",
         1,
     )
-    generated_lock_line = next(
-        line for line in command.splitlines() if line.startswith("lock=")
-    )
+    generated_lock_line = next(line for line in command.splitlines() if line.startswith("lock="))
     command = command.replace(
         generated_lock_line,
         f"lock={shlex.quote(str(tmp_path / 'task-worktree.lock'))}",
@@ -8426,9 +8398,7 @@ def test_libvirt_task_pin_remains_authoritative_after_base_branch_advances(
         f"target={shlex.quote(str(target))}",
         1,
     )
-    generated_lock_line = next(
-        line for line in command.splitlines() if line.startswith("lock=")
-    )
+    generated_lock_line = next(line for line in command.splitlines() if line.startswith("lock="))
     command = command.replace(
         generated_lock_line,
         f"lock={shlex.quote(str(tmp_path / 'task-worktree.lock'))}",
@@ -8465,10 +8435,7 @@ def test_libvirt_worktree_preparation_preserves_reported_prepared_base() -> None
     class _ReportingVmExecutor(FakeVmExecutor):
         def vm_exec(self, **kwargs: object) -> dict[str, object]:
             result = super().vm_exec(**kwargs)
-            result["stdout"] = (
-                f"EVANDER_BASE_COMMIT={prepared_base}\n"
-                f"{worktree_head}\n"
-            )
+            result["stdout"] = f"EVANDER_BASE_COMMIT={prepared_base}\n{worktree_head}\n"
             return result
 
     executor = _ReportingVmExecutor()
@@ -8716,9 +8683,7 @@ def test_task_level_git_base_commit_pin_is_used_for_first_preparation(
     assert prepared["pinned_base_commit"] == pinned_commit
     assert prepared["pinned_base_tree"] is None
     assert len(rows) == 1
-    assert next(iter(result_state.git_work_contexts.values())).base_commit == (
-        pinned_commit
-    )
+    assert next(iter(result_state.git_work_contexts.values())).base_commit == (pinned_commit)
 
 
 @pytest.mark.parametrize(
@@ -9469,15 +9434,15 @@ def test_wake_due_agents_reschedules_exhausted_state_conflict_without_agent_fail
     assert {context.dispatch_id for context in reread.git_work_contexts.values()} == {
         result["transient_conflicts"][0]["dispatch_id"]
     }
-    scheduled = json.loads(
-        scheduled_internal_event_store_path(tmp_path).read_text(encoding="utf-8")
-    )
+    scheduled = ScheduledInternalEventStore(
+        default_orchestration_database_path(tmp_path)
+    ).list_all()
     retries = [
         record
-        for record in scheduled.values()
-        if record["event_type"] == AGENT_WAKE_REQUESTED_EVENT_TYPE
-        and record["payload"]["agent_id"] == "backend"
-        and record["payload"]["reason"] == "state_conflict_retry"
+        for record in scheduled
+        if record.event_type == AGENT_WAKE_REQUESTED_EVENT_TYPE
+        and record.payload["agent_id"] == "backend"
+        and record.payload["reason"] == "state_conflict_retry"
     ]
     assert len(retries) == 1
 
@@ -11097,7 +11062,7 @@ def test_agent_prompt_completion_hook_finalizes_standalone_team_dispatch(
     assert runtime.no_progress_count == 0
     assert session_store.calls
     assert session_store.sessions["session-backend"].metadata["team_addon"]["agent_id"] == "backend"
-    events = InternalEventBus(internal_event_store_path(tmp_path)).list_events()
+    events = InternalEventBus(default_orchestration_database_path(tmp_path)).list_events()
     chat_events = [event for event in events if event.event_type == CHAT_MESSAGE_QUEUED_EVENT_TYPE]
     assert len(chat_events) == 1
     assert chat_events[0].payload["dispatch_id"] == queued_dispatch_id
@@ -11604,7 +11569,7 @@ def test_enqueue_operator_chat_message_effect_validates_target_and_authorization
     assert message.metadata["allow_team_mutations"] is True
     assert message.metadata["team_mutation_authorization"]["mode"] == "project_scoped"
     assert message.metadata["team_mutation_authorization"]["project_ids"] == ["project"]
-    published = InternalEventBus(internal_event_store_path(tmp_path)).list_events()
+    published = InternalEventBus(default_orchestration_database_path(tmp_path)).list_events()
     assert len(published) == 1
     assert published[0].event_type == CHAT_MESSAGE_QUEUED_EVENT_TYPE
     assert published[0].payload["message_id"] == result["message_id"]
@@ -11640,9 +11605,9 @@ def test_enqueue_operator_chat_message_effect_validates_target_and_authorization
         ),
     )
     threaded_result = threaded.execute()
-    threaded_message = TeamStateRepository(tmp_path).read().conversation_messages[
-        threaded_result["message_id"]
-    ]
+    threaded_message = (
+        TeamStateRepository(tmp_path).read().conversation_messages[threaded_result["message_id"]]
+    )
     assert threaded_message.metadata["external_origin"]["source_thread_id"] == (
         "123456789012345681"
     )
@@ -12271,7 +12236,7 @@ def test_update_case_effect_prompts_case_closure_outbox_publication(
     assert len(closure_records) == 1
     assert closure_records[0].status.value == "pending"
     assert result["outbox_publication_wake"]["outbox_record_ids"] == [closure_records[0].id]
-    events = InternalEventBus(internal_event_store_path(runtime_dir)).list_events()
+    events = InternalEventBus(default_orchestration_database_path(runtime_dir)).list_events()
     assert len(events) == 1
     assert events[0].event_type == TEAM_OUTBOX_PUBLISH_REQUESTED_EVENT_TYPE
     assert events[0].payload == {"outbox_record_ids": [closure_records[0].id]}
@@ -12335,7 +12300,7 @@ def test_publish_outbox_effect_targets_requested_record_before_older_backlog(
         for record_id, record in records.items()
         if record_id != target.id
     )
-    published = InternalEventBus(internal_event_store_path(runtime_dir)).list_events()
+    published = InternalEventBus(default_orchestration_database_path(runtime_dir)).list_events()
     assert [(event.event_type, event.payload) for event in published] == [
         (TEAM_CASE_CLOSED_EVENT_TYPE, {"case_id": "case"})
     ]
@@ -13111,15 +13076,15 @@ def test_team_event_publisher_schedules_delayed_wake_events(tmp_path: Path) -> N
     )
 
     assert published_ids and published_ids[0].startswith("sched-")
-    assert InternalEventBus(internal_event_store_path(tmp_path)).list_events() == []
-    scheduled = json.loads(
-        scheduled_internal_event_store_path(tmp_path).read_text(encoding="utf-8")
-    )
+    assert InternalEventBus(default_orchestration_database_path(tmp_path)).list_events() == []
+    scheduled = ScheduledInternalEventStore(
+        default_orchestration_database_path(tmp_path)
+    ).list_all()
     assert len(scheduled) == 1
-    [record] = scheduled.values()
-    assert record["event_type"] == AGENT_WAKE_REQUESTED_EVENT_TYPE
-    assert record["status"] == "pending"
-    assert record["payload"]["agent_id"] == "backend"
+    [record] = scheduled
+    assert record.event_type == AGENT_WAKE_REQUESTED_EVENT_TYPE
+    assert record.status == "pending"
+    assert record.payload["agent_id"] == "backend"
 
 
 def test_team_runtime_pack_routes_git_promotion_kinds() -> None:
@@ -13323,7 +13288,7 @@ def test_team_runtime_pack_routes_git_promotion_kinds() -> None:
     assert emitted["payload"] == {
         "base_commit_sha": "${{team-git-promotion-requested.payload.base_commit_sha}}",
         "canonical_branch": "${{team-git-promotion-requested.payload.target_branch}}",
-        "directory_path": "${{team-git-promotion-requested.payload.directory_path ?? \"root\"}}",
+        "directory_path": '${{team-git-promotion-requested.payload.directory_path ?? "root"}}',
         "expected_commit_sha": "${{team-git-promotion-requested.payload.expected_commit_sha}}",
         "managed_repo_id": "${{team-git-promotion-requested.payload.managed_repo_id}}",
         "project_id": "${{team-git-promotion-requested.payload.project_id}}",
@@ -13357,16 +13322,12 @@ def test_team_release_published_gate_requires_non_conflicting_mark_result(
 ) -> None:
     pack = _team_runtime_sections()
     gate = next(
-        node
-        for node in pack["gates"]
-        if node["id"] == "team-gate-release-published-successfully"
+        node for node in pack["gates"] if node["id"] == "team-gate-release-published-successfully"
     )
     resolved = resolve_workflow_bindings(
         gate["when"],
         {
-            "team-git-promotion-requested": {
-                "payload": {"expected_commit_sha": "candidate-sha"}
-            },
+            "team-git-promotion-requested": {"payload": {"expected_commit_sha": "candidate-sha"}},
             "team-push-canonical-branch": {"commit_sha": "candidate-sha"},
             "team-mark-release-published": {
                 "success": True,

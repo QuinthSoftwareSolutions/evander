@@ -9,8 +9,8 @@ from uuid import uuid4
 from evander.events.internal import (
     InternalEventBus,
     InternalEventSource,
-    internal_event_store_path,
 )
+from evander.orchestration.internal_events import build_internal_event_bus_for_runtime
 
 from .domain import common as _team_common
 from ..repository import (
@@ -375,7 +375,7 @@ class TeamRuntimeService:
         if bus is None and self._event_bus_factory is not None:
             bus = self._event_bus_factory()
         if bus is None:
-            bus = InternalEventBus(internal_event_store_path(self._repository.runtime_dir))
+            bus = build_internal_event_bus_for_runtime(self._repository.runtime_dir)
         for event in events:
             if not isinstance(event, Mapping):
                 continue
@@ -1330,9 +1330,7 @@ class TeamRuntimeService:
                     blocker_ids=list(manager_scope.blocker_ids),
                     review_request_ids=list(manager_scope.review_request_ids),
                     inbox_item_ids=list(manager_scope.inbox_item_ids),
-                    source_evidence_snapshot_ids=list(
-                        manager_source_evidence_snapshot_ids
-                    ),
+                    source_evidence_snapshot_ids=list(manager_source_evidence_snapshot_ids),
                     mcp_capability_receipt=_new_review_mcp_capability_receipt(
                         state_model,
                         agent_id=manager.id,

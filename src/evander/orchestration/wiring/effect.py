@@ -111,9 +111,6 @@ def build_effect_provider_runtime_wiring(
         admin_runtime=admin_runtime,
     )
     provider_factory.metadata.update(internal_event_bus_metadata(worker_config))
-    provider_factory.metadata["scheduled_internal_event_store_path"] = str(
-        worker_config.scheduled_internal_event_store_path
-    )
     agent_run_status_port = None
     agent_prompt_dispatch_port = None
     special_event_handlers: tuple[SpecialEventHandler, ...] = ()

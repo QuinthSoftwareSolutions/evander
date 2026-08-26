@@ -8811,7 +8811,7 @@ def test_admin_service_publish_external_workflow_event_preserves_payload_and_ide
         idempotency_key="request-1",
     )
 
-    events = InternalEventBus(tmp_path / "runtime" / "internal-events.json").list_events()
+    events = InternalEventBus(tmp_path / "runtime" / "orchestration.db").list_events()
     assert first["event_id"] == second["event_id"]
     assert [event.event_id for event in events] == [first["event_id"]]
     assert events[0].event_type == "external.deploy_requested"

@@ -597,8 +597,7 @@ def test_default_registry_includes_all_known_effect_types() -> None:
         is RuntimeDiagnosticsSnapshotEffectProvider
     )
     assert (
-        DEFAULT_EFFECT_PROVIDER_REGISTRY["effect:ado:pipeline-run"]
-        is AdoPipelineRunEffectProvider
+        DEFAULT_EFFECT_PROVIDER_REGISTRY["effect:ado:pipeline-run"] is AdoPipelineRunEffectProvider
     )
     assert (
         DEFAULT_EFFECT_PROVIDER_REGISTRY["effect:ado:post-work-item-comment"]
@@ -725,8 +724,7 @@ def test_prepare_reference_repositories_batches_exact_read_only_checkouts(
     assert {call["source_ref"] for call in backend.prepared_reference_repos} == {"refs/heads/main"}
     assert all(call["update_existing"] is True for call in backend.prepared_reference_repos)
     assert {
-        (managed_repo_id, str(kwargs["directory_path"]))
-        for managed_repo_id, kwargs in lookup_calls
+        (managed_repo_id, str(kwargs["directory_path"])) for managed_repo_id, kwargs in lookup_calls
     } == {
         ("mr-one", "root/personal"),
         ("mr-two", "root/personal"),
@@ -759,17 +757,15 @@ def test_prepare_reference_repositories_batches_exact_read_only_checkouts(
 
 
 def test_prepare_reference_repositories_runtime_inputs_require_managed_repo_ids() -> None:
-    assert _normalize_repository_inputs(
-        [{"managed_repo_id": " mr-one ", "branch": " main "}]
-    ) == [{"managed_repo_id": "mr-one", "branch": "main"}]
+    assert _normalize_repository_inputs([{"managed_repo_id": " mr-one ", "branch": " main "}]) == [
+        {"managed_repo_id": "mr-one", "branch": "main"}
+    ]
 
     with pytest.raises(
         ValueError,
         match="repo_source is not supported; select a managed_repo_id",
     ):
-        _normalize_repository_inputs(
-            [{"repo_source": "https://example.invalid/legacy.git"}]
-        )
+        _normalize_repository_inputs([{"repo_source": "https://example.invalid/legacy.git"}])
 
 
 def test_prepare_reference_repositories_reuses_cached_checkout_by_default(
@@ -1187,7 +1183,7 @@ def test_factory_initializes_provider_with_runtime_context() -> None:
         env={"API_TOKEN": "top-secret"},
         metadata={
             "directory_path": "stale-directory",
-            "internal_event_store_path": "runtime/internal-events.json",
+            "orchestration_store_path": "runtime/orchestration.db",
         },
     )
     provider = factory.build(effect, directory_path="root/team-a", graph_id="graph-1")
@@ -1198,9 +1194,8 @@ def test_factory_initializes_provider_with_runtime_context() -> None:
     assert provider.runtime_context.resolve_secret("API_TOKEN") == "top-secret"
     assert provider.runtime_context.metadata["directory_path"] == "root/team-a"
     assert provider.runtime_context.metadata["graph_id"] == "graph-1"
-    assert (
-        provider.runtime_context.metadata["internal_event_store_path"]
-        == "runtime/internal-events.json"
+    assert provider.runtime_context.metadata["orchestration_store_path"] == (
+        "runtime/orchestration.db"
     )
 
 

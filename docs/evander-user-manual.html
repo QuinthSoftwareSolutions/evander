@@ -16878,100 +16878,96 @@ responsible for each path.</p>
 </tr>
 <tr class="odd">
 <td><code>runtime/orchestration.db</code></td>
-<td>Trigger events, workflow/effect/gate executions</td>
+<td>Trigger events, internal events/subscriptions/schedules,
+workflow/effect/gate executions</td>
 <td>Trigger and effect orchestrators</td>
 </tr>
 <tr class="even">
-<td><code>runtime/scheduled-internal-events.json</code></td>
-<td>Durable one-shot internal events</td>
-<td>Schedule effect and trigger worker</td>
-</tr>
-<tr class="odd">
 <td><code>runtime/workflow-pack-history/</code></td>
 <td>Pack revisions and append-only change ledger</td>
 <td>Workflow pack service</td>
 </tr>
-<tr class="even">
+<tr class="odd">
 <td><code>runtime/workflow-state.json</code></td>
 <td>Workflow-scoped state records</td>
 <td>Workflow state providers</td>
 </tr>
-<tr class="odd">
+<tr class="even">
 <td><code>runtime/wake-requests-store.db</code></td>
 <td>Scheduled wake requests and dispatch history</td>
 <td>Scheduled-wake and reconciliation services</td>
 </tr>
-<tr class="even">
+<tr class="odd">
 <td><code>runtime/model-usage.db</code></td>
 <td>Normalized model-usage observations and attribution</td>
 <td>Model usage service and Team cost aggregation</td>
 </tr>
-<tr class="odd">
+<tr class="even">
 <td><code>runtime/teams-meetings.json</code></td>
 <td>Teams meeting session/projection state</td>
 <td>Teams meeting services</td>
 </tr>
-<tr class="even">
+<tr class="odd">
 <td><code>runtime/managed-git-repositories.json</code></td>
 <td>Stable managed repository identities and bindings</td>
 <td>Managed Git service</td>
 </tr>
-<tr class="odd">
+<tr class="even">
 <td><code>runtime/managed-git/</code></td>
 <td>Host-owned bare repositories</td>
 <td>Managed Git service and restricted SSH</td>
 </tr>
-<tr class="even">
+<tr class="odd">
 <td><code>runtime/git-worktrees/</code></td>
 <td>Ephemeral operation worktrees</td>
 <td>Managed Git effects; safe cleanup is service-owned</td>
 </tr>
-<tr class="odd">
+<tr class="even">
 <td><code>runtime/artifact-spaces.json</code></td>
 <td>Artifact-space metadata and published versions</td>
 <td>Artifact-space service</td>
 </tr>
-<tr class="even">
+<tr class="odd">
 <td><code>runtime/published-artifacts/</code></td>
 <td>Host-published artifact blobs</td>
 <td>Artifact effects</td>
 </tr>
-<tr class="odd">
+<tr class="even">
 <td><code>runtime/communication-targets.db</code></td>
 <td>Directory-scoped communication targets</td>
 <td>Messaging target service</td>
 </tr>
-<tr class="even">
+<tr class="odd">
 <td><code>runtime/communication-artifacts/</code></td>
 <td>Staged message attachments</td>
 <td>Communication effects</td>
 </tr>
-<tr class="odd">
+<tr class="even">
 <td><code>runtime/review-request-store.json</code></td>
 <td>PR review-request inbox</td>
 <td>Review request provider</td>
 </tr>
-<tr class="even">
+<tr class="odd">
 <td><code>runtime/agent-consultations.db</code></td>
 <td>Consultation lifecycle and results</td>
 <td>Consultation service</td>
 </tr>
-<tr class="odd">
+<tr class="even">
 <td><code>runtime/host-agent-control-state.json</code></td>
 <td>Durable enabled/disabled agent state</td>
 <td>Wake and execution control paths</td>
 </tr>
-<tr class="even">
+<tr class="odd">
 <td><code>runtime/voice-sessions-store.json</code></td>
 <td>Phone/meeting/realtime session projection</td>
 <td>Voice and meeting integrations</td>
 </tr>
-<tr class="odd">
+<tr class="even">
 <td><code>runtime/addons/&lt;addon-id&gt;/</code></td>
 <td>Add-on-private state</td>
 <td>The named add-on only</td>
 </tr>
-<tr class="even">
+<tr class="odd">
 <td><code>runtime/addons/team-addon/state.db</code></td>
 <td>Team&#39;s canonical relational state</td>
 <td>Team repository and Team Admin API</td>

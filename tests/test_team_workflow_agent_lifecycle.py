@@ -231,9 +231,7 @@ def test_lifecycle_effects_accept_completed_replays_with_original_revision(
     tmp_path: Path,
 ) -> None:
     repo = _seed_team(tmp_path)
-    sessions = _Sessions(
-        _Session("support-session", expires_at=utc_now() + timedelta(hours=1))
-    )
+    sessions = _Sessions(_Session("support-session", expires_at=utc_now() + timedelta(hours=1)))
     registration_revision = repo.read().revision
 
     created = _register(
@@ -352,14 +350,13 @@ def test_register_agent_rejects_non_cleaned_ephemeral_session_binding(tmp_path: 
         return state
 
     repo.update(_add_assignment)
-    sessions = _Sessions(
-        _Session("shared-session", expires_at=utc_now() + timedelta(hours=1))
-    )
+    sessions = _Sessions(_Session("shared-session", expires_at=utc_now() + timedelta(hours=1)))
     for assignment_state in (
         EphemeralAssignmentState.REQUESTED,
         EphemeralAssignmentState.RUNNING,
         EphemeralAssignmentState.CLEANUP_PENDING,
     ):
+
         def _set_assignment_state(state):
             state.ephemeral_assignments["ephemeral-assignment"].state = assignment_state
             return state
@@ -373,16 +370,14 @@ def test_register_agent_rejects_non_cleaned_ephemeral_session_binding(tmp_path: 
             agent_id="persistent-agent",
         )
         assert rejected["success"] is False
-        assert "non-cleaned ephemeral assignment ephemeral-assignment" in str(
-            rejected["error"]
-        )
+        assert "non-cleaned ephemeral assignment ephemeral-assignment" in str(rejected["error"])
         assert repo.read().revision == revision_before_rejection
         assert "persistent-agent" not in repo.read().agents
 
     def _mark_cleaned_up(state):
-        state.ephemeral_assignments["ephemeral-assignment"].state = (
-            EphemeralAssignmentState.CLEANED_UP
-        )
+        state.ephemeral_assignments[
+            "ephemeral-assignment"
+        ].state = EphemeralAssignmentState.CLEANED_UP
         return state
 
     repo.update(_mark_cleaned_up)
@@ -501,9 +496,7 @@ def test_retire_agent_effect_requires_child_first_cleanup_and_preserves_retry_hi
 
 def test_retirement_preserves_closed_case_and_memory_history(tmp_path: Path) -> None:
     repo = _seed_team(tmp_path)
-    sessions = _Sessions(
-        _Session("support-session", expires_at=utc_now() + timedelta(hours=1))
-    )
+    sessions = _Sessions(_Session("support-session", expires_at=utc_now() + timedelta(hours=1)))
     assert _register(
         tmp_path,
         sessions,
@@ -568,9 +561,7 @@ def test_retirement_blocks_governance_management_and_active_dispatches(
     tmp_path: Path,
 ) -> None:
     repo = _seed_team(tmp_path)
-    sessions = _Sessions(
-        _Session("support-session", expires_at=utc_now() + timedelta(hours=1))
-    )
+    sessions = _Sessions(_Session("support-session", expires_at=utc_now() + timedelta(hours=1)))
     assert _register(
         tmp_path,
         sessions,
@@ -636,9 +627,7 @@ def test_retirement_blocks_governance_management_and_active_dispatches(
 
 def test_retirement_preserves_rejected_task_ownership(tmp_path: Path) -> None:
     repo = _seed_team(tmp_path)
-    sessions = _Sessions(
-        _Session("support-session", expires_at=utc_now() + timedelta(hours=1))
-    )
+    sessions = _Sessions(_Session("support-session", expires_at=utc_now() + timedelta(hours=1)))
     assert _register(
         tmp_path,
         sessions,
@@ -687,9 +676,7 @@ def test_retirement_blocks_active_release_and_preserves_terminal_release_owner(
     tmp_path: Path,
 ) -> None:
     repo = _seed_team(tmp_path)
-    sessions = _Sessions(
-        _Session("support-session", expires_at=utc_now() + timedelta(hours=1))
-    )
+    sessions = _Sessions(_Session("support-session", expires_at=utc_now() + timedelta(hours=1)))
     admin = TeamAdminService(repo)
     admin.update_role(
         role_id="support",
@@ -750,9 +737,7 @@ def test_retirement_blocks_active_release_and_preserves_terminal_release_owner(
 
 def test_session_routing_ignores_retired_persistent_agent(tmp_path: Path) -> None:
     _seed_team(tmp_path)
-    sessions = _Sessions(
-        _Session("support-session", expires_at=utc_now() + timedelta(hours=1))
-    )
+    sessions = _Sessions(_Session("support-session", expires_at=utc_now() + timedelta(hours=1)))
     assert _register(
         tmp_path,
         sessions,
@@ -923,20 +908,6 @@ def test_case_closed_trigger_supports_child_first_retirement_then_session_destro
         expected_revision=repo.read().revision,
     )
 
-    publisher = TeamPublishOutboxEventsEffectProvider()
-    publisher.initialize(
-        TeamPublishOutboxEventsEffectDefinition(
-            id="publish-case-closure",
-            display_name="Publish case closure",
-            type="effect:team:publish-outbox-events",
-            intent_types=["team.case.closed"],
-        ),
-        EffectRuntimeContext(resolved_config={"runtime_dir": str(tmp_path)}),
-    )
-    published = publisher.execute()
-    assert published["success"] is True
-    assert published["published_count"] == 1
-
     worker_config = canonical_worker_config(
         {
             "runtime_dir": tmp_path,
@@ -957,6 +928,22 @@ def test_case_closed_trigger_supports_child_first_retirement_then_session_destro
         worker_config=worker_config,
         runtime=None,  # type: ignore[arg-type]
     )
+    assert trigger_worker.run_once().events_published == 0
+
+    publisher = TeamPublishOutboxEventsEffectProvider()
+    publisher.initialize(
+        TeamPublishOutboxEventsEffectDefinition(
+            id="publish-case-closure",
+            display_name="Publish case closure",
+            type="effect:team:publish-outbox-events",
+            intent_types=["team.case.closed"],
+        ),
+        EffectRuntimeContext(resolved_config={"runtime_dir": str(tmp_path)}),
+    )
+    published = publisher.execute()
+    assert published["success"] is True
+    assert published["published_count"] == 1
+
     assert trigger_worker.run_once().events_published == 1
 
     destroying_admin = _DestroyingAdminService(sessions)
@@ -1001,5 +988,10 @@ def test_case_closed_trigger_supports_child_first_retirement_then_session_destro
 def test_lifecycle_effects_are_registered_with_output_contracts() -> None:
     registration = register_providers()
 
-    assert registration.effect_providers["effect:team:register-agent"] is TeamRegisterAgentEffectProvider
-    assert registration.effect_providers["effect:team:retire-agent"] is TeamRetireAgentEffectProvider
+    assert (
+        registration.effect_providers["effect:team:register-agent"]
+        is TeamRegisterAgentEffectProvider
+    )
+    assert (
+        registration.effect_providers["effect:team:retire-agent"] is TeamRetireAgentEffectProvider
+    )

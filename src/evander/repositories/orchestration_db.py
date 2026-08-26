@@ -2,13 +2,15 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 SQLITE_BUSY_TIMEOUT_MS = 30_000
 SQLITE_WAL_CHECKPOINT_BUSY_TIMEOUT_MS = 1_000
 SQLITE_WAL_CHECKPOINT_MIN_BYTES = 64 * 1024 * 1024
@@ -42,6 +44,8 @@ class OrchestrationRetentionResult:
     workflow_events_deleted: int = 0
     compact_executions_deleted: int = 0
     compact_payload_blobs_deleted: int = 0
+    internal_events_deleted: int = 0
+    scheduled_internal_events_deleted: int = 0
 
 
 @dataclass(frozen=True)
@@ -56,18 +60,23 @@ class OrchestrationWalCheckpointResult:
     error: str | None = None
 
 
-def connect_orchestration_db(path: Path | str) -> sqlite3.Connection:
+@contextmanager
+def connect_orchestration_db(path: Path | str) -> Iterator[sqlite3.Connection]:
     db_path = Path(path)
     db_path.parent.mkdir(parents=True, exist_ok=True)
     connection = sqlite3.connect(db_path, timeout=30.0)
-    connection.row_factory = sqlite3.Row
-    connection.execute(f"PRAGMA busy_timeout={SQLITE_BUSY_TIMEOUT_MS}")
-    connection.execute("PRAGMA journal_mode=WAL")
-    connection.execute("PRAGMA foreign_keys=ON")
-    connection.create_function(
-        "execution_history_numeric_compare", 2, _compare_execution_history_numbers
-    )
-    return connection
+    try:
+        connection.row_factory = sqlite3.Row
+        connection.execute(f"PRAGMA busy_timeout={SQLITE_BUSY_TIMEOUT_MS}")
+        connection.execute("PRAGMA journal_mode=WAL")
+        connection.execute("PRAGMA foreign_keys=ON")
+        connection.create_function(
+            "execution_history_numeric_compare", 2, _compare_execution_history_numbers
+        )
+        with connection:
+            yield connection
+    finally:
+        connection.close()
 
 
 def ensure_orchestration_schema(path: Path | str) -> None:
@@ -202,6 +211,77 @@ def ensure_orchestration_schema(path: Path | str) -> None:
                 ON workflow_events(subject_id, row_id);
             CREATE INDEX IF NOT EXISTS idx_workflow_events_occurred
                 ON workflow_events(occurred_at, row_id);
+
+            CREATE TABLE IF NOT EXISTS internal_events (
+                row_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                event_id TEXT NOT NULL UNIQUE,
+                event_type TEXT NOT NULL,
+                correlation_key TEXT,
+                created_at TEXT NOT NULL,
+                source_json TEXT,
+                idempotency_key TEXT UNIQUE,
+                payload_json TEXT NOT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_internal_events_type_row
+                ON internal_events(event_type, row_id);
+            CREATE INDEX IF NOT EXISTS idx_internal_events_created
+                ON internal_events(created_at, row_id);
+            CREATE INDEX IF NOT EXISTS idx_internal_events_idempotency
+                ON internal_events(idempotency_key);
+
+            CREATE TABLE IF NOT EXISTS internal_event_subscriptions (
+                trigger_id TEXT PRIMARY KEY,
+                trigger_type TEXT NOT NULL,
+                event_type TEXT NOT NULL,
+                filter_hash TEXT NOT NULL,
+                filter_json TEXT NOT NULL,
+                scan_cursor_row_id INTEGER NOT NULL DEFAULT 0,
+                active INTEGER NOT NULL DEFAULT 1,
+                config_revision TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_internal_event_subscriptions_active
+                ON internal_event_subscriptions(active, event_type, scan_cursor_row_id);
+
+            CREATE TABLE IF NOT EXISTS internal_event_deliveries (
+                trigger_id TEXT NOT NULL,
+                internal_event_row_id INTEGER NOT NULL,
+                state TEXT NOT NULL CHECK(state IN ('pending', 'delivered')),
+                created_at TEXT NOT NULL,
+                delivered_at TEXT,
+                PRIMARY KEY(trigger_id, internal_event_row_id),
+                FOREIGN KEY(trigger_id)
+                    REFERENCES internal_event_subscriptions(trigger_id)
+                    ON DELETE CASCADE,
+                FOREIGN KEY(internal_event_row_id)
+                    REFERENCES internal_events(row_id)
+                    ON DELETE CASCADE
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_internal_event_deliveries_pending
+                ON internal_event_deliveries(trigger_id, state, internal_event_row_id);
+
+            CREATE TABLE IF NOT EXISTS scheduled_internal_events (
+                schedule_id TEXT PRIMARY KEY,
+                event_type TEXT NOT NULL,
+                correlation_key TEXT,
+                run_at TEXT NOT NULL,
+                status TEXT NOT NULL CHECK(status IN ('pending', 'published')),
+                created_at TEXT NOT NULL,
+                published_at TEXT,
+                published_event_id TEXT,
+                idempotency_key TEXT UNIQUE,
+                source_json TEXT,
+                payload_json TEXT NOT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_scheduled_internal_events_due
+                ON scheduled_internal_events(status, run_at, created_at, schedule_id);
+            CREATE INDEX IF NOT EXISTS idx_scheduled_internal_events_published
+                ON scheduled_internal_events(status, published_at, schedule_id);
 
             CREATE TABLE IF NOT EXISTS workflow_config_snapshots (
                 revision TEXT PRIMARY KEY,
@@ -591,6 +671,34 @@ def run_orchestration_retention(
             )
             """
         ).rowcount
+        internal_deleted = connection.execute(
+            """
+            DELETE FROM internal_events
+            WHERE created_at < ?
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM internal_event_deliveries AS delivery
+                  WHERE delivery.internal_event_row_id = internal_events.row_id
+                    AND delivery.state = 'pending'
+              )
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM internal_event_subscriptions AS subscription
+                  WHERE subscription.active = 1
+                    AND subscription.event_type = internal_events.event_type
+                    AND subscription.scan_cursor_row_id < internal_events.row_id
+              )
+            """,
+            (cutoff,),
+        ).rowcount
+        scheduled_deleted = connection.execute(
+            """
+            DELETE FROM scheduled_internal_events
+            WHERE status = 'published'
+              AND published_at < ?
+            """,
+            (cutoff,),
+        ).rowcount
         connection.execute(
             """
             INSERT INTO orchestration_metadata(key, value_json)
@@ -606,6 +714,8 @@ def run_orchestration_retention(
         workflow_events_deleted=max(0, workflow_deleted),
         compact_executions_deleted=max(0, compact_deleted),
         compact_payload_blobs_deleted=max(0, blob_deleted),
+        internal_events_deleted=max(0, internal_deleted),
+        scheduled_internal_events_deleted=max(0, scheduled_deleted),
     )
 
 

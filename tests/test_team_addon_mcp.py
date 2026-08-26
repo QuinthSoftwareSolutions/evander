@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
-import json
 import threading
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -15,7 +14,7 @@ from evander.addons import AddonLoaderConfig
 from evander.config import GatewayConfig
 from evander.directories import DirectoryService
 from evander.effects.providers.agent_exec import AgentExecEffectProvider
-from evander.events.scheduled import scheduled_internal_event_store_path
+from evander.events.scheduled import ScheduledInternalEventStore
 from evander.gateway import create_server
 from evander.models import ApprovalStatus, SessionManifest, ToolName, tool_name_value
 from evander.model_usage.models import ModelUsageCorrelationContext
@@ -23,6 +22,7 @@ from evander.model_usage.runtime import model_usage_store
 from evander.operator_steering import operator_steering_note_store
 from evander.runtime import build_runtime
 import evander_team_addon.mcp as team_addon_mcp
+from internal_event_test_support import default_orchestration_database_path
 from evander_team_addon.mcp import (
     MCP_TOOL_NAMES,
     TEAM_ACKNOWLEDGE_OPERATOR_CHAT_MESSAGES_TOOL,
@@ -644,6 +644,8 @@ def test_team_git_candidate_pinner_uses_deliverable_scoped_immutable_ref(
             "pinned_ref": expected_ref,
         }
     ]
+
+
 def test_team_addon_mcp_registers_all_plan_tool_names_as_addon_tools(
     tmp_path: Path,
 ) -> None:
@@ -1930,19 +1932,17 @@ def test_team_addon_mcp_slice6_tools_use_command_implementation(
     ]
     assert len(created_wake_outbox) == 1
     assert created_wake_outbox[0].status.value == "completed"
-    scheduled = json.loads(
-        scheduled_internal_event_store_path(context.config.runtime_dir).read_text(
-            encoding="utf-8",
-        )
-    )
+    scheduled = ScheduledInternalEventStore(
+        default_orchestration_database_path(context.config.runtime_dir)
+    ).list_all()
     scheduled_wakes = [
         record
-        for record in scheduled.values()
-        if record["event_type"] == AGENT_WAKE_REQUESTED_EVENT_TYPE
-        and record["payload"]["agent_id"] == "backend"
+        for record in scheduled
+        if record.event_type == AGENT_WAKE_REQUESTED_EVENT_TYPE
+        and record.payload["agent_id"] == "backend"
     ]
     assert scheduled_wakes
-    assert all(record["status"] == "pending" for record in scheduled_wakes)
+    assert all(record.status == "pending" for record in scheduled_wakes)
     assert created_tasks["created_task_ids"] == [
         "task-mcp-batch-a",
         "task-mcp-batch-b",
