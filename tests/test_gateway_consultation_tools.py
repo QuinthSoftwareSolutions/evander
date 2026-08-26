@@ -17,10 +17,11 @@ from evander.consultations import (
     utc_now,
 )
 from evander.directories import DirectoryService
-from evander.events.internal import InternalEventBus, internal_event_store_path
+from evander.events.internal import InternalEventBus
 from evander.gateway import create_server
 from evander.models import SessionManifest, ToolName
 from evander.runtime import build_runtime
+from internal_event_test_support import default_orchestration_database_path
 
 
 def _call_tool(server, name: str, arguments: dict[str, object]):
@@ -136,7 +137,9 @@ def test_consult_codebase_pins_snapshot_and_publishes_durable_request(
     }
     assert managed_git.pins[0][2]["source_ref"] == "main"
     assert managed_git.pins[-1][2]["commit_sha"] == "a" * 40
-    events = InternalEventBus(internal_event_store_path(context.config.runtime_dir)).list_events()
+    events = InternalEventBus(
+        default_orchestration_database_path(context.config.runtime_dir)
+    ).list_events()
     assert [(event.event_type, event.payload["consultation_id"]) for event in events] == [
         ("agent.consultation.requested", created["consultation_id"])
     ]
@@ -163,7 +166,7 @@ def test_consult_codebase_pins_snapshot_and_publishes_durable_request(
     )
     assert cancelled["cancellation_requested"] is True
     all_events = InternalEventBus(
-        internal_event_store_path(context.config.runtime_dir)
+        default_orchestration_database_path(context.config.runtime_dir)
     ).list_events()
     assert [event.event_type for event in all_events] == [
         "agent.consultation.requested",
@@ -333,7 +336,9 @@ def test_cancelling_a_queued_consultation_publishes_snapshot_cleanup(
 
     assert cancelled["status"] == "cancelled"
     assert cancelled["cancellation_requested"] is True
-    events = InternalEventBus(internal_event_store_path(context.config.runtime_dir)).list_events()
+    events = InternalEventBus(
+        default_orchestration_database_path(context.config.runtime_dir)
+    ).list_events()
     assert [(event.event_type, event.payload["consultation_id"]) for event in events] == [
         ("agent.consultation.requested", first["consultation_id"]),
         ("agent.consultation.terminate", second["consultation_id"]),
@@ -424,7 +429,9 @@ def test_consult_codebase_enqueues_cleanup_when_dispatch_publication_fails(
     assert record.status == "failed"
     assert record.started_at is not None
     assert record.cleanup_status == "pending"
-    events = InternalEventBus(internal_event_store_path(context.config.runtime_dir)).list_events()
+    events = InternalEventBus(
+        default_orchestration_database_path(context.config.runtime_dir)
+    ).list_events()
     assert [(event.event_type, event.payload["consultation_id"]) for event in events] == [
         ("agent.consultation.terminate", consultation_id)
     ]

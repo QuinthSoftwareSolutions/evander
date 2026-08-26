@@ -25,11 +25,6 @@ from evander.events.models import (
     TriggerEvent,
     validate_output_mapping_keys,
 )
-from evander.events.internal import InternalEventSource
-from evander.events.scheduled import (
-    ScheduledInternalEventStore,
-    scheduled_internal_event_wake_socket_path,
-)
 from evander.orchestration.adapters import (
     TriggerCompletionPublisherAdapter,
     TriggerDependencyResolverAdapter,
@@ -58,7 +53,10 @@ from evander.orchestration.kernels import PollingKernelConfig, PollingOrchestrat
 from evander.orchestration.wal_maintenance import (
     OrchestrationWalCheckpointMaintenance,
 )
-from evander.orchestration.internal_events import build_internal_event_bus
+from evander.orchestration.internal_events import (
+    build_internal_event_bus,
+    build_scheduled_internal_event_store,
+)
 from evander.orchestration.wiring import TriggerWorkerWiring, build_trigger_worker_wiring
 from evander.orchestration.wiring.trigger import build_trigger_provider_runtime_wiring
 from evander.repositories.orchestration import GateCursorRepository
@@ -123,11 +121,6 @@ class TriggerOrchestratorWorker:
         self._wal_checkpoint_maintenance = OrchestrationWalCheckpointMaintenance()
         self._wake_sleeper = HostWakeSleeper(
             wake_socket_path_for_lock(self.worker_config.lock_path),
-            additional_paths=(
-                scheduled_internal_event_wake_socket_path(
-                    self.worker_config.scheduled_internal_event_store_path
-                ),
-            ),
         )
         self._effect_wake_notifier = HostWakeNotifier(
             wake_socket_path_for_lock(self.worker_config.effect_lock_path)
@@ -184,11 +177,6 @@ class TriggerOrchestratorWorker:
                 active_config = latest_config
                 self._wake_sleeper.set_paths(
                     wake_socket_path_for_lock(self.worker_config.lock_path),
-                    additional_paths=(
-                        scheduled_internal_event_wake_socket_path(
-                            self.worker_config.scheduled_internal_event_store_path
-                        ),
-                    ),
                 )
                 logger.info(
                     "Trigger orchestrator config revision changed revision=%s trigger_count=%d",
@@ -200,11 +188,16 @@ class TriggerOrchestratorWorker:
                     wake_socket_path_for_lock(self.worker_config.effect_lock_path)
                 )
 
-        self._publish_due_scheduled_internal_events(active_config)
         configured_triggers = self._configured_triggers(active_config)
         providers = self._load_configured_providers(active_config, configured_triggers)
         node_graph_metadata_by_id = _resolve_node_graph_metadata(active_config)
         config_revision = _config_revision_hash(active_config)
+        self._reconcile_internal_event_subscriptions(
+            active_config,
+            providers,
+            config_revision=config_revision,
+        )
+        self._publish_due_scheduled_internal_events(active_config)
         events_discovered = 0
         events_published = 0
         published_event_ids_by_trigger_id: dict[str, list[str]] = {}
@@ -304,8 +297,8 @@ class TriggerOrchestratorWorker:
             events_published=events_published + scheduled_events_published_after_poll,
             poll_interval_seconds=sleep_config.poll_interval_seconds,
             jitter_seconds=sleep_config.jitter_seconds,
-            next_scheduled_run_at=ScheduledInternalEventStore(
-                active_config.scheduled_internal_event_store_path
+            next_scheduled_run_at=build_scheduled_internal_event_store(
+                active_config
             ).next_pending_run_at(),
         )
         self._run_orchestration_wal_checkpoint_maintenance()
@@ -327,12 +320,31 @@ class TriggerOrchestratorWorker:
                 result.error,
             )
 
+    def _reconcile_internal_event_subscriptions(
+        self,
+        worker_config: TriggerOrchestratorWorkerGlobalConfig,
+        providers: dict[str, Any],
+        *,
+        config_revision: str,
+    ) -> None:
+        bus = build_internal_event_bus(worker_config)
+        active_trigger_ids: set[str] = set()
+        for provider in providers.values():
+            subscription_spec = getattr(provider, "subscription_spec", None)
+            if not callable(subscription_spec):
+                continue
+            spec = subscription_spec()
+            bus.reconcile_subscription(spec, config_revision=config_revision)
+            active_trigger_ids.add(spec.trigger_id)
+        bus.deactivate_missing_subscriptions(
+            active_trigger_ids,
+            config_revision=config_revision,
+        )
+
     def _publish_due_scheduled_internal_events(
         self, worker_config: TriggerOrchestratorWorkerGlobalConfig
     ) -> int:
-        scheduled_event_store = ScheduledInternalEventStore(
-            worker_config.scheduled_internal_event_store_path
-        )
+        scheduled_event_store = build_scheduled_internal_event_store(worker_config)
         due_events = scheduled_event_store.list_due(datetime.now(UTC))
         if not due_events:
             return 0
@@ -340,20 +352,10 @@ class TriggerOrchestratorWorker:
         internal_event_bus = build_internal_event_bus(worker_config)
         published_count = 0
         for scheduled_event in due_events:
-            source = _scheduled_internal_event_source(scheduled_event.source)
-            published_event = internal_event_bus.publish(
-                event_type=scheduled_event.event_type,
-                payload=scheduled_event.payload,
-                correlation_key=scheduled_event.correlation_key,
-                source=source,
-                idempotency_key=f"scheduled-event:{scheduled_event.schedule_id}",
+            _published_event, created = internal_event_bus.publish_scheduled(
+                scheduled_event.schedule_id
             )
-            scheduled_event_store.mark_published(
-                scheduled_event.schedule_id,
-                published_event.event_id,
-                datetime.now(UTC),
-            )
-            published_count += 1
+            published_count += int(created)
         return published_count
 
     def _configured_triggers(
@@ -408,14 +410,6 @@ def _normalize_trace_id(value: str | None) -> str:
         return str(uuid4())
     normalized = value.strip()
     return normalized or str(uuid4())
-
-
-def _scheduled_internal_event_source(
-    source: InternalEventSource | None,
-) -> InternalEventSource:
-    if source is None:
-        return InternalEventSource(source_type="scheduled_internal_event")
-    return source.model_copy(update={"source_type": "scheduled_internal_event"})
 
 
 def _acknowledge_provider_event_published(provider: Any | None, event: TriggerEvent) -> None:

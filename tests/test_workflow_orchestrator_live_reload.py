@@ -71,7 +71,6 @@ def _reload_worker_config(
     runtime_dir: Path,
     *,
     orchestration_store_path: Path | None = None,
-    internal_event_store_path: Path | None = None,
     effect_cursor_store_path: Path | None = None,
     effect_lock_path: Path | None = None,
     provider_modules: list[str] | None = None,
@@ -89,11 +88,6 @@ def _reload_worker_config(
             **(
                 {"orchestration_store_path": orchestration_store_path}
                 if orchestration_store_path is not None
-                else {}
-            ),
-            **(
-                {"internal_event_store_path": internal_event_store_path}
-                if internal_event_store_path is not None
                 else {}
             ),
             **(

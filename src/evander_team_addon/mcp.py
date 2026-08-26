@@ -15,11 +15,10 @@ from evander.addons import AddonContext, AddonMcpTool
 from evander.events.internal import (
     InternalEventSource,
 )
-from evander.events.scheduled import (
-    ScheduledInternalEventStore,
-    scheduled_internal_event_store_path,
+from evander.orchestration.internal_events import (
+    build_internal_event_bus_for_runtime,
+    build_scheduled_internal_event_store_for_runtime,
 )
-from evander.orchestration.internal_events import build_internal_event_bus_for_runtime
 from evander.effects.providers.base import EffectRuntimeContext
 from evander.effects.providers.agent_exec import AgentExecEffectProvider
 from evander.events.provider_models import AgentExecEffectDefinition
@@ -106,12 +105,8 @@ TEAM_ARCHIVE_OUTCOME_KIND_TOOL = "team_archive_outcome_kind"
 TEAM_UPDATE_TASK_TOOL = "team_update_task"
 TEAM_REOPEN_TASK_FOR_REWORK_TOOL = "team_reopen_task_for_rework"
 TEAM_CANCEL_TASK_TOOL = "team_cancel_task"
-TEAM_REPAIR_CANCELLED_TASK_DEPENDENCIES_TOOL = (
-    "team_repair_cancelled_task_dependencies"
-)
-TEAM_RECOVER_SUBMITTED_INTEGRATION_BOUNDARY_TOOL = (
-    "team_recover_submitted_integration_boundary"
-)
+TEAM_REPAIR_CANCELLED_TASK_DEPENDENCIES_TOOL = "team_repair_cancelled_task_dependencies"
+TEAM_RECOVER_SUBMITTED_INTEGRATION_BOUNDARY_TOOL = "team_recover_submitted_integration_boundary"
 TEAM_UPDATE_GOAL_TOOL = "team_update_goal"
 TEAM_STAND_DOWN_AGENT_TOOL = "team_stand_down_agent"
 TEAM_REVOKE_STAND_DOWN_TOOL = "team_revoke_stand_down"
@@ -1855,18 +1850,16 @@ def _register_slice6_tools(
             tool_name=TEAM_REPAIR_CANCELLED_TASK_DEPENDENCIES_TOOL,
         )
         try:
-            _state, result = (
-                task_update_commands.repair_cancelled_task_dependencies_command(
-                    session_id=caller.session_id,
-                    predecessor_task_id=predecessor_task_id,
-                    successor_task_id=successor_task_id,
-                    expected_dependent_task_ids=expected_dependent_task_ids,
-                    reason=reason,
-                    request_id=request_id,
-                    handled_inbox_item_ids=handled_inbox_item_ids,
-                    correlation_id=correlation_id,
-                    causation_id=causation_id,
-                )
+            _state, result = task_update_commands.repair_cancelled_task_dependencies_command(
+                session_id=caller.session_id,
+                predecessor_task_id=predecessor_task_id,
+                successor_task_id=successor_task_id,
+                expected_dependent_task_ids=expected_dependent_task_ids,
+                reason=reason,
+                request_id=request_id,
+                handled_inbox_item_ids=handled_inbox_item_ids,
+                correlation_id=correlation_id,
+                causation_id=causation_id,
             )
         except (TypeError, ValueError) as exc:
             raise ToolError(str(exc)) from exc
@@ -1907,25 +1900,21 @@ def _register_slice6_tools(
             tool_name=TEAM_RECOVER_SUBMITTED_INTEGRATION_BOUNDARY_TOOL,
         )
         try:
-            _state, result = (
-                task_update_commands.recover_submitted_integration_boundary_command(
-                    session_id=caller.session_id,
-                    predecessor_task_id=predecessor_task_id,
-                    successor_task_id=successor_task_id,
-                    integration_task_id=integration_task_id,
-                    replacement_task_id=replacement_task_id,
-                    expected_dependency_task_ids=expected_dependency_task_ids,
-                    expected_required_contribution_task_ids=(
-                        expected_required_contribution_task_ids
-                    ),
-                    reason=reason,
-                    request_id=request_id,
-                    git_base_commit_sha=git_base_commit_sha,
-                    git_base_branch=git_base_branch,
-                    handled_inbox_item_ids=handled_inbox_item_ids,
-                    correlation_id=correlation_id,
-                    causation_id=causation_id,
-                )
+            _state, result = task_update_commands.recover_submitted_integration_boundary_command(
+                session_id=caller.session_id,
+                predecessor_task_id=predecessor_task_id,
+                successor_task_id=successor_task_id,
+                integration_task_id=integration_task_id,
+                replacement_task_id=replacement_task_id,
+                expected_dependency_task_ids=expected_dependency_task_ids,
+                expected_required_contribution_task_ids=(expected_required_contribution_task_ids),
+                reason=reason,
+                request_id=request_id,
+                git_base_commit_sha=git_base_commit_sha,
+                git_base_branch=git_base_branch,
+                handled_inbox_item_ids=handled_inbox_item_ids,
+                correlation_id=correlation_id,
+                causation_id=causation_id,
             )
         except (TypeError, ValueError) as exc:
             raise ToolError(str(exc)) from exc
@@ -4106,11 +4095,7 @@ def _team_command_mcp_result(
                         payload["completed_outbox_record_ids"] = completed_outbox_ids
         raw_outbox_ids = payload.get("outbox_record_ids")
         outbox_ids = (
-            {
-                text
-                for record_id in raw_outbox_ids
-                if (text := str(record_id).strip())
-            }
+            {text for record_id in raw_outbox_ids if (text := str(record_id).strip())}
             if isinstance(raw_outbox_ids, list)
             else set()
         )
@@ -4218,8 +4203,10 @@ def _publish_team_events(context: AddonContext, events: object) -> list[str]:
         project_dir=context.project_dir,
         base_config=context.config,
     )
-    scheduled_store = ScheduledInternalEventStore(
-        scheduled_internal_event_store_path(context.runtime_dir)
+    scheduled_store = build_scheduled_internal_event_store_for_runtime(
+        context.runtime_dir,
+        project_dir=context.project_dir,
+        base_config=context.config,
     )
     published_ids: list[str] = []
     for event in events:

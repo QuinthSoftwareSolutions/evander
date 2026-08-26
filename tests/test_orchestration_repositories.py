@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -152,6 +153,14 @@ def _workflow_config_snapshot_payload(*, revision: str = "revision-1") -> dict[s
         "queries": [{"id": "query-1", "type": "query:test"}],
         "edges": [{"source_id": "trigger-1", "target_id": "effect-1"}],
     }
+
+
+def test_orchestration_connection_is_closed_after_context_exit(tmp_path: Path) -> None:
+    with connect_orchestration_db(tmp_path / "orchestration.db") as connection:
+        assert connection.execute("SELECT 1").fetchone()[0] == 1
+
+    with pytest.raises(sqlite3.ProgrammingError, match="closed database"):
+        connection.execute("SELECT 1")
 
 
 def test_gate_cursor_repository_records_per_trigger_poll_metadata(tmp_path: Path) -> None:

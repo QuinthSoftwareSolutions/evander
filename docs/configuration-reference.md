@@ -144,7 +144,7 @@ For orchestration-only deployments, use `config/trigger-orchestrator/orchestrati
 | `poll_interval_seconds` | `config/trigger-orchestrator/config.json` | Trigger orchestrator worker polling cadence. |
 | `jitter_seconds` | `config/trigger-orchestrator/config.json` | Trigger orchestrator worker jitter between cycles. |
 | `lock_path` | `config/trigger-orchestrator/config.json` | Trigger orchestrator single-instance lock file path. |
-| `orchestration_store_path` | `config/trigger-orchestrator/config.json` | Authoritative SQLite database path for trigger events, effect executions, gate executions, workflow events, and workflow configuration snapshots. Defaults to `runtime/orchestration.db`. |
+| `orchestration_store_path` | `config/trigger-orchestrator/config.json` | Authoritative SQLite database path for trigger events, internal events and subscriptions, scheduled internal events, effect executions, gate executions, workflow events, and workflow configuration snapshots. Defaults to `runtime/orchestration.db`. |
 | `orchestration_retention_days` | `config/trigger-orchestrator/config.json` | Completed orchestration history retention window. Defaults to `30`. |
 | `orchestration_compact_history_retention_days` | `config/trigger-orchestrator/config.json` | Queryable compact node-execution history retention window. Defaults to `365`. Compact history stores sanitized canonical inputs and outputs, typed scalar indexes, and source provenance after full execution records expire. |
 | `orchestration_wal_checkpoint_mode` | `config/trigger-orchestrator/config.json` | SQLite WAL checkpoint mode for bounded orchestration-store maintenance. Defaults to `truncate`; set to `disabled` to skip explicit checkpoints. |
@@ -152,7 +152,6 @@ For orchestration-only deployments, use `config/trigger-orchestrator/orchestrati
 | `orchestration_wal_checkpoint_interval_seconds` | `config/trigger-orchestrator/config.json` | Minimum interval between explicit WAL checkpoint attempts. Defaults to `300`. |
 | `orchestration_wal_checkpoint_busy_timeout_ms` | `config/trigger-orchestrator/config.json` | Short busy timeout used only for explicit WAL checkpoint attempts. Defaults to `1000`. |
 | `event_queue_cursor_store_path` | `config/trigger-orchestrator/config.json` | Trigger orchestrator event queue cursor/checkpoint store path. |
-| `scheduled_internal_event_store_path` | `config/trigger-orchestrator/config.json` | Durable one-shot scheduled internal event store path used by `effect:event:schedule`. Defaults to `runtime/scheduled-internal-events.json`. |
 | `workflow_packs` | `config/trigger-orchestrator/config.json` | Ordered workflow-pack filenames under `config/workflow-packs/` to compose into executable IR. |
 | `workflow_ir` | `config/trigger-orchestrator/config.json` | Optional inline IR overlay (`version`, `nodes`, `edges`) merged after pack composition. |
 | `workflow_graphs` | `config/trigger-orchestrator/config.json` | Optional editor metadata for connected graphs when using inline/non-pack workflows (`id`, `name`, `description`, `directory_path`, `user_ids`, `node_ids`). Each graph has exactly one canonical directory. `user_ids` are ownership/audit metadata, not a visibility boundary; Admin Web group assignments and direct workflow grants control graph visibility. Pack-backed workflows store the same metadata as `graphs` inside the pack file. The retired plural `directory_paths` field is rejected. |
@@ -405,10 +404,13 @@ The HTTP ingress requires either a bearer token minted by a signed-in Admin Web 
 configured machine token from `EVANDER_WORKFLOW_EVENT_MACHINE_TOKENS`. Machine tokens are
 configured as comma-separated `source-name:token` entries; the matching source name is recorded on
 the published event. Token values must not contain commas or colons. The ingress accepts arbitrary
-JSON-object payloads for workflow-specific data. Scheduled internal events are first written to
-`scheduled_internal_event_store_path` and then published into the normal internal event store by
-the trigger orchestrator when they become due, so the end-to-end delay is bounded by the trigger
-orchestrator poll interval.
+JSON-object payloads for workflow-specific data. Internal events, per-trigger subscription and
+delivery state, and scheduled internal events share `orchestration_store_path`. A new or changed
+subscription starts at the current event tail; it does not replay historical events. The offline
+JSON-to-SQLite cutover is the exception: it imports the configured triggers' unacknowledged legacy
+work. Event publication sends a best-effort wake to the trigger worker after the SQLite commit, and
+scheduling uses the same primary wake socket. A missing socket still falls back to the configured
+poll interval.
 
 Known stable internal event names are exposed through the workflow editor catalog and appear as
 suggestions for `trigger:event.event_type`. Operator-defined events are still valid when they pass

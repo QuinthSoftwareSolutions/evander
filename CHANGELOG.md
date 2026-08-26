@@ -1,5 +1,17 @@
 # Changelog
 
+## 2026-08-26 - SQLite Internal Event Delivery
+
+- Moved internal events, event-trigger subscription and delivery state, and scheduled internal
+  events into the shared orchestration SQLite database with indexed future-only subscriptions,
+  atomic scheduled publication, and retention that preserves pending work.
+- Woke the trigger worker after durable event publication and scheduled-event creation so
+  discovery-to-support handoffs no longer wait for the normal polling interval.
+- Added a fail-closed, restartable offline migration that validates, imports, archives, and removes
+  the retired JSON stores and config keys while preserving pending work for configured triggers.
+- Closed shared orchestration SQLite connections at context exit so increased event activity does
+  not accumulate database descriptors.
+
 ## 2026-08-25 - Teams Channel Poll Recovery
 
 - Added deadline-aware retries for bounded Teams history reads so a full request timeout no longer

@@ -26,7 +26,6 @@
     "enabled_addon_ids": null
   },
   "runtime_dir": "runtime",
-  "scheduled_internal_event_store_path": "runtime/scheduled-internal-events.json",
   "workflow_packs": [
     "agent-default.v1.json"
   ],

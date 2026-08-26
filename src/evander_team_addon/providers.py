@@ -44,10 +44,7 @@ from evander.events.internal import (
     InternalEventBus,
     InternalEventSource,
 )
-from evander.events.scheduled import (
-    ScheduledInternalEventStore,
-    scheduled_internal_event_store_path,
-)
+from evander.events.scheduled import ScheduledInternalEventStore
 from evander.events.provider_models import (
     AgentCloneRepoEffectDefinition,
     AgentCopyFilesEffectDefinition,
@@ -2277,10 +2274,7 @@ _TEAM_INTERNAL_EVENT_CATALOG: tuple[WorkflowInternalEventCatalogEntry, ...] = (
     _team_internal_event(
         DELIVERABLE_ACCEPTANCE_VERIFICATION_REQUESTED_EVENT_TYPE,
         "Team deliverable acceptance verification requested (deprecated)",
-        (
-            "Legacy event accepted as a no-op for queued work; new Team actions do not "
-            "publish it."
-        ),
+        ("Legacy event accepted as a no-op for queued work; new Team actions do not publish it."),
     ),
     _team_internal_event(
         HUMAN_REVIEW_REQUESTED_EVENT_TYPE,
@@ -4564,9 +4558,7 @@ class TeamSetTaskWorkStateEffectProvider(EffectProviderBase):
                 task_id=task.id,
                 state=requested_state,
                 expected_revision=(
-                    expected_revision
-                    if expected_revision is not None
-                    else current_state.revision
+                    expected_revision if expected_revision is not None else current_state.revision
                 ),
             )
         except TeamStateConflictError as exc:
@@ -4584,7 +4576,9 @@ class TeamSetTaskWorkStateEffectProvider(EffectProviderBase):
             task = current_state.tasks.get(task_id or "") if current_state is not None else None
             project = current_state.projects.get(task.project_id) if task is not None else None
             return _task_effect_error_result(
-                revision=current_state.revision if current_state is not None else repo.read().revision,
+                revision=current_state.revision
+                if current_state is not None
+                else repo.read().revision,
                 task_id=task_id,
                 team_id=project.team_id if project is not None else None,
                 project_id=task.project_id if task is not None else None,
@@ -6171,9 +6165,7 @@ class TeamStateQueryProvider(QueryProviderBase):
             "agents": filtered["agents"],
             "cases": filtered["cases"],
             "tasks": filtered["tasks"],
-            "external_source_evidence_snapshots": filtered[
-                "external_source_evidence_snapshots"
-            ],
+            "external_source_evidence_snapshots": filtered["external_source_evidence_snapshots"],
         }
 
 
@@ -8479,11 +8471,9 @@ def _prepare_project_repo(
             context,
             project_id=project_id,
             snapshots=review_snapshots,
-    )
+        )
     checkout_cache_key = (
-        (managed_repo_id, pinned_commit_sha)
-        if pinned_commit_sha is not None
-        else None
+        (managed_repo_id, pinned_commit_sha) if pinned_commit_sha is not None else None
     )
     clone_result = (
         prepared_review_checkouts.get(checkout_cache_key)
@@ -8649,25 +8639,34 @@ def _review_repository_snapshots_for_project(
         deliverable_id = _optional_text(getattr(review, "deliverable_id", None))
         if deliverable_id is not None:
             deliverable = deliverables.get(deliverable_id)
-            task = tasks.get(getattr(deliverable, "task_id", None)) if deliverable is not None else None
+            task = (
+                tasks.get(getattr(deliverable, "task_id", None))
+                if deliverable is not None
+                else None
+            )
             review_project_id = _optional_text(getattr(task, "project_id", None))
         else:
-            release = releases.get(_optional_text(getattr(review, "release_package_id", None)) or "")
+            release = releases.get(
+                _optional_text(getattr(review, "release_package_id", None)) or ""
+            )
             review_project_id = _optional_text(getattr(release, "project_id", None))
         if review_project_id == project_id:
             selected.append((review_id, review))
     if not selected:
         return []
 
-    missing = [review_id for review_id, review in selected if getattr(review, "repository_snapshot", None) is None]
+    missing = [
+        review_id
+        for review_id, review in selected
+        if getattr(review, "repository_snapshot", None) is None
+    ]
     if missing:
         raise ReviewRepositoryPreparationError(
             project_id=project_id,
             review_request_ids=missing,
             message=(
                 "review request(s) have no immutable repository snapshot (legacy reviews must "
-                "be retried or replaced): "
-                + ", ".join(missing)
+                "be retried or replaced): " + ", ".join(missing)
             ),
         )
 
@@ -8676,10 +8675,7 @@ def _review_repository_snapshots_for_project(
     for review_id, review in selected:
         snapshot = review.repository_snapshot
         assert snapshot is not None
-        if (
-            snapshot.managed_repo_id != managed_repo_id
-            or snapshot.directory_path != directory_path
-        ):
+        if snapshot.managed_repo_id != managed_repo_id or snapshot.directory_path != directory_path:
             invalid_ids.append(review_id)
             continue
         snapshots.append(
@@ -8751,7 +8747,9 @@ def _pin_review_repository_snapshots(
                 pinned_ref=snapshot["pinned_ref"],
             )
             if not isinstance(result, Mapping):
-                raise RuntimeError("managed Git Team review snapshot pinning returned an invalid result")
+                raise RuntimeError(
+                    "managed Git Team review snapshot pinning returned an invalid result"
+                )
             actual_commit = _required_text(result.get("commit_sha"), "pinned snapshot commit_sha")
             actual_ref = _required_text(result.get("pin_ref"), "pinned snapshot pin_ref")
             if actual_commit.casefold() != snapshot["commit_sha"].casefold():
@@ -8936,16 +8934,13 @@ def _create_project_repo_git_work_contexts(
             effective_base_branch = _optional_text(task.get("git_base_branch")) or base_branch
             worktree_base_ref = effective_base_branch
             pinned_base_commit = _optional_text(task.get("git_base_commit_sha"))
-            continuation_base_commits = {
-                source.base_commit_sha for source in continuation_sources
-            }
+            continuation_base_commits = {source.base_commit_sha for source in continuation_sources}
             if len(continuation_base_commits) != 1:
                 raise DependencyGitPreparationError(
                     task_id=task_id,
                     message=(
                         "unsuperseded rejected deliverables record different original "
-                        "Git bases: "
-                        + ", ".join(sorted(continuation_base_commits))
+                        "Git bases: " + ", ".join(sorted(continuation_base_commits))
                     ),
                 )
             continuation_base_commit = next(iter(continuation_base_commits))
@@ -9114,9 +9109,7 @@ def _create_project_repo_git_work_contexts(
                     task_id=task_id,
                     agent_branch=agent_branch,
                     base_ref=worktree_base_ref or "HEAD",
-                    worktree_identity_commit=(
-                        continuation_identity_commit
-                    ),
+                    worktree_identity_commit=(continuation_identity_commit),
                     prior_base_commit=prior_base_commit,
                     pinned_base_commit=pinned_base_commit,
                     pinned_base_tree=pinned_base_tree,
@@ -9311,9 +9304,7 @@ def _create_project_repo_git_work_contexts(
                         dependency_composition_recovery_id=(dependency_composition_recovery_id),
                         manual_dependency_git_sources=manual_dependency_git_sources,
                         dependency_composition_manifest=(dependency_composition_manifest),
-                        resource_provenance_validator=(
-                            _validate_prepared_dependency_provenance
-                        ),
+                        resource_provenance_validator=(_validate_prepared_dependency_provenance),
                         expected_revision=None,
                     )
                     break
@@ -9449,10 +9440,7 @@ def _validate_project_repo_git_work_context(
         field_name
         for field_name, expected_value in expected.items()
         if _normalized_comparison_value(
-            [
-                item
-                for item in getattr(context_model, field_name, [])
-            ]
+            [item for item in getattr(context_model, field_name, [])]
             if field_name
             in {
                 "dependency_git_sources",
@@ -9640,8 +9628,7 @@ def _verify_rejected_deliverable_continuation_git_source(
             source.commit_sha
         ):
             raise RuntimeError(
-                f"immutable ref {source.pinned_ref!r} does not retain "
-                f"{source.commit_sha}"
+                f"immutable ref {source.pinned_ref!r} does not retain {source.commit_sha}"
             )
         branch_commit = resolve_branch(
             managed_repo_id,
@@ -9661,8 +9648,7 @@ def _verify_rejected_deliverable_continuation_git_source(
         raise DependencyGitPreparationError(
             task_id=task_id,
             message=(
-                "could not verify rejected deliverable continuation "
-                f"{source.deliverable_id}: {exc}"
+                f"could not verify rejected deliverable continuation {source.deliverable_id}: {exc}"
             ),
         ) from None
 
@@ -9726,9 +9712,7 @@ def _managed_git_base_tree_hash(
         resolved_base = _required_text(result.get("base_commit_sha"), "base_commit_sha")
         resolved_tree = _required_text(result.get("base_tree_hash"), "base_tree_hash")
         if resolved_base.casefold() != base_commit_sha.casefold():
-            raise RuntimeError(
-                f"managed Git resolved base {resolved_base}, not {base_commit_sha}"
-            )
+            raise RuntimeError(f"managed Git resolved base {resolved_base}, not {base_commit_sha}")
         if re.fullmatch(r"(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})", resolved_tree) is None:
             raise RuntimeError("managed Git returned an invalid base tree hash")
     except Exception as exc:
@@ -9838,8 +9822,7 @@ def _merge_dependency_git_source_rows(
             )
             rows_by_deliverable_id[deliverable_id] = dict(source)
     return [
-        rows_by_deliverable_id[deliverable_id]
-        for deliverable_id in sorted(rows_by_deliverable_id)
+        rows_by_deliverable_id[deliverable_id] for deliverable_id in sorted(rows_by_deliverable_id)
     ]
 
 
@@ -9857,9 +9840,7 @@ def _project_repo_task_dependency_git_sources_unchecked(
     managed_git = getattr(getattr(context, "admin_service", None), "managed_git_admin", None)
     resolve_branch_commit = getattr(managed_git, "resolve_branch_commit", None)
     resolve_team_review_commit = getattr(managed_git, "resolve_team_review_commit", None)
-    required_source_ids = set(
-        required_source_deliverable_ids_for_task(state, task_id=task_id)
-    )
+    required_source_ids = set(required_source_deliverable_ids_for_task(state, task_id=task_id))
     required_task_ids = {
         state.deliverables[deliverable_id].task_id
         for deliverable_id in required_source_ids
@@ -10134,8 +10115,7 @@ def _accepted_deliverable_pinned_ref(
         )
         if actual_ref != selected_ref or actual_commit.casefold() != commit_sha.casefold():
             raise RuntimeError(
-                f"managed Git pinned {actual_ref}@{actual_commit}, not "
-                f"{selected_ref}@{commit_sha}"
+                f"managed Git pinned {actual_ref}@{actual_commit}, not {selected_ref}@{commit_sha}"
             )
         if callable(resolve_review_commit):
             resolved_after = resolve_review_commit(
@@ -10147,8 +10127,7 @@ def _accepted_deliverable_pinned_ref(
                 commit_sha.casefold()
             ):
                 raise RuntimeError(
-                    f"managed Git did not retain {selected_ref!r} at accepted "
-                    f"commit {commit_sha}"
+                    f"managed Git did not retain {selected_ref!r} at accepted commit {commit_sha}"
                 )
         return selected_ref
     except Exception as exc:
@@ -10201,8 +10180,7 @@ def _prior_project_repo_task_base_commit(
             not require_dependency_provenance_match
             or (
                 _optional_text(getattr(context_model, "agent_id", None)) == agent_id
-                and _optional_text(getattr(context_model, "agent_branch", None))
-                == agent_branch
+                and _optional_text(getattr(context_model, "agent_branch", None)) == agent_branch
             )
         )
     ]
@@ -10336,11 +10314,7 @@ def _prepare_project_repo_task_worktree(
                 f"expected {agent_branch!r}"
             )
         record_created = bool(getattr(record, "created", False))
-        if (
-            not record_created
-            and prior_base_commit is None
-            and pinned_base_commit is None
-        ):
+        if not record_created and prior_base_commit is None and pinned_base_commit is None:
             raise RuntimeError(
                 "reused task worktree has no authoritative server-recorded base; "
                 f"preserve {record.target_dir} and use an audited provenance recovery"
@@ -10507,7 +10481,8 @@ def _prepare_project_repo_task_worktree(
         )
         pinned_ref = _optional_text(source.get("pinned_ref"))
         source_ref = shlex.quote(
-            pinned_ref or f"refs/heads/{validate_branch_name(_required_text(source.get('branch'), 'dependency branch'))}"
+            pinned_ref
+            or f"refs/heads/{validate_branch_name(_required_text(source.get('branch'), 'dependency branch'))}"
         )
         source_task = shlex.quote(
             _required_text(source.get("dependency_task_id"), "dependency_task_id")
@@ -10858,29 +10833,26 @@ def _prepare_project_repo_task_worktree(
             'git -C "$target" config --worktree evander.baseCommit '
             '"$configured_base"; fi'
         ),
-        'if [ -d .evander ]; then test ! -L .evander; fi',
+        "if [ -d .evander ]; then test ! -L .evander; fi",
         'if [ -L "$target/.evander" ]; then exit 1; fi',
         'if [ -d .evander ] && [ ! -e "$target/.evander" ]; then cp -R .evander "$target/.evander"; fi',
-        'if [ -d .evander/bin ]; then',
-        '  test ! -L .evander',
-        '  test ! -L .evander/bin',
+        "if [ -d .evander/bin ]; then",
+        "  test ! -L .evander",
+        "  test ! -L .evander/bin",
         '  if [ -e "$target/.evander" ]; then test ! -L "$target/.evander"; fi',
         '  install -d -m 0755 "$target/.evander"',
         '  if [ -e "$target/.evander/bin" ]; then test ! -L "$target/.evander/bin"; fi',
         '  install -d -m 0755 "$target/.evander/bin"',
-        '  for helper_name in agent-pr-note push-agent sync-base; do',
+        "  for helper_name in agent-pr-note push-agent sync-base; do",
         '    helper_source=".evander/bin/$helper_name"',
         '    if [ -f "$helper_source" ] && [ ! -L "$helper_source" ]; then',
         '      helper_temp="$(mktemp "$target/.evander/bin/.${helper_name}.XXXXXX")"',
         '      install -m 0755 "$helper_source" "$helper_temp"',
         '      mv -f "$helper_temp" "$target/.evander/bin/$helper_name"',
-        '    fi',
-        '  done',
-        'fi',
-        (
-            'base_commit="$(git -C "$target" config --worktree --get '
-            'evander.baseCommit)"'
-        ),
+        "    fi",
+        "  done",
+        "fi",
+        ('base_commit="$(git -C "$target" config --worktree --get evander.baseCommit)"'),
         'head_commit="$(git -C "$target" rev-parse HEAD)"',
         'composition_root_commit=""',
         'composed_commit="$head_commit"',
@@ -10891,15 +10863,15 @@ def _prepare_project_repo_task_worktree(
             '    git -C "$target" config --worktree '
             'evander.dependencyCompositionRootCommit "$configured_composition_root"'
         ),
-        '  fi',
+        "  fi",
         '  if [ -z "$configured_composed_commit" ]; then',
         '    candidate_composed="$base_commit"',
-        '    candidate_contains_dependencies=1',
+        "    candidate_contains_dependencies=1",
         *[
             (
                 f'    if ! git -C "$target" merge-base --is-ancestor '
                 f'"$dependency_commit_{index}" "$candidate_composed"; then '
-                'candidate_contains_dependencies=0; fi'
+                "candidate_contains_dependencies=0; fi"
             )
             for index, _source in enumerate(dependency_git_sources)
         ],
@@ -10916,7 +10888,7 @@ def _prepare_project_repo_task_worktree(
             '    git -C "$target" config --worktree '
             'evander.dependencyComposedCommit "$configured_composed_commit"'
         ),
-        '  fi',
+        "  fi",
         (
             '  git -C "$target" merge-base --is-ancestor '
             '"$configured_composition_root" "$configured_composed_commit"'
@@ -10927,7 +10899,7 @@ def _prepare_project_repo_task_worktree(
         ),
         '  composition_root_commit="$configured_composition_root"',
         '  composed_commit="$configured_composed_commit"',
-        'fi',
+        "fi",
         'if [ "$head_commit" = "$base_commit" ] && ! git -C "$target" ls-remote '
         '--exit-code --heads origin "refs/heads/$branch" >/dev/null 2>&1; then',
         '  git -C "$target" push origin "HEAD:refs/heads/$branch"',
@@ -12331,13 +12303,15 @@ def _internal_event_bus(context: Any) -> InternalEventBus:
 
 
 def _scheduled_internal_event_store(context: Any) -> ScheduledInternalEventStore:
+    from evander.orchestration.internal_events import (
+        build_scheduled_internal_event_store_from_metadata,
+    )
+
     runtime_dir = _runtime_dir(context)
     metadata = getattr(context, "metadata", {})
-    store_path = None
-    if isinstance(metadata, Mapping):
-        store_path = metadata.get("scheduled_internal_event_store_path")
-    return ScheduledInternalEventStore(
-        Path(store_path) if store_path else scheduled_internal_event_store_path(runtime_dir)
+    return build_scheduled_internal_event_store_from_metadata(
+        metadata if isinstance(metadata, Mapping) else None,
+        runtime_dir=runtime_dir,
     )
 
 
@@ -13780,9 +13754,7 @@ def _filtered_team_state_payload(
         visible_source_evidence_snapshot_ids = {
             snapshot_id
             for value in (*filtered["tasks"].values(), *filtered["cases"].values())
-            for snapshot_id in _string_items(
-                value.get("source_evidence_snapshot_ids")
-            )
+            for snapshot_id in _string_items(value.get("source_evidence_snapshot_ids"))
         }
         visible_source_evidence_snapshot_ids.update(
             snapshot_id

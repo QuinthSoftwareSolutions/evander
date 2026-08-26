@@ -141,7 +141,7 @@ def test_execution_history_schema_upgrade_does_not_rewrite_v1_records(tmp_path) 
             for row in connection.execute("SELECT version FROM schema_migrations ORDER BY version")
         ]
     assert upgraded == original
-    assert migration_versions == [1, 2, 3]
+    assert migration_versions == [1, 2, 3, 4]
 
 
 def test_execution_history_v3_timestamp_rewrite_runs_only_during_migration(

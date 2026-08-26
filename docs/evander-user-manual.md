@@ -8661,8 +8661,7 @@ The runtime tree contains both live configuration and operational state. The tab
 | `runtime/local-issues.json` | Unified local and proxy issue records | Issue service and provider workflows |
 | `runtime/audit.jsonl` | Append-only tool and denial audit journal | MCP gateway and audit writers |
 | `runtime/audit.db` | Rebuildable query index over audit entries | Admin Web Tool Calls |
-| `runtime/orchestration.db` | Trigger events, workflow/effect/gate executions | Trigger and effect orchestrators |
-| `runtime/scheduled-internal-events.json` | Durable one-shot internal events | Schedule effect and trigger worker |
+| `runtime/orchestration.db` | Trigger events, internal events/subscriptions/schedules, workflow/effect/gate executions | Trigger and effect orchestrators |
 | `runtime/workflow-pack-history/` | Pack revisions and append-only change ledger | Workflow pack service |
 | `runtime/workflow-state.json` | Workflow-scoped state records | Workflow state providers |
 | `runtime/wake-requests-store.db` | Scheduled wake requests and dispatch history | Scheduled-wake and reconciliation services |

@@ -96,7 +96,10 @@ from evander.workflow.engine.node_executors import (
 from evander.workflow.engine import OrchestrationLoop
 from evander.orchestration.kernels import PollingKernelConfig, PollingOrchestratorKernel
 from evander.orchestration.wal_maintenance import OrchestrationWalCheckpointMaintenance
-from evander.orchestration.internal_events import build_internal_event_bus
+from evander.orchestration.internal_events import (
+    build_internal_event_bus,
+    build_scheduled_internal_event_store,
+)
 from evander.orchestration.managed_git_lifecycle import ManagedGitWorkerLifecycle
 from evander.orchestration.wiring import (
     EffectWorkerStoreWiring,
@@ -143,7 +146,7 @@ WorkflowNodeDefinition = (
     | QueryDefinitionDiscriminated
 )
 _ScheduledInternalEventStoreGetter = Callable[[], ScheduledInternalEventStore]
-_ScheduledInternalEventStoreCache = tuple[Path, ScheduledInternalEventStore] | None
+_ScheduledInternalEventStoreCache = tuple[Path, Path, ScheduledInternalEventStore] | None
 
 
 def _record_has_pending_completion(record: Any) -> bool:
@@ -756,8 +759,8 @@ class EffectOrchestratorWorker:
                     self.query_executor_registry = NodeExecutorRegistry()
                     self._register_default_node_executors()
                 elif store_wiring is not None and (
-                    latest_config.internal_event_store_path
-                    != previous_config.internal_event_store_path
+                    latest_config.orchestration_store_path
+                    != previous_config.orchestration_store_path
                 ):
                     self._register_default_node_executors()
                 logger.info(
@@ -1102,12 +1105,17 @@ class EffectOrchestratorWorker:
             self.query_executor_registry.register(query_type, provider_query_executor)
 
     def _get_scheduled_internal_event_store(self) -> ScheduledInternalEventStore:
-        store_path = self.worker_config.scheduled_internal_event_store_path
+        store_path = self.worker_config.orchestration_store_path
+        trigger_lock_path = self.worker_config.lock_path
         cached = self._scheduled_internal_event_store_cache
-        if cached is None or cached[0] != store_path:
-            cached = (store_path, ScheduledInternalEventStore(store_path))
+        if cached is None or cached[:2] != (store_path, trigger_lock_path):
+            cached = (
+                store_path,
+                trigger_lock_path,
+                build_scheduled_internal_event_store(self.worker_config),
+            )
             self._scheduled_internal_event_store_cache = cached
-        return cached[1]
+        return cached[2]
 
     def _effect_provider_class(self, effect_type: str) -> Any | None:
         registry = getattr(self.provider_factory, "registry", None)
@@ -3416,9 +3424,6 @@ def _effect_store_binding_signature(
         else None,
         "effect_lock_path": str(worker_config.effect_lock_path)
         if worker_config.effect_lock_path is not None
-        else None,
-        "internal_event_store_path": str(worker_config.internal_event_store_path)
-        if worker_config.internal_event_store_path is not None
         else None,
     }
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")

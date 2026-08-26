@@ -45,11 +45,10 @@ from evander.admin.web.user_store import normalize_admin_web_login
 from evander.events.internal import (
     InternalEventSource,
 )
-from evander.events.scheduled import (
-    ScheduledInternalEventStore,
-    scheduled_internal_event_store_path,
+from evander.orchestration.internal_events import (
+    build_internal_event_bus_for_runtime,
+    build_scheduled_internal_event_store_for_runtime,
 )
-from evander.orchestration.internal_events import build_internal_event_bus_for_runtime
 from evander.execution.container_worker_client import (
     ContainerWorkerClient,
     ContainerWorkerClientError,
@@ -587,12 +586,7 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
         ):
             return None
         return JSONResponse(
-            {
-                "error": (
-                    f"{action} requires directory owner permission for the "
-                    "affected project."
-                )
-            },
+            {"error": (f"{action} requires directory owner permission for the affected project.")},
             status_code=403,
         )
 
@@ -1063,19 +1057,13 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
             or (
                 effective_git.directory_path
                 if has_git and effective_git is not None
-                else (
-                    current_project.directory_path
-                    if current_project is not None
-                    else "root"
-                )
+                else (current_project.directory_path if current_project is not None else "root")
             )
         )
         if current_project is None:
             return JSONResponse({"error": "project not found"}, status_code=404)
         authorization_paths = list(
-            dict.fromkeys(
-                [current_project.directory_path, effective_directory_path]
-            )
+            dict.fromkeys([current_project.directory_path, effective_directory_path])
         )
         for authorization_path in authorization_paths:
             authorization_error = _directory_owner_authorization_error(
@@ -2663,9 +2651,7 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
             integration_task_id=integration_task_id,
             replacement_task_id=_required(payload, "replacement_task_id"),
             expected_dependency_task_ids=expected_dependency_task_ids,
-            expected_required_contribution_task_ids=(
-                expected_required_contribution_task_ids
-            ),
+            expected_required_contribution_task_ids=(expected_required_contribution_task_ids),
             reason=_required(payload, "reason"),
             actor_id=_operator_actor_from_request(context.auth, request),
             git_base_commit_sha=_optional(payload, "git_base_commit_sha"),
@@ -3951,9 +3937,7 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
         if source_type is not None:
             rows = [row for row in rows if row.source_type == source_type]
         if external_identifier is not None:
-            rows = [
-                row for row in rows if row.external_identifier == external_identifier
-            ]
+            rows = [row for row in rows if row.external_identifier == external_identifier]
         rows.sort(key=lambda row: (row.fetched_at, row.created_at, row.id), reverse=True)
         return JSONResponse(
             {
@@ -3966,9 +3950,7 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
 
     async def get_external_source_evidence_snapshot(request: Request) -> JSONResponse:
         state = repository.read()
-        snapshot = state.external_source_evidence_snapshots.get(
-            request.path_params["snapshot_id"]
-        )
+        snapshot = state.external_source_evidence_snapshots.get(request.path_params["snapshot_id"])
         if snapshot is None:
             return JSONResponse(
                 {"error": "external source evidence snapshot not found"},
@@ -4010,8 +3992,7 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
             return JSONResponse(
                 {
                     "error": (
-                        "External source evidence creation requires directory owner "
-                        "permission."
+                        "External source evidence creation requires directory owner permission."
                     )
                 },
                 status_code=403,
@@ -7892,8 +7873,10 @@ def _publish_team_events(context: AddonContext, events: object) -> list[str]:
         project_dir=context.project_dir,
         base_config=context.config,
     )
-    scheduled_store = ScheduledInternalEventStore(
-        scheduled_internal_event_store_path(context.runtime_dir)
+    scheduled_store = build_scheduled_internal_event_store_for_runtime(
+        context.runtime_dir,
+        project_dir=context.project_dir,
+        base_config=context.config,
     )
     published_ids: list[str] = []
     for event in events:
