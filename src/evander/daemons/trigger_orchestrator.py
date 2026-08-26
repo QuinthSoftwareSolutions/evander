@@ -194,6 +194,7 @@ class TriggerOrchestratorWorker:
         config_revision = _config_revision_hash(active_config)
         self._reconcile_internal_event_subscriptions(
             active_config,
+            configured_triggers,
             providers,
             config_revision=config_revision,
         )
@@ -323,12 +324,17 @@ class TriggerOrchestratorWorker:
     def _reconcile_internal_event_subscriptions(
         self,
         worker_config: TriggerOrchestratorWorkerGlobalConfig,
+        configured_triggers: list[TriggerDefinitionDiscriminated],
         providers: dict[str, Any],
         *,
         config_revision: str,
     ) -> None:
         bus = build_internal_event_bus(worker_config)
-        active_trigger_ids: set[str] = set()
+        # A configured trigger is missing from providers only when its factory build failed.
+        # Keep any existing subscription active until a later cycle can initialize it again.
+        active_trigger_ids = {
+            trigger.id for trigger in configured_triggers if trigger.id not in providers
+        }
         for provider in providers.values():
             subscription_spec = getattr(provider, "subscription_spec", None)
             if not callable(subscription_spec):

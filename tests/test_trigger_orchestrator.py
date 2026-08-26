@@ -1524,6 +1524,65 @@ def test_event_trigger_matches_internal_event_and_preserves_payload(tmp_path: Pa
     assert record["payload"]["correlation_key"] == "issue:ISSUE-1"
 
 
+def test_event_trigger_pending_delivery_survives_transient_provider_initialization_failure(
+    tmp_path: Path,
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    config = GatewayConfig(runtime_dir=runtime_dir)
+    worker_config = canonical_worker_config(
+        {
+            "runtime_dir": runtime_dir,
+            "poll_interval_seconds": 1,
+            "jitter_seconds": 0,
+            "triggers": [
+                {
+                    "id": "event-listener",
+                    "display_name": "Plan committed",
+                    "type": "trigger:event",
+                    "event_type": "issue.plan_committed",
+                }
+            ],
+        }
+    )
+    bus = InternalEventBus(worker_config.orchestration_store_path)
+    worker = TriggerOrchestratorWorker(
+        config=config,
+        worker_config=worker_config,
+        runtime=None,  # type: ignore[arg-type]
+    )
+    original_build = worker.provider_factory.build
+    original_queue = worker.event_queue
+
+    assert worker.run_once().events_published == 0
+    internal = bus.publish(
+        event_type="issue.plan_committed",
+        payload={"issue_id": "ISSUE-1"},
+        idempotency_key="pending-across-provider-failure",
+    )
+    worker.event_queue = _FailingEventQueue()  # type: ignore[assignment]
+
+    with pytest.raises(RuntimeError, match="queue publish failed"):
+        worker.run_once()
+
+    def fail_provider_initialization(*_args, **_kwargs):
+        raise RuntimeError("transient provider initialization failure")
+
+    worker.event_queue = original_queue
+    worker.provider_factory.build = fail_provider_initialization  # type: ignore[assignment]
+
+    failed_cycle = worker.run_once()
+
+    assert failed_cycle.events_published == 0
+
+    worker.provider_factory.build = original_build  # type: ignore[assignment]
+    recovered_cycle = worker.run_once()
+
+    assert recovered_cycle.events_published == 1
+    assert list(trigger_queue_payload(worker_config)) == [
+        f"event-listener:{internal.event_id}"
+    ]
+
+
 def test_event_trigger_ignores_non_matching_type_and_correlation_key(tmp_path: Path) -> None:
     from evander.events.internal import InternalEventBus
 
