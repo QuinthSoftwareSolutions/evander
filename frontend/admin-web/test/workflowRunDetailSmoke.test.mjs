@@ -649,6 +649,10 @@ test("workflow editor inspects a stored workflow run detail", async (t) => {
     waitUntil: "domcontentloaded",
   });
 
+  const dispatchAgentNode = page.locator(".react-flow__node", { hasText: "Dispatch agent" });
+  await assert.doesNotReject(() => dispatchAgentNode.waitFor({ state: "visible" }));
+  assert.equal(await dispatchAgentNode.locator(".node-runtime-badge.status-error_routed").count(), 0);
+
   await page.getByText("Current runs").click();
   const currentRunCard = page.locator(".runtime-run-card").first();
   await assert.doesNotReject(() => currentRunCard.getByText("error_routed", { exact: true }).waitFor({ state: "visible" }));

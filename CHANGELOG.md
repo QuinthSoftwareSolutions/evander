@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-08-26 - Workflow Error-Route Badge Cleanup
+
+- Stopped showing persistent `ERROR_ROUTED` badges on workflow canvas nodes after their configured
+  error paths have handled the execution; routed-failure details remain available in run history
+  and inspection views.
+
 ## 2026-08-25 - Teams Channel Poll Recovery
 
 - Added deadline-aware retries for bounded Teams history reads so a full request timeout no longer

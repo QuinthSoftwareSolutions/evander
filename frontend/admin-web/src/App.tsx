@@ -565,7 +565,6 @@ const NODE_TYPE_DESCRIPTIONS: Record<string, string> = {
 const RUNTIME_POLL_INTERVAL_MS = 5000;
 const NODE_STATUS_ORDER = [
   "failed",
-  "error_routed",
   "running",
   "waiting",
   "completion_pending",
@@ -971,15 +970,20 @@ function nodeStatusBuckets(
   activity: WorkflowNodeActivityCounts | undefined,
 ): Array<{ status: string; count: number }> {
   if (!activity) return [];
+  // An error-routed execution reached its configured error edge. Keep it in the
+  // run history, but do not leave a non-actionable alert on the canvas node.
+  const displayableActivity = Object.fromEntries(
+    Object.entries(activity).filter(([status]) => status !== "error_routed"),
+  );
   const orderedStatuses = new Set<string>(NODE_STATUS_ORDER);
   const buckets: Array<{ status: string; count: number }> = [];
   for (const status of NODE_STATUS_ORDER) {
-    const count = activity[status] ?? 0;
+    const count = displayableActivity[status] ?? 0;
     if (count > 0) {
       buckets.push({ status, count });
     }
   }
-  for (const [status, count] of Object.entries(activity)) {
+  for (const [status, count] of Object.entries(displayableActivity)) {
     if (!orderedStatuses.has(status) && count > 0) {
       buckets.push({ status, count });
     }
