@@ -39,6 +39,7 @@ from evander.workflow.runtime_config import load_trigger_orchestrator_worker_glo
 import evander_team_addon.outbox_publication as team_outbox_publication
 from internal_event_test_support import default_orchestration_database_path
 from evander_team_addon.chat_attachments import TeamChatAttachmentStorage
+from evander_team_addon.costs import TeamCostService
 from evander_team_addon.mcp import (
     GOVERNANCE_TEAM_MCP_TOOL_NAMES,
     ORDINARY_TEAM_MCP_TOOL_NAMES,
@@ -7508,6 +7509,7 @@ def test_wake_due_agents_provider_keeps_rotation_pending_when_resume_fails(
 
 def test_wake_due_agents_provider_skips_team_when_cost_limit_reached(
     tmp_path: Path,
+    monkeypatch,
 ) -> None:
     repo = _seed_team(tmp_path)
     _team_admin_service(repo).update_team(
@@ -7516,6 +7518,13 @@ def test_wake_due_agents_provider_skips_team_when_cost_limit_reached(
         set_max_cost_usd=True,
     )
     resumer = FakeResumer()
+    monkeypatch.setattr(
+        TeamCostService,
+        "costs_payload",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("wake-time cost guards must not build the lifetime cost report")
+        ),
+    )
     provider = TeamWakeDueAgentsEffectProvider()
     provider.initialize(
         TeamWakeDueAgentsEffectDefinition(

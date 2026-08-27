@@ -15,6 +15,12 @@ from pathlib import Path
 from threading import Lock
 from typing import Any
 
+from evander.model_usage.cost_balances import (
+    UsageCostSummary,
+    dedupe_model_usage_cost_events,
+    model_usage_request_key,
+    model_usage_source,
+)
 from evander.model_usage.models import (
     ModelInferenceUsageEvent,
     ModelUsageCorrelationContext,
@@ -26,6 +32,7 @@ from evander.model_usage.pricing import (
     estimate_model_usage_cost,
     extract_cache_write_input_tokens,
     extract_cached_input_tokens,
+    model_pricing_catalog_fingerprint,
 )
 from evander.model_usage.store import ModelUsageStore
 from evander.models import utc_now
@@ -40,6 +47,7 @@ DEFAULT_REMOTE_AGENT_HOME = "/home/agent"
 REMOTE_TRANSCRIPT_SCAN_TIMEOUT_SECONDS = 20
 REMOTE_TRANSCRIPT_STALE_HOST_TTL_SECONDS = 300
 SSH_CONNECT_TIMEOUT_SECONDS = 5
+COST_BALANCE_RECONCILIATION_INTERVAL_SECONDS = 15 * 60
 _SSH_HOST_RE = re.compile(r"^[A-Za-z0-9_.:-]+$")
 _SSH_USER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_.-]*$")
 _REMOTE_TRANSCRIPT_FAILURES: dict[tuple[str, str, str], float] = {}
@@ -437,6 +445,295 @@ class TeamCostService:
         }
         if backfill_result is not None:
             payload["backfill"] = backfill_result.model_dump()
+        return payload
+
+    def current_budget_costs_payload(
+        self,
+        *,
+        team_ids: Iterable[str] | None = None,
+        now: datetime | None = None,
+        max_reconciliation_age_seconds: int | None = None,
+        backfill_transcripts_when_reconciling: bool = False,
+    ) -> dict[str, Any]:
+        """Read incrementally maintained active-window balances for wake-time decisions.
+
+        A missing, dirty, repriced, or periodically stale balance is rebuilt from only
+        that team's current budget-window interval. Ordinary reads never enumerate
+        model usage once a balance is healthy.
+        """
+        effective_now = _ensure_utc(now or utc_now())
+        selected_ids = (
+            {
+                normalized
+                for team_id in team_ids
+                if (normalized := _optional_text(team_id)) is not None
+            }
+            if team_ids is not None
+            else set(self.state.teams)
+        )
+        selected_teams = {
+            team_id: team
+            for team_id, team in self.state.teams.items()
+            if team_id in selected_ids and team.max_cost_usd is not None
+        }
+        self._sync_incremental_cost_attributions()
+        catalog = self._load_pricing_catalog()
+        if catalog is None:
+            return {
+                "generated_at": _json_datetime(effective_now),
+                "coverage_status": "partial",
+                "coverage_reasons": ["pricing_unavailable"],
+                "team_costs": {
+                    team_id: self._incremental_team_cost_payload(
+                        team=team,
+                        window=self._incremental_team_window(team, now=effective_now),
+                        summary=UsageCostSummary(),
+                        balance=None,
+                        coverage_reasons=["pricing_unavailable"],
+                    )
+                    for team_id, team in sorted(selected_teams.items())
+                },
+                "reconciled_team_ids": [],
+            }
+
+        pricing_fingerprint = model_pricing_catalog_fingerprint(catalog)
+        plans: list[dict[str, Any]] = []
+        for team_id, team in sorted(selected_teams.items()):
+            window = self._incremental_team_window(team, now=effective_now)
+            balance = self.usage_store.get_cost_balance(
+                dimension_kind="team",
+                dimension_id=team_id,
+                window_id=window["window_id"],
+            )
+            reason = self._balance_reconciliation_reason(
+                balance,
+                window=window,
+                pricing_fingerprint=pricing_fingerprint,
+                now=effective_now,
+                max_age_seconds=max_reconciliation_age_seconds,
+            )
+            plans.append(
+                {
+                    "team_id": team_id,
+                    "team": team,
+                    "window": window,
+                    "balance": balance,
+                    "reconciliation_reason": reason,
+                }
+            )
+
+        backfill_result = None
+        if backfill_transcripts_when_reconciling and any(
+            plan["reconciliation_reason"] is not None for plan in plans
+        ):
+            backfill_result = self.backfill_claude_transcripts()
+
+        reconciled_team_ids: list[str] = []
+        team_costs: dict[str, dict[str, Any]] = {}
+        for plan in plans:
+            team_id = plan["team_id"]
+            balance = plan["balance"]
+            if plan["reconciliation_reason"] is not None:
+                balance = self._reconcile_incremental_team_balance(
+                    team_id=team_id,
+                    window=plan["window"],
+                    catalog=catalog,
+                    now=effective_now,
+                )
+                reconciled_team_ids.append(team_id)
+            summary = balance["summary"] if balance is not None else UsageCostSummary()
+            team_costs[team_id] = self._incremental_team_cost_payload(
+                team=plan["team"],
+                window=plan["window"],
+                summary=summary,
+                balance=balance,
+            )
+
+        coverage_reasons = sorted(
+            {reason for cost in team_costs.values() for reason in cost.get("coverage_reasons", [])}
+        )
+        if backfill_result is not None and backfill_result.coverage_status != "complete":
+            coverage_reasons.append("transcript_backfill_partial")
+            coverage_reasons = sorted(set(coverage_reasons))
+        payload: dict[str, Any] = {
+            "generated_at": _json_datetime(effective_now),
+            "coverage_status": "partial" if coverage_reasons else "complete",
+            "coverage_reasons": coverage_reasons,
+            "team_costs": team_costs,
+            "reconciled_team_ids": reconciled_team_ids,
+        }
+        if backfill_result is not None:
+            payload["backfill"] = backfill_result.model_dump()
+        return payload
+
+    def reconcile_current_cost_balances(
+        self,
+        *,
+        team_ids: Iterable[str] | None = None,
+        now: datetime | None = None,
+        max_age_seconds: int = COST_BALANCE_RECONCILIATION_INTERVAL_SECONDS,
+        backfill_transcripts: bool = True,
+    ) -> dict[str, Any]:
+        return self.current_budget_costs_payload(
+            team_ids=team_ids,
+            now=now,
+            max_reconciliation_age_seconds=max(0, int(max_age_seconds)),
+            backfill_transcripts_when_reconciling=backfill_transcripts,
+        )
+
+    def _sync_incremental_cost_attributions(self) -> None:
+        attributions: dict[str, tuple[str | None, str | None, str | None]] = {}
+        for agent in self.state.agents.values():
+            project_ids = agent_project_ids(self.state, agent.id)
+            attributions[agent.session_id] = (
+                agent.team_id,
+                project_ids[0] if project_ids else None,
+                agent.id,
+            )
+        for assignment in self.state.ephemeral_assignments.values():
+            parent = self.state.agents.get(assignment.parent_agent_id)
+            attributions[assignment.session_id] = (
+                parent.team_id if parent is not None else None,
+                assignment.project_id,
+                assignment.parent_agent_id,
+            )
+        self.usage_store.upsert_cost_attributions(
+            [
+                {
+                    "session_id": session_id,
+                    "team_id": team_id,
+                    "project_id": project_id,
+                    "agent_id": agent_id,
+                }
+                for session_id, (team_id, project_id, agent_id) in attributions.items()
+            ]
+        )
+
+    @staticmethod
+    def _incremental_team_window(team: Any, *, now: datetime) -> dict[str, Any]:
+        active = _current_team_budget_window(team, now=now)
+        if active is not None:
+            return {**active, "explicit": True}
+        return {
+            "window_id": f"legacy-lifetime:{team.id}",
+            "started_at": _ensure_utc(team.created_at),
+            "ends_at": None,
+            "renewal_mode": "manual",
+            "explicit": False,
+        }
+
+    @staticmethod
+    def _balance_reconciliation_reason(
+        balance: Mapping[str, Any] | None,
+        *,
+        window: Mapping[str, Any],
+        pricing_fingerprint: str,
+        now: datetime,
+        max_age_seconds: int | None,
+    ) -> str | None:
+        if balance is None:
+            return "missing"
+        if balance.get("dirty_reason"):
+            return str(balance["dirty_reason"])
+        if balance.get("pricing_fingerprint") != pricing_fingerprint:
+            return "pricing_changed"
+        if _ensure_utc(balance["started_at"]) != _ensure_utc(window["started_at"]):
+            return "window_changed"
+        balance_end = balance.get("ended_at")
+        window_end = window.get("ends_at")
+        if (balance_end is None) != (window_end is None) or (
+            balance_end is not None
+            and window_end is not None
+            and _ensure_utc(balance_end) != _ensure_utc(window_end)
+        ):
+            return "window_changed"
+        if max_age_seconds is not None:
+            age_seconds = (now - _ensure_utc(balance["reconciled_at"])).total_seconds()
+            if age_seconds >= max_age_seconds:
+                return "periodic"
+        return None
+
+    def _reconcile_incremental_team_balance(
+        self,
+        *,
+        team_id: str,
+        window: Mapping[str, Any],
+        catalog: ModelPricingCatalog,
+        now: datetime,
+    ) -> dict[str, Any]:
+        raw_events = self.usage_store.list_events(
+            occurred_after=window["started_at"],
+            occurred_before=window.get("ends_at"),
+        )
+        self.usage_store.backfill_cost_request_keys(raw_events)
+        self._request_attribution_cache = self._request_attributions(raw_events)
+        summary = UsageCostSummary()
+        for event in _dedupe_cost_events(raw_events):
+            occurred_at = _ensure_utc(event.occurred_at)
+            if occurred_at < _ensure_utc(window["started_at"]):
+                continue
+            if window.get("ends_at") is not None and occurred_at >= _ensure_utc(window["ends_at"]):
+                continue
+            if self._attribute_event(event).team_id != team_id:
+                continue
+            summary.add_event(event, catalog)
+        return self.usage_store.replace_cost_balance(
+            dimension_kind="team",
+            dimension_id=team_id,
+            window_id=window["window_id"],
+            started_at=window["started_at"],
+            ended_at=window.get("ends_at"),
+            pricing_catalog=catalog,
+            summary=summary,
+            reconciled_at=now,
+        )
+
+    @staticmethod
+    def _incremental_team_cost_payload(
+        *,
+        team: Any,
+        window: Mapping[str, Any],
+        summary: UsageCostSummary,
+        balance: Mapping[str, Any] | None,
+        coverage_reasons: Iterable[str] = (),
+    ) -> dict[str, Any]:
+        payload = summary.public_payload()
+        reasons = sorted(set(payload["coverage_reasons"]) | set(coverage_reasons))
+        estimated = summary.estimated_cost_usd
+        max_cost = Decimal(str(team.max_cost_usd)) if team.max_cost_usd is not None else None
+        explicit_window = bool(window.get("explicit"))
+        payload.update(
+            {
+                "team_id": team.id,
+                "coverage_status": "partial" if reasons else "complete",
+                "coverage_reasons": reasons,
+                "max_cost_usd": float(max_cost) if max_cost is not None else None,
+                "remaining_cost_usd": (
+                    float(max(max_cost - estimated, Decimal("0"))) if max_cost is not None else None
+                ),
+                "cost_limit_reached": bool(max_cost is not None and estimated >= max_cost),
+                "cost_limit_basis": "budget_window" if explicit_window else "lifetime",
+                "lifetime_estimated_cost": float(estimated) if not explicit_window else None,
+                "budget_window_estimated_cost": float(estimated) if explicit_window else None,
+                "budget_window_events_count": summary.events_count if explicit_window else 0,
+                "budget_window_started_at": (
+                    _json_datetime(window["started_at"]) if explicit_window else None
+                ),
+                "budget_window_ends_at": (
+                    _json_datetime(window.get("ends_at")) if explicit_window else None
+                ),
+                "budget_window_renewal_mode": (
+                    window.get("renewal_mode") if explicit_window else None
+                ),
+                "balance_window_id": window["window_id"],
+                "balance_updated_at": (
+                    _json_datetime(balance.get("updated_at")) if balance is not None else None
+                ),
+                "balance_reconciled_at": (
+                    _json_datetime(balance.get("reconciled_at")) if balance is not None else None
+                ),
+            }
+        )
         return payload
 
     def backfill_claude_transcripts(self) -> ClaudeTranscriptBackfillResult:
@@ -1389,8 +1686,8 @@ def _finalize_team_bucket(
         if budget_window is not None
         else finalized
     )
-    budget_window_estimated = (
-        _optional_decimal(window_finalized.get("estimated_cost")) or Decimal("0")
+    budget_window_estimated = _optional_decimal(window_finalized.get("estimated_cost")) or Decimal(
+        "0"
     )
     capped_estimated = budget_window_estimated if budget_window is not None else lifetime_estimated
     finalized["max_cost_usd"] = _decimal_to_float(max_cost)
@@ -1445,6 +1742,7 @@ def _current_team_budget_window(team: Any | None, *, now: datetime) -> dict[str,
         ends_at = None
         renewal_mode = "manual"
     return {
+        "window_id": active.id,
         "started_at": started_at,
         "ends_at": ends_at,
         "renewal_mode": renewal_mode,
@@ -1496,9 +1794,7 @@ def _governance_group_costs(
                 continue
             max_cost = _optional_decimal(team_cost.get("max_cost_usd"))
             if max_cost is not None and max_cost > 0:
-                window_estimated = _optional_decimal(
-                    team_cost.get("budget_window_estimated_cost")
-                )
+                window_estimated = _optional_decimal(team_cost.get("budget_window_estimated_cost"))
                 team_estimated = (
                     window_estimated
                     if window_estimated is not None
@@ -1592,81 +1888,15 @@ def _request_attribution_rank(
 def _dedupe_cost_events(
     events: Iterable[ModelInferenceUsageEvent],
 ) -> list[ModelInferenceUsageEvent]:
-    materialized = [
-        event
-        for event in events
-        if _usage_source(event) != "transcript" or _event_has_billable_tokens(event)
-    ]
-    anthropic_transcript_request_keys = {
-        key
-        for event in materialized
-        if (key := _anthropic_transcript_request_key(event)) is not None
-    }
-    if not anthropic_transcript_request_keys:
-        return materialized
-    return [
-        event
-        for event in materialized
-        if not (
-            _usage_source(event) != "transcript"
-            and _optional_text(event.provider) == "anthropic"
-            and _event_request_key(event) in anthropic_transcript_request_keys
-        )
-    ]
-
-
-def _anthropic_transcript_request_key(
-    event: ModelInferenceUsageEvent,
-) -> tuple[str, str] | None:
-    if _usage_source(event) != "transcript":
-        return None
-    if _optional_text(event.provider) != "anthropic":
-        return None
-    return _event_request_key(event)
+    return dedupe_model_usage_cost_events(events)
 
 
 def _event_request_key(event: ModelInferenceUsageEvent) -> tuple[str, str] | None:
-    session_id = _optional_text(event.session_id)
-    request_id = _first_text(
-        event.request_id,
-        _raw_metadata_text(event.raw_usage_metadata, "response_metadata", "provider_request_id"),
-        _raw_metadata_text(event.raw_usage_metadata, "response_metadata", "request_id"),
-        _raw_metadata_text(event.raw_usage_metadata, "request_metadata", "provider_request_id"),
-        _raw_metadata_text(event.raw_usage_metadata, "request_metadata", "request_id"),
-    )
-    if session_id is None or request_id is None:
-        return None
-    return (session_id, request_id)
-
-
-def _raw_metadata_text(raw_usage_metadata: Mapping[str, Any], section: str, key: str) -> str | None:
-    payload = raw_usage_metadata.get(section)
-    if not isinstance(payload, Mapping):
-        return None
-    return _optional_text(payload.get(key))
-
-
-def _event_has_billable_tokens(event: ModelInferenceUsageEvent) -> bool:
-    for value in (
-        event.input_tokens,
-        event.output_tokens,
-        event.total_tokens,
-        extract_cached_input_tokens(event),
-        extract_cache_write_input_tokens(event).total,
-    ):
-        number = _optional_non_negative_int(value)
-        if number is not None and number > 0:
-            return True
-    return False
+    return model_usage_request_key(event)
 
 
 def _usage_source(event: ModelInferenceUsageEvent) -> str:
-    request_metadata = event.raw_usage_metadata.get("request_metadata")
-    if isinstance(request_metadata, Mapping):
-        source = _optional_text(request_metadata.get("source"))
-        if source == TRANSCRIPT_SOURCE_NAME:
-            return "transcript"
-    return "relay"
+    return model_usage_source(event)
 
 
 def _agent_for_session(state: TeamState, session_id: str) -> PersistentAgent | None:

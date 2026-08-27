@@ -372,9 +372,7 @@ def test_team_costs_derive_the_current_month_from_a_stale_active_window(tmp_path
     )
 
     def _backdate_window(state):
-        state.teams["team"].cost_budget_windows[-1].started_at = datetime(
-            2026, 1, 15, tzinfo=UTC
-        )
+        state.teams["team"].cost_budget_windows[-1].started_at = datetime(2026, 1, 15, tzinfo=UTC)
         return state
 
     repo.update(_backdate_window)
@@ -515,6 +513,164 @@ def test_legacy_team_cap_stays_lifetime_based_until_its_first_reset(tmp_path: Pa
     assert cost["budget_window_started_at"] is None
     assert cost["budget_window_estimated_cost"] == 1.0
     assert cost["cost_limit_reached"] is True
+
+
+def test_current_team_balance_is_incremental_after_bounded_bootstrap(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    repo = _seed_team(runtime_dir)
+    _team_admin_service(repo).update_team(
+        team_id="team",
+        max_cost_usd="10.00",
+        set_max_cost_usd=True,
+    )
+    window_start = repo.read().teams["team"].cost_budget_windows[-1].started_at
+    store = ModelUsageStore(runtime_dir / "model-usage.db")
+    store.upsert_event(
+        _usage_event(
+            "first",
+            session_id="session-manager",
+            occurred_at=window_start + timedelta(seconds=1),
+        )
+    )
+    service = TeamCostService(
+        runtime_dir=runtime_dir,
+        state=repo.read(),
+        usage_store=store,
+        pricing_catalog=_pricing_catalog(),
+    )
+
+    original_list_events = store.list_events
+    reconciliation_reads: list[dict] = []
+
+    def bounded_history_read(**kwargs):
+        reconciliation_reads.append(dict(kwargs))
+        return original_list_events(**kwargs)
+
+    monkeypatch.setattr(store, "list_events", bounded_history_read)
+    initial = service.current_budget_costs_payload(team_ids=["team"])
+    assert initial["reconciled_team_ids"] == ["team"]
+    assert initial["team_costs"]["team"]["budget_window_estimated_cost"] == 1.0
+    assert reconciliation_reads == [{"occurred_after": window_start, "occurred_before": None}]
+
+    def unexpected_history_read(**_kwargs):
+        raise AssertionError("healthy incremental balance must not enumerate model usage")
+
+    monkeypatch.setattr(store, "list_events", unexpected_history_read)
+    store.upsert_event(
+        _usage_event(
+            "second",
+            session_id="session-manager",
+            occurred_at=window_start + timedelta(seconds=2),
+        )
+    )
+    incremental = TeamCostService(
+        runtime_dir=runtime_dir,
+        state=repo.read(),
+        usage_store=store,
+        pricing_catalog=_pricing_catalog(),
+    ).current_budget_costs_payload(team_ids=["team"])
+    assert incremental["reconciled_team_ids"] == []
+    assert incremental["team_costs"]["team"]["budget_window_estimated_cost"] == 2.0
+
+    monkeypatch.setattr(store, "list_events", original_list_events)
+    reconciled = TeamCostService(
+        runtime_dir=runtime_dir,
+        state=repo.read(),
+        usage_store=store,
+        pricing_catalog=_pricing_catalog(),
+    ).reconcile_current_cost_balances(
+        team_ids=["team"],
+        max_age_seconds=0,
+        backfill_transcripts=False,
+    )
+    assert reconciled["team_costs"]["team"]["budget_window_estimated_cost"] == 2.0
+
+
+def test_incremental_cached_token_balance_converges_with_full_reconciliation(
+    tmp_path: Path,
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    repo = _seed_team(runtime_dir)
+    _team_admin_service(repo).update_team(
+        team_id="team",
+        max_cost_usd="100.00",
+        set_max_cost_usd=True,
+    )
+    window_start = repo.read().teams["team"].cost_budget_windows[-1].started_at
+    store = ModelUsageStore(runtime_dir / "model-usage.db")
+
+    def cached_event(
+        *,
+        input_tokens: int,
+        output_tokens: int,
+        cache_read: int,
+        cache_write_5m: int,
+        cache_write_1h: int,
+    ) -> ModelInferenceUsageEvent:
+        return _usage_event(
+            "cached",
+            session_id="session-manager",
+            provider="anthropic",
+            model="claude-sonnet-4-6",
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            occurred_at=window_start + timedelta(seconds=1),
+            request_id="cached-request",
+            raw_usage_metadata={
+                "usage": {
+                    "input_tokens": input_tokens,
+                    "output_tokens": output_tokens,
+                    "cache_read_input_tokens": cache_read,
+                    "cache_creation_input_tokens": cache_write_5m + cache_write_1h,
+                    "cache_creation": {
+                        "ephemeral_5m_input_tokens": cache_write_5m,
+                        "ephemeral_1h_input_tokens": cache_write_1h,
+                    },
+                }
+            },
+        )
+
+    store.upsert_event(
+        cached_event(
+            input_tokens=1_000_000,
+            output_tokens=100_000,
+            cache_read=400_000,
+            cache_write_5m=100_000,
+            cache_write_1h=200_000,
+        )
+    )
+    service = TeamCostService(
+        runtime_dir=runtime_dir,
+        state=repo.read(),
+        usage_store=store,
+        pricing_catalog=_pricing_catalog(),
+    )
+    service.current_budget_costs_payload(team_ids=["team"])
+
+    store.upsert_event(
+        cached_event(
+            input_tokens=800_000,
+            output_tokens=200_000,
+            cache_read=600_000,
+            cache_write_5m=50_000,
+            cache_write_1h=100_000,
+        )
+    )
+    incremental = service.current_budget_costs_payload(team_ids=["team"])["team_costs"]["team"]
+    full = service.costs_payload(backfill_transcripts=False)["team_costs"]["team"]
+    assert incremental["budget_window_estimated_cost"] == full["budget_window_estimated_cost"]
+    assert incremental["cached_input_tokens"] == full["cached_input_tokens"] == 600_000
+    assert incremental["cache_write_input_tokens"] == full["cache_write_input_tokens"] == 150_000
+
+    reconciled = service.reconcile_current_cost_balances(
+        team_ids=["team"],
+        max_age_seconds=0,
+        backfill_transcripts=False,
+    )["team_costs"]["team"]
+    assert reconciled["budget_window_estimated_cost"] == incremental["budget_window_estimated_cost"]
 
 
 def test_governance_group_costs_roll_up_member_team_costs(tmp_path: Path) -> None:

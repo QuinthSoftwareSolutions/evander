@@ -2532,6 +2532,19 @@ class TeamWakeDueAgentsEffectProvider(EffectProviderBase):
         current_state = TeamAdminService(repo).advance_team_cost_budget_windows(
             current_state=current_state,
         )
+        cost_balance_reconciliation: dict[str, Any] = {}
+        cost_balance_reconciliation_error: str | None = None
+        if run_global_maintenance:
+            try:
+                cost_balance_reconciliation = TeamCostService(
+                    runtime_dir=_runtime_dir(context),
+                    state=current_state,
+                    session_repository=_session_repository_from_context(context),
+                ).reconcile_current_cost_balances()
+            except Exception as exc:
+                # A dirty balance is retried from its bounded current window. It must
+                # not suppress unrelated wakes in this maintenance cycle.
+                cost_balance_reconciliation_error = str(exc) or exc.__class__.__name__
         session_records = _session_records_by_id(_session_repository_from_context(context))
         cost_guard_blocked_teams = _cost_guard_blocked_teams(
             context,
@@ -3003,6 +3016,8 @@ class TeamWakeDueAgentsEffectProvider(EffectProviderBase):
             "retry_scheduled_count": len(retry_event_ids),
             "cost_guard_blocked_team_ids": sorted(blocked_team_ids),
             "cost_guard_blocked_teams": cost_guard_blocked_teams,
+            "cost_balance_reconciliation": cost_balance_reconciliation,
+            "cost_balance_reconciliation_error": cost_balance_reconciliation_error,
             "worktree_cleanup": worktree_cleanup,
             "worktree_cleanup_error": worktree_cleanup_error,
             "human_review_assignment_reconciliation": (human_review_assignment_reconciliation),
@@ -3573,7 +3588,7 @@ class TeamWakeGovernanceManagersEffectProvider(EffectProviderBase):
             runtime_dir=_runtime_dir(context),
             state=current_state,
             session_repository=_session_repository_from_context(context),
-        ).costs_payload(backfill_transcripts=True)
+        ).current_budget_costs_payload()
         _state, leases = TeamRuntimeService(repo).lease_due_governance_managers(
             governance_group_id=_optional_text(payload.get("governance_group_id")),
             limit=_optional_int(payload.get("limit"), default=10),
@@ -11589,7 +11604,7 @@ def _cost_guard_blocked_teams(
         state=state,
         session_repository=_session_repository_from_context(context),
     )
-    cost_payload = service.costs_payload(backfill_transcripts=True)
+    cost_payload = service.current_budget_costs_payload(team_ids=limited_team_ids)
     team_costs = cost_payload.get("team_costs")
     team_costs = team_costs if isinstance(team_costs, Mapping) else {}
 

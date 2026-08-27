@@ -7,6 +7,15 @@
 - Preserved `202 Accepted` callback handling and periodic durable-queue draining when the wake
   socket is unavailable.
 
+## 2026-08-27 - Incremental Team Cost Balances
+
+- Replaced wake-time lifetime usage aggregation with persisted per-Team budget-window balances.
+- Applied usage corrections transactionally as bounded request-group pricing deltas, including
+  cached input reads and 5-minute or 1-hour cache-write token rates, while preserving relay and
+  transcript deduplication.
+- Limited bootstrap, dirty-state, repricing, and periodic consolidation reads to the active budget
+  window, with content-fingerprinted pricing snapshots preventing silent balance drift.
+
 ## 2026-08-26 - Teams Graph Change Notifications
 
 - Added optional Microsoft Graph change notifications for authorized Teams channels, chats, and
