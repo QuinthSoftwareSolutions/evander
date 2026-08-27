@@ -21,11 +21,15 @@ _LIFECYCLE_NOTIFICATION_URL = "https://notifications.example.test/msgraph/teams/
 class _FakeGraphService:
     api_base_url = "https://graph.example.test/v1.0"
 
-    def __init__(self) -> None:
+    def __init__(self, tenant_id: str | None = None) -> None:
         self.token = "opaque-access-token"
+        self.tenant_id = tenant_id
 
     def _resolve_token(self) -> str:
         return self.token
+
+    def _resolve_tenant_id(self) -> str | None:
+        return self.tenant_id
 
     def _request_with_retries(self, client, method, url, *, params=None, json=None):
         response = client.request(method, url, params=params, json=json)
@@ -113,7 +117,9 @@ def test_subscription_reconciler_creates_and_renews_owned_subscription(tmp_path)
     assert [method for method, _payload in requests] == ["POST", "PATCH"]
 
 
-def test_subscription_reconciler_resolves_opaque_token_tenant_through_graph(tmp_path) -> None:
+def test_subscription_reconciler_uses_authenticated_credential_tenant_without_graph_lookup(
+    tmp_path,
+) -> None:
     store = TeamsInboxStore(tmp_path / "runtime" / "teams-inbox-store.db")
     reconciler = TeamsSubscriptionReconciler(store=store, worker_config=_worker_config())
     requests: list[httpx.Request] = []
@@ -121,13 +127,6 @@ def test_subscription_reconciler_resolves_opaque_token_tenant_through_graph(tmp_
 
     def handler(request: httpx.Request) -> httpx.Response:
         requests.append(request)
-        if request.url.path == "/v1.0/organization":
-            assert request.url.params["$select"] == "id"
-            return httpx.Response(
-                200,
-                request=request,
-                json={"value": [{"id": "tenant-from-graph"}]},
-            )
         return httpx.Response(
             201,
             request=request,
@@ -146,7 +145,7 @@ def test_subscription_reconciler_resolves_opaque_token_tenant_through_graph(tmp_
     with httpx.Client(transport=httpx.MockTransport(handler)) as client:
         healthy = reconciler.reconcile_directory(
             client,
-            service=_FakeGraphService(),
+            service=_FakeGraphService("tenant-from-credential"),
             provider_config=provider_config,
             directory_path="root",
             targets={"team-a/channel-a"},
@@ -154,10 +153,37 @@ def test_subscription_reconciler_resolves_opaque_token_tenant_through_graph(tmp_
         )
 
     assert healthy == {"team-a/channel-a"}
-    assert [request.method for request in requests] == ["GET", "POST"]
+    assert [request.method for request in requests] == ["POST"]
     subscription = store.get_owned_subscription("opaque-token-subscription")
     assert subscription is not None
-    assert subscription.tenant_id == "tenant-from-graph"
+    assert subscription.tenant_id == "tenant-from-credential"
+
+
+def test_subscription_reconciler_requires_tenant_metadata_or_concrete_configuration(
+    tmp_path,
+) -> None:
+    store = TeamsInboxStore(tmp_path / "runtime" / "teams-inbox-store.db")
+    reconciler = TeamsSubscriptionReconciler(store=store, worker_config=_worker_config())
+
+    def unexpected(request: httpx.Request) -> httpx.Response:
+        raise AssertionError(f"unexpected Graph request: {request.method} {request.url}")
+
+    with httpx.Client(transport=httpx.MockTransport(unexpected)) as client:
+        try:
+            reconciler.reconcile_directory(
+                client,
+                service=_FakeGraphService(),
+                provider_config=GatewayConfig.model_validate(
+                    {"runtime_dir": tmp_path / "runtime", "teams_backend": "graph_api"}
+                ),
+                directory_path="root",
+                targets={"team-a/channel-a"},
+                now=datetime.now(UTC),
+            )
+        except RuntimeError as exc:
+            assert "does not identify a concrete tenant" in str(exc)
+        else:
+            raise AssertionError("expected tenant resolution to fail")
 
 
 def test_subscription_reconciler_never_adopts_foreign_subscription(tmp_path) -> None:
@@ -433,11 +459,14 @@ def test_subscription_reconciler_recreates_subscription_after_callback_url_chang
         )
     )
     reconciler = TeamsSubscriptionReconciler(store=store, worker_config=_worker_config())
-    assert reconciler.healthy_targets(
-        directory_path="root",
-        tenant_id="tenant-a",
-        now=now,
-    ) == set()
+    assert (
+        reconciler.healthy_targets(
+            directory_path="root",
+            tenant_id="tenant-a",
+            now=now,
+        )
+        == set()
+    )
     requests: list[httpx.Request] = []
 
     def handler(request: httpx.Request) -> httpx.Response:

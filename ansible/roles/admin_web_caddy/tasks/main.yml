@@ -12,6 +12,9 @@
         that:
           - evander_services.admin_web | bool
           - evander_admin_web_caddy_hostname | length > 0
+          - >-
+            evander_teams_notifications_public_base_url | length == 0 or
+            evander_teams_notifications_caddy_hostname | length > 0
         fail_msg: >-
           evander_services.admin_web must be enabled and
           evander_admin_web_caddy_hostname must be set, or

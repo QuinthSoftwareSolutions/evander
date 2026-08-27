@@ -930,9 +930,9 @@ class TeamsIngestWorker:
         subscriptions_by_directory: dict[str, list[Any]] = {}
         for subscription in store.list_owned_subscriptions():
             if subscription.directory_path not in active_directories:
-                subscriptions_by_directory.setdefault(
-                    subscription.directory_path, []
-                ).append(subscription)
+                subscriptions_by_directory.setdefault(subscription.directory_path, []).append(
+                    subscription
+                )
         self._cleanup_subscription_groups(
             subscriptions_by_directory,
             now=now,
@@ -954,20 +954,16 @@ class TeamsIngestWorker:
             store.replace_notification_target_health(
                 directory_path=directory_path,
                 desired_targets=(
-                    {item.target for item in subscriptions}
-                    if retain_fallback_targets
-                    else set()
+                    {item.target for item in subscriptions} if retain_fallback_targets else set()
                 ),
                 healthy_targets=set(),
-                errors_by_target={
-                    item.target: "notifications disabled" for item in subscriptions
-                },
+                errors_by_target={item.target: "notifications disabled" for item in subscriptions},
                 updated_at=now,
             )
-            provider_config = self.runtime.provider_config.resolve_for_directory(directory_path)
-            if provider_config.teams_backend not in {"graph_api", "delegated_graph_api"}:
-                continue
             try:
+                provider_config = self.runtime.provider_config.resolve_for_directory(directory_path)
+                if provider_config.teams_backend not in {"graph_api", "delegated_graph_api"}:
+                    raise RuntimeError("directory no longer resolves to a Graph Teams provider")
                 service = self._build_graph_service(
                     provider_config=provider_config,
                     channel_targets=[item.target for item in subscriptions],
@@ -1227,14 +1223,18 @@ class TeamsIngestWorker:
             token_provider = _build_delegated_teams_token_provider(provider_config)
         if token_provider is None:
             resolved_token_provider = None
+            resolved_tenant_id_provider = None
         elif hasattr(token_provider, "get_bearer_token"):
             resolved_token_provider = token_provider.get_bearer_token
+            resolved_tenant_id_provider = getattr(token_provider, "get_tenant_id", None)
         else:
             resolved_token_provider = token_provider
+            resolved_tenant_id_provider = None
         return GraphTeamsService(
             SqliteTeamsRecordsRepository(self.config.teams_message_store_path),
             token=token,
             token_provider=resolved_token_provider,
+            tenant_id_provider=resolved_tenant_id_provider,
             api_base_url=provider_config.teams_graph_api_base_url,
             poll_limit=provider_config.teams_poll_limit,
             history_page_cap=provider_config.teams_history_page_cap,

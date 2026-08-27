@@ -5,6 +5,7 @@ import logging
 import secrets
 from datetime import UTC, datetime, timedelta
 from urllib.parse import quote
+from uuid import UUID
 
 import httpx
 
@@ -21,6 +22,13 @@ logger = logging.getLogger(__name__)
 _NON_CONCRETE_TENANT_IDS = {"organizations", "common", "consumers"}
 
 
+def _tenant_uuid(value: str) -> str | None:
+    try:
+        return str(UUID(value))
+    except ValueError:
+        return None
+
+
 def notification_resource_for_target(target: str) -> str:
     parsed = parse_teams_target(target)
     if parsed.kind == "chat":
@@ -31,31 +39,29 @@ def notification_resource_for_target(target: str) -> str:
 
 
 def resolve_graph_tenant_id(
-    client: httpx.Client,
+    _client: httpx.Client,
     *,
     service: GraphTeamsService,
     provider_config: GatewayConfig,
 ) -> str:
     configured = str(provider_config.teams_delegated_tenant_id or "").strip()
+    tenant_resolver = getattr(service, "_resolve_tenant_id", None)
+    credential_tenant = str(tenant_resolver() or "").strip() if callable(tenant_resolver) else ""
     if configured and configured.casefold() not in _NON_CONCRETE_TENANT_IDS:
-        return configured
+        configured_uuid = _tenant_uuid(configured)
+        credential_uuid = _tenant_uuid(credential_tenant) if credential_tenant else None
+        if configured_uuid and credential_uuid and credential_uuid != configured_uuid:
+            raise PermissionError(
+                "Configured Teams tenant does not match the authenticated credential tenant"
+            )
+        return credential_tenant or configured
 
-    response = service._request_with_retries(
-        client,
-        "GET",
-        f"{service.api_base_url}/organization",
-        params={"$select": "id"},
+    if credential_tenant:
+        return credential_tenant
+    raise RuntimeError(
+        "Teams delegated credential does not identify a concrete tenant; configure "
+        "teams_delegated_tenant_id or repeat device-code login"
     )
-    payload = response.json()
-    values = payload.get("value") if isinstance(payload, dict) else None
-    tenant_ids = {
-        str(item.get("id") or "").strip()
-        for item in values or []
-        if isinstance(item, dict) and str(item.get("id") or "").strip()
-    }
-    if len(tenant_ids) != 1:
-        raise RuntimeError("Teams Graph organization lookup did not identify one tenant")
-    return tenant_ids.pop()
 
 
 class TeamsSubscriptionReconciler:

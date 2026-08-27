@@ -302,6 +302,12 @@ evander_admin_web_caddy_upstream_host: "127.0.0.1"
 evander_admin_web_caddy_upstream_port: "{{ evander_admin_web_env.get('ADMIN_WEB_PORT', '8100') }}"
 evander_teams_notifications_public_base_url: >-
   {{ evander_teams_ingest_config.get('change_notification_public_base_url', '') | default('', true) }}
+evander_teams_notifications_caddy_hostname: >-
+  {{
+    evander_teams_notifications_public_base_url
+    | regex_replace('^https?://', '')
+    | regex_replace('/.*$', '')
+  }}
 evander_teams_notifications_listener_host: >-
   {{ evander_teams_ingest_config.get('change_notification_listener_host', '127.0.0.1') }}
 evander_teams_notifications_listener_endpoint_host: >-

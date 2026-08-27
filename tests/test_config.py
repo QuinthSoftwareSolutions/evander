@@ -492,7 +492,6 @@ def test_teams_delegated_scopes_default_includes_channel_and_chat_access() -> No
 
     assert config.teams_delegated_scopes == [
         "offline_access",
-        "https://graph.microsoft.com/User.Read",
         "https://graph.microsoft.com/ChannelMessage.Read.All",
         "https://graph.microsoft.com/ChannelMessage.Send",
         "https://graph.microsoft.com/Chat.ReadWrite",

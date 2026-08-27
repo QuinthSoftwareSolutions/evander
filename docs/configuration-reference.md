@@ -2124,9 +2124,11 @@ healthy subscription continue polling at `poll_interval_seconds` (two seconds by
 restart. Turning notifications off restores fast polling immediately, stops creation and renewal,
 and best-effort deletes only subscriptions recorded as owned by this deployment.
 Subscription reconciliation uses a concrete `teams_delegated_tenant_id` when configured and
-otherwise resolves the tenant with Graph `GET /organization?$select=id`; it never depends on the
-access-token encoding. The default delegated scopes include `User.Read` for that lookup. A static
-application token must either allow `Organization.Read.All` or use a concrete tenant setting.
+otherwise uses the concrete tenant metadata retained with a delegated device-code credential. It
+does not decode Graph access tokens or require a Graph organization-read permission. A delegated
+credential created before tenant metadata was retained must be replaced with a new login or paired
+with a concrete tenant setting; static environment-token mode always requires a concrete tenant for
+notifications. Polling remains active while tenant resolution is unavailable.
 Persisted callback URLs are compared during reconciliation, and changing the public base URL
 replaces the old Graph subscriptions before they can be treated as healthy.
 
@@ -2144,7 +2146,7 @@ Key delegated Teams provider settings now include:
 - `teams_delegated_identity_id`
 - `teams_delegated_client_id`
 - optional `teams_delegated_tenant_id`
-- optional `teams_delegated_scopes` (default includes `offline_access`, `User.Read`,
+- optional `teams_delegated_scopes` (default includes `offline_access`,
   `ChannelMessage.Read.All`, `ChannelMessage.Send`, and `Chat.ReadWrite`)
 - Resolving Teams direct-message sender mail addresses and outbound mention targets may require
   adding a Graph user-read scope such as `User.ReadBasic.All` or `User.Read.All` and rerunning
@@ -2162,6 +2164,9 @@ Key delegated Teams provider settings now include:
   client secret or assertion and is incompatible with this flow.
 - Changing `teams_delegated_scopes` affects only newly issued delegated credentials; rerun the
   host `teams-auth login` flow for the directory after scope changes.
+- Refresh requests use the stored credential's granted scopes, not the current configured defaults.
+  Device-code login requests add the OIDC `openid` and `profile` scopes so the concrete authenticated
+  tenant can be retained without another Graph request.
 
 ## 4) Additional env vars consumed directly in code paths
 

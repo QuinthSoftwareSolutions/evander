@@ -179,6 +179,7 @@
       port: 11777
     - key: teams_notifications
       port: "{{ evander_teams_notifications_listener_port }}"
+      host: "{{ evander_teams_notifications_listener_host }}"
   when: evander_services.get(item.key, false) | bool
 
 - name: Verify enabled relay health endpoints
@@ -238,11 +239,13 @@
     probe_caddy_url "https://${host}/index.html"
 
     {% if evander_teams_notifications_public_base_url | length > 0 %}
+    callback_host="{{ evander_teams_notifications_caddy_hostname }}"
     challenge="evander-caddy-notification-probe"
     challenge_response="$(
       "${curl_common[@]}" \
+        --resolve "${callback_host}:443:127.0.0.1" \
         --request POST \
-        "https://${host}/msgraph/teams/notifications?validationToken=${challenge}"
+        "https://${callback_host}/msgraph/teams/notifications?validationToken=${challenge}"
     )"
     if [[ "${challenge_response}" != "${challenge}" ]]; then
       echo "Teams notification callback challenge did not traverse Caddy correctly" >&2

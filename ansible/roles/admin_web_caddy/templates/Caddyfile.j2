@@ -1,5 +1,5 @@
 {{ evander_admin_web_caddy_hostname }} {
-{% if evander_teams_notifications_public_base_url | length > 0 %}
+{% if evander_teams_notifications_public_base_url | length > 0 and evander_teams_notifications_caddy_hostname == evander_admin_web_caddy_hostname %}
 	handle /msgraph/teams/* {
 		reverse_proxy {{ evander_teams_notifications_listener_endpoint_host }}:{{ evander_teams_notifications_listener_port }}
 	}
@@ -32,3 +32,11 @@
 		file_server
 	}
 }
+{% if evander_teams_notifications_public_base_url | length > 0 and evander_teams_notifications_caddy_hostname != evander_admin_web_caddy_hostname %}
+
+{{ evander_teams_notifications_caddy_hostname }} {
+	handle /msgraph/teams/* {
+		reverse_proxy {{ evander_teams_notifications_listener_endpoint_host }}:{{ evander_teams_notifications_listener_port }}
+	}
+}
+{% endif %}

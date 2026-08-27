@@ -755,7 +755,7 @@ Storage layout for directory config:
   - `teams_delegated_client_id`
   - optional `teams_delegated_tenant_id`, `teams_delegated_scopes`,
     `teams_delegated_authority_base_url`, and `teams_delegated_credential_store_path`
-  - the default delegated scope set includes `User.Read`, channel read/send, and `Chat.ReadWrite`
+  - the default delegated scope set includes channel read/send and `Chat.ReadWrite`
   - Teams direct-message sender mail/UPN resolution and outbound mention lookup may require adding
     a Graph user-read scope such as `User.ReadBasic.All` or `User.Read`
 - The Entra app behind `teams_delegated_client_id` must be configured for public client /
@@ -774,6 +774,11 @@ Storage layout for directory config:
   - `evander-cli teams-auth list`
 - After changing `teams_delegated_scopes`, repeat `teams-auth login` for that directory so the
   stored delegated credential is refreshed with the new scopes.
+- Token refreshes preserve the scopes granted to the stored credential; changing configured scopes
+  never broadens an existing refresh grant. New device-code logins also retain authenticated tenant
+  metadata for notification validation. A credential created before tenant metadata was retained
+  must either be replaced with a new login or paired with a concrete `teams_delegated_tenant_id`
+  before change notifications can become healthy.
 - The legacy static env-token mode remains supported for compatibility. In that mode,
   `teams_graph_access_token_env` names the host environment variable that holds the token.
 - Do not place Teams credentials in cloud-init, session manifests, or guest shell profiles.

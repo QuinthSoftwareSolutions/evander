@@ -227,6 +227,58 @@ def test_disabling_notifications_resets_subscription_reconciliation_backoff(
     )
 
 
+@pytest.mark.parametrize("notifications_enabled", [False, True])
+def test_stale_subscription_for_deleted_directory_is_abandoned_without_aborting_cycle(
+    tmp_path: Path,
+    notifications_enabled: bool,
+) -> None:
+    if notifications_enabled:
+        config_path = tmp_path / "config" / "teams-ingest" / "config.json"
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        config_path.write_text(
+            json.dumps(
+                {
+                    "change_notifications_enabled": True,
+                    "change_notification_public_base_url": "https://notifications.example.test",
+                }
+            ),
+            encoding="utf-8",
+        )
+    worker = build_teams_ingest_worker(
+        GatewayConfig.model_validate({"runtime_dir": tmp_path / "runtime"}),
+        project_dir=tmp_path,
+    )
+    ensure_directory(worker, "root/deleted")
+    directory_service = DirectoryService(worker.runtime.directories)
+    store = worker._notification_store
+    assert store is not None
+    now = datetime.now(UTC)
+    store.upsert_owned_subscription(
+        TeamsOwnedSubscription(
+            subscription_id="stale-subscription",
+            owner_id=store.notification_owner_id(),
+            target="team-a/channel-a",
+            resource="/teams/team-a/channels/channel-a/messages",
+            directory_path="root/deleted",
+            tenant_id="tenant-a",
+            expires_at=now + timedelta(hours=48),
+            client_state_sha256="0" * 64,
+            created_at=now,
+            updated_at=now,
+        )
+    )
+    directory_service.delete("root/deleted")
+
+    result = worker.run_once()
+
+    stale = store.get_owned_subscription("stale-subscription")
+    assert result.directories_polled == 0
+    assert stale is not None
+    assert stale.health == "abandoned"
+    assert stale.cleanup_attempted is True
+    assert "does not exist" in str(stale.last_error)
+
+
 def test_exact_notification_ingests_delayed_unseen_message_without_regressing_cursor(
     tmp_path: Path,
 ) -> None:

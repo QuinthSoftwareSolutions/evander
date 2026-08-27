@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import base64
+import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from threading import Barrier, Lock, Thread
@@ -102,7 +104,7 @@ def test_begin_device_code_login_returns_prompt(tmp_path: Path) -> None:
     form = parse_qs(requests[0].content.decode("utf-8"))
     assert form == {
         "client_id": ["client-123"],
-        "scope": ["offline_access https://graph.microsoft.com/ChannelMessage.Send"],
+        "scope": ["offline_access https://graph.microsoft.com/ChannelMessage.Send openid profile"],
     }
 
 
@@ -298,6 +300,130 @@ def test_get_bearer_token_refreshes_expiring_credentials_and_reuses_prior_refres
     form = parse_qs(requests[0].content.decode("utf-8"))
     assert form["grant_type"] == ["refresh_token"]
     assert form["refresh_token"] == ["refresh-token-old"]
+    assert form["scope"] == ["offline_access https://graph.microsoft.com/ChannelMessage.Send"]
+    assert form["client_info"] == ["1"]
+
+
+def test_refresh_preserves_credential_scopes_when_config_defaults_expand(tmp_path: Path) -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(
+            200,
+            json={
+                "access_token": "access-token-refreshed",
+                "token_type": "Bearer",
+                "expires_in": 7200,
+            },
+            request=request,
+        )
+
+    provider, store = make_provider(tmp_path, transport=httpx.MockTransport(handler))
+    provider.config = provider.config.model_copy(
+        update={
+            "scopes": [
+                "offline_access",
+                "https://graph.microsoft.com/User.Read",
+                "https://graph.microsoft.com/ChannelMessage.Send",
+            ]
+        }
+    )
+    granted_scopes = [
+        "offline_access",
+        "https://graph.microsoft.com/ChannelMessage.Send",
+    ]
+    store.save(
+        TeamsAuthCredentials(
+            client_id="client-123",
+            tenant_id="tenant-abc",
+            access_token="access-token-old",
+            refresh_token="refresh-token-old",
+            scopes=granted_scopes,
+            expires_at=datetime(2026, 4, 9, 13, 0, tzinfo=UTC),
+        )
+    )
+
+    refreshed = provider.refresh_access_token()
+
+    form = parse_qs(requests[0].content.decode("utf-8"))
+    assert form["scope"] == [" ".join(granted_scopes)]
+    assert "User.Read" not in form["scope"][0]
+    assert refreshed.scopes == granted_scopes
+
+
+def test_refresh_omits_scope_when_legacy_credential_did_not_persist_grants(
+    tmp_path: Path,
+) -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(
+            200,
+            json={
+                "access_token": "access-token-refreshed",
+                "token_type": "Bearer",
+                "expires_in": 7200,
+            },
+            request=request,
+        )
+
+    provider, store = make_provider(tmp_path, transport=httpx.MockTransport(handler))
+    store.save(
+        TeamsAuthCredentials(
+            client_id="client-123",
+            tenant_id="organizations",
+            access_token="access-token-old",
+            refresh_token="refresh-token-old",
+            scopes=[],
+            expires_at=datetime(2026, 4, 9, 13, 0, tzinfo=UTC),
+        )
+    )
+
+    refreshed = provider.refresh_access_token()
+
+    form = parse_qs(requests[0].content.decode("utf-8"))
+    assert "scope" not in form
+    assert refreshed.scopes == []
+
+
+def test_device_login_persists_concrete_tenant_from_identity_metadata(tmp_path: Path) -> None:
+    tenant_id = "11111111-2222-3333-4444-555555555555"
+    claims = base64.urlsafe_b64encode(json.dumps({"tid": tenant_id}).encode()).decode().rstrip("=")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        form = parse_qs(request.content.decode("utf-8"))
+        assert form["client_info"] == ["1"]
+        return httpx.Response(
+            200,
+            json={
+                "access_token": "access-token",
+                "refresh_token": "refresh-token",
+                "id_token": f"header.{claims}.signature",
+                "scope": "offline_access https://graph.microsoft.com/ChannelMessage.Send",
+                "expires_in": 3600,
+            },
+            request=request,
+        )
+
+    provider, store = make_provider(tmp_path, transport=httpx.MockTransport(handler))
+    session = DeviceCodeLoginSession(
+        client_id="client-123",
+        tenant_id="organizations",
+        scopes=["offline_access"],
+        device_code="device-code-1",
+        user_code="ABCD-EFGH",
+        verification_uri="https://microsoft.com/devicelogin",
+        message="Sign in with the code.",
+        expires_at=datetime(2026, 4, 9, 12, 15, tzinfo=UTC),
+    )
+
+    credentials = provider.poll_device_code_login_once(session)
+
+    assert credentials.tenant_id == tenant_id
+    assert provider.get_tenant_id() == tenant_id
+    assert store.load() is not None and store.load().tenant_id == tenant_id
 
 
 def test_get_bearer_token_serializes_concurrent_refreshes(tmp_path: Path) -> None:
