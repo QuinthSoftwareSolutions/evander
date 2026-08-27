@@ -74,6 +74,7 @@ from evander.messaging.teams_inbox_store import (
 from evander.messaging.teams_subscriptions import (
     TeamsSubscriptionReconciler,
     resolve_graph_tenant_id,
+    teams_subscription_provider_identity_key,
 )
 from evander.triggers.providers.teams_message_events import (
     CommunicationTeamsMessageEventMatcher,
@@ -219,6 +220,11 @@ class TeamsIngestWorker:
             TeamsSubscriptionReconciler(
                 store=self._notification_store,
                 worker_config=self.worker_config,
+                provider_identity_key_for_directory=(
+                    lambda directory_path: teams_subscription_provider_identity_key(
+                        self.runtime.provider_config.resolve_for_directory(directory_path)
+                    )
+                ),
             )
             if self._notification_store is not None
             else None
@@ -853,6 +859,7 @@ class TeamsIngestWorker:
             )
             healthy_before_reconciliation = reconciler.healthy_targets(
                 directory_path=directory_path,
+                provider_identity_key=teams_subscription_provider_identity_key(provider_config),
                 tenant_id=tenant_id,
                 now=datetime.now(UTC),
             )
@@ -934,14 +941,17 @@ class TeamsIngestWorker:
         now: datetime,
     ) -> None:
         store = self._notification_store
-        if store is None:
+        reconciler = self._subscription_reconciler
+        if store is None or reconciler is None:
             return
         subscriptions_by_directory: dict[str, list[Any]] = {}
-        for subscription in store.list_owned_subscriptions():
-            if subscription.directory_path not in active_directories:
-                subscriptions_by_directory.setdefault(subscription.directory_path, []).append(
-                    subscription
-                )
+        for subscription in reconciler.prune_inactive_consumers(
+            active_directories=active_directories,
+            now=now,
+        ):
+            subscriptions_by_directory.setdefault(subscription.directory_path, []).append(
+                subscription
+            )
         self._cleanup_subscription_groups(
             subscriptions_by_directory,
             now=now,
@@ -979,12 +989,20 @@ class TeamsIngestWorker:
                     directory_path=directory_path,
                 )
                 with httpx.Client(timeout=provider_config.teams_timeout_seconds) as client:
-                    reconciler.cleanup_directory(
-                        client,
-                        service=service,
-                        directory_path=directory_path,
-                        now=now,
-                    )
+                    if retain_fallback_targets:
+                        reconciler.cleanup_owned_subscriptions(
+                            client,
+                            service=service,
+                            subscriptions=subscriptions,
+                            now=now,
+                        )
+                    else:
+                        reconciler.cleanup_directory(
+                            client,
+                            service=service,
+                            directory_path=directory_path,
+                            now=now,
+                        )
             except Exception as exc:
                 logger.warning(
                     "Unable to clean up owned Teams Graph subscriptions directory=%s; "

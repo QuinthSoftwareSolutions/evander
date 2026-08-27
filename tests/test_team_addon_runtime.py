@@ -3529,6 +3529,51 @@ def test_team_chat_prompt_deduplicates_current_body_and_caps_history() -> None:
     assert "only a successful tool result completes this chat reply" in prompt
 
 
+def test_team_chat_prompt_reports_external_attachment_import_failure() -> None:
+    current = {
+        "id": "message-current",
+        "conversation_id": "conversation",
+        "sender": "operator",
+        "body": "External message attachments could not be imported.",
+        "metadata": {
+            "external_attachment_import": {
+                "status": "failed",
+                "discovered_count": 1,
+                "imported_count": 0,
+                "failed_count": 1,
+                "failures": [
+                    {
+                        "code": "download_failed",
+                        "message": "provider request failed",
+                        "attachment_id": "hosted-1",
+                        "filename": "hosted-1.png",
+                    }
+                ],
+            }
+        },
+        "created_at": datetime(2026, 1, 2, tzinfo=UTC),
+    }
+
+    prompt = _build_team_chat_prompt(
+        state={
+            "agents": {"agent": {"id": "agent", "display_name": "Agent"}},
+            "conversation_messages": {current["id"]: current},
+        },
+        conversation={
+            "id": "conversation",
+            "agent_id": "agent",
+            "operator_user_id": "operator",
+            "operator_display_name": "Operator",
+        },
+        message=current,
+        mutation_allowed=False,
+    )
+
+    assert "External attachment import warnings" in prompt
+    assert '"attachment_id": "hosted-1"' in prompt
+    assert "Do not claim to have inspected any attachment that was not imported" in prompt
+
+
 def test_wake_due_agents_provider_retries_queued_chat_attachment_from_relative_runtime(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -11617,6 +11662,110 @@ def test_enqueue_operator_chat_message_effect_validates_target_and_authorization
     assert published[0].event_type == CHAT_MESSAGE_QUEUED_EVENT_TYPE
     assert published[0].payload["message_id"] == result["message_id"]
     assert published[0].payload["dispatch_id"] == result["dispatch_id"]
+
+    class _AttachmentDiscordService:
+        list_calls = 0
+        download_calls = 0
+
+        def list_attachments(self, message_id, *, channel_id=None):
+            self.list_calls += 1
+            assert message_id == "discord-message-with-image"
+            assert channel_id == "123456789012345678"
+            return [
+                {
+                    "id": "discord-attachment-1",
+                    "filename": "screen.png",
+                    "content_type": "image/png",
+                    "size": 8,
+                }
+            ]
+
+        def download_attachment(self, message_id, attachment_id, *, channel_id=None):
+            self.download_calls += 1
+            assert attachment_id == "discord-attachment-1"
+            return {
+                "filename": "screen.png",
+                "content_type": "image/png",
+                "content": b"png-data",
+            }
+
+    attachment_service = _AttachmentDiscordService()
+    attachment_provider = TeamEnqueueOperatorChatMessageEffectProvider()
+    attachment_provider.initialize(
+        definition.model_copy(
+            update={
+                "id": "enqueue-external-chat-attachment",
+                "source_message_id": "discord-message-with-image",
+                "body": "",
+                "import_attachments": True,
+            }
+        ),
+        EffectRuntimeContext(
+            resolved_config={"runtime_dir": str(tmp_path)},
+            metadata={"directory_path": "root", "directory_store": directory_store},
+            session_lookup=SimpleNamespace(
+                get_session=lambda _session_id: SimpleNamespace(directory_path="root")
+            ),
+            admin_service=SimpleNamespace(
+                runtime=SimpleNamespace(
+                    discord_service_for_session=lambda _session_id: attachment_service
+                )
+            ),
+        ),
+    )
+
+    attachment_result = attachment_provider.execute()
+    attachment_replay = attachment_provider.execute()
+
+    assert attachment_result["attachment_import"]["status"] == "complete"
+    assert attachment_result["attachment_import"]["imported_count"] == 1
+    assert attachment_replay["duplicate"] is True
+    assert attachment_service.list_calls == 1
+    assert attachment_service.download_calls == 1
+    attachment_state = TeamStateRepository(tmp_path).read()
+    attachment_message = attachment_state.conversation_messages[attachment_result["message_id"]]
+    assert attachment_message.body is None
+    assert len(attachment_message.attachment_ids) == 1
+    attachment = attachment_state.chat_attachments[attachment_message.attachment_ids[0]]
+    assert attachment.filename == "screen.png"
+    assert attachment.external_source is not None
+    assert attachment.external_source.source_attachment_id == "discord-attachment-1"
+
+    class _FailingDiscordService:
+        def list_attachments(self, _message_id, *, channel_id=None):
+            raise RuntimeError("provider attachment listing failed")
+
+    failed_attachment_provider = TeamEnqueueOperatorChatMessageEffectProvider()
+    failed_attachment_provider.initialize(
+        definition.model_copy(
+            update={
+                "id": "enqueue-external-chat-failed-attachment",
+                "source_message_id": "discord-message-with-missing-image",
+                "body": "",
+                "import_attachments": True,
+            }
+        ),
+        EffectRuntimeContext(
+            resolved_config={"runtime_dir": str(tmp_path)},
+            metadata={"directory_path": "root", "directory_store": directory_store},
+            session_lookup=SimpleNamespace(
+                get_session=lambda _session_id: SimpleNamespace(directory_path="root")
+            ),
+            admin_service=SimpleNamespace(
+                runtime=SimpleNamespace(
+                    discord_service_for_session=lambda _session_id: _FailingDiscordService()
+                )
+            ),
+        ),
+    )
+
+    failed_attachment_result = failed_attachment_provider.execute()
+    failed_attachment_state = TeamStateRepository(tmp_path).read()
+    failed_attachment_message = failed_attachment_state.conversation_messages[
+        failed_attachment_result["message_id"]
+    ]
+    assert failed_attachment_result["attachment_import"]["status"] == "failed"
+    assert failed_attachment_message.body == "External message attachments could not be imported."
 
     DiscordInboxStore(tmp_path / "discord-inbox-store.json").upsert_thread_binding(
         thread_id="123456789012345681",

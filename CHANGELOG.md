@@ -1,5 +1,16 @@
 # Changelog
 
+## 2026-08-27 - External Team Chat Attachments And Shared Teams Subscriptions
+
+- Added an opt-in `import_attachments` bridge setting for Teams, Discord, and email messages that
+  validates provider files with the effective Team Chat attachment policy, copies accepted bytes
+  into private Team storage, and preserves external-source provenance.
+- Delivered valid files when other imports fail, while surfacing bounded failure details in Team
+  prompts and the operator UI so agents cannot silently claim to have inspected missing content.
+- Reconciled Graph change-notification subscriptions by credential identity, tenant, and target
+  across directory scopes, converging legacy duplicates onto one shared subscription and retrying
+  failed duplicate cleanup with bounded backoff.
+
 ## 2026-08-27 - Teams Notification Wake Latency
 
 - Signalled the Teams ingest worker immediately after a Microsoft Graph callback is durably queued,

@@ -274,12 +274,16 @@ def test_workflow_editor_catalog_enriches_team_bridge_target_options(
     ).model_dump(mode="json")
     nodes = {node["type"]: node for node in payload["nodes"]}
     bridge = nodes["effect:team:enqueue-operator-chat-message"]
+    import_attachments_field = next(
+        field for field in bridge["fields"] if field["key"] == "import_attachments"
+    )
     target_field = next(
         field for field in bridge["fields"] if field["key"] == "communication_target_id"
     )
     options = {option["value"]: option for option in target_field["options"]}
 
     assert set(options) == {"bridge-discord", "bridge-teams-reply"}
+    assert import_attachments_field["default_value"] is False
     assert options["bridge-discord"]["metadata"]["required_capabilities"] == [
         "read",
         "write or reply",

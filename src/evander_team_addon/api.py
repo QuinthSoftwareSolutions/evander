@@ -7373,6 +7373,11 @@ def _chat_attachment_payload(attachment: Any) -> dict[str, Any]:
         "byte_count": attachment.byte_count,
         "sha256": attachment.sha256,
         "sender": attachment.sender,
+        "external_source": (
+            attachment.external_source.model_dump(mode="json")
+            if attachment.external_source is not None
+            else None
+        ),
         "created_at": attachment.created_at.isoformat() if attachment.created_at else None,
         "download_url": (
             f"/api/addons/team-addon/conversations/{attachment.conversation_id}/"

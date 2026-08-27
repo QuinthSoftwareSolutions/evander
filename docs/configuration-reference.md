@@ -230,6 +230,14 @@ Set `allow_team_mutations=false` unless the workflow also contains a fixed
 required. Mutation-enabled ingress additionally requires the recipient agent
 and every included project to be within the workflow effect's directory scope.
 
+The optional `import_attachments` field defaults to `false`. When enabled for a
+Teams, Discord, or email target, the Team add-on imports provider attachments
+into its own private storage, applies the effective operator-to-agent Team Chat
+attachment policy, preserves external provenance, and uses the existing Team
+dispatch file-copy path. Import failures do not discard the external message:
+accepted files remain attached and structured warnings identify rejected or
+unavailable files.
+
 The bundled Team runtime pack consumes
 `team.chat.external_reply_requested` after `team_reply_to_chat`, sends the
 persisted reply through `effect:communication:send-message`, and records the
@@ -2131,6 +2139,11 @@ with a concrete tenant setting; static environment-token mode always requires a 
 notifications. Polling remains active while tenant resolution is unavailable.
 Persisted callback URLs are compared during reconciliation, and changing the public base URL
 replaces the old Graph subscriptions before they can be treated as healthy.
+Directories that resolve to the same Graph provider identity and tenant share one owned
+subscription per canonical target and callback. Consumer directory paths remain recorded
+separately for health and cleanup. Reconciliation adopts legacy per-directory records, keeps the
+healthy subscription with the latest expiry, and retries deletion of redundant owned records with
+bounded backoff; genuinely distinct provider identities are never combined.
 
 The callback validates endpoint challenges, tenant, owned subscription ID, and constant-time
 `clientState` hashes before durably acknowledging notifications. After a new queue row commits, the

@@ -3838,6 +3838,24 @@ class ExternalChatDeliveryRecord(TeamModel):
         return _optional_text(value)
 
 
+class TeamChatAttachmentExternalSource(TeamModel):
+    provider: Literal["teams", "discord", "email"]
+    communication_target_id: str
+    source_message_id: str
+    source_attachment_id: str
+
+    @field_validator(
+        "provider",
+        "communication_target_id",
+        "source_message_id",
+        "source_attachment_id",
+        mode="before",
+    )
+    @classmethod
+    def _required_source_text(cls, value: object, info) -> str:
+        return _required_text(value, info.field_name)
+
+
 class TeamChatAttachment(TeamModel):
     id: str
     message_id: str
@@ -3848,6 +3866,7 @@ class TeamChatAttachment(TeamModel):
     sha256: str
     sender: Literal["operator", "agent"]
     created_by_session_id: str | None = None
+    external_source: TeamChatAttachmentExternalSource | None = None
     created_at: datetime = Field(default_factory=utc_now)
 
     @field_validator(

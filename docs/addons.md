@@ -625,6 +625,15 @@ bounded to the workflow effect directory for both the recipient agent and
 included projects. The target must additionally allow `reply` for a preserved
 provider thread or `write` for a top-level response.
 
+Set `import_attachments=true` to import files from supported Teams, Discord,
+or email source messages into private Team Chat attachment storage. The flag
+defaults to `false`. Imported files retain provider/message/attachment
+provenance, are validated by the effective Team Chat operator-to-agent file
+policy, and follow the normal workspace-copy path. Valid files are still
+delivered when another file fails or violates policy; the message, effect
+output, Team Chat UI, and agent prompt carry a bounded warning describing the
+partial or failed import. Provider credentials remain host-side.
+
 An agent reply to an externally originated message is committed to Team state
 before delivery is attempted. `team_reply_to_chat` creates a pending external
 delivery and emits `team.chat.external_reply_requested`; the packaged runtime

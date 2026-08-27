@@ -10013,6 +10013,9 @@ function renderChatMessage(message) {
   const externalDelivery = metadata.external_delivery && typeof metadata.external_delivery === "object"
     ? metadata.external_delivery
     : null;
+  const attachmentImport = metadata.external_attachment_import && typeof metadata.external_attachment_import === "object"
+    ? metadata.external_attachment_import
+    : null;
   const mutationMode = sender === "operator" ? text(message.mutation_mode) : "";
   const mutationModeLabel = mutationMode === "project_scoped"
     ? "Mutation enabled"
@@ -10024,6 +10027,7 @@ function renderChatMessage(message) {
       <div class="chat-message-bubble">
         ${message.body ? `<p>${escapeHtml(message.body)}</p>` : ""}
         ${attachments.length ? `<div class="chat-message-attachments">${attachments.map(renderChatAttachment).join("")}</div>` : ""}
+        ${attachmentImportWarning(attachmentImport)}
         <div class="chat-message-meta">
           <span>${escapeHtml(chatMessageSenderLabel(sender, metadata))}</span>
           <time>${escapeHtml(formatChatTimestamp(message.created_at))}</time>
@@ -10035,6 +10039,20 @@ function renderChatMessage(message) {
       </div>
     </article>
   `;
+}
+
+function attachmentImportWarning(summary) {
+  const status = text(summary?.status);
+  if (!["partial", "failed"].includes(status)) return "";
+  const imported = Number(summary?.imported_count || 0);
+  const failed = Number(summary?.failed_count || 0);
+  const label = status === "partial"
+    ? `${imported} external attachment${imported === 1 ? "" : "s"} imported; ${failed} could not be imported.`
+    : `External attachments could not be imported (${failed || "unknown"} failure${failed === 1 ? "" : "s"}).`;
+  const details = Array.isArray(summary?.failures)
+    ? summary.failures.map((item) => `${text(item?.filename) || text(item?.attachment_id) || "attachment"}: ${text(item?.message) || text(item?.code) || "failed"}`).join(" · ")
+    : "";
+  return `<div class="chat-message-error"${details ? ` title="${escapeAttr(details)}"` : ""}>${escapeHtml(label)}</div>`;
 }
 
 function externalChatDeliveryLabel(delivery) {
