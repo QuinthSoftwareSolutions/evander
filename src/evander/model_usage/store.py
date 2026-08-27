@@ -349,60 +349,104 @@ class ModelUsageStore:
         now_value = _storage_datetime(datetime.now(UTC))
         with self._lock, self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
-            connection.execute(
-                """
-                DELETE FROM model_usage_cost_balances
-                WHERE dimension_kind = ? AND dimension_id = ? AND window_id != ?
-                """,
-                (normalized_kind, normalized_id, normalized_window_id),
+            row = self._replace_cost_balance_row(
+                connection,
+                dimension_kind=normalized_kind,
+                dimension_id=normalized_id,
+                window_id=normalized_window_id,
+                started_at=started_at,
+                ended_at=ended_at,
+                pricing_payload=pricing_payload,
+                pricing_fingerprint=pricing_fingerprint,
+                summary=summary,
+                reconciled_at=effective_reconciled_at,
+                updated_at=now_value,
             )
-            connection.execute(
+        return self._cost_balance_payload(row)
+
+    def reconcile_team_cost_balance(
+        self,
+        *,
+        dimension_kind: str,
+        team_id: str,
+        window_id: str,
+        started_at: datetime,
+        ended_at: datetime | None,
+        pricing_catalog: ModelPricingCatalog,
+        reconciled_at: datetime | None = None,
+    ) -> dict[str, Any]:
+        """Atomically rebuild one Team balance from its bounded event interval.
+
+        Holding a SQLite write transaction across the event snapshot and balance
+        replacement ensures a concurrent event either participates in this rebuild
+        or applies its incremental delta after the replacement commits.
+        """
+        normalized_kind = _storage_optional_text(dimension_kind)
+        normalized_team_id = _storage_optional_text(team_id)
+        normalized_window_id = _storage_optional_text(window_id)
+        if normalized_kind is None or normalized_team_id is None or normalized_window_id is None:
+            raise ValueError("cost balance dimension and window identifiers are required")
+        effective_reconciled_at = reconciled_at or datetime.now(UTC)
+        pricing_payload = model_pricing_catalog_payload(pricing_catalog)
+        pricing_fingerprint = model_pricing_catalog_fingerprint(pricing_catalog)
+        now_value = _storage_datetime(datetime.now(UTC))
+        with self._lock, self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            clauses = ["occurred_at >= ?"]
+            params: list[Any] = [_storage_datetime(started_at)]
+            if ended_at is not None:
+                clauses.append("occurred_at < ?")
+                params.append(_storage_datetime(ended_at))
+            rows = connection.execute(
                 """
-                INSERT INTO model_usage_cost_balances(
-                    dimension_kind,
-                    dimension_id,
-                    window_id,
-                    started_at,
-                    ended_at,
-                    pricing_fingerprint,
-                    pricing_catalog_json,
-                    balance_json,
-                    dirty_reason,
-                    reconciled_at,
-                    updated_at
+                SELECT payload_json
+                FROM model_usage_events
+                WHERE """
+                + " AND ".join(clauses)
+                + " ORDER BY occurred_at, event_id",
+                params,
+            ).fetchall()
+            bounded_events = [
+                ModelInferenceUsageEvent.model_validate_json(row["payload_json"]) for row in rows
+            ]
+            for event in bounded_events:
+                request_key = (model_usage_request_key(event) or (None, None))[1]
+                connection.execute(
+                    """
+                    UPDATE model_usage_events
+                    SET cost_request_key = ?
+                    WHERE event_id = ? AND cost_request_key IS NOT ?
+                    """,
+                    (request_key, event.event_id, request_key),
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)
-                ON CONFLICT(dimension_kind, dimension_id, window_id) DO UPDATE SET
-                    started_at = excluded.started_at,
-                    ended_at = excluded.ended_at,
-                    pricing_fingerprint = excluded.pricing_fingerprint,
-                    pricing_catalog_json = excluded.pricing_catalog_json,
-                    balance_json = excluded.balance_json,
-                    dirty_reason = NULL,
-                    reconciled_at = excluded.reconciled_at,
-                    updated_at = excluded.updated_at
-                """,
-                (
-                    normalized_kind,
-                    normalized_id,
-                    normalized_window_id,
-                    _storage_datetime(started_at),
-                    _storage_datetime(ended_at),
-                    pricing_fingerprint,
-                    _json_dumps(pricing_payload),
-                    _json_dumps(summary.storage_payload()),
-                    _storage_datetime(effective_reconciled_at),
-                    now_value,
-                ),
+
+            summary = UsageCostSummary()
+            affected_keys = {self._incremental_event_key(event) for event in bounded_events}
+            for key in sorted(affected_keys):
+                summary.apply(
+                    self._team_summary_for_group(
+                        connection,
+                        self._incremental_event_group(connection, key),
+                        team_id=normalized_team_id,
+                        started_at=started_at,
+                        ended_at=ended_at,
+                        catalog=pricing_catalog,
+                    )
+                )
+            row = self._replace_cost_balance_row(
+                connection,
+                dimension_kind=normalized_kind,
+                dimension_id=normalized_team_id,
+                window_id=normalized_window_id,
+                started_at=started_at,
+                ended_at=ended_at,
+                pricing_payload=pricing_payload,
+                pricing_fingerprint=pricing_fingerprint,
+                summary=summary,
+                reconciled_at=effective_reconciled_at,
+                updated_at=now_value,
             )
-        balance = self.get_cost_balance(
-            dimension_kind=normalized_kind,
-            dimension_id=normalized_id,
-            window_id=normalized_window_id,
-        )
-        if balance is None:  # pragma: no cover - defensive read-after-write invariant
-            raise RuntimeError("cost balance write did not persist")
-        return balance
+        return self._cost_balance_payload(row)
 
     def get_cost_balance(
         self,
@@ -421,6 +465,79 @@ class ModelUsageStore:
                 (dimension_kind, dimension_id, window_id),
             ).fetchone()
         return self._cost_balance_payload(row) if row is not None else None
+
+    @staticmethod
+    def _replace_cost_balance_row(
+        connection: sqlite3.Connection,
+        *,
+        dimension_kind: str,
+        dimension_id: str,
+        window_id: str,
+        started_at: datetime,
+        ended_at: datetime | None,
+        pricing_payload: Mapping[str, Any],
+        pricing_fingerprint: str,
+        summary: UsageCostSummary,
+        reconciled_at: datetime,
+        updated_at: str | None,
+    ) -> sqlite3.Row:
+        connection.execute(
+            """
+            DELETE FROM model_usage_cost_balances
+            WHERE dimension_kind = ? AND dimension_id = ? AND window_id != ?
+            """,
+            (dimension_kind, dimension_id, window_id),
+        )
+        connection.execute(
+            """
+            INSERT INTO model_usage_cost_balances(
+                dimension_kind,
+                dimension_id,
+                window_id,
+                started_at,
+                ended_at,
+                pricing_fingerprint,
+                pricing_catalog_json,
+                balance_json,
+                dirty_reason,
+                reconciled_at,
+                updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)
+            ON CONFLICT(dimension_kind, dimension_id, window_id) DO UPDATE SET
+                started_at = excluded.started_at,
+                ended_at = excluded.ended_at,
+                pricing_fingerprint = excluded.pricing_fingerprint,
+                pricing_catalog_json = excluded.pricing_catalog_json,
+                balance_json = excluded.balance_json,
+                dirty_reason = NULL,
+                reconciled_at = excluded.reconciled_at,
+                updated_at = excluded.updated_at
+            """,
+            (
+                dimension_kind,
+                dimension_id,
+                window_id,
+                _storage_datetime(started_at),
+                _storage_datetime(ended_at),
+                pricing_fingerprint,
+                _json_dumps(pricing_payload),
+                _json_dumps(summary.storage_payload()),
+                _storage_datetime(reconciled_at),
+                updated_at,
+            ),
+        )
+        row = connection.execute(
+            """
+            SELECT *
+            FROM model_usage_cost_balances
+            WHERE dimension_kind = ? AND dimension_id = ? AND window_id = ?
+            """,
+            (dimension_kind, dimension_id, window_id),
+        ).fetchone()
+        if row is None:  # pragma: no cover - defensive write invariant
+            raise RuntimeError("cost balance write did not persist")
+        return row
 
     def upsert_cost_attribution(
         self,
@@ -512,7 +629,7 @@ class ModelUsageStore:
                     """
                     UPDATE model_usage_cost_balances
                     SET dirty_reason = 'session_attribution_changed', updated_at = ?
-                    WHERE dimension_kind = 'team' AND dimension_id = ?
+                    WHERE dimension_kind IN ('team', 'team_lifetime') AND dimension_id = ?
                     """,
                     (now_value, affected_team_id),
                 )
@@ -914,7 +1031,7 @@ class ModelUsageStore:
             f"""
             SELECT *
             FROM model_usage_cost_balances
-            WHERE dimension_kind = 'team'
+            WHERE dimension_kind IN ('team', 'team_lifetime')
                 AND dirty_reason IS NULL
                 AND dimension_id IN ({placeholders})
             """,  # noqa: S608 - placeholders are generated, values remain bound

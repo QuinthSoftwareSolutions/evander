@@ -5,6 +5,7 @@ import subprocess
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
+from threading import Event, Thread
 
 from evander.model_usage.models import (
     ModelInferenceUsageEvent,
@@ -542,23 +543,14 @@ def test_current_team_balance_is_incremental_after_bounded_bootstrap(
         pricing_catalog=_pricing_catalog(),
     )
 
-    original_list_events = store.list_events
-    reconciliation_reads: list[dict] = []
+    def unexpected_public_history_read(**_kwargs):
+        raise AssertionError("balance reconciliation must own its bounded SQLite snapshot")
 
-    def bounded_history_read(**kwargs):
-        reconciliation_reads.append(dict(kwargs))
-        return original_list_events(**kwargs)
-
-    monkeypatch.setattr(store, "list_events", bounded_history_read)
+    monkeypatch.setattr(store, "list_events", unexpected_public_history_read)
     initial = service.current_budget_costs_payload(team_ids=["team"])
     assert initial["reconciled_team_ids"] == ["team"]
     assert initial["team_costs"]["team"]["budget_window_estimated_cost"] == 1.0
-    assert reconciliation_reads == [{"occurred_after": window_start, "occurred_before": None}]
 
-    def unexpected_history_read(**_kwargs):
-        raise AssertionError("healthy incremental balance must not enumerate model usage")
-
-    monkeypatch.setattr(store, "list_events", unexpected_history_read)
     store.upsert_event(
         _usage_event(
             "second",
@@ -575,7 +567,6 @@ def test_current_team_balance_is_incremental_after_bounded_bootstrap(
     assert incremental["reconciled_team_ids"] == []
     assert incremental["team_costs"]["team"]["budget_window_estimated_cost"] == 2.0
 
-    monkeypatch.setattr(store, "list_events", original_list_events)
     reconciled = TeamCostService(
         runtime_dir=runtime_dir,
         state=repo.read(),
@@ -587,6 +578,98 @@ def test_current_team_balance_is_incremental_after_bounded_bootstrap(
         backfill_transcripts=False,
     )
     assert reconciled["team_costs"]["team"]["budget_window_estimated_cost"] == 2.0
+
+
+def test_reconciliation_serializes_concurrent_event_delta(tmp_path: Path, monkeypatch) -> None:
+    runtime_dir = tmp_path / "runtime"
+    repo = _seed_team(runtime_dir)
+    _team_admin_service(repo).update_team(
+        team_id="team",
+        max_cost_usd="10.00",
+        set_max_cost_usd=True,
+    )
+    window_start = repo.read().teams["team"].cost_budget_windows[-1].started_at
+    store = ModelUsageStore(runtime_dir / "model-usage.db")
+    store.upsert_event(
+        _usage_event(
+            "first",
+            session_id="session-manager",
+            occurred_at=window_start + timedelta(seconds=1),
+        )
+    )
+    service = TeamCostService(
+        runtime_dir=runtime_dir,
+        state=repo.read(),
+        usage_store=store,
+        pricing_catalog=_pricing_catalog(),
+    )
+    service.current_budget_costs_payload(team_ids=["team"])
+
+    snapshot_ready = Event()
+    allow_replacement = Event()
+    original_replace = store._replace_cost_balance_row
+
+    def pause_after_snapshot(connection, **kwargs):
+        snapshot_ready.set()
+        assert allow_replacement.wait(timeout=5)
+        return original_replace(connection, **kwargs)
+
+    monkeypatch.setattr(store, "_replace_cost_balance_row", pause_after_snapshot)
+    reconciliation_errors: list[BaseException] = []
+
+    def reconcile() -> None:
+        try:
+            service.reconcile_current_cost_balances(
+                team_ids=["team"],
+                max_age_seconds=0,
+                backfill_transcripts=False,
+            )
+        except BaseException as exc:  # pragma: no cover - asserted below
+            reconciliation_errors.append(exc)
+
+    reconciliation_thread = Thread(target=reconcile)
+    reconciliation_thread.start()
+    assert snapshot_ready.wait(timeout=5)
+
+    writer_started = Event()
+    writer_finished = Event()
+    writer_errors: list[BaseException] = []
+
+    def write_concurrent_event() -> None:
+        writer_started.set()
+        try:
+            ModelUsageStore(runtime_dir / "model-usage.db").upsert_event(
+                _usage_event(
+                    "second",
+                    session_id="session-manager",
+                    occurred_at=window_start + timedelta(seconds=2),
+                )
+            )
+        except BaseException as exc:  # pragma: no cover - asserted below
+            writer_errors.append(exc)
+        finally:
+            writer_finished.set()
+
+    writer_thread = Thread(target=write_concurrent_event)
+    writer_thread.start()
+    assert writer_started.wait(timeout=5)
+    assert not writer_finished.wait(timeout=0.1)
+    allow_replacement.set()
+    reconciliation_thread.join(timeout=5)
+    writer_thread.join(timeout=5)
+
+    assert not reconciliation_thread.is_alive()
+    assert not writer_thread.is_alive()
+    assert reconciliation_errors == []
+    assert writer_errors == []
+    balance = store.get_cost_balance(
+        dimension_kind="team",
+        dimension_id="team",
+        window_id=repo.read().teams["team"].cost_budget_windows[-1].id,
+    )
+    assert balance is not None
+    assert balance["summary"].estimated_cost_usd == Decimal("2.000000")
+    assert balance["summary"].events_count == 2
 
 
 def test_incremental_cached_token_balance_converges_with_full_reconciliation(
@@ -671,6 +754,87 @@ def test_incremental_cached_token_balance_converges_with_full_reconciliation(
         backfill_transcripts=False,
     )["team_costs"]["team"]
     assert reconciled["budget_window_estimated_cost"] == incremental["budget_window_estimated_cost"]
+
+
+def test_governance_costs_include_uncapped_team_lifetime_incrementally(tmp_path: Path) -> None:
+    runtime_dir = tmp_path / "runtime"
+    repo = _seed_team(runtime_dir)
+    store = ModelUsageStore(runtime_dir / "model-usage.db")
+    store.upsert_event(_usage_event("first", session_id="session-manager"))
+    service = TeamCostService(
+        runtime_dir=runtime_dir,
+        state=repo.read(),
+        usage_store=store,
+        pricing_catalog=_pricing_catalog(),
+    )
+
+    initial = service.governance_costs_payload()
+    assert initial["reconciled_team_ids"] == ["team"]
+    assert initial["reconciled_lifetime_team_ids"] == []
+    assert initial["team_costs"]["team"]["max_cost_usd"] is None
+    assert initial["team_costs"]["team"]["estimated_cost"] == 1.0
+    assert initial["team_costs"]["team"]["lifetime_estimated_cost"] == 1.0
+
+    store.upsert_event(_usage_event("second", session_id="session-manager"))
+    incremental = service.governance_costs_payload()
+    assert incremental["reconciled_team_ids"] == []
+    assert incremental["reconciled_lifetime_team_ids"] == []
+    assert incremental["team_costs"]["team"]["estimated_cost"] == 2.0
+    assert incremental["team_costs"]["team"]["events_count"] == 2
+
+
+def test_governance_costs_preserve_lifetime_spend_after_budget_reset(tmp_path: Path) -> None:
+    runtime_dir = tmp_path / "runtime"
+    repo = _seed_team(runtime_dir)
+    admin = _team_admin_service(repo)
+    admin.update_team(team_id="team", max_cost_usd="10.00", set_max_cost_usd=True)
+    first_window_start = repo.read().teams["team"].cost_budget_windows[-1].started_at
+    store = ModelUsageStore(runtime_dir / "model-usage.db")
+    store.upsert_event(
+        _usage_event(
+            "first",
+            session_id="session-manager",
+            occurred_at=first_window_start + timedelta(microseconds=1),
+        )
+    )
+    service = TeamCostService(
+        runtime_dir=runtime_dir,
+        state=repo.read(),
+        usage_store=store,
+        pricing_catalog=_pricing_catalog(),
+    )
+    initial = service.governance_costs_payload()
+    assert initial["team_costs"]["team"]["estimated_cost"] == 1.0
+    assert initial["team_costs"]["team"]["budget_window_estimated_cost"] == 1.0
+    assert initial["reconciled_lifetime_team_ids"] == ["team"]
+
+    admin.reset_team_cost_budget(
+        team_id="team",
+        reason="Approved another budget window.",
+        operator_actor_id="operator:jonathan",
+    )
+    second_window_start = repo.read().teams["team"].cost_budget_windows[-1].started_at
+    store.upsert_event(
+        _usage_event(
+            "second",
+            session_id="session-manager",
+            occurred_at=second_window_start + timedelta(microseconds=1),
+        )
+    )
+    reset_service = TeamCostService(
+        runtime_dir=runtime_dir,
+        state=repo.read(),
+        usage_store=store,
+        pricing_catalog=_pricing_catalog(),
+    )
+    incremental = reset_service.governance_costs_payload()["team_costs"]["team"]
+    full = reset_service.costs_payload(backfill_transcripts=False)["team_costs"]["team"]
+
+    assert incremental["estimated_cost"] == full["estimated_cost"] == 2.0
+    assert incremental["lifetime_estimated_cost"] == full["lifetime_estimated_cost"] == 2.0
+    assert incremental["budget_window_estimated_cost"] == 1.0
+    assert incremental["budget_window_events_count"] == 1
+    assert incremental["events_count"] == 2
 
 
 def test_governance_group_costs_roll_up_member_team_costs(tmp_path: Path) -> None:

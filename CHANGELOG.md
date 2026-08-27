@@ -13,8 +13,11 @@
 - Applied usage corrections transactionally as bounded request-group pricing deltas, including
   cached input reads and 5-minute or 1-hour cache-write token rates, while preserving relay and
   transcript deduplication.
-- Limited bootstrap, dirty-state, repricing, and periodic consolidation reads to the active budget
-  window, with content-fingerprinted pricing snapshots preventing silent balance drift.
+- Serialized bounded reconciliation with incoming event deltas, and retained separately
+  incremental lifetime Team balances where governance context requires pre-window spend.
+- Limited cost-guard bootstrap, dirty-state, repricing, and periodic consolidation reads to the
+  active budget window, with content-fingerprinted pricing snapshots preventing silent balance
+  drift.
 
 ## 2026-08-26 - Teams Graph Change Notifications
 

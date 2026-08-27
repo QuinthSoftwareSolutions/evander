@@ -48,6 +48,7 @@ REMOTE_TRANSCRIPT_SCAN_TIMEOUT_SECONDS = 20
 REMOTE_TRANSCRIPT_STALE_HOST_TTL_SECONDS = 300
 SSH_CONNECT_TIMEOUT_SECONDS = 5
 COST_BALANCE_RECONCILIATION_INTERVAL_SECONDS = 15 * 60
+_LIFETIME_BALANCE_START = datetime.min.replace(tzinfo=UTC)
 _SSH_HOST_RE = re.compile(r"^[A-Za-z0-9_.:-]+$")
 _SSH_USER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_.-]*$")
 _REMOTE_TRANSCRIPT_FAILURES: dict[tuple[str, str, str], float] = {}
@@ -454,6 +455,7 @@ class TeamCostService:
         now: datetime | None = None,
         max_reconciliation_age_seconds: int | None = None,
         backfill_transcripts_when_reconciling: bool = False,
+        include_uncapped_teams: bool = False,
     ) -> dict[str, Any]:
         """Read incrementally maintained active-window balances for wake-time decisions.
 
@@ -474,7 +476,7 @@ class TeamCostService:
         selected_teams = {
             team_id: team
             for team_id, team in self.state.teams.items()
-            if team_id in selected_ids and team.max_cost_usd is not None
+            if team_id in selected_ids and (include_uncapped_teams or team.max_cost_usd is not None)
         }
         self._sync_incremental_cost_attributions()
         catalog = self._load_pricing_catalog()
@@ -535,6 +537,7 @@ class TeamCostService:
             balance = plan["balance"]
             if plan["reconciliation_reason"] is not None:
                 balance = self._reconcile_incremental_team_balance(
+                    dimension_kind="team",
                     team_id=team_id,
                     window=plan["window"],
                     catalog=catalog,
@@ -564,6 +567,110 @@ class TeamCostService:
         }
         if backfill_result is not None:
             payload["backfill"] = backfill_result.model_dump()
+        return payload
+
+    def governance_costs_payload(
+        self,
+        *,
+        team_ids: Iterable[str] | None = None,
+        now: datetime | None = None,
+    ) -> dict[str, Any]:
+        """Return incremental active-window and lifetime Team costs for governance.
+
+        Governance retains lifetime advisory context for every member Team, while
+        cap decisions continue to use the active budget window. Lifetime balances
+        are bootstrapped once and then receive the same transactional event deltas
+        as active-window balances.
+        """
+        effective_now = _ensure_utc(now or utc_now())
+        selected_ids = (
+            {
+                normalized
+                for team_id in team_ids
+                if (normalized := _optional_text(team_id)) is not None
+            }
+            if team_ids is not None
+            else set(self.state.teams)
+        )
+        active_payload = self.current_budget_costs_payload(
+            team_ids=selected_ids,
+            now=effective_now,
+            include_uncapped_teams=True,
+        )
+        catalog = self._load_pricing_catalog()
+        pricing_fingerprint = (
+            model_pricing_catalog_fingerprint(catalog) if catalog is not None else None
+        )
+        team_costs: dict[str, dict[str, Any]] = {}
+        reconciled_lifetime_team_ids: list[str] = []
+        lifetime_coverage_reasons: set[str] = set()
+        active_team_costs = active_payload.get("team_costs")
+        active_team_costs = active_team_costs if isinstance(active_team_costs, Mapping) else {}
+        for team_id, team in sorted(self.state.teams.items()):
+            if team_id not in selected_ids:
+                continue
+            active_cost = dict(active_team_costs.get(team_id) or {})
+            active_window = self._incremental_team_window(team, now=effective_now)
+            lifetime_balance = None
+            if catalog is not None and pricing_fingerprint is not None:
+                if active_window.get("explicit"):
+                    lifetime_window = self._lifetime_team_window(team)
+                    lifetime_balance = self.usage_store.get_cost_balance(
+                        dimension_kind="team_lifetime",
+                        dimension_id=team_id,
+                        window_id=lifetime_window["window_id"],
+                    )
+                    reason = self._balance_reconciliation_reason(
+                        lifetime_balance,
+                        window=lifetime_window,
+                        pricing_fingerprint=pricing_fingerprint,
+                        now=effective_now,
+                        max_age_seconds=None,
+                    )
+                    if reason is not None:
+                        lifetime_balance = self._reconcile_incremental_team_balance(
+                            dimension_kind="team_lifetime",
+                            team_id=team_id,
+                            window=lifetime_window,
+                            catalog=catalog,
+                            now=effective_now,
+                        )
+                        reconciled_lifetime_team_ids.append(team_id)
+                else:
+                    lifetime_balance = self.usage_store.get_cost_balance(
+                        dimension_kind="team",
+                        dimension_id=team_id,
+                        window_id=active_window["window_id"],
+                    )
+            lifetime_summary = (
+                lifetime_balance["summary"] if lifetime_balance is not None else UsageCostSummary()
+            )
+            team_cost = self._governance_team_cost_payload(
+                team=team,
+                active_cost=active_cost,
+                lifetime_summary=lifetime_summary,
+                lifetime_balance=lifetime_balance,
+            )
+            team_costs[team_id] = team_cost
+            lifetime_coverage_reasons.update(team_cost.get("coverage_reasons") or [])
+
+        coverage_reasons = sorted(
+            set(active_payload.get("coverage_reasons") or []) | lifetime_coverage_reasons
+        )
+        payload: dict[str, Any] = {
+            "generated_at": _json_datetime(effective_now),
+            "coverage_status": "partial" if coverage_reasons else "complete",
+            "coverage_reasons": coverage_reasons,
+            "team_costs": team_costs,
+            "governance_group_costs": _governance_group_costs(
+                self.state,
+                team_cost_payloads=team_costs,
+            ),
+            "reconciled_team_ids": list(active_payload.get("reconciled_team_ids") or []),
+            "reconciled_lifetime_team_ids": reconciled_lifetime_team_ids,
+        }
+        if "backfill" in active_payload:
+            payload["backfill"] = active_payload["backfill"]
         return payload
 
     def reconcile_current_cost_balances(
@@ -616,7 +723,17 @@ class TeamCostService:
             return {**active, "explicit": True}
         return {
             "window_id": f"legacy-lifetime:{team.id}",
-            "started_at": _ensure_utc(team.created_at),
+            "started_at": _LIFETIME_BALANCE_START,
+            "ends_at": None,
+            "renewal_mode": "manual",
+            "explicit": False,
+        }
+
+    @staticmethod
+    def _lifetime_team_window(team: Any) -> dict[str, Any]:
+        return {
+            "window_id": f"lifetime:{team.id}",
+            "started_at": _LIFETIME_BALANCE_START,
             "ends_at": None,
             "renewal_mode": "manual",
             "explicit": False,
@@ -656,35 +773,19 @@ class TeamCostService:
     def _reconcile_incremental_team_balance(
         self,
         *,
+        dimension_kind: str,
         team_id: str,
         window: Mapping[str, Any],
         catalog: ModelPricingCatalog,
         now: datetime,
     ) -> dict[str, Any]:
-        raw_events = self.usage_store.list_events(
-            occurred_after=window["started_at"],
-            occurred_before=window.get("ends_at"),
-        )
-        self.usage_store.backfill_cost_request_keys(raw_events)
-        self._request_attribution_cache = self._request_attributions(raw_events)
-        summary = UsageCostSummary()
-        for event in _dedupe_cost_events(raw_events):
-            occurred_at = _ensure_utc(event.occurred_at)
-            if occurred_at < _ensure_utc(window["started_at"]):
-                continue
-            if window.get("ends_at") is not None and occurred_at >= _ensure_utc(window["ends_at"]):
-                continue
-            if self._attribute_event(event).team_id != team_id:
-                continue
-            summary.add_event(event, catalog)
-        return self.usage_store.replace_cost_balance(
-            dimension_kind="team",
-            dimension_id=team_id,
+        return self.usage_store.reconcile_team_cost_balance(
+            dimension_kind=dimension_kind,
+            team_id=team_id,
             window_id=window["window_id"],
             started_at=window["started_at"],
             ended_at=window.get("ends_at"),
             pricing_catalog=catalog,
-            summary=summary,
             reconciled_at=now,
         )
 
@@ -731,6 +832,53 @@ class TeamCostService:
                 ),
                 "balance_reconciled_at": (
                     _json_datetime(balance.get("reconciled_at")) if balance is not None else None
+                ),
+            }
+        )
+        return payload
+
+    @staticmethod
+    def _governance_team_cost_payload(
+        *,
+        team: Any,
+        active_cost: Mapping[str, Any],
+        lifetime_summary: UsageCostSummary,
+        lifetime_balance: Mapping[str, Any] | None,
+    ) -> dict[str, Any]:
+        payload = lifetime_summary.public_payload()
+        coverage_reasons = sorted(
+            set(payload.get("coverage_reasons") or [])
+            | set(active_cost.get("coverage_reasons") or [])
+        )
+        payload.update(
+            {
+                "team_id": team.id,
+                "coverage_status": "partial" if coverage_reasons else "complete",
+                "coverage_reasons": coverage_reasons,
+                "max_cost_usd": active_cost.get("max_cost_usd"),
+                "remaining_cost_usd": active_cost.get("remaining_cost_usd"),
+                "cost_limit_reached": bool(active_cost.get("cost_limit_reached")),
+                "cost_limit_basis": active_cost.get("cost_limit_basis"),
+                "lifetime_estimated_cost": float(lifetime_summary.estimated_cost_usd),
+                "budget_window_estimated_cost": active_cost.get("budget_window_estimated_cost"),
+                "budget_window_events_count": int(
+                    active_cost.get("budget_window_events_count") or 0
+                ),
+                "budget_window_started_at": active_cost.get("budget_window_started_at"),
+                "budget_window_ends_at": active_cost.get("budget_window_ends_at"),
+                "budget_window_renewal_mode": active_cost.get("budget_window_renewal_mode"),
+                "balance_window_id": active_cost.get("balance_window_id"),
+                "balance_updated_at": active_cost.get("balance_updated_at"),
+                "balance_reconciled_at": active_cost.get("balance_reconciled_at"),
+                "lifetime_balance_updated_at": (
+                    _json_datetime(lifetime_balance.get("updated_at"))
+                    if lifetime_balance is not None
+                    else None
+                ),
+                "lifetime_balance_reconciled_at": (
+                    _json_datetime(lifetime_balance.get("reconciled_at"))
+                    if lifetime_balance is not None
+                    else None
                 ),
             }
         )

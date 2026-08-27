@@ -3584,13 +3584,20 @@ class TeamWakeGovernanceManagersEffectProvider(EffectProviderBase):
         current_state = TeamAdminService(repo).advance_team_cost_budget_windows(
             current_state=current_state,
         )
+        governance_group_id = _optional_text(payload.get("governance_group_id"))
+        governance_team_ids = {
+            team_id
+            for group_id, group in current_state.governance_groups.items()
+            if governance_group_id is None or group_id == governance_group_id
+            for team_id in group.member_team_ids
+        }
         cost_payload = TeamCostService(
             runtime_dir=_runtime_dir(context),
             state=current_state,
             session_repository=_session_repository_from_context(context),
-        ).current_budget_costs_payload()
+        ).governance_costs_payload(team_ids=governance_team_ids)
         _state, leases = TeamRuntimeService(repo).lease_due_governance_managers(
-            governance_group_id=_optional_text(payload.get("governance_group_id")),
+            governance_group_id=governance_group_id,
             limit=_optional_int(payload.get("limit"), default=10),
             lease_seconds=_optional_int(payload.get("lease_seconds"), default=900),
             wake_interval_seconds=_optional_int(
