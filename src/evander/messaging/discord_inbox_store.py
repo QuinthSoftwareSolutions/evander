@@ -116,6 +116,23 @@ class DiscordInboxStore:
     def add_message_if_new(self, envelope: DiscordMessageEnvelope) -> bool:
         return self.add_messages_if_new([envelope]) > 0
 
+    def get_message(self, message_id: str) -> DiscordMessageEnvelope | None:
+        normalized_message_id = str(message_id or "").strip()
+        if not normalized_message_id:
+            return None
+        with self._lock, self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT payload_json
+                FROM discord_inbox_messages
+                WHERE message_id = ?
+                """,
+                (normalized_message_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        return DiscordMessageEnvelope.model_validate_json(row["payload_json"])
+
     def register_thread_parent(self, parent_channel_id: str, *, observed_at: datetime) -> bool:
         normalized_parent = str(parent_channel_id or "").strip()
         if not normalized_parent:
@@ -236,7 +253,9 @@ class DiscordInboxStore:
         observed_at: datetime,
     ) -> None:
         normalized_parent = str(parent_channel_id or "").strip()
-        active_ids = {str(value or "").strip() for value in active_thread_ids if str(value or "").strip()}
+        active_ids = {
+            str(value or "").strip() for value in active_thread_ids if str(value or "").strip()
+        }
         timestamp = self._datetime_to_storage(observed_at)
         with self._lock, self._connect() as connection:
             if active_ids:

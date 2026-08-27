@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 import secrets
+from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from urllib.parse import quote
 from uuid import UUID
@@ -20,6 +22,32 @@ from evander.services import GraphTeamsService, parse_teams_target
 logger = logging.getLogger(__name__)
 
 _NON_CONCRETE_TENANT_IDS = {"organizations", "common", "consumers"}
+
+
+def teams_subscription_provider_identity_key(config: GatewayConfig) -> str:
+    """Return a stable, secret-free identity for Graph subscription ownership."""
+
+    payload: dict[str, str] = {
+        "backend": config.teams_backend,
+        "graph_api_base_url": config.teams_graph_api_base_url.rstrip("/").casefold(),
+    }
+    if config.teams_backend == "delegated_graph_api":
+        payload.update(
+            {
+                "delegated_identity_id": str(config.teams_delegated_identity_id or "").strip(),
+                "delegated_client_id": str(config.teams_delegated_client_id or "").strip(),
+                "delegated_authority_base_url": (
+                    config.teams_delegated_authority_base_url.rstrip("/").casefold()
+                ),
+                "delegated_credential_store_path": str(
+                    config.teams_delegated_credential_store_path
+                ),
+            }
+        )
+    else:
+        payload["graph_access_token_env"] = config.teams_graph_access_token_env.strip()
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
 
 
 def _tenant_uuid(value: str) -> str | None:
@@ -70,10 +98,12 @@ class TeamsSubscriptionReconciler:
         *,
         store: TeamsInboxStore,
         worker_config: TeamsIngestWorkerGlobalConfig,
+        provider_identity_key_for_directory: Callable[[str], str | None] | None = None,
     ) -> None:
         self.store = store
         self.worker_config = worker_config
         self.owner_id = store.notification_owner_id()
+        self.provider_identity_key_for_directory = provider_identity_key_for_directory
 
     def reconcile_directory(
         self,
@@ -91,6 +121,7 @@ class TeamsSubscriptionReconciler:
             service=service,
             provider_config=provider_config,
         )
+        provider_identity_key = teams_subscription_provider_identity_key(provider_config)
         desired = {target for target in targets if parse_teams_target(target).kind != "user"}
         for target in sorted(desired):
             reconciliation_state = self.store.get_subscription_reconciliation_state(
@@ -106,6 +137,7 @@ class TeamsSubscriptionReconciler:
                 client,
                 service=service,
                 directory_path=directory_path,
+                provider_identity_key=provider_identity_key,
                 tenant_id=tenant_id,
                 target=target,
                 now=now,
@@ -124,20 +156,41 @@ class TeamsSubscriptionReconciler:
                     initial_backoff_seconds=self.worker_config.target_backoff_initial_seconds,
                     max_backoff_seconds=self.worker_config.target_backoff_max_seconds,
                 )
-        for subscription in self.store.list_owned_subscriptions(directory_path=directory_path):
-            if subscription.owner_id != self.owner_id or subscription.tenant_id != tenant_id:
+        for subscription in self.store.list_owned_subscriptions():
+            if (
+                subscription.owner_id != self.owner_id
+                or subscription.tenant_id != tenant_id
+                or not self._matches_provider_identity(
+                    subscription,
+                    provider_identity_key=provider_identity_key,
+                )
+                or directory_path not in self._consumer_directories(subscription)
+            ):
                 continue
             if subscription.target not in desired:
-                self._delete_owned(client, service=service, subscription=subscription, now=now)
+                self._remove_directory_consumer(
+                    client,
+                    service=service,
+                    subscription=subscription,
+                    directory_path=directory_path,
+                    now=now,
+                )
         healthy = self.healthy_targets(
             directory_path=directory_path,
+            provider_identity_key=provider_identity_key,
             tenant_id=tenant_id,
             now=now,
         )
         current_by_target = {
             item.target: item
-            for item in self.store.list_owned_subscriptions(directory_path=directory_path)
-            if item.owner_id == self.owner_id and item.tenant_id == tenant_id
+            for item in self.store.list_owned_subscriptions()
+            if item.owner_id == self.owner_id
+            and item.tenant_id == tenant_id
+            and self._matches_provider_identity(
+                item,
+                provider_identity_key=provider_identity_key,
+            )
+            and directory_path in self._consumer_directories(item)
         }
         reconciliation_by_target = {
             target: self.store.get_subscription_reconciliation_state(
@@ -174,22 +227,87 @@ class TeamsSubscriptionReconciler:
         directory_path: str,
         now: datetime,
     ) -> None:
-        for subscription in self.store.list_owned_subscriptions(directory_path=directory_path):
+        for subscription in self.store.list_owned_subscriptions():
+            if (
+                subscription.owner_id == self.owner_id
+                and directory_path in self._consumer_directories(subscription)
+            ):
+                self._remove_directory_consumer(
+                    client,
+                    service=service,
+                    subscription=subscription,
+                    directory_path=directory_path,
+                    now=now,
+                )
+
+    def cleanup_owned_subscriptions(
+        self,
+        client: httpx.Client,
+        *,
+        service: GraphTeamsService,
+        subscriptions: list[TeamsOwnedSubscription],
+        now: datetime,
+    ) -> None:
+        for subscription in subscriptions:
             if subscription.owner_id == self.owner_id:
-                self._delete_owned(client, service=service, subscription=subscription, now=now)
+                self._delete_owned(
+                    client,
+                    service=service,
+                    subscription=subscription,
+                    now=now,
+                )
+
+    def prune_inactive_consumers(
+        self,
+        *,
+        active_directories: set[str],
+        now: datetime,
+    ) -> list[TeamsOwnedSubscription]:
+        """Detach inactive directory consumers and return subscriptions with none left."""
+
+        orphaned: list[TeamsOwnedSubscription] = []
+        for subscription in self.store.list_owned_subscriptions():
+            if subscription.owner_id != self.owner_id:
+                continue
+            consumers = self._consumer_directories(subscription)
+            remaining = consumers & active_directories
+            if remaining == consumers:
+                continue
+            if not remaining:
+                orphaned.append(subscription)
+                continue
+            self.store.upsert_owned_subscription(
+                subscription.model_copy(
+                    update={
+                        "directory_path": self._representative_directory(remaining),
+                        "consumer_directory_paths": sorted(remaining),
+                        "updated_at": now,
+                    }
+                )
+            )
+        return orphaned
 
     def healthy_targets(
         self,
         *,
         directory_path: str,
+        provider_identity_key: str | None = None,
         tenant_id: str,
         now: datetime,
     ) -> set[str]:
         return {
             item.target
-            for item in self.store.list_owned_subscriptions(directory_path=directory_path)
+            for item in self.store.list_owned_subscriptions()
             if item.owner_id == self.owner_id
             and item.tenant_id == tenant_id
+            and (
+                provider_identity_key is None
+                or self._matches_provider_identity(
+                    item,
+                    provider_identity_key=provider_identity_key,
+                )
+            )
+            and directory_path in self._consumer_directories(item)
             and item.health == "active"
             and _utc(item.expires_at) > now
             and self._uses_current_callback_urls(item)
@@ -218,10 +336,87 @@ class TeamsSubscriptionReconciler:
                 }
             )
         )
-        self.store.clear_subscription_reconciliation_state(
-            directory_path=subscription.directory_path,
-            target=subscription.target,
+        for directory_path in self._consumer_directories(subscription):
+            self.store.clear_subscription_reconciliation_state(
+                directory_path=directory_path,
+                target=subscription.target,
+            )
+
+    @staticmethod
+    def _consumer_directories(subscription: TeamsOwnedSubscription) -> set[str]:
+        return set(subscription.consumer_directory_paths or [subscription.directory_path])
+
+    @staticmethod
+    def _representative_directory(directory_paths: set[str]) -> str:
+        if not directory_paths:
+            raise ValueError("at least one subscription consumer directory is required")
+        return min(directory_paths, key=lambda item: (len(item.split("/")), item))
+
+    def _matches_provider_identity(
+        self,
+        subscription: TeamsOwnedSubscription,
+        *,
+        provider_identity_key: str,
+    ) -> bool:
+        if subscription.provider_identity_key:
+            return subscription.provider_identity_key == provider_identity_key
+        resolver = self.provider_identity_key_for_directory
+        if resolver is None:
+            return True
+        try:
+            return resolver(subscription.directory_path) == provider_identity_key
+        except Exception:
+            return False
+
+    def _matching_subscriptions(
+        self,
+        *,
+        provider_identity_key: str,
+        tenant_id: str,
+        target: str,
+    ) -> list[TeamsOwnedSubscription]:
+        resource = notification_resource_for_target(target)
+        return [
+            item
+            for item in self.store.list_owned_subscriptions()
+            if item.owner_id == self.owner_id
+            and item.tenant_id == tenant_id
+            and item.target == target
+            and item.resource == resource
+            and self._matches_provider_identity(
+                item,
+                provider_identity_key=provider_identity_key,
+            )
+        ]
+
+    def _remove_directory_consumer(
+        self,
+        client: httpx.Client,
+        *,
+        service: GraphTeamsService,
+        subscription: TeamsOwnedSubscription,
+        directory_path: str,
+        now: datetime,
+    ) -> bool:
+        consumers = self._consumer_directories(subscription)
+        consumers.discard(directory_path)
+        if not consumers:
+            return self._delete_owned(
+                client,
+                service=service,
+                subscription=subscription,
+                now=now,
+            )
+        self.store.upsert_owned_subscription(
+            subscription.model_copy(
+                update={
+                    "directory_path": self._representative_directory(consumers),
+                    "consumer_directory_paths": sorted(consumers),
+                    "updated_at": now,
+                }
+            )
         )
+        return True
 
     def _ensure_subscription(
         self,
@@ -229,27 +424,50 @@ class TeamsSubscriptionReconciler:
         *,
         service: GraphTeamsService,
         directory_path: str,
+        provider_identity_key: str,
         tenant_id: str,
         target: str,
         now: datetime,
     ) -> tuple[bool, str | None]:
-        existing = self.store.find_owned_subscription(
+        directory_record = self.store.find_owned_subscription(
             directory_path=directory_path,
             tenant_id=tenant_id,
             target=target,
         )
-        if existing is not None and existing.owner_id != self.owner_id:
+        if directory_record is not None and directory_record.owner_id != self.owner_id:
             return False, "subscription is owned by another deployment"
-        if existing is not None and not self._uses_current_callback_urls(existing):
+        candidates = self._matching_subscriptions(
+            provider_identity_key=provider_identity_key,
+            tenant_id=tenant_id,
+            target=target,
+        )
+        stale_callbacks = [
+            item for item in candidates if not self._uses_current_callback_urls(item)
+        ]
+        for stale in stale_callbacks:
             if not self._delete_owned(
                 client,
                 service=service,
-                subscription=existing,
+                subscription=stale,
                 now=now,
             ):
-                refreshed = self.store.get_owned_subscription(existing.subscription_id)
+                refreshed = self.store.get_owned_subscription(stale.subscription_id)
                 return False, refreshed.last_error if refreshed is not None else None
-            existing = None
+        candidates = [item for item in candidates if item not in stale_callbacks]
+        existing = self._preferred_subscription(candidates)
+        if existing is not None:
+            consumers = {directory_path}
+            for candidate in candidates:
+                consumers.update(self._consumer_directories(candidate))
+            existing = existing.model_copy(
+                update={
+                    "provider_identity_key": provider_identity_key,
+                    "directory_path": self._representative_directory(consumers),
+                    "consumer_directory_paths": sorted(consumers),
+                    "updated_at": now,
+                }
+            )
+            self.store.upsert_owned_subscription(existing)
         if existing is not None and existing.health == "reauthorization_required":
             try:
                 service._request_with_retries(
@@ -269,22 +487,114 @@ class TeamsSubscriptionReconciler:
             and existing.health == "active"
             and _utc(existing.expires_at) > renewal_deadline
         ):
+            self._cleanup_duplicate_subscriptions(
+                client,
+                service=service,
+                provider_identity_key=provider_identity_key,
+                tenant_id=tenant_id,
+                target=target,
+                keeper=existing,
+                now=now,
+            )
             return True, None
         if existing is not None and existing.health != "removed":
             if self._renew(client, service=service, subscription=existing, now=now):
+                refreshed_existing = self.store.get_owned_subscription(existing.subscription_id)
+                self._cleanup_duplicate_subscriptions(
+                    client,
+                    service=service,
+                    provider_identity_key=provider_identity_key,
+                    tenant_id=tenant_id,
+                    target=target,
+                    keeper=refreshed_existing or existing,
+                    now=now,
+                )
                 return True, None
             if _utc(existing.expires_at) > now:
                 refreshed = self.store.get_owned_subscription(existing.subscription_id)
                 return False, refreshed.last_error if refreshed is not None else None
-        return self._create(
+        created, error = self._create(
             client,
             service=service,
             directory_path=directory_path,
+            provider_identity_key=provider_identity_key,
             tenant_id=tenant_id,
             target=target,
             existing=existing,
             now=now,
         )
+        if created:
+            current = self._preferred_subscription(
+                self._matching_subscriptions(
+                    provider_identity_key=provider_identity_key,
+                    tenant_id=tenant_id,
+                    target=target,
+                )
+            )
+            if current is not None:
+                self._cleanup_duplicate_subscriptions(
+                    client,
+                    service=service,
+                    provider_identity_key=provider_identity_key,
+                    tenant_id=tenant_id,
+                    target=target,
+                    keeper=current,
+                    now=now,
+                )
+        return created, error
+
+    @staticmethod
+    def _preferred_subscription(
+        candidates: list[TeamsOwnedSubscription],
+    ) -> TeamsOwnedSubscription | None:
+        if not candidates:
+            return None
+        return max(
+            candidates,
+            key=lambda item: (
+                item.health == "active",
+                _utc(item.expires_at),
+                item.subscription_id,
+            ),
+        )
+
+    def _cleanup_duplicate_subscriptions(
+        self,
+        client: httpx.Client,
+        *,
+        service: GraphTeamsService,
+        provider_identity_key: str,
+        tenant_id: str,
+        target: str,
+        keeper: TeamsOwnedSubscription,
+        now: datetime,
+    ) -> None:
+        candidates = self._matching_subscriptions(
+            provider_identity_key=provider_identity_key,
+            tenant_id=tenant_id,
+            target=target,
+        )
+        consumers = set()
+        for candidate in candidates:
+            consumers.update(self._consumer_directories(candidate))
+        keeper = keeper.model_copy(
+            update={
+                "provider_identity_key": provider_identity_key,
+                "directory_path": self._representative_directory(consumers),
+                "consumer_directory_paths": sorted(consumers),
+                "updated_at": now,
+            }
+        )
+        self.store.upsert_owned_subscription(keeper)
+        for candidate in candidates:
+            if candidate.subscription_id == keeper.subscription_id:
+                continue
+            self._delete_owned(
+                client,
+                service=service,
+                subscription=candidate,
+                now=now,
+            )
 
     def _create(
         self,
@@ -292,6 +602,7 @@ class TeamsSubscriptionReconciler:
         *,
         service: GraphTeamsService,
         directory_path: str,
+        provider_identity_key: str,
         tenant_id: str,
         target: str,
         existing: TeamsOwnedSubscription | None,
@@ -360,7 +671,17 @@ class TeamsSubscriptionReconciler:
                 owner_id=self.owner_id,
                 target=target,
                 resource=payload["resource"],
-                directory_path=directory_path,
+                directory_path=self._representative_directory(
+                    self._consumer_directories(existing) | {directory_path}
+                    if existing is not None
+                    else {directory_path}
+                ),
+                provider_identity_key=provider_identity_key,
+                consumer_directory_paths=sorted(
+                    self._consumer_directories(existing) | {directory_path}
+                    if existing is not None
+                    else {directory_path}
+                ),
                 tenant_id=tenant_id,
                 expires_at=expires_at,
                 health="active",
@@ -427,8 +748,33 @@ class TeamsSubscriptionReconciler:
         subscription: TeamsOwnedSubscription,
         now: datetime,
     ) -> bool:
-        if subscription.cleanup_attempted:
-            return subscription.health == "deleted"
+        if subscription.health == "deleted":
+            return True
+        if (
+            subscription.cleanup_next_attempt_at is not None
+            and _utc(subscription.cleanup_next_attempt_at) > now
+        ):
+            return False
+        attempt_count = subscription.cleanup_attempt_count + 1
+        retry_delay = min(
+            self.worker_config.target_backoff_initial_seconds * (2 ** (attempt_count - 1)),
+            self.worker_config.target_backoff_max_seconds,
+        )
+
+        def record_failure(error: BaseException) -> None:
+            self.store.upsert_owned_subscription(
+                subscription.model_copy(
+                    update={
+                        "health": "degraded",
+                        "cleanup_attempted": False,
+                        "cleanup_attempt_count": attempt_count,
+                        "cleanup_next_attempt_at": now + timedelta(seconds=retry_delay),
+                        "updated_at": now,
+                        "last_error": _safe_error(error),
+                    }
+                )
+            )
+
         try:
             service._request_with_retries(
                 client,
@@ -438,34 +784,18 @@ class TeamsSubscriptionReconciler:
             )
         except httpx.HTTPStatusError as exc:
             if exc.response.status_code != 404:
-                self.store.upsert_owned_subscription(
-                    subscription.model_copy(
-                        update={
-                            "health": "abandoned",
-                            "cleanup_attempted": True,
-                            "updated_at": now,
-                            "last_error": _safe_error(exc),
-                        }
-                    )
-                )
+                record_failure(exc)
                 return False
         except Exception as exc:
-            self.store.upsert_owned_subscription(
-                subscription.model_copy(
-                    update={
-                        "health": "abandoned",
-                        "cleanup_attempted": True,
-                        "updated_at": now,
-                        "last_error": _safe_error(exc),
-                    }
-                )
-            )
+            record_failure(exc)
             return False
         self.store.upsert_owned_subscription(
             subscription.model_copy(
                 update={
                     "health": "deleted",
                     "cleanup_attempted": True,
+                    "cleanup_attempt_count": attempt_count,
+                    "cleanup_next_attempt_at": None,
                     "updated_at": now,
                     "last_error": None,
                 }

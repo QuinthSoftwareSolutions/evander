@@ -198,12 +198,15 @@ from evander_team_addon.services.human_correction_reconciliation_service import 
 )
 from evander_team_addon.services.runtime_service import (
     TeamRuntimeService,
+    _dispatch_staleness_errors,
     _has_prior_successful_ordinary_wake,
 )
 from evander_team_addon.services.worktree_cleanup_service import (
     TeamWorktreeCleanupService,
 )
 from evander_team_addon.services.commands import (
+    TeamAgentMessageCommandService,
+    TeamCaseCommandService,
     TeamEphemeralCommandService,
     TeamGitReleaseCommandService,
     TeamReviewCommandService,
@@ -2093,6 +2096,181 @@ def test_due_team_member_is_leased_before_manager_fallback(tmp_path: Path) -> No
     assert manager_runtime is None or manager_runtime.active_dispatch_id is None
 
 
+def test_manager_fallback_scopes_unattended_support_task_for_supervision(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = _seed_team(tmp_path)
+    admin = _team_admin_service(repo)
+    now = datetime(2026, 1, 1, tzinfo=UTC)
+    state = admin.update_task(
+        task_id="task",
+        state=TeamTaskState.WAITING_FOR_INPUT,
+        expected_revision=repo.read().revision,
+    )
+    state = admin.register_agent(
+        agent_id="support",
+        team_id="team",
+        project_id="project",
+        role_id="project__backend",
+        session_id="session-support",
+        reports_to_agent_id="manager",
+        display_name="Support Agent",
+        expected_revision=state.revision,
+    )
+    state = admin.create_or_reprioritize_task(
+        task_id="support-task",
+        owner_agent_id="support",
+        project_id="project",
+        priority=1,
+        title="Resolve support case",
+        description="Keep the customer case current while awaiting a reply.",
+        created_by_agent_id="manager",
+        expected_revision=state.revision,
+    )
+    state = admin.create_case(
+        case_id="support-case",
+        team_id="team",
+        project_id="project",
+        title="Factory support case",
+        description="Awaiting the operator's reply.",
+        status=TeamCaseStatus.WAITING,
+        owner_agent_id="support",
+        source="teams",
+        source_ref="teams:support:thread",
+        task_ids=["support-task"],
+        expected_revision=state.revision,
+    )
+    state = admin.create_or_reprioritize_task(
+        task_id="unrelated-support-task",
+        owner_agent_id="support",
+        project_id="project",
+        priority=2,
+        title="Unrelated deferred support work",
+        description="This task must not enter the current fallback supervision scope.",
+        created_by_agent_id="manager",
+        state=TeamTaskState.WAITING_FOR_INPUT,
+        expected_revision=state.revision,
+    )
+    state = admin.create_case(
+        case_id="unrelated-support-case",
+        team_id="team",
+        project_id="project",
+        title="Unrelated factory support case",
+        description="This case belongs to another deferred task.",
+        status=TeamCaseStatus.WAITING,
+        owner_agent_id="support",
+        task_ids=["unrelated-support-task"],
+        expected_revision=state.revision,
+    )
+
+    def _defer_support_owner(current: TeamState) -> TeamState:
+        current.agent_runtimes["support"] = AgentRuntime(
+            agent_id="support",
+            next_wake_at=now + timedelta(hours=1),
+        )
+        return current
+
+    repo.update(_defer_support_owner, expected_revision=state.revision)
+    runtime = _team_runtime_service(repo)
+    _state, leases = runtime.lease_due_agents(now=now, defer_activation=True)
+
+    assert [lease["agent"]["id"] for lease in leases] == ["manager"]
+    lease = leases[0]
+    dispatch_id = lease["dispatch_id"]
+    assert lease["reason"] == "manager_fallback"
+    assert lease["tasks"] == []
+    assert lease["dispatch"]["task_ids"] == ["support-task"]
+    assert lease["dispatch"]["project_ids"] == []
+    assert lease["dispatch"]["wake_work_record_fingerprints"]["open_work:support-task"]
+    unfingerprinted = repo.read().dispatches[dispatch_id].model_copy(deep=True)
+    unfingerprinted.wake_work_record_fingerprints = {}
+    assert _dispatch_staleness_errors(
+        repo.read(),
+        dispatch=unfingerprinted,
+    ) == ["task support-task is now assigned to support"]
+
+    activated, _activation = runtime.activate_delivered_agent_dispatch(
+        dispatch_id=dispatch_id,
+        now=now + timedelta(seconds=1),
+    )
+    dispatch = activated.dispatches[dispatch_id]
+    assert dispatch.status == TeamDispatchStatus.LEASED
+    assert dispatch.task_ids == ["support-task"]
+    assert dispatch.project_ids == []
+
+    def _simulate_in_flight_legacy_scope(current: TeamState) -> TeamState:
+        current.dispatches[dispatch_id].project_ids = ["project"]
+        return current
+
+    repo.update(_simulate_in_flight_legacy_scope)
+    monkeypatch.setattr(
+        "evander_team_addon.services.commands.executor.utc_now",
+        lambda: now + timedelta(seconds=2),
+    )
+
+    state, status_request = TeamAgentMessageCommandService(repo).request_status_command(
+        session_id="session-manager",
+        recipient_agent_id="support",
+        task_id="support-task",
+        question="Confirm whether this case should remain waiting or can be closed.",
+        request_id="manager-fallback-support-status",
+    )
+    assert status_request["success"] is True, json.dumps(status_request, indent=2, sort_keys=True)
+    status_inbox_id = status_request["inbox_item_id"]
+    assert state.inbox[status_inbox_id].task_id == "support-task"
+
+    _state, unrelated_status = TeamAgentMessageCommandService(repo).request_status_command(
+        session_id="session-manager",
+        recipient_agent_id="support",
+        task_id="unrelated-support-task",
+        question="This unrelated task must remain outside the fallback dispatch.",
+        request_id="manager-fallback-unrelated-status",
+    )
+    assert unrelated_status["success"] is False
+    assert unrelated_status["errors"][0]["code"] == "dispatch_scope_forbidden"
+
+    state, case_update = TeamCaseCommandService(repo).update_case_command(
+        session_id="session-manager",
+        case_id="support-case",
+        description="Manager reviewed; still awaiting the operator's reply.",
+        status=TeamCaseStatus.WAITING.value,
+        request_id="manager-fallback-support-case-review",
+    )
+    assert case_update["success"] is True
+    assert state.cases["support-case"].status == TeamCaseStatus.WAITING
+    assert state.cases["support-case"].description.startswith("Manager reviewed")
+    assert state.tasks["support-task"].owner_agent_id == "support"
+
+    _state, unrelated_case_update = TeamCaseCommandService(repo).update_case_command(
+        session_id="session-manager",
+        case_id="unrelated-support-case",
+        description="This unrelated case must remain untouched.",
+        request_id="manager-fallback-unrelated-case-review",
+    )
+    assert unrelated_case_update["success"] is False
+    assert unrelated_case_update["errors"][0]["code"] == "dispatch_scope_forbidden"
+
+    _state, linked_case_scope_change = TeamCaseCommandService(repo).update_case_command(
+        session_id="session-manager",
+        case_id="support-case",
+        owner_agent_id="manager",
+        request_id="manager-fallback-linked-case-scope-change",
+    )
+    assert linked_case_scope_change["success"] is False
+    assert linked_case_scope_change["errors"][0]["code"] == "dispatch_scope_forbidden"
+
+    _state, unrelated_case_create = TeamCaseCommandService(repo).create_case_command(
+        session_id="session-manager",
+        case_id="new-unrelated-support-case",
+        project_id="project",
+        title="Unauthorized project-wide case",
+        request_id="manager-fallback-unrelated-case-create",
+    )
+    assert unrelated_case_create["success"] is False
+    assert unrelated_case_create["errors"][0]["code"] == "dispatch_scope_forbidden"
+
+
 def test_dependency_waiting_owner_not_leased(tmp_path: Path) -> None:
     repo = _seed_team(tmp_path)
     # A pending dependency owned by another agent keeps "task" waiting.
@@ -3527,6 +3705,51 @@ def test_team_chat_prompt_deduplicates_current_body_and_caps_history() -> None:
     assert "Mandatory hydration retry" in prompt
     assert "repeat the lookup, and make the tool call" in prompt
     assert "only a successful tool result completes this chat reply" in prompt
+
+
+def test_team_chat_prompt_reports_external_attachment_import_failure() -> None:
+    current = {
+        "id": "message-current",
+        "conversation_id": "conversation",
+        "sender": "operator",
+        "body": "External message attachments could not be imported.",
+        "metadata": {
+            "external_attachment_import": {
+                "status": "failed",
+                "discovered_count": 1,
+                "imported_count": 0,
+                "failed_count": 1,
+                "failures": [
+                    {
+                        "code": "download_failed",
+                        "message": "provider request failed",
+                        "attachment_id": "hosted-1",
+                        "filename": "hosted-1.png",
+                    }
+                ],
+            }
+        },
+        "created_at": datetime(2026, 1, 2, tzinfo=UTC),
+    }
+
+    prompt = _build_team_chat_prompt(
+        state={
+            "agents": {"agent": {"id": "agent", "display_name": "Agent"}},
+            "conversation_messages": {current["id"]: current},
+        },
+        conversation={
+            "id": "conversation",
+            "agent_id": "agent",
+            "operator_user_id": "operator",
+            "operator_display_name": "Operator",
+        },
+        message=current,
+        mutation_allowed=False,
+    )
+
+    assert "External attachment import warnings" in prompt
+    assert '"attachment_id": "hosted-1"' in prompt
+    assert "Do not claim to have inspected any attachment that was not imported" in prompt
 
 
 def test_wake_due_agents_provider_retries_queued_chat_attachment_from_relative_runtime(
@@ -11617,6 +11840,128 @@ def test_enqueue_operator_chat_message_effect_validates_target_and_authorization
     assert published[0].event_type == CHAT_MESSAGE_QUEUED_EVENT_TYPE
     assert published[0].payload["message_id"] == result["message_id"]
     assert published[0].payload["dispatch_id"] == result["dispatch_id"]
+
+    class _AttachmentDiscordService:
+        list_calls = 0
+        download_calls = 0
+
+        def list_attachments(self, message_id, *, channel_id=None):
+            self.list_calls += 1
+            assert message_id == "discord-message-with-image"
+            assert channel_id == "123456789012345678"
+            return [
+                {
+                    "id": "discord-attachment-1",
+                    "filename": "screen.png",
+                    "content_type": "image/png",
+                    "size": 8,
+                }
+            ]
+
+        def download_attachment(
+            self,
+            message_id,
+            attachment_id,
+            *,
+            channel_id=None,
+            max_bytes=None,
+        ):
+            self.download_calls += 1
+            assert attachment_id == "discord-attachment-1"
+            return {
+                "filename": "screen.png",
+                "content_type": "image/png",
+                "content": b"png-data",
+            }
+
+    attachment_service = _AttachmentDiscordService()
+    attachment_source_directories: list[str] = []
+
+    def attachment_service_for_directory(directory_path, **_kwargs):
+        attachment_source_directories.append(directory_path)
+        return attachment_service
+
+    attachment_provider = TeamEnqueueOperatorChatMessageEffectProvider()
+    attachment_provider.initialize(
+        definition.model_copy(
+            update={
+                "id": "enqueue-external-chat-attachment",
+                "source_message_id": "discord-message-with-image",
+                "body": "",
+                "import_attachments": True,
+                "allow_team_mutations": False,
+                "authorized_author_ids": [],
+            }
+        ),
+        EffectRuntimeContext(
+            resolved_config={"runtime_dir": str(tmp_path)},
+            metadata={"directory_path": "root/team-a", "directory_store": directory_store},
+            session_lookup=SimpleNamespace(
+                get_session=lambda _session_id: SimpleNamespace(directory_path="root/team-b")
+            ),
+            admin_service=SimpleNamespace(
+                runtime=SimpleNamespace(
+                    discord_service_for_directory=attachment_service_for_directory
+                )
+            ),
+        ),
+    )
+
+    attachment_result = attachment_provider.execute()
+    attachment_replay = attachment_provider.execute()
+
+    assert attachment_result["attachment_import"]["status"] == "complete"
+    assert attachment_result["attachment_import"]["imported_count"] == 1
+    assert attachment_replay["duplicate"] is True
+    assert attachment_service.list_calls == 1
+    assert attachment_service.download_calls == 1
+    assert attachment_source_directories == ["root/team-a", "root/team-a"]
+    attachment_state = TeamStateRepository(tmp_path).read()
+    attachment_message = attachment_state.conversation_messages[attachment_result["message_id"]]
+    assert attachment_message.body is None
+    assert len(attachment_message.attachment_ids) == 1
+    attachment = attachment_state.chat_attachments[attachment_message.attachment_ids[0]]
+    assert attachment.filename == "screen.png"
+    assert attachment.external_source is not None
+    assert attachment.external_source.source_attachment_id == "discord-attachment-1"
+
+    class _FailingDiscordService:
+        def list_attachments(self, _message_id, *, channel_id=None):
+            raise RuntimeError("provider attachment listing failed")
+
+    failed_attachment_provider = TeamEnqueueOperatorChatMessageEffectProvider()
+    failed_attachment_provider.initialize(
+        definition.model_copy(
+            update={
+                "id": "enqueue-external-chat-failed-attachment",
+                "source_message_id": "discord-message-with-missing-image",
+                "body": "",
+                "import_attachments": True,
+            }
+        ),
+        EffectRuntimeContext(
+            resolved_config={"runtime_dir": str(tmp_path)},
+            metadata={"directory_path": "root", "directory_store": directory_store},
+            session_lookup=SimpleNamespace(
+                get_session=lambda _session_id: SimpleNamespace(directory_path="root")
+            ),
+            admin_service=SimpleNamespace(
+                runtime=SimpleNamespace(
+                    discord_service_for_directory=(
+                        lambda _directory_path, **_kwargs: _FailingDiscordService()
+                    )
+                )
+            ),
+        ),
+    )
+
+    failed_attachment_result = failed_attachment_provider.execute()
+    failed_attachment_state = TeamStateRepository(tmp_path).read()
+    failed_attachment_message = failed_attachment_state.conversation_messages[
+        failed_attachment_result["message_id"]
+    ]
+    assert failed_attachment_result["attachment_import"]["status"] == "failed"
+    assert failed_attachment_message.body == "External message attachments could not be imported."
 
     DiscordInboxStore(tmp_path / "discord-inbox-store.json").upsert_thread_binding(
         thread_id="123456789012345681",

@@ -35,6 +35,7 @@ from evander.messaging.teams_inbox_store import (
     TeamsNotificationQueueEntry,
     TeamsOwnedSubscription,
 )
+from evander.messaging.teams_subscriptions import teams_subscription_provider_identity_key
 from evander.orchestration.host_polling import HostWakeSleeper, wake_socket_path_for_lock
 from evander.services import TeamsAuthenticationError
 from evander.triggers.providers.base import TriggerRuntimeContext
@@ -293,6 +294,67 @@ def test_stale_subscription_for_deleted_directory_is_abandoned_without_aborting_
     assert stale.health == "abandoned"
     assert stale.cleanup_attempted is True
     assert "does not exist" in str(stale.last_error)
+
+
+def test_orphaned_shared_subscription_is_deleted_in_one_cleanup_pass(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config_path = tmp_path / "config" / "teams-ingest" / "config.json"
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    config_path.write_text(
+        json.dumps(
+            {
+                "change_notifications_enabled": True,
+                "change_notification_public_base_url": "https://notifications.example.test",
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("GRAPH_TEAMS_ACCESS_TOKEN", "opaque-access-token")
+    provider_config = GatewayConfig.model_validate(
+        {
+            "runtime_dir": tmp_path / "runtime",
+            "teams_backend": "graph_api",
+            "teams_delegated_tenant_id": "tenant-a",
+        }
+    )
+    delete_requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        delete_requests.append(request)
+        return httpx.Response(204, request=request)
+
+    patch_worker_httpx_client(monkeypatch, httpx.MockTransport(handler))
+    worker = build_teams_ingest_worker(provider_config, project_dir=tmp_path)
+    ensure_directory(worker, "root/consumer-a")
+    ensure_directory(worker, "root/consumer-b")
+    store = worker._notification_store
+    assert store is not None
+    now = datetime.now(UTC)
+    store.upsert_owned_subscription(
+        TeamsOwnedSubscription(
+            subscription_id="orphaned-shared-subscription",
+            owner_id=store.notification_owner_id(),
+            target="team-a/channel-a",
+            resource="/teams/team-a/channels/channel-a/messages",
+            directory_path="root/consumer-a",
+            consumer_directory_paths=["root/consumer-a", "root/consumer-b"],
+            provider_identity_key=teams_subscription_provider_identity_key(provider_config),
+            tenant_id="tenant-a",
+            expires_at=now + timedelta(hours=48),
+            client_state_sha256="0" * 64,
+            created_at=now,
+            updated_at=now,
+        )
+    )
+
+    worker._cleanup_orphaned_subscriptions(active_directories=set(), now=now)
+
+    deleted = store.get_owned_subscription("orphaned-shared-subscription")
+    assert deleted is not None
+    assert deleted.health == "deleted"
+    assert [request.method for request in delete_requests] == ["DELETE"]
 
 
 def test_exact_notification_ingests_delayed_unseen_message_without_regressing_cursor(
@@ -630,6 +692,180 @@ def test_message_notification_does_not_fetch_removed_or_unauthorized_target(
     )
 
 
+def test_message_notification_uses_active_shared_subscription_consumer(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("GRAPH_TEAMS_ACCESS_TOKEN", "opaque-access-token")
+    target = "team-a/channel-a"
+    resource = "teams('team-a')/channels('channel-a')/messages('message-a')"
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(
+            200,
+            request=request,
+            json={
+                "id": "message-a",
+                "createdDateTime": "2026-08-26T12:00:00Z",
+                "body": {"content": "child consumer message", "contentType": "text"},
+                "from": {"user": {"id": "operator-a", "displayName": "Ada"}},
+            },
+        )
+
+    patch_worker_httpx_client(monkeypatch, httpx.MockTransport(handler))
+    provider_config = GatewayConfig.model_validate(
+        {
+            "runtime_dir": tmp_path / "runtime",
+            "teams_backend": "graph_api",
+            "teams_delegated_tenant_id": "tenant-a",
+        }
+    )
+    worker = build_teams_ingest_worker(provider_config, project_dir=tmp_path)
+    ensure_directory(worker, "root/child")
+    root_session = SessionManifest(
+        session_id="session-root",
+        directory_path="root",
+        allowed_tools=[ToolName.TEAMS_GET_MESSAGES],
+        teams_channel_allowlist=[target],
+        expires_at=datetime.now(UTC) + timedelta(hours=1),
+    )
+    child_session = SessionManifest(
+        session_id="session-child",
+        directory_path="root/child",
+        allowed_tools=[ToolName.TEAMS_GET_MESSAGES],
+        teams_channel_allowlist=[target],
+        expires_at=datetime.now(UTC) + timedelta(hours=1),
+    )
+    worker.session_repository.upsert_session(root_session)
+    worker.session_repository.upsert_session(child_session)
+    stale_provider_config = provider_config.model_copy(
+        update={"teams_graph_access_token_env": "STALE_GRAPH_TEAMS_ACCESS_TOKEN"}
+    )
+    monkeypatch.setattr(
+        worker.runtime.provider_config,
+        "resolve_for_directory",
+        lambda directory_path: (
+            stale_provider_config if directory_path == "root" else provider_config
+        ),
+    )
+    store = worker._notification_store
+    assert store is not None
+    now = datetime.now(UTC)
+    store.upsert_owned_subscription(
+        TeamsOwnedSubscription(
+            subscription_id="shared-subscription",
+            owner_id=store.notification_owner_id(),
+            target=target,
+            resource="/teams/team-a/channels/channel-a/messages",
+            directory_path="root",
+            consumer_directory_paths=["root", "root/child"],
+            provider_identity_key=teams_subscription_provider_identity_key(provider_config),
+            tenant_id="tenant-a",
+            expires_at=now + timedelta(hours=48),
+            client_state_sha256="0" * 64,
+            created_at=now,
+            updated_at=now,
+        )
+    )
+    entry = TeamsNotificationQueueEntry(
+        idempotency_key="shared-notification",
+        notification_kind="message",
+        subscription_id="shared-subscription",
+        tenant_id="tenant-a",
+        resource=resource,
+        change_type="created",
+        received_at=now,
+        next_attempt_at=now,
+    )
+    snapshot = worker._capture_trigger_config_snapshot(captured_at=now)
+
+    discovered = worker._process_message_notification(
+        entry,
+        active_sessions=[root_session, child_session],
+        trigger_snapshot=snapshot,
+        directories=["root", "root/child"],
+    )
+
+    assert discovered == 1
+    assert len(requests) == 1
+    assert worker.store.list_all_messages(channel_targets=[target])[0].content == (
+        "child consumer message"
+    )
+
+
+def test_message_notification_retries_transient_consumer_resolution_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    target = "team-a/channel-a"
+    worker = build_teams_ingest_worker(
+        GatewayConfig.model_validate({"runtime_dir": tmp_path / "runtime"}),
+        project_dir=tmp_path,
+    )
+    session = SessionManifest(
+        session_id="session-root",
+        directory_path="root",
+        allowed_tools=[ToolName.TEAMS_GET_MESSAGES],
+        teams_channel_allowlist=[target],
+        expires_at=datetime.now(UTC) + timedelta(hours=1),
+    )
+    worker.session_repository.upsert_session(session)
+    store = worker._notification_store
+    assert store is not None
+    now = datetime.now(UTC)
+    store.upsert_owned_subscription(
+        TeamsOwnedSubscription(
+            subscription_id="transient-resolution-subscription",
+            owner_id=store.notification_owner_id(),
+            target=target,
+            resource="/teams/team-a/channels/channel-a/messages",
+            directory_path="root",
+            consumer_directory_paths=["root"],
+            tenant_id="tenant-a",
+            expires_at=now + timedelta(hours=48),
+            client_state_sha256="0" * 64,
+            created_at=now,
+            updated_at=now,
+        )
+    )
+    entry = TeamsNotificationQueueEntry(
+        idempotency_key="transient-resolution-notification",
+        notification_kind="message",
+        subscription_id="transient-resolution-subscription",
+        tenant_id="tenant-a",
+        resource="teams('team-a')/channels('channel-a')/messages('message-a')",
+        change_type="created",
+        received_at=now,
+        next_attempt_at=now,
+    )
+    assert store.enqueue_notification(entry)
+
+    def fail_provider_resolution(_directory: str) -> GatewayConfig:
+        raise OSError("config store temporarily busy")
+
+    monkeypatch.setattr(
+        worker.runtime.provider_config,
+        "resolve_for_directory",
+        fail_provider_resolution,
+    )
+    snapshot = worker._capture_trigger_config_snapshot(captured_at=now)
+
+    assert (
+        worker._process_notification_queue(
+            active_sessions=[session],
+            trigger_snapshot=snapshot,
+            directories=["root"],
+        )
+        == 0
+    )
+    retried = store.lease_notifications(now=now + timedelta(hours=1))
+    assert len(retried) == 1
+    assert retried[0].idempotency_key == entry.idempotency_key
+    assert retried[0].last_error == "failed to resolve an active Teams notification consumer"
+
+
 def test_build_teams_ingest_worker_uses_worker_config_and_normalizes_directories(
     tmp_path: Path,
 ) -> None:
@@ -767,6 +1003,11 @@ def test_teams_ingest_worker_persists_inbound_messages_and_ignores_status_store_
     assert "contentBytes" not in stored[0].metadata["attachments"][0]
     assert "contentBytes" not in stored[0].metadata["message"]["attachments"][0]
     assert "contentBytes" not in stored[0].metadata["message"]["hostedContents"][0]
+    mirrored = worker.runtime.teams_messages.get("team-a/channel-1/msg-1")
+    assert mirrored is not None
+    assert mirrored.message_id == "msg-1"
+    assert mirrored.metadata["attachments"][0]["id"] == "att-1"
+    assert "contentBytes" not in mirrored.metadata["attachments"][0]
     assert worker.store.get_cursor("team-a/channel-1") == "team-a/channel-1/msg-2"
     assert requests[0].headers["Authorization"] == "Bearer graph-token"
     assert result.channel_targets_polled == 1

@@ -20,6 +20,16 @@ from evander_team_addon.providers import (
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def test_team_chat_renders_external_attachment_import_warnings() -> None:
+    source = (ROOT / "src" / "evander_team_addon" / "ui_static" / "team-ui.js").read_text(
+        encoding="utf-8"
+    )
+
+    assert "external_attachment_import" in source
+    assert "function attachmentImportWarning(summary)" in source
+    assert "External attachments could not be imported" in source
+
+
 def test_project_git_payload_uses_visible_provider_neutral_directory_scope() -> None:
     source = (ROOT / "src" / "evander_team_addon" / "ui_static" / "team-ui.js").read_text(
         encoding="utf-8"

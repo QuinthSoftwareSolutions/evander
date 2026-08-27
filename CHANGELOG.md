@@ -1,5 +1,34 @@
 # Changelog
 
+## 2026-08-27 - External Team Chat Attachments And Shared Teams Subscriptions
+
+- Added an opt-in `import_attachments` bridge setting for Teams, Discord, and email messages that
+  validates provider files with the effective Team Chat attachment policy, copies accepted bytes
+  into private Team storage, and preserves external-source provenance.
+- Delivered valid files when other imports fail, while surfacing bounded failure details in Team
+  prompts and the operator UI so agents cannot silently claim to have inspected missing content.
+- Resolved email attachment mailboxes from each target's authentication profile and reduced
+  URL-bearing provider failures to credential-free error classes before persistence.
+- Reconciled Graph change-notification subscriptions by credential identity, tenant, and target
+  across directory scopes, converging legacy duplicates onto one shared subscription and retrying
+  failed duplicate cleanup with bounded backoff.
+- Routed shared-subscription callbacks through an active consumer directory when the stored
+  representative is no longer active, preserving delayed exact-message delivery.
+- Mirrored sanitized Teams and Discord ingress envelopes into their attachment adapter stores,
+  resolved imports with the source workflow directory credentials, and preserved Discord thread
+  channels for attachment listing and download.
+- Enforced Team Chat attachment byte caps while streaming Teams and Discord downloads, selected
+  callback consumers only when their target and provider identity still match, and deleted fully
+  orphaned shared subscriptions in one reconciliation pass.
+
+## 2026-08-27 - Scoped Manager Fallback Supervision
+
+- Froze displayed actionable subordinate tasks into dedicated manager-fallback supervision scope,
+  allowing direct status requests and bounded linked-Case updates without transferring task
+  ownership or granting generic authority over the subordinate task's project.
+- Required the matching bounded fallback fingerprint during deferred dispatch activation so an
+  unrelated subordinate task cannot be added to the frozen scope.
+
 ## 2026-08-27 - Teams Notification Wake Latency
 
 - Signalled the Teams ingest worker immediately after a Microsoft Graph callback is durably queued,

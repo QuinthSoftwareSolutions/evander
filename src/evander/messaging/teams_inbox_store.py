@@ -9,7 +9,7 @@ from pathlib import Path
 from threading import RLock
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 _TEAMS_MESSAGE_RETENTION = timedelta(days=90)
 _COMPLETED_NOTIFICATION_RETENTION = timedelta(days=7)
@@ -64,6 +64,8 @@ class TeamsOwnedSubscription(BaseModel):
     target: str
     resource: str
     directory_path: str
+    provider_identity_key: str | None = None
+    consumer_directory_paths: list[str] = Field(default_factory=list)
     tenant_id: str
     expires_at: datetime
     health: str = "active"
@@ -75,6 +77,15 @@ class TeamsOwnedSubscription(BaseModel):
     last_reconciled_at: datetime | None = None
     last_error: str | None = None
     cleanup_attempted: bool = False
+    cleanup_attempt_count: int = Field(default=0, ge=0)
+    cleanup_next_attempt_at: datetime | None = None
+
+    @field_validator("consumer_directory_paths", mode="before")
+    @classmethod
+    def normalize_consumer_directory_paths(cls, value: object) -> list[str]:
+        if not isinstance(value, (list, tuple, set, frozenset)):
+            return []
+        return sorted({str(item or "").strip() for item in value if str(item or "").strip()})
 
 
 class TeamsSubscriptionReconciliationState(BaseModel):
@@ -648,9 +659,7 @@ class TeamsInboxStore:
                 item.target
                 for item in subscriptions
                 if item.health not in {"deleted", "expired", "abandoned"}
-                and (
-                    item.health != "active" or self._ensure_utc(item.expires_at) <= current
-                )
+                and (item.health != "active" or self._ensure_utc(item.expires_at) <= current)
             }
             | {
                 str(row["target"])
@@ -869,6 +878,38 @@ class TeamsInboxStore:
                 WHERE cursor = ?
                 """,
                 (normalized_cursor,),
+            ).fetchone()
+        if row is None:
+            return None
+        return TeamsInboxMessage.model_validate_json(row["payload_json"])
+
+    def find_message(
+        self,
+        message_id: str,
+        *,
+        channel_target: str | None = None,
+    ) -> TeamsInboxMessage | None:
+        normalized_message_id = str(message_id or "").strip()
+        if not normalized_message_id:
+            return None
+        where = ["message_id = ?"]
+        params: list[Any] = [normalized_message_id]
+        if channel_target is not None:
+            normalized_target = str(channel_target or "").strip().strip("/")
+            if not normalized_target:
+                return None
+            where.append("channel_target = ?")
+            params.append(normalized_target)
+        with self._lock, self._connect() as connection:
+            row = connection.execute(
+                f"""
+                SELECT payload_json
+                FROM teams_inbox_messages
+                WHERE {" AND ".join(where)}
+                ORDER BY created_at DESC, cursor DESC
+                LIMIT 1
+                """,
+                params,
             ).fetchone()
         if row is None:
             return None

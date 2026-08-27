@@ -29,7 +29,7 @@ from .models import (
 
 ADDON_ID = "team-addon"
 STATE_DB_FILE = "state.db"
-SQLITE_SCHEMA_VERSION = 66
+SQLITE_SCHEMA_VERSION = 67
 _SQLITE_WAL_ENABLE_TIMEOUT_SECONDS = 5.0
 
 T = TypeVar("T")
@@ -1204,6 +1204,12 @@ class TeamStateSqliteStore:
                     table_name="team_conversation_messages",
                     column_name="attachment_ids_json",
                     definition="TEXT NOT NULL DEFAULT '[]'",
+                )
+                _ensure_column(
+                    connection,
+                    table_name="team_chat_attachments",
+                    column_name="external_source_json",
+                    definition="TEXT",
                 )
                 _ensure_column(
                     connection,
@@ -4223,6 +4229,11 @@ class TeamStateSqliteStore:
                 "sha256": row["sha256"],
                 "sender": row["sender"],
                 "created_by_session_id": row["created_by_session_id"],
+                "external_source": (
+                    _json_loads(row["external_source_json"])
+                    if row["external_source_json"] is not None
+                    else None
+                ),
                 "created_at": row["created_at"],
             }
 
@@ -4235,8 +4246,8 @@ class TeamStateSqliteStore:
                 """
                 INSERT INTO team_chat_attachments(
                     id, message_id, conversation_id, filename, mime_type, byte_count,
-                    sha256, sender, created_by_session_id, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    sha256, sender, created_by_session_id, external_source_json, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     attachment["id"],
@@ -4248,6 +4259,11 @@ class TeamStateSqliteStore:
                     attachment["sha256"],
                     attachment["sender"],
                     attachment.get("created_by_session_id"),
+                    (
+                        _json_dumps(attachment["external_source"])
+                        if attachment.get("external_source") is not None
+                        else None
+                    ),
                     attachment["created_at"],
                 ),
             )
@@ -8695,6 +8711,7 @@ CREATE TABLE IF NOT EXISTS team_chat_attachments (
     sha256 TEXT NOT NULL,
     sender TEXT NOT NULL,
     created_by_session_id TEXT,
+    external_source_json TEXT,
     created_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_team_chat_attachments_message

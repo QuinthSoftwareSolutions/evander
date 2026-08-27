@@ -93,6 +93,7 @@ class TeamEnqueueOperatorChatMessageEffectDefinition(EffectDefinition):
     source_thread_id: ConfigValue | None = None
     source_author_id: ConfigValue
     source_author_name: ConfigValue | None = None
+    import_attachments: ConfigValue | None = None
     allow_team_mutations: ConfigValue | None = None
     authorized_author_ids: ConfigValue | None = None
 
@@ -600,6 +601,8 @@ TEAM_OUTPUT_SCHEMAS: dict[str, dict[str, dict[str, Any]]] = {
         "message_id": {"type": "string"},
         "dispatch_id": {"type": "string"},
         "duplicate": {"type": "boolean"},
+        "attachment_ids": {"type": "array"},
+        "attachment_import": {"type": "object"},
     },
     "effect:team:record-external-chat-delivery": {
         "success": {"type": "boolean"},

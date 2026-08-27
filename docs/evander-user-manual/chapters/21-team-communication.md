@@ -90,6 +90,13 @@ message ID. An exact replay returns the original conversation, message, and
 <code>team.chat.message_queued</code> event, so transcript, lease, busy-session,
 tool-grant, and reply behavior remain the built-in Chat behavior.
 
+Set <code>import_attachments=true</code> to opt into first-class external file
+delivery. Teams inline hosted images, ordinary Teams and Discord files, and
+email attachments are copied into Team-owned private storage, policy-checked,
+shown in the Chat transcript, and delivered to the agent through the normal
+attachment workspace path. Partial failures are shown as warnings and do not
+discard valid files or the external message.
+
 The bridge defaults to <code>allow_team_mutations=false</code>. Enabling Team
 mutations requires a non-empty fixed <code>authorized_author_ids</code> list,
 and the authenticated source author must match it. A Discord trigger should

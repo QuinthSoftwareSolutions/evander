@@ -557,7 +557,9 @@ class TeamChatService:
         agent_id: str | None,
         operator_user_id: str,
         operator_display_name: str | None,
-        body: str,
+        body: str | None,
+        attachments: Sequence[PreparedChatAttachment] = (),
+        attachment_import: dict[str, Any] | None = None,
         provider: str,
         communication_target_id: str,
         source_message_id: str,
@@ -573,7 +575,9 @@ class TeamChatService:
         if (normalized_conversation_id is None) == (normalized_agent_id is None):
             raise ValueError("exactly one of conversation_id and agent_id is required")
         normalized_operator_user_id = _normalize_operator_user_id(operator_user_id)
-        normalized_body = _required_text(body, "body")
+        normalized_body = _optional_text(body)
+        prepared_attachments = list(attachments)
+        normalized_attachment_import = dict(attachment_import or {})
         normalized_provider = _required_text(provider, "provider").lower()
         normalized_target_id = _required_text(
             communication_target_id,
@@ -599,6 +603,15 @@ class TeamChatService:
                         "message_id": record.message_id,
                         "dispatch_id": record.dispatch_id,
                         "duplicate": True,
+                        "attachment_ids": list(
+                            state.conversation_messages[record.message_id].attachment_ids
+                        ),
+                        "attachment_import": dict(
+                            state.conversation_messages[record.message_id].metadata.get(
+                                "external_attachment_import"
+                            )
+                            or {}
+                        ),
                     }
             return None
 
@@ -615,6 +628,8 @@ class TeamChatService:
             if existing_inside is not None:
                 result = existing_inside
                 return state
+            if normalized_body is None and not prepared_attachments:
+                raise ValueError("body or at least one attachment is required")
             now = utc_now()
             resolved_conversation_id = normalized_conversation_id
             if resolved_conversation_id is None:
@@ -675,6 +690,8 @@ class TeamChatService:
                 "queued_at": now.isoformat(),
                 "queued_reason": "queued by external communication bridge",
             }
+            if normalized_attachment_import:
+                metadata["external_attachment_import"] = normalized_attachment_import
             effective_authorization = mutation_authorization or reply_only_team_chat_authorization(
                 source="external_bridge",
                 principal_id=normalized_source_author_id,
@@ -690,16 +707,29 @@ class TeamChatService:
                 sender="operator",
                 message_type="text",
                 body=normalized_body,
+                attachment_ids=[attachment.id for attachment in prepared_attachments],
                 status="queued",
                 dispatch_id=dispatch_id,
                 metadata=metadata,
                 created_at=now,
                 updated_at=now,
             )
+            for attachment in prepared_attachments:
+                state.chat_attachments[attachment.id] = TeamChatAttachment(
+                    **attachment.payload(),
+                    message_id=message_id,
+                    conversation_id=conversation.id,
+                    sender="operator",
+                    created_at=now,
+                )
             _touch_conversation(
                 conversation,
                 now=now,
-                preview=f"Queued: {_chat_preview(normalized_body)}",
+                preview=(
+                    f"Queued: {_chat_preview(normalized_body)}"
+                    if normalized_body is not None
+                    else f"Queued: {_attachment_preview(len(prepared_attachments))}"
+                ),
             )
             ingress_id = f"external-chat-ingress-{uuid4().hex}"
             state.external_chat_ingress[ingress_id] = ExternalChatIngressRecord(
@@ -751,6 +781,8 @@ class TeamChatService:
                 "message_id": message_id,
                 "dispatch_id": dispatch_id,
                 "duplicate": False,
+                "attachment_ids": [attachment.id for attachment in prepared_attachments],
+                "attachment_import": normalized_attachment_import,
             }
             return state
 

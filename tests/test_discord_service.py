@@ -1160,6 +1160,14 @@ def test_discord_bot_api_preserves_attachment_metadata_and_downloads_host_side(
     assert downloaded["mime_type"] == "text/plain"
     assert requests[-1].headers["Authorization"] == "Bot test-token"
 
+    with pytest.raises(ValueError, match="maximum size of 10 bytes"):
+        service.download_attachment(
+            "1000",
+            "att-1",
+            channel_id="chan-a",
+            max_bytes=10,
+        )
+
 
 def test_discord_attachment_listing_enforces_channel_allowlist(tmp_path: Path) -> None:
     command_store = JsonStore(tmp_path / "discord.json", DiscordCommandEnvelope)

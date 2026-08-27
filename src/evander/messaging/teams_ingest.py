@@ -74,6 +74,7 @@ from evander.messaging.teams_inbox_store import (
 from evander.messaging.teams_subscriptions import (
     TeamsSubscriptionReconciler,
     resolve_graph_tenant_id,
+    teams_subscription_provider_identity_key,
 )
 from evander.triggers.providers.teams_message_events import (
     CommunicationTeamsMessageEventMatcher,
@@ -188,6 +189,10 @@ class _VerifiedNotificationPublicationError(RuntimeError):
     pass
 
 
+class _NotificationConsumerResolutionError(RuntimeError):
+    pass
+
+
 class TeamsIngestWorker:
     def __init__(
         self,
@@ -219,6 +224,11 @@ class TeamsIngestWorker:
             TeamsSubscriptionReconciler(
                 store=self._notification_store,
                 worker_config=self.worker_config,
+                provider_identity_key_for_directory=(
+                    lambda directory_path: teams_subscription_provider_identity_key(
+                        self.runtime.provider_config.resolve_for_directory(directory_path)
+                    )
+                ),
             )
             if self._notification_store is not None
             else None
@@ -853,6 +863,7 @@ class TeamsIngestWorker:
             )
             healthy_before_reconciliation = reconciler.healthy_targets(
                 directory_path=directory_path,
+                provider_identity_key=teams_subscription_provider_identity_key(provider_config),
                 tenant_id=tenant_id,
                 now=datetime.now(UTC),
             )
@@ -934,14 +945,17 @@ class TeamsIngestWorker:
         now: datetime,
     ) -> None:
         store = self._notification_store
-        if store is None:
+        reconciler = self._subscription_reconciler
+        if store is None or reconciler is None:
             return
         subscriptions_by_directory: dict[str, list[Any]] = {}
-        for subscription in store.list_owned_subscriptions():
-            if subscription.directory_path not in active_directories:
-                subscriptions_by_directory.setdefault(subscription.directory_path, []).append(
-                    subscription
-                )
+        for subscription in reconciler.prune_inactive_consumers(
+            active_directories=active_directories,
+            now=now,
+        ):
+            subscriptions_by_directory.setdefault(subscription.directory_path, []).append(
+                subscription
+            )
         self._cleanup_subscription_groups(
             subscriptions_by_directory,
             now=now,
@@ -979,10 +993,10 @@ class TeamsIngestWorker:
                     directory_path=directory_path,
                 )
                 with httpx.Client(timeout=provider_config.teams_timeout_seconds) as client:
-                    reconciler.cleanup_directory(
+                    reconciler.cleanup_owned_subscriptions(
                         client,
                         service=service,
-                        directory_path=directory_path,
+                        subscriptions=subscriptions,
                         now=now,
                     )
             except Exception as exc:
@@ -1072,25 +1086,62 @@ class TeamsIngestWorker:
         if store is None:
             return 0
         subscription = store.get_owned_subscription(entry.subscription_id)
-        if subscription is None or subscription.directory_path not in set(directories):
+        if subscription is None:
             return 0
-        directory_path = subscription.directory_path
-        channel_targets = self._channel_targets_for_directory(
-            directory_path,
-            active_sessions=active_sessions,
-            trigger_targets_by_directory=trigger_snapshot.poll_targets_by_directory,
-        )
-        provider_config = self.runtime.provider_config.resolve_for_directory(directory_path)
-        if provider_config.teams_backend not in {"graph_api", "delegated_graph_api"}:
-            return 0
-        poll_scope = _teams_graph_poll_scope(provider_config, directory_path=directory_path)
-        discovered_chats = self.store.get_discovered_chat_targets(poll_scope)
+        active_directories = set(directories)
+        consumer_directories = subscription.consumer_directory_paths or [
+            subscription.directory_path
+        ]
         target = subscription.target
         direct_sender_refs = set(trigger_snapshot.direct_sender_refs)
-        if target not in channel_targets and not (
-            target.startswith("chat:") and target in discovered_chats and direct_sender_refs
-        ):
+        selected_consumer: tuple[str, GatewayConfig, set[str], str] | None = None
+        candidate_errors: list[Exception] = []
+        for candidate in consumer_directories:
+            if candidate not in active_directories:
+                continue
+            try:
+                candidate_config = self.runtime.provider_config.resolve_for_directory(candidate)
+                if candidate_config.teams_backend not in {"graph_api", "delegated_graph_api"}:
+                    continue
+                candidate_identity = teams_subscription_provider_identity_key(candidate_config)
+                if (
+                    subscription.provider_identity_key is not None
+                    and candidate_identity != subscription.provider_identity_key
+                ):
+                    continue
+                candidate_targets = set(
+                    self._channel_targets_for_directory(
+                        candidate,
+                        active_sessions=active_sessions,
+                        trigger_targets_by_directory=trigger_snapshot.poll_targets_by_directory,
+                    )
+                )
+                candidate_poll_scope = _teams_graph_poll_scope(
+                    candidate_config,
+                    directory_path=candidate,
+                )
+                discovered_chats = self.store.get_discovered_chat_targets(candidate_poll_scope)
+                if target not in candidate_targets and not (
+                    target.startswith("chat:") and target in discovered_chats and direct_sender_refs
+                ):
+                    continue
+            except Exception as exc:
+                candidate_errors.append(exc)
+                continue
+            selected_consumer = (
+                candidate,
+                candidate_config,
+                candidate_targets,
+                candidate_poll_scope,
+            )
+            break
+        if selected_consumer is None:
+            if candidate_errors:
+                raise _NotificationConsumerResolutionError(
+                    "failed to resolve an active Teams notification consumer"
+                ) from candidate_errors[0]
             return 0
+        directory_path, provider_config, channel_targets, poll_scope = selected_consumer
         service = self._build_graph_service(
             provider_config=provider_config,
             channel_targets=[target],
@@ -1517,6 +1568,21 @@ class TeamsIngestWorker:
                     )
             if self._is_known_status_post(message.cursor):
                 continue
+            self.runtime.teams_messages.put(
+                message.cursor,
+                TeamsMessageEnvelope(
+                    cursor=message.cursor,
+                    message_id=message.message_id,
+                    author_id=message.author_id,
+                    team_id=message.team_id,
+                    channel_id=message.channel_id,
+                    chat_id=message.chat_id,
+                    thread_id=message.thread_id,
+                    content=message.content,
+                    created_at=message.created_at,
+                    metadata=dict(message.metadata),
+                ),
+            )
             added = self.store.add_message_if_new(message)
             if added:
                 discovered.append(message)
@@ -2051,7 +2117,10 @@ def _notification_resource_target(resource: str) -> str:
 
 
 def _notification_error_is_retryable(exc: BaseException) -> bool:
-    if isinstance(exc, _VerifiedNotificationPublicationError):
+    if isinstance(
+        exc,
+        (_NotificationConsumerResolutionError, _VerifiedNotificationPublicationError),
+    ):
         return True
     if isinstance(exc, (httpx.TimeoutException, httpx.TransportError, TimeoutError)):
         return True

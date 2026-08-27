@@ -11,7 +11,10 @@ from evander.messaging.teams_inbox_store import (
     TeamsNotificationQueueEntry,
     TeamsOwnedSubscription,
 )
-from evander.messaging.teams_subscriptions import TeamsSubscriptionReconciler
+from evander.messaging.teams_subscriptions import (
+    TeamsSubscriptionReconciler,
+    teams_subscription_provider_identity_key,
+)
 
 
 _NOTIFICATION_URL = "https://notifications.example.test/msgraph/teams/notifications"
@@ -505,7 +508,7 @@ def test_subscription_reconciler_recreates_subscription_after_callback_url_chang
     assert replacement.lifecycle_notification_url == _LIFECYCLE_NOTIFICATION_URL
 
 
-def test_failed_owned_subscription_cleanup_is_attempted_once_then_abandoned(tmp_path) -> None:
+def test_failed_owned_subscription_cleanup_uses_backoff_then_retries(tmp_path) -> None:
     store = TeamsInboxStore(tmp_path / "runtime" / "teams-inbox-store.db")
     reconciler = TeamsSubscriptionReconciler(store=store, worker_config=_worker_config())
     now = datetime.now(UTC)
@@ -546,9 +549,147 @@ def test_failed_owned_subscription_cleanup_is_attempted_once_then_abandoned(tmp_
 
     subscription = store.get_owned_subscription("owned-subscription")
     assert subscription is not None
-    assert subscription.health == "abandoned"
-    assert subscription.cleanup_attempted is True
+    assert subscription.health == "degraded"
+    assert subscription.cleanup_attempted is False
+    assert subscription.cleanup_attempt_count == 1
+    assert subscription.cleanup_next_attempt_at is not None
     assert delete_calls == 1
+
+    with httpx.Client(
+        transport=httpx.MockTransport(lambda request: httpx.Response(204, request=request))
+    ) as client:
+        reconciler.cleanup_directory(
+            client,
+            service=_FakeGraphService(),
+            directory_path="root",
+            now=subscription.cleanup_next_attempt_at + timedelta(seconds=1),
+        )
+
+    deleted = store.get_owned_subscription("owned-subscription")
+    assert deleted is not None
+    assert deleted.health == "deleted"
+    assert deleted.cleanup_attempted is True
+
+
+def test_reconciler_converges_legacy_directory_duplicates_to_one_subscription(tmp_path) -> None:
+    store = TeamsInboxStore(tmp_path / "runtime" / "teams-inbox-store.db")
+    provider_config = _provider_config(tmp_path)
+    provider_identity_key = teams_subscription_provider_identity_key(provider_config)
+    reconciler = TeamsSubscriptionReconciler(
+        store=store,
+        worker_config=_worker_config(),
+        provider_identity_key_for_directory=lambda _directory: provider_identity_key,
+    )
+    now = datetime.now(UTC)
+    for subscription_id, directory_path, extra_hours in (
+        ("subscription-root", "root", 24),
+        ("subscription-example", "root/example", 48),
+    ):
+        store.upsert_owned_subscription(
+            TeamsOwnedSubscription(
+                subscription_id=subscription_id,
+                owner_id=store.notification_owner_id(),
+                target="team-a/channel-a",
+                resource="/teams/team-a/channels/channel-a/messages",
+                directory_path=directory_path,
+                tenant_id="tenant-a",
+                expires_at=now + timedelta(hours=extra_hours),
+                notification_url=_NOTIFICATION_URL,
+                lifecycle_notification_url=_LIFECYCLE_NOTIFICATION_URL,
+                client_state_sha256="0" * 64,
+                created_at=now - timedelta(days=1),
+                updated_at=now - timedelta(days=1),
+            )
+        )
+    requests: list[tuple[str, str]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append((request.method, request.url.path))
+        return httpx.Response(204, request=request)
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        root_healthy = reconciler.reconcile_directory(
+            client,
+            service=_FakeGraphService(),
+            provider_config=provider_config,
+            directory_path="root",
+            targets={"team-a/channel-a"},
+            now=now,
+        )
+        example_healthy = reconciler.reconcile_directory(
+            client,
+            service=_FakeGraphService(),
+            provider_config=provider_config,
+            directory_path="root/example",
+            targets={"team-a/channel-a"},
+            now=now,
+        )
+
+    assert root_healthy == {"team-a/channel-a"}
+    assert example_healthy == {"team-a/channel-a"}
+    assert requests == [("DELETE", "/v1.0/subscriptions/subscription-root")]
+    active = store.list_owned_subscriptions()
+    assert [item.subscription_id for item in active] == ["subscription-example"]
+    assert active[0].directory_path == "root"
+    assert active[0].provider_identity_key == provider_identity_key
+    assert active[0].consumer_directory_paths == ["root", "root/example"]
+
+
+def test_reconciler_preserves_same_resource_for_distinct_provider_identity(tmp_path) -> None:
+    store = TeamsInboxStore(tmp_path / "runtime" / "teams-inbox-store.db")
+    provider_config = _provider_config(tmp_path)
+    provider_identity_key = teams_subscription_provider_identity_key(provider_config)
+    reconciler = TeamsSubscriptionReconciler(
+        store=store,
+        worker_config=_worker_config(),
+        provider_identity_key_for_directory=lambda _directory: provider_identity_key,
+    )
+    now = datetime.now(UTC)
+    store.upsert_owned_subscription(
+        TeamsOwnedSubscription(
+            subscription_id="other-identity",
+            owner_id=store.notification_owner_id(),
+            target="team-a/channel-a",
+            resource="/teams/team-a/channels/channel-a/messages",
+            directory_path="root/other",
+            provider_identity_key="different-provider-identity",
+            consumer_directory_paths=["root/other"],
+            tenant_id="tenant-a",
+            expires_at=now + timedelta(hours=48),
+            notification_url=_NOTIFICATION_URL,
+            lifecycle_notification_url=_LIFECYCLE_NOTIFICATION_URL,
+            client_state_sha256="0" * 64,
+            created_at=now,
+            updated_at=now,
+        )
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.method == "POST"
+        return httpx.Response(
+            201,
+            request=request,
+            json={
+                "id": "current-identity",
+                "expirationDateTime": (now + timedelta(hours=48)).isoformat(),
+            },
+        )
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        healthy = reconciler.reconcile_directory(
+            client,
+            service=_FakeGraphService(),
+            provider_config=provider_config,
+            directory_path="root",
+            targets={"team-a/channel-a"},
+            now=now,
+        )
+
+    assert healthy == {"team-a/channel-a"}
+    assert {item.subscription_id for item in store.list_owned_subscriptions()} == {
+        "other-identity",
+        "current-identity",
+    }
 
 
 def test_lifecycle_event_marks_subscription_unhealthy_for_polling_fallback(tmp_path) -> None:

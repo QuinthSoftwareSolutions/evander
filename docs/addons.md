@@ -625,6 +625,20 @@ bounded to the workflow effect directory for both the recipient agent and
 included projects. The target must additionally allow `reply` for a preserved
 provider thread or `write` for a top-level response.
 
+Set `import_attachments=true` to import files from supported Teams, Discord,
+or email source messages into private Team Chat attachment storage. The flag
+defaults to `false`. Imported files retain provider/message/attachment
+provenance, are validated by the effective Team Chat operator-to-agent file
+policy, and follow the normal workspace-copy path. Valid files are still
+delivered when another file fails or violates policy; the message, effect
+output, Team Chat UI, and agent prompt carry a bounded warning describing the
+partial or failed import. Provider credentials and target allowlists are
+resolved from the workflow effect's source directory, while the receiving
+agent's directory still supplies the Team Chat attachment policy. Teams and
+Discord downloads enforce that policy's byte cap while streaming, and Discord
+public-thread imports use the authenticated source thread rather than its
+configured parent channel. Provider credentials remain host-side.
+
 An agent reply to an externally originated message is committed to Team state
 before delivery is attempted. `team_reply_to_chat` creates a pending external
 delivery and emits `team.chat.external_reply_requested`; the packaged runtime
@@ -1886,6 +1900,17 @@ required by those delivered records. Relationship alone never adds a record to
 the wrong scope list, and work created mid-dispatch waits for a later wake.
 Commands require a `leased` dispatch and revalidate membership plus current
 assignment/actionability in the corresponding list.
+
+A manager-fallback wake has one bounded supervision exception. Actionable
+subordinate tasks displayed in its compact `open_work` summary are frozen into
+the dispatch `task_ids`, but their projects are not added to generic
+`project_ids`. The fallback fingerprint proves that each task was selected by
+the server. Tool-specific guards allow a Team manager to request status from
+the task's direct-subordinate owner and update only the status or description
+of a Case already linked to that task. This does not grant project-wide case,
+goal, release, memory, or task-creation authority, and it does not transfer task
+ownership: ordinary task-update ownership, lifecycle, and reassignment checks
+continue to apply.
 
 Before leasing, Team prepares every required repository and task worktree and
 persists a fresh dispatch-bound Git context. A durable task/repository identity

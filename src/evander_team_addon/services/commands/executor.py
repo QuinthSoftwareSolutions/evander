@@ -55,6 +55,7 @@ from ..domain.dispatch_scope import (
 from ..domain.agent_access import _is_project_lead_for, _is_team_manager
 from ..domain.manager_fallback import (
     _manager_fallback_review_routing_authority_error,
+    manager_fallback_dispatch_supervision_task_ids,
 )
 from ..domain.git_work_contexts import GitCandidateCommitResolver
 from ..domain.dependency_composition_recovery import (
@@ -402,10 +403,22 @@ class TeamCommandExecutor:
                 dispatch=dispatch,
                 payload=normalized_payload,
             )
+        manager_fallback_supervision_project_ids = (
+            _validate_manager_fallback_supervision_command_scope(
+                state,
+                dispatch=dispatch,
+                tool_name=resolved.context.tool_name,
+                payload=normalized_payload,
+            )
+        )
         _validate_dispatch_project_scope(
             state,
             dispatch=dispatch,
-            project_ids=(targets["project_ids"] - request_review_routing_project_ids),
+            project_ids=(
+                targets["project_ids"]
+                - request_review_routing_project_ids
+                - manager_fallback_supervision_project_ids
+            ),
         )
         if (
             resolved.context.tool_name in {"team_request_release", "team_decide_initial_release"}
@@ -2062,19 +2075,144 @@ def _validate_manager_fallback_initial_release_scope(
         )
 
 
+def _manager_fallback_ordinary_project_ids(
+    state: TeamState,
+    *,
+    dispatch: TeamDispatch,
+) -> set[str]:
+    """Exclude projects carried only by legacy fallback supervision widening."""
+
+    allowed_project_ids = set(dispatch.project_ids)
+    if dispatch.cause_kind != "manager_fallback":
+        return allowed_project_ids
+    foreign_task_ids = {
+        task_id
+        for task_id in dispatch.task_ids
+        if (task := state.tasks.get(task_id)) is not None
+        and task.owner_agent_id != dispatch.agent_id
+    }
+    foreign_task_project_ids = {state.tasks[task_id].project_id for task_id in foreign_task_ids}
+    if not foreign_task_project_ids:
+        return allowed_project_ids
+
+    ordinary_project_ids = allowed_project_ids - foreign_task_project_ids
+    ordinary_project_ids.update(
+        task.project_id
+        for task_id in dispatch.task_ids
+        if task_id not in foreign_task_ids
+        if (task := state.tasks.get(task_id)) is not None
+    )
+    ordinary_project_ids.update(
+        project_id
+        for blocker_id in dispatch.blocker_ids
+        if (blocker := state.blockers.get(blocker_id)) is not None
+        for project_id in _blocker_project_ids(state, blocker)
+    )
+    ordinary_project_ids.update(
+        project_id
+        for review_id in dispatch.review_request_ids
+        if (review := state.review_requests.get(review_id)) is not None
+        for project_id in _review_project_ids(state, review)
+    )
+    ordinary_project_ids.update(
+        project_id
+        for inbox_id in dispatch.inbox_item_ids
+        if (item := state.inbox.get(inbox_id)) is not None
+        for project_id in _inbox_project_ids(state, item)
+    )
+    ordinary_project_ids.update(
+        task.project_id
+        for deliverable_id in dispatch.initial_release_decision_deliverable_ids
+        if (deliverable := state.deliverables.get(deliverable_id)) is not None
+        if (task := state.tasks.get(deliverable.task_id)) is not None
+    )
+    return ordinary_project_ids & allowed_project_ids
+
+
+def _validate_manager_fallback_supervision_command_scope(
+    state: TeamState,
+    *,
+    dispatch: TeamDispatch,
+    tool_name: str,
+    payload: Mapping[str, Any],
+) -> set[str]:
+    """Return project targets authorized by exact fallback supervision tasks."""
+
+    supervision_task_ids = manager_fallback_dispatch_supervision_task_ids(
+        state,
+        dispatch=dispatch,
+    )
+    if not supervision_task_ids:
+        return set()
+
+    if tool_name == "team_request_status":
+        task_id = _optional_text(payload.get("task_id"))
+        if task_id not in supervision_task_ids:
+            return set()
+        task = state.tasks[task_id]
+        recipient_agent_id = _optional_text(payload.get("recipient_agent_id"))
+        if recipient_agent_id != task.owner_agent_id:
+            raise _dispatch_scope_error(
+                dispatch,
+                scope_kind="manager-fallback supervised task owner",
+                requested_ids=[recipient_agent_id or "none"],
+                allowed_ids=[task.owner_agent_id],
+            )
+        return {task.project_id}
+
+    if tool_name != "team_update_case":
+        return set()
+    case_id = _optional_text(payload.get("case_id"))
+    case = state.cases.get(case_id or "")
+    if case is None:
+        return set()
+    ordinary_project_ids = _manager_fallback_ordinary_project_ids(
+        state,
+        dispatch=dispatch,
+    )
+    if case.project_id is not None and case.project_id in ordinary_project_ids:
+        return set()
+
+    linked_supervision_task_ids = set(case.task_ids) & supervision_task_ids
+    linked_project_ids = {
+        state.tasks[task_id].project_id for task_id in linked_supervision_task_ids
+    }
+    updates = payload.get("updates")
+    update_fields = set(updates) if isinstance(updates, Mapping) else set()
+    disallowed_update_fields = sorted(update_fields - {"description", "status"})
+    if (
+        not linked_supervision_task_ids
+        or (case.project_id is not None and case.project_id not in linked_project_ids)
+        or disallowed_update_fields
+    ):
+        requested_ids = [case.id]
+        requested_ids.extend(disallowed_update_fields)
+        raise _dispatch_scope_error(
+            dispatch,
+            scope_kind="manager-fallback linked Case update",
+            requested_ids=requested_ids,
+            allowed_ids=sorted(linked_supervision_task_ids),
+        )
+    return linked_project_ids
+
+
 def _validate_dispatch_project_scope(
     state: TeamState,
     *,
     dispatch: TeamDispatch,
     project_ids: set[str],
 ) -> None:
-    missing = sorted(project_ids - set(dispatch.project_ids))
+    allowed_project_ids = _manager_fallback_ordinary_project_ids(
+        state,
+        dispatch=dispatch,
+    )
+    missing = sorted(project_ids - allowed_project_ids)
     if missing:
         raise _dispatch_scope_error(
             dispatch,
             scope_kind="project",
             requested_ids=missing,
-            allowed_ids=dispatch.project_ids,
+            allowed_ids=sorted(allowed_project_ids),
         )
     missing_current = sorted(project_ids - set(state.projects))
     if missing_current:

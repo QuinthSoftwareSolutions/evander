@@ -313,7 +313,16 @@ def test_discord_ingest_worker_batches_new_messages_before_advancing_cursor(
                     "timestamp": "2026-03-30T11:00:01Z",
                     "content": "first",
                     "author": {"id": "user-a", "username": "A"},
-                    "attachments": [],
+                    "attachments": [
+                        {
+                            "id": "att-1",
+                            "filename": "report.txt",
+                            "content_type": "text/plain",
+                            "size": 11,
+                            "url": "https://cdn.discord.test/att-1",
+                            "content": "must-not-store",
+                        }
+                    ],
                 },
             ]
 
@@ -347,6 +356,16 @@ def test_discord_ingest_worker_batches_new_messages_before_advancing_cursor(
 
     assert store.add_messages_calls == [["1", "2"]]
     assert store.set_cursor_calls == [("chan-a", "2026-03-30T11:00:02Z")]
+    mirrored = worker.runtime.discord_commands.get("1")
+    assert mirrored is not None
+    assert mirrored.channel_id == "chan-a"
+    assert mirrored.metadata["attachments"][0] == {
+        "id": "att-1",
+        "filename": "report.txt",
+        "content_type": "text/plain",
+        "size": 11,
+        "url": "https://cdn.discord.test/att-1",
+    }
 
 
 def test_discord_ingest_discovers_only_public_threads_under_configured_parent(

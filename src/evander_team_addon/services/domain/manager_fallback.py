@@ -15,6 +15,7 @@ from ...models import (
     ReviewProfile,
     ReviewRequest,
     Team,
+    TeamDispatch,
     TeamDispatchReviewRoutingAuthority,
     TeamInboxItemState,
     TeamState,
@@ -49,6 +50,37 @@ _MANAGER_FALLBACK_FAILED_ACTION_LIMIT = 3
 _MANAGER_FALLBACK_ROUTING_GAP_LIMIT = MAX_MANAGER_FALLBACK_ROWS
 
 _MANAGER_FALLBACK_TEXT_LIMIT = 240
+
+
+def manager_fallback_dispatch_supervision_task_ids(
+    state: TeamState,
+    *,
+    dispatch: TeamDispatch,
+) -> set[str]:
+    """Return exact subordinate tasks frozen for one manager-fallback dispatch."""
+
+    if dispatch.cause_kind != "manager_fallback":
+        return set()
+    agent = state.agents.get(dispatch.agent_id)
+    if agent is None or agent.team_id is None:
+        return set()
+    supervision_task_ids: set[str] = set()
+    for task_id in dispatch.task_ids:
+        if f"open_work:{task_id}" not in dispatch.wake_work_record_fingerprints:
+            continue
+        task = state.tasks.get(task_id)
+        project = state.projects.get(task.project_id) if task is not None else None
+        team = state.teams.get(project.team_id) if project is not None else None
+        if (
+            task is not None
+            and project is not None
+            and team is not None
+            and task.owner_agent_id != agent.id
+            and agent.team_id == team.id
+            and team.manager_agent_id == agent.id
+        ):
+            supervision_task_ids.add(task.id)
+    return supervision_task_ids
 
 
 def _manager_fallback_task_visible_for_work(
@@ -1272,6 +1304,7 @@ __all__ = [
     "_MANAGER_FALLBACK_TEXT_LIMIT",
     "_MANAGER_FALLBACK_PENDING_REVIEW_STATES",
     "_manager_fallback_task_visible_for_work",
+    "manager_fallback_dispatch_supervision_task_ids",
     "_manager_fallback_summary_payload",
     "_manager_fallback_summary_has_actionable_work",
     "manager_fallback_work_fingerprint",

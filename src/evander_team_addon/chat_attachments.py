@@ -5,7 +5,7 @@ import json
 import mimetypes
 import os
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path, PurePath
 from typing import Any, Iterable, Literal, Mapping
@@ -14,7 +14,7 @@ from uuid import uuid4
 from evander.addons import addon_storage_path
 from evander.models import DirectoryPath, utc_now
 
-from .models import TeamChatAttachmentPolicy, TeamState
+from .models import TeamChatAttachmentExternalSource, TeamChatAttachmentPolicy, TeamState
 from .repository import ADDON_ID, TeamStateRepository
 
 STAGING_TTL = timedelta(hours=24)
@@ -30,6 +30,10 @@ class PreparedChatAttachment:
     mime_type: str | None
     byte_count: int
     sha256: str
+    external_source: TeamChatAttachmentExternalSource | None = field(
+        default=None,
+        kw_only=True,
+    )
 
     def payload(self) -> dict[str, Any]:
         return {
@@ -38,6 +42,11 @@ class PreparedChatAttachment:
             "mime_type": self.mime_type,
             "byte_count": self.byte_count,
             "sha256": self.sha256,
+            "external_source": (
+                self.external_source.model_dump(mode="json")
+                if self.external_source is not None
+                else None
+            ),
         }
 
 
@@ -145,6 +154,7 @@ class TeamChatAttachmentStorage:
         content: bytes,
         filename: str,
         mime_type: str | None,
+        external_source: TeamChatAttachmentExternalSource | None = None,
     ) -> PreparedChatAttachment:
         attachment_id = f"chatatt_{uuid4().hex}"
         safe_filename = normalize_attachment_filename(filename)
@@ -157,6 +167,7 @@ class TeamChatAttachmentStorage:
             mime_type=resolved_mime,
             byte_count=len(content),
             sha256=digest,
+            external_source=external_source,
         )
 
     def stage_agent_file(

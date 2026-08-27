@@ -585,6 +585,59 @@ def _artifact_bytes(artifact: dict[str, Any]) -> bytes:
     raise ValueError("Artifact payload must include a readable path or inline content bytes.")
 
 
+def _buffer_streaming_response(
+    response: httpx.Response,
+    *,
+    max_bytes: int,
+    allow_redirect: bool = False,
+) -> httpx.Response:
+    """Materialize a streaming response without ever crossing the caller's byte cap."""
+
+    try:
+        if not (allow_redirect and response.is_redirect):
+            try:
+                response.raise_for_status()
+            except httpx.HTTPStatusError:
+                buffered_error = httpx.Response(
+                    response.status_code,
+                    headers=response.headers,
+                    content=b"",
+                    request=response.request,
+                    extensions=response.extensions,
+                )
+                buffered_error.raise_for_status()
+        content_length = response.headers.get("content-length")
+        if content_length is not None:
+            try:
+                declared_length = int(content_length)
+            except ValueError:
+                declared_length = None
+            if declared_length is not None and declared_length > max_bytes:
+                raise ValueError(
+                    f"provider attachment exceeds the maximum size of {max_bytes} bytes"
+                )
+        chunks: list[bytes] = []
+        total = 0
+        for chunk in response.iter_bytes():
+            if not chunk:
+                continue
+            total += len(chunk)
+            if total > max_bytes:
+                raise ValueError(
+                    f"provider attachment exceeds the maximum size of {max_bytes} bytes"
+                )
+            chunks.append(chunk)
+        return httpx.Response(
+            response.status_code,
+            headers=response.headers,
+            content=b"".join(chunks),
+            request=response.request,
+            extensions=response.extensions,
+        )
+    finally:
+        response.close()
+
+
 class EmailService:
     def __init__(self, provider: EmailProvider) -> None:
         self.provider = provider
@@ -665,7 +718,12 @@ class DiscordService(Protocol):
     ) -> list[dict[str, Any]]: ...
 
     def download_attachment(
-        self, message_id: str, attachment_id: str, *, channel_id: str | None = None
+        self,
+        message_id: str,
+        attachment_id: str,
+        *,
+        channel_id: str | None = None,
+        max_bytes: int | None = None,
     ) -> dict[str, Any]: ...
 
     def post_file(
@@ -710,7 +768,12 @@ class TeamsService(Protocol):
     ) -> list[dict[str, Any]]: ...
 
     def download_attachment(
-        self, message_id: str, attachment_id: str, *, channel_target: str | None = None
+        self,
+        message_id: str,
+        attachment_id: str,
+        *,
+        channel_target: str | None = None,
+        max_bytes: int | None = None,
     ) -> dict[str, Any]: ...
 
     def post_file(
@@ -910,7 +973,12 @@ class StubDiscordService:
         return [_sanitize_attachment_metadata(item) for item in raw_attachments or []]
 
     def download_attachment(
-        self, message_id: str, attachment_id: str, *, channel_id: str | None = None
+        self,
+        message_id: str,
+        attachment_id: str,
+        *,
+        channel_id: str | None = None,
+        max_bytes: int | None = None,
     ) -> dict[str, Any]:
         for attachment in self.list_attachments(message_id, channel_id=channel_id):
             if str(attachment.get("id") or attachment.get("attachment_id") or "") == attachment_id:
@@ -1106,23 +1174,41 @@ class DiscordBotApiService:
         data: dict[str, Any] | None = None,
         files: Any = None,
         headers: dict[str, str] | None = None,
+        max_response_bytes: int | None = None,
     ) -> httpx.Response:
         start_time = time.monotonic()
         attempt = 0
         last_error: Exception | None = None
         while True:
             try:
-                response = client.request(
-                    method,
-                    url,
-                    headers=self._headers() if headers is None else headers,
-                    params=params,
-                    json=json,
-                    data=data,
-                    files=files,
-                    timeout=self.timeout_seconds,
-                )
-                response.raise_for_status()
+                request_headers = self._headers() if headers is None else headers
+                if max_response_bytes is None:
+                    response = client.request(
+                        method,
+                        url,
+                        headers=request_headers,
+                        params=params,
+                        json=json,
+                        data=data,
+                        files=files,
+                        timeout=self.timeout_seconds,
+                    )
+                    response.raise_for_status()
+                else:
+                    request = client.build_request(
+                        method,
+                        url,
+                        headers=request_headers,
+                        params=params,
+                        json=json,
+                        data=data,
+                        files=files,
+                        timeout=self.timeout_seconds,
+                    )
+                    response = _buffer_streaming_response(
+                        client.send(request, stream=True),
+                        max_bytes=max_response_bytes,
+                    )
                 return response
             except (httpx.TimeoutException, httpx.ConnectError) as exc:
                 last_error = exc
@@ -1267,7 +1353,12 @@ class DiscordBotApiService:
         return attachments
 
     def download_attachment(
-        self, message_id: str, attachment_id: str, *, channel_id: str | None = None
+        self,
+        message_id: str,
+        attachment_id: str,
+        *,
+        channel_id: str | None = None,
+        max_bytes: int | None = None,
     ) -> dict[str, Any]:
         _, _, attachment = self._find_message_attachment(
             message_id,
@@ -1280,7 +1371,13 @@ class DiscordBotApiService:
             raise ValueError(f"Discord attachment {attachment_id} does not include a download URL")
         headers = {"Authorization": f"Bot {self.token}"}
         with httpx.Client(timeout=self.timeout_seconds) as client:
-            response = self._request_with_retries(client, "GET", download_url, headers=headers)
+            response = self._request_with_retries(
+                client,
+                "GET",
+                download_url,
+                headers=headers,
+                max_response_bytes=max_bytes,
+            )
             content_type = response.headers.get("content-type") or attachment.get("content_type")
             return {
                 **attachment,
@@ -2456,7 +2553,12 @@ class StubTeamsService:
         return [_sanitize_attachment_metadata(item) for item in raw_attachments or []]
 
     def download_attachment(
-        self, message_id: str, attachment_id: str, *, channel_target: str | None = None
+        self,
+        message_id: str,
+        attachment_id: str,
+        *,
+        channel_target: str | None = None,
+        max_bytes: int | None = None,
     ) -> dict[str, Any]:
         for attachment in self.list_attachments(message_id, channel_target=channel_target):
             if str(attachment.get("id") or attachment.get("attachment_id") or "") == attachment_id:
@@ -2831,6 +2933,9 @@ class GraphTeamsService:
         json: dict[str, Any] | None = None,
         timeout_seconds: float | None = None,
         deadline_monotonic: float | None = None,
+        include_auth: bool = True,
+        max_response_bytes: int | None = None,
+        allow_redirect_response: bool = False,
     ) -> httpx.Response:
         start_time = time.monotonic()
         attempt = 0
@@ -2859,15 +2964,32 @@ class GraphTeamsService:
                 effective_timeout = min(effective_timeout, remaining_deadline)
             attempt_started_at = time.monotonic()
             try:
-                response = client.request(
-                    method,
-                    url,
-                    headers=self._headers(),
-                    params=params,
-                    json=json,
-                    timeout=effective_timeout,
-                )
-                response.raise_for_status()
+                request_headers = self._headers() if include_auth else {}
+                if max_response_bytes is None:
+                    response = client.request(
+                        method,
+                        url,
+                        headers=request_headers,
+                        params=params,
+                        json=json,
+                        timeout=effective_timeout,
+                    )
+                    if not (allow_redirect_response and response.is_redirect):
+                        response.raise_for_status()
+                else:
+                    request = client.build_request(
+                        method,
+                        url,
+                        headers=request_headers,
+                        params=params,
+                        json=json,
+                        timeout=effective_timeout,
+                    )
+                    response = _buffer_streaming_response(
+                        client.send(request, stream=True),
+                        max_bytes=max_response_bytes,
+                        allow_redirect=allow_redirect_response,
+                    )
                 if attempt > 0:
                     _LOGGER.info(
                         "Teams Graph request recovered method=%s path=%s attempts=%d "
@@ -2999,15 +3121,31 @@ class GraphTeamsService:
         encoded = base64.urlsafe_b64encode(url.encode("utf-8")).decode("ascii").rstrip("=")
         return f"{self.api_base_url}/shares/u!{encoded}/driveItem/content"
 
-    def _download_graph_content_url(self, client: httpx.Client, url: str) -> httpx.Response:
-        response = client.request("GET", url, headers=self._headers(), timeout=self.timeout_seconds)
+    def _download_graph_content_url(
+        self,
+        client: httpx.Client,
+        url: str,
+        *,
+        max_bytes: int | None,
+    ) -> httpx.Response:
+        response = self._request_with_retries(
+            client,
+            "GET",
+            url,
+            max_response_bytes=max_bytes,
+            allow_redirect_response=True,
+        )
         if response.is_redirect:
             redirect_url = str(response.headers.get("location") or "").strip()
             if not redirect_url:
                 response.raise_for_status()
-            redirected = client.request("GET", redirect_url, timeout=self.timeout_seconds)
-            redirected.raise_for_status()
-            return redirected
+            return self._request_with_retries(
+                client,
+                "GET",
+                redirect_url,
+                include_auth=False,
+                max_response_bytes=max_bytes,
+            )
         response.raise_for_status()
         return response
 
@@ -3015,17 +3153,27 @@ class GraphTeamsService:
         self,
         client: httpx.Client,
         url: str,
+        *,
+        max_bytes: int | None,
     ) -> httpx.Response:
         parsed_url = urlparse(url)
         if parsed_url.scheme.lower() not in {"http", "https"} or not parsed_url.netloc:
             raise ValueError("Teams attachment contentUrl must be an absolute http(s) URL.")
         if self._is_graph_api_origin(url):
-            return self._download_graph_content_url(client, url)
+            return self._download_graph_content_url(client, url, max_bytes=max_bytes)
         if self._is_sharepoint_content_url(url):
-            return self._download_graph_content_url(client, self._graph_share_content_url(url))
-        response = client.request("GET", url, timeout=self.timeout_seconds)
-        response.raise_for_status()
-        return response
+            return self._download_graph_content_url(
+                client,
+                self._graph_share_content_url(url),
+                max_bytes=max_bytes,
+            )
+        return self._request_with_retries(
+            client,
+            "GET",
+            url,
+            include_auth=False,
+            max_response_bytes=max_bytes,
+        )
 
     def new_pagination_budget(self) -> _TeamsGraphPaginationBudget:
         return _TeamsGraphPaginationBudget(
@@ -3516,7 +3664,12 @@ class GraphTeamsService:
         return f"{root_url}/{quote(message_id, safe='')}"
 
     def download_attachment(
-        self, message_id: str, attachment_id: str, *, channel_target: str | None = None
+        self,
+        message_id: str,
+        attachment_id: str,
+        *,
+        channel_target: str | None = None,
+        max_bytes: int | None = None,
     ) -> dict[str, Any]:
         record, target = self._find_message_record(message_id, channel_target=channel_target)
         attachments = self._list_attachments_for_record(
@@ -3558,9 +3711,14 @@ class GraphTeamsService:
             url = content_url
         with httpx.Client(timeout=self.timeout_seconds) as client:
             response = (
-                self._request_with_retries(client, "GET", url)
+                self._request_with_retries(
+                    client,
+                    "GET",
+                    url,
+                    max_response_bytes=max_bytes,
+                )
                 if attachment.get("attachment_kind") == "hosted_content" or not content_url
-                else self._download_attachment_content_url(client, url)
+                else self._download_attachment_content_url(client, url, max_bytes=max_bytes)
             )
             content_type = response.headers.get("content-type") or attachment.get("contentType")
         filename = str(attachment.get("name") or attachment.get("filename") or attachment_id)
