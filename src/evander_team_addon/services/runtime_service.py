@@ -1268,6 +1268,13 @@ class TeamRuntimeService:
                 initial_release_decision_ids = _manager_fallback_initial_release_decision_ids(
                     manager_fallback_summary
                 )
+                manager_fallback_supervision_task_ids = (
+                    _manager_fallback_supervision_task_ids(
+                        state_model,
+                        manager=manager,
+                        summary=manager_fallback_summary,
+                    )
+                )
                 manager_reservation_scope = build_agent_dispatch_scope(
                     state_model,
                     agent=manager,
@@ -1293,8 +1300,17 @@ class TeamRuntimeService:
                     if (deliverable := state_model.deliverables.get(deliverable_id)) is not None
                     if (task := state_model.tasks.get(deliverable.task_id)) is not None
                 }
+                manager_fallback_supervision_project_ids = {
+                    state_model.tasks[task_id].project_id
+                    for task_id in manager_fallback_supervision_task_ids
+                }
+                scoped_task_ids = sorted(
+                    set(manager_scope.task_ids) | set(manager_fallback_supervision_task_ids)
+                )
                 scoped_project_ids = sorted(
-                    set(manager_scope.project_ids) | initial_release_project_ids
+                    set(manager_scope.project_ids)
+                    | initial_release_project_ids
+                    | manager_fallback_supervision_project_ids
                 )
                 scoped_managed_repo_ids = sorted(
                     {
@@ -1309,7 +1325,7 @@ class TeamRuntimeService:
                         state_model,
                         agent=manager,
                         task_ids={
-                            *manager_scope.task_ids,
+                            *scoped_task_ids,
                             *(
                                 state_model.deliverables[deliverable_id].task_id
                                 for deliverable_id in initial_release_decision_ids
@@ -1341,7 +1357,7 @@ class TeamRuntimeService:
                         else None
                     ),
                     requested_lease_seconds=max(1, int(lease_seconds)),
-                    task_ids=list(manager_scope.task_ids),
+                    task_ids=scoped_task_ids,
                     blocker_ids=list(manager_scope.blocker_ids),
                     review_request_ids=list(manager_scope.review_request_ids),
                     inbox_item_ids=list(manager_scope.inbox_item_ids),
@@ -2843,6 +2859,44 @@ def _action_feedback_cause_id(
     return _optional_text(action_feedback[0].get("action_record_id"))
 
 
+def _manager_fallback_supervision_task_ids(
+    state: TeamState,
+    *,
+    manager: PersistentAgent,
+    summary: Mapping[str, Any],
+) -> list[str]:
+    """Freeze displayed actionable subordinate work into manager scope.
+
+    The fallback summary is bounded diagnostic context. Only its displayed
+    ``open_work`` rows can become supervision authority, and only while the
+    source task is still actionable in the manager's Team. The task remains
+    owned by its assigned agent; domain command policy still controls which
+    supervisory actions the manager may perform.
+    """
+
+    rows = summary.get("open_work")
+    if not isinstance(rows, list) or manager.team_id is None:
+        return []
+    assessments = TaskAssessmentService(state)
+    task_ids: set[str] = set()
+    for row in rows:
+        if not isinstance(row, Mapping):
+            continue
+        task_id = _optional_text(row.get("id"))
+        task = state.tasks.get(task_id or "")
+        project = state.projects.get(task.project_id) if task is not None else None
+        if (
+            task is None
+            or project is None
+            or task.owner_agent_id == manager.id
+            or project.team_id != manager.team_id
+            or assessments.assess(task.id).readiness != TaskAssessmentReadiness.ACTIONABLE
+        ):
+            continue
+        task_ids.add(task.id)
+    return sorted(task_ids)
+
+
 def _has_prior_successful_ordinary_wake(
     state: TeamState,
     agent: PersistentAgent,
@@ -3171,6 +3225,34 @@ def _runtime_has_active_dispatch_reservation(
     }
 
 
+def _is_manager_fallback_supervision_task(
+    state: TeamState,
+    *,
+    dispatch: TeamDispatch,
+    task_id: str,
+) -> bool:
+    """Validate the server-frozen exception for subordinate fallback work."""
+
+    if (
+        dispatch.cause_kind != "manager_fallback"
+        or f"open_work:{task_id}" not in dispatch.wake_work_record_fingerprints
+    ):
+        return False
+    task = state.tasks.get(task_id)
+    agent = state.agents.get(dispatch.agent_id)
+    project = state.projects.get(task.project_id) if task is not None else None
+    team = state.teams.get(project.team_id) if project is not None else None
+    return bool(
+        task is not None
+        and agent is not None
+        and project is not None
+        and team is not None
+        and task.owner_agent_id != agent.id
+        and agent.team_id == team.id
+        and team.manager_agent_id == agent.id
+    )
+
+
 def _dispatch_staleness_errors(
     state: TeamState,
     *,
@@ -3208,7 +3290,12 @@ def _dispatch_staleness_errors(
         if task is None:
             errors.append(f"task {task_id} no longer exists")
             continue
-        if task.owner_agent_id != dispatch.agent_id:
+        manager_fallback_supervision_task = _is_manager_fallback_supervision_task(
+            state,
+            dispatch=dispatch,
+            task_id=task.id,
+        )
+        if task.owner_agent_id != dispatch.agent_id and not manager_fallback_supervision_task:
             errors.append(f"task {task.id} is now assigned to {task.owner_agent_id}")
             continue
         assessment = assessment_service.assess(task.id)

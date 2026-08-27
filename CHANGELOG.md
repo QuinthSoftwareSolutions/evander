@@ -11,6 +11,14 @@
   across directory scopes, converging legacy duplicates onto one shared subscription and retrying
   failed duplicate cleanup with bounded backoff.
 
+## 2026-08-27 - Scoped Manager Fallback Supervision
+
+- Froze displayed actionable subordinate tasks and their exact projects into manager-fallback
+  dispatch scope, allowing direct status requests and linked Case updates without transferring
+  task ownership or granting blanket Team authority.
+- Required the matching bounded fallback fingerprint during deferred dispatch activation so an
+  unrelated subordinate task cannot be added to the frozen scope.
+
 ## 2026-08-27 - Teams Notification Wake Latency
 
 - Signalled the Teams ingest worker immediately after a Microsoft Graph callback is durably queued,

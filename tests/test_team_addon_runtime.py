@@ -198,12 +198,15 @@ from evander_team_addon.services.human_correction_reconciliation_service import 
 )
 from evander_team_addon.services.runtime_service import (
     TeamRuntimeService,
+    _dispatch_staleness_errors,
     _has_prior_successful_ordinary_wake,
 )
 from evander_team_addon.services.worktree_cleanup_service import (
     TeamWorktreeCleanupService,
 )
 from evander_team_addon.services.commands import (
+    TeamAgentMessageCommandService,
+    TeamCaseCommandService,
     TeamEphemeralCommandService,
     TeamGitReleaseCommandService,
     TeamReviewCommandService,
@@ -2091,6 +2094,117 @@ def test_due_team_member_is_leased_before_manager_fallback(tmp_path: Path) -> No
     assert all(lease["reason"] != "manager_fallback" for lease in leases)
     manager_runtime = state.agent_runtimes.get("manager")
     assert manager_runtime is None or manager_runtime.active_dispatch_id is None
+
+
+def test_manager_fallback_scopes_unattended_support_task_for_supervision(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = _seed_team(tmp_path)
+    admin = _team_admin_service(repo)
+    now = datetime(2026, 1, 1, tzinfo=UTC)
+    state = admin.update_task(
+        task_id="task",
+        state=TeamTaskState.WAITING_FOR_INPUT,
+        expected_revision=repo.read().revision,
+    )
+    state = admin.register_agent(
+        agent_id="support",
+        team_id="team",
+        project_id="project",
+        role_id="project__backend",
+        session_id="session-support",
+        reports_to_agent_id="manager",
+        display_name="Support Agent",
+        expected_revision=state.revision,
+    )
+    state = admin.create_or_reprioritize_task(
+        task_id="support-task",
+        owner_agent_id="support",
+        project_id="project",
+        priority=1,
+        title="Resolve support case",
+        description="Keep the customer case current while awaiting a reply.",
+        created_by_agent_id="manager",
+        expected_revision=state.revision,
+    )
+    state = admin.create_case(
+        case_id="support-case",
+        team_id="team",
+        project_id="project",
+        title="Factory support case",
+        description="Awaiting the operator's reply.",
+        status=TeamCaseStatus.WAITING,
+        owner_agent_id="support",
+        source="teams",
+        source_ref="teams:support:thread",
+        task_ids=["support-task"],
+        expected_revision=state.revision,
+    )
+
+    def _defer_support_owner(current: TeamState) -> TeamState:
+        current.agent_runtimes["support"] = AgentRuntime(
+            agent_id="support",
+            next_wake_at=now + timedelta(hours=1),
+        )
+        return current
+
+    repo.update(_defer_support_owner, expected_revision=state.revision)
+    runtime = _team_runtime_service(repo)
+    _state, leases = runtime.lease_due_agents(now=now, defer_activation=True)
+
+    assert [lease["agent"]["id"] for lease in leases] == ["manager"]
+    lease = leases[0]
+    dispatch_id = lease["dispatch_id"]
+    assert lease["reason"] == "manager_fallback"
+    assert lease["tasks"] == []
+    assert lease["dispatch"]["task_ids"] == ["support-task"]
+    assert lease["dispatch"]["project_ids"] == ["project"]
+    assert (
+        lease["dispatch"]["wake_work_record_fingerprints"]["open_work:support-task"]
+    )
+    unfingerprinted = repo.read().dispatches[dispatch_id].model_copy(deep=True)
+    unfingerprinted.wake_work_record_fingerprints = {}
+    assert _dispatch_staleness_errors(
+        repo.read(),
+        dispatch=unfingerprinted,
+    ) == ["task support-task is now assigned to support"]
+
+    activated, _activation = runtime.activate_delivered_agent_dispatch(
+        dispatch_id=dispatch_id,
+        now=now + timedelta(seconds=1),
+    )
+    dispatch = activated.dispatches[dispatch_id]
+    assert dispatch.status == TeamDispatchStatus.LEASED
+    assert dispatch.task_ids == ["support-task"]
+    assert dispatch.project_ids == ["project"]
+    monkeypatch.setattr(
+        "evander_team_addon.services.commands.executor.utc_now",
+        lambda: now + timedelta(seconds=2),
+    )
+
+    state, status_request = TeamAgentMessageCommandService(repo).request_status_command(
+        session_id="session-manager",
+        recipient_agent_id="support",
+        task_id="support-task",
+        question="Confirm whether this case should remain waiting or can be closed.",
+        request_id="manager-fallback-support-status",
+    )
+    assert status_request["success"] is True, json.dumps(status_request, indent=2, sort_keys=True)
+    status_inbox_id = status_request["inbox_item_id"]
+    assert state.inbox[status_inbox_id].task_id == "support-task"
+
+    state, case_update = TeamCaseCommandService(repo).update_case_command(
+        session_id="session-manager",
+        case_id="support-case",
+        description="Manager reviewed; still awaiting the operator's reply.",
+        status=TeamCaseStatus.WAITING.value,
+        request_id="manager-fallback-support-case-review",
+    )
+    assert case_update["success"] is True
+    assert state.cases["support-case"].status == TeamCaseStatus.WAITING
+    assert state.cases["support-case"].description.startswith("Manager reviewed")
+    assert state.tasks["support-task"].owner_agent_id == "support"
 
 
 def test_dependency_waiting_owner_not_leased(tmp_path: Path) -> None:

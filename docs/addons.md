@@ -1896,6 +1896,15 @@ the wrong scope list, and work created mid-dispatch waits for a later wake.
 Commands require a `leased` dispatch and revalidate membership plus current
 assignment/actionability in the corresponding list.
 
+A manager-fallback wake has one bounded supervision exception. Actionable
+subordinate tasks displayed in its compact `open_work` summary are frozen into
+the dispatch `task_ids`, and their exact projects are frozen into `project_ids`.
+The fallback fingerprint proves that each task was selected by the server. This
+allows a Team manager to request status from a direct subordinate and update a
+linked Case without granting blanket Team scope. It does not transfer task
+ownership: ordinary task-update ownership, lifecycle, and reassignment checks
+continue to apply.
+
 Before leasing, Team prepares every required repository and task worktree and
 persists a fresh dispatch-bound Git context. A durable task/repository identity
 keeps one deterministic physical worktree path across dispatches, while context
