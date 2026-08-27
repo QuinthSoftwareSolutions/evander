@@ -15,7 +15,13 @@ from evander.config import DiscordIngestWorkerGlobalConfig, GatewayConfig
 from evander.events.models import materialize_node_definition
 from evander.events.provider_models import CommunicationNewMessageTriggerDefinition
 from evander.messaging.targets import load_communication_targets_config
-from evander.models import DirectoryPath, DiscordMessageEnvelope, SessionManifest, ToolName
+from evander.models import (
+    DirectoryPath,
+    DiscordCommandEnvelope,
+    DiscordMessageEnvelope,
+    SessionManifest,
+    ToolName,
+)
 from evander.orchestration.host_polling import HostFileLockManager, HostSleeper
 from evander.orchestration.kernels import (
     PollingKernelConfig,
@@ -503,6 +509,19 @@ class DiscordIngestWorker:
                 )
             )
         if discovered:
+            self.runtime.discord_commands.put_many(
+                {
+                    message.message_id: DiscordCommandEnvelope(
+                        command_id=message.message_id,
+                        author_id=message.author_id,
+                        channel_id=message.channel_id,
+                        content=message.content,
+                        created_at=message.created_at,
+                        metadata=dict(message.raw),
+                    )
+                    for message in discovered
+                }
+            )
             self.runtime.discord_inbox_service.store.add_messages_if_new(discovered)
         if discovered:
             latest_created_at = discovered[-1].created_at.isoformat().replace("+00:00", "Z")

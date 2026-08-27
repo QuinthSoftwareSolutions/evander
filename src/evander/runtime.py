@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 from datetime import UTC, datetime
 from dataclasses import dataclass, field
-from typing import Callable
+from typing import Callable, Sequence
 from pathlib import Path
 
 from evander.messaging.agent_prompt_store import AgentPromptStore
@@ -214,6 +214,16 @@ class RuntimeContext:
             _build_email_provider(resolved_config, self.emails, self.drafts, self.email_cursors)
         )
 
+    def email_service_for_directory(self, directory_path: str) -> EmailService:
+        if not isinstance(self.email_service, EmailService):
+            return self.email_service
+        resolved_config = self.provider_config.resolve_for_directory(directory_path)
+        if resolved_config == self.config:
+            return self.email_service
+        return EmailService(
+            _build_email_provider(resolved_config, self.emails, self.drafts, self.email_cursors)
+        )
+
     def discord_service_for_session(self, session_id: str) -> DiscordService:
         if not isinstance(self.discord_service, (StubDiscordService, DiscordBotApiService)):
             return self.discord_service
@@ -224,6 +234,32 @@ class RuntimeContext:
             self.session_repository,
             self.policy_config,
             session_id=session_id,
+        )
+
+    def discord_service_for_directory(
+        self,
+        directory_path: str,
+        *,
+        allowed_channel_ids: Sequence[str],
+    ) -> DiscordService:
+        if not isinstance(self.discord_service, (StubDiscordService, DiscordBotApiService)):
+            return self.discord_service
+        resolved_config = self.provider_config.resolve_for_directory(directory_path)
+        exact_channel_ids = sorted(
+            {
+                str(channel_id or "").strip()
+                for channel_id in allowed_channel_ids
+                if str(channel_id or "").strip()
+            }
+        )
+        return _build_discord_service(
+            resolved_config,
+            self.discord_commands,
+            self.session_repository,
+            self.policy_config,
+            allowed_channel_ids_provider=lambda: exact_channel_ids,
+            poll_channel_ids_provider=lambda: exact_channel_ids,
+            allowed_webhook_channel_ids_provider=lambda: [],
         )
 
     def discord_inbox_service_for_session(self, session_id: str) -> DiscordInboxService:
@@ -325,6 +361,32 @@ class RuntimeContext:
                 session_id,
                 policy_config=self.policy_config,
             ),
+            user_chat_cache=self.teams_user_chat_cache,
+        )
+
+    def teams_service_for_directory(
+        self,
+        directory_path: str,
+        *,
+        allowed_channel_targets: Sequence[str],
+    ) -> TeamsService:
+        if not isinstance(self.teams_service, (StubTeamsService, GraphTeamsService)):
+            return self.teams_service
+        resolved_config = self.provider_config.resolve_for_directory(directory_path)
+        exact_targets = sorted(
+            {
+                str(target or "").strip()
+                for target in allowed_channel_targets
+                if str(target or "").strip()
+            }
+        )
+        return _build_teams_service(
+            resolved_config,
+            self.teams_messages,
+            self.session_repository,
+            directory_path=directory_path,
+            allowed_channel_targets_provider=lambda: exact_targets,
+            allowed_user_targets_provider=lambda: [],
             user_chat_cache=self.teams_user_chat_cache,
         )
 

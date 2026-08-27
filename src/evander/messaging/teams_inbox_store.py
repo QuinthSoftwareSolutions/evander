@@ -659,9 +659,7 @@ class TeamsInboxStore:
                 item.target
                 for item in subscriptions
                 if item.health not in {"deleted", "expired", "abandoned"}
-                and (
-                    item.health != "active" or self._ensure_utc(item.expires_at) <= current
-                )
+                and (item.health != "active" or self._ensure_utc(item.expires_at) <= current)
             }
             | {
                 str(row["target"])
@@ -880,6 +878,38 @@ class TeamsInboxStore:
                 WHERE cursor = ?
                 """,
                 (normalized_cursor,),
+            ).fetchone()
+        if row is None:
+            return None
+        return TeamsInboxMessage.model_validate_json(row["payload_json"])
+
+    def find_message(
+        self,
+        message_id: str,
+        *,
+        channel_target: str | None = None,
+    ) -> TeamsInboxMessage | None:
+        normalized_message_id = str(message_id or "").strip()
+        if not normalized_message_id:
+            return None
+        where = ["message_id = ?"]
+        params: list[Any] = [normalized_message_id]
+        if channel_target is not None:
+            normalized_target = str(channel_target or "").strip().strip("/")
+            if not normalized_target:
+                return None
+            where.append("channel_target = ?")
+            params.append(normalized_target)
+        with self._lock, self._connect() as connection:
+            row = connection.execute(
+                f"""
+                SELECT payload_json
+                FROM teams_inbox_messages
+                WHERE {" AND ".join(where)}
+                ORDER BY created_at DESC, cursor DESC
+                LIMIT 1
+                """,
+                params,
             ).fetchone()
         if row is None:
             return None

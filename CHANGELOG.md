@@ -14,6 +14,12 @@
   failed duplicate cleanup with bounded backoff.
 - Routed shared-subscription callbacks through an active consumer directory when the stored
   representative is no longer active, preserving delayed exact-message delivery.
+- Mirrored sanitized Teams and Discord ingress envelopes into their attachment adapter stores,
+  resolved imports with the source workflow directory credentials, and preserved Discord thread
+  channels for attachment listing and download.
+- Enforced Team Chat attachment byte caps while streaming Teams and Discord downloads, selected
+  callback consumers only when their target and provider identity still match, and deleted fully
+  orphaned shared subscriptions in one reconciliation pass.
 
 ## 2026-08-27 - Scoped Manager Fallback Supervision
 

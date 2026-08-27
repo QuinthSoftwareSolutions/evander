@@ -11858,7 +11858,14 @@ def test_enqueue_operator_chat_message_effect_validates_target_and_authorization
                 }
             ]
 
-        def download_attachment(self, message_id, attachment_id, *, channel_id=None):
+        def download_attachment(
+            self,
+            message_id,
+            attachment_id,
+            *,
+            channel_id=None,
+            max_bytes=None,
+        ):
             self.download_calls += 1
             assert attachment_id == "discord-attachment-1"
             return {
@@ -11868,6 +11875,12 @@ def test_enqueue_operator_chat_message_effect_validates_target_and_authorization
             }
 
     attachment_service = _AttachmentDiscordService()
+    attachment_source_directories: list[str] = []
+
+    def attachment_service_for_directory(directory_path, **_kwargs):
+        attachment_source_directories.append(directory_path)
+        return attachment_service
+
     attachment_provider = TeamEnqueueOperatorChatMessageEffectProvider()
     attachment_provider.initialize(
         definition.model_copy(
@@ -11876,17 +11889,19 @@ def test_enqueue_operator_chat_message_effect_validates_target_and_authorization
                 "source_message_id": "discord-message-with-image",
                 "body": "",
                 "import_attachments": True,
+                "allow_team_mutations": False,
+                "authorized_author_ids": [],
             }
         ),
         EffectRuntimeContext(
             resolved_config={"runtime_dir": str(tmp_path)},
-            metadata={"directory_path": "root", "directory_store": directory_store},
+            metadata={"directory_path": "root/team-a", "directory_store": directory_store},
             session_lookup=SimpleNamespace(
-                get_session=lambda _session_id: SimpleNamespace(directory_path="root")
+                get_session=lambda _session_id: SimpleNamespace(directory_path="root/team-b")
             ),
             admin_service=SimpleNamespace(
                 runtime=SimpleNamespace(
-                    discord_service_for_session=lambda _session_id: attachment_service
+                    discord_service_for_directory=attachment_service_for_directory
                 )
             ),
         ),
@@ -11900,6 +11915,7 @@ def test_enqueue_operator_chat_message_effect_validates_target_and_authorization
     assert attachment_replay["duplicate"] is True
     assert attachment_service.list_calls == 1
     assert attachment_service.download_calls == 1
+    assert attachment_source_directories == ["root/team-a", "root/team-a"]
     attachment_state = TeamStateRepository(tmp_path).read()
     attachment_message = attachment_state.conversation_messages[attachment_result["message_id"]]
     assert attachment_message.body is None
@@ -11931,7 +11947,9 @@ def test_enqueue_operator_chat_message_effect_validates_target_and_authorization
             ),
             admin_service=SimpleNamespace(
                 runtime=SimpleNamespace(
-                    discord_service_for_session=lambda _session_id: _FailingDiscordService()
+                    discord_service_for_directory=(
+                        lambda _directory_path, **_kwargs: _FailingDiscordService()
+                    )
                 )
             ),
         ),

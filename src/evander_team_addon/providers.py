@@ -3986,7 +3986,7 @@ class TeamEnqueueOperatorChatMessageEffectProvider(EffectProviderBase):
                     runtime,
                     TeamChatAttachmentStorage(repo.runtime_dir),
                 ).import_message_attachments(
-                    session_id=agent.session_id,
+                    source_directory_path=directory_path,
                     provider=provider,
                     communication_target_id=target.id,
                     target_address=target.address,
@@ -3994,6 +3994,7 @@ class TeamEnqueueOperatorChatMessageEffectProvider(EffectProviderBase):
                         payload.get("source_message_id"),
                         "source_message_id",
                     ),
+                    source_thread_id=source_thread_id,
                     policy=policy,
                     auth_profile_ref=target.policy.auth_profile_ref,
                 )

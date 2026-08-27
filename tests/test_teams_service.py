@@ -714,7 +714,9 @@ def test_graph_teams_outbound_write_does_not_retry_after_unacknowledged_timeout(
     def handler(request: httpx.Request) -> httpx.Response:
         nonlocal attempts
         attempts += 1
-        raise httpx.ReadTimeout("response timed out after Graph received the write", request=request)
+        raise httpx.ReadTimeout(
+            "response timed out after Graph received the write", request=request
+        )
 
     patch_httpx_client(monkeypatch, httpx.MockTransport(handler))
     service = GraphTeamsService(
@@ -1889,6 +1891,73 @@ def test_graph_teams_service_preserves_attachment_metadata_and_downloads_hosted_
     assert downloaded["content"] == b"png-bytes"
     assert downloaded["mime_type"] == "image/png"
     assert downloaded["filename"] == "inline.png"
+
+
+def test_graph_teams_unknown_size_hosted_content_stops_at_streaming_limit(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    yielded_chunks: list[bytes] = []
+
+    class _ChunkedBody(httpx.SyncByteStream):
+        def __iter__(self):
+            for chunk in (b"1234", b"5678", b"must-not-read"):
+                yielded_chunks.append(chunk)
+                yield chunk
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            headers={"content-type": "image/png"},
+            stream=_ChunkedBody(),
+            request=request,
+        )
+
+    transport = httpx.MockTransport(handler)
+    patch_httpx_client(monkeypatch, transport)
+    store = JsonStore(tmp_path / "teams.json", TeamsMessageEnvelope)
+    store.put(
+        "team-a/channel-1/msg-1",
+        TeamsMessageEnvelope(
+            cursor="team-a/channel-1/msg-1",
+            message_id="msg-1",
+            author_id="user-a",
+            team_id="team-a",
+            channel_id="channel-1",
+            content='<img src="../hostedContents/hosted-1/$value">',
+            metadata={
+                "source": "teams_graph_api",
+                "target": "team-a/channel-1",
+                "attachments": [
+                    {
+                        "id": "hosted-1",
+                        "name": "inline.png",
+                        "contentType": "image/png",
+                        "attachment_kind": "hosted_content",
+                        "hosted_content_id": "hosted-1",
+                    }
+                ],
+            },
+        ),
+    )
+    service = GraphTeamsService(
+        store,
+        token="graph-token",
+        api_base_url="https://graph.microsoft.com/v1.0",
+        poll_limit=25,
+        timeout_seconds=5.0,
+        allowed_channel_targets_provider=lambda: ["team-a/channel-1"],
+    )
+
+    with pytest.raises(ValueError, match="maximum size of 5 bytes"):
+        service.download_attachment(
+            "msg-1",
+            "hosted-1",
+            channel_target="team-a/channel-1",
+            max_bytes=5,
+        )
+
+    assert yielded_chunks == [b"1234", b"5678"]
 
 
 def test_graph_teams_service_lists_hosted_content_on_demand_for_inline_images(

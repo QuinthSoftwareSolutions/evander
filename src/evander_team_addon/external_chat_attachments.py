@@ -3,11 +3,15 @@ from __future__ import annotations
 import base64
 import re
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Mapping
 
 import httpx
 
+from evander.messaging.discord_inbox_store import DiscordInboxStore
 from evander.messaging.notifications import _email_mailbox_id_from_auth_profile_ref
+from evander.messaging.teams_inbox_store import TeamsInboxStore
+from evander.models import DiscordCommandEnvelope, TeamsMessageEnvelope
 
 from .chat_attachments import (
     PreparedChatAttachment,
@@ -73,11 +77,12 @@ class ExternalTeamChatAttachmentImporter:
     def import_message_attachments(
         self,
         *,
-        session_id: str,
+        source_directory_path: str,
         provider: str,
         communication_target_id: str,
         target_address: str,
         source_message_id: str,
+        source_thread_id: str | None = None,
         policy: TeamChatAttachmentPolicy,
         auth_profile_ref: str | None = None,
     ) -> ExternalAttachmentImportResult:
@@ -88,11 +93,22 @@ class ExternalTeamChatAttachmentImporter:
                 if normalized_provider == "email"
                 else None
             )
-            raw_refs = self._list_attachments(
-                session_id=session_id,
+            ingress_message_present = self._mirror_ingress_message(
                 provider=normalized_provider,
                 target_address=target_address,
                 source_message_id=source_message_id,
+                source_thread_id=source_thread_id,
+            )
+            if normalized_provider in {"teams", "discord"} and ingress_message_present is False:
+                raise ValueError(
+                    f"{normalized_provider} source message is not present in the ingress store"
+                )
+            raw_refs = self._list_attachments(
+                source_directory_path=source_directory_path,
+                provider=normalized_provider,
+                target_address=target_address,
+                source_message_id=source_message_id,
+                source_thread_id=source_thread_id,
                 email_mailbox_id=email_mailbox_id,
             )
         except Exception as exc:
@@ -137,12 +153,14 @@ class ExternalTeamChatAttachmentImporter:
                         byte_count=ref.byte_count,
                     )
                 content, filename, mime_type = self._download_attachment(
-                    session_id=session_id,
+                    source_directory_path=source_directory_path,
                     provider=normalized_provider,
                     target_address=target_address,
                     source_message_id=source_message_id,
+                    source_thread_id=source_thread_id,
                     ref=ref,
                     email_mailbox_id=email_mailbox_id,
+                    max_bytes=policy.max_attachment_bytes,
                 )
                 validate_attachment_policy_content(
                     policy,
@@ -178,27 +196,101 @@ class ExternalTeamChatAttachmentImporter:
             result.status = "failed"
         return result
 
-    def _list_attachments(
+    def _mirror_ingress_message(
         self,
         *,
-        session_id: str,
         provider: str,
         target_address: str,
         source_message_id: str,
+        source_thread_id: str | None,
+    ) -> bool | None:
+        config = getattr(self.runtime, "config", None)
+        runtime_dir_value = getattr(config, "runtime_dir", None)
+        if runtime_dir_value is None:
+            return None
+        runtime_dir = Path(runtime_dir_value)
+        if provider == "teams" and hasattr(self.runtime, "teams_messages"):
+            message = TeamsInboxStore(runtime_dir / "teams-inbox-store.db").find_message(
+                source_message_id,
+                channel_target=target_address,
+            )
+            if message is None or (
+                source_thread_id is not None and message.thread_id != source_thread_id
+            ):
+                return False
+            self.runtime.teams_messages.put(
+                message.cursor,
+                TeamsMessageEnvelope(
+                    cursor=message.cursor,
+                    message_id=message.message_id,
+                    author_id=message.author_id,
+                    team_id=message.team_id,
+                    channel_id=message.channel_id,
+                    chat_id=message.chat_id,
+                    thread_id=message.thread_id,
+                    content=message.content,
+                    created_at=message.created_at,
+                    metadata=dict(message.metadata),
+                ),
+            )
+            return True
+        if provider == "discord" and hasattr(self.runtime, "discord_commands"):
+            message = DiscordInboxStore(runtime_dir / "discord-inbox-store.db").get_message(
+                source_message_id
+            )
+            parent_channel_id = target_address.rsplit("/", 1)[-1]
+            expected_channel_id = source_thread_id or parent_channel_id
+            if (
+                message is None
+                or message.channel_id != expected_channel_id
+                or (source_thread_id is not None and message.parent_channel_id != parent_channel_id)
+                or (source_thread_id is None and message.parent_channel_id not in {None, ""})
+            ):
+                return False
+            self.runtime.discord_commands.put(
+                message.message_id,
+                DiscordCommandEnvelope(
+                    command_id=message.message_id,
+                    author_id=message.author_id,
+                    channel_id=message.channel_id,
+                    content=message.content,
+                    created_at=message.created_at,
+                    metadata=dict(message.raw),
+                ),
+            )
+            return True
+        return None
+
+    def _list_attachments(
+        self,
+        *,
+        source_directory_path: str,
+        provider: str,
+        target_address: str,
+        source_message_id: str,
+        source_thread_id: str | None,
         email_mailbox_id: str | None,
     ) -> list[Any]:
         if provider == "teams":
-            raw = self.runtime.teams_service_for_session(session_id).list_attachments(
+            raw = self.runtime.teams_service_for_directory(
+                source_directory_path,
+                allowed_channel_targets=[target_address],
+            ).list_attachments(
                 source_message_id,
                 channel_target=target_address,
             )
         elif provider == "discord":
-            raw = self.runtime.discord_service_for_session(session_id).list_attachments(
+            parent_channel_id = target_address.rsplit("/", 1)[-1]
+            source_channel_id = source_thread_id or parent_channel_id
+            raw = self.runtime.discord_service_for_directory(
+                source_directory_path,
+                allowed_channel_ids=[parent_channel_id, source_channel_id],
+            ).list_attachments(
                 source_message_id,
-                channel_id=target_address.rsplit("/", 1)[-1],
+                channel_id=source_channel_id,
             )
         elif provider == "email":
-            raw = self.runtime.email_service_for_session(session_id).list_attachments(
+            raw = self.runtime.email_service_for_directory(source_directory_path).list_attachments(
                 mailbox_id=email_mailbox_id,
                 message_id=source_message_id,
             )
@@ -209,27 +301,45 @@ class ExternalTeamChatAttachmentImporter:
     def _download_attachment(
         self,
         *,
-        session_id: str,
+        source_directory_path: str,
         provider: str,
         target_address: str,
         source_message_id: str,
+        source_thread_id: str | None,
         ref: ExternalAttachmentRef,
         email_mailbox_id: str | None,
+        max_bytes: int | None,
     ) -> tuple[bytes, str, str | None]:
         if provider == "teams":
-            raw = self.runtime.teams_service_for_session(session_id).download_attachment(
+            raw = self.runtime.teams_service_for_directory(
+                source_directory_path,
+                allowed_channel_targets=[target_address],
+            ).download_attachment(
                 source_message_id,
                 ref.attachment_id,
                 channel_target=target_address,
+                max_bytes=max_bytes,
             )
         elif provider == "discord":
-            raw = self.runtime.discord_service_for_session(session_id).download_attachment(
+            parent_channel_id = target_address.rsplit("/", 1)[-1]
+            source_channel_id = source_thread_id or parent_channel_id
+            raw = self.runtime.discord_service_for_directory(
+                source_directory_path,
+                allowed_channel_ids=[parent_channel_id, source_channel_id],
+            ).download_attachment(
                 source_message_id,
                 ref.attachment_id,
-                channel_id=target_address.rsplit("/", 1)[-1],
+                channel_id=source_channel_id,
+                max_bytes=max_bytes,
             )
         elif provider == "email":
-            raw = self.runtime.email_service_for_session(session_id).download_attachment(
+            if max_bytes is not None and ref.byte_count is None:
+                raise ValueError(
+                    "email attachment metadata omitted size required to enforce the Team Chat limit"
+                )
+            raw = self.runtime.email_service_for_directory(
+                source_directory_path
+            ).download_attachment(
                 mailbox_id=email_mailbox_id,
                 message_id=source_message_id,
                 attachment_id=ref.attachment_id,

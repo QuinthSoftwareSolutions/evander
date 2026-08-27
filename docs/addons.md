@@ -632,7 +632,12 @@ provenance, are validated by the effective Team Chat operator-to-agent file
 policy, and follow the normal workspace-copy path. Valid files are still
 delivered when another file fails or violates policy; the message, effect
 output, Team Chat UI, and agent prompt carry a bounded warning describing the
-partial or failed import. Provider credentials remain host-side.
+partial or failed import. Provider credentials and target allowlists are
+resolved from the workflow effect's source directory, while the receiving
+agent's directory still supplies the Team Chat attachment policy. Teams and
+Discord downloads enforce that policy's byte cap while streaming, and Discord
+public-thread imports use the authenticated source thread rather than its
+configured parent channel. Provider credentials remain host-side.
 
 An agent reply to an externally originated message is committed to Team state
 before delivery is attempted. `team_reply_to_chat` creates a pending external
