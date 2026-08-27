@@ -44,8 +44,8 @@ from evander.repositories.cursors import (
 from evander.models import DirectoryPath, SessionManifest, TeamsMessageEnvelope, ToolName
 from evander.orchestration.host_polling import (
     HostFileLockManager,
-    HostSleeper,
     HostWakeNotifier,
+    HostWakeSleeper,
     wake_socket_path_for_lock,
 )
 from evander.orchestration.kernels import (
@@ -205,6 +205,11 @@ class TeamsIngestWorker:
         self.worker_config = worker_config
         self.runtime = runtime
         self.project_dir = Path(project_dir) if project_dir is not None else Path.cwd()
+        worker_lock_path = _resolve_teams_ingest_lock_path(
+            self.worker_config,
+            project_dir=self.project_dir,
+        )
+        self._wake_sleeper = HostWakeSleeper(wake_socket_path_for_lock(worker_lock_path))
         self.session_repository = runtime.session_repository
         self.store = store or JsonTeamsInboxCursorRepository(
             config.runtime_dir / "teams-inbox-store.db"
@@ -241,10 +246,10 @@ class TeamsIngestWorker:
                 lock_path=self.worker_config.lock_path,
             ),
             lock_manager=HostFileLockManager(busy_error_text="Teams ingest worker already running"),
-            sleeper=HostSleeper(),
+            sleeper=self._wake_sleeper,
             run_cycle=self.run_once,
             get_sleep_seconds=lambda result: result.next_sleep_seconds,
-            on_start=self._log_start,
+            on_start=self._on_start,
             on_cycle_success=self._log_cycle_success,
             on_cycle_exception=self._log_cycle_exception,
             get_exception_sleep_seconds=lambda _exc: self.worker_config.backoff_seconds,
@@ -370,6 +375,10 @@ class TeamsIngestWorker:
             self.worker_config.publish_trigger_events_directly,
             self.worker_config.lock_path,
         )
+
+    def _on_start(self) -> None:
+        self._wake_sleeper.start()
+        self._log_start()
 
     def _log_cycle_success(self, result: TeamsIngestCycleResult) -> None:
         logger.debug(
@@ -1811,6 +1820,19 @@ def _load_teams_ingest_worker_global_config(
     if not isinstance(raw, dict):
         raise ValueError(f"worker config file {path} must contain a JSON object")
     return TeamsIngestWorkerGlobalConfig.model_validate({**base_payload, **raw})
+
+
+def _resolve_teams_ingest_lock_path(
+    worker_config: TeamsIngestWorkerGlobalConfig,
+    *,
+    project_dir: Path,
+) -> Path:
+    lock_path = worker_config.lock_path
+    if lock_path is None:
+        lock_path = worker_config.runtime_dir / "teams-ingest.lock"
+    if not lock_path.is_absolute():
+        lock_path = Path(project_dir) / lock_path
+    return lock_path
 
 
 def _build_trigger_wake_notifier(

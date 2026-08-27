@@ -242,6 +242,26 @@ def normalize_model_pricing_catalog_payload(payload: Any) -> dict[str, Any]:
     }
 
 
+def model_pricing_catalog_payload(catalog: ModelPricingCatalog) -> dict[str, Any]:
+    """Return the exact normalized pricing snapshot used for cost accounting."""
+    return {
+        "version": catalog.version,
+        "currency": catalog.currency,
+        "rules": [_pricing_rule_payload(rule) for rule in catalog.rules],
+    }
+
+
+def model_pricing_catalog_fingerprint(catalog: ModelPricingCatalog) -> str:
+    """Identify pricing by content so same-version edits invalidate cached balances."""
+    payload = json.dumps(
+        model_pricing_catalog_payload(catalog),
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+    ).encode("utf-8")
+    return sha256(payload).hexdigest()
+
+
 def estimate_model_usage_cost(
     event: ModelInferenceUsageEvent,
     catalog: ModelPricingCatalog | None,
@@ -730,6 +750,8 @@ __all__ = [
     "extract_cached_input_tokens",
     "load_model_pricing_catalog",
     "load_model_pricing_catalog_payload",
+    "model_pricing_catalog_fingerprint",
+    "model_pricing_catalog_payload",
     "normalize_model_pricing_catalog_payload",
     "seed_default_model_pricing_catalog",
 ]

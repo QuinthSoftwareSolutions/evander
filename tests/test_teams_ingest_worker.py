@@ -106,6 +106,22 @@ def write_teams_ingest_worker_config(
     )
 
 
+def test_teams_ingest_worker_binds_wake_socket_for_its_lock(tmp_path: Path) -> None:
+    config = GatewayConfig.model_validate({"runtime_dir": tmp_path / "runtime"})
+    worker = build_teams_ingest_worker(config, project_dir=tmp_path)
+    wake_path = wake_socket_path_for_lock(tmp_path / "runtime" / "teams-ingest.lock")
+
+    assert isinstance(worker._wake_sleeper, HostWakeSleeper)
+    assert worker._wake_sleeper.path == wake_path
+    assert worker._kernel._sleeper is worker._wake_sleeper
+
+    worker._kernel._on_start()
+    try:
+        assert wake_path.is_socket()
+    finally:
+        worker._wake_sleeper.close()
+
+
 @pytest.mark.parametrize(
     ("resource", "expected"),
     [

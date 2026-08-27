@@ -39,6 +39,7 @@ from evander.workflow.runtime_config import load_trigger_orchestrator_worker_glo
 import evander_team_addon.outbox_publication as team_outbox_publication
 from internal_event_test_support import default_orchestration_database_path
 from evander_team_addon.chat_attachments import TeamChatAttachmentStorage
+from evander_team_addon.costs import TeamCostService
 from evander_team_addon.mcp import (
     GOVERNANCE_TEAM_MCP_TOOL_NAMES,
     ORDINARY_TEAM_MCP_TOOL_NAMES,
@@ -4540,6 +4541,7 @@ def test_waiting_reconciliation_discards_replaced_governance_queue_record_before
 
 def test_wake_governance_managers_uses_governance_prompt_without_action_seed(
     tmp_path: Path,
+    monkeypatch,
 ) -> None:
     repo = _seed_team(tmp_path)
     _team_admin_service(repo).update_team(
@@ -4576,6 +4578,35 @@ def test_wake_governance_managers_uses_governance_prompt_without_action_seed(
         team_id="team",
         expected_revision=repo.read().revision,
     )
+    budget_window_started_at = (
+        repo.read()
+        .teams["team"]
+        .cost_budget_windows[-1]
+        .started_at.astimezone(UTC)
+        .isoformat()
+        .replace("+00:00", "Z")
+    )
+    governance_cost_calls: list[bool] = []
+
+    def governance_costs(_service, *, team_ids):
+        assert team_ids == {"team"}
+        governance_cost_calls.append(True)
+        return {
+            "team_costs": {
+                "team": {
+                    "team_id": "team",
+                    "estimated_cost": 42.0,
+                    "lifetime_estimated_cost": 42.0,
+                    "budget_window_estimated_cost": 7.0,
+                    "budget_window_started_at": budget_window_started_at,
+                    "max_cost_usd": 2000.0,
+                    "remaining_cost_usd": 1993.0,
+                    "cost_limit_reached": False,
+                }
+            }
+        }
+
+    monkeypatch.setattr(TeamCostService, "governance_costs_payload", governance_costs)
 
     def assert_context_registered(call: dict[str, object]) -> None:
         usage_context = ModelUsageStore(tmp_path / "model-usage.db").get_correlation_context(
@@ -4655,6 +4686,10 @@ def test_wake_governance_managers_uses_governance_prompt_without_action_seed(
         str(resumer.calls[0]["prompt"]).split("Governance context JSON:\n", maxsplit=1)[1]
     )
     member_team = governance_context["member_teams"][0]
+    assert governance_cost_calls == [True]
+    assert member_team["cost"]["estimated_cost"] == 42.0
+    assert member_team["cost"]["lifetime_estimated_cost"] == 42.0
+    assert member_team["cost"]["budget_window_estimated_cost"] == 7.0
     assert member_team["team"]["cost_budget_windows"][-1]["max_cost_usd"] == 975.0
     assert member_team["current_cost_policy"] == {
         "budget_window_started_at": member_team["cost"]["budget_window_started_at"],
@@ -7508,6 +7543,7 @@ def test_wake_due_agents_provider_keeps_rotation_pending_when_resume_fails(
 
 def test_wake_due_agents_provider_skips_team_when_cost_limit_reached(
     tmp_path: Path,
+    monkeypatch,
 ) -> None:
     repo = _seed_team(tmp_path)
     _team_admin_service(repo).update_team(
@@ -7516,6 +7552,13 @@ def test_wake_due_agents_provider_skips_team_when_cost_limit_reached(
         set_max_cost_usd=True,
     )
     resumer = FakeResumer()
+    monkeypatch.setattr(
+        TeamCostService,
+        "costs_payload",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("wake-time cost guards must not build the lifetime cost report")
+        ),
+    )
     provider = TeamWakeDueAgentsEffectProvider()
     provider.initialize(
         TeamWakeDueAgentsEffectDefinition(

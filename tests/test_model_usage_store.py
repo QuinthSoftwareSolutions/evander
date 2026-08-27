@@ -2,17 +2,57 @@ from __future__ import annotations
 
 import sqlite3
 from datetime import UTC, datetime, timedelta
+from decimal import Decimal
 from pathlib import Path
+
+import pytest
 
 from evander.model_usage.models import (
     ModelInferenceUsageEvent,
     ModelUsageCorrelationContext,
 )
+from evander.model_usage.cost_balances import UsageCostSummary
+from evander.model_usage.pricing import load_model_pricing_catalog_payload
 from evander.model_usage.store import ModelUsageStore, model_usage_store_db_path
 
 
 def _store(tmp_path: Path) -> ModelUsageStore:
     return ModelUsageStore(tmp_path / "runtime" / "model-usage.json")
+
+
+def _incremental_pricing_catalog():
+    return load_model_pricing_catalog_payload(
+        {
+            "version": "incremental-test",
+            "currency": "usd",
+            "rules": [
+                {
+                    "id": "openai:cached-test",
+                    "provider": "openai",
+                    "models": ["cached-test"],
+                    "rates_per_1m_tokens": {
+                        "input": "10",
+                        "cached_input": "1",
+                        "cache_write_5m": "12",
+                        "cache_write_1h": "20",
+                        "output": "30",
+                    },
+                },
+                {
+                    "id": "anthropic:cached-test",
+                    "provider": "anthropic",
+                    "models": ["cached-test"],
+                    "rates_per_1m_tokens": {
+                        "input": "10",
+                        "cached_input": "1",
+                        "cache_write_5m": "12",
+                        "cache_write_1h": "20",
+                        "output": "30",
+                    },
+                },
+            ],
+        }
+    )
 
 
 def test_model_usage_store_uses_sqlite_and_indexes(tmp_path: Path) -> None:
@@ -35,7 +75,12 @@ def test_model_usage_store_uses_sqlite_and_indexes(tmp_path: Path) -> None:
             )
         }
 
-    assert {"model_usage_events", "model_usage_correlation_contexts"} <= tables
+    assert {
+        "model_usage_events",
+        "model_usage_correlation_contexts",
+        "model_usage_cost_attributions",
+        "model_usage_cost_balances",
+    } <= tables
     assert {
         "idx_model_usage_events_occurred_at",
         "idx_model_usage_events_session_id",
@@ -45,7 +90,19 @@ def test_model_usage_store_uses_sqlite_and_indexes(tmp_path: Path) -> None:
         "idx_model_usage_events_model",
         "idx_model_usage_events_agent_harness",
         "idx_model_usage_events_dispatch_id",
+        "idx_model_usage_events_cost_request",
+        "idx_model_usage_cost_balances_window",
     } <= indexes
+
+
+def test_model_usage_store_closes_connections_after_each_operation(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+
+    with store._connect() as connection:
+        assert connection.execute("SELECT 1").fetchone()[0] == 1
+
+    with pytest.raises(sqlite3.ProgrammingError, match="closed"):
+        connection.execute("SELECT 1")
 
 
 def test_model_usage_store_upserts_queries_and_filters_events(tmp_path: Path) -> None:
@@ -333,3 +390,153 @@ def test_model_usage_store_upsert_preserves_existing_team_attribution(tmp_path: 
     assert merged.team_id == "team-a"
     assert merged.project_id == "project-a"
     assert merged.agent_id == "agent-a"
+
+
+def test_model_usage_store_applies_exact_cached_token_cost_deltas(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    catalog = _incremental_pricing_catalog()
+    started_at = datetime(2026, 8, 1, tzinfo=UTC)
+    store.replace_cost_balance(
+        dimension_kind="team",
+        dimension_id="team-a",
+        window_id="window-a",
+        started_at=started_at,
+        ended_at=None,
+        pricing_catalog=catalog,
+        summary=UsageCostSummary(),
+        reconciled_at=started_at,
+    )
+
+    def event(
+        *,
+        input_tokens: int,
+        output_tokens: int,
+        cached: int,
+        cache_write_5m: int,
+        cache_write_1h: int,
+    ):
+        return ModelInferenceUsageEvent(
+            event_id="event-a",
+            occurred_at=started_at + timedelta(hours=1),
+            provider="anthropic",
+            provider_endpoint_identifier="messages",
+            model="cached-test",
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            total_tokens=input_tokens + output_tokens,
+            request_status="success",
+            normalized_usage_status="available",
+            raw_usage_metadata={
+                "usage": {
+                    "input_tokens": input_tokens,
+                    "output_tokens": output_tokens,
+                    "cache_read_input_tokens": cached,
+                    "cache_creation_input_tokens": cache_write_5m + cache_write_1h,
+                    "cache_creation": {
+                        "ephemeral_5m_input_tokens": cache_write_5m,
+                        "ephemeral_1h_input_tokens": cache_write_1h,
+                    },
+                },
+                "request_metadata": {"team_id": "team-a"},
+            },
+            session_id="session-a",
+            request_id="request-a",
+        )
+
+    store.upsert_event(
+        event(
+            input_tokens=1_000,
+            output_tokens=100,
+            cached=400,
+            cache_write_5m=100,
+            cache_write_1h=200,
+        )
+    )
+    first = store.get_cost_balance(
+        dimension_kind="team", dimension_id="team-a", window_id="window-a"
+    )["summary"]
+    assert first.estimated_cost_usd == Decimal("0.0186")
+    assert first.cached_input_tokens == 400
+    assert first.cache_write_input_tokens == 300
+
+    corrected = event(
+        input_tokens=800,
+        output_tokens=200,
+        cached=600,
+        cache_write_5m=50,
+        cache_write_1h=100,
+    )
+    store.upsert_event(corrected)
+    store.upsert_event(corrected)
+    final = store.get_cost_balance(
+        dimension_kind="team", dimension_id="team-a", window_id="window-a"
+    )["summary"]
+    assert final.estimated_cost_usd == Decimal("0.0172")
+    assert final.events_count == 1
+    assert final.input_tokens == 800
+    assert final.cached_input_tokens == 600
+    assert final.cache_write_input_tokens == 150
+    assert final.output_tokens == 200
+
+
+def test_model_usage_store_incrementally_replaces_relay_cost_with_transcript_cost(
+    tmp_path: Path,
+) -> None:
+    store = _store(tmp_path)
+    catalog = _incremental_pricing_catalog()
+    started_at = datetime(2026, 8, 1, tzinfo=UTC)
+    store.replace_cost_balance(
+        dimension_kind="team",
+        dimension_id="team-a",
+        window_id="window-a",
+        started_at=started_at,
+        ended_at=None,
+        pricing_catalog=catalog,
+        summary=UsageCostSummary(),
+        reconciled_at=started_at,
+    )
+    common = {
+        "occurred_at": started_at + timedelta(hours=1),
+        "provider": "anthropic",
+        "provider_endpoint_identifier": "messages",
+        "model": "cached-test",
+        "output_tokens": 0,
+        "request_status": "success",
+        "normalized_usage_status": "available",
+        "session_id": "session-a",
+        "request_id": "request-a",
+    }
+    store.upsert_event(
+        ModelInferenceUsageEvent(
+            event_id="relay",
+            input_tokens=1_000,
+            total_tokens=1_000,
+            raw_usage_metadata={
+                "usage": {"input_tokens": 1_000, "output_tokens": 0},
+                "request_metadata": {"team_id": "team-a"},
+            },
+            **common,
+        )
+    )
+    store.upsert_event(
+        ModelInferenceUsageEvent(
+            event_id="transcript",
+            input_tokens=2_000,
+            total_tokens=2_000,
+            raw_usage_metadata={
+                "usage": {"input_tokens": 2_000, "output_tokens": 0},
+                "request_metadata": {
+                    "source": "claude_transcript_backfill",
+                    "team_id": "team-a",
+                },
+            },
+            **common,
+        )
+    )
+
+    summary = store.get_cost_balance(
+        dimension_kind="team", dimension_id="team-a", window_id="window-a"
+    )["summary"]
+    assert summary.events_count == 1
+    assert summary.input_tokens == 2_000
+    assert summary.estimated_cost_usd == Decimal("0.02")

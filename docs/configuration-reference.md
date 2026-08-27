@@ -2133,8 +2133,11 @@ Persisted callback URLs are compared during reconciliation, and changing the pub
 replaces the old Graph subscriptions before they can be treated as healthy.
 
 The callback validates endpoint challenges, tenant, owned subscription ID, and constant-time
-`clientState` hashes before durably acknowledging notifications. The ingest worker then fetches the
-exact message through Graph and uses the same authorization, direct-sender filtering, self-message
+`clientState` hashes before durably acknowledging notifications. After a new queue row commits, the
+listener signals the wake socket derived from the Teams ingest worker's configured `lock_path`; the
+worker then fetches the exact message through Graph without waiting for its next polling sleep. Wake
+failure does not reject the callback because the periodic worker cycle remains a durable fallback.
+Exact-message ingestion uses the same authorization, direct-sender filtering, self-message
 suppression, inbox deduplication, trigger publication, and wake path as polling. Completed queue rows
 are kept for seven days, exhausted failures for 30 days, and transient retrieval failures retry for
 up to 24 hours. Admin Web worker detail and the listener `/healthz` expose secret-free subscription,
