@@ -2512,6 +2512,7 @@ class GraphTeamsService:
         *,
         token: str | None = None,
         token_provider: Callable[[], str] | None = None,
+        tenant_id_provider: Callable[[], str | None] | None = None,
         api_base_url: str,
         poll_limit: int,
         timeout_seconds: float,
@@ -2531,6 +2532,7 @@ class GraphTeamsService:
         self.message_store = message_store
         self.token = str(token or "").strip()
         self.token_provider = token_provider or (lambda: self.token)
+        self.tenant_id_provider = tenant_id_provider
         self.api_base_url = api_base_url.rstrip("/")
         self.poll_limit = poll_limit
         self.history_page_cap = max(1, int(history_page_cap))
@@ -2570,6 +2572,12 @@ class GraphTeamsService:
             "Authorization": f"Bearer {self._resolve_token()}",
             "Content-Type": "application/json",
         }
+
+    def _resolve_tenant_id(self) -> str | None:
+        if self.tenant_id_provider is None:
+            return None
+        tenant_id = str(self.tenant_id_provider() or "").strip()
+        return tenant_id or None
 
     def _allowed_channel_targets(self) -> list[str]:
         return sorted(

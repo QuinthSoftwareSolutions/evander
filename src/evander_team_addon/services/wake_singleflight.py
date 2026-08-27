@@ -32,8 +32,9 @@ class TeamWakeSingleFlight:
 
     The invocation key includes the state revision observed by the caller, so
     a later state change always gets its own execution. Differently scoped or
-    revisioned wakes remain concurrent; SQLite serializes only their atomic
-    write sections instead of prompt preparation for unrelated agents.
+    revisioned wake executions remain concurrent. Their lease planning is
+    serialized per Team database, while prompt preparation for unrelated agents
+    remains concurrent and outside the SQLite writer transaction.
 
     Identical calls that arrive during one active execution share one trailing
     generation. The trailing execution rechecks wall-clock and external state

@@ -19,7 +19,8 @@ package, Git, and HTTP relays.
 - A host-side npm audit facade that sends npm audit POSTs to public npm while keeping package metadata and tarballs on Nexus
 - A host-side Azure DevOps PR feedback/completion worker plus workflow ADO work-item intake nodes
 - A host-side workflow orchestrator that polls provider triggers, evaluates gates, and persists durable queue events for downstream workers/hooks
-- A host-side Teams ingest worker that polls Microsoft Graph and feeds `trigger:teams:new-message`
+- A host-side Teams ingest worker that uses Microsoft Graph polling by default, with optional
+  change notifications and per-target polling fallback, and feeds `trigger:teams:new-message`
   and `trigger:teams:direct-message` orchestration
 - A host-side shared NuGet cache that can be mounted read-only into guests for faster cold restores
 - Optional host-local Qdrant semantic store primitives for workflow-visible health, collection setup, and explicit-ID text point upsert/search/get/delete
@@ -770,7 +771,7 @@ contract. See [live-smoke-tests.md](docs/live-smoke-tests.md) for live provider 
   - `teams_delegated_client_id: <ENTRA_APP_CLIENT_ID>`
   - optional `teams_delegated_tenant_id`, `teams_delegated_scopes`,
     `teams_delegated_authority_base_url`, and `teams_delegated_credential_store_path`
-  - default delegated scopes now include channel read/send plus `Chat.ReadWrite` for group chats
+  - default delegated scopes include channel read/send and `Chat.ReadWrite`
   - Teams direct-message sender mail/UPN resolution and outbound mention lookup may require adding
     a Graph user-read scope such as `User.ReadBasic.All` or `User.Read`
 - The Entra app registration used for `teams_delegated_client_id` must allow public client /

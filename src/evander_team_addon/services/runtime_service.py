@@ -3,6 +3,8 @@ from __future__ import annotations
 import logging
 from collections.abc import Mapping
 from datetime import datetime, timedelta
+from pathlib import Path
+from threading import Lock
 from typing import Any, Callable, Literal
 from uuid import uuid4
 
@@ -171,11 +173,24 @@ GIT_WORK_CONTEXT_RETENTION_DAYS = 30
 MAX_AGENT_DISPATCH_LEASE_RENEWAL_SECONDS = 900
 REVIEW_DECISION_MCP_TOOL_NAME = "team_decide_review"
 MAX_REVIEW_MCP_CAPABILITY_ATTEMPTS = 2
+TEAM_LEASE_PREPARED_COMMIT_MAX_ATTEMPTS = 3
+_TEAM_LEASE_PLANNING_LOCKS_GUARD = Lock()
+_TEAM_LEASE_PLANNING_LOCKS: dict[str, Lock] = {}
 logger = logging.getLogger(__name__)
 
 
 def utc_now() -> datetime:
     return _team_common.utc_now()
+
+
+def _team_lease_planning_lock(state_db_path: object) -> Lock:
+    key = str(Path(str(state_db_path)).resolve())
+    with _TEAM_LEASE_PLANNING_LOCKS_GUARD:
+        lock = _TEAM_LEASE_PLANNING_LOCKS.get(key)
+        if lock is None:
+            lock = Lock()
+            _TEAM_LEASE_PLANNING_LOCKS[key] = lock
+        return lock
 
 
 class TeamRuntimeService:
@@ -1435,32 +1450,55 @@ class TeamRuntimeService:
         if normalized_limit == 0:
             return self._repository.read(), []
 
-        def _transaction(
-            state_model: TeamState,
-            tx: TeamStateSqliteCommandTransaction,
-        ) -> TeamState:
-            next_state = _mutate(state_model)
-            for record in _team_event_outbox_records(blocker_routing_events):
-                tx.enqueue_outbox_record(record)
-            for lease in leases:
-                lease_agent = lease["agent"]
-                tx.append_dispatch_activity(
-                    TeamDispatchActivity(
-                        id=f"activity-{uuid4().hex}",
-                        tool_name="team_dispatch_started",
-                        caller_session_id=lease_agent["session_id"],
-                        caller_identity=f"agent:{lease_agent['id']}",
-                        agent_id=lease_agent["id"],
-                        dispatch_id=lease["dispatch_id"],
-                        status=TeamDispatchActivityStatus.SUCCESS,
-                        progress_classification="none",
-                        created_at=effective_now,
-                        updated_at=effective_now,
-                    )
-                )
-            return next_state
+        def _plan_and_commit() -> TeamState:
+            last_conflict: TeamStateConflictError | None = None
+            for _attempt in range(TEAM_LEASE_PREPARED_COMMIT_MAX_ATTEMPTS):
+                leases.clear()
+                blocker_routing_events.clear()
+                idle_rotation_result.clear()
+                idle_rotation_result["events"] = []
 
-        state = self._repository.update_with_command_transaction(_transaction)
+                planning_state = self._repository.read()
+                previous_payload = planning_state.model_dump(mode="json")
+                candidate = _mutate(planning_state)
+                outbox_records = _team_event_outbox_records(blocker_routing_events)
+                activity_records = []
+                for lease in leases:
+                    lease_agent = lease["agent"]
+                    activity_records.append(
+                        TeamDispatchActivity(
+                            id=f"activity-{uuid4().hex}",
+                            tool_name="team_dispatch_started",
+                            caller_session_id=lease_agent["session_id"],
+                            caller_identity=f"agent:{lease_agent['id']}",
+                            agent_id=lease_agent["id"],
+                            dispatch_id=lease["dispatch_id"],
+                            status=TeamDispatchActivityStatus.SUCCESS,
+                            progress_classification="none",
+                            created_at=effective_now,
+                            updated_at=effective_now,
+                        )
+                    )
+
+                def _write_commands(tx: TeamStateSqliteCommandTransaction) -> None:
+                    for record in outbox_records:
+                        tx.enqueue_outbox_record(record)
+                    for activity in activity_records:
+                        tx.append_dispatch_activity(activity)
+
+                try:
+                    return self._repository.commit_prepared_state_with_command_transaction(
+                        previous_payload=previous_payload,
+                        candidate=candidate,
+                        command_writer=_write_commands,
+                    )
+                except TeamStateConflictError as exc:
+                    last_conflict = exc
+            assert last_conflict is not None
+            raise last_conflict
+
+        with _team_lease_planning_lock(self._repository.store.path):
+            state = _plan_and_commit()
         if not defer_activation:
             for lease in leases:
                 state = self.mark_agent_dispatch_leased(

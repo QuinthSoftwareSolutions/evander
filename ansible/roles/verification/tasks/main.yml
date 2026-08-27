@@ -41,6 +41,8 @@
         unit: evander-managed-git-refresh.service
       - key: teams_ingest
         unit: evander-teams-ingest.service
+      - key: teams_notifications
+        unit: evander-teams-notifications.service
       - key: teams_meeting_ingest
         unit: evander-teams-meeting-ingest.service
       - key: effect_orchestrator
@@ -175,6 +177,9 @@
       port: "{{ evander_apt_cache_port }}"
     - key: http_target_relay
       port: 11777
+    - key: teams_notifications
+      port: "{{ evander_teams_notifications_listener_port }}"
+      host: "{{ evander_teams_notifications_listener_host }}"
   when: evander_services.get(item.key, false) | bool
 
 - name: Verify enabled relay health endpoints
@@ -200,6 +205,8 @@
       url: "http://127.0.0.1:{{ evander_apt_cache_port }}/acng-report.html"
     - key: http_target_relay
       url: "http://127.0.0.1:11777/healthz"
+    - key: teams_notifications
+      url: "http://{{ evander_teams_notifications_listener_endpoint_host }}:{{ evander_teams_notifications_listener_port }}/healthz"
   when: evander_services.get(item.key, false) | bool
 
 - name: Verify managed Admin Web Caddy serves frontend and proxies health
@@ -230,6 +237,21 @@
     probe_caddy_url "https://${host}/healthz"
     probe_caddy_url "https://${host}/"
     probe_caddy_url "https://${host}/index.html"
+
+    {% if evander_teams_notifications_public_base_url | length > 0 %}
+    callback_host="{{ evander_teams_notifications_caddy_hostname }}"
+    challenge="evander-caddy-notification-probe"
+    challenge_response="$(
+      "${curl_common[@]}" \
+        --resolve "${callback_host}:443:127.0.0.1" \
+        --request POST \
+        "https://${callback_host}/msgraph/teams/notifications?validationToken=${challenge}"
+    )"
+    if [[ "${challenge_response}" != "${challenge}" ]]; then
+      echo "Teams notification callback challenge did not traverse Caddy correctly" >&2
+      exit 1
+    fi
+    {% endif %}
 
     for extension in js css; do
       asset_path="$(find "${dist_dir}/assets" -maxdepth 1 -type f -name "*.${extension}" -print -quit)"

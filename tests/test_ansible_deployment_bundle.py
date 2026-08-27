@@ -92,6 +92,32 @@ def test_ansible_admin_web_caddy_role_proxies_branded_entrypoints() -> None:
     assert "Reload Caddy after Caddyfile changes" in tasks
 
     assert "handle /api/*" in caddyfile
+    assert "handle /msgraph/teams/*" in caddyfile
+    assert "evander_teams_notifications_public_base_url | length > 0" in caddyfile
+    assert "evander_teams_notifications_listener_port" in caddyfile
+    assert "evander_teams_notifications_listener_endpoint_host" in defaults
+    assert "evander_teams_notifications_caddy_hostname" in defaults
+    assert "if ':' in evander_teams_notifications_listener_host" in defaults
+    assert (
+        "reverse_proxy {{ evander_teams_notifications_listener_endpoint_host }}:"
+        "{{ evander_teams_notifications_listener_port }}" in caddyfile
+    )
+    assert (
+        'url: "http://{{ evander_teams_notifications_listener_endpoint_host }}:'
+        '{{ evander_teams_notifications_listener_port }}/healthz"' in verification
+    )
+    assert 'host: "{{ evander_teams_notifications_listener_host }}"' in verification
+    assert "{{ evander_teams_notifications_caddy_hostname }} {" in caddyfile
+    assert (
+        "evander_teams_notifications_caddy_hostname != evander_admin_web_caddy_hostname"
+        in caddyfile
+    )
+    assert 'callback_host="{{ evander_teams_notifications_caddy_hostname }}"' in verification
+    assert "https://${callback_host}/msgraph/teams/notifications" in verification
+    assert (
+        "reverse_proxy {{ evander_teams_notifications_listener_host }}:"
+        "{{ evander_teams_notifications_listener_port }}" not in caddyfile
+    )
     assert "handle /public/*" in caddyfile
     assert "handle /addons/*" in caddyfile
     assert "handle /healthz" in caddyfile
@@ -111,6 +137,8 @@ def test_ansible_admin_web_caddy_role_proxies_branded_entrypoints() -> None:
     assert "--connect-timeout" in verification
     assert "evander_admin_web_caddy_verification_max_time_seconds" in verification
     assert "register: evander_admin_web_caddy_frontend_probe" in verification
+    assert "evander-caddy-notification-probe" in verification
+    assert "/msgraph/teams/notifications?validationToken=" in verification
     assert 'retries: "{{ evander_admin_web_caddy_verification_retries | int }}"' in verification
     assert "until: evander_admin_web_caddy_frontend_probe.rc == 0" in verification
     assert "https://${host}/index.html" in verification
@@ -820,6 +848,27 @@ def test_ansible_worker_global_config_render_only_creates_missing_files() -> Non
     for path in worker_config_paths:
         assert f'path: "{path}"' in service_config
         assert f"  - {path}" not in defaults
+
+
+def test_truman_deployment_enables_teams_notifications_without_changing_local_defaults() -> None:
+    repo = Path(__file__).resolve().parents[1]
+    defaults = (repo / "ansible" / "group_vars" / "all" / "defaults.yml").read_text(
+        encoding="utf-8"
+    )
+    truman = (repo / "ansible" / "host_vars" / "truman-control-plane.yml").read_text(
+        encoding="utf-8"
+    )
+    service_config = (
+        repo / "ansible" / "roles" / "service_config" / "tasks" / "main.yml"
+    ).read_text(encoding="utf-8")
+
+    assert "change_notifications_enabled: false" in defaults
+    assert "change_notification_public_base_url: null" in defaults
+    assert "evander_manage_teams_ingest_config: false" in defaults
+    assert "change_notifications_enabled: true" in truman
+    assert "https://truman-admin.northeurope.cloudapp.azure.com" in truman
+    assert "evander_manage_teams_ingest_config: true" in truman
+    assert "Reconcile CI managed Teams ingest config" in service_config
 
 
 def test_ansible_uv_bootstrap_uses_python_install_environment() -> None:

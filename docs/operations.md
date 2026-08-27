@@ -774,6 +774,11 @@ Storage layout for directory config:
   - `evander-cli teams-auth list`
 - After changing `teams_delegated_scopes`, repeat `teams-auth login` for that directory so the
   stored delegated credential is refreshed with the new scopes.
+- Token refreshes preserve the scopes granted to the stored credential; changing configured scopes
+  never broadens an existing refresh grant. New device-code logins also retain authenticated tenant
+  metadata for notification validation. A credential created before tenant metadata was retained
+  must either be replaced with a new login or paired with a concrete `teams_delegated_tenant_id`
+  before change notifications can become healthy.
 - The legacy static env-token mode remains supported for compatibility. In that mode,
   `teams_graph_access_token_env` names the host environment variable that holds the token.
 - Do not place Teams credentials in cloud-init, session manifests, or guest shell profiles.
@@ -2899,6 +2904,11 @@ compatibility with older live workflow packs and should not be used for new prov
   host-side Teams ingest worker that polls Microsoft Graph on the host and writes into the Teams
   message store consumed by trigger orchestration.
 - The ingest worker uses the same delegated Teams auth settings described above.
+- Optional Teams Graph change notifications use the loopback-only
+  `evander-teams-notifications.service`. The callback durably queues deliveries; the ingest worker
+  owns subscription reconciliation and exact-message retrieval. Polling remains the automatic
+  per-target fallback when notification mode is disabled, creation or renewal fails, a lifecycle
+  event marks a subscription unhealthy, or the subscription expires.
 - Graph retry cooldowns are stored per logical endpoint/target. Inspect the Teams inbox
   `poll_health` diagnostics before changing service-wide polling; an unhealthy channel, chat,
   discovery request, or user lookup must not back off unrelated targets.
@@ -2920,7 +2930,10 @@ compatibility with older live workflow packs and should not be used for new prov
   cursors; the trigger orchestrator still reconciles and acknowledges events and recovers any message
   missed because matching, queue publication, or a wake notification failed.
 - To roll back the fast path, set `publish_trigger_events_directly` to `false` and restart
-  `evander-teams-ingest.service`. Inspect the Teams ingest cycle log fields `messages_matched`,
+  `evander-teams-ingest.service`. This disables direct publication for polling; verified exact
+  notifications still use deterministic queue publication to preserve out-of-order messages, so
+  disable change notifications too when every direct publication path must be removed. Inspect the
+  Teams ingest cycle log fields `messages_matched`,
   `events_created`, `events_deduplicated`, `publication_failures`, `effect_wake_notified`,
   `trigger_wake_notified`, and `workflow_config_revision` when diagnosing delivery.
 - This polling path is independent from the wake workers; Discord/scheduled wake behavior now stays with
@@ -2971,6 +2984,7 @@ This creates:
 - `evander-scheduled-wake.service`
 - `evander-managed-git-refresh.service`
 - `evander-teams-ingest.service`
+- `evander-teams-notifications.service`
 - `evander-teams-meeting-ingest.service`
 - `evander-effect-orchestrator.service`
 - `evander-trigger-orchestrator.service`
@@ -3014,6 +3028,7 @@ sudo systemctl start evander-discord-wake.service
 sudo systemctl start evander-scheduled-wake.service
 sudo systemctl start evander-managed-git-refresh.service
 sudo systemctl start evander-teams-ingest.service
+sudo systemctl start evander-teams-notifications.service
 sudo systemctl start evander-teams-meeting-ingest.service
 sudo systemctl status evander-team-runtime.target
 sudo systemctl status evander-firewall.service
@@ -3030,6 +3045,7 @@ sudo systemctl status evander-discord-wake.service
 sudo systemctl status evander-scheduled-wake.service
 sudo systemctl status evander-managed-git-refresh.service
 sudo systemctl status evander-teams-ingest.service
+sudo systemctl status evander-teams-notifications.service
 sudo systemctl status evander-teams-meeting-ingest.service
 sudo systemctl status evander-effect-orchestrator.service
 sudo systemctl status evander-trigger-orchestrator.service

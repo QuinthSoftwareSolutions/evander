@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from threading import Event
 
 import pytest
 from pydantic import ValidationError
@@ -54,7 +56,7 @@ from evander_team_addon.models import (
     WorktreeCleanupState,
     summarize_worktree_cleanup_inventory,
 )
-from evander_team_addon.repository import TeamStateRepository
+from evander_team_addon.repository import TeamStateConflictError, TeamStateRepository
 from evander_team_addon.services.admin_service import TeamAdminService
 from evander_team_addon.services.chat_service import TeamChatService
 from evander_team_addon.services.runtime_service import TeamRuntimeService
@@ -323,6 +325,195 @@ def test_noop_updates_and_empty_wake_checks_preserve_revision_and_skip_state_dml
         and any(table in statement for table in _STATE_TABLES)
     ]
     assert state_dml == []
+
+
+def test_prepared_state_commit_computes_validation_and_delta_before_writer_lock(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repository = _seed_team_repository(tmp_path)
+    baseline = repository.read()
+    previous_payload = baseline.model_dump(mode="json")
+    candidate = baseline.model_copy(deep=True)
+    candidate.projects["project"].name = "Prepared project"
+    phases: list[str] = []
+    original_prepare = repository.store._prepare_updated_state
+    original_connect = repository.store._connect
+
+    def _tracked_prepare(**kwargs):
+        phases.append("prepare")
+        return original_prepare(**kwargs)
+
+    def _traced_connect() -> sqlite3.Connection:
+        connection = original_connect()
+
+        def _trace(statement: str) -> None:
+            if statement.strip().upper() == "BEGIN IMMEDIATE":
+                phases.append("begin_immediate")
+
+        connection.set_trace_callback(_trace)
+        return connection
+
+    monkeypatch.setattr(repository.store, "_prepare_updated_state", _tracked_prepare)
+    monkeypatch.setattr(repository.store, "_connect", _traced_connect)
+
+    committed = repository.commit_prepared_state_with_command_transaction(
+        previous_payload=previous_payload,
+        candidate=candidate,
+        command_writer=lambda _tx: None,
+    )
+
+    assert phases == ["prepare", "begin_immediate"]
+    assert committed.revision == baseline.revision + 1
+    assert committed.projects["project"].name == "Prepared project"
+
+
+def test_prepared_state_commit_rejects_stale_revision_before_command_writes(
+    tmp_path: Path,
+) -> None:
+    repository = _seed_team_repository(tmp_path)
+    baseline = repository.read()
+    previous_payload = baseline.model_dump(mode="json")
+    candidate = baseline.model_copy(deep=True)
+    candidate.projects["project"].name = "Stale prepared project"
+    command_writes: list[str] = []
+
+    repository.update(
+        lambda state: setattr(state.teams["team"], "name", "Concurrent team") or state
+    )
+
+    with pytest.raises(TeamStateConflictError) as error:
+        repository.commit_prepared_state_with_command_transaction(
+            previous_payload=previous_payload,
+            candidate=candidate,
+            command_writer=lambda _tx: command_writes.append("written"),
+        )
+
+    assert error.value.expected_revision == baseline.revision
+    assert error.value.current_revision == baseline.revision + 1
+    assert command_writes == []
+    current = repository.read()
+    assert current.teams["team"].name == "Concurrent team"
+    assert current.projects["project"].name == "Project"
+
+
+def test_lease_planning_releases_writer_and_replans_after_revision_change(
+    tmp_path: Path,
+) -> None:
+    repository = _seed_team_repository(tmp_path)
+    TeamAdminService(repository).create_or_reprioritize_task(
+        task_id="task",
+        owner_agent_id="lead",
+        project_id="project",
+        priority=1,
+        title="Prepare a dispatch",
+        description="Exercise optimistic Team lease planning.",
+        created_by_agent_id="lead",
+        expected_revision=repository.read().revision,
+    )
+    planning_started = Event()
+    release_planning = Event()
+    busy_checks: list[str] = []
+
+    def _session_is_busy(session_id: str) -> bool:
+        busy_checks.append(session_id)
+        if len(busy_checks) == 1:
+            planning_started.set()
+            if not release_planning.wait(timeout=5):
+                raise TimeoutError("lease planning was not released")
+        return False
+
+    concurrent_repository = TeamStateRepository(tmp_path)
+
+    def _rename_project(state):
+        state.projects["project"].name = "Concurrent project"
+        return state
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        lease_future = executor.submit(
+            TeamRuntimeService(repository).lease_due_agents,
+            agent_id="lead",
+            now=NOW,
+            respect_wake_interval=False,
+            session_is_busy=_session_is_busy,
+            defer_activation=True,
+        )
+        assert planning_started.wait(timeout=5)
+        writer_future = executor.submit(concurrent_repository.update, _rename_project)
+        try:
+            writer_future.result(timeout=2)
+        finally:
+            release_planning.set()
+        state, leases = lease_future.result(timeout=10)
+
+    assert len(busy_checks) >= 2
+    assert len(leases) == 1
+    assert leases[0]["agent"]["id"] == "lead"
+    assert state.projects["project"].name == "Concurrent project"
+    assert repository.read().projects["project"].name == "Concurrent project"
+
+
+def test_same_database_lease_plans_are_serialized_without_holding_sqlite_writer(
+    tmp_path: Path,
+) -> None:
+    repository = _seed_team_repository(tmp_path)
+    TeamAdminService(repository).create_or_reprioritize_task(
+        task_id="task",
+        owner_agent_id="lead",
+        project_id="project",
+        priority=1,
+        title="Prepare one dispatch",
+        description="Keep duplicate wake planning out of the SQLite writer.",
+        created_by_agent_id="lead",
+        expected_revision=repository.read().revision,
+    )
+    first_planning_started = Event()
+    release_first_planning = Event()
+    second_call_started = Event()
+    second_planning_started = Event()
+
+    def _first_session_is_busy(_session_id: str) -> bool:
+        first_planning_started.set()
+        if not release_first_planning.wait(timeout=5):
+            raise TimeoutError("first lease plan was not released")
+        return False
+
+    def _second_session_is_busy(_session_id: str) -> bool:
+        second_planning_started.set()
+        return False
+
+    def _run_second_lease_plan():
+        second_call_started.set()
+        return TeamRuntimeService(TeamStateRepository(tmp_path)).lease_due_agents(
+            agent_id="lead",
+            now=NOW,
+            respect_wake_interval=False,
+            session_is_busy=_second_session_is_busy,
+            defer_activation=True,
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        first_future = executor.submit(
+            TeamRuntimeService(repository).lease_due_agents,
+            agent_id="lead",
+            now=NOW,
+            respect_wake_interval=False,
+            session_is_busy=_first_session_is_busy,
+            defer_activation=True,
+        )
+        assert first_planning_started.wait(timeout=5)
+        second_future = executor.submit(_run_second_lease_plan)
+        assert second_call_started.wait(timeout=5)
+        try:
+            assert not second_planning_started.wait(timeout=0.2)
+        finally:
+            release_first_planning.set()
+        _first_state, first_leases = first_future.result(timeout=10)
+        _second_state, second_leases = second_future.result(timeout=10)
+
+    assert second_planning_started.is_set()
+    assert len(first_leases) == 1
+    assert second_leases == []
 
 
 def test_single_record_update_only_rewrites_its_persistence_group(

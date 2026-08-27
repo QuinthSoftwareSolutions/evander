@@ -697,6 +697,7 @@ def _build_teams_service(
         return GraphTeamsService(
             message_store,
             token_provider=token_provider.get_bearer_token,
+            tenant_id_provider=token_provider.get_tenant_id,
             api_base_url=config.teams_graph_api_base_url,
             poll_limit=config.teams_poll_limit,
             history_page_cap=config.teams_history_page_cap,

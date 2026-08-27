@@ -16723,19 +16723,27 @@ reads</td>
 <td>Teams is configured</td>
 </tr>
 <tr class="even">
+<td><code>evander-teams-notifications.service</code></td>
+<td><code>evander-teams-notifications</code></td>
+<td>Receives loopback-proxied Microsoft Graph message and lifecycle
+callbacks</td>
+<td>Teams notifications are installed; public routing is configured only
+when enabled</td>
+</tr>
+<tr class="odd">
 <td><code>evander-teams-meeting-ingest.service</code></td>
 <td><code>evander-teams-meeting-ingest</code></td>
 <td>Ingests queued meeting transcript and speech-status events</td>
 <td>Meeting integration is configured</td>
 </tr>
-<tr class="odd">
+<tr class="even">
 <td><code>evander-trigger-orchestrator.service</code></td>
 <td><code>evander-cli trigger-orchestrator</code></td>
 <td>Polls trigger providers, validates/deduplicates, and publishes
 durable trigger events</td>
 <td>Workflow triggers are enabled</td>
 </tr>
-<tr class="even">
+<tr class="odd">
 <td><code>evander-effect-orchestrator.service</code></td>
 <td><code>evander-effect-orchestrator</code></td>
 <td>Traverses downstream workflow nodes and executes gates, queries, and

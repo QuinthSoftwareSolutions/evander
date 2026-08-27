@@ -134,6 +134,19 @@
   when: item.enabled | default(true) | bool
   register: evander_json_config_render
 
+- name: Reconcile CI managed Teams ingest config
+  ansible.builtin.template:
+    src: json_file.j2
+    dest: "{{ evander_deploy_path }}/config/teams-ingest/config.json"
+    owner: "{{ evander_run_user }}"
+    group: "{{ evander_run_user }}"
+    mode: "0640"
+    force: true
+  vars:
+    json_payload: "{{ evander_teams_ingest_config }}"
+  when: evander_manage_teams_ingest_config | bool
+  register: evander_teams_ingest_managed_config_render
+
 - name: Remove retired generated host-heartbeat and issue-orchestrator config files
   ansible.builtin.file:
     path: "{{ evander_deploy_path }}/{{ item }}"
@@ -184,6 +197,7 @@
         or (evander_shared_secrets_render.changed | default(false))
         or (evander_shared_secrets_remove.changed | default(false))
         or (evander_json_config_render.changed | default(false))
+        or (evander_teams_ingest_managed_config_render.changed | default(false))
         or (evander_retired_config_remove.changed | default(false))
         or (evander_workflow_pack_copy.changed | default(false))
         or (evander_workflow_layout_copy.changed | default(false))

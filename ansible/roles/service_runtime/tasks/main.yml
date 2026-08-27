@@ -32,6 +32,8 @@
         unit: evander-managed-git-refresh.service
       - key: teams_ingest
         unit: evander-teams-ingest.service
+      - key: teams_notifications
+        unit: evander-teams-notifications.service
       - key: teams_meeting_ingest
         unit: evander-teams-meeting-ingest.service
       - key: effect_orchestrator

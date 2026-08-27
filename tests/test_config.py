@@ -1090,6 +1090,38 @@ def test_teams_ingest_worker_global_config_defaults_follow_runtime_dir() -> None
     assert config.publish_trigger_events_directly is True
     assert config.target_transient_backoff_initial_seconds == 5.0
     assert config.target_transient_backoff_max_seconds == 30.0
+    assert config.change_notifications_enabled is False
+    assert config.change_notification_public_base_url is None
+    assert config.change_notification_listener_host == "127.0.0.1"
+    assert config.change_notification_listener_port == 11882
+    assert config.change_notification_subscription_lifetime_hours == 48.0
+    assert config.change_notification_renewal_margin_hours == 24.0
+    assert config.change_notification_reconciliation_poll_interval_seconds == 60.0
+
+
+def test_teams_change_notifications_require_https_public_callback() -> None:
+    with pytest.raises(ValueError, match="change_notification_public_base_url is required"):
+        TeamsIngestWorkerGlobalConfig.model_validate({"change_notifications_enabled": True})
+    with pytest.raises(ValueError, match="must use https"):
+        TeamsIngestWorkerGlobalConfig.model_validate(
+            {
+                "change_notifications_enabled": True,
+                "change_notification_public_base_url": "http://notifications.example.test",
+            }
+        )
+
+
+def test_teams_change_notification_listener_must_be_loopback() -> None:
+    with pytest.raises(ValueError, match="must be a loopback address"):
+        TeamsIngestWorkerGlobalConfig.model_validate(
+            {"change_notification_listener_host": "0.0.0.0"}
+        )
+
+    config = TeamsIngestWorkerGlobalConfig.model_validate(
+        {"change_notification_listener_host": " ::1 "}
+    )
+
+    assert config.change_notification_listener_host == "::1"
 
 
 @pytest.mark.parametrize("value", [0, 33])

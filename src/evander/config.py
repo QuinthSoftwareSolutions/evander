@@ -1264,6 +1264,15 @@ class TeamsIngestWorkerGlobalConfig(BaseModel):
     target_backoff_max_seconds: float = Field(default=900.0, ge=0)
     target_transient_backoff_initial_seconds: float = Field(default=5.0, ge=0)
     target_transient_backoff_max_seconds: float = Field(default=30.0, ge=0)
+    change_notifications_enabled: bool = False
+    change_notification_public_base_url: str | None = None
+    change_notification_listener_host: str = "127.0.0.1"
+    change_notification_listener_port: int = Field(default=11882, ge=1, le=65535)
+    change_notification_subscription_lifetime_hours: float = Field(default=48.0, gt=0)
+    change_notification_renewal_margin_hours: float = Field(default=24.0, ge=0)
+    change_notification_reconciliation_poll_interval_seconds: float = Field(
+        default=60.0, gt=0
+    )
     lock_path: Path | None = None
 
     @model_validator(mode="after")
@@ -1281,7 +1290,43 @@ class TeamsIngestWorkerGlobalConfig(BaseModel):
                 "target_transient_backoff_max_seconds must be greater than or equal to "
                 "target_transient_backoff_initial_seconds"
             )
+        if (
+            self.change_notification_renewal_margin_hours
+            >= self.change_notification_subscription_lifetime_hours
+        ):
+            raise ValueError(
+                "change_notification_renewal_margin_hours must be less than "
+                "change_notification_subscription_lifetime_hours"
+            )
+        if self.change_notifications_enabled and not self.change_notification_public_base_url:
+            raise ValueError(
+                "change_notification_public_base_url is required when "
+                "change_notifications_enabled is true"
+            )
         return self
+
+    @field_validator("change_notification_public_base_url", mode="before")
+    @classmethod
+    def normalize_change_notification_public_base_url(cls, value: object) -> object:
+        if value is None:
+            return None
+        normalized = str(value).strip().rstrip("/")
+        return normalized or None
+
+    @field_validator("change_notification_public_base_url")
+    @classmethod
+    def validate_change_notification_public_base_url(cls, value: str | None) -> str | None:
+        if value is not None and not value.startswith("https://"):
+            raise ValueError("change_notification_public_base_url must use https")
+        return value
+
+    @field_validator("change_notification_listener_host")
+    @classmethod
+    def validate_change_notification_listener_host(cls, value: str) -> str:
+        normalized = str(value or "").strip()
+        if not _host_is_loopback(normalized):
+            raise ValueError("change_notification_listener_host must be a loopback address")
+        return normalized
 
     @field_validator("directories", mode="before")
     @classmethod

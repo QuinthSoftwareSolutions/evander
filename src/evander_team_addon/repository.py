@@ -137,6 +137,28 @@ class TeamStateRepository:
 
         return self.store.update_state_with_command_transaction(_update)
 
+    def commit_prepared_state_with_command_transaction(
+        self,
+        *,
+        previous_payload: Mapping[str, Any],
+        candidate: TeamState,
+        command_writer: Callable[[TeamStateSqliteCommandTransaction], None],
+    ) -> TeamState:
+        expected_revision = int(previous_payload.get("revision", 0))
+        committed, current_revision, state = (
+            self.store.commit_prepared_state_with_command_transaction(
+                previous_payload=previous_payload,
+                candidate=candidate,
+                command_writer=command_writer,
+            )
+        )
+        if not committed or state is None:
+            raise TeamStateConflictError(
+                expected_revision=expected_revision,
+                current_revision=current_revision,
+            )
+        return state
+
     def append_dispatch_activity(
         self,
         activity: TeamDispatchActivity | Mapping[str, Any],

@@ -196,6 +196,11 @@ renders these host-local managed artifacts with restricted permissions:
 - `config/discord-wake/config.json`
 - `config/scheduled-wake/config.json`
 - `config/teams-ingest/config.json`
+- `evander-teams-notifications.service` and its loopback `/healthz` endpoint are deployed with the
+  Teams ingest service. Managed Caddy exposes `/msgraph/teams/*` only when
+  `evander_teams_ingest_config.change_notification_public_base_url` is set. If that URL uses a
+  hostname different from Admin Web, the managed Caddyfile creates and verifies a separate callback
+  site and certificate for that hostname.
 - `config/teams-meeting-ingest/config.json`
 - `config/trigger-orchestrator/config.json`
 - optional `secrets.env`

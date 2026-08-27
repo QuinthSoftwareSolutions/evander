@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from datetime import timedelta
 from pathlib import Path
 from types import UnionType
 from typing import Any, get_args, get_origin
@@ -40,6 +41,7 @@ from evander.directory_config import (
     PrTemplateDirectoryConfig,
 )
 from evander.messaging.targets import COMMUNICATION_TARGETS_DOMAIN
+from evander.messaging.teams_inbox_store import TeamsInboxStore
 from evander.vm.defaults_config import EffectiveVmDefaultsConfig
 
 _DISCORD_CONFIG_FIELDS: tuple[tuple[str, str], ...] = (
@@ -587,6 +589,24 @@ _WORKER_GLOBAL_CONFIG_TOOLTIPS: dict[str, str] = {
     "effect_lock_path": "Single-instance lock file for the effect orchestrator worker loop.",
     "triggers": "Configured trigger definitions for the trigger orchestrator graph.",
     "effects": "Configured effect definitions for the trigger orchestrator graph.",
+    "change_notifications_enabled": (
+        "Use Microsoft Graph change notifications for low-latency Teams intake while retaining "
+        "automatic polling fallback."
+    ),
+    "change_notification_public_base_url": (
+        "Public HTTPS base URL used for Microsoft Graph notification and lifecycle callbacks."
+    ),
+    "change_notification_listener_host": "Loopback host for the Teams notification listener.",
+    "change_notification_listener_port": "Loopback port for the Teams notification listener.",
+    "change_notification_subscription_lifetime_hours": (
+        "Requested Microsoft Graph subscription lifetime in hours."
+    ),
+    "change_notification_renewal_margin_hours": (
+        "Renew active subscriptions this many hours before expiry."
+    ),
+    "change_notification_reconciliation_poll_interval_seconds": (
+        "Polling interval retained for targets with healthy change-notification subscriptions."
+    ),
 }
 
 
@@ -821,11 +841,23 @@ def _worker_detail(service: AdminRuntimeComponents, worker_id: str) -> dict[str,
     if summary is None:
         raise ValueError(f"Unknown worker: {worker_id}")
     config = service.workflow_config_admin.read_worker_global_config(worker_id)
-    return {
+    result = {
         "summary": _normalize_worker_summary(summary),
         "config": _json_payload(config),
         "config_schema": _worker_config_schema(worker_id),
     }
+    if worker_id == "teams-ingest":
+        worker_config = TeamsIngestWorkerGlobalConfig.model_validate(config.config)
+        status_runtime_dir = Path(worker_config.runtime_dir)
+        if not status_runtime_dir.is_absolute():
+            status_runtime_dir = service.project_dir / status_runtime_dir
+        result["runtime_status"] = TeamsInboxStore(
+            status_runtime_dir / "teams-inbox-store.db"
+        ).notification_status(
+            enabled=worker_config.change_notifications_enabled,
+            renewal_margin=timedelta(hours=worker_config.change_notification_renewal_margin_hours),
+        )
+    return result
 
 
 def _directory_tab_underlying_domains(tab_key: str) -> tuple[str, ...]:

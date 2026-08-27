@@ -56,6 +56,7 @@ def test_install_systemd_units_preflight_checks_for_mssql_worker_password_when_e
     assert "config/issue-orchestrator/config.json" not in text
     assert "evander-issue-orchestrator.service" not in text
     assert "evander-teams-ingest.service" in text
+    assert "evander-teams-notifications.service" in text
     assert "evander-trigger-orchestrator.service" in text
     assert "evander-http-target-relay.service" in text
     assert "evander-didww-sip-bridge.service" in text
@@ -81,9 +82,7 @@ def test_install_systemd_units_uses_only_canonical_evander_names() -> None:
 def test_team_runtime_services_register_and_restart_as_one_generation() -> None:
     repo = Path(__file__).resolve().parents[1]
     script = _script_text()
-    target = (repo / "systemd" / "evander-team-runtime.target.template").read_text(
-        encoding="utf-8"
-    )
+    target = (repo / "systemd" / "evander-team-runtime.target.template").read_text(encoding="utf-8")
     component_templates = {
         "gateway": "evander-gateway.service.template",
         "admin-web": "evander-admin-web.service.template",
@@ -93,7 +92,9 @@ def test_team_runtime_services_register_and_restart_as_one_generation() -> None:
 
     assert "evander-team-runtime.target" in script
     assert "sudo systemctl restart evander-team-runtime.target" in script
-    assert all(filename.replace(".template", "") in target for filename in component_templates.values())
+    assert all(
+        filename.replace(".template", "") in target for filename in component_templates.values()
+    )
     for component, filename in component_templates.items():
         template = (repo / "systemd" / filename).read_text(encoding="utf-8")
         assert "PartOf=evander-team-runtime.target" in template
@@ -175,6 +176,9 @@ def test_service_templates_use_optional_shared_secrets_env() -> None:
     teams_ingest = (repo / "systemd" / "evander-teams-ingest.service.template").read_text(
         encoding="utf-8"
     )
+    teams_notifications = (
+        repo / "systemd" / "evander-teams-notifications.service.template"
+    ).read_text(encoding="utf-8")
     discord_ingest = (repo / "systemd" / "evander-discord-ingest.service.template").read_text(
         encoding="utf-8"
     )
@@ -239,6 +243,11 @@ def test_service_templates_use_optional_shared_secrets_env() -> None:
     assert "Environment=TEAMS_INGEST_LOG_LEVEL=INFO" in teams_ingest
     assert "ExecStart=__PROJECT_DIR__/scripts/run_teams_ingest.sh" in teams_ingest
     assert "EnvironmentFile=-__PROJECT_DIR__/secrets.env" in teams_ingest
+    assert "PartOf=evander-teams-ingest.service" in teams_notifications
+    assert (
+        "evander-teams-notifications --runtime-dir __PROJECT_DIR__/runtime" in teams_notifications
+    )
+    assert "EnvironmentFile=-__PROJECT_DIR__/secrets.env" in teams_notifications
     assert "Environment=DISCORD_INGEST_LOG_LEVEL=INFO" in discord_ingest
     assert "--log-level ${DISCORD_INGEST_LOG_LEVEL}" in discord_ingest
     assert "ExecStart=__PROJECT_DIR__/.venv/bin/evander-discord-ingest" in discord_ingest

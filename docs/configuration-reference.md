@@ -2108,7 +2108,37 @@ Teams targets of `trigger:communication:new-message`. Newly persisted matching m
 atomically to the configured orchestration queue and wake the effect orchestrator once per cycle. The
 trigger orchestrator is still notified and remains authoritative for cursor advancement and recovery.
 Set the field to `false` and restart `evander-teams-ingest.service` to restore the prior
-persist-and-wake path without direct queue publication.
+persist-and-wake path for polling. Verified exact change-notification deliveries still publish
+through the deterministic event queue so an out-of-order message cannot fall behind a time cursor;
+disable change notifications as well to remove every direct publication path.
+
+Teams Graph change notifications are optional and disabled by default. Set
+`change_notifications_enabled` to `true` together with an HTTPS
+`change_notification_public_base_url` to subscribe each authorized channel, explicit chat, and
+discovered one-on-one chat. `evander-teams-notifications.service` listens only on
+`change_notification_listener_host` and `change_notification_listener_port` (defaults
+`127.0.0.1:11882`); the managed Caddy configuration exposes only `/msgraph/teams/*` when a public
+callback base URL is configured. The defaults request a 48-hour subscription, renew 24 hours before
+expiry, and retain a 60-second reconciliation poll for healthy targets. Targets without a confirmed
+healthy subscription continue polling at `poll_interval_seconds` (two seconds by default) without a
+restart. Turning notifications off restores fast polling immediately, stops creation and renewal,
+and best-effort deletes only subscriptions recorded as owned by this deployment.
+Subscription reconciliation uses a concrete `teams_delegated_tenant_id` when configured and
+otherwise uses the concrete tenant metadata retained with a delegated device-code credential. It
+does not decode Graph access tokens or require a Graph organization-read permission. A delegated
+credential created before tenant metadata was retained must be replaced with a new login or paired
+with a concrete tenant setting; static environment-token mode always requires a concrete tenant for
+notifications. Polling remains active while tenant resolution is unavailable.
+Persisted callback URLs are compared during reconciliation, and changing the public base URL
+replaces the old Graph subscriptions before they can be treated as healthy.
+
+The callback validates endpoint challenges, tenant, owned subscription ID, and constant-time
+`clientState` hashes before durably acknowledging notifications. The ingest worker then fetches the
+exact message through Graph and uses the same authorization, direct-sender filtering, self-message
+suppression, inbox deduplication, trigger publication, and wake path as polling. Completed queue rows
+are kept for seven days, exhausted failures for 30 days, and transient retrieval failures retry for
+up to 24 hours. Admin Web worker detail and the listener `/healthz` expose secret-free subscription,
+fallback, queue, notification, ingestion, and degradation status.
 
 Key delegated Teams provider settings now include:
 
@@ -2134,6 +2164,9 @@ Key delegated Teams provider settings now include:
   client secret or assertion and is incompatible with this flow.
 - Changing `teams_delegated_scopes` affects only newly issued delegated credentials; rerun the
   host `teams-auth login` flow for the directory after scope changes.
+- Refresh requests use the stored credential's granted scopes, not the current configured defaults.
+  Device-code login requests add the OIDC `openid` and `profile` scopes so the concrete authenticated
+  tenant can be retained without another Graph request.
 
 ## 4) Additional env vars consumed directly in code paths
 

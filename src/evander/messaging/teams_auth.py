@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import json
 import time
 from datetime import UTC, datetime, timedelta
@@ -14,6 +15,8 @@ _HTTP_URL_ADAPTER = TypeAdapter(AnyHttpUrl)
 _DEFAULT_AUTHORITY_BASE_URL = "https://login.microsoftonline.com"
 _DEVICE_CODE_GRANT_TYPE = "urn:ietf:params:oauth:grant-type:device_code"
 _AADSTS_CONFIDENTIAL_CLIENT_REQUIRES_SECRET = "AADSTS7000218"
+_IDENTITY_METADATA_SCOPES = ("openid", "profile")
+_NON_CONCRETE_TENANT_IDS = {"organizations", "common", "consumers"}
 
 
 def _utc_now() -> datetime:
@@ -24,6 +27,42 @@ def _ensure_utc(value: datetime) -> datetime:
     if value.tzinfo is None:
         return value.replace(tzinfo=UTC)
     return value.astimezone(UTC)
+
+
+def _is_concrete_tenant_id(value: str | None) -> bool:
+    normalized = str(value or "").strip()
+    return bool(normalized) and normalized.casefold() not in _NON_CONCRETE_TENANT_IDS
+
+
+def _base64url_json(value: object) -> dict[str, Any]:
+    encoded = str(value or "").strip()
+    if not encoded:
+        return {}
+    try:
+        padded = f"{encoded}{'=' * (-len(encoded) % 4)}"
+        payload = json.loads(base64.urlsafe_b64decode(padded).decode("utf-8"))
+    except (ValueError, UnicodeDecodeError, json.JSONDecodeError):
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _tenant_id_from_account_metadata(account: dict[str, Any]) -> str | None:
+    direct_tenant = str(account.get("tenant") or "").strip()
+    if _is_concrete_tenant_id(direct_tenant):
+        return direct_tenant
+
+    client_info = _base64url_json(account.get("client_info"))
+    client_tenant = str(client_info.get("utid") or "").strip()
+    if _is_concrete_tenant_id(client_tenant):
+        return client_tenant
+
+    id_token = str(account.get("id_token") or "").strip()
+    token_parts = id_token.split(".")
+    id_token_claims = _base64url_json(token_parts[1]) if len(token_parts) >= 2 else {}
+    token_tenant = str(id_token_claims.get("tid") or "").strip()
+    if _is_concrete_tenant_id(token_tenant):
+        return token_tenant
+    return None
 
 
 class TeamsAuthError(RuntimeError):
@@ -158,6 +197,10 @@ class MicrosoftDeviceCodeAuthConfig(BaseModel):
     @property
     def scope_string(self) -> str:
         return " ".join(self.scopes)
+
+    @property
+    def device_code_scope_string(self) -> str:
+        return " ".join(dict.fromkeys([*self.scopes, *_IDENTITY_METADATA_SCOPES]))
 
     @property
     def device_code_url(self) -> str:
@@ -361,7 +404,7 @@ class TeamsDeviceCodeTokenProvider:
             self.config.device_code_url,
             {
                 "client_id": self.config.client_id,
-                "scope": self.config.scope_string,
+                "scope": self.config.device_code_scope_string,
             },
             operation="device_code_start",
         )
@@ -411,6 +454,7 @@ class TeamsDeviceCodeTokenProvider:
                 "grant_type": _DEVICE_CODE_GRANT_TYPE,
                 "client_id": self.config.client_id,
                 "device_code": session.device_code,
+                "client_info": "1",
             },
             operation="device_code_poll",
         )
@@ -469,15 +513,20 @@ class TeamsDeviceCodeTokenProvider:
                 "Persisted Teams credentials do not include a refresh token."
             )
 
+        form_data = {
+            "grant_type": "refresh_token",
+            "client_id": self.config.client_id,
+            "refresh_token": refresh_token,
+            "client_info": "1",
+        }
+        granted_scope_string = " ".join(scope.strip() for scope in resolved.scopes if scope.strip())
+        if granted_scope_string:
+            form_data["scope"] = granted_scope_string
+
         try:
             payload = self._post_form(
                 self.config.token_url,
-                {
-                    "grant_type": "refresh_token",
-                    "client_id": self.config.client_id,
-                    "refresh_token": refresh_token,
-                    "scope": self.config.scope_string,
-                },
+                form_data,
                 operation="refresh",
             )
         except RefreshTokenRevokedError:
@@ -500,6 +549,14 @@ class TeamsDeviceCodeTokenProvider:
             if force_refresh or self.credentials_expiring(credentials):
                 credentials = self.refresh_access_token(credentials)
             return credentials.access_token
+
+    def get_tenant_id(self) -> str | None:
+        credentials = self.load_credentials()
+        if credentials is not None and _is_concrete_tenant_id(credentials.tenant_id):
+            return credentials.tenant_id.strip()
+        if _is_concrete_tenant_id(self.config.tenant_id):
+            return self.config.tenant_id.strip()
+        return None
 
     def _sleep_until_next_poll(
         self,
@@ -566,20 +623,18 @@ class TeamsDeviceCodeTokenProvider:
         expires_in = self._int_field(payload, "expires_in", minimum=1)
         access_token = self._required_str(payload, "access_token")
         scope_value = self._optional_str(payload, "scope")
-        scopes = scope_value.split(" ") if scope_value else list(self.config.scopes)
+        if scope_value:
+            scopes = scope_value.split(" ")
+        elif prior_credentials is not None:
+            scopes = list(prior_credentials.scopes)
+        else:
+            scopes = list(self.config.scopes)
         refresh_token = self._optional_str(payload, "refresh_token")
         if refresh_token is None and prior_credentials is not None:
             refresh_token = prior_credentials.refresh_token
-        return TeamsAuthCredentials(
-            client_id=self.config.client_id,
-            tenant_id=self.config.tenant_id,
-            access_token=access_token,
-            refresh_token=refresh_token,
-            token_type=self._optional_str(payload, "token_type") or "Bearer",
-            scopes=[scope for scope in scopes if scope.strip()],
-            expires_at=issued_at + timedelta(seconds=expires_in),
-            issued_at=issued_at,
-            account={
+        account = dict(prior_credentials.account) if prior_credentials is not None else {}
+        account.update(
+            {
                 key: value
                 for key, value in payload.items()
                 if key
@@ -592,7 +647,23 @@ class TeamsDeviceCodeTokenProvider:
                     "resource",
                     "tenant",
                 }
-            },
+            }
+        )
+        tenant_id = _tenant_id_from_account_metadata(account)
+        if tenant_id is None and prior_credentials is not None:
+            tenant_id = prior_credentials.tenant_id
+        if tenant_id is None:
+            tenant_id = self.config.tenant_id
+        return TeamsAuthCredentials(
+            client_id=self.config.client_id,
+            tenant_id=tenant_id,
+            access_token=access_token,
+            refresh_token=refresh_token,
+            token_type=self._optional_str(payload, "token_type") or "Bearer",
+            scopes=[scope for scope in scopes if scope.strip()],
+            expires_at=issued_at + timedelta(seconds=expires_in),
+            issued_at=issued_at,
+            account=account,
         )
 
     def _normalize_oauth_error(

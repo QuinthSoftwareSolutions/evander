@@ -5072,6 +5072,7 @@ def teams_ingest(
             f"Teams ingest worker cycle complete directories={result.directories_polled} "
             f"sessions={result.sessions_seen} "
             f"new_messages={result.new_messages_discovered} "
+            f"notifications_processed={getattr(result, 'notifications_processed', 0)} "
             f"trigger_wake_notified={result.trigger_wake_notified} "
             f"sleep_seconds={result.next_sleep_seconds:.3f}"
         )

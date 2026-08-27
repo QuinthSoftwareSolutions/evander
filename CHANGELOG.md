@@ -1,5 +1,20 @@
 # Changelog
 
+## 2026-08-26 - Teams Graph Change Notifications
+
+- Added optional Microsoft Graph change notifications for authorized Teams channels, chats, and
+  discovered direct chats, with owned-subscription renewal and lifecycle handling.
+- Added a loopback-only durable notification listener and queue that validates tenant,
+  subscription, and constant-time client state before exact-message ingestion.
+- Kept two-second per-target polling as the disabled or degraded fallback, with 60-second
+  reconciliation polling for healthy subscriptions and monotonic cursor advancement.
+- Preserved out-of-order verified deliveries with deterministic trigger-event deduplication,
+  resolved opaque-token tenants through concrete configuration or authenticated credential
+  metadata, preserved existing refresh grants, and replaced subscriptions when callback URLs change.
+- Added secret-free Admin and health status, IPv4/IPv6 listener verification, callback-host-aware
+  Caddy routing, systemd and Ansible deployment wiring, and a CI/CD-owned Truman configuration while
+  local deployments remain polling-only by default.
+
 ## 2026-08-26 - SQLite Events, Team Chat, And Release Reliability
 
 - Stopped the host-observable agent-completion trigger from polling libvirt inventory on
@@ -27,6 +42,8 @@
   the retired JSON stores and config keys while preserving pending work for configured triggers.
 - Closed shared orchestration SQLite connections at context exit so increased event activity does
   not accumulate database descriptors.
+- Serialized Team agent lease planning per database outside SQLite, moved full-state validation
+  and row-delta discovery before the writer lock, and committed with revision-guarded retries.
 - Bound correction and remediation work to exact release-candidate provenance and automatically
   joined it to one persisted release lineage instead of allowing another initial package.
 - Reused terminal packages for identical deliverables, enforced a unique successor frontier, and

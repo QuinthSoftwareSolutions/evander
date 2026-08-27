@@ -76,6 +76,7 @@ EVANDER_UNITS=(
   evander-scheduled-wake.service
   evander-managed-git-refresh.service
   evander-teams-ingest.service
+  evander-teams-notifications.service
   evander-teams-meeting-ingest.service
   evander-effect-orchestrator.service
   evander-trigger-orchestrator.service
@@ -526,6 +527,10 @@ render_unit \
   "${SYSTEMD_DIR}/evander-teams-ingest.service"
 
 render_unit \
+  "${ROOT_DIR}/systemd/evander-teams-notifications.service.template" \
+  "${SYSTEMD_DIR}/evander-teams-notifications.service"
+
+render_unit \
   "${ROOT_DIR}/systemd/evander-teams-meeting-ingest.service.template" \
   "${SYSTEMD_DIR}/evander-teams-meeting-ingest.service"
 
@@ -561,6 +566,7 @@ Installed systemd units:
   evander-scheduled-wake.service
   evander-managed-git-refresh.service
   evander-teams-ingest.service
+  evander-teams-notifications.service
   evander-teams-meeting-ingest.service
   evander-effect-orchestrator.service
   evander-trigger-orchestrator.service
@@ -592,6 +598,7 @@ Next steps:
      sudo systemctl start evander-scheduled-wake.service
      sudo systemctl start evander-managed-git-refresh.service
      sudo systemctl start evander-teams-ingest.service
+     sudo systemctl start evander-teams-notifications.service
      sudo systemctl start evander-teams-meeting-ingest.service
      sudo systemctl start evander-effect-orchestrator.service
      sudo systemctl start evander-trigger-orchestrator.service

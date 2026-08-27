@@ -51,14 +51,19 @@ class TeamsNewMessageEventMatcher:
             user_filter=frozenset(value.strip() for value in trigger.user_ids if value.strip()),
         )
 
-    def event_for(self, message: TeamsInboxMessage) -> TriggerEvent | None:
+    def event_for(
+        self,
+        message: TeamsInboxMessage,
+        *,
+        bypass_cursor: bool = False,
+    ) -> TriggerEvent | None:
         channel_target = teams_message_channel_target(message)
         if self.target_filters and channel_target not in self.target_filters:
             return None
         if self.user_filter and message.author_id.strip() not in self.user_filter:
             return None
         occurred_at = message.created_at.astimezone(UTC)
-        if message_is_behind_cursor(
+        if not bypass_cursor and message_is_behind_cursor(
             self.cursor,
             occurred_at=occurred_at,
             recent_id=message.cursor,
@@ -113,7 +118,12 @@ class TeamsDirectMessageEventMatcher:
             ),
         )
 
-    def event_for(self, message: TeamsInboxMessage) -> TriggerEvent | None:
+    def event_for(
+        self,
+        message: TeamsInboxMessage,
+        *,
+        bypass_cursor: bool = False,
+    ) -> TriggerEvent | None:
         if not is_teams_direct_message(message):
             return None
         channel_target = teams_message_channel_target(message)
@@ -124,7 +134,7 @@ class TeamsDirectMessageEventMatcher:
         ):
             return None
         occurred_at = message.created_at.astimezone(UTC)
-        if message_is_behind_cursor(
+        if not bypass_cursor and message_is_behind_cursor(
             self.cursor,
             occurred_at=occurred_at,
             recent_id=message.cursor,
@@ -179,7 +189,12 @@ class CommunicationTeamsMessageEventMatcher:
             ),
         )
 
-    def events_for(self, message: TeamsInboxMessage) -> tuple[TriggerEvent, ...]:
+    def events_for(
+        self,
+        message: TeamsInboxMessage,
+        *,
+        bypass_cursor: bool = False,
+    ) -> tuple[TriggerEvent, ...]:
         if not self.teams_targets_by_address:
             return ()
         message_target = teams_message_channel_target(message)
@@ -195,7 +210,7 @@ class CommunicationTeamsMessageEventMatcher:
         events: list[TriggerEvent] = []
         for target_id in target_ids:
             cursor_key = communication_message_cursor_key("teams", target_id, message.message_id)
-            if message_is_behind_cursor(
+            if not bypass_cursor and message_is_behind_cursor(
                 self.cursor,
                 occurred_at=occurred_at,
                 recent_id=cursor_key,

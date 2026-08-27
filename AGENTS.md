@@ -151,6 +151,7 @@ The current install script renders and enables:
 - `evander-scheduled-wake.service`
 - `evander-managed-git-refresh.service`
 - `evander-teams-ingest.service`
+- `evander-teams-notifications.service`
 - `evander-teams-meeting-ingest.service`
 - `evander-effect-orchestrator.service`
 - `evander-trigger-orchestrator.service`
