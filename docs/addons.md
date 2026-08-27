@@ -1898,10 +1898,12 @@ assignment/actionability in the corresponding list.
 
 A manager-fallback wake has one bounded supervision exception. Actionable
 subordinate tasks displayed in its compact `open_work` summary are frozen into
-the dispatch `task_ids`, and their exact projects are frozen into `project_ids`.
-The fallback fingerprint proves that each task was selected by the server. This
-allows a Team manager to request status from a direct subordinate and update a
-linked Case without granting blanket Team scope. It does not transfer task
+the dispatch `task_ids`, but their projects are not added to generic
+`project_ids`. The fallback fingerprint proves that each task was selected by
+the server. Tool-specific guards allow a Team manager to request status from
+the task's direct-subordinate owner and update only the status or description
+of a Case already linked to that task. This does not grant project-wide case,
+goal, release, memory, or task-creation authority, and it does not transfer task
 ownership: ordinary task-update ownership, lifecycle, and reassignment checks
 continue to apply.
 

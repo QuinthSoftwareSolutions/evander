@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import httpx
 import pytest
 
 from evander.email.providers import EmailAttachmentContent, EmailAttachmentMetadata
@@ -42,7 +43,7 @@ class _TeamsOrDiscordAttachmentService:
 
 class _EmailAttachmentService:
     def list_attachments(self, *, mailbox_id, message_id):
-        assert mailbox_id == "support@example.test"
+        assert mailbox_id == "default"
         assert message_id == "message-1"
         return [
             EmailAttachmentMetadata(
@@ -54,7 +55,7 @@ class _EmailAttachmentService:
         ]
 
     def download_attachment(self, *, mailbox_id, message_id, attachment_id):
-        assert mailbox_id == "support@example.test"
+        assert mailbox_id == "default"
         assert message_id == "message-1"
         assert attachment_id == "attachment-1"
         return EmailAttachmentContent(
@@ -104,6 +105,7 @@ def test_imports_supported_provider_attachments_with_provenance(
         target_address=target_address,
         source_message_id="message-1",
         policy=TeamChatAttachmentPolicy.root_defaults(),
+        auth_profile_ref="email.default" if provider == "email" else None,
     )
 
     assert result.status == "complete"
@@ -209,3 +211,46 @@ def test_partial_import_keeps_valid_files_when_other_metadata_is_malformed(tmp_p
     assert result.discovered_count == 2
     assert [item.filename for item in result.attachments] == ["screen.png"]
     assert [failure.code for failure in result.failures] == ["metadata_invalid"]
+
+
+@pytest.mark.parametrize("wrapped", [False, True])
+def test_provider_url_credentials_are_not_recorded_in_import_failures(
+    tmp_path,
+    wrapped,
+) -> None:
+    signed_url = "https://cdn.example.test/file.png?sig=host-secret#fragment"
+    request = httpx.Request("GET", signed_url)
+    response = httpx.Response(403, request=request)
+    http_error = httpx.HTTPStatusError(
+        "provider download failed",
+        request=request,
+        response=response,
+    )
+
+    class _FailingService:
+        def list_attachments(self, _message_id, *, channel_target=None):
+            return [{"id": "attachment-1", "name": "screen.png"}]
+
+        def download_attachment(self, _message_id, _attachment_id, *, channel_target=None):
+            if wrapped:
+                raise RuntimeError(f"provider request failed for {signed_url}") from http_error
+            raise http_error
+
+    result = ExternalTeamChatAttachmentImporter(
+        SimpleNamespace(teams_service_for_session=lambda _session_id: _FailingService()),
+        TeamChatAttachmentStorage(tmp_path),
+    ).import_message_attachments(
+        session_id="session-1",
+        provider="teams",
+        communication_target_id="teams-target",
+        target_address="team/channel",
+        source_message_id="message-1",
+        policy=TeamChatAttachmentPolicy.root_defaults(),
+    )
+
+    assert result.status == "failed"
+    assert len(result.failures) == 1
+    failure_message = result.failures[0].message
+    assert "host-secret" not in failure_message
+    assert "cdn.example.test" not in failure_message
+    assert failure_message == ("RuntimeError" if wrapped else "HTTPStatusError (HTTP 403)")

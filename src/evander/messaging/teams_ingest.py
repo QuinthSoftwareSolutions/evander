@@ -1090,9 +1090,22 @@ class TeamsIngestWorker:
         if store is None:
             return 0
         subscription = store.get_owned_subscription(entry.subscription_id)
-        if subscription is None or subscription.directory_path not in set(directories):
+        if subscription is None:
             return 0
-        directory_path = subscription.directory_path
+        active_directories = set(directories)
+        consumer_directories = subscription.consumer_directory_paths or [
+            subscription.directory_path
+        ]
+        directory_path = next(
+            (
+                candidate
+                for candidate in consumer_directories
+                if candidate in active_directories
+            ),
+            None,
+        )
+        if directory_path is None:
+            return 0
         channel_targets = self._channel_targets_for_directory(
             directory_path,
             active_sessions=active_sessions,

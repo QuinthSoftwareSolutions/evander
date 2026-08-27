@@ -2141,6 +2141,28 @@ def test_manager_fallback_scopes_unattended_support_task_for_supervision(
         task_ids=["support-task"],
         expected_revision=state.revision,
     )
+    state = admin.create_or_reprioritize_task(
+        task_id="unrelated-support-task",
+        owner_agent_id="support",
+        project_id="project",
+        priority=2,
+        title="Unrelated deferred support work",
+        description="This task must not enter the current fallback supervision scope.",
+        created_by_agent_id="manager",
+        state=TeamTaskState.WAITING_FOR_INPUT,
+        expected_revision=state.revision,
+    )
+    state = admin.create_case(
+        case_id="unrelated-support-case",
+        team_id="team",
+        project_id="project",
+        title="Unrelated factory support case",
+        description="This case belongs to another deferred task.",
+        status=TeamCaseStatus.WAITING,
+        owner_agent_id="support",
+        task_ids=["unrelated-support-task"],
+        expected_revision=state.revision,
+    )
 
     def _defer_support_owner(current: TeamState) -> TeamState:
         current.agent_runtimes["support"] = AgentRuntime(
@@ -2159,10 +2181,8 @@ def test_manager_fallback_scopes_unattended_support_task_for_supervision(
     assert lease["reason"] == "manager_fallback"
     assert lease["tasks"] == []
     assert lease["dispatch"]["task_ids"] == ["support-task"]
-    assert lease["dispatch"]["project_ids"] == ["project"]
-    assert (
-        lease["dispatch"]["wake_work_record_fingerprints"]["open_work:support-task"]
-    )
+    assert lease["dispatch"]["project_ids"] == []
+    assert lease["dispatch"]["wake_work_record_fingerprints"]["open_work:support-task"]
     unfingerprinted = repo.read().dispatches[dispatch_id].model_copy(deep=True)
     unfingerprinted.wake_work_record_fingerprints = {}
     assert _dispatch_staleness_errors(
@@ -2177,7 +2197,13 @@ def test_manager_fallback_scopes_unattended_support_task_for_supervision(
     dispatch = activated.dispatches[dispatch_id]
     assert dispatch.status == TeamDispatchStatus.LEASED
     assert dispatch.task_ids == ["support-task"]
-    assert dispatch.project_ids == ["project"]
+    assert dispatch.project_ids == []
+
+    def _simulate_in_flight_legacy_scope(current: TeamState) -> TeamState:
+        current.dispatches[dispatch_id].project_ids = ["project"]
+        return current
+
+    repo.update(_simulate_in_flight_legacy_scope)
     monkeypatch.setattr(
         "evander_team_addon.services.commands.executor.utc_now",
         lambda: now + timedelta(seconds=2),
@@ -2194,6 +2220,16 @@ def test_manager_fallback_scopes_unattended_support_task_for_supervision(
     status_inbox_id = status_request["inbox_item_id"]
     assert state.inbox[status_inbox_id].task_id == "support-task"
 
+    _state, unrelated_status = TeamAgentMessageCommandService(repo).request_status_command(
+        session_id="session-manager",
+        recipient_agent_id="support",
+        task_id="unrelated-support-task",
+        question="This unrelated task must remain outside the fallback dispatch.",
+        request_id="manager-fallback-unrelated-status",
+    )
+    assert unrelated_status["success"] is False
+    assert unrelated_status["errors"][0]["code"] == "dispatch_scope_forbidden"
+
     state, case_update = TeamCaseCommandService(repo).update_case_command(
         session_id="session-manager",
         case_id="support-case",
@@ -2205,6 +2241,34 @@ def test_manager_fallback_scopes_unattended_support_task_for_supervision(
     assert state.cases["support-case"].status == TeamCaseStatus.WAITING
     assert state.cases["support-case"].description.startswith("Manager reviewed")
     assert state.tasks["support-task"].owner_agent_id == "support"
+
+    _state, unrelated_case_update = TeamCaseCommandService(repo).update_case_command(
+        session_id="session-manager",
+        case_id="unrelated-support-case",
+        description="This unrelated case must remain untouched.",
+        request_id="manager-fallback-unrelated-case-review",
+    )
+    assert unrelated_case_update["success"] is False
+    assert unrelated_case_update["errors"][0]["code"] == "dispatch_scope_forbidden"
+
+    _state, linked_case_scope_change = TeamCaseCommandService(repo).update_case_command(
+        session_id="session-manager",
+        case_id="support-case",
+        owner_agent_id="manager",
+        request_id="manager-fallback-linked-case-scope-change",
+    )
+    assert linked_case_scope_change["success"] is False
+    assert linked_case_scope_change["errors"][0]["code"] == "dispatch_scope_forbidden"
+
+    _state, unrelated_case_create = TeamCaseCommandService(repo).create_case_command(
+        session_id="session-manager",
+        case_id="new-unrelated-support-case",
+        project_id="project",
+        title="Unauthorized project-wide case",
+        request_id="manager-fallback-unrelated-case-create",
+    )
+    assert unrelated_case_create["success"] is False
+    assert unrelated_case_create["errors"][0]["code"] == "dispatch_scope_forbidden"
 
 
 def test_dependency_waiting_owner_not_leased(tmp_path: Path) -> None:

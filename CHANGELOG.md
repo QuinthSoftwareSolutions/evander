@@ -7,15 +7,19 @@
   into private Team storage, and preserves external-source provenance.
 - Delivered valid files when other imports fail, while surfacing bounded failure details in Team
   prompts and the operator UI so agents cannot silently claim to have inspected missing content.
+- Resolved email attachment mailboxes from each target's authentication profile and reduced
+  URL-bearing provider failures to credential-free error classes before persistence.
 - Reconciled Graph change-notification subscriptions by credential identity, tenant, and target
   across directory scopes, converging legacy duplicates onto one shared subscription and retrying
   failed duplicate cleanup with bounded backoff.
+- Routed shared-subscription callbacks through an active consumer directory when the stored
+  representative is no longer active, preserving delayed exact-message delivery.
 
 ## 2026-08-27 - Scoped Manager Fallback Supervision
 
-- Froze displayed actionable subordinate tasks and their exact projects into manager-fallback
-  dispatch scope, allowing direct status requests and linked Case updates without transferring
-  task ownership or granting blanket Team authority.
+- Froze displayed actionable subordinate tasks into dedicated manager-fallback supervision scope,
+  allowing direct status requests and bounded linked-Case updates without transferring task
+  ownership or granting generic authority over the subordinate task's project.
 - Required the matching bounded fallback fingerprint during deferred dispatch activation so an
   unrelated subordinate task cannot be added to the frozen scope.
 

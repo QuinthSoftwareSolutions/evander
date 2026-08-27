@@ -128,6 +128,7 @@ from .domain.manager_fallback import (
     _manager_fallback_initial_release_decision_ids,
     _manager_fallback_summary_payload,
     _manager_fallback_summary_has_actionable_work,
+    manager_fallback_dispatch_supervision_task_ids,
     manager_fallback_work_fingerprint,
     manager_fallback_work_record_fingerprints,
 )
@@ -1268,12 +1269,10 @@ class TeamRuntimeService:
                 initial_release_decision_ids = _manager_fallback_initial_release_decision_ids(
                     manager_fallback_summary
                 )
-                manager_fallback_supervision_task_ids = (
-                    _manager_fallback_supervision_task_ids(
-                        state_model,
-                        manager=manager,
-                        summary=manager_fallback_summary,
-                    )
+                manager_fallback_supervision_task_ids = _manager_fallback_supervision_task_ids(
+                    state_model,
+                    manager=manager,
+                    summary=manager_fallback_summary,
                 )
                 manager_reservation_scope = build_agent_dispatch_scope(
                     state_model,
@@ -1300,17 +1299,11 @@ class TeamRuntimeService:
                     if (deliverable := state_model.deliverables.get(deliverable_id)) is not None
                     if (task := state_model.tasks.get(deliverable.task_id)) is not None
                 }
-                manager_fallback_supervision_project_ids = {
-                    state_model.tasks[task_id].project_id
-                    for task_id in manager_fallback_supervision_task_ids
-                }
                 scoped_task_ids = sorted(
                     set(manager_scope.task_ids) | set(manager_fallback_supervision_task_ids)
                 )
                 scoped_project_ids = sorted(
-                    set(manager_scope.project_ids)
-                    | initial_release_project_ids
-                    | manager_fallback_supervision_project_ids
+                    set(manager_scope.project_ids) | initial_release_project_ids
                 )
                 scoped_managed_repo_ids = sorted(
                     {
@@ -3225,34 +3218,6 @@ def _runtime_has_active_dispatch_reservation(
     }
 
 
-def _is_manager_fallback_supervision_task(
-    state: TeamState,
-    *,
-    dispatch: TeamDispatch,
-    task_id: str,
-) -> bool:
-    """Validate the server-frozen exception for subordinate fallback work."""
-
-    if (
-        dispatch.cause_kind != "manager_fallback"
-        or f"open_work:{task_id}" not in dispatch.wake_work_record_fingerprints
-    ):
-        return False
-    task = state.tasks.get(task_id)
-    agent = state.agents.get(dispatch.agent_id)
-    project = state.projects.get(task.project_id) if task is not None else None
-    team = state.teams.get(project.team_id) if project is not None else None
-    return bool(
-        task is not None
-        and agent is not None
-        and project is not None
-        and team is not None
-        and task.owner_agent_id != agent.id
-        and agent.team_id == team.id
-        and team.manager_agent_id == agent.id
-    )
-
-
 def _dispatch_staleness_errors(
     state: TeamState,
     *,
@@ -3285,16 +3250,16 @@ def _dispatch_staleness_errors(
         and item.recipient_agent_id == dispatch.agent_id
         and item.task_id is not None
     }
+    manager_fallback_supervision_task_ids = manager_fallback_dispatch_supervision_task_ids(
+        state,
+        dispatch=dispatch,
+    )
     for task_id in dispatch.task_ids:
         task = state.tasks.get(task_id)
         if task is None:
             errors.append(f"task {task_id} no longer exists")
             continue
-        manager_fallback_supervision_task = _is_manager_fallback_supervision_task(
-            state,
-            dispatch=dispatch,
-            task_id=task.id,
-        )
+        manager_fallback_supervision_task = task.id in manager_fallback_supervision_task_ids
         if task.owner_agent_id != dispatch.agent_id and not manager_fallback_supervision_task:
             errors.append(f"task {task.id} is now assigned to {task.owner_agent_id}")
             continue

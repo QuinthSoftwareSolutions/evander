@@ -3995,6 +3995,7 @@ class TeamEnqueueOperatorChatMessageEffectProvider(EffectProviderBase):
                         "source_message_id",
                     ),
                     policy=policy,
+                    auth_profile_ref=target.policy.auth_profile_ref,
                 )
             prepared_attachments = list(attachment_import.attachments)
         body = _optional_text(payload.get("body"))
@@ -7803,10 +7804,11 @@ def _build_prompt(
         "- Treat manager_fallback_summary as the compact source of stalled team "
         "and project work, even when this manager's top-level tasks and inbox "
         "arrays are empty.\n"
-        "- Displayed actionable subordinate tasks are frozen into this dispatch's "
-        "task and project scope for supervision. You may request status or update "
-        "a linked Case within that scope, but task ownership is unchanged and "
-        "ordinary task mutation policy still applies.\n"
+        "- Displayed actionable subordinate tasks are frozen into task-level "
+        "supervision scope without generic authority over their projects. You may "
+        "request status from the task owner or update the status or description of "
+        "a linked Case, but task ownership is unchanged and ordinary task mutation "
+        "policy still applies.\n"
         "- Start from manager_fallback_summary.routing_gaps when present; those "
         "rows identify likely assignment or review-routing fixes.\n"
         "- Also inspect pending_initial_release_decisions. Group only compatible "

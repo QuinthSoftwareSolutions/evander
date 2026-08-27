@@ -1,8 +1,13 @@
 from __future__ import annotations
 
 import base64
+import re
 from dataclasses import dataclass, field
 from typing import Any, Mapping
+
+import httpx
+
+from evander.messaging.notifications import _email_mailbox_id_from_auth_profile_ref
 
 from .chat_attachments import (
     PreparedChatAttachment,
@@ -74,14 +79,21 @@ class ExternalTeamChatAttachmentImporter:
         target_address: str,
         source_message_id: str,
         policy: TeamChatAttachmentPolicy,
+        auth_profile_ref: str | None = None,
     ) -> ExternalAttachmentImportResult:
         normalized_provider = str(provider or "").strip().lower()
         try:
+            email_mailbox_id = (
+                _email_mailbox_id_from_auth_profile_ref(auth_profile_ref or "")
+                if normalized_provider == "email"
+                else None
+            )
             raw_refs = self._list_attachments(
                 session_id=session_id,
                 provider=normalized_provider,
                 target_address=target_address,
                 source_message_id=source_message_id,
+                email_mailbox_id=email_mailbox_id,
             )
         except Exception as exc:
             return ExternalAttachmentImportResult(
@@ -130,6 +142,7 @@ class ExternalTeamChatAttachmentImporter:
                     target_address=target_address,
                     source_message_id=source_message_id,
                     ref=ref,
+                    email_mailbox_id=email_mailbox_id,
                 )
                 validate_attachment_policy_content(
                     policy,
@@ -172,6 +185,7 @@ class ExternalTeamChatAttachmentImporter:
         provider: str,
         target_address: str,
         source_message_id: str,
+        email_mailbox_id: str | None,
     ) -> list[Any]:
         if provider == "teams":
             raw = self.runtime.teams_service_for_session(session_id).list_attachments(
@@ -185,7 +199,7 @@ class ExternalTeamChatAttachmentImporter:
             )
         elif provider == "email":
             raw = self.runtime.email_service_for_session(session_id).list_attachments(
-                mailbox_id=target_address,
+                mailbox_id=email_mailbox_id,
                 message_id=source_message_id,
             )
         else:
@@ -200,6 +214,7 @@ class ExternalTeamChatAttachmentImporter:
         target_address: str,
         source_message_id: str,
         ref: ExternalAttachmentRef,
+        email_mailbox_id: str | None,
     ) -> tuple[bytes, str, str | None]:
         if provider == "teams":
             raw = self.runtime.teams_service_for_session(session_id).download_attachment(
@@ -215,7 +230,7 @@ class ExternalTeamChatAttachmentImporter:
             )
         elif provider == "email":
             raw = self.runtime.email_service_for_session(session_id).download_attachment(
-                mailbox_id=target_address,
+                mailbox_id=email_mailbox_id,
                 message_id=source_message_id,
                 attachment_id=ref.attachment_id,
             )
@@ -307,7 +322,13 @@ def _optional_text(value: object) -> str | None:
 
 
 def _safe_error(exc: BaseException) -> str:
-    return " ".join(str(exc).split())[:300] or type(exc).__name__
+    error_class = type(exc).__name__
+    if isinstance(exc, httpx.HTTPStatusError):
+        return f"{error_class} (HTTP {exc.response.status_code})"
+    text = " ".join(str(exc).split())
+    if isinstance(exc, httpx.HTTPError) or re.search(r"https?://", text, flags=re.IGNORECASE):
+        return error_class
+    return text[:300] or error_class
 
 
 __all__ = [

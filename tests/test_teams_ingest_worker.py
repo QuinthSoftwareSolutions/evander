@@ -630,6 +630,92 @@ def test_message_notification_does_not_fetch_removed_or_unauthorized_target(
     )
 
 
+def test_message_notification_uses_active_shared_subscription_consumer(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("GRAPH_TEAMS_ACCESS_TOKEN", "opaque-access-token")
+    target = "team-a/channel-a"
+    resource = "teams('team-a')/channels('channel-a')/messages('message-a')"
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(
+            200,
+            request=request,
+            json={
+                "id": "message-a",
+                "createdDateTime": "2026-08-26T12:00:00Z",
+                "body": {"content": "child consumer message", "contentType": "text"},
+                "from": {"user": {"id": "operator-a", "displayName": "Ada"}},
+            },
+        )
+
+    patch_worker_httpx_client(monkeypatch, httpx.MockTransport(handler))
+    worker = build_teams_ingest_worker(
+        GatewayConfig.model_validate(
+            {
+                "runtime_dir": tmp_path / "runtime",
+                "teams_backend": "graph_api",
+                "teams_delegated_tenant_id": "tenant-a",
+            }
+        ),
+        project_dir=tmp_path,
+    )
+    ensure_directory(worker, "root/child")
+    child_session = SessionManifest(
+        session_id="session-child",
+        directory_path="root/child",
+        allowed_tools=[ToolName.TEAMS_GET_MESSAGES],
+        teams_channel_allowlist=[target],
+        expires_at=datetime.now(UTC) + timedelta(hours=1),
+    )
+    worker.session_repository.upsert_session(child_session)
+    store = worker._notification_store
+    assert store is not None
+    now = datetime.now(UTC)
+    store.upsert_owned_subscription(
+        TeamsOwnedSubscription(
+            subscription_id="shared-subscription",
+            owner_id=store.notification_owner_id(),
+            target=target,
+            resource="/teams/team-a/channels/channel-a/messages",
+            directory_path="root",
+            consumer_directory_paths=["root", "root/child"],
+            tenant_id="tenant-a",
+            expires_at=now + timedelta(hours=48),
+            client_state_sha256="0" * 64,
+            created_at=now,
+            updated_at=now,
+        )
+    )
+    entry = TeamsNotificationQueueEntry(
+        idempotency_key="shared-notification",
+        notification_kind="message",
+        subscription_id="shared-subscription",
+        tenant_id="tenant-a",
+        resource=resource,
+        change_type="created",
+        received_at=now,
+        next_attempt_at=now,
+    )
+    snapshot = worker._capture_trigger_config_snapshot(captured_at=now)
+
+    discovered = worker._process_message_notification(
+        entry,
+        active_sessions=[child_session],
+        trigger_snapshot=snapshot,
+        directories=["root/child"],
+    )
+
+    assert discovered == 1
+    assert len(requests) == 1
+    assert worker.store.list_all_messages(channel_targets=[target])[0].content == (
+        "child consumer message"
+    )
+
+
 def test_build_teams_ingest_worker_uses_worker_config_and_normalizes_directories(
     tmp_path: Path,
 ) -> None:
