@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-08-27 - Teams Notification Wake Latency
+
+- Signalled the Teams ingest worker immediately after a Microsoft Graph callback is durably queued,
+  avoiding the next polling-sleep delay before exact-message retrieval.
+- Preserved `202 Accepted` callback handling and periodic durable-queue draining when the wake
+  socket is unavailable.
+
 ## 2026-08-26 - Teams Graph Change Notifications
 
 - Added optional Microsoft Graph change notifications for authorized Teams channels, chats, and
