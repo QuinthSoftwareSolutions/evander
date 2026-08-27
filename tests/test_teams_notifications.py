@@ -15,7 +15,7 @@ from evander.messaging.teams_notifications import create_app
 from evander.models import WorkerSummary
 
 
-def _configured_service(tmp_path):
+def _configured_service(tmp_path, *, ingest_wake_notifier=None):
     runtime_dir = tmp_path / "runtime"
     config_dir = tmp_path / "config" / "teams-ingest"
     config_dir.mkdir(parents=True)
@@ -47,7 +47,12 @@ def _configured_service(tmp_path):
             updated_at=now,
         )
     )
-    app = create_app(config, project_dir=tmp_path, store=store)
+    app = create_app(
+        config,
+        project_dir=tmp_path,
+        store=store,
+        ingest_wake_notifier=ingest_wake_notifier,
+    )
     return TestClient(app), store, client_state
 
 
@@ -62,7 +67,11 @@ def test_teams_notifications_returns_decoded_challenge_verbatim(tmp_path) -> Non
 
 
 def test_teams_notifications_validates_batch_and_durably_deduplicates(tmp_path) -> None:
-    client, store, client_state = _configured_service(tmp_path)
+    wake_calls: list[str] = []
+    client, store, client_state = _configured_service(
+        tmp_path,
+        ingest_wake_notifier=lambda: wake_calls.append("wake") or True,
+    )
     valid = {
         "subscriptionId": "subscription-1",
         "tenantId": "tenant-a",
@@ -83,9 +92,132 @@ def test_teams_notifications_validates_batch_and_durably_deduplicates(tmp_path) 
     assert response.json() == {"status": "accepted", "accepted": 1}
     assert duplicate.status_code == 202
     assert duplicate.json()["accepted"] == 0
+    assert wake_calls == ["wake"]
     leased = store.lease_notifications(now=datetime.now(UTC))
     assert len(leased) == 1
     assert leased[0].resource.endswith("messages('message-1')")
+
+
+def test_teams_notifications_wakes_ingest_after_durable_enqueue(tmp_path) -> None:
+    observed_queue_depths: list[int] = []
+    store_holder: dict[str, TeamsInboxStore] = {}
+
+    def observe_wake() -> bool:
+        status = store_holder["store"].notification_status(
+            enabled=True,
+            renewal_margin=timedelta(hours=24),
+        )
+        observed_queue_depths.append(status["queue_depth"])
+        return True
+
+    client, store, client_state = _configured_service(
+        tmp_path,
+        ingest_wake_notifier=observe_wake,
+    )
+    store_holder["store"] = store
+
+    response = client.post(
+        "/msgraph/teams/notifications",
+        json={
+            "value": [
+                {
+                    "subscriptionId": "subscription-1",
+                    "tenantId": "tenant-a",
+                    "clientState": client_state,
+                    "changeType": "created",
+                    "resource": "chats('chat-a')/messages('message-a')",
+                }
+            ]
+        },
+    )
+
+    assert response.status_code == 202
+    assert response.json()["accepted"] == 1
+    assert observed_queue_depths == [1]
+
+
+def test_teams_notifications_acknowledges_when_ingest_wake_fails(
+    tmp_path,
+    caplog,
+) -> None:
+    def fail_wake() -> bool:
+        raise OSError("wake socket unavailable")
+
+    client, store, client_state = _configured_service(
+        tmp_path,
+        ingest_wake_notifier=fail_wake,
+    )
+
+    with caplog.at_level("WARNING"):
+        response = client.post(
+            "/msgraph/teams/notifications",
+            json={
+                "value": [
+                    {
+                        "subscriptionId": "subscription-1",
+                        "tenantId": "tenant-a",
+                        "clientState": client_state,
+                        "changeType": "created",
+                        "resource": "chats('chat-a')/messages('message-a')",
+                    }
+                ]
+            },
+        )
+
+    assert response.status_code == 202
+    assert response.json()["accepted"] == 1
+    assert len(store.lease_notifications(now=datetime.now(UTC))) == 1
+    assert "periodic polling will process the queue" in caplog.text
+
+
+def test_teams_notifications_resolves_worker_wake_socket_from_project_dir(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    notified_paths = []
+
+    class RecordingWakeNotifier:
+        def __init__(self, path) -> None:
+            notified_paths.append(path)
+
+        def notify(self) -> bool:
+            return True
+
+    monkeypatch.setattr(
+        "evander.messaging.teams_notifications.HostWakeNotifier",
+        RecordingWakeNotifier,
+    )
+    client, _store, client_state = _configured_service(tmp_path)
+    config_path = tmp_path / "config" / "teams-ingest" / "config.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "runtime_dir": "runtime",
+                "lock_path": "custom/teams-ingest.lock",
+                "change_notifications_enabled": True,
+                "change_notification_public_base_url": "https://notifications.example.test",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    response = client.post(
+        "/msgraph/teams/notifications",
+        json={
+            "value": [
+                {
+                    "subscriptionId": "subscription-1",
+                    "tenantId": "tenant-a",
+                    "clientState": client_state,
+                    "changeType": "created",
+                    "resource": "chats('chat-a')/messages('message-a')",
+                }
+            ]
+        },
+    )
+
+    assert response.status_code == 202
+    assert notified_paths == [tmp_path / "custom" / "teams-ingest.wake.sock"]
 
 
 def test_teams_notifications_ignore_unknown_subscription_and_wrong_tenant(tmp_path) -> None:
@@ -208,12 +340,7 @@ def test_teams_notifications_rejects_oversized_batch_before_subscription_lookup(
     monkeypatch.setattr(store, "get_owned_subscriptions", unexpected_lookup)
     response = client.post(
         "/msgraph/teams/notifications",
-        json={
-            "value": [
-                {"subscriptionId": f"unknown-{index}"}
-                for index in range(101)
-            ]
-        },
+        json={"value": [{"subscriptionId": f"unknown-{index}"} for index in range(101)]},
     )
 
     assert response.status_code == 413

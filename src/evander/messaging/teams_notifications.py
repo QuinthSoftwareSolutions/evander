@@ -8,7 +8,7 @@ import logging
 from datetime import UTC, datetime, timedelta
 from ipaddress import ip_address
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import uvicorn
 from starlette.applications import Starlette
@@ -23,7 +23,11 @@ from evander.messaging.teams_inbox_store import (
     TeamsNotificationQueueEntry,
     TeamsOwnedSubscription,
 )
-from evander.messaging.teams_ingest import _load_teams_ingest_worker_global_config
+from evander.messaging.teams_ingest import (
+    _load_teams_ingest_worker_global_config,
+    _resolve_teams_ingest_lock_path,
+)
+from evander.orchestration.host_polling import HostWakeNotifier, wake_socket_path_for_lock
 
 logger = logging.getLogger(__name__)
 _MAX_NOTIFICATION_REQUEST_BYTES = 256 * 1024
@@ -44,6 +48,7 @@ class TeamsNotificationsService:
         project_dir: Path,
         store: TeamsInboxStore | None = None,
         max_request_bytes: int = _MAX_NOTIFICATION_REQUEST_BYTES,
+        ingest_wake_notifier: Callable[[], bool] | None = None,
     ) -> None:
         self.config = config
         self.project_dir = Path(project_dir)
@@ -55,6 +60,7 @@ class TeamsNotificationsService:
         self.store = store
         self.owner_id = self.store.notification_owner_id()
         self.max_request_bytes = max(1, int(max_request_bytes))
+        self._ingest_wake_notifier = ingest_wake_notifier
 
     def worker_config(self) -> TeamsIngestWorkerGlobalConfig:
         return _load_teams_ingest_worker_global_config(
@@ -151,6 +157,8 @@ class TeamsNotificationsService:
                     accepted += 1
                 elif entry is None:
                     rejected += 1
+        if accepted > 0:
+            self._notify_ingest_worker(worker_config)
         if rejected:
             logger.warning(
                 "Ignored invalid Teams Graph notification items kind=%s count=%d",
@@ -158,6 +166,30 @@ class TeamsNotificationsService:
                 rejected,
             )
         return JSONResponse({"status": "accepted", "accepted": accepted}, status_code=202)
+
+    def _notify_ingest_worker(self, worker_config: TeamsIngestWorkerGlobalConfig) -> bool:
+        notifier = self._ingest_wake_notifier
+        if notifier is None:
+            lock_path = _resolve_teams_ingest_lock_path(
+                worker_config,
+                project_dir=self.project_dir,
+            )
+            notifier = HostWakeNotifier(wake_socket_path_for_lock(lock_path)).notify
+        try:
+            notified = notifier()
+        except Exception:
+            logger.warning(
+                "Failed to wake Teams ingest worker after durable notification enqueue; "
+                "periodic polling will process the queue",
+                exc_info=True,
+            )
+            return False
+        if not notified:
+            logger.warning(
+                "Teams ingest worker wake socket was unavailable after durable notification "
+                "enqueue; periodic polling will process the queue"
+            )
+        return notified
 
     async def _bounded_body(self, request: Request) -> bytes:
         content_length = request.headers.get("content-length")
@@ -254,12 +286,14 @@ def create_app(
     project_dir: Path,
     store: TeamsInboxStore | None = None,
     max_request_bytes: int = _MAX_NOTIFICATION_REQUEST_BYTES,
+    ingest_wake_notifier: Callable[[], bool] | None = None,
 ) -> Starlette:
     return TeamsNotificationsService(
         config,
         project_dir=project_dir,
         store=store,
         max_request_bytes=max_request_bytes,
+        ingest_wake_notifier=ingest_wake_notifier,
     ).create_app()
 
 
