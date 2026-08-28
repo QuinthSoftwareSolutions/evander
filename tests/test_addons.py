@@ -34,6 +34,7 @@ BUNDLED_ADDON_MANIFESTS = {
     "skatteverket-addon": "evander_skatteverket_addon",
     "mssql-seed-addon": "evander_mssql_seed_addon",
     "ado-activity-addon": "evander_ado_activity_addon",
+    "elastic-stack-addon": "evander_elastic_stack_addon",
 }
 BUNDLED_ADDON_PACKAGE_DATA = {
     "evander_team_addon": ["addon.json", "ui_static/*"],
@@ -41,6 +42,7 @@ BUNDLED_ADDON_PACKAGE_DATA = {
     "evander_skatteverket_addon": ["addon.json", "ui_static/*"],
     "evander_mssql_seed_addon": ["addon.json", "ui_static/*"],
     "evander_ado_activity_addon": ["addon.json"],
+    "evander_elastic_stack_addon": ["addon.json"],
 }
 
 
@@ -147,6 +149,23 @@ def test_bundled_ado_activity_addon_packaging_contract_is_declared() -> None:
     assert addon.workflow_providers is not None
 
 
+def test_bundled_elastic_stack_addon_packaging_contract_is_declared() -> None:
+    pyproject = tomllib.loads((PROJECT_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+
+    addon_entry_points = pyproject["project"]["entry-points"]["evander.addons"]
+    package_data = pyproject["tool"]["setuptools"]["package-data"]
+
+    assert addon_entry_points["elastic_stack"] == ("evander_elastic_stack_addon:register_addon")
+    assert package_data["evander_elastic_stack_addon"] == ["addon.json"]
+    assert json.loads(
+        (PROJECT_ROOT / "src/evander_elastic_stack_addon/addon.json").read_text(encoding="utf-8")
+    ) == {"addon_id": "elastic-stack-addon", "module": "evander_elastic_stack_addon"}
+
+    addon = importlib.import_module("evander_elastic_stack_addon").register_addon()
+    assert addon.mcp_tools is not None
+    assert addon.workflow_providers is not None
+
+
 def test_bundled_addon_manifests_are_scannable_from_src() -> None:
     pyproject = tomllib.loads((PROJECT_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     package_data = pyproject["tool"]["setuptools"]["package-data"]
@@ -189,6 +208,7 @@ def test_bundled_mcp_addons_declare_every_registered_tool_in_the_ui_catalog() ->
         "evander_skatteverket_addon",
         "evander_mssql_seed_addon",
         "evander_ado_activity_addon",
+        "evander_elastic_stack_addon",
     ):
         registration = importlib.import_module(module_name).register_addon()
         mcp_module = importlib.import_module(f"{module_name}.mcp")
@@ -1004,3 +1024,32 @@ def test_bundled_ado_activity_addon_workflow_providers_are_optional() -> None:
     catalog_entries = {entry.type: entry for entry in enabled.workflow_editor_catalog_entries}
     assert catalog_entries["query:ado:activity"].label == "ADO activity index query"
     assert catalog_entries["effect:ado:sync-activity-index"].description
+
+
+def test_bundled_elastic_stack_addon_workflow_providers_are_optional() -> None:
+    disabled = load_provider_plugins(
+        module_names=[],
+        include_entry_points=False,
+        include_builtin=False,
+    )
+    assert "query:kibana:data-views" not in disabled.query_providers
+    assert "effect:kibana:import-saved-objects" not in disabled.effect_providers
+
+    enabled = load_provider_plugins(
+        module_names=[],
+        include_entry_points=False,
+        include_builtin=False,
+        addon_loader=AddonLoaderConfig(
+            modules=["evander_elastic_stack_addon"],
+            enabled_addon_ids=["elastic-stack-addon"],
+        ),
+    )
+
+    assert "addon:elastic-stack-addon" in enabled.loaded_plugins
+    assert "query:elasticsearch:indices" in enabled.query_providers
+    assert "query:kibana:data-views" in enabled.query_providers
+    assert "effect:kibana:upsert-data-view" in enabled.effect_providers
+    assert "effect:kibana:import-saved-objects" in enabled.effect_providers
+    catalog_entries = {entry.type: entry for entry in enabled.workflow_editor_catalog_entries}
+    assert catalog_entries["query:elasticsearch:cluster-health"].label
+    assert catalog_entries["effect:kibana:import-saved-objects"].description

@@ -1,5 +1,16 @@
 # Changelog
 
+## 2026-08-28 - Elastic Stack Add-on
+
+- Added a bundled, opt-in Elastic Stack add-on with narrowly scoped Elasticsearch read tools and
+  Kibana data-view, saved-object import, and default-data-view operations for agents and workflows.
+- Added directory-scoped static targets plus session metadata targets so demo deployments can
+  expose derived Kibana and Elasticsearch URLs without storing credentials in session state.
+- Kept authentication host-side through named basic, API-key, and bearer environment profiles,
+  with an explicit origin allowlist checked before any secret is resolved or sent.
+- Added bounded response and NDJSON import validation, add-on MCP catalog metadata, workflow
+  editor catalog entries, focused tests, and operator configuration guidance.
+
 ## 2026-08-28 - Role-Based Team Task Allocation
 
 - Added single-task Team MCP commands that resolve an exact base or project-assignment role to a

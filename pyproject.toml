@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "evander"
-version = "0.9.0"
+version = "0.10.0"
 description = "Host-side MCP gateway and libvirt orchestration for isolated agent VMs."
 readme = "README.md"
 requires-python = ">=3.12"
@@ -40,6 +40,7 @@ bokio = "evander_bokio_addon:register_addon"
 skatteverket = "evander_skatteverket_addon:register_addon"
 mssql_seed = "evander_mssql_seed_addon:register_addon"
 ado_activity = "evander_ado_activity_addon:register_addon"
+elastic_stack = "evander_elastic_stack_addon:register_addon"
 
 [project.scripts]
 evander-gateway = "evander.gateway:main"
@@ -75,6 +76,7 @@ evander_bokio_addon = ["addon.json", "ui_static/*"]
 evander_skatteverket_addon = ["addon.json", "ui_static/*"]
 evander_mssql_seed_addon = ["addon.json", "ui_static/*"]
 evander_ado_activity_addon = ["addon.json"]
+evander_elastic_stack_addon = ["addon.json"]
 
 [tool.ruff]
 line-length = 100
