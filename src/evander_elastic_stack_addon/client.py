@@ -5,7 +5,7 @@ from collections.abc import Callable, Mapping
 from fnmatch import fnmatchcase
 import json
 from typing import Any
-from urllib.parse import quote, urlencode, urlsplit
+from urllib.parse import quote, urlencode
 
 import httpx
 
@@ -14,6 +14,8 @@ from .models import (
     ElasticStackEndpoint,
     ElasticStackSettings,
     ElasticStackTarget,
+    _validate_import_options,
+    canonical_http_origin,
     normalize_identifier,
     normalize_space_id,
 )
@@ -138,10 +140,11 @@ class ElasticStackClient:
         compatibility_mode: bool = False,
         space_id: str | None = None,
     ) -> dict[str, Any]:
-        if create_new_copies and (overwrite or compatibility_mode):
-            raise ValueError(
-                "create_new_copies cannot be combined with overwrite or compatibility_mode"
-            )
+        _validate_import_options(
+            overwrite=overwrite,
+            create_new_copies=create_new_copies,
+            compatibility_mode=compatibility_mode,
+        )
         content, object_count = self._validated_ndjson(ndjson)
         query = urlencode(
             {
@@ -320,14 +323,11 @@ class ElasticStackClient:
 
     @staticmethod
     def _ensure_origin_allowed(base_url: str, profile: ElasticStackAuthProfile) -> None:
-        parts = urlsplit(base_url)
-        port = parts.port
-        default_port = 443 if parts.scheme == "https" else 80
-        netloc = str(parts.hostname or "").lower()
-        if port is not None and port != default_port:
-            netloc = f"{netloc}:{port}"
-        origin = f"{parts.scheme.lower()}://{netloc}"
-        if any(fnmatchcase(origin, pattern) for pattern in profile.allowed_origins):
+        origin = canonical_http_origin(base_url, field_name="base_url")
+        if any(
+            origin == pattern or ("*" in pattern and fnmatchcase(origin, pattern))
+            for pattern in profile.allowed_origins
+        ):
             return
         raise ElasticStackConfigError(
             f"Elastic Stack target origin {origin!r} is not allowed by its auth profile"

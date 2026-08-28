@@ -4,6 +4,8 @@ from collections.abc import Mapping
 import os
 from typing import Any
 
+from evander.models import DirectoryPath
+
 from .client import ElasticStackClient
 from .models import settings_from_provider_state
 
@@ -92,10 +94,31 @@ def _session_from_context(context: Any, session_id: str) -> Any:
             (
                 item
                 for item in records or ()
-                if str(getattr(item, "session_id", "") or "") == normalized_session_id
+                if str(_record_value(item, "session_id", "") or "") == normalized_session_id
             ),
             None,
         )
     if session is None:
         raise ValueError(f"session {normalized_session_id!r} was not found")
+    workflow_directory_path = _directory_path(
+        _record_value(getattr(context, "metadata", {}), "directory_path", "root")
+    )
+    session_directory_path = _directory_path(_record_value(session, "directory_path", "root"))
+    if session_directory_path != workflow_directory_path and not session_directory_path.startswith(
+        f"{workflow_directory_path}/"
+    ):
+        raise ValueError(
+            f"session {normalized_session_id!r} is outside workflow directory scope "
+            f"{workflow_directory_path!r}"
+        )
     return session
+
+
+def _record_value(record: Any, key: str, default: Any = None) -> Any:
+    if isinstance(record, Mapping):
+        return record.get(key, default)
+    return getattr(record, key, default)
+
+
+def _directory_path(value: Any) -> str:
+    return DirectoryPath(segments=str(value or "root")).as_posix()

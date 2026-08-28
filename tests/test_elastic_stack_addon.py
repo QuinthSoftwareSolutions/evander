@@ -26,8 +26,12 @@ from evander_elastic_stack_addon.models import (
 from evander_elastic_stack_addon.providers import (
     ElasticsearchIndicesQueryProvider,
     KibanaImportSavedObjectsEffectProvider,
+    KibanaSetDefaultDataViewEffectProvider,
+    KibanaUpsertDataViewEffectProvider,
+    _boolean,
     register_providers,
 )
+from evander_elastic_stack_addon.service import client_for_provider_context
 
 
 def _provider_state() -> dict[str, Any]:
@@ -186,6 +190,22 @@ def test_kibana_import_validates_ndjson_and_sends_bounded_multipart() -> None:
             overwrite=True,
             create_new_copies=True,
         )
+    with pytest.raises(ValueError, match="compatibility_mode cannot be combined with overwrite"):
+        client.kibana_import_saved_objects(
+            "app-demo",
+            ndjson=ndjson,
+            overwrite=True,
+            compatibility_mode=True,
+        )
+    with pytest.raises(ValueError, match="create_new_copies cannot be combined"):
+        client.kibana_import_saved_objects(
+            "app-demo",
+            ndjson=ndjson,
+            overwrite=False,
+            create_new_copies=True,
+            compatibility_mode=True,
+        )
+    assert len(captured) == 1
 
 
 def test_elasticsearch_queries_use_api_key_and_restrict_index_paths() -> None:
@@ -211,6 +231,7 @@ def test_elasticsearch_queries_use_api_key_and_restrict_index_paths() -> None:
 
 def test_client_rejects_origin_before_sending_secret_and_redacts_upstream_errors() -> None:
     calls = 0
+    secret_calls = 0
 
     def handler(_request: httpx.Request) -> httpx.Response:
         nonlocal calls
@@ -232,9 +253,15 @@ def test_client_rejects_origin_before_sending_secret_and_redacts_upstream_errors
             }
         },
     )
+
+    def secret_resolver(_ref: str) -> str:
+        nonlocal secret_calls
+        secret_calls += 1
+        return "secret-value"
+
     client = ElasticStackClient(
         settings,
-        secret_resolver=lambda _ref: "secret-value",
+        secret_resolver=secret_resolver,
         transport=httpx.MockTransport(handler),
     )
 
@@ -242,12 +269,163 @@ def test_client_rejects_origin_before_sending_secret_and_redacts_upstream_errors
         client.kibana_status("bad")
     assert "secret-value" not in str(rejected.value)
     assert calls == 0
+    assert secret_calls == 0
 
     allowed = _client(handler)
     with pytest.raises(ElasticStackApiError, match="HTTP 500") as upstream:
         allowed.kibana_status("app-demo")
     assert "secret-value" not in str(upstream.value)
     assert calls == 1
+
+
+@pytest.mark.parametrize(
+    ("allowed_origin", "base_url", "canonical_allowed", "canonical_base_url"),
+    [
+        (
+            "HTTPS://[2001:DB8::1]:443",
+            "https://[2001:db8::1]:443",
+            "https://[2001:db8::1]",
+            "https://[2001:db8::1]",
+        ),
+        (
+            "https://*.EXAMPLE.test:443",
+            "https://KIBANA.example.TEST:443",
+            "https://*.example.test",
+            "https://kibana.example.test",
+        ),
+        (
+            "http://kibana.example.test:80",
+            "http://kibana.example.test",
+            "http://kibana.example.test",
+            "http://kibana.example.test",
+        ),
+        (
+            "https://[2001:db8::1]:8443",
+            "https://[2001:DB8::1]:8443",
+            "https://[2001:db8::1]:8443",
+            "https://[2001:db8::1]:8443",
+        ),
+    ],
+)
+def test_origin_allowlists_and_endpoints_share_canonical_ipv6_and_port_forms(
+    allowed_origin: str,
+    base_url: str,
+    canonical_allowed: str,
+    canonical_base_url: str,
+) -> None:
+    requests: list[httpx.Request] = []
+    settings = ElasticStackSettings.model_validate(
+        {
+            "auth_profiles": {"canonical": {"type": "none", "allowed_origins": [allowed_origin]}},
+            "targets": {
+                "canonical": {"kibana": {"base_url": base_url, "auth_profile": "canonical"}}
+            },
+        }
+    )
+    client = ElasticStackClient(
+        settings,
+        secret_resolver=lambda _ref: None,
+        transport=httpx.MockTransport(
+            lambda request: requests.append(request) or httpx.Response(200, json={})
+        ),
+    )
+
+    assert client.kibana_status("canonical") == {}
+    assert settings.auth_profiles["canonical"].allowed_origins == [canonical_allowed]
+    assert settings.targets["canonical"].kibana is not None
+    assert settings.targets["canonical"].kibana.base_url == canonical_base_url
+    assert len(requests) == 1
+
+
+def test_nondefault_origin_port_mismatch_is_rejected_before_secret_or_transport() -> None:
+    secret_calls: list[str] = []
+    transport_calls: list[httpx.Request] = []
+    settings = ElasticStackSettings.model_validate(
+        {
+            "auth_profiles": {
+                "restricted": {
+                    "type": "bearer_env",
+                    "token_env": "ELASTIC_TEST_TOKEN",
+                    "allowed_origins": ["https://kibana.example.test:8443"],
+                }
+            },
+            "targets": {
+                "wrong-port": {
+                    "kibana": {
+                        "base_url": "https://kibana.example.test:9443",
+                        "auth_profile": "restricted",
+                    }
+                }
+            },
+        }
+    )
+    client = ElasticStackClient(
+        settings,
+        secret_resolver=lambda ref: secret_calls.append(ref) or "secret",
+        transport=httpx.MockTransport(
+            lambda request: transport_calls.append(request) or httpx.Response(200, json={})
+        ),
+    )
+
+    with pytest.raises(ElasticStackConfigError, match="not allowed"):
+        client.kibana_status("wrong-port")
+    assert secret_calls == []
+    assert transport_calls == []
+
+
+def test_workflow_session_target_rejects_out_of_scope_sessions_before_config_or_secrets() -> None:
+    class Resolver:
+        def __init__(self) -> None:
+            self.calls: list[Any] = []
+
+        def resolve_for_session_manifest(self, session: Any) -> dict[str, Any]:
+            self.calls.append(session)
+            return {"provider_state": _provider_state()}
+
+    def context(records: Any, resolver: Resolver, *, directory_path: str = "root/a") -> Any:
+        secret_calls: list[str] = []
+
+        def resolve_secret(ref: str) -> None:
+            secret_calls.append(ref)
+            return None
+
+        return SimpleNamespace(
+            metadata={"directory_path": directory_path},
+            session_lookup=SimpleNamespace(read_all_sessions=lambda: records),
+            provider_config_resolver=resolver,
+            resolve_secret=resolve_secret,
+            secret_calls=secret_calls,
+        )
+
+    rejected_records = [
+        {"session_id": "sibling", "directory_path": "root/b"},
+        {"session_id": "ancestor", "directory_path": "root"},
+        {"session_id": "prefix", "directory_path": "root/a-evil"},
+    ]
+    for records in (
+        {record["session_id"]: record for record in rejected_records},
+        [SimpleNamespace(**record) for record in rejected_records],
+    ):
+        resolver = Resolver()
+        runtime_context = context(records, resolver)
+        for session_id in ("sibling", "ancestor", "prefix"):
+            with pytest.raises(ValueError, match="outside workflow directory scope"):
+                client_for_provider_context(runtime_context, session_id=session_id)
+        assert resolver.calls == []
+        assert runtime_context.secret_calls == []
+
+    allowed_records = {
+        "same": SimpleNamespace(session_id="same", directory_path="root/a", metadata={}),
+        "child": SimpleNamespace(session_id="child", directory_path="root/a/child", metadata={}),
+        "other": SimpleNamespace(session_id="other", directory_path="root/b", metadata={}),
+    }
+    resolver = Resolver()
+    runtime_context = context(allowed_records, resolver)
+    assert client_for_provider_context(runtime_context, session_id="same").list_targets()
+    assert client_for_provider_context(runtime_context, session_id="child").list_targets()
+    root_context = context(allowed_records, resolver, directory_path="root")
+    assert client_for_provider_context(root_context, session_id="other").list_targets()
+    assert [session.session_id for session in resolver.calls] == ["same", "child", "other"]
 
 
 def test_mcp_tools_are_policy_scoped_and_delegate_semantic_operations(monkeypatch) -> None:
@@ -351,6 +529,15 @@ def test_workflow_provider_registration_materializes_and_executes(monkeypatch) -
         )
     )
     assert bound.target_id == "${{gate-map.target_id}}"
+    clear_default = registration.node_definition_resolvers["effect:kibana:set-default-data-view"](
+        WorkflowNodeEnvelope(
+            id="clear-default",
+            display_name="Clear default data view",
+            type="effect:kibana:set-default-data-view",
+            config={"target_id": "demo"},
+        )
+    )
+    assert clear_default.data_view_id is None
 
     class FakeClient:
         def elasticsearch_list_indices(self, target_id: str, **kwargs):
@@ -391,3 +578,157 @@ def test_workflow_provider_registration_materializes_and_executes(monkeypatch) -
     )
     effect.runtime_context = SimpleNamespace()
     assert effect.execute()["success"] is True
+
+
+@pytest.mark.parametrize(
+    ("overwrite", "create_new_copies", "compatibility_mode"),
+    [
+        (True, True, False),
+        (False, True, True),
+        (True, False, True),
+    ],
+)
+def test_import_definition_rejects_mutually_exclusive_modes(
+    overwrite: bool,
+    create_new_copies: bool,
+    compatibility_mode: bool,
+) -> None:
+    resolver = register_providers().node_definition_resolvers["effect:kibana:import-saved-objects"]
+    with pytest.raises(ValueError, match="cannot be combined"):
+        resolver(
+            WorkflowNodeEnvelope(
+                id="invalid-import",
+                display_name="Invalid import",
+                type="effect:kibana:import-saved-objects",
+                config={
+                    "target_id": "demo",
+                    "ndjson": "{}\n",
+                    "overwrite": overwrite,
+                    "create_new_copies": create_new_copies,
+                    "compatibility_mode": compatibility_mode,
+                },
+            )
+        )
+
+    legal = resolver(
+        WorkflowNodeEnvelope(
+            id="legal-import",
+            display_name="Legal import",
+            type="effect:kibana:import-saved-objects",
+            config={
+                "target_id": "demo",
+                "ndjson": "{}\n",
+                "overwrite": False,
+                "compatibility_mode": True,
+            },
+        )
+    )
+    assert legal.overwrite is False
+    assert legal.compatibility_mode is True
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        (True, True),
+        (False, False),
+        ("true", True),
+        ("false", False),
+        ("1", True),
+        ("0", False),
+        ("YES", True),
+        ("off", False),
+    ],
+)
+def test_workflow_boolean_parser_accepts_only_explicit_boolean_forms(
+    value: Any, expected: bool
+) -> None:
+    assert _boolean(value, field_name="test_field", default=not expected) is expected
+
+
+@pytest.mark.parametrize("value", [1, 0, "", "sometimes", [], {}, object()])
+def test_workflow_boolean_parser_rejects_ambiguous_values(value: Any) -> None:
+    with pytest.raises(ValueError, match="test_field must be a boolean"):
+        _boolean(value, field_name="test_field", default=False)
+
+
+def test_bound_workflow_boolean_strings_reach_all_clients_as_booleans(monkeypatch) -> None:
+    calls: dict[str, dict[str, Any]] = {}
+
+    class FakeClient:
+        def elasticsearch_list_indices(self, target_id: str, **kwargs: Any) -> list[dict[str, Any]]:
+            calls["indices"] = {"target_id": target_id, **kwargs}
+            return []
+
+        def kibana_upsert_data_view(self, target_id: str, **kwargs: Any) -> dict[str, Any]:
+            calls["upsert"] = {"target_id": target_id, **kwargs}
+            return {"ok": True}
+
+        def kibana_import_saved_objects(self, target_id: str, **kwargs: Any) -> dict[str, Any]:
+            calls["import"] = {"target_id": target_id, **kwargs}
+            return {"ok": True}
+
+        def kibana_set_default_data_view(self, target_id: str, **kwargs: Any) -> dict[str, Any]:
+            calls["default"] = {"target_id": target_id, **kwargs}
+            return {"ok": True}
+
+    monkeypatch.setattr(
+        "evander_elastic_stack_addon.providers.client_for_provider_context",
+        lambda *_args, **_kwargs: FakeClient(),
+    )
+
+    query = ElasticsearchIndicesQueryProvider()
+    query.query_definition = SimpleNamespace(
+        model_dump=lambda **_kwargs: {
+            "type": "query:elasticsearch:indices",
+            "target_id": "demo",
+        }
+    )
+    query.runtime_context = SimpleNamespace()
+    query.execute(resolved_config={"include_hidden": "false"})
+
+    upsert = KibanaUpsertDataViewEffectProvider()
+    upsert.effect_definition = SimpleNamespace(
+        model_dump=lambda **_kwargs: {
+            "type": "effect:kibana:upsert-data-view",
+            "target_id": "demo",
+            "data_view": {"title": "events-*"},
+        }
+    )
+    upsert.runtime_context = SimpleNamespace()
+    upsert.execute(resolved_config={"override": "false"})
+
+    saved_object_import = KibanaImportSavedObjectsEffectProvider()
+    saved_object_import.effect_definition = SimpleNamespace(
+        model_dump=lambda **_kwargs: {
+            "type": "effect:kibana:import-saved-objects",
+            "target_id": "demo",
+            "ndjson": "{}\n",
+        }
+    )
+    saved_object_import.runtime_context = SimpleNamespace()
+    saved_object_import.execute(
+        resolved_config={
+            "overwrite": "false",
+            "create_new_copies": "true",
+            "compatibility_mode": "false",
+        }
+    )
+
+    set_default = KibanaSetDefaultDataViewEffectProvider()
+    set_default.effect_definition = SimpleNamespace(
+        model_dump=lambda **_kwargs: {
+            "type": "effect:kibana:set-default-data-view",
+            "target_id": "demo",
+        }
+    )
+    set_default.runtime_context = SimpleNamespace()
+    set_default.execute(resolved_config={"force": "false"})
+
+    assert calls["indices"]["include_hidden"] is False
+    assert calls["upsert"]["override"] is False
+    assert calls["import"]["overwrite"] is False
+    assert calls["import"]["create_new_copies"] is True
+    assert calls["import"]["compatibility_mode"] is False
+    assert calls["default"]["data_view_id"] is None
+    assert calls["default"]["force"] is False

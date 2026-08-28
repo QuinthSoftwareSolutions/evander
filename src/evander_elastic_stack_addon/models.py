@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 from typing import Any, Literal
-from urllib.parse import urlsplit, urlunsplit
+from urllib.parse import SplitResult, urlsplit
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
@@ -26,9 +26,12 @@ def normalize_identifier(value: object, *, field_name: str) -> str:
     return normalized
 
 
-def normalize_base_url(value: object, *, field_name: str) -> str:
+def _http_url_parts(value: object, *, field_name: str) -> SplitResult:
     text = str(value or "").strip()
-    parts = urlsplit(text)
+    try:
+        parts = urlsplit(text)
+    except ValueError as exc:
+        raise ValueError(f"{field_name} must be an absolute http(s) URL") from exc
     if parts.scheme not in {"http", "https"} or not parts.netloc or not parts.hostname:
         raise ValueError(f"{field_name} must be an absolute http(s) URL")
     if parts.username or parts.password:
@@ -39,8 +42,40 @@ def normalize_base_url(value: object, *, field_name: str) -> str:
         parts.port
     except ValueError as exc:
         raise ValueError(f"{field_name} must contain a valid port") from exc
+    return parts
+
+
+def _canonical_origin(parts: SplitResult) -> str:
+    scheme = parts.scheme.lower()
+    hostname = str(parts.hostname or "").lower()
+    if ":" in hostname:
+        hostname = f"[{hostname}]"
+    port = parts.port
+    default_port = 443 if scheme == "https" else 80
+    netloc = hostname if port is None or port == default_port else f"{hostname}:{port}"
+    return f"{scheme}://{netloc}"
+
+
+def canonical_http_origin(value: object, *, field_name: str) -> str:
+    return _canonical_origin(_http_url_parts(value, field_name=field_name))
+
+
+def normalize_base_url(value: object, *, field_name: str) -> str:
+    parts = _http_url_parts(value, field_name=field_name)
     path = parts.path.rstrip("/")
-    return urlunsplit((parts.scheme.lower(), parts.netloc.lower(), path, "", ""))
+    return f"{_canonical_origin(parts)}{path}"
+
+
+def normalize_allowed_origin(value: object) -> str:
+    parts = _http_url_parts(value, field_name="allowed_origins entry")
+    hostname = str(parts.hostname or "")
+    if (
+        parts.path not in {"", "/"}
+        or hostname in {"", "*"}
+        or hostname.replace("*", "").strip(".") == ""
+    ):
+        raise ValueError("allowed_origins entries must be host-restricted http(s) origins")
+    return _canonical_origin(parts)
 
 
 def normalize_space_id(value: object) -> str | None:
@@ -78,20 +113,7 @@ class ElasticStackAuthProfile(BaseModel):
             raise ValueError("allowed_origins must be a list")
         result: list[str] = []
         for item in value:
-            text = str(item or "").strip().lower().rstrip("/")
-            parts = urlsplit(text)
-            hostname = str(parts.hostname or "")
-            if (
-                parts.scheme not in {"http", "https"}
-                or not parts.netloc
-                or parts.path not in {"", "/"}
-                or parts.query
-                or parts.fragment
-                or hostname in {"", "*"}
-                or hostname.replace("*", "").strip(".") == ""
-            ):
-                raise ValueError("allowed_origins entries must be host-restricted http(s) origins")
-            result.append(text)
+            result.append(normalize_allowed_origin(item))
         return list(dict.fromkeys(result))
 
     @model_validator(mode="after")
@@ -273,23 +295,36 @@ class KibanaImportSavedObjectsEffectDefinition(_TargetedDefinition):
 
     @model_validator(mode="after")
     def validate_import_options(self) -> "KibanaImportSavedObjectsEffectDefinition":
-        if (
-            isinstance(self.create_new_copies, bool)
-            and isinstance(self.overwrite, bool)
-            and isinstance(self.compatibility_mode, bool)
-            and self.create_new_copies
-            and (self.overwrite or self.compatibility_mode)
+        if all(
+            isinstance(value, bool)
+            for value in (self.overwrite, self.create_new_copies, self.compatibility_mode)
         ):
-            raise ValueError(
-                "create_new_copies cannot be combined with overwrite or compatibility_mode"
+            _validate_import_options(
+                overwrite=self.overwrite,
+                create_new_copies=self.create_new_copies,
+                compatibility_mode=self.compatibility_mode,
             )
         return self
 
 
 class KibanaSetDefaultDataViewEffectDefinition(_TargetedDefinition):
     type: Literal["effect:kibana:set-default-data-view"]
-    data_view_id: ConfigValue | None
+    data_view_id: ConfigValue | None = None
     force: ConfigValue = True
+
+
+def _validate_import_options(
+    *,
+    overwrite: bool,
+    create_new_copies: bool,
+    compatibility_mode: bool,
+) -> None:
+    if create_new_copies and (overwrite or compatibility_mode):
+        raise ValueError(
+            "create_new_copies cannot be combined with overwrite or compatibility_mode"
+        )
+    if compatibility_mode and overwrite:
+        raise ValueError("compatibility_mode cannot be combined with overwrite")
 
 
 def _normalize_keyed_mapping(value: object, *, field_name: str) -> dict[str, Any]:

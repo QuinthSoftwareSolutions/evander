@@ -6,6 +6,7 @@ from typing import Any
 from evander.effects.providers.base import EffectProviderBase
 from evander.events.models import WorkflowNodeEnvelope
 from evander.queries.providers.base import QueryProviderBase
+from evander.semantic.workflow_helpers import optional_bool
 from evander.workflow.catalog import WorkflowEditorFieldDefinition, WorkflowEditorNodeCatalogEntry
 from evander.workflow.plugins import ProviderPluginRegistration
 
@@ -95,7 +96,9 @@ class ElasticsearchIndicesQueryProvider(_ElasticStackProviderMixin, QueryProvide
         items = self._client(payload).elasticsearch_list_indices(
             _required(payload, "target_id"),
             index_pattern=str(payload.get("index_pattern") or "*"),
-            include_hidden=bool(payload.get("include_hidden") or False),
+            include_hidden=_boolean(
+                payload.get("include_hidden"), field_name="include_hidden", default=False
+            ),
         )
         return {"result": items, "items": items, "count": len(items)}
 
@@ -149,7 +152,7 @@ class KibanaUpsertDataViewEffectProvider(_ElasticStackProviderMixin, EffectProvi
         result = self._client(payload).kibana_upsert_data_view(
             _required(payload, "target_id"),
             data_view=_object(payload.get("data_view"), "data_view"),
-            override=bool(payload.get("override", True)),
+            override=_boolean(payload.get("override"), field_name="override", default=True),
             space_id=_optional(payload.get("space_id")),
         )
         return {"result": result, **result}
@@ -161,9 +164,17 @@ class KibanaImportSavedObjectsEffectProvider(_ElasticStackProviderMixin, EffectP
         result = self._client(payload).kibana_import_saved_objects(
             _required(payload, "target_id"),
             ndjson=_required(payload, "ndjson"),
-            overwrite=bool(payload.get("overwrite", True)),
-            create_new_copies=bool(payload.get("create_new_copies", False)),
-            compatibility_mode=bool(payload.get("compatibility_mode", False)),
+            overwrite=_boolean(payload.get("overwrite"), field_name="overwrite", default=True),
+            create_new_copies=_boolean(
+                payload.get("create_new_copies"),
+                field_name="create_new_copies",
+                default=False,
+            ),
+            compatibility_mode=_boolean(
+                payload.get("compatibility_mode"),
+                field_name="compatibility_mode",
+                default=False,
+            ),
             space_id=_optional(payload.get("space_id")),
         )
         return {"result": result, **result}
@@ -175,7 +186,7 @@ class KibanaSetDefaultDataViewEffectProvider(_ElasticStackProviderMixin, EffectP
         result = self._client(payload).kibana_set_default_data_view(
             _required(payload, "target_id"),
             data_view_id=_optional(payload.get("data_view_id")),
-            force=bool(payload.get("force", True)),
+            force=_boolean(payload.get("force"), field_name="force", default=True),
             space_id=_optional(payload.get("space_id")),
         )
         return {"result": result, **result}
@@ -210,6 +221,15 @@ def _optional(value: Any) -> str | None:
         return None
     text = str(value).strip()
     return text or None
+
+
+def _boolean(value: Any, *, field_name: str, default: bool) -> bool:
+    parsed = optional_bool(
+        value,
+        node_type="Elastic Stack workflow",
+        field_name=field_name,
+    )
+    return default if parsed is None else parsed
 
 
 def _object(value: Any, field_name: str) -> dict[str, Any]:
