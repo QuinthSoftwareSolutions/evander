@@ -111,6 +111,7 @@ from .mcp import (
     TEAM_ROUTE_HUMAN_FINDING_CORRECTION_TOOL,
     TEAM_CREATE_OPERATOR_DIRECTIVE_TOOL,
     TEAM_CREATE_CASE_TOOL,
+    TEAM_CREATE_TASK_FOR_ROLE_TOOL,
     TEAM_CREATE_TASKS_TOOL,
     TEAM_CREATE_TASK_TOOL,
     TEAM_CREATE_OUTCOME_KIND_TOOL,
@@ -128,6 +129,7 @@ from .mcp import (
     TEAM_MARK_GOVERNANCE_AGENDA_HANDLED_TOOL,
     TEAM_PUBLISH_REVIEW_BRANCH_TOOL,
     TEAM_PROPOSE_HUMAN_FINDING_RESOLUTION_TOOL,
+    TEAM_REASSIGN_TASK_FOR_ROLE_TOOL,
     TEAM_RECORD_NOTE_TOOL,
     TEAM_RECORD_CONTEXT_HANDOFF_TOOL,
     TEAM_RECOVER_RELEASE_TOOL,
@@ -7431,7 +7433,8 @@ def _team_agent_guidance_content(*, agent: Mapping[str, Any]) -> str:
         "only after every linked triage or correction task is resolved, supplying "
         "closure evidence. Closing that case does not roll back publication.\n"
         f"- Use {TEAM_CREATE_TASK_TOOL} or {TEAM_CREATE_TASKS_TOOL} only within "
-        "the task creation mandate in your wake prompt.\n"
+        "the task creation mandate in your wake prompt. "
+        f"{TEAM_CREATE_TASK_FOR_ROLE_TOOL} follows the same mandate.\n"
         f"- Use {TEAM_REQUEST_STATUS_TOOL} only for direct subordinates. "
         f"{TEAM_ASK_QUESTION_TOOL} defaults to your direct superior; for a task "
         "authorized by the current immutable dispatch, you may instead select "
@@ -7447,7 +7450,8 @@ def _team_agent_guidance_content(*, agent: Mapping[str, Any]) -> str:
         "child_task_ids, blocked_by_task_ids, and subtask_counts. Do not start "
         "tasks whose dependency_status is not 'satisfied'; wait until their "
         "blocked_by_task_ids clear. Decompose large work by creating child tasks "
-        f"with {TEAM_CREATE_TASK_TOOL} or {TEAM_CREATE_TASKS_TOOL} instead of ad "
+        f"with {TEAM_CREATE_TASK_TOOL}, {TEAM_CREATE_TASK_FOR_ROLE_TOOL}, or "
+        f"{TEAM_CREATE_TASKS_TOOL} instead of ad "
         "hoc checklists in descriptions. Declare ordering between tasks with "
         "dependency_task_ids. parent_task_id means constituent composition; "
         "dependency_task_ids means execution ordering; originating_task_id records "
@@ -7878,6 +7882,9 @@ def _build_prompt(
         "Identity detail: the full role_description is in Team context JSON.agent. "
         f"Use {TEAM_GET_MY_IDENTITY_TOOL} for any complete identity field.\n\n"
         "Role-aware delegation: use subordinates[].role_name and role_description. "
+        f"Use {TEAM_CREATE_TASK_FOR_ROLE_TOOL} for least-loaded role allocation and "
+        f"{TEAM_REASSIGN_TASK_FOR_ROLE_TOOL} for an existing task; both resolve to a "
+        "concrete owner. "
         f"Reviewer roles should generally receive {TEAM_REQUEST_REVIEW_TOOL} calls "
         "or review-focused tasks, not implementation ownership.\n\n"
         if fresh_context
@@ -8348,6 +8355,7 @@ def _task_creation_mandate_guidance(agent: Mapping[str, Any]) -> str:
             f"{lead_scope} include {RolePermission.CREATE_ROOT_TASK.value}. You may create top-level "
             f"tasks with {TEAM_CREATE_TASK_TOOL} or {TEAM_CREATE_TASKS_TOOL} by omitting "
             "parent_task_id when you otherwise have authority to create the task. "
+            f"{TEAM_CREATE_TASK_FOR_ROLE_TOOL} follows the same root-task boundary. "
             "Use parent_task_id only for constituent work contained by that parent. "
             "Create an independent root for separate work, and set "
             "originating_task_id when that root is correction or follow-up work "
@@ -8364,7 +8372,8 @@ def _task_creation_mandate_guidance(agent: Mapping[str, Any]) -> str:
         f"have {RolePermission.CREATE_ROOT_TASK.value}. You may NOT create "
         f"top-level tasks. Every {TEAM_CREATE_TASK_TOOL} or "
         f"{TEAM_CREATE_TASKS_TOOL} call must set parent_task_id to one of your "
-        "own active tasks. Do not misuse originating_task_id to bypass that root "
+        f"own active tasks; {TEAM_CREATE_TASK_FOR_ROLE_TOOL} has the same requirement. "
+        "Do not misuse originating_task_id to bypass that root "
         "creation boundary; it records provenance, not containment authority.\n\n"
     )
 

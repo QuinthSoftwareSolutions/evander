@@ -30,6 +30,7 @@ from evander_team_addon.mcp import (
     TEAM_CREATE_CASE_TOOL,
     TEAM_ROUTE_HUMAN_FINDING_CORRECTION_TOOL,
     TEAM_CREATE_OPERATOR_DIRECTIVE_TOOL,
+    TEAM_CREATE_TASK_FOR_ROLE_TOOL,
     TEAM_CREATE_TASKS_TOOL,
     TEAM_CREATE_TASK_TOOL,
     TEAM_DECIDE_INITIAL_RELEASE_TOOL,
@@ -43,6 +44,7 @@ from evander_team_addon.mcp import (
     TEAM_PROPOSE_HUMAN_FINDING_RESOLUTION_TOOL,
     TEAM_ACCEPT_EPHEMERAL_RESULT_TOOL,
     TEAM_RECORD_NOTE_TOOL,
+    TEAM_REASSIGN_TASK_FOR_ROLE_TOOL,
     TEAM_RECOVER_RELEASE_TOOL,
     TEAM_REOPEN_TASK_FOR_REWORK_TOOL,
     TEAM_RETIRE_REVIEW_TOOL,
@@ -1773,8 +1775,10 @@ def test_team_addon_mcp_slice6_tools_use_command_implementation(
         TEAM_CREATE_CASE_TOOL,
         TEAM_UPDATE_CASE_TOOL,
         TEAM_CREATE_TASK_TOOL,
+        TEAM_CREATE_TASK_FOR_ROLE_TOOL,
         TEAM_CREATE_TASKS_TOOL,
         TEAM_UPDATE_TASK_TOOL,
+        TEAM_REASSIGN_TASK_FOR_ROLE_TOOL,
         TEAM_UPDATE_GOAL_TOOL,
         TEAM_STAND_DOWN_AGENT_TOOL,
         TEAM_REVOKE_STAND_DOWN_TOOL,
@@ -1870,6 +1874,35 @@ def test_team_addon_mcp_slice6_tools_use_command_implementation(
         },
         _make_request_context(session_id="session-lead"),
     )
+    created_role_task = _call_tool_with_context(
+        server,
+        TEAM_CREATE_TASK_FOR_ROLE_TOOL,
+        {
+            "task_id": "task-mcp-role",
+            "role_id": "project__backend",
+            "project_id": "project",
+            "priority": 1,
+            "title": "Role-selected MCP task",
+            "description": "Assign this through the backend role.",
+            "request_id": "request-mcp-role-task",
+        },
+        _make_request_context(session_id="session-lead"),
+    )
+    _lease_agent(
+        repo,
+        agent_id="backend",
+        dispatch_id="dispatch-backend-role-reassign",
+    )
+    reassigned_role_task = _call_tool_with_context(
+        server,
+        TEAM_REASSIGN_TASK_FOR_ROLE_TOOL,
+        {
+            "task_id": "task-mcp-role",
+            "role_id": "project__backend",
+            "request_id": "request-mcp-role-reassign",
+        },
+        _make_request_context(session_id="session-backend"),
+    )
     _lease_agent(
         repo,
         agent_id="backend",
@@ -1947,6 +1980,11 @@ def test_team_addon_mcp_slice6_tools_use_command_implementation(
         "task-mcp-batch-a",
         "task-mcp-batch-b",
     ]
+    assert created_role_task["created_task_ids"] == ["task-mcp-role"]
+    assert created_role_task["assignment_policy"] == "work_aware_least_loaded_v1"
+    assert created_role_task["selected_owner_agent_id"] == "backend"
+    assert reassigned_role_task["assignment_outcome"] == "unchanged"
+    assert reassigned_role_task["selected_owner_agent_id"] == "backend"
     assert updated_task["updated_task_ids"] == ["task-mcp"]
     assert updated_goal["updated_goal_ids"] == ["goal"]
     assert stood_down["created_stand_down_ids"]

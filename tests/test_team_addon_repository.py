@@ -20,6 +20,7 @@ from evander_team_addon.models import (
     AgentContextClearingPolicy,
     AgentInboxItem,
     AgentRuntime,
+    AgentStandDown,
     AgentStandDownSource,
     AgentStatus,
     AgentVoiceProfile,
@@ -7154,6 +7155,164 @@ def test_repository_create_tasks_command_allows_sibling_dependencies(
     )
     assert replay == result
     assert replay_state.revision == state.revision
+
+
+def test_repository_create_task_for_role_selects_least_loaded_effective_role(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _register_backend_peer(repo, reports_to_agent_id="lead")
+    _seed_task(repo, task_id="backend-existing")
+
+    def _use_project_assignment_role(state: TeamState) -> None:
+        state.agents["backend-peer"].role_id = "project__worker"
+
+    repo.update(_use_project_assignment_role)
+    _lease_agent_dispatch(repo, agent_id="lead")
+    service = _command_service(repo)
+
+    state, result = service.create_task_for_role_command(
+        session_id="session-lead",
+        task_id="role-created",
+        role_id="project__backend",
+        project_id="project",
+        priority=1,
+        title="Role allocated work",
+        description="Choose the least-loaded backend role holder.",
+        request_id="request-role-create",
+    )
+
+    assert result["success"] is True
+    assert result["assignment_outcome"] == "created"
+    assert result["assignment_policy"] == "work_aware_least_loaded_v1"
+    assert result["selected_owner_agent_id"] == "backend-peer"
+    assert result["eligible_candidate_count"] == 2
+    assert [row["agent_id"] for row in result["candidate_scores"]] == [
+        "backend-peer",
+        "backend",
+    ]
+    assert state.tasks["role-created"].owner_agent_id == "backend-peer"
+
+    replay_state, replay = service.create_task_for_role_command(
+        session_id="session-lead",
+        task_id="role-created",
+        role_id="project__backend",
+        project_id="project",
+        priority=1,
+        title="Role allocated work",
+        description="Choose the least-loaded backend role holder.",
+        request_id="request-role-create",
+    )
+    assert replay == result
+    assert replay_state.revision == state.revision
+
+
+def test_repository_create_task_for_role_excludes_unavailable_agents_atomically(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _register_backend_peer(repo, reports_to_agent_id="lead")
+
+    def _make_candidates_unavailable(state: TeamState) -> None:
+        state.stand_downs["stand-down-backend"] = AgentStandDown(
+            id="stand-down-backend",
+            agent_id="backend",
+            scope="agent",
+            reason="Paused for maintenance.",
+            set_by="operator",
+        )
+        state.agents["backend-peer"].status = AgentStatus.PAUSED
+
+    repo.update(_make_candidates_unavailable)
+    _lease_agent_dispatch(repo, agent_id="lead")
+    before = repo.read()
+
+    state, result = _command_service(repo).create_task_for_role_command(
+        session_id="session-lead",
+        task_id="unassigned-role-task",
+        role_id="project__backend",
+        project_id="project",
+        priority=1,
+        title="Unavailable role work",
+        description="No active role holder can receive this.",
+        request_id="request-role-no-candidate",
+    )
+
+    assert result["success"] is False
+    assert result["errors"][0]["code"] == "role_assignment_no_eligible_agent"
+    reasons = result["correction_context"]["exclusion_reason_counts"]
+    assert reasons["agent_not_active"] == 1
+    assert reasons["agent_stood_down"] == 1
+    assert "unassigned-role-task" not in state.tasks
+    assert state.revision == before.revision
+
+
+def test_repository_reassign_task_for_role_changes_owner_and_finalizes_git_context(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _register_backend_peer(repo, reports_to_agent_id="backend")
+    _seed_task(repo, task_id="role-reassigned")
+    _lease_agent_dispatch(
+        repo,
+        agent_id="backend",
+        dispatch_id="dispatch-role-reassign",
+    )
+    _seed_git_work_context(
+        repo,
+        context_id="ctx-role-reassigned",
+        task_id="role-reassigned",
+        dispatch_id="dispatch-role-reassign",
+    )
+
+    state, result = _command_service(repo).reassign_task_for_role_command(
+        session_id="session-backend",
+        task_id="role-reassigned",
+        role_id="project__backend",
+        request_id="request-role-reassign",
+    )
+
+    assert result["success"] is True
+    assert result["assignment_outcome"] == "reassigned"
+    assert result["previous_owner_agent_id"] == "backend"
+    assert result["selected_owner_agent_id"] == "backend-peer"
+    assert state.tasks["role-reassigned"].owner_agent_id == "backend-peer"
+    assert (
+        state.git_work_contexts["ctx-role-reassigned"].state
+        == GitWorkContextState.ABANDONED
+    )
+    assert result["outbox_record_ids"]
+
+
+def test_repository_reassign_task_for_role_keeps_least_loaded_current_owner(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _register_backend_peer(repo, reports_to_agent_id="backend")
+    _seed_task(repo, task_id="role-current")
+    _seed_task(repo, task_id="peer-work-a", owner_agent_id="backend-peer")
+    _seed_task(repo, task_id="peer-work-b", owner_agent_id="backend-peer")
+    _lease_agent_dispatch(
+        repo,
+        agent_id="backend",
+        dispatch_id="dispatch-role-current",
+    )
+    before = repo.read()
+
+    state, result = _command_service(repo).reassign_task_for_role_command(
+        session_id="session-backend",
+        task_id="role-current",
+        role_id="project__backend",
+        request_id="request-role-current",
+    )
+
+    assert result["success"] is True
+    assert result["assignment_outcome"] == "unchanged"
+    assert result["selected_owner_agent_id"] == "backend"
+    assert result["updated_task_ids"] == []
+    assert result["progress_made"] is False
+    assert state.tasks["role-current"].owner_agent_id == "backend"
+    assert state.revision == before.revision
 
 
 @pytest.mark.parametrize("batched", [False, True], ids=["team_create_task", "team_create_tasks"])
@@ -15980,6 +16139,23 @@ def _seed_task(
         title=f"Task {task_id}",
         description="Work to deliver.",
         created_by_agent_id="lead",
+    )
+
+
+def _register_backend_peer(
+    repo: TeamStateRepository,
+    *,
+    reports_to_agent_id: str,
+) -> None:
+    _team_admin_service(repo).register_agent(
+        agent_id="backend-peer",
+        team_id="team",
+        project_id="project",
+        role_id="project__backend",
+        session_id="session-backend-peer",
+        reports_to_agent_id=reports_to_agent_id,
+        display_name="Backend Peer",
+        expected_revision=repo.read().revision,
     )
 
 

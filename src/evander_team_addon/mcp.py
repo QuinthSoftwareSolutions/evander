@@ -100,11 +100,13 @@ TEAM_PROPOSE_HUMAN_FINDING_RESOLUTION_TOOL = "team_propose_human_finding_resolut
 TEAM_ROUTE_HUMAN_FINDING_CORRECTION_TOOL = "team_route_human_finding_correction"
 TEAM_CLOSE_POST_RELEASE_CASE_TOOL = "team_close_post_release_case"
 TEAM_CREATE_TASK_TOOL = "team_create_task"
+TEAM_CREATE_TASK_FOR_ROLE_TOOL = "team_create_task_for_role"
 TEAM_CREATE_TASKS_TOOL = "team_create_tasks"
 TEAM_CREATE_OUTCOME_KIND_TOOL = "team_create_outcome_kind"
 TEAM_UPDATE_OUTCOME_KIND_TOOL = "team_update_outcome_kind"
 TEAM_ARCHIVE_OUTCOME_KIND_TOOL = "team_archive_outcome_kind"
 TEAM_UPDATE_TASK_TOOL = "team_update_task"
+TEAM_REASSIGN_TASK_FOR_ROLE_TOOL = "team_reassign_task_for_role"
 TEAM_REOPEN_TASK_FOR_REWORK_TOOL = "team_reopen_task_for_rework"
 TEAM_CANCEL_TASK_TOOL = "team_cancel_task"
 TEAM_REPAIR_CANCELLED_TASK_DEPENDENCIES_TOOL = "team_repair_cancelled_task_dependencies"
@@ -181,11 +183,13 @@ ORDINARY_TEAM_MCP_TOOL_NAMES = (
     TEAM_ROUTE_HUMAN_FINDING_CORRECTION_TOOL,
     TEAM_CLOSE_POST_RELEASE_CASE_TOOL,
     TEAM_CREATE_TASK_TOOL,
+    TEAM_CREATE_TASK_FOR_ROLE_TOOL,
     TEAM_CREATE_TASKS_TOOL,
     TEAM_CREATE_OUTCOME_KIND_TOOL,
     TEAM_UPDATE_OUTCOME_KIND_TOOL,
     TEAM_ARCHIVE_OUTCOME_KIND_TOOL,
     TEAM_UPDATE_TASK_TOOL,
+    TEAM_REASSIGN_TASK_FOR_ROLE_TOOL,
     TEAM_REOPEN_TASK_FOR_REWORK_TOOL,
     TEAM_CANCEL_TASK_TOOL,
     TEAM_REPAIR_CANCELLED_TASK_DEPENDENCIES_TOOL,
@@ -267,11 +271,13 @@ IMPLEMENTED_ORDINARY_TEAM_MCP_TOOL_NAMES = (
     TEAM_ROUTE_HUMAN_FINDING_CORRECTION_TOOL,
     TEAM_CLOSE_POST_RELEASE_CASE_TOOL,
     TEAM_CREATE_TASK_TOOL,
+    TEAM_CREATE_TASK_FOR_ROLE_TOOL,
     TEAM_CREATE_TASKS_TOOL,
     TEAM_CREATE_OUTCOME_KIND_TOOL,
     TEAM_UPDATE_OUTCOME_KIND_TOOL,
     TEAM_ARCHIVE_OUTCOME_KIND_TOOL,
     TEAM_UPDATE_TASK_TOOL,
+    TEAM_REASSIGN_TASK_FOR_ROLE_TOOL,
     TEAM_REOPEN_TASK_FOR_REWORK_TOOL,
     TEAM_CANCEL_TASK_TOOL,
     TEAM_REPAIR_CANCELLED_TASK_DEPENDENCIES_TOOL,
@@ -328,11 +334,13 @@ MCP_TOOL_NAMES = (
     TEAM_ROUTE_HUMAN_FINDING_CORRECTION_TOOL,
     TEAM_CLOSE_POST_RELEASE_CASE_TOOL,
     TEAM_CREATE_TASK_TOOL,
+    TEAM_CREATE_TASK_FOR_ROLE_TOOL,
     TEAM_CREATE_TASKS_TOOL,
     TEAM_CREATE_OUTCOME_KIND_TOOL,
     TEAM_UPDATE_OUTCOME_KIND_TOOL,
     TEAM_ARCHIVE_OUTCOME_KIND_TOOL,
     TEAM_UPDATE_TASK_TOOL,
+    TEAM_REASSIGN_TASK_FOR_ROLE_TOOL,
     TEAM_REOPEN_TASK_FOR_REWORK_TOOL,
     TEAM_CANCEL_TASK_TOOL,
     TEAM_REPAIR_CANCELLED_TASK_DEPENDENCIES_TOOL,
@@ -1578,6 +1586,72 @@ def _register_slice6_tools(
         ),
     )
 
+    def team_create_task_for_role(
+        role_id: str,
+        project_id: str,
+        priority: int,
+        title: str,
+        description: str,
+        request_id: str,
+        task_id: str | None = None,
+        case_id: str | None = None,
+        state: str = "pending",
+        parent_task_id: str | None = None,
+        originating_task_id: str | None = None,
+        git_base_branch: str | None = None,
+        dependency_task_ids: list[str] | None = None,
+        task_kind: str = "support",
+        outcome_contract: dict[str, Any] | None = None,
+        integration_boundary: bool = False,
+        deliverable_contract: dict[str, Any] | None = None,
+        handled_inbox_item_ids: list[str] | None = None,
+        correlation_id: str | None = None,
+        causation_id: str | None = None,
+        session_id: str | None = None,
+    ) -> dict[str, Any]:
+        caller = resolver.require_persistent_action_context(
+            session_id=session_id,
+            tool_name=TEAM_CREATE_TASK_FOR_ROLE_TOOL,
+        )
+        try:
+            _state, result = task_creation_commands.create_task_for_role_command(
+                session_id=caller.session_id,
+                role_id=role_id,
+                project_id=project_id,
+                priority=priority,
+                title=title,
+                description=description,
+                request_id=request_id,
+                task_id=task_id,
+                case_id=case_id,
+                state=state,
+                parent_task_id=parent_task_id,
+                originating_task_id=originating_task_id,
+                git_base_branch=git_base_branch,
+                dependency_task_ids=dependency_task_ids,
+                task_kind=task_kind,
+                outcome_contract=outcome_contract,
+                integration_boundary=integration_boundary,
+                deliverable_contract=deliverable_contract,
+                handled_inbox_item_ids=handled_inbox_item_ids,
+                correlation_id=correlation_id,
+                causation_id=causation_id,
+            )
+        except (TypeError, ValueError) as exc:
+            raise ToolError(str(exc)) from exc
+        return _team_command_mcp_result(result, caller=caller, context=context)
+
+    server.add_tool(
+        team_create_task_for_role,
+        name=TEAM_CREATE_TASK_FOR_ROLE_TOOL,
+        description=(
+            "Create one Team task for the least-loaded eligible holder of an exact "
+            "team or project role. Selection is atomic, preserves ordinary task "
+            "creation authority, excludes stood-down agents, and returns the "
+            "selected concrete owner plus the audited candidate scores."
+        ),
+    )
+
     def team_create_tasks(
         tasks: list[dict[str, Any]],
         request_id: str,
@@ -1607,6 +1681,43 @@ def _register_slice6_tools(
         team_create_tasks,
         name=TEAM_CREATE_TASKS_TOOL,
         description="Create a batch of Team tasks all-or-nothing.",
+    )
+
+    def team_reassign_task_for_role(
+        task_id: str,
+        role_id: str,
+        request_id: str,
+        handled_inbox_item_ids: list[str] | None = None,
+        correlation_id: str | None = None,
+        causation_id: str | None = None,
+        session_id: str | None = None,
+    ) -> dict[str, Any]:
+        caller = resolver.require_persistent_action_context(
+            session_id=session_id,
+            tool_name=TEAM_REASSIGN_TASK_FOR_ROLE_TOOL,
+        )
+        try:
+            _state, result = task_update_commands.reassign_task_for_role_command(
+                session_id=caller.session_id,
+                task_id=task_id,
+                role_id=role_id,
+                request_id=request_id,
+                handled_inbox_item_ids=handled_inbox_item_ids,
+                correlation_id=correlation_id,
+                causation_id=causation_id,
+            )
+        except (TypeError, ValueError) as exc:
+            raise ToolError(str(exc)) from exc
+        return _team_command_mcp_result(result, caller=caller, context=context)
+
+    server.add_tool(
+        team_reassign_task_for_role,
+        name=TEAM_REASSIGN_TASK_FOR_ROLE_TOOL,
+        description=(
+            "Assign an existing non-terminal Team task to the least-loaded eligible "
+            "holder of an exact role. The current owner remains a candidate, so the "
+            "command can succeed without mutation when that owner still ranks first."
+        ),
     )
 
     def team_create_outcome_kind(

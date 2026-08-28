@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-08-28 - Role-Based Team Task Allocation
+
+- Added single-task Team MCP commands that resolve an exact base or project-assignment role to a
+  concrete active project member using a fixed, work-aware least-loaded policy.
+- Preserved existing assignment authority and reassignment cleanup, failed atomically when no
+  candidate is eligible, and returned the selected owner and candidate scores for audit and
+  idempotent replay.
+
 ## 2026-08-27 - External Team Chat Attachments And Shared Teams Subscriptions
 
 - Added an opt-in `import_attachments` bridge setting for Teams, Discord, and email messages that

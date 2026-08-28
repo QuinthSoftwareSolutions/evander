@@ -34,6 +34,7 @@ from ..domain.case_task import (
     _apply_task_creation_plan,
     _resolve_task_creation_plan_git_bases,
     _task_creation_batch_graph_errors,
+    _task_creation_owner_assignment_error,
 )
 from ..domain.common import (
     DEFAULT_AGENT_WAKE_REQUEST_DEBOUNCE_SECONDS,
@@ -43,6 +44,10 @@ from ..domain.common import (
 )
 from ..domain.project_status import _recalculate_project_status
 from ..domain.outcome_catalog import snapshot_task_outcome_contract
+from ..domain.role_task_allocation import (
+    RoleTaskAllocationError,
+    select_role_task_owner,
+)
 from ..domain.wake import _append_agent_wake_requested_event
 
 
@@ -172,6 +177,175 @@ class TeamTaskCreationCommandService(TeamCommandExecutor):
             }
             _append_agent_wake_requested_event(
                 state,
+                agent_id=plan.owner_id,
+                result=response_payload,
+                reason="task_ready",
+                now=utc_now(),
+                delay_seconds=DEFAULT_AGENT_WAKE_REQUEST_DEBOUNCE_SECONDS,
+            )
+            return TeamCommandApplyResult(
+                response_payload=response_payload,
+                created_domain_ids=[created_id],
+            )
+
+        return self._execute_team_command(
+            context=context,
+            normalized_payload=normalized_payload,
+            handled_inbox_item_ids=normalized_handled_ids,
+            apply_command=_apply,
+            require_active_dispatch=True,
+        )
+
+    def create_task_for_role_command(
+        self,
+        *,
+        session_id: str,
+        role_id: str,
+        project_id: str,
+        title: str,
+        description: str,
+        request_id: str,
+        task_id: str | None = None,
+        case_id: str | None = None,
+        priority: int = 0,
+        state: TeamTaskState | str = TeamTaskState.PENDING,
+        parent_task_id: str | None = None,
+        originating_task_id: str | None = None,
+        git_base_branch: str | None = None,
+        dependency_task_ids: Sequence[str] | None = None,
+        task_kind: str = "support",
+        outcome_contract: Mapping[str, Any] | None = None,
+        integration_boundary: bool = False,
+        deliverable_contract: Mapping[str, Any] | None = None,
+        handled_inbox_item_ids: Sequence[str] | None = None,
+        correlation_id: str | None = None,
+        causation_id: str | None = None,
+    ) -> tuple[TeamState, dict[str, Any]]:
+        normalized_session_id = _required_text(session_id, "session_id")
+        normalized_role_id = _required_text(role_id, "role_id")
+        normalized_project_id = _required_text(project_id, "project_id")
+        normalized_request_id = _required_text(request_id, "request_id")
+        creation = _normalize_task_creation_mapping(
+            {
+                "task_id": task_id,
+                "owner_agent_id": None,
+                "project_id": normalized_project_id,
+                "case_id": case_id,
+                "priority": priority,
+                "title": title,
+                "description": description,
+                "state": state.value if isinstance(state, TeamTaskState) else state,
+                "parent_task_id": parent_task_id,
+                "originating_task_id": originating_task_id,
+                "git_base_branch": git_base_branch,
+                "dependency_task_ids": list(dependency_task_ids or []),
+                "task_kind": task_kind,
+                "outcome_contract": (
+                    dict(outcome_contract) if outcome_contract is not None else None
+                ),
+                "integration_boundary": integration_boundary,
+                "deliverable_contract": (
+                    dict(deliverable_contract) if deliverable_contract is not None else None
+                ),
+            },
+            field_name="task",
+        )
+        normalized_handled_ids = _unique_text_list(
+            handled_inbox_item_ids or [],
+            "handled_inbox_item_ids",
+        )
+        context = TeamCommandContext(
+            ambient_session_id=normalized_session_id,
+            tool_name="team_create_task_for_role",
+            request_id=normalized_request_id,
+            correlation_id=_optional_text(correlation_id),
+            causation_id=_optional_text(causation_id),
+            progress_classification="progress",
+        )
+        normalized_payload = {
+            "role_id": normalized_role_id,
+            "task": dict(creation),
+            "handled_inbox_item_ids": sorted(normalized_handled_ids),
+            "correlation_id": context.correlation_id,
+            "causation_id": context.causation_id,
+        }
+
+        def _apply(
+            state_model: TeamState,
+            resolved: _ResolvedTeamCommandContext,
+        ) -> TeamCommandApplyResult:
+            agent = _require_command_agent(resolved, "team_create_task_for_role")
+            try:
+                selection = select_role_task_owner(
+                    state_model,
+                    actor=agent,
+                    project_id=normalized_project_id,
+                    role_id=normalized_role_id,
+                    candidate_authorization_error=lambda candidate: (
+                        _task_creation_owner_assignment_error(
+                            state_model,
+                            actor=agent,
+                            owner_id=candidate.id,
+                            project_id=normalized_project_id,
+                        )
+                    ),
+                )
+            except RoleTaskAllocationError as exc:
+                raise TeamCommandValidationError(
+                    code=exc.code,
+                    message=str(exc),
+                    correction_context=exc.correction_context,
+                ) from None
+
+            selected_creation = {
+                **creation,
+                "owner_agent_id": selection.selected_owner_agent_id,
+            }
+            plan = _command_plan_task_creation(
+                state_model,
+                actor=agent,
+                creation=_creation_with_outcome_definition_snapshots(
+                    state_model,
+                    selected_creation,
+                ),
+                reserved_task_ids=set(),
+            )
+            plan = _resolve_task_creation_plan_git_bases(
+                state_model,
+                [plan],
+                git_default_branch_resolver=self.git_default_branch_resolver,
+            )[0]
+            graph_errors = _task_creation_batch_graph_errors(
+                state_model,
+                [plan],
+                actor=agent,
+            )
+            if graph_errors:
+                error = graph_errors.get(plan.task_id) or next(iter(graph_errors.values()))
+                raise TeamCommandValidationError(
+                    code="task_graph_invalid",
+                    message=error,
+                    correction_context=_task_graph_correction_context(
+                        state_model,
+                        project_id=plan.project_id,
+                        task_id=plan.task_id,
+                        parent_task_id=plan.parent_task_id,
+                        dependency_task_ids=plan.dependency_task_ids,
+                    ),
+                )
+            created_id = _apply_task_creation_plan(state_model, plan=plan, actor=agent)
+            _recalculate_project_status(state_model, plan.project_id)
+            response_payload = {
+                "task_id": created_id,
+                "created_task_ids": [created_id],
+                "progress_made": True,
+                **selection.response_payload(
+                    outcome="created",
+                    previous_owner_agent_id=None,
+                ),
+            }
+            _append_agent_wake_requested_event(
+                state_model,
                 agent_id=plan.owner_id,
                 result=response_payload,
                 reason="task_ready",

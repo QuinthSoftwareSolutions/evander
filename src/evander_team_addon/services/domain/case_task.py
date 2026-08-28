@@ -800,40 +800,16 @@ def _plan_task_creation(
 ) -> _TaskCreationPlan | None:
     owner_id = _required_text(creation.get("owner_agent_id"), "owner_agent_id")
     project_id = _required_text(creation.get("project_id"), "project_id")
-    owner = state.agents.get(owner_id)
-    if owner is None:
-        result["errors"].append(f"task creation references missing owner {owner_id}")
-        return None
-    project = state.projects.get(project_id)
-    if project is None:
-        result["errors"].append(f"task creation references missing project {project_id}")
-        return None
-    if owner.team_id != actor.team_id or project.team_id != actor.team_id:
-        result["errors"].append(f"agent {actor.id} cannot create tasks outside its team")
-        return None
-    actor_can_target_project = _is_project_lead_for(
-        state, actor.id, project_id
-    ) or _is_team_manager(state, actor)
-    if (
-        not agent_has_project_assignment(state, owner.id, project_id)
-        and not actor_can_target_project
-    ):
-        result["errors"].append(
-            f"agent {actor.id} cannot create a task for {owner_id} outside project {project_id}"
-        )
-        return None
-    permitted = (
-        owner.id == actor.id
-        or _is_direct_subordinate(actor, owner.id)
-        or (
-            _is_project_lead_for(state, actor.id, project_id)
-            and _agent_in_project_hierarchy(state, owner.id, project_id)
-        )
-        or (_is_team_manager(state, actor) and _is_project_lead_for(state, owner.id, project_id))
+    owner_error = _task_creation_owner_assignment_error(
+        state,
+        actor=actor,
+        owner_id=owner_id,
+        project_id=project_id,
     )
-    if not permitted:
-        result["errors"].append(f"agent {actor.id} is not permitted to create tasks for {owner_id}")
+    if owner_error is not None:
+        result["errors"].append(owner_error)
         return None
+    project = state.projects[project_id]
     raw_state = _optional_text(creation.get("state"))
     if raw_state is not None:
         try:
@@ -1000,6 +976,43 @@ def _plan_task_creation(
         integration_boundary=integration_boundary,
         deliverable_contract=deliverable_contract,
     )
+
+
+def _task_creation_owner_assignment_error(
+    state: TeamState,
+    *,
+    actor: PersistentAgent,
+    owner_id: str,
+    project_id: str,
+) -> str | None:
+    owner = state.agents.get(owner_id)
+    if owner is None:
+        return f"task creation references missing owner {owner_id}"
+    project = state.projects.get(project_id)
+    if project is None:
+        return f"task creation references missing project {project_id}"
+    if owner.team_id != actor.team_id or project.team_id != actor.team_id:
+        return f"agent {actor.id} cannot create tasks outside its team"
+    actor_can_target_project = _is_project_lead_for(
+        state, actor.id, project_id
+    ) or _is_team_manager(state, actor)
+    if (
+        not agent_has_project_assignment(state, owner.id, project_id)
+        and not actor_can_target_project
+    ):
+        return f"agent {actor.id} cannot create a task for {owner_id} outside project {project_id}"
+    permitted = (
+        owner.id == actor.id
+        or _is_direct_subordinate(actor, owner.id)
+        or (
+            _is_project_lead_for(state, actor.id, project_id)
+            and _agent_in_project_hierarchy(state, owner.id, project_id)
+        )
+        or (_is_team_manager(state, actor) and _is_project_lead_for(state, owner.id, project_id))
+    )
+    if not permitted:
+        return f"agent {actor.id} is not permitted to create tasks for {owner_id}"
+    return None
 
 
 def _apply_task_creation_plan(
@@ -1600,6 +1613,7 @@ __all__ = [
     "_task_creation_mandate_error",
     "_upward_recipient_error",
     "_plan_task_creation",
+    "_task_creation_owner_assignment_error",
     "_apply_task_creation_plan",
     "_resolve_task_creation_plan_git_bases",
     "_resolve_new_task_git_base_branch",
