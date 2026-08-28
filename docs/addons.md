@@ -733,7 +733,10 @@ Operators and workflows can use:
 Team roles are first-class state records under `TeamState.roles`. Agents store a
 `role_id` instead of a free-form role string, and role records carry the display
 name, optional project scope, default ephemeral policy, and permission list for
-that role. The Admin API exposes role CRUD at `/api/addons/team-addon/roles`,
+that role. An agent's base `role_id` is distinct from the optional `role_id` on
+each project assignment: the base role applies wherever its own scope permits,
+while an assignment role applies only to that assignment's project. The Admin
+API exposes role CRUD at `/api/addons/team-addon/roles`,
 and the bundled UI includes role create/edit forms inside the `Teams` view;
 there is no separate top-level `Roles` view. Bundled
 permissions include `create_root_task`, `manage_outcome_kinds`,
@@ -1204,7 +1207,8 @@ set:
   Team wake through ordinary Team MCP tools.
 - `effect:team:create-task` directly creates or updates an operator-authored Team
   task for a specific project owner. Agent-authored task creation remains through
-  `team_create_task` and `team_create_tasks` during persistent Team wakes.
+  `team_create_task`, `team_create_task_for_role`, and `team_create_tasks` during
+  persistent Team wakes.
 - `team_create_operator_directive` is the add-on-owned MCP tool for governance
   managers. It creates the same durable `operator_directive` inbox item, but
   only for member Teams of a governance group managed by the caller, and only
@@ -1276,11 +1280,13 @@ Ordinary persistent Team wakes may receive these tools:
 - `team_route_human_finding_correction`
 - `team_close_post_release_case`
 - `team_create_task`
+- `team_create_task_for_role`
 - `team_create_tasks`
 - `team_create_outcome_kind`
 - `team_update_outcome_kind`
 - `team_archive_outcome_kind`
 - `team_update_task`
+- `team_reassign_task_for_role`
 - `team_cancel_task`
 - `team_repair_cancelled_task_dependencies`
 - `team_recover_submitted_integration_boundary`
@@ -1339,6 +1345,27 @@ the whole tool call fails without partial handling.
 Async-intent tools may record durable intent while external work is still
 pending. Their result reports the recorded intent and pending effect state
 rather than claiming the external operation completed synchronously.
+
+`team_create_task_for_role` creates one task after resolving `role_id` to a
+concrete owner. `team_reassign_task_for_role` applies the same allocation to an
+existing non-terminal task. An agent is eligible only when it is active,
+assigned to the target project, not under an active stand-down, within the
+caller's existing task-assignment authority, and has the exact role either as
+its base role or on its target-project assignment. A live dispatch or wake lease
+makes a candidate busy but does not make it ineligible.
+
+Both tools use the fixed `work_aware_least_loaded_v1` ordering: fewest ready
+obligations (ready tasks, pending reviews, due blockers, and pending
+response-required inbox items), idle before busy, fewest total non-terminal
+tasks, oldest `last_wake_at` with never-woken agents first, then agent id. The
+selection and mutation are one transaction. If no candidate is eligible, the
+tool fails atomically and leaves the task unchanged; reassignment may instead
+succeed without a task mutation when the current owner still ranks first.
+Responses include the policy, selected owner,
+candidate count, and candidate scores for command audit and idempotent replay.
+The role is not stored on the task and does not cause later automatic movement;
+the existing concrete-owner tools remain unchanged. Role-based batch creation is
+not supported.
 
 `team_report_blocker` records a durable blocker for an explicit dependency or a
 blocked task, deliverable, review request, or release package. The nearest

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
+from datetime import datetime
 from typing import Any
 
 from evander.models import utc_now
@@ -19,6 +20,7 @@ from .work_item_helpers import (
     _team_record_state_value,
 )
 from ...models import (
+    AgentTask,
     AgentStatus,
     TaskCancellation,
     TeamBlockerSourceKind,
@@ -69,6 +71,10 @@ from ..domain.dependency_composition_recovery import (
 from ..domain.git_work_contexts import finalize_active_git_work_contexts_for_task
 from ..domain.project_status import _recalculate_project_status
 from ..domain.preparation_failures import task_preparation_generation
+from ..domain.role_task_allocation import (
+    RoleTaskAllocationError,
+    select_role_task_owner,
+)
 from ..domain.review_handoff import queue_actionable_inbox_item
 from ..domain.task_assessment import (
     TaskAssessmentBoundaryError,
@@ -92,6 +98,52 @@ from ..domain.task_replacement import (
 )
 from ..domain.wake import _append_agent_wake_requested_event
 from ..domain.work_due import _mark_agent_work_due
+
+
+def _empty_task_reassignment_result() -> dict[str, Any]:
+    return {
+        "created_inbox_item_ids": [],
+        "events": [],
+        "resolved_blocker_ids": [],
+        "blocker_event_ids": [],
+    }
+
+
+def _apply_task_owner_reassignment(
+    state: TeamState,
+    *,
+    task: AgentTask,
+    new_owner_id: str,
+    actor_agent_id: str,
+    dispatch_id: str | None,
+    reconciliation_result: dict[str, Any],
+    now: datetime,
+) -> None:
+    old_owner_id = task.owner_agent_id
+    finalize_active_git_work_contexts_for_task(
+        state,
+        task_id=task.id,
+        now=now,
+    )
+    task.owner_agent_id = new_owner_id
+    reconcile_task_blockers_after_reassignment(
+        state,
+        task_id=task.id,
+        old_owner_agent_id=old_owner_id,
+        new_owner_agent_id=new_owner_id,
+        actor_agent_id=actor_agent_id,
+        dispatch_id=dispatch_id,
+        result=reconciliation_result,
+        now=now,
+    )
+    _maybe_mark_idle_context_rotation_due(
+        state,
+        agent_id=old_owner_id,
+        now=now,
+        result=reconciliation_result,
+    )
+    if task_state_can_wake_owner(task.state):
+        _mark_agent_work_due(state, agent_id=new_owner_id, now=now)
 
 
 class TeamTaskUpdateCommandService(TeamCommandExecutor):
@@ -1144,6 +1196,149 @@ class TeamTaskUpdateCommandService(TeamCommandExecutor):
             reject_stale_high_priority_inbox=True,
         )
 
+    def reassign_task_for_role_command(
+        self,
+        *,
+        session_id: str,
+        task_id: str,
+        role_id: str,
+        request_id: str,
+        handled_inbox_item_ids: Sequence[str] | None = None,
+        correlation_id: str | None = None,
+        causation_id: str | None = None,
+    ) -> tuple[TeamState, dict[str, Any]]:
+        normalized_session_id = _required_text(session_id, "session_id")
+        normalized_task_id = _required_text(task_id, "task_id")
+        normalized_role_id = _required_text(role_id, "role_id")
+        normalized_request_id = _required_text(request_id, "request_id")
+        normalized_handled_ids = _unique_text_list(
+            handled_inbox_item_ids or [],
+            "handled_inbox_item_ids",
+        )
+        context = TeamCommandContext(
+            ambient_session_id=normalized_session_id,
+            tool_name="team_reassign_task_for_role",
+            request_id=normalized_request_id,
+            correlation_id=_optional_text(correlation_id),
+            causation_id=_optional_text(causation_id),
+            progress_classification="progress",
+        )
+        normalized_payload = {
+            "task_id": normalized_task_id,
+            "role_id": normalized_role_id,
+            "handled_inbox_item_ids": sorted(normalized_handled_ids),
+            "correlation_id": context.correlation_id,
+            "causation_id": context.causation_id,
+        }
+
+        def _apply(
+            state_model: TeamState,
+            resolved: _ResolvedTeamCommandContext,
+        ) -> TeamCommandApplyResult:
+            agent = _require_command_agent(resolved, "team_reassign_task_for_role")
+            task = state_model.tasks.get(normalized_task_id)
+            if task is None:
+                raise TeamCommandValidationError(
+                    code="task_not_found",
+                    message=f"task {normalized_task_id} does not exist",
+                    correction_context={"task_id": normalized_task_id},
+                )
+            previous_owner_id = task.owner_agent_id
+            try:
+                selection = select_role_task_owner(
+                    state_model,
+                    actor=agent,
+                    project_id=task.project_id,
+                    role_id=normalized_role_id,
+                    candidate_authorization_error=lambda candidate: (
+                        _task_owner_reassignment_error(
+                            state_model,
+                            actor=agent,
+                            task=task,
+                            new_owner_id=candidate.id,
+                        )
+                    ),
+                )
+            except RoleTaskAllocationError as exc:
+                raise TeamCommandValidationError(
+                    code=exc.code,
+                    message=str(exc),
+                    correction_context=exc.correction_context,
+                ) from None
+
+            selected_owner_id = selection.selected_owner_agent_id
+            if selected_owner_id == previous_owner_id:
+                return TeamCommandApplyResult(
+                    response_payload={
+                        "task_id": task.id,
+                        "updated_task_ids": [],
+                        "progress_made": False,
+                        **selection.response_payload(
+                            outcome="unchanged",
+                            previous_owner_agent_id=previous_owner_id,
+                        ),
+                    },
+                    progress_classification="none",
+                    state_changed=False,
+                )
+
+            reconciliation_result = _empty_task_reassignment_result()
+            now = utc_now()
+            _apply_task_owner_reassignment(
+                state_model,
+                task=task,
+                new_owner_id=selected_owner_id,
+                actor_agent_id=agent.id,
+                dispatch_id=resolved.dispatch_id,
+                reconciliation_result=reconciliation_result,
+                now=now,
+            )
+            task.updated_at = now
+            _recalculate_project_status(state_model, task.project_id)
+            response_payload = {
+                "task_id": task.id,
+                "updated_task_ids": [task.id],
+                "progress_made": True,
+                "created_blocker_ids": [],
+                "created_inbox_item_ids": list(
+                    reconciliation_result["created_inbox_item_ids"]
+                ),
+                "events": list(reconciliation_result["events"]),
+                "resolved_blocker_ids": list(reconciliation_result["resolved_blocker_ids"]),
+                "blocker_event_ids": list(reconciliation_result["blocker_event_ids"]),
+                "resolved_blocker_event_ids": [],
+                "automatically_handled_inbox_item_ids": [],
+                **selection.response_payload(
+                    outcome="reassigned",
+                    previous_owner_agent_id=previous_owner_id,
+                ),
+            }
+            if task_state_can_wake_owner(task.state):
+                _append_agent_wake_requested_event(
+                    state_model,
+                    agent_id=task.owner_agent_id,
+                    result=response_payload,
+                    reason="task_ready",
+                    now=now,
+                    delay_seconds=DEFAULT_AGENT_WAKE_REQUEST_DEBOUNCE_SECONDS,
+                )
+            return TeamCommandApplyResult(
+                response_payload=response_payload,
+                created_domain_ids=[
+                    task.id,
+                    *response_payload["blocker_event_ids"],
+                    *response_payload["created_inbox_item_ids"],
+                ],
+            )
+
+        return self._execute_team_command(
+            context=context,
+            normalized_payload=normalized_payload,
+            handled_inbox_item_ids=normalized_handled_ids,
+            apply_command=_apply,
+            require_active_dispatch=True,
+        )
+
     def update_task_command(
         self,
         *,
@@ -1204,12 +1399,7 @@ class TeamTaskUpdateCommandService(TeamCommandExecutor):
             resolved: _ResolvedTeamCommandContext,
         ) -> TeamCommandApplyResult:
             agent = _require_command_agent(resolved, "team_update_task")
-            reconciliation_result: dict[str, Any] = {
-                "created_inbox_item_ids": [],
-                "events": [],
-                "resolved_blocker_ids": [],
-                "blocker_event_ids": [],
-            }
+            reconciliation_result = _empty_task_reassignment_result()
             task = state_model.tasks.get(normalized_task_id)
             if task is None:
                 raise TeamCommandValidationError(
@@ -1598,31 +1788,15 @@ class TeamTaskUpdateCommandService(TeamCommandExecutor):
                         correction_context={"task_id": task.id},
                     ) from None
             if has_owner_reassignment and isinstance(new_owner_id, str):
-                old_owner_id = task.owner_agent_id
-                finalize_active_git_work_contexts_for_task(
+                _apply_task_owner_reassignment(
                     state_model,
-                    task_id=task.id,
-                    now=now,
-                )
-                task.owner_agent_id = new_owner_id
-                reconcile_task_blockers_after_reassignment(
-                    state_model,
-                    task_id=task.id,
-                    old_owner_agent_id=old_owner_id,
-                    new_owner_agent_id=new_owner_id,
+                    task=task,
+                    new_owner_id=new_owner_id,
                     actor_agent_id=agent.id,
                     dispatch_id=resolved.dispatch_id,
-                    result=reconciliation_result,
+                    reconciliation_result=reconciliation_result,
                     now=now,
                 )
-                _maybe_mark_idle_context_rotation_due(
-                    state_model,
-                    agent_id=old_owner_id,
-                    now=now,
-                    result=reconciliation_result,
-                )
-                if task_state_can_wake_owner(task.state):
-                    _mark_agent_work_due(state_model, agent_id=new_owner_id, now=now)
                 changed = True
             if new_dependency_ids is not None and task.dependency_task_ids != new_dependency_ids:
                 task.dependency_task_ids = new_dependency_ids
