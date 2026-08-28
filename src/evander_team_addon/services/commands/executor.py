@@ -1062,6 +1062,7 @@ class TeamCommandExecutor:
 
 _TASK_SCOPE_TOOLS = frozenset(
     {
+        "team_reassign_task_for_role",
         "team_update_task",
         "team_submit_deliverable",
         "team_submit_deliverable_for_review",
@@ -1096,6 +1097,7 @@ _STAND_DOWN_DISPATCH_COMPLETION_TOOLS = frozenset(
 _PROJECT_SCOPE_TOOLS = frozenset(
     {
         "team_create_task",
+        "team_create_task_for_role",
         "team_create_tasks",
         "team_cancel_task",
         "team_repair_cancelled_task_dependencies",
