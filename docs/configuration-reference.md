@@ -280,6 +280,16 @@ stores a durable SQLite index under
 DevOps credentials from the selected directory config; PR comment/commit syncs
 require `repo`, while work-item syncs can run by project/work-item filters.
 
+For the bundled Elastic Stack Add-on, enabling `elastic-stack-addon` exposes
+bounded `elastic_stack_*`, `elasticsearch_*`, and `kibana_*` MCP tools and makes
+`query:elasticsearch:*`, `query:kibana:*`, and `effect:kibana:*` workflow
+providers available. Configure static targets, origin-restricted host-side auth
+profiles, request timeouts, and response/import limits under
+`provider_state.elastic_stack`. A demo provisioner may also add target endpoints
+under `session.metadata.elastic_stack.targets`; session metadata can reference a
+configured auth profile but cannot carry or redefine its secret. See
+`docs/addons.md` for the complete schema and examples.
+
 Wake sockets are internal runtime artifacts, not operator-facing config fields. The trigger worker
 listens on the path derived from `lock_path` with `.wake.sock`, and the effect worker listens on the
 path derived from `effect_lock_path` with `.wake.sock`.

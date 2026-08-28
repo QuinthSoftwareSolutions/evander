@@ -174,6 +174,87 @@ trigger/effect orchestrators. This add-on complements, but does not replace,
 `evander-ado-worker`; PR feedback polling and completion pickup remain owned by
 that worker.
 
+## Elastic Stack Add-on Guidance
+
+The bundled `evander_elastic_stack_addon` is a headless, general-purpose add-on
+for Elasticsearch and Kibana automation. It intentionally exposes semantic
+operations instead of an arbitrary authenticated HTTP client: agents can inspect
+cluster health, indices, mappings, Kibana status, data views, and saved objects;
+they can create or update data views, import bounded NDJSON saved-object bundles,
+and select the default data view. The same operations are available as workflow
+queries and effects.
+
+Enable `elastic-stack-addon` through `/#addons` or the equivalent Admin API and
+restart the listed services. Configure targets and host-owned authentication in
+directory-scoped `provider_state.elastic_stack`, for example:
+
+```json
+{
+  "provider_state": {
+    "elastic_stack": {
+      "auth_profiles": {
+        "demo-automation": {
+          "type": "basic_env",
+          "username_env": "KIBANA_DEMO_USERNAME",
+          "password_env": "KIBANA_DEMO_PASSWORD",
+          "allowed_origins": [
+            "https://*-kibana.northeurope.cloudapp.azure.com"
+          ]
+        }
+      },
+      "targets": {
+        "operations": {
+          "kibana": {
+            "base_url": "https://operations-kibana.example.net",
+            "auth_profile": "demo-automation"
+          },
+          "elasticsearch": {
+            "base_url": "https://operations-elasticsearch.example.net",
+            "auth_profile": "demo-automation"
+          }
+        }
+      },
+      "timeout_seconds": 30,
+      "max_response_bytes": 2097152,
+      "max_import_bytes": 10485760,
+      "max_import_objects": 1000
+    }
+  }
+}
+```
+
+Authentication profiles support `none`, `basic_env`, `api_key_env`, and
+`bearer_env`. Each profile requires a restricted `allowed_origins` list; the
+add-on verifies the selected endpoint origin before resolving its host-side
+secret. The environment variables must be available to every service that uses
+the add-on, normally the gateway and trigger/effect orchestrators. Prefer a
+dedicated least-privilege Kibana automation identity over a person's password.
+
+Demo provisioning can attach a target to one session without writing an auth
+secret into session metadata:
+
+```json
+{
+  "elastic_stack": {
+    "targets": {
+      "app-demo": {
+        "kibana": {
+          "base_url": "https://demo-kibana.example.net",
+          "auth_profile": "demo-automation"
+        }
+      }
+    }
+  }
+}
+```
+
+Place that object under `session.metadata`. A session target may reference a
+host-configured authentication profile but cannot define or override one. Grant
+only the required `elastic_stack_*`, `elasticsearch_*`, and `kibana_*` MCP tool
+names to the session. Saved-object imports remain subject to the configured
+byte/object limits and to the target Kibana version's saved-object compatibility
+rules.
+
 ## MSSQL Seed Add-on Guidance
 
 The bundled `evander_mssql_seed_addon` package provides an optional seed-restore
