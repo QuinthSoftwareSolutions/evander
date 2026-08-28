@@ -33,12 +33,12 @@ def client_for_provider_context(
     transport: Any | None = None,
 ) -> ElasticStackClient:
     session = _session_from_context(context, session_id) if session_id else None
-    config = _config_for_session(context, session) if session is not None else None
-    provider_state = (
-        _provider_state(config)
-        if config is not None
-        else _provider_state(getattr(context, "provider_config", {}))
+    config = (
+        _config_for_session(context, session)
+        if session is not None
+        else _config_for_provider_context(context)
     )
+    provider_state = _provider_state(config)
     metadata = getattr(session, "metadata", {}) if session is not None else {}
     secret_resolver = getattr(context, "resolve_secret", None)
     if not callable(secret_resolver):
@@ -64,6 +64,20 @@ def _config_for_session(runtime_or_context: Any, session: Any) -> Any:
     if config is not None:
         return config
     return getattr(runtime_or_context, "provider_config", {})
+
+
+def _config_for_provider_context(context: Any) -> Any:
+    resolver = getattr(context, "provider_config_resolver", None)
+    resolve = getattr(resolver, "resolve_for_directory", None)
+    if callable(resolve):
+        directory_path = _directory_path(
+            _record_value(getattr(context, "metadata", {}), "directory_path", "root")
+        )
+        return resolve(directory_path)
+    config = getattr(context, "config", None)
+    if config is not None:
+        return config
+    return getattr(context, "provider_config", {})
 
 
 def _provider_state(config: Any) -> dict[str, Any]:

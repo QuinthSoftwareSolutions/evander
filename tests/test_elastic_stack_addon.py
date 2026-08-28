@@ -11,8 +11,11 @@ import pytest
 from mcp.server.fastmcp.exceptions import ToolError
 
 from evander.addons import AddonContext
+from evander.effects.registry import EffectProviderFactory, EffectProviderRegistry
 from evander.events.models import WorkflowNodeEnvelope
 from evander.policy import PolicyError
+from evander.provider_config import EffectProviderConfig, QueryProviderConfig
+from evander.queries.registry import QueryProviderFactory, QueryProviderRegistry
 from evander_elastic_stack_addon.client import (
     ElasticStackApiError,
     ElasticStackClient,
@@ -190,13 +193,15 @@ def test_kibana_import_validates_ndjson_and_sends_bounded_multipart() -> None:
             overwrite=True,
             create_new_copies=True,
         )
-    with pytest.raises(ValueError, match="compatibility_mode cannot be combined with overwrite"):
-        client.kibana_import_saved_objects(
-            "app-demo",
-            ndjson=ndjson,
-            overwrite=True,
-            compatibility_mode=True,
-        )
+    compatible = client.kibana_import_saved_objects(
+        "app-demo",
+        ndjson=ndjson,
+        overwrite=True,
+        compatibility_mode=True,
+    )
+    assert compatible["success"] is True
+    assert captured[1].url.params["overwrite"] == "true"
+    assert captured[1].url.params["compatibilityMode"] == "true"
     with pytest.raises(ValueError, match="create_new_copies cannot be combined"):
         client.kibana_import_saved_objects(
             "app-demo",
@@ -205,7 +210,7 @@ def test_kibana_import_validates_ndjson_and_sends_bounded_multipart() -> None:
             create_new_copies=True,
             compatibility_mode=True,
         )
-    assert len(captured) == 1
+    assert len(captured) == 2
 
 
 def test_elasticsearch_queries_use_api_key_and_restrict_index_paths() -> None:
@@ -428,6 +433,88 @@ def test_workflow_session_target_rejects_out_of_scope_sessions_before_config_or_
     assert [session.session_id for session in resolver.calls] == ["same", "child", "other"]
 
 
+def test_sessionless_workflow_providers_resolve_directory_state_through_real_factories(
+    monkeypatch, tmp_path
+) -> None:
+    calls: list[tuple[str, str]] = []
+
+    class Resolver:
+        def resolve_query_provider_config(self, directory_path: str) -> QueryProviderConfig:
+            calls.append(("query", directory_path))
+            return QueryProviderConfig(runtime_dir=tmp_path)
+
+        def resolve_effect_provider_config(self, directory_path: str) -> EffectProviderConfig:
+            calls.append(("effect", directory_path))
+            return EffectProviderConfig(
+                runtime_dir=tmp_path,
+                session_store_path=tmp_path / "sessions.json",
+                default_session_ttl_seconds=3600,
+            )
+
+        def resolve_for_directory(self, directory_path: str) -> Any:
+            calls.append(("full", directory_path))
+            return SimpleNamespace(provider_state=_provider_state())
+
+    resolved_settings: list[ElasticStackSettings] = []
+
+    class FakeClient:
+        def __init__(self, settings: ElasticStackSettings, **_kwargs: Any) -> None:
+            resolved_settings.append(settings)
+
+        def elasticsearch_cluster_health(self, target_id: str) -> dict[str, Any]:
+            return {"target_id": target_id, "status": "green"}
+
+        def kibana_set_default_data_view(self, target_id: str, **_kwargs: Any) -> dict[str, Any]:
+            return {"target_id": target_id, "acknowledged": True}
+
+    monkeypatch.setattr("evander_elastic_stack_addon.service.ElasticStackClient", FakeClient)
+
+    registration = register_providers()
+    resolver = Resolver()
+    query_definition = registration.node_definition_resolvers["query:elasticsearch:cluster-health"](
+        WorkflowNodeEnvelope(
+            id="cluster-health",
+            display_name="Cluster health",
+            type="query:elasticsearch:cluster-health",
+            config={"target_id": "static"},
+        )
+    )
+    query = QueryProviderFactory(
+        resolver,
+        registry=QueryProviderRegistry(registration.query_providers),
+    ).build(query_definition, directory_path="root/operations")
+    assert "provider_state" not in query.runtime_context.provider_config
+    assert query.execute()["status"] == "green"
+
+    effect_definition = registration.node_definition_resolvers[
+        "effect:kibana:set-default-data-view"
+    ](
+        WorkflowNodeEnvelope(
+            id="set-default",
+            display_name="Set default data view",
+            type="effect:kibana:set-default-data-view",
+            config={"target_id": "static", "data_view_id": "events"},
+        )
+    )
+    effect = EffectProviderFactory(
+        resolver,
+        registry=EffectProviderRegistry(registration.effect_providers),
+    ).build(effect_definition, directory_path="root/operations")
+    assert "provider_state" not in effect.runtime_context.provider_config
+    assert effect.execute()["acknowledged"] is True
+
+    assert [sorted(settings.targets) for settings in resolved_settings] == [
+        ["static"],
+        ["static"],
+    ]
+    assert calls == [
+        ("query", "root/operations"),
+        ("full", "root/operations"),
+        ("effect", "root/operations"),
+        ("full", "root/operations"),
+    ]
+
+
 def test_mcp_tools_are_policy_scoped_and_delegate_semantic_operations(monkeypatch) -> None:
     tools: dict[str, Any] = {}
 
@@ -585,7 +672,6 @@ def test_workflow_provider_registration_materializes_and_executes(monkeypatch) -
     [
         (True, True, False),
         (False, True, True),
-        (True, False, True),
     ],
 )
 def test_import_definition_rejects_mutually_exclusive_modes(
@@ -618,12 +704,11 @@ def test_import_definition_rejects_mutually_exclusive_modes(
             config={
                 "target_id": "demo",
                 "ndjson": "{}\n",
-                "overwrite": False,
                 "compatibility_mode": True,
             },
         )
     )
-    assert legal.overwrite is False
+    assert legal.overwrite is True
     assert legal.compatibility_mode is True
 
 

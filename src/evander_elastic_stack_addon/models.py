@@ -323,8 +323,6 @@ def _validate_import_options(
         raise ValueError(
             "create_new_copies cannot be combined with overwrite or compatibility_mode"
         )
-    if compatibility_mode and overwrite:
-        raise ValueError("compatibility_mode cannot be combined with overwrite")
 
 
 def _normalize_keyed_mapping(value: object, *, field_name: str) -> dict[str, Any]:
