@@ -260,6 +260,7 @@ class ElasticStackClient:
         self._ensure_origin_allowed(endpoint.base_url, profile)
         headers = self._auth_headers(profile)
         headers["accept"] = "application/json"
+        headers["accept-encoding"] = "identity"
         if kibana_write:
             headers["kbn-xsrf"] = "evander-elastic-stack-addon"
         url = f"{endpoint.base_url.rstrip('/')}{path}"

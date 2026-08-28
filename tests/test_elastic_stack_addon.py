@@ -161,6 +161,19 @@ def test_kibana_data_view_calls_use_host_basic_auth_space_and_xsrf() -> None:
     assert requests[1].headers["authorization"] == f"Basic {expected_auth}"
 
 
+def test_requests_identity_encoding_for_proxy_compatible_bounded_reads() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.headers.get("accept-encoding") != "identity":
+            return httpx.Response(
+                200,
+                headers={"content-encoding": "gzip"},
+                content=b'{"status":"not-really-gzipped"}',
+            )
+        return httpx.Response(200, json={"status": "available"})
+
+    assert _client(handler).kibana_status("app-demo") == {"status": "available"}
+
+
 def test_kibana_import_validates_ndjson_and_sends_bounded_multipart() -> None:
     captured: list[httpx.Request] = []
 
