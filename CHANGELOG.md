@@ -1,5 +1,10 @@
 # Changelog
 
+## 2026-08-28 - Elastic Stack Proxy Compatibility
+
+- Requested identity-encoded Elastic Stack API responses so bounded streamed reads remain
+  compatible with reverse proxies that advertise already-decoded compressed responses.
+
 ## 2026-08-28 - Elastic Stack Add-on
 
 - Added a bundled, opt-in Elastic Stack add-on with narrowly scoped Elasticsearch read tools and
