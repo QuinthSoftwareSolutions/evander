@@ -255,6 +255,13 @@ names to the session. Saved-object imports remain subject to the configured
 byte/object limits and to the target Kibana version's saved-object compatibility
 rules.
 
+The add-on supports the public Elasticsearch and Kibana APIs used by Elastic Stack 9.5.2. Kibana
+9 returns only the overall level from `/api/status` to unauthenticated callers; the add-on
+normalizes that redacted form as well as the detailed authenticated response. A deployment that
+already places Kibana behind an authenticated reverse proxy may set `status.allowAnonymous: true`
+on the loopback-only Kibana listener when agents need the exact version and plugin readiness from
+the status tool. Do not enable detailed anonymous status on a directly exposed Kibana listener.
+
 ## MSSQL Seed Add-on Guidance
 
 The bundled `evander_mssql_seed_addon` package provides an optional seed-restore

@@ -174,6 +174,38 @@ def test_requests_identity_encoding_for_proxy_compatible_bounded_reads() -> None
     assert _client(handler).kibana_status("app-demo") == {"status": "available"}
 
 
+def test_kibana_status_normalizes_full_and_elastic_9_redacted_responses() -> None:
+    responses = iter(
+        [
+            {
+                "status": {
+                    "overall": {
+                        "level": "available",
+                        "summary": "All services are available",
+                    }
+                },
+                "version": {"number": "9.5.2"},
+            },
+            {"status": {"overall": {"level": "available"}}},
+        ]
+    )
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=next(responses))
+
+    client = _client(handler)
+    full = client.kibana_status("app-demo")
+    redacted = client.kibana_status("app-demo")
+
+    assert full["level"] == "available"
+    assert full["summary"] == "All services are available"
+    assert full["version_number"] == "9.5.2"
+    assert redacted == {
+        "status": {"overall": {"level": "available"}},
+        "level": "available",
+    }
+
+
 def test_kibana_import_validates_ndjson_and_sends_bounded_multipart() -> None:
     captured: list[httpx.Request] = []
 

@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-08-29 - Elastic Stack 9 Compatibility
+
+- Normalized both detailed and redacted Kibana status responses so the bounded Elastic Stack
+  tools remain useful with Kibana 9 while preserving exact version and readiness details when the
+  authenticated deployment exposes them.
+- Documented the safe loopback-only detailed-status configuration validated with matching
+  Elasticsearch and Kibana 9.5.2 containers.
+
 ## 2026-08-28 - Elastic Stack Proxy Compatibility
 
 - Requested identity-encoded Elastic Stack API responses so bounded streamed reads remain

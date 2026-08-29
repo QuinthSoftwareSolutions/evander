@@ -52,11 +52,30 @@ class ElasticStackClient:
         ]
 
     def kibana_status(self, target_id: str) -> dict[str, Any]:
-        return self._json_request(
+        result = self._json_request(
             endpoint=self._endpoint(target_id, "kibana"),
             method="GET",
             path="/api/status",
         )
+        if not isinstance(result, Mapping):
+            raise ElasticStackApiError("Kibana returned an invalid status response")
+
+        payload = dict(result)
+        status = payload.get("status")
+        overall = status.get("overall") if isinstance(status, Mapping) else None
+        if isinstance(overall, Mapping):
+            level = overall.get("level")
+            summary = overall.get("summary")
+            if isinstance(level, str) and level.strip():
+                payload.setdefault("level", level)
+            if isinstance(summary, str) and summary.strip():
+                payload.setdefault("summary", summary)
+
+        version = payload.get("version")
+        version_number = version.get("number") if isinstance(version, Mapping) else None
+        if isinstance(version_number, str) and version_number.strip():
+            payload.setdefault("version_number", version_number)
+        return payload
 
     def kibana_list_data_views(
         self,
