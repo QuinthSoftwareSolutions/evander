@@ -183,6 +183,9 @@ from evander_team_addon.services.domain.wake import (
     _case_payloads_for_agent,
     _case_payloads_for_team,
 )
+from evander_team_addon.services.domain.preparation_failures import (
+    task_git_work_context_generation,
+)
 from evander_team_addon.services.agent_action_service import TeamAgentActionService
 from evander_team_addon.services.admin_service import TeamAdminService
 from evander_team_addon.services.commands.outbox import (
@@ -1066,10 +1069,82 @@ def _seed_git_work_context(
             agent_branch=agent_branch,
             commit_sha=commit_sha,
             dispatch_id=dispatch_id,
+            preparation_generation=task_git_work_context_generation(state, "task"),
         )
         return state
 
     repo.update(_mutate)
+
+
+def test_admin_task_contract_edit_invalidates_active_git_preparation(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_team(tmp_path)
+    admin = _team_admin_service(repo)
+    admin.create_or_reprioritize_task(
+        task_id="contribution",
+        owner_agent_id="backend",
+        project_id="project",
+        priority=2,
+        title="Contribution",
+        description="Produce the required contribution.",
+        created_by_agent_id="lead",
+        parent_task_id="task",
+        expected_revision=repo.read().revision,
+    )
+    _seed_git_work_context(repo, context_id="ctx-before-contract-edit")
+    generation_before = repo.read().git_work_contexts[
+        "ctx-before-contract-edit"
+    ].preparation_generation
+
+    updated = admin.update_task(
+        task_id="task",
+        integration_boundary=True,
+        deliverable_contract={
+            "require_git_provenance": True,
+            "required_contribution_task_ids": ["contribution"],
+        },
+        expected_revision=repo.read().revision,
+    )
+
+    context = updated.git_work_contexts["ctx-before-contract-edit"]
+    assert context.state == GitWorkContextState.ABANDONED
+    assert context.preparation_generation == generation_before
+    recovery = next(
+        item
+        for item in updated.inbox.values()
+        if item.payload.get("kind") == "task_preparation_invalidated"
+    )
+    assert recovery.recipient_agent_id == "backend"
+    assert recovery.payload["invalidated_git_work_context_ids"] == [
+        "ctx-before-contract-edit"
+    ]
+    assert recovery.payload["preparation_generation_before"] == generation_before
+    assert recovery.payload["preparation_generation_after"] != generation_before
+    assert recovery.payload["required_action"] == (
+        "reprepare_from_current_task_specification"
+    )
+
+
+def test_admin_priority_edit_keeps_current_git_preparation(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_team(tmp_path)
+    _seed_git_work_context(repo, context_id="ctx-priority-only")
+
+    updated = _team_admin_service(repo).update_task(
+        task_id="task",
+        priority=7,
+        expected_revision=repo.read().revision,
+    )
+
+    assert updated.git_work_contexts["ctx-priority-only"].state == (
+        GitWorkContextState.ACTIVE
+    )
+    assert not any(
+        item.payload.get("kind") == "task_preparation_invalidated"
+        for item in updated.inbox.values()
+    )
 
 
 def test_agent_action_uses_active_dispatch_for_git_context_binding(tmp_path: Path) -> None:
@@ -7934,19 +8009,29 @@ def test_wake_due_agents_provider_prepares_project_repo_when_configured(
     assert project_repo["target_dir"] == "/home/agent/Truman"
     assert project_repo["base_branch"] == "main"
     assert project_repo["branch_context_id"]
-    assert project_repo["agent_branch"] == "agents/session-backend/tasks/task-0ebb429f"
+    preparation_generation = task_git_work_context_generation(repo.read(), "task")
+    expected_agent_branch = (
+        "agents/session-backend/tasks/task-0ebb429f-prep-"
+        f"{preparation_generation[:12]}"
+    )
+    expected_worktree_path = (
+        "/home/agent/worktrees/Truman/task-0ebb429f-prep-"
+        f"{preparation_generation[:12]}"
+    )
+    assert project_repo["agent_branch"] == expected_agent_branch
     git_context = project_repo["git_work_contexts"][0]
     assert git_context == {
         "id": project_repo["branch_context_id"],
         "branch_context_id": project_repo["branch_context_id"],
         "agent_id": "backend",
         "task_id": "task",
-        "agent_branch": "agents/session-backend/tasks/task-0ebb429f",
+        "agent_branch": expected_agent_branch,
         "base_branch": "main",
         "base_commit": "a" * 40,
         "dispatch_id": result["dispatches"][0]["dispatch_id"],
-        "worktree_path": "/home/agent/worktrees/Truman/task-0ebb429f",
+        "worktree_path": expected_worktree_path,
         "state": "active",
+        "preparation_generation": preparation_generation,
     }
     assert project_repo["branch_contexts_by_task_id"] == {"task": git_context}
     assert result["git_work_contexts"] == [git_context]
@@ -7965,8 +8050,8 @@ def test_wake_due_agents_provider_prepares_project_repo_when_configured(
     assert '"project_repos"' in prompt
     assert '"project_repo"' not in prompt
     assert project_repo["branch_context_id"] in prompt
-    assert "agents/session-backend/tasks/task-0ebb429f" in prompt
-    assert "/home/agent/worktrees/Truman/task-0ebb429f" in prompt
+    assert expected_agent_branch in prompt
+    assert expected_worktree_path in prompt
     assert "project_repos[].git_work_contexts" in prompt
     assert session_store.calls[1]["metadata"]["team_addon"]["project_repo"] == project_repo
     assert any(

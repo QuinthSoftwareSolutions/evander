@@ -124,6 +124,13 @@ unresolved descendants, active acceptance, or active review that must be
 settled first. The generic task editor cannot move work directly into
 <code>accepted</code> or <code>cancelled</code>.
 
+**Planning** and **Task board** use the same revision-checked task editor. When a
+title, description, owner, dependency frontier, deliverable contract, or another
+preparation input changes after Git preparation, Team abandons that context and
+queues a fresh generation. The task status distinguishes queued re-preparation,
+an active agent lease, and a review awaiting dispatch. A priority-only edit does
+not invalidate the checkout.
+
 Background state and cost refreshes preserve open **Planning** project, task,
 hierarchy, full-brief, worktree, and technical-detail disclosures, so a live
 update does not collapse the operator's place in a long task. Disclosure state

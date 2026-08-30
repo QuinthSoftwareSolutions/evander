@@ -201,6 +201,27 @@ def test_attention_excludes_retired_or_superseded_delivery_lineage() -> None:
 
 def test_planning_view_receives_formal_review_status_collection() -> None:
     assert "review_requests" in TEAM_VIEW_COLLECTIONS["planning"]
+    assert {"agent_runtimes", "inbox"} <= TEAM_VIEW_COLLECTIONS["planning"]
+    assert {"agent_runtimes", "inbox"} <= TEAM_VIEW_COLLECTIONS["task-board"]
+
+
+def test_planning_ui_distinguishes_repreparation_and_active_review() -> None:
+    source = (ROOT / "src" / "evander_team_addon" / "ui_static" / "team-ui.js").read_text(
+        encoding="utf-8"
+    )
+    stylesheet = (
+        ROOT / "src" / "evander_team_addon" / "ui_static" / "team-ui.css"
+    ).read_text(encoding="utf-8")
+
+    assert "function latestTaskPreparationInvalidation(taskId)" in source
+    assert source.count("${renderPlanningExecutionStatus(task)}") == 3
+    assert "Repreparing after task edit" in source
+    assert "Fresh preparation is queued." in source
+    assert "function latestDispatchForReview(reviewId)" in source
+    assert "lease until" in source
+    assert "awaiting dispatch" in source
+    assert "stale Git preparation" in source
+    assert ".planning-execution-status" in stylesheet
 
 
 def test_versioned_agent_guidance_explains_task_topology_and_cancellation() -> None:
@@ -208,7 +229,7 @@ def test_versioned_agent_guidance_explains_task_topology_and_cancellation() -> N
         agent={"id": "implementer", "display_name": "Implementer"}
     )
 
-    assert TEAM_AGENT_GUIDANCE_VERSION == 38
+    assert TEAM_AGENT_GUIDANCE_VERSION == 39
     assert "Every test command must have an explicit timeout" in content
     assert "timeout --preserve-status -k 20s <seconds> <test command>" in content
     assert "Do not retry the unchanged command indefinitely" in content
@@ -252,6 +273,8 @@ def test_versioned_agent_guidance_explains_task_topology_and_cancellation() -> N
     assert "automatic successors of generated rejected-candidate" in content
     assert "run git push-agent and require it to succeed" in content
     assert "Confirm the managed agent branch resolves to the same commit" in content
+    assert "task_preparation_invalidated" in content
+    assert "dependency_composition_manifest_recovery_required" in content
 
 
 def test_task_cancellation_ui_exposes_atomic_dependency_replacement() -> None:

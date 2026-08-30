@@ -29,7 +29,7 @@ from .models import (
 
 ADDON_ID = "team-addon"
 STATE_DB_FILE = "state.db"
-SQLITE_SCHEMA_VERSION = 67
+SQLITE_SCHEMA_VERSION = 68
 _SQLITE_WAL_ENABLE_TIMEOUT_SECONDS = 5.0
 
 T = TypeVar("T")
@@ -1877,6 +1877,12 @@ class TeamStateSqliteStore:
                     connection,
                     table_name="team_git_work_contexts",
                     column_name="dependency_composition_manifest_json",
+                    definition="TEXT",
+                )
+                _ensure_column(
+                    connection,
+                    table_name="team_git_work_contexts",
+                    column_name="preparation_generation",
                     definition="TEXT",
                 )
                 _ensure_column(
@@ -5194,6 +5200,7 @@ class TeamStateSqliteStore:
                     if row["dependency_composition_manifest_json"] is not None
                     else None
                 ),
+                "preparation_generation": row["preparation_generation"],
                 "state": row["state"],
                 "created_at": row["created_at"],
                 "updated_at": row["updated_at"],
@@ -5211,9 +5218,9 @@ class TeamStateSqliteStore:
                     dependency_composition_recovery_id,
                     manual_dependency_git_sources_json,
                     dependency_composition_manifest_json,
-                    state, created_at, updated_at
+                    preparation_generation, state, created_at, updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     context["id"],
@@ -5233,6 +5240,7 @@ class TeamStateSqliteStore:
                         if context.get("dependency_composition_manifest") is not None
                         else None
                     ),
+                    context.get("preparation_generation"),
                     context.get("state", "active"),
                     context["created_at"],
                     context["updated_at"],
@@ -9120,6 +9128,7 @@ CREATE TABLE IF NOT EXISTS team_git_work_contexts (
     dependency_composition_recovery_id TEXT,
     manual_dependency_git_sources_json TEXT NOT NULL DEFAULT '[]',
     dependency_composition_manifest_json TEXT,
+    preparation_generation TEXT,
     state TEXT NOT NULL,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL

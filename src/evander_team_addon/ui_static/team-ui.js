@@ -13355,6 +13355,7 @@ function renderTaskBoardHierarchyNode(task, hierarchy, focus, display, path) {
           ${relation ? `<span class="task-board-relation-badge">${escapeHtml(relation)}</span>` : ""}
         </div>
         ${warnings.length ? `<div class="task-board-hierarchy-warning">${escapeHtml(warnings.join(" "))}</div>` : ""}
+        ${renderPlanningExecutionStatus(task)}
         ${renderTaskBoardBrief(task)}
         ${renderTaskBoardBlockerLine(task)}
         ${renderTaskBoardTechnicalDetails(task, unresolvedIds, worktreeContexts)}
@@ -13647,6 +13648,7 @@ function renderTaskBoardCard(task, focus) {
       <div class="task-board-card-meta">Assigned to: ${escapeHtml(assignedTo || "Unassigned")}</div>
       <div class="task-board-card-meta">Entered lane: ${escapeHtml(laneEntered)}</div>
       <div class="task-board-card-meta">Readiness: ${escapeHtml(task.readiness || assessment.readiness || "unknown")} - resolution: ${escapeHtml(task.resolution_status || assessment.resolution_status || "unknown")} - integration ${task.integration_ready ?? assessment.integration_ready ? "ready" : "not ready"}</div>
+      ${renderPlanningExecutionStatus(task)}
       ${renderTaskBoardBrief(task)}
       ${renderTaskBoardUnresolvedDescendants(task.id, unresolvedIds)}
       ${worktreeContexts.length ? `<div class="task-board-card-meta">Worktree: ${escapeHtml(worktreeContexts.map((row) => row.worktree_path || "Control-plane context").join(", "))}</div>` : ""}
@@ -14080,6 +14082,74 @@ function latestDispatchForTask(taskId) {
         String(right.created_at || "").localeCompare(String(left.created_at || "")) ||
         byId(left, right),
     )[0] || null;
+}
+
+function latestDispatchForReview(reviewId) {
+  const normalizedReviewId = text(reviewId);
+  return values(state.dispatches)
+    .filter((dispatch) =>
+      (dispatch.review_request_ids || []).some(
+        (candidateId) => text(candidateId) === normalizedReviewId,
+      ),
+    )
+    .sort(
+      (left, right) =>
+        String(right.created_at || "").localeCompare(String(left.created_at || "")) ||
+        byId(left, right),
+    )[0] || null;
+}
+
+function latestTaskPreparationInvalidation(taskId) {
+  const normalizedTaskId = text(taskId);
+  return values(state.inbox)
+    .filter(
+      (item) =>
+        text(item.task_id) === normalizedTaskId &&
+        text(item.payload?.kind) === "task_preparation_invalidated",
+    )
+    .sort(
+      (left, right) =>
+        String(right.created_at || "").localeCompare(String(left.created_at || "")) ||
+        byId(left, right),
+    )[0] || null;
+}
+
+function renderPlanningExecutionStatus(task) {
+  const blockers = activeBlockersForRecord("task", task.id, task.id);
+  if (blockers.length) {
+    return `<div class="planning-execution-status" role="status"><strong>Blocked</strong><span>${escapeHtml(blockers[0].summary || "Resolve the active task blocker.")}</span></div>`;
+  }
+  const invalidation = latestTaskPreparationInvalidation(task.id);
+  const dispatch = latestDispatchForTask(task.id);
+  const dispatchIsFresh = Boolean(
+    dispatch &&
+    (!invalidation || String(dispatch.created_at || "") >= String(invalidation.created_at || "")),
+  );
+  if (
+    dispatchIsFresh &&
+    dispatch &&
+    ["preparing", "leased"].includes(text(dispatch.status))
+  ) {
+    const runtime = state.agent_runtimes?.[dispatch.agent_id];
+    const lease = runtime?.wake_leased_until
+      ? ` Lease until ${formatTimelineTimestamp(runtime.wake_leased_until)}.`
+      : "";
+    return `<div class="planning-execution-status" role="status"><strong>Agent active</strong><span>${escapeHtml(`${humanizeToken(dispatch.status)}.${lease}`)}</span></div>`;
+  }
+  if (invalidation && text(invalidation.state) === "pending") {
+    const dispatchLabel = dispatch
+      ? `Latest dispatch: ${humanizeToken(dispatch.status || "unknown")}.`
+      : "Fresh preparation is queued.";
+    return `<div class="planning-execution-status" role="status"><strong>Repreparing after task edit</strong><span>${escapeHtml(dispatchLabel)}</span></div>`;
+  }
+  if (dispatch && ["preparing", "leased"].includes(text(dispatch.status))) {
+    const runtime = state.agent_runtimes?.[dispatch.agent_id];
+    const lease = runtime?.wake_leased_until
+      ? ` Lease until ${formatTimelineTimestamp(runtime.wake_leased_until)}.`
+      : "";
+    return `<div class="planning-execution-status" role="status"><strong>Agent active</strong><span>${escapeHtml(`${humanizeToken(dispatch.status)}.${lease}`)}</span></div>`;
+  }
+  return "";
 }
 
 function renderCandidateCorrectionRecoveryStatus(task) {
@@ -14839,7 +14909,16 @@ function renderPlanningReviewStatus(task) {
       ${acceptanceCount ? `<span>${acceptanceCount} direct acceptance${acceptanceCount === 1 ? "" : "s"} pending</span>` : ""}
       ${reviews.map((review) => {
         const reviewer = state.agents?.[review.reviewer_agent_id];
-        return `<span>Review by ${escapeHtml(reviewer ? agentLabel(reviewer) : "assigned reviewer")} <span class="state-pill ${escapeAttr(review.state)}">${escapeHtml(humanizeToken(review.state))}</span></span>`;
+        const dispatch = latestDispatchForReview(review.id);
+        const runtime = state.agent_runtimes?.[review.reviewer_agent_id];
+        const active = dispatch && ["preparing", "leased"].includes(text(dispatch.status));
+        const lease = active && runtime?.wake_leased_until
+          ? ` · lease until ${formatTimelineTimestamp(runtime.wake_leased_until)}`
+          : "";
+        const dispatchStatus = dispatch
+          ? ` · dispatch ${humanizeToken(dispatch.status || "unknown")}`
+          : " · awaiting dispatch";
+        return `<span>Review by ${escapeHtml(reviewer ? agentLabel(reviewer) : "assigned reviewer")} <span class="state-pill ${escapeAttr(review.state)}">${escapeHtml(humanizeToken(review.state))}</span>${escapeHtml(dispatchStatus + lease)}</span>`;
       }).join("")}
     </div>
   `;
@@ -15137,6 +15216,7 @@ function renderStructuredPlanningTask(task, { depth = 0, hierarchyWarning = "" }
               <div><span>Priority</span><strong>${Number(task.priority ?? 0)}</strong></div>
             </div>
             <p class="planning-lifecycle-reason"><strong>Lifecycle reason:</strong> ${escapeHtml(reason)}</p>
+            ${renderPlanningExecutionStatus(task)}
             ${renderPlanningTaskBlockers(task)}
           </section>
           <section class="planning-task-section">
@@ -20913,9 +20993,30 @@ async function submitTaskUpdate(form) {
         required_contribution_task_ids: requiredContributionTaskIds,
       }
     : null;
-  await submitMutation(form, `/tasks/${encodeURIComponent(taskId)}`, "PATCH", payload, {
+  const saved = await submitMutation(form, `/tasks/${encodeURIComponent(taskId)}`, "PATCH", payload, {
     resetOnSuccess: false,
   });
+  if (saved) {
+    showTaskPreparationInvalidationStatus(taskId);
+  }
+}
+
+function showTaskPreparationInvalidationStatus(taskId) {
+  const item = latestTaskPreparationInvalidation(taskId);
+  const task = state.tasks?.[text(taskId)];
+  if (
+    !item ||
+    text(item.state) !== "pending" ||
+    (task?.updated_at && String(item.created_at || "") < String(task.updated_at))
+  ) {
+    return false;
+  }
+  const contextCount = (item.payload?.invalidated_git_work_context_ids || []).length;
+  setStatus(
+    `Saved revision ${state.revision}. ${contextCount} stale Git preparation${contextCount === 1 ? " was" : "s were"} retired; fresh preparation is queued.`,
+    "ok",
+  );
+  return true;
 }
 
 async function importGitRepoForForm(form, button) {
@@ -23622,6 +23723,9 @@ async function submitEditForm(form) {
     resetOnSuccess: false,
   });
   if (saved) {
+    if (type === "task") {
+      showTaskPreparationInvalidationStatus(id);
+    }
     clearFormDraft(form);
     closeEditDialog();
   } else if (type === "governance-group") {

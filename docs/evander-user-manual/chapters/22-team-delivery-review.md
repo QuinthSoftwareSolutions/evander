@@ -187,6 +187,13 @@ legacy branch/context validation. A new formal review records policy version 2 a
 the immutable-ref and composition gates that apply to its Git task; direct acceptance uses the
 submission-time retained ref without acquiring formal-review criteria.
 
+A policy-v2 integration submission with Git-backed sources must carry the server-generated
+composition manifest from its current preparation generation. Team rejects a missing or stale
+manifest before creating either the deliverable or its reviews. Global maintenance repairs an
+older nonterminal malformed record exactly once by preserving its Git evidence, retiring its
+review handoffs, rejecting the candidate, reopening the task, and queueing a freshly prepared
+replacement. Accepted historical evidence is not rewritten.
+
 ## Submitting, superior acceptance, and formal review
 
 The producer submits the evidence, then chooses the handoff the task actually requires:

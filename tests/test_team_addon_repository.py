@@ -123,6 +123,9 @@ from evander_team_addon.services.domain.task_assessment import (
     assess_task,
     require_release_scope,
 )
+from evander_team_addon.services.domain.preparation_failures import (
+    task_git_work_context_generation,
+)
 from evander_team_addon.services.domain.work_due import _mark_agent_work_due
 from evander_team_addon.services.domain.wake import AGENT_WAKE_REQUESTED_EVENT_TYPE
 from evander_team_addon.services.agent_action_service import TeamAgentActionService
@@ -133,6 +136,9 @@ from evander_team_addon.services.chat_service import (
 )
 from evander_team_addon.services.ephemeral_service import TeamEphemeralService
 from evander_team_addon.services.git_release_service import TeamGitReleaseService
+from evander_team_addon.services.integration_manifest_reconciliation_service import (
+    IntegrationManifestReconciliationService,
+)
 from evander_team_addon.services.release_gate_service import TeamReleaseGateService
 from evander_team_addon.services.domain.acceptance_verification import (
     DELIVERABLE_ACCEPTANCE_VERIFICATION_REQUESTED_EVENT_TYPE,
@@ -271,6 +277,10 @@ def _seed_git_work_context(
             base_commit="base123",
             agent_branch=agent_branch,
             commit_sha=commit_sha,
+            preparation_generation=task_git_work_context_generation(
+                state_model,
+                task_id,
+            ),
             state=context_state,
             **({"updated_at": updated_at} if updated_at is not None else {}),
         )
@@ -4464,6 +4474,240 @@ def test_composed_submission_persists_server_verified_candidate_ancestry(
     ]
 
 
+def test_formal_integration_submission_rejects_missing_composition_manifest(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _set_project_git(repo)
+    _seed_task(repo, task_id="dependency")
+    _seed_task(repo, task_id="task")
+
+    def _configure(state: TeamState) -> TeamState:
+        dependency = state.tasks["dependency"]
+        dependency.state = TeamTaskState.FINISHED
+        dependency.deliverable_ids = ["dependency-deliverable"]
+        state.deliverables["dependency-deliverable"] = Deliverable(
+            id="dependency-deliverable",
+            task_id="dependency",
+            producer_agent_id="backend",
+            summary="Accepted Git dependency.",
+            state=TeamRecordState.ACCEPTED,
+            git_refs=DeliverableGitRefs(
+                agent_branch="agents/session-backend/dependency",
+                commit_sha="b" * 40,
+                submitted_commit_sha="b" * 40,
+            ),
+        )
+        task = state.tasks["task"]
+        task.integration_boundary = True
+        task.dependency_task_ids = ["dependency"]
+        task.deliverable_contract = TaskDeliverableContract(
+            require_git_provenance=True,
+        )
+        return state
+
+    repo.update(_configure)
+    _lease_agent_dispatch(repo, agent_id="backend", dispatch_id="dispatch-missing-manifest")
+    _seed_git_work_context(
+        repo,
+        commit_sha=None,
+        dispatch_id="dispatch-missing-manifest",
+    )
+
+    state, submitted = TeamDeliverableSubmissionCommandService(
+        repo,
+        git_candidate_commit_resolver=lambda **_kwargs: "c" * 40,
+    ).submit_deliverable_for_review_command(
+        session_id="session-backend",
+        deliverable={
+            "id": "missing-manifest",
+            "task_id": "task",
+            "summary": "Candidate missing server composition evidence.",
+            "branch_context_id": "ctx-task",
+            "git_refs": {
+                "agent_branch": "agents/session-backend/task",
+                "commit_sha": "c" * 40,
+            },
+        },
+        reviews=[{"id": "review-missing-manifest", "reviewer_agent_id": "worker"}],
+        request_id="request-missing-manifest",
+    )
+
+    assert submitted["success"] is False
+    assert submitted["errors"][0]["code"] == (
+        "dependency_composition_manifest_required"
+    )
+    assert "missing-manifest" not in state.deliverables
+    assert "review-missing-manifest" not in state.review_requests
+    assert state.tasks["task"].state != TeamTaskState.WAITING_FOR_REVIEW
+
+
+def test_legacy_missing_composition_manifest_is_reconciled_idempotently(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _set_project_git(repo)
+    _seed_task(repo, task_id="dependency")
+    _seed_task(repo, task_id="task")
+
+    def _seed_legacy_candidate(state: TeamState) -> TeamState:
+        dependency = state.tasks["dependency"]
+        dependency.state = TeamTaskState.FINISHED
+        dependency.deliverable_ids = ["dependency-deliverable"]
+        state.deliverables["dependency-deliverable"] = Deliverable(
+            id="dependency-deliverable",
+            task_id=dependency.id,
+            producer_agent_id="backend",
+            summary="Accepted dependency evidence.",
+            state=TeamRecordState.ACCEPTED,
+            git_refs=DeliverableGitRefs(
+                agent_branch="agents/session-backend/dependency",
+                commit_sha="b" * 40,
+                submitted_commit_sha="b" * 40,
+            ),
+        )
+        task = state.tasks["task"]
+        task.integration_boundary = True
+        task.dependency_task_ids = [dependency.id]
+        task.deliverable_contract = TaskDeliverableContract(
+            require_git_provenance=True,
+        )
+        task.state = TeamTaskState.WAITING_FOR_REVIEW
+        task.deliverable_ids = ["legacy-malformed-deliverable"]
+        state.deliverables["legacy-malformed-deliverable"] = Deliverable(
+            id="legacy-malformed-deliverable",
+            task_id=task.id,
+            producer_agent_id="backend",
+            summary="Retained malformed integration candidate.",
+            state=TeamRecordState.PENDING,
+            git_refs=DeliverableGitRefs(
+                agent_branch="agents/session-backend/task",
+                commit_sha="c" * 40,
+                submitted_commit_sha="c" * 40,
+            ),
+            source_deliverable_ids=["dependency-deliverable"],
+            review_request_ids=["legacy-review"],
+            acceptance_policy_version=2,
+        )
+        state.review_requests["legacy-review"] = ReviewRequest(
+            id="legacy-review",
+            deliverable_id="legacy-malformed-deliverable",
+            reviewer_agent_id="worker",
+            state=TeamRecordState.PENDING,
+        )
+        open_or_get_blocker(
+            state,
+            source_kind=TeamBlockerSourceKind.DELIVERABLE,
+            source_id="legacy-malformed-deliverable",
+            summary="Composition manifest is missing.",
+            reason_code=(
+                "deliverable_acceptance_deferred:"
+                "dependency_composition_manifest_missing"
+            ),
+            initial_owner_agent_id="backend",
+            team_id="team",
+            project_id="project",
+            task_id=task.id,
+        )
+        task.state = TeamTaskState.BLOCKED
+        state.inbox["legacy-review-inbox"] = AgentInboxItem(
+            id="legacy-review-inbox",
+            recipient_agent_id="worker",
+            sender_agent_id="backend",
+            task_id=task.id,
+            item_type=TeamInboxItemType.STATUS_REQUEST,
+            payload={
+                "kind": "review_requested",
+                "deliverable_id": "legacy-malformed-deliverable",
+                "review_request_id": "legacy-review",
+            },
+        )
+        return state
+
+    repo.update(_seed_legacy_candidate)
+    service = IntegrationManifestReconciliationService(repo)
+
+    first = service.reconcile()
+    state = repo.read()
+
+    assert first["changed"] is True
+    assert first["reconciled_deliverable_ids"] == ["legacy-malformed-deliverable"]
+    malformed = state.deliverables["legacy-malformed-deliverable"]
+    assert malformed.state == TeamRecordState.REJECTED
+    assert malformed.git_refs.submitted_commit_sha == "c" * 40
+    assert state.tasks["task"].state == TeamTaskState.IN_PROGRESS
+    assert state.review_requests["legacy-review"].retired_at is not None
+    assert state.inbox["legacy-review-inbox"].state == TeamInboxItemState.HANDLED
+    assert first["resolved_manifest_blocker_ids"]
+    assert all(
+        state.blockers[blocker_id].state == TeamBlockerState.RESOLVED
+        for blocker_id in first["resolved_manifest_blocker_ids"]
+    )
+    recovery_items = [
+        item
+        for item in state.inbox.values()
+        if item.payload.get("kind")
+        == "dependency_composition_manifest_recovery_required"
+    ]
+    assert len(recovery_items) == 1
+    assert recovery_items[0].priority == TeamInboxPriority.HIGH
+
+    second = service.reconcile()
+
+    assert second["changed"] is False
+    assert len(
+        [
+            item
+            for item in repo.read().inbox.values()
+            if item.payload.get("kind")
+            == "dependency_composition_manifest_recovery_required"
+        ]
+    ) == 1
+
+
+def test_formal_submission_rejects_stale_preparation_generation_atomically(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _set_project_git(repo)
+    _seed_task(repo, task_id="task")
+    _lease_agent_dispatch(repo, agent_id="backend", dispatch_id="dispatch-stale-generation")
+    _seed_git_work_context(
+        repo,
+        commit_sha=None,
+        dispatch_id="dispatch-stale-generation",
+    )
+
+    def _change_spec_without_invalidation(state: TeamState) -> TeamState:
+        state.tasks["task"].description = "A newer immutable work specification."
+        return state
+
+    repo.update(_change_spec_without_invalidation)
+    state, submitted = TeamDeliverableSubmissionCommandService(
+        repo,
+        git_candidate_commit_resolver=lambda **_kwargs: "c" * 40,
+    ).submit_deliverable_for_review_command(
+        session_id="session-backend",
+        deliverable={
+            "id": "stale-generation-deliverable",
+            "task_id": "task",
+            "summary": "Candidate prepared from the old specification.",
+            "branch_context_id": "ctx-task",
+            "git_refs": {
+                "agent_branch": "agents/session-backend/task",
+                "commit_sha": "c" * 40,
+            },
+        },
+        reviews=[{"id": "review-stale-generation", "reviewer_agent_id": "worker"}],
+        request_id="request-stale-generation",
+    )
+
+    assert submitted["success"] is False
+    assert submitted["errors"][0]["code"] == "git_submission_context_stale"
+    assert "stale-generation-deliverable" not in state.deliverables
+    assert "review-stale-generation" not in state.review_requests
+
+
 def test_submit_deliverable_for_review_rejects_agent_sha_that_is_not_branch_tip(
     tmp_path: Path,
 ) -> None:
@@ -7602,6 +7846,41 @@ def test_task_git_base_lock_is_stable_through_command_surface(tmp_path: Path) ->
     assert result["success"] is False
     assert result["errors"][0]["code"] == "git_base_locked"
     assert state.tasks["task"].git_base_branch == "main"
+
+
+def test_update_task_command_invalidates_prepared_generation(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _seed_task(repo, task_id="task")
+    _seed_git_work_context(
+        repo,
+        context_id="ctx-before-command-edit",
+        dispatch_id=None,
+    )
+    generation_before = repo.read().git_work_contexts[
+        "ctx-before-command-edit"
+    ].preparation_generation
+    _lease_agent_dispatch(repo, agent_id="backend", dispatch_id="dispatch-edit-task")
+
+    state, result = _command_service(repo).update_task_command(
+        session_id="session-backend",
+        task_id="task",
+        description="Updated implementation requirements.",
+        request_id="request-edit-invalidates-preparation",
+    )
+
+    assert result["success"] is True, result
+    assert state.git_work_contexts["ctx-before-command-edit"].state == (
+        GitWorkContextState.ABANDONED
+    )
+    assert result["invalidated_git_work_context_ids"] == [
+        "ctx-before-command-edit"
+    ]
+    assert result["preparation_generation_before"] == generation_before
+    assert result["preparation_generation_after"] != generation_before
+    [inbox_id] = result["created_preparation_invalidation_inbox_item_ids"]
+    assert state.inbox[inbox_id].payload["kind"] == "task_preparation_invalidated"
 
 
 def test_repository_create_tasks_command_rejects_cycles_atomically(

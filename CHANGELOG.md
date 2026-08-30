@@ -1,5 +1,16 @@
 # Changelog
 
+## 2026-08-30 - Team Preparation Generation Safety
+
+- Persisted a semantic preparation generation on Team Git work contexts and scoped prepared
+  branches and worktrees to it, preventing stale checkout metadata from crossing task edits.
+- Invalidated active Git preparation after relevant task edits, queued fresh preparation, and
+  exposed queued, leased, and review-dispatch status in Planning and Task board.
+- Rejected Git-backed policy-v2 integration submissions without the current server composition
+  manifest before persistence, and added idempotent recovery for retained malformed candidates.
+- Allowed safe cleanup of invalidated unresolved-task worktrees after active dispatches finish
+  while preserving submitted Git evidence and normal dirty-worktree safeguards.
+
 ## 2026-08-29 - Elastic Stack 9 Compatibility
 
 - Normalized both detailed and redacted Kibana status responses so the bounded Elastic Stack

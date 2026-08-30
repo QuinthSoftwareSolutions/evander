@@ -4125,6 +4125,22 @@ button.org-focus-team-tab strong {
   line-height: 1.4;
 }
 
+.planning-execution-status {
+  display: flex;
+  align-items: baseline;
+  gap: 0.45rem;
+  border-left: 3px solid var(--accent);
+  border-radius: 0.35rem;
+  padding: 0.45rem 0.6rem;
+  background: var(--panel);
+  color: var(--muted);
+  font-size: 0.76rem;
+}
+
+.planning-execution-status strong {
+  color: var(--ink);
+}
+
 .planning-task-lifecycle {
   display: grid;
   grid-template-columns: repeat(5, minmax(0, 1fr));

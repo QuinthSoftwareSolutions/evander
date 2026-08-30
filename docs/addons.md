@@ -632,6 +632,21 @@ and a durable high-priority re-preparation request is queued for its owner. The
 cancellation audit records both the affected integration boundaries and the
 invalidated context IDs.
 
+Both **Planning** and **Task board** expose the same revision-checked task editor.
+If an operator changes preparation-relevant task fields after a Git checkout was
+prepared, Team abandons the old context, queues a high-priority fresh preparation,
+and shows that re-preparation state beside the task. Branch and worktree names are
+scoped by the preparation generation, so a later dispatch cannot accidentally
+reuse stale container metadata. Priority-only edits do not invalidate preparation.
+
+Policy-v2 integration deliverables with Git dependencies must carry the immutable,
+server-generated dependency-composition manifest from their current Git work
+context. A malformed submission is rejected atomically before deliverable or
+review records are created. Global Team maintenance also reconciles older
+nonterminal malformed candidates: it preserves their Git evidence, retires their
+review handoffs, rejects the candidate, reopens the task, and queues replacement
+work exactly once.
+
 The `Teams` tab includes an org-chart hierarchy view for each team. It renders
 the manager, subordinate agents, nested reporting lines, and unreachable or
 malformed hierarchy references without changing persisted state. Agent nodes

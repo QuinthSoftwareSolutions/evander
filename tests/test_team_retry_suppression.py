@@ -26,6 +26,7 @@ from evander_team_addon.providers import (
 from evander_team_addon.services.domain.blockers import resolve_blocker
 from evander_team_addon.services.domain.preparation_failures import (
     TASK_PREPARATION_CONTRACT_VERSION,
+    task_git_work_context_generation,
     task_preparation_generation,
 )
 from evander_team_addon.services.domain.review import retry_blocked_review
@@ -190,6 +191,29 @@ def test_task_preparation_generation_ignores_scheduling_bookkeeping(
 
     assert repeated == []
     assert unchanged.blockers[blocker.id].state == TeamBlockerState.OPEN
+
+
+def test_git_work_context_generation_ignores_dispatch_lifecycle_but_not_spec_edits(
+    tmp_path,
+) -> None:
+    state = _seed_team(tmp_path).read()
+    state.projects["project"].git = ProjectGitConfig(
+        managed_repo_id="mr_0123456789abcdefabcd",
+        base_branch="main",
+    )
+    task = state.tasks["task"]
+    task.state = TeamTaskState.PENDING
+    task.git_base_branch = None
+    pending_generation = task_git_work_context_generation(state, task.id)
+
+    task.state = TeamTaskState.IN_PROGRESS
+    task.git_base_branch = "main"
+    active_generation = task_git_work_context_generation(state, task.id)
+    task.description = "A materially different implementation contract."
+    edited_generation = task_git_work_context_generation(state, task.id)
+
+    assert active_generation == pending_generation
+    assert edited_generation != active_generation
 
 
 def test_project_git_change_unlocks_task_preparation_generation(

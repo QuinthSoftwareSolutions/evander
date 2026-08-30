@@ -270,6 +270,7 @@ from .services.domain.preparation_failures import (
     record_inbox_preparation_failure,
     record_review_preparation_failure,
     record_task_preparation_failure,
+    task_git_work_context_generation,
 )
 from .services.domain.correction_git_source import (
     HumanReviewCorrectionGitSource,
@@ -312,6 +313,9 @@ from .services.human_correction_reconciliation_service import (
 from .services.candidate_correction_reconciliation_service import (
     CandidateCorrectionReconciliationService,
 )
+from .services.integration_manifest_reconciliation_service import (
+    IntegrationManifestReconciliationService,
+)
 from .services.release_gate_service import TeamReleaseGateService
 from .services.release_verification_effects import EffectReleaseVerificationExecutor
 from .services.release_verification_runner import (
@@ -341,7 +345,7 @@ from .services.worktree_cleanup_service import (
 
 logger = logging.getLogger(__name__)
 
-TEAM_AGENT_GUIDANCE_VERSION = 38
+TEAM_AGENT_GUIDANCE_VERSION = 39
 TEAM_AGENT_GUIDANCE_PATH = "/home/agent/AGENTS.md"
 TEAM_AGENT_GUIDANCE_SECTION_ID = "evander-team-addon"
 LEGACY_TEAM_AGENT_GUIDANCE_SECTION_IDS = ("truman-team-addon",)
@@ -2469,6 +2473,24 @@ class TeamWakeDueAgentsEffectProvider(EffectProviderBase):
                 # The durable reconciliation blocker and the next Team cycle
                 # preserve recovery without suppressing unrelated wakes.
                 candidate_correction_reconciliation_error = str(exc) or exc.__class__.__name__
+        integration_manifest_reconciliation: dict[str, Any] = {}
+        integration_manifest_reconciliation_error: str | None = None
+        if run_global_maintenance:
+            try:
+                integration_manifest_reconciliation = (
+                    IntegrationManifestReconciliationService(repo).reconcile()
+                )
+                if integration_manifest_reconciliation.get("events"):
+                    integration_manifest_reconciliation["published_event_ids"] = (
+                        _publish_team_events(
+                            context,
+                            integration_manifest_reconciliation["events"],
+                        )
+                    )
+            except Exception as exc:
+                integration_manifest_reconciliation_error = (
+                    str(exc) or exc.__class__.__name__
+                )
         human_correction_reconciliation: dict[str, Any] = {}
         human_correction_reconciliation_error: str | None = None
         if run_global_maintenance:
@@ -3045,6 +3067,12 @@ class TeamWakeDueAgentsEffectProvider(EffectProviderBase):
             "candidate_correction_reconciliation": (candidate_correction_reconciliation),
             "candidate_correction_reconciliation_error": (
                 candidate_correction_reconciliation_error
+            ),
+            "integration_manifest_reconciliation": (
+                integration_manifest_reconciliation
+            ),
+            "integration_manifest_reconciliation_error": (
+                integration_manifest_reconciliation_error
             ),
             "errors": errors,
         }
@@ -7471,7 +7499,11 @@ def _team_agent_guidance_content(*, agent: Mapping[str, Any]) -> str:
         "boundary, regardless of its title or hierarchy depth. Its "
         "deliverable_contract may require authoritative pinned Git provenance and "
         "names the direct-child or dependency task IDs whose accepted deliverables "
-        "must appear in source_deliverable_ids.\n\n"
+        "must appear in source_deliverable_ids. If an inbox item reports "
+        "task_preparation_invalidated or "
+        "dependency_composition_manifest_recovery_required, stop using the older "
+        "Git context, wait for the fresh prepared generation, and submit the "
+        "requested replacement from that context.\n\n"
         "Parent and child lifecycle:\n"
         "- A parent owner creates constituent children for delegated work. If the "
         "parent owner also has substantive implementation work, model that work as "
@@ -8467,7 +8499,11 @@ def _project_repos_prompt_guidance(
         "Git work contexts are listed once in "
         "Team context JSON.project_repos[].git_work_contexts. For the current "
         "task, enter its exact worktree and use its matching branch and "
-        "branch_context_id. Control checkouts are read-only.\n\n"
+        "branch_context_id. Control checkouts are read-only. If an inbox item "
+        "reports task_preparation_invalidated or "
+        "dependency_composition_manifest_recovery_required, do not submit from "
+        "the older context; use the newly prepared generation and submit a "
+        "replacement when requested.\n\n"
     )
 
 
@@ -9239,9 +9275,11 @@ def _create_project_repo_git_work_contexts(
                 pinned_base_tree = accepted_recovery.base_tree_hash
                 dependency_composition_mode = "adopt_resolved"
                 dependency_composition_recovery_id = accepted_recovery.id
+        preparation_generation = task_git_work_context_generation(state, task_id)
         agent_branch = _project_repo_agent_branch(
             session_id,
             task_id=task_id,
+            preparation_generation=preparation_generation,
             candidate_commit_sha=(
                 continuation_identity_commit
                 if continuation_identity_commit is not None
@@ -9259,6 +9297,7 @@ def _create_project_repo_git_work_contexts(
                     agent_branch=agent_branch,
                     base_branch=effective_base_branch,
                     dependency_git_sources=dependency_git_sources,
+                    preparation_generation=preparation_generation,
                     require_dependency_provenance_match=bool(continuation_sources),
                 )
                 # The rejected-candidate pin remains the immutable composition
@@ -9290,6 +9329,7 @@ def _create_project_repo_git_work_contexts(
                     agent_branch=agent_branch,
                     base_ref=worktree_base_ref or "HEAD",
                     worktree_identity_commit=(continuation_identity_commit),
+                    preparation_generation=preparation_generation,
                     prior_base_commit=prior_base_commit,
                     pinned_base_commit=pinned_base_commit,
                     pinned_base_tree=pinned_base_tree,
@@ -9468,6 +9508,10 @@ def _create_project_repo_git_work_contexts(
                         dependency_composition_recovery_id=(dependency_composition_recovery_id),
                         manual_dependency_git_sources=manual_dependency_git_sources,
                         dependency_composition_manifest=(dependency_composition_manifest),
+                        preparation_generation=task_git_work_context_generation(
+                            state,
+                            task_id,
+                        ),
                     )
                     break
                 try:
@@ -9585,6 +9629,7 @@ def _validate_project_repo_git_work_context(
     dependency_composition_recovery_id: str | None = None,
     manual_dependency_git_sources: Sequence[Mapping[str, str]] = (),
     dependency_composition_manifest: Mapping[str, Any] | None = None,
+    preparation_generation: str | None = None,
 ) -> None:
     def _normalized_comparison_value(value: Any) -> Any:
         if hasattr(value, "model_dump"):
@@ -9615,6 +9660,7 @@ def _validate_project_repo_git_work_context(
             if dependency_composition_manifest is not None
             else None
         ),
+        "preparation_generation": preparation_generation,
     }
     mismatches = [
         field_name
@@ -9647,6 +9693,7 @@ def _project_repo_agent_branch(
     *,
     task_id: str,
     candidate_commit_sha: str | None = None,
+    preparation_generation: str | None = None,
 ) -> str:
     task_slug = _slug_id_part(task_id, fallback="task")[:40]
     task_hash = hashlib.sha256(task_id.encode("utf-8")).hexdigest()[:8]
@@ -9656,8 +9703,15 @@ def _project_repo_agent_branch(
         if not re.fullmatch(r"(?:[0-9a-f]{40}|[0-9a-f]{64})", normalized_candidate):
             raise ValueError("candidate correction task requires a full Git object ID")
         candidate_suffix = f"-{normalized_candidate[:12]}"
+    generation_suffix = ""
+    if preparation_generation is not None:
+        normalized_generation = preparation_generation.strip().casefold()
+        if re.fullmatch(r"[0-9a-f]{20}", normalized_generation) is None:
+            raise ValueError("preparation_generation must be a 20-character hex fingerprint")
+        generation_suffix = f"-prep-{normalized_generation[:12]}"
     return validate_branch_name(
-        f"agents/{session_id}/tasks/{task_slug}-{task_hash}{candidate_suffix}"
+        f"agents/{session_id}/tasks/{task_slug}-{task_hash}"
+        f"{candidate_suffix}{generation_suffix}"
     )
 
 
@@ -10346,6 +10400,7 @@ def _prior_project_repo_task_base_commit(
     agent_branch: str,
     base_branch: str | None = None,
     dependency_git_sources: Sequence[Mapping[str, str]] = (),
+    preparation_generation: str | None = None,
     require_dependency_provenance_match: bool = False,
 ) -> str | None:
     contexts = getattr(state, "git_work_contexts", {})
@@ -10356,6 +10411,13 @@ def _prior_project_repo_task_base_commit(
         for context_model in contexts.values()
         if _optional_text(getattr(context_model, "task_id", None)) == task_id
         and _optional_text(getattr(context_model, "base_branch", None)) == base_branch
+        and (
+            preparation_generation is None
+            or _optional_text(
+                getattr(context_model, "preparation_generation", None)
+            )
+            == preparation_generation
+        )
         and (
             not require_dependency_provenance_match
             or (
@@ -10411,6 +10473,7 @@ def _prepare_project_repo_task_worktree(
     agent_branch: str,
     base_ref: str,
     worktree_identity_commit: str | None = None,
+    preparation_generation: str | None = None,
     prior_base_commit: str | None = None,
     pinned_base_commit: str | None = None,
     pinned_base_tree: str | None = None,
@@ -10427,7 +10490,13 @@ def _prepare_project_repo_task_worktree(
     task_hash = hashlib.sha256(task_id.encode("utf-8")).hexdigest()[:8]
     identity_commit = worktree_identity_commit or pinned_base_commit
     candidate_suffix = f"-{identity_commit.casefold()[:12]}" if identity_commit is not None else ""
-    worktree_name = f"{task_slug}-{task_hash}{candidate_suffix}"
+    generation_suffix = ""
+    if preparation_generation is not None:
+        normalized_generation = preparation_generation.strip().casefold()
+        if re.fullmatch(r"[0-9a-f]{20}", normalized_generation) is None:
+            raise ValueError("preparation_generation must be a 20-character hex fingerprint")
+        generation_suffix = f"-prep-{normalized_generation[:12]}"
+    worktree_name = f"{task_slug}-{task_hash}{candidate_suffix}{generation_suffix}"
     directory_path = str(getattr(context, "metadata", {}).get("directory_path") or "root")
     selected_backend, config = selected_execution_backend_for_target(
         context,
@@ -11246,6 +11315,7 @@ def _git_work_context_prompt_payload(context: Any) -> dict[str, Any]:
         "dispatch_id",
         "worktree_path",
         "state",
+        "preparation_generation",
     ):
         value = _optional_text(payload.get(key))
         if value is not None:

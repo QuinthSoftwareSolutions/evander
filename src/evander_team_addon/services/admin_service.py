@@ -228,6 +228,9 @@ from .domain.task_replacement import (
     plan_cancelled_task_dependency_repair,
     queue_rebound_integration_preparation_recovery,
 )
+from .domain.task_preparation_invalidation import (
+    invalidate_task_preparation_after_edit,
+)
 from .domain.wake import (
     _append_agent_wake_requested_event,
     _append_newly_ready_task_owner_wake_requested_events,
@@ -237,6 +240,7 @@ from .domain.work_due import _mark_agent_work_due
 from .domain.common import DEFAULT_AGENT_WAKE_REQUEST_DEBOUNCE_SECONDS
 from .domain.preparation_failures import (
     create_rejected_candidate_correction_preparation_recovery_inbox,
+    task_git_work_context_generation,
     task_preparation_generation,
 )
 from .domain.dependency_composition_recovery import (
@@ -2386,6 +2390,10 @@ class TeamAdminService:
                     f"Git work context base {effective_base_branch!r} does not match "
                     f"task {task.id} snapshot {task.git_base_branch!r}"
                 )
+            current_preparation_generation = task_git_work_context_generation(
+                state,
+                task.id,
+            )
             if task.git_base_commit_sha is not None:
                 if normalized_base_commit is None:
                     raise ValueError(
@@ -2418,6 +2426,7 @@ class TeamAdminService:
                     dependency_composition_manifest=(
                         normalized_dependency_composition_manifest
                     ),
+                    preparation_generation=current_preparation_generation,
                     base_branch=effective_base_branch,
                     base_commit=normalized_base_commit,
                     agent_branch=normalized_agent_branch,
@@ -2444,6 +2453,7 @@ class TeamAdminService:
                 dependency_composition_recovery_id=(normalized_dependency_composition_recovery_id),
                 manual_dependency_git_sources=(normalized_manual_dependency_git_sources),
                 dependency_composition_manifest=(normalized_dependency_composition_manifest),
+                preparation_generation=current_preparation_generation,
                 base_branch=effective_base_branch,
                 base_commit=normalized_base_commit,
                 agent_branch=normalized_agent_branch,
@@ -3993,6 +4003,10 @@ class TeamAdminService:
 
         def _mutate(state_model: TeamState) -> TeamState:
             task = _require_present(state_model.tasks, normalized_task_id, "task")
+            preparation_generation_before = task_git_work_context_generation(
+                state_model,
+                task.id,
+            )
             now = utc_now()
             previous_state = task.state
             crosses_blocked_boundary = (
@@ -4190,6 +4204,33 @@ class TeamAdminService:
                     git_base_branch=None,
                     git_default_branch_resolver=(self._resolve_managed_git_default_branch),
                 )
+            changed_preparation_fields = [
+                field_name
+                for field_name, requested in (
+                    ("state", state is not None),
+                    ("title", title is not None),
+                    ("description", description is not None),
+                    ("case_id", set_case_id or case_id is not None),
+                    ("parent_task_id", set_parent_task_id),
+                    ("git_base_branch", set_git_base_branch),
+                    ("dependency_task_ids", normalized_dependency_task_ids is not None),
+                    ("integration_boundary", integration_boundary is not None),
+                    (
+                        "deliverable_contract",
+                        set_deliverable_contract or deliverable_contract is not None,
+                    ),
+                )
+                if requested
+            ]
+            invalidate_task_preparation_after_edit(
+                state_model,
+                task_id=task.id,
+                preparation_generation_before=preparation_generation_before,
+                changed_fields=changed_preparation_fields,
+                sender_agent_id=None,
+                result=blocker_result,
+                now=now,
+            )
             task.updated_at = now
             if previous_state != TeamTaskState.BLOCKED and task.state == TeamTaskState.BLOCKED:
                 project = _require_present(state_model.projects, task.project_id, "project")

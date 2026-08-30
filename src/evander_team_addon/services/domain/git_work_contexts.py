@@ -15,6 +15,7 @@ from ...models import (
     WorktreeCleanupState,
 )
 from .common import _ensure_utc, _optional_mapping, _optional_text, utc_now
+from .preparation_failures import task_git_work_context_generation
 
 
 class GitWorkContextValidationError(ValueError):
@@ -46,6 +47,54 @@ _TERMINAL_TASK_STATES = frozenset(
         TeamTaskState.CANCELLED,
     }
 )
+
+
+def _require_current_preparation_generation(
+    state: TeamState,
+    *,
+    context: GitWorkContext,
+    task_id: str,
+) -> None:
+    task = state.tasks.get(task_id)
+    if task is None:
+        raise GitWorkContextValidationError(
+            code="branch_context_task_not_found",
+            message=f"Git work context {context.id} references missing task {task_id}",
+            correction_context={
+                "branch_context_id": context.id,
+                "task_id": task_id,
+            },
+        )
+    current_generation = task_git_work_context_generation(state, task_id)
+    legacy_context_requires_reprepare = bool(
+        context.preparation_generation is None
+        and task.integration_boundary
+        and (
+            task.dependency_task_ids
+            or (
+                task.deliverable_contract is not None
+                and task.deliverable_contract.required_contribution_task_ids
+            )
+        )
+    )
+    if legacy_context_requires_reprepare or (
+        context.preparation_generation is not None
+        and context.preparation_generation != current_generation
+    ):
+        raise GitWorkContextValidationError(
+            code="git_submission_context_stale",
+            message=(
+                f"Git work context {context.id} was prepared for an obsolete "
+                f"task specification; task {task_id} requires fresh preparation"
+            ),
+            correction_context={
+                "branch_context_id": context.id,
+                "task_id": task_id,
+                "prepared_generation": context.preparation_generation,
+                "current_generation": current_generation,
+                "required_action": "reprepare_from_current_task_specification",
+            },
+        )
 
 
 def require_authoritative_git_review_retry_candidate(
@@ -548,6 +597,11 @@ def bind_deliverable_git_refs_to_work_context(
                 },
             )
         inferred_context = active_contexts[0]
+        _require_current_preparation_generation(
+            state,
+            context=inferred_context,
+            task_id=task_id,
+        )
         authoritative_commit_sha = _resolve_git_context_branch_commit(
             state,
             context=inferred_context,
@@ -613,6 +667,11 @@ def bind_deliverable_git_refs_to_work_context(
                 "agent_id": agent_id,
             },
         )
+    _require_current_preparation_generation(
+        state,
+        context=context,
+        task_id=task_id,
+    )
     if context.state != GitWorkContextState.ACTIVE:
         raise GitWorkContextValidationError(
             code="branch_context_not_active",
@@ -649,15 +708,7 @@ def bind_deliverable_git_refs_to_work_context(
             },
         )
     task = state.tasks.get(task_id)
-    if task is None:
-        raise GitWorkContextValidationError(
-            code="branch_context_task_not_found",
-            message=f"Git work context {branch_context_id} references missing task {task_id}",
-            correction_context={
-                "branch_context_id": branch_context_id,
-                "task_id": task_id,
-            },
-        )
+    assert task is not None
     if task.state in _TERMINAL_TASK_STATES:
         raise GitWorkContextValidationError(
             code="branch_context_task_terminal",

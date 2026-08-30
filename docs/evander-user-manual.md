@@ -4731,6 +4731,13 @@ unresolved descendants, active acceptance, or active review that must be
 settled first. The generic task editor cannot move work directly into
 <code>accepted</code> or <code>cancelled</code>.
 
+**Planning** and **Task board** use the same revision-checked task editor. When a
+title, description, owner, dependency frontier, deliverable contract, or another
+preparation input changes after Git preparation, Team abandons that context and
+queues a fresh generation. The task status distinguishes queued re-preparation,
+an active agent lease, and a review awaiting dispatch. A priority-only edit does
+not invalidate the checkout.
+
 Background state and cost refreshes preserve open **Planning** project, task,
 hierarchy, full-brief, worktree, and technical-detail disclosures, so a live
 update does not collapse the operator's place in a long task. Disclosure state
@@ -6475,6 +6482,13 @@ These rules apply prospectively. Historical accepted deliverables remain readabl
 legacy branch/context validation. A new formal review records policy version 2 and must satisfy
 the immutable-ref and composition gates that apply to its Git task; direct acceptance uses the
 submission-time retained ref without acquiring formal-review criteria.
+
+A policy-v2 integration submission with Git-backed sources must carry the server-generated
+composition manifest from its current preparation generation. Team rejects a missing or stale
+manifest before creating either the deliverable or its reviews. Global maintenance repairs an
+older nonterminal malformed record exactly once by preserving its Git evidence, retiring its
+review handoffs, rejecting the candidate, reopening the task, and queueing a freshly prepared
+replacement. Accepted historical evidence is not rewritten.
 
 ## Submitting, superior acceptance, and formal review
 

@@ -255,6 +255,42 @@ def task_preparation_generation(state: TeamState, task_id: str) -> str:
     return hashlib.sha256(serialized.encode("utf-8")).hexdigest()[:20]
 
 
+def task_git_work_context_generation(state: TeamState, task_id: str) -> str:
+    """Fingerprint Git preparation inputs without transient execution-state churn."""
+
+    task = state.tasks.get(task_id)
+    if task is None:
+        return "missing"
+    project = state.projects.get(task.project_id)
+    effective_git_base_branch = task.git_base_branch
+    if (
+        effective_git_base_branch is None
+        and project is not None
+        and project.git is not None
+    ):
+        effective_git_base_branch = project.git.base_branch
+    normalized_states = {
+        TeamTaskState.PENDING,
+        TeamTaskState.IN_PROGRESS,
+        TeamTaskState.BLOCKED,
+        TeamTaskState.WAITING_FOR_INPUT,
+    }
+    task_updates: dict[str, object] = {
+        "git_base_branch": effective_git_base_branch,
+    }
+    if task.state in normalized_states:
+        task_updates["state"] = TeamTaskState.IN_PROGRESS
+    normalized_task = task.model_copy(
+        update=task_updates,
+        deep=True,
+    )
+    normalized_state = state.model_copy(
+        update={"tasks": {**state.tasks, task_id: normalized_task}},
+        deep=False,
+    )
+    return task_preparation_generation(normalized_state, task_id)
+
+
 def _human_correction_generation_payload(
     state: TeamState,
     *,
@@ -799,5 +835,6 @@ __all__ = [
     "task_has_current_preparation_blocker",
     "task_preparation_blocker_is_current",
     "task_preparation_generation",
+    "task_git_work_context_generation",
     "task_preparation_source_id",
 ]

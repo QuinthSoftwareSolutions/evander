@@ -90,6 +90,111 @@ _DELIVERABLE_GIT_REF_INPUT_FIELDS = frozenset(
 )
 
 
+def _require_current_dependency_composition_manifest(
+    state: TeamState,
+    *,
+    task: AgentTask,
+    deliverable_id: str,
+    source_deliverable_ids: Sequence[str],
+    dependency_composition_manifest: object,
+) -> None:
+    """Reject malformed policy-v2 integration candidates before persistence."""
+
+    if not task.integration_boundary:
+        return
+
+    def _has_git_provenance(candidate: Deliverable) -> bool:
+        refs = candidate.git_refs
+        return any(
+            (
+                refs.branch_context_id,
+                refs.agent_branch,
+                refs.commit_sha,
+                refs.submitted_commit_sha,
+                refs.reviewed_commit_sha,
+                refs.accepted_pinned_ref,
+            )
+        )
+
+    submitted_git_source_ids = sorted(
+        source_id
+        for source_id in source_deliverable_ids
+        if (
+            (source := state.deliverables.get(source_id)) is not None
+            and _has_git_provenance(source)
+        )
+    )
+    dependency_git_source_ids = sorted(
+        candidate.id
+        for candidate in state.deliverables.values()
+        if candidate.task_id in task.dependency_task_ids
+        and candidate.state == TeamRecordState.ACCEPTED
+        and candidate.superseded_by_deliverable_id is None
+        and _has_git_provenance(candidate)
+    )
+    if not submitted_git_source_ids and not dependency_git_source_ids:
+        return
+    if dependency_composition_manifest is None:
+        raise TeamCommandValidationError(
+            code="dependency_composition_manifest_required",
+            message=(
+                f"deliverable {deliverable_id} requires a server-generated "
+                "dependency composition manifest; prepare the task again"
+            ),
+            correction_context={
+                "deliverable_id": deliverable_id,
+                "task_id": task.id,
+                "required_action": "reprepare_from_current_task_specification",
+            },
+        )
+    required_contribution_task_ids = set(
+        task.deliverable_contract.required_contribution_task_ids
+        if task.deliverable_contract is not None
+        else []
+    )
+    required_contribution_git_source_ids = sorted(
+        source_id
+        for source_id in submitted_git_source_ids
+        if state.deliverables[source_id].task_id in required_contribution_task_ids
+    )
+    manifest_sources = dependency_composition_manifest.dependency_git_sources
+    manifest_contribution_ids = sorted(
+        source.deliverable_id
+        for source in manifest_sources
+        if source.relationship_kind == "required_contribution"
+    )
+    manifest_dependency_ids = sorted(
+        source.deliverable_id
+        for source in manifest_sources
+        if source.relationship_kind == "task_dependency"
+    )
+    expected_dependency_ids = sorted(
+        set(dependency_git_source_ids) - set(required_contribution_git_source_ids)
+    )
+    if (
+        manifest_contribution_ids != required_contribution_git_source_ids
+        or manifest_dependency_ids != expected_dependency_ids
+    ):
+        raise TeamCommandValidationError(
+            code="dependency_composition_manifest_scope_mismatch",
+            message=(
+                f"deliverable {deliverable_id} does not match the currently "
+                "prepared dependency composition"
+            ),
+            correction_context={
+                "deliverable_id": deliverable_id,
+                "task_id": task.id,
+                "manifest_contribution_deliverable_ids": manifest_contribution_ids,
+                "required_contribution_deliverable_ids": (
+                    required_contribution_git_source_ids
+                ),
+                "manifest_dependency_deliverable_ids": manifest_dependency_ids,
+                "current_dependency_deliverable_ids": expected_dependency_ids,
+                "required_action": "reprepare_from_current_task_specification",
+            },
+        )
+
+
 def _normalize_deliverable_git_ref_mapping(
     value: object,
     *,
@@ -767,6 +872,14 @@ def _apply_command_deliverable_submission(
         and branch_context.dependency_composition_manifest is not None
         else None
     )
+    if suppress_superior_notice:
+        _require_current_dependency_composition_manifest(
+            state,
+            task=task,
+            deliverable_id=deliverable_id,
+            source_deliverable_ids=source_deliverable_ids,
+            dependency_composition_manifest=dependency_composition_manifest,
+        )
     new_deliverable = Deliverable(
         id=deliverable_id,
         task_id=task.id,
