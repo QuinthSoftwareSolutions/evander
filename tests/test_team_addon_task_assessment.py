@@ -70,6 +70,9 @@ from evander_team_addon.services.domain.git_promotion import (
 from evander_team_addon.services.domain.git_work_contexts import (
     bind_deliverable_git_refs_to_work_context,
 )
+from evander_team_addon.services.domain.preparation_failures import (
+    task_git_work_context_generation,
+)
 from evander_team_addon.services.domain.release_packages import (
     _build_release_package,
 )
@@ -1291,6 +1294,10 @@ def test_git_submission_verifies_and_records_composition_candidate_ancestry() ->
     manifest = context.dependency_composition_manifest
     assert manifest is not None
     manifest.verified_candidate_commit_sha = None
+    context.preparation_generation = task_git_work_context_generation(
+        state,
+        integration.id,
+    )
     resolver_calls: list[dict[str, object]] = []
 
     def _resolve(**kwargs: object) -> str:
