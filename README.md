@@ -33,6 +33,7 @@ package, Git, and HTTP relays.
 - Configuration templates and implementation notes for evolving the scaffold into a production setup
 - A consolidated configuration parameter reference at `docs/configuration-reference.md`
 - A connector implementation and operations reference at `docs/connectors.md`
+- An asynchronous personal Alexa-to-agent bridge at `docs/alexa-agent-bridge.md`
 - A Host Directory security and operations reference at `docs/host-directories.md`
 
 ## Core Security Model

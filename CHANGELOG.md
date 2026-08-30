@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-08-30 - Alexa Agent Bridge Example
+
+- Added a signed, deduplicated Alexa webhook workflow example that dispatches bounded personal
+  questions to one operator-pinned agent session.
+- Added a host-authenticated, write-only reply connector example plus setup, trust-boundary, and
+  end-to-end verification guidance for the external Alexa mailbox service.
+
 ## 2026-08-30 - Browser Proxy And Team Review Hardening
 
 - Bound browser proxy HTTP and TLS application authorities to the session-authorized target,
