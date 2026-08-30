@@ -82,6 +82,16 @@ def test_persistence_registry_covers_every_collection_and_table_once() -> None:
     assert set(tables) == set(_STATE_TABLES)
 
 
+def test_store_connection_context_closes_connection(tmp_path: Path) -> None:
+    repository = TeamStateRepository(tmp_path)
+
+    with repository.store._connect() as connection:
+        assert connection.execute("SELECT 1").fetchone()[0] == 1
+
+    with pytest.raises(sqlite3.ProgrammingError, match="closed database"):
+        connection.execute("SELECT 1")
+
+
 def test_review_criterion_evidence_column_migrates_from_legacy_table(
     tmp_path: Path,
 ) -> None:
