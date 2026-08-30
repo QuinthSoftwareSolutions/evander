@@ -52,6 +52,8 @@ class EffectiveVmDefaultsConfig(BaseModel):
     gateway_url: str = "http://192.168.250.1:8000/mcp"
     http_target_relay_host: str = "0.0.0.0"
     http_target_relay_port: int = 11777
+    http_target_browser_proxy_host: str = "0.0.0.0"
+    http_target_browser_proxy_port: int = 11778
     nuget_relay_host: str = "0.0.0.0"
     nuget_relay_port: int = 11666
     npm_audit_facade_host: str = "0.0.0.0"
@@ -89,10 +91,16 @@ class EffectiveVmDefaultsConfig(BaseModel):
             self.gateway_url, port=self.http_target_relay_port, path=""
         )
 
+    def guest_http_target_browser_proxy_url(self) -> str:
+        return _service_url_from_gateway_url(
+            self.gateway_url, port=self.http_target_browser_proxy_port, path=""
+        )
+
     def guest_environment(self) -> dict[str, str]:
         return {
             "GATEWAY_URL": self.gateway_url,
             "HTTP_TARGET_RELAY_BASE_URL": self.guest_http_target_relay_base_url(),
+            "HTTP_TARGET_BROWSER_PROXY_URL": self.guest_http_target_browser_proxy_url(),
             "LLM_BASE_URL": self.guest_openai_base_url(),
             "NUGET_RELAY_BASE_URL": self.guest_nuget_relay_base_url(),
         }
@@ -137,6 +145,12 @@ class VmDefaultsConfigResolver:
         payload.setdefault("openai_relay_port", self.config.openai_relay_port)
         payload.setdefault("http_target_relay_host", self.config.http_target_relay_host)
         payload.setdefault("http_target_relay_port", self.config.http_target_relay_port)
+        payload.setdefault(
+            "http_target_browser_proxy_host", self.config.http_target_browser_proxy_host
+        )
+        payload.setdefault(
+            "http_target_browser_proxy_port", self.config.http_target_browser_proxy_port
+        )
         payload.setdefault("nuget_relay_host", self.config.nuget_relay_host)
         payload.setdefault("nuget_relay_port", self.config.nuget_relay_port)
         payload.setdefault("npm_audit_facade_host", self.config.npm_audit_facade_host)

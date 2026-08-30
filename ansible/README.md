@@ -107,6 +107,7 @@ Service toggles:
 - `evander_services.apt_cache`
 - `evander_services.semantic_store`
 - `evander_services.http_target_relay`
+- `evander_services.http_target_browser_proxy`
 - `evander_services.ado_worker`
 - `evander_services.proxy_issue_sync`
 - `evander_services.discord_ingest`
@@ -591,6 +592,7 @@ container_worker_guest_openai_base_url: "http://<control-plane-private-ip>:11434
 container_worker_guest_anthropic_base_url: "http://<control-plane-private-ip>:11434/v1"
 container_worker_guest_gateway_url: "http://<control-plane-private-ip>:8000/mcp"
 container_worker_guest_http_target_relay_base_url: "http://<control-plane-private-ip>:11777"
+container_worker_guest_http_target_browser_proxy_url: "http://<control-plane-private-ip>:11778"
 container_worker_guest_nuget_relay_base_url: "http://<control-plane-private-ip>:11666"
 container_worker_guest_pypi_index_url: "http://<control-plane-private-ip>:8081/repository/pypi-all/simple"
 container_worker_guest_npm_registry_url: "http://<control-plane-private-ip>:8081/repository/npm-all/"

@@ -14,6 +14,7 @@ ELASTIC_STACK_PROVIDER_STATE_KEY = "elastic_stack"
 ELASTIC_STACK_SESSION_METADATA_KEY = "elastic_stack"
 
 _IDENTIFIER = re.compile(r"^[a-z0-9][a-z0-9._-]{0,127}$")
+_WRITE_INDEX_PATTERN = re.compile(r"^[a-z0-9][a-z0-9.*_-]{0,254}$")
 
 
 def normalize_identifier(value: object, *, field_name: str) -> str:
@@ -147,7 +148,27 @@ class ElasticStackEndpoint(BaseModel):
 class ElasticStackTarget(BaseModel):
     kibana: ElasticStackEndpoint | None = None
     elasticsearch: ElasticStackEndpoint | None = None
+    write_index_patterns: list[str] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("write_index_patterns", mode="before")
+    @classmethod
+    def validate_write_index_patterns(cls, value: object) -> list[str]:
+        if value is None:
+            return []
+        if isinstance(value, str):
+            value = [value]
+        if not isinstance(value, (list, tuple)):
+            raise ValueError("write_index_patterns must be a list")
+        result: list[str] = []
+        for item in value:
+            pattern = str(item or "").strip()
+            if pattern == "*" or not _WRITE_INDEX_PATTERN.fullmatch(pattern):
+                raise ValueError(
+                    "write_index_patterns entries must be restricted lowercase index patterns"
+                )
+            result.append(pattern)
+        return list(dict.fromkeys(result))
 
     @model_validator(mode="after")
     def require_endpoint(self) -> "ElasticStackTarget":
@@ -162,6 +183,7 @@ class ElasticStackTarget(BaseModel):
             "elasticsearch_configured": self.elasticsearch is not None,
             "kibana_base_url": self.kibana.base_url if self.kibana else None,
             "elasticsearch_base_url": (self.elasticsearch.base_url if self.elasticsearch else None),
+            "write_index_patterns": list(self.write_index_patterns),
             "metadata": dict(self.metadata),
         }
 
@@ -173,6 +195,8 @@ class ElasticStackSettings(BaseModel):
     max_response_bytes: int = Field(default=2 * 1024 * 1024, ge=1024, le=20 * 1024 * 1024)
     max_import_bytes: int = Field(default=10 * 1024 * 1024, ge=1024, le=50 * 1024 * 1024)
     max_import_objects: int = Field(default=1000, ge=1, le=10_000)
+    max_bulk_bytes: int = Field(default=5 * 1024 * 1024, ge=1024, le=20 * 1024 * 1024)
+    max_bulk_documents: int = Field(default=1000, ge=1, le=10_000)
 
     @field_validator("auth_profiles", mode="before")
     @classmethod
@@ -262,6 +286,14 @@ class ElasticsearchIndicesQueryDefinition(_TargetedDefinition):
 class ElasticsearchMappingsQueryDefinition(_TargetedDefinition):
     type: Literal["query:elasticsearch:mappings"]
     index_pattern: ConfigValue
+
+
+class ElasticsearchBulkIndexEffectDefinition(_TargetedDefinition):
+    type: Literal["effect:elasticsearch:bulk-index-documents"]
+    index_name: ConfigValue
+    documents: ConfigValue
+    id_field: ConfigValue | None = None
+    refresh: ConfigValue = "wait_for"
 
 
 class KibanaStatusQueryDefinition(_TargetedDefinition):

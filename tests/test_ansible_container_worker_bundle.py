@@ -692,6 +692,7 @@ def test_worker_docs_and_inventory_reference_playbook() -> None:
     assert "evander_worker_token" in ansible_docs
     assert "container_worker_base_url" in ansible_docs
     assert "container_worker_guest_http_target_relay_base_url" in ansible_docs
+    assert "container_worker_guest_http_target_browser_proxy_url" in ansible_docs
     assert "container_worker_guest_pypi_index_url" in ansible_docs
     assert "container_worker_guest_npm_registry_url" in ansible_docs
     assert "evander_npm_audit_facade_port" in ansible_docs

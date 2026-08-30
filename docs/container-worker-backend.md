@@ -27,6 +27,7 @@ container_worker_guest_openai_base_url: "http://<control-plane-private-ip>:11434
 container_worker_guest_anthropic_base_url: "http://<control-plane-private-ip>:11434/v1"
 container_worker_guest_gateway_url: "http://<control-plane-private-ip>:8000/mcp"
 container_worker_guest_http_target_relay_base_url: "http://<control-plane-private-ip>:11777"
+container_worker_guest_http_target_browser_proxy_url: "http://<control-plane-private-ip>:11778"
 container_worker_guest_nuget_relay_base_url: "http://<control-plane-private-ip>:11666"
 container_worker_guest_pypi_index_url: "http://<control-plane-private-ip>:8081/repository/pypi-all/simple"
 container_worker_guest_npm_registry_url: "http://<control-plane-private-ip>:8081/repository/npm-all/"
@@ -318,6 +319,7 @@ The default allowlist is intentionally small and private:
 - control-plane OpenAI relay on `11434`
 - control-plane NuGet relay on `11666`
 - control-plane HTTP target relay on `11777`
+- control-plane HTTP target browser proxy on `11778`
 - control-plane npm audit facade on `11881` when npm audit support is enabled
 - control-plane Nexus package cache on `8081`
 - control-plane apt-cacher-ng on `3142`
@@ -694,9 +696,9 @@ const { launchSeededChromium } = await import(
 const browser = await launchSeededChromium(chromium, { headless: true });
 ```
 
-The helper accepts the repository's own `chromium` export and adds the seeded executable path to
-its launch options. The equivalent direct form is
-`chromium.launch({ executablePath: process.env.PLAYWRIGHT_MCP_EXECUTABLE_PATH })`. Do not hard-code
+The helper accepts the repository's own `chromium` export, adds the seeded executable path, and
+automatically applies the authenticated session browser proxy when configured. Do not replace its
+proxy option or hard-code
 a `chromium-<revision>` cache directory: package revisions can differ while the worker intentionally
 remains offline.
 

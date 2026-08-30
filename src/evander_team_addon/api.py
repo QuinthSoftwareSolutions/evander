@@ -302,9 +302,11 @@ TEAM_VIEW_COLLECTIONS: dict[str, set[str]] = {
         "teams",
         "projects",
         "agents",
+        "agent_runtimes",
         "tasks",
         "cases",
         "external_source_evidence_snapshots",
+        "inbox",
         "blockers",
         "blocker_events",
         "dependency_composition_recoveries",
@@ -350,11 +352,13 @@ TEAM_VIEW_COLLECTIONS: dict[str, set[str]] = {
         "teams",
         "projects",
         "agents",
+        "agent_runtimes",
         "tasks",
         "external_source_evidence_snapshots",
         "deliverables",
         "review_requests",
         "review_profiles",
+        "inbox",
         "blockers",
         "blocker_events",
         "dependency_composition_recoveries",
@@ -5488,6 +5492,29 @@ def _inbox_history_sort_key(item: Any) -> tuple[float, str]:
     return (timestamp.timestamp(), item.id)
 
 
+def _latest_task_preparation_invalidation_ids(state: TeamState) -> set[str]:
+    latest_by_task_id: dict[str, Any] = {}
+    for item in state.inbox.values():
+        task_id = str(item.task_id or "").strip()
+        if (
+            not task_id
+            or task_id not in state.tasks
+            or item.payload.get("kind") != "task_preparation_invalidated"
+        ):
+            continue
+        current = latest_by_task_id.get(task_id)
+        if current is None:
+            latest_by_task_id[task_id] = item
+            continue
+        item_timestamp = _inbox_history_sort_key(item)[0]
+        current_timestamp = _inbox_history_sort_key(current)[0]
+        if item_timestamp > current_timestamp or (
+            item_timestamp == current_timestamp and item.id < current.id
+        ):
+            latest_by_task_id[task_id] = item
+    return {item.id for item in latest_by_task_id.values()}
+
+
 def _view_ids_by_collection(state: TeamState, view: str) -> dict[str, set[str]]:
     ids_by_collection: dict[str, set[str]] = {}
     if view in {"people", "org", "operations", "workspace"}:
@@ -5496,6 +5523,8 @@ def _view_ids_by_collection(state: TeamState, view: str) -> dict[str, set[str]]:
             for item_id, item in state.inbox.items()
             if item.state != TeamInboxItemState.HANDLED
         }
+    if view in {"planning", "task-board"}:
+        ids_by_collection["inbox"] = _latest_task_preparation_invalidation_ids(state)
     if view in {"operations", "workspace"}:
         ids_by_collection["action_records"] = {
             record.id for record in current_failed_action_records(state)

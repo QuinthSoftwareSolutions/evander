@@ -4731,6 +4731,13 @@ unresolved descendants, active acceptance, or active review that must be
 settled first. The generic task editor cannot move work directly into
 <code>accepted</code> or <code>cancelled</code>.
 
+**Planning** and **Task board** use the same revision-checked task editor. When a
+title, description, owner, dependency frontier, deliverable contract, or another
+preparation input changes after Git preparation, Team abandons that context and
+queues a fresh generation. The task status distinguishes queued re-preparation,
+an active agent lease, and a review awaiting dispatch. A priority-only edit does
+not invalidate the checkout.
+
 Background state and cost refreshes preserve open **Planning** project, task,
 hierarchy, full-brief, worktree, and technical-detail disclosures, so a live
 update does not collapse the operator's place in a long task. Disclosure state
@@ -6475,6 +6482,13 @@ These rules apply prospectively. Historical accepted deliverables remain readabl
 legacy branch/context validation. A new formal review records policy version 2 and must satisfy
 the immutable-ref and composition gates that apply to its Git task; direct acceptance uses the
 submission-time retained ref without acquiring formal-review criteria.
+
+A policy-v2 integration submission with Git-backed sources must carry the server-generated
+composition manifest from its current preparation generation. Team rejects a missing or stale
+manifest before creating either the deliverable or its reviews. Global maintenance repairs an
+older nonterminal malformed record exactly once by preserving its Git evidence, retiring its
+review handoffs, rejecting the candidate, reopening the task, and queueing a freshly prepared
+replacement. Accepted historical evidence is not rewritten.
 
 ## Submitting, superior acceptance, and formal review
 
@@ -8623,6 +8637,7 @@ The trigger worker illustrates why the distinction matters: its persistent unit 
 | `evander-nuget-relay.service` | `evander-nuget-relay` | Allowlisted NuGet feeds and cache | .NET workloads need packages |
 | `evander-npm-audit-facade.service` | `evander-npm-audit-facade` | Narrow npm audit/package-cache surface | Front-end workloads need it |
 | `evander-http-target-relay.service` | `evander-http-target-relay` | Session-scoped, allowlisted external HTTP targets | A workflow grants an HTTP target |
+| `evander-http-target-browser-proxy.service` | `evander-http-target-browser-proxy` | Authenticated browser access to session HTTP target origins | Seeded browser automation is used |
 | `evander-didww-sip-bridge.service` | `evander-didww-sip-bridge` | DIDWW/ARI telephony and realtime voice bridge | Telephony is configured |
 | `evander-ado-worker.service` | `evander-ado-worker` | Azure DevOps PR-feedback and completion polling | ADO PR automation is configured; work-item intake is workflow-owned |
 | `evander-proxy-issue-sync.service` | `evander-proxy-issue-sync` | Refreshes proxy issue status | Proxy issue providers are configured |
@@ -8640,7 +8655,7 @@ The container worker is intentionally absent from this list. `evander-worker-dae
 
 ## 28.3 Default guest-reachable ports
 
-The firewall's checked-in default is `ALLOWED_TCP_PORTS="22 8000 11434 11666 11777 11881 8081 3142"`. Allowing a port makes a narrow host surface reachable; it does not grant arbitrary host access.
+The firewall's checked-in default is `ALLOWED_TCP_PORTS="22 8000 11434 11666 11777 11778 11881 8081 3142"`. Allowing a port makes a narrow host surface reachable; it does not grant arbitrary host access.
 
 | Port | Surface | Typical guest use | Important qualification |
 |---:|---|---|---|
@@ -8649,6 +8664,7 @@ The firewall's checked-in default is `ALLOWED_TCP_PORTS="22 8000 11434 11666 117
 | 11434 | Model relay | OpenAI-compatible `/v1` and configured Anthropic surface | The host keeps upstream credentials |
 | 11666 | NuGet relay | Restore from configured NuGet feeds | It is not a general HTTP proxy; health is `/healthz` |
 | 11777 | HTTP target relay | Reach a session allowlist of external targets | Guest-supplied auth can pass through; host secrets are not injected |
+| 11778 | HTTP target browser proxy | Browse configured session target origins without rewriting them | Session id and proof token authenticate the proxy |
 | 11881 | npm audit facade | Narrow npm audit/cache operations | It is not general npm internet access |
 | 8081 | Nexus cache | PyPI/npm package cache when enabled | Optional host package-cache service |
 | 3142 | apt-cacher-ng | Worker provisioning package cache | Optional and primarily for provisioning |

@@ -927,11 +927,15 @@ and record the backup SHA-256 in the resulting artifact bundle.
 ## Host-Side LLM Access
 
 - The firewall allows only the host TCP ports listed in `ALLOWED_TCP_PORTS`.
-- Defaults: `22` for host SSH/Git, `8000` for the MCP gateway, `11434` for the host-side OpenAI relay or a local OpenAI-compatible LLM endpoint such as Ollama, `11666` for the host-side NuGet relay, `11777` for the host-side HTTP target relay used to reach approved external web endpoints such as APP demo environments, `11881` for the host-side npm audit facade, `8081` for the host-side Nexus package cache used by worker PyPI/npm restores, and `3142` for the host-side apt-cacher-ng relay used by worker apt provisioning. The optional Qdrant semantic store binds to `127.0.0.1:6333` by default and is intentionally host-local in this slice.
+- Defaults: `22` for host SSH/Git, `8000` for MCP, `11434` for the OpenAI relay, `11666` for the
+  NuGet relay, `11777` for the host-side HTTP target relay, `11778` for the authenticated
+  HTTP target browser proxy, `11881` for npm audit, `8081` for the host-side Nexus package cache,
+  and `3142` for the host-side apt-cacher-ng relay. The browser proxy preserves the upstream origin rather than
+  rewriting application HTML.
 - Override when applying firewall rules, for example:
 
   ```bash
-  sudo ALLOWED_TCP_PORTS="22 8000 11434 11666 11777 11881 8081 3142 4000" ./scripts/apply_firewall.sh
+  sudo ALLOWED_TCP_PORTS="22 8000 11434 11666 11777 11778 11881 8081 3142 4000" ./scripts/apply_firewall.sh
   ```
 
 - The guest receives `EVANDER_LLM_BASE_URL`, `OPENAI_BASE_URL`, `EVANDER_ANTHROPIC_BASE_URL`, and `ANTHROPIC_BASE_URL` in `/etc/evander/session.env`.
@@ -2883,17 +2887,16 @@ sudo journalctl -u evander-trigger-orchestrator.service -f
   `metadata.http_targets.targets`: `<environment-alias>-api` for backend/API traffic and
   `<environment-alias>-ui` for browser/DOM traffic. It keeps the APP-specific
   `metadata.example_app.environments.<environment-alias>` record for convenience and refreshes
-  `metadata.example_app_last_provision` with the selected environment alias plus its API alias, UI
-  alias, `app_base_url` (API base URL), and `app_public_url` (public UI URL).
+  `metadata.example_app_last_provision` with the selected environment alias plus its API alias,
+  UI alias, `app_base_url` (API base URL), and `app_public_url` (public UI URL).
 - The trigger graph writes that metadata patch into the originating session and resumes the same
   session with the provisioning pipeline run URL in the follow-up prompt.
-- Guests authenticate to the selected APP environment themselves through the relay-backed URL for
-  the appropriate API or UI alias. The generic HTTP target relay no longer injects host-side APP
-  authorization headers.
+- Guests use the API relay alias for programmatic traffic. Seeded browsers navigate to the public
+  UI URL through the session browser proxy, preserving the APP UI origin and its API CORS policy.
 - Container-backed agents receive `HTTP_TARGET_RELAY_BASE_URL` and should treat it as an opaque
   relay prefix; tokenized sessions may include relay auth in that prefix. Build relay URLs as
-  `$HTTP_TARGET_RELAY_BASE_URL/session/<session-id>/target/<alias>/` rather than calling the public
-  Azure URL directly.
+  `$HTTP_TARGET_RELAY_BASE_URL/session/<session-id>/target/<alias>/`. Browser automation uses
+  `EVANDER_PLAYWRIGHT_LAUNCH_HELPER` and the public UI URL.
 
 The older `scripts/provision_exampleindustry_app_demo_environment.sh` wrapper is retained only for
 compatibility with older live workflow packs and should not be used for new provisioning graphs.
@@ -2980,6 +2983,7 @@ This creates:
 - `evander-nuget-relay.service`
 - `evander-npm-audit-facade.service`
 - `evander-http-target-relay.service`
+- `evander-http-target-browser-proxy.service`
 - `evander-ado-worker.service`
 - `evander-proxy-issue-sync.service`
 - `evander-discord-ingest.service`
@@ -3024,6 +3028,7 @@ sudo systemctl start evander-didww-sip-bridge.service
 sudo systemctl start evander-nuget-relay.service
 sudo systemctl start evander-npm-audit-facade.service
 sudo systemctl start evander-http-target-relay.service
+sudo systemctl start evander-http-target-browser-proxy.service
 sudo systemctl start evander-ado-worker.service
 sudo systemctl start evander-proxy-issue-sync.service
 sudo systemctl start evander-discord-ingest.service
@@ -3041,6 +3046,7 @@ sudo systemctl status evander-didww-sip-bridge.service
 sudo systemctl status evander-nuget-relay.service
 sudo systemctl status evander-npm-audit-facade.service
 sudo systemctl status evander-http-target-relay.service
+sudo systemctl status evander-http-target-browser-proxy.service
 sudo systemctl status evander-ado-worker.service
 sudo systemctl status evander-proxy-issue-sync.service
 sudo systemctl status evander-discord-ingest.service

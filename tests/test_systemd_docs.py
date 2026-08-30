@@ -13,6 +13,7 @@ def test_operations_doc_mentions_firewall_service() -> None:
     assert "evander-npm-audit-facade.service" in text
     assert "config/npm-audit-facade.env" in text
     assert "evander-http-target-relay.service" in text
+    assert "evander-http-target-browser-proxy.service" in text
     assert "evander-didww-sip-bridge.service" in text
     assert "HTTP target relay" in text
     assert "systemctl show -p User evander-discord-wake.service" in text

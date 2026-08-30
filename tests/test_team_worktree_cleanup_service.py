@@ -228,7 +228,6 @@ def test_reconciler_enqueues_removes_audits_and_only_then_prunes_context(
     assert candidate.expected_head == _BASE_COMMIT
     assert candidate.worktree_path == _WORKTREE_PATH
     assert candidate.directory_path == "root"
-
     # Generic metadata retention cannot run ahead of physical cleanup.
     def _try_metadata_prune(current: TeamState) -> TeamState:
         reconcile_git_work_context_lifecycle(
@@ -268,6 +267,32 @@ def test_reconciler_enqueues_removes_audits_and_only_then_prunes_context(
     assert audit[0].audit_record_id == candidate.id
     assert audit[0].status.value == "success"
     assert _WORKTREE_PATH in (audit[0].correction_context_summary or "")
+
+
+def test_invalidated_preparation_is_cleanup_eligible_before_task_resolution(
+    tmp_path,
+) -> None:
+    repository = _seed_cleanup_state(
+        tmp_path,
+        task_state=TeamTaskState.IN_PROGRESS,
+    )
+
+    def _mark_invalidated_generation(state: TeamState) -> TeamState:
+        state.git_work_contexts["context"].preparation_generation = "0" * 20
+        return state
+
+    repository.update(_mark_invalidated_generation)
+    backend = FakeCleanupBackend([_removed_outcome()])
+    service = TeamWorktreeCleanupService(repository, backend)
+    now = datetime(2026, 8, 24, 12, tzinfo=UTC)
+
+    state, counts = service.enqueue_candidates(now=now, grace_seconds=0)
+
+    assert counts == {"enqueued": 1, "recovered": 0, "refreshed": 0}
+    candidate = next(iter(state.worktree_cleanup_candidates.values()))
+    assert candidate.reason == "preparation_invalidated"
+    result = service.reconcile(now=now, grace_seconds=0, dry_run=False)
+    assert result.succeeded_count == 1
 
 
 def test_cleanup_uses_enqueued_directory_after_project_scope_moves(
@@ -1950,6 +1975,23 @@ def test_candidate_correction_branch_is_scoped_to_the_pinned_candidate() -> None
     )
 
     assert candidate == f"{ordinary}-{'a' * 12}"
+
+
+def test_task_branch_is_scoped_to_preparation_generation() -> None:
+    first = _project_repo_agent_branch(
+        "session",
+        task_id="integration-task",
+        preparation_generation="a" * 20,
+    )
+    second = _project_repo_agent_branch(
+        "session",
+        task_id="integration-task",
+        preparation_generation="b" * 20,
+    )
+
+    assert first.endswith(f"-prep-{'a' * 12}")
+    assert second.endswith(f"-prep-{'b' * 12}")
+    assert first != second
 
 
 def test_container_preparation_recovers_legacy_base_from_prior_team_context(

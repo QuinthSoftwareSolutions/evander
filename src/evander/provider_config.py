@@ -82,6 +82,7 @@ class EffectProviderConfig(BaseModel):
     container_worker_guest_anthropic_base_url: str | None = None
     container_worker_guest_gateway_url: str | None = None
     container_worker_guest_http_target_relay_base_url: str | None = None
+    container_worker_guest_http_target_browser_proxy_url: str | None = None
     container_worker_guest_nuget_relay_base_url: str | None = None
     container_worker_guest_pypi_index_url: str | None = None
     container_worker_guest_npm_registry_url: str | None = None

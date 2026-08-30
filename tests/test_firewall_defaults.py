@@ -9,7 +9,9 @@ def test_firewall_default_ports_include_ssh_mcp_and_relay() -> None:
     env_example = (ROOT / "config" / "firewall.env.example").read_text(encoding="utf-8")
     ops = (ROOT / "docs" / "operations.md").read_text(encoding="utf-8")
 
-    assert 'ALLOWED_TCP_PORTS="22 8000 11434 11666 11777 11881 8081 3142"' in env_example
+    assert 'ALLOWED_TCP_PORTS="22 8000 11434 11666 11777 11778 11881 8081 3142"' in env_example
+    assert "11778" in ops
+    assert "HTTP target browser proxy" in ops
     assert "`22` for host SSH/Git" in ops
     assert "`11777` for the host-side HTTP target relay" in ops
     assert "`8081` for the host-side Nexus package cache" in ops

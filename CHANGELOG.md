@@ -1,5 +1,47 @@
 # Changelog
 
+## 2026-08-30 - Alexa Agent Bridge Example
+
+- Added a signed, deduplicated Alexa webhook workflow example that dispatches bounded personal
+  questions to one operator-pinned agent session.
+- Added a host-authenticated, write-only reply connector example plus setup, trust-boundary, and
+  end-to-end verification guidance for the external Alexa mailbox service.
+
+## 2026-08-30 - Browser Proxy And Team Review Hardening
+
+- Bound browser proxy HTTP and TLS application authorities to the session-authorized target,
+  rejected excess connections without queueing sockets, and added a short unauthenticated
+  header and TLS ClientHello deadline.
+- Kept cancelled Team dependencies out of policy-v2 composition manifest requirements and
+  missing-manifest reconciliation, matching preparation and acceptance assessment.
+- Scoped Planning and Task board inbox payloads to the latest preparation invalidation per task
+  and indexed those records once for status rendering.
+
+## 2026-08-30 - Bounded Elasticsearch Demo Seeding
+
+- Added an allowlist-gated, size- and document-bounded Elasticsearch bulk-index tool and workflow
+  effect with deterministic document IDs for idempotent synthetic demo-history seeding.
+- Extended the APP demo operating guidance to populate three weeks of production-metrics history
+  before creating and verifying Kibana dashboards.
+
+## 2026-08-30 - Session-scoped Browser Target Access
+
+- Added an authenticated forward proxy that lets seeded browsers use the real origins of a
+  session's configured HTTP targets without weakening VM or container default-deny egress.
+- Wired the browser proxy into both execution backends and updated APP demo workflows to browse
+  the public UI origin while retaining the path-based relay for programmatic API traffic.
+
+## 2026-08-30 - Team Preparation Generation Safety
+
+- Persisted a semantic preparation generation on Team Git work contexts and scoped prepared
+  branches and worktrees to it, preventing stale checkout metadata from crossing task edits.
+- Invalidated active Git preparation after relevant task edits, queued fresh preparation, and
+  exposed queued, leased, and review-dispatch status in Planning and Task board.
+- Rejected Git-backed policy-v2 integration submissions without the current server composition
+  manifest before persistence, and added idempotent recovery for retained malformed candidates.
+- Allowed safe cleanup of invalidated unresolved-task worktrees after active dispatches finish
+  while preserving submitted Git evidence and normal dirty-worktree safeguards.
+
 ## 2026-08-29 - Elastic Stack 9 Compatibility
 
 - Normalized both detailed and redacted Kibana status responses so the bounded Elastic Stack
@@ -7,6 +49,11 @@
   authenticated deployment exposes them.
 - Documented the safe loopback-only detailed-status configuration validated with matching
   Elasticsearch and Kibana 9.5.2 containers.
+
+## 2026-08-29 - Task Board Task Editing
+
+- Added the existing task Edit action to Task Board cards so operators can update a task without
+  navigating to the separate Planning view.
 
 ## 2026-08-28 - Elastic Stack Proxy Compatibility
 

@@ -46,6 +46,13 @@ The security model is:
   - Session-scoped relay for allowlisted external HTTP targets. It forwards guest-managed auth
     headers/cookies; host secrets are not injected into the guest request.
 
+- HTTP target browser proxy:
+  - Entry point: `evander-http-target-browser-proxy`
+  - Code: `src/evander/relays/http_target_browser_proxy.py`
+  - Default guest-reachable port: `11778`
+  - Authenticated forward proxy that preserves real browser origins while restricting connections
+    to the current session's configured HTTP targets.
+
 - Admin Web:
   - Entry point: `evander-admin-web`
   - Code: `src/evander/admin/web/app.py`
@@ -99,6 +106,7 @@ The security model is:
   - `11434` for OpenAI relay
   - `11666` for NuGet relay
   - `11777` for HTTP target relay
+  - `11778` for HTTP target browser proxy
   - `11881` for the npm audit relay
   - `8081` for Nexus PyPI/npm package cache when enabled
   - `3142` for apt-cacher-ng worker provisioning when enabled
@@ -144,6 +152,7 @@ The current install script renders and enables:
 - `evander-nuget-relay.service`
 - `evander-npm-audit-facade.service`
 - `evander-http-target-relay.service`
+- `evander-http-target-browser-proxy.service`
 - `evander-ado-worker.service`
 - `evander-proxy-issue-sync.service`
 - `evander-discord-ingest.service`
@@ -220,6 +229,7 @@ Before install/start, populate the required local config and secret files for th
    sudo systemctl start evander-openai-relay.service
    sudo systemctl start evander-nuget-relay.service
    sudo systemctl start evander-http-target-relay.service
+   sudo systemctl start evander-http-target-browser-proxy.service
    sudo systemctl start evander-trigger-orchestrator.service
    sudo systemctl start evander-effect-orchestrator.service
    ```

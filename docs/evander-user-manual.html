@@ -10162,6 +10162,13 @@ disabled and its hover explanation names the unresolved descendants,
 active acceptance, or active review that must be settled first. The
 generic task editor cannot move work directly into <code>accepted</code>
 or <code>cancelled</code>.</p>
+<p><strong>Planning</strong> and <strong>Task board</strong> use the
+same revision-checked task editor. When a title, description, owner,
+dependency frontier, deliverable contract, or another preparation input
+changes after Git preparation, Team abandons that context and queues a
+fresh generation. The task status distinguishes queued re-preparation,
+an active agent lease, and a review awaiting dispatch. A priority-only
+edit does not invalidate the checkout.</p>
 <p>Background state and cost refreshes preserve open
 <strong>Planning</strong> project, task, hierarchy, full-brief,
 worktree, and technical-detail disclosures, so a live update does not
@@ -13012,6 +13019,14 @@ formal review records policy version 2 and must satisfy the
 immutable-ref and composition gates that apply to its Git task; direct
 acceptance uses the submission-time retained ref without acquiring
 formal-review criteria.</p>
+<p>A policy-v2 integration submission with Git-backed sources must carry
+the server-generated composition manifest from its current preparation
+generation. Team rejects a missing or stale manifest before creating
+either the deliverable or its reviews. Global maintenance repairs an
+older nonterminal malformed record exactly once by preserving its Git
+evidence, retiring its review handoffs, rejecting the candidate,
+reopening the task, and queueing a freshly prepared replacement.
+Accepted historical evidence is not rewritten.</p>
 <h2 id="submitting-superior-acceptance-and-formal-review">Submitting,
 superior acceptance, and formal review</h2>
 <p>The producer submits the evidence, then chooses the handoff the task
@@ -16680,56 +16695,62 @@ explicit start commands; installation itself does not start them.</p>
 <td>A workflow grants an HTTP target</td>
 </tr>
 <tr class="even">
+<td><code>evander-http-target-browser-proxy.service</code></td>
+<td><code>evander-http-target-browser-proxy</code></td>
+<td>Authenticated browser access to session HTTP target origins</td>
+<td>Seeded browser automation is used</td>
+</tr>
+<tr class="odd">
 <td><code>evander-didww-sip-bridge.service</code></td>
 <td><code>evander-didww-sip-bridge</code></td>
 <td>DIDWW/ARI telephony and realtime voice bridge</td>
 <td>Telephony is configured</td>
 </tr>
-<tr class="odd">
+<tr class="even">
 <td><code>evander-ado-worker.service</code></td>
 <td><code>evander-ado-worker</code></td>
 <td>Azure DevOps PR-feedback and completion polling</td>
 <td>ADO PR automation is configured; work-item intake is
 workflow-owned</td>
 </tr>
-<tr class="even">
+<tr class="odd">
 <td><code>evander-proxy-issue-sync.service</code></td>
 <td><code>evander-proxy-issue-sync</code></td>
 <td>Refreshes proxy issue status</td>
 <td>Proxy issue providers are configured</td>
 </tr>
-<tr class="odd">
+<tr class="even">
 <td><code>evander-discord-ingest.service</code></td>
 <td><code>evander-discord-ingest</code></td>
 <td>Ingests allowlisted Discord commands/messages</td>
 <td>Discord is configured</td>
 </tr>
-<tr class="even">
+<tr class="odd">
 <td><code>evander-discord-wake.service</code></td>
 <td><code>evander-discord-wake</code></td>
 <td>Turns eligible Discord inbox activity into wakes</td>
 <td>Discord wake is enabled</td>
 </tr>
-<tr class="odd">
+<tr class="even">
 <td><code>evander-scheduled-wake.service</code></td>
 <td><code>evander-scheduled-wake</code></td>
 <td>Resumes sessions whose scheduled wake is due</td>
 <td>Scheduled work is enabled</td>
 </tr>
-<tr class="even">
+<tr class="odd">
 <td><code>evander-managed-git-refresh.service</code></td>
 <td><code>evander-managed-git-refresh</code></td>
 <td>Refreshes the exact authorized managed repository before Git
 reads</td>
 <td>Agents clone, fetch, or pull managed repositories</td>
 </tr>
-<tr class="odd">
+<tr class="even">
 <td><code>evander-teams-ingest.service</code></td>
 <td><code>evander-cli teams-ingest</code> via its runner script</td>
 <td>Ingests Microsoft Teams messages</td>
 <td>Teams is configured</td>
 </tr>
-<tr class="even">
+<tr class="odd">
 <td><code>evander-teams-notifications.service</code></td>
 <td><code>evander-teams-notifications</code></td>
 <td>Receives loopback-proxied Microsoft Graph message and lifecycle
@@ -16737,20 +16758,20 @@ callbacks</td>
 <td>Teams notifications are installed; public routing is configured only
 when enabled</td>
 </tr>
-<tr class="odd">
+<tr class="even">
 <td><code>evander-teams-meeting-ingest.service</code></td>
 <td><code>evander-teams-meeting-ingest</code></td>
 <td>Ingests queued meeting transcript and speech-status events</td>
 <td>Meeting integration is configured</td>
 </tr>
-<tr class="even">
+<tr class="odd">
 <td><code>evander-trigger-orchestrator.service</code></td>
 <td><code>evander-cli trigger-orchestrator</code></td>
 <td>Polls trigger providers, validates/deduplicates, and publishes
 durable trigger events</td>
 <td>Workflow triggers are enabled</td>
 </tr>
-<tr class="odd">
+<tr class="even">
 <td><code>evander-effect-orchestrator.service</code></td>
 <td><code>evander-effect-orchestrator</code></td>
 <td>Traverses downstream workflow nodes and executes gates, queries, and
@@ -16766,7 +16787,7 @@ control-plane service installed by the script above.</p>
 <h2 id="283-default-guest-reachable-ports">28.3 Default guest-reachable
 ports</h2>
 <p>The firewall&#39;s checked-in default is
-<code>ALLOWED_TCP_PORTS=&quot;22 8000 11434 11666 11777 11881 8081 3142&quot;</code>.
+<code>ALLOWED_TCP_PORTS=&quot;22 8000 11434 11666 11777 11778 11881 8081 3142&quot;</code>.
 Allowing a port makes a narrow host surface reachable; it does not grant
 arbitrary host access.</p>
 <table>
@@ -16814,18 +16835,24 @@ surface</td>
 injected</td>
 </tr>
 <tr class="even">
+<td style="text-align: right;">11778</td>
+<td>HTTP target browser proxy</td>
+<td>Browse configured session target origins without rewriting them</td>
+<td>Session id and proof token authenticate the proxy</td>
+</tr>
+<tr class="odd">
 <td style="text-align: right;">11881</td>
 <td>npm audit facade</td>
 <td>Narrow npm audit/cache operations</td>
 <td>It is not general npm internet access</td>
 </tr>
-<tr class="odd">
+<tr class="even">
 <td style="text-align: right;">8081</td>
 <td>Nexus cache</td>
 <td>PyPI/npm package cache when enabled</td>
 <td>Optional host package-cache service</td>
 </tr>
-<tr class="even">
+<tr class="odd">
 <td style="text-align: right;">3142</td>
 <td>apt-cacher-ng</td>
 <td>Worker provisioning package cache</td>

@@ -44,6 +44,7 @@ fi
 HOST_NODE_ROOT="${HOST_NODE_ROOT:-${CALLER_HOME}/.nvm/versions/node/v24.14.0}"
 HOST_PLAYWRIGHT_NODE_MODULES="${HOST_PLAYWRIGHT_NODE_MODULES:-${CALLER_HOME}/node_modules}"
 HOST_PLAYWRIGHT_BROWSERS="${HOST_PLAYWRIGHT_BROWSERS:-${CALLER_HOME}/.cache/ms-playwright}"
+PLAYWRIGHT_LAUNCH_HELPER_SOURCE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/src/evander/assets/playwright-launch.mjs"
 SSH_OPTS=(
   -i "${SSH_KEY_PATH}"
 )
@@ -60,6 +61,11 @@ fi
 
 if [[ ! -d "${HOST_PLAYWRIGHT_BROWSERS}" ]]; then
   echo "Missing host Playwright browser cache: ${HOST_PLAYWRIGHT_BROWSERS}" >&2
+  exit 1
+fi
+
+if [[ ! -f "${PLAYWRIGHT_LAUNCH_HELPER_SOURCE}" ]]; then
+  echo "Missing Playwright launch helper: ${PLAYWRIGHT_LAUNCH_HELPER_SOURCE}" >&2
   exit 1
 fi
 
@@ -88,6 +94,7 @@ scp "${SSH_OPTS[@]}" -r "${HOST_NODE_ROOT}" "${VM_USER}@${VM_IP}:~/toolchains/no
 scp "${SSH_OPTS[@]}" -r "${HOST_PLAYWRIGHT_NODE_MODULES}/playwright" "${VM_USER}@${VM_IP}:~/playwright-runtime/node_modules/"
 scp "${SSH_OPTS[@]}" -r "${HOST_PLAYWRIGHT_NODE_MODULES}/playwright-core" "${VM_USER}@${VM_IP}:~/playwright-runtime/node_modules/"
 scp "${SSH_OPTS[@]}" -r "${HOST_PLAYWRIGHT_BROWSERS}" "${VM_USER}@${VM_IP}:~/.cache/ms-playwright"
+scp "${SSH_OPTS[@]}" "${PLAYWRIGHT_LAUNCH_HELPER_SOURCE}" "${VM_USER}@${VM_IP}:~/.evander/playwright-launch.mjs"
 
 ssh "${SSH_OPTS[@]}" "${VM_USER}@${VM_IP}" "bash -s" <<'EOF'
 set -euo pipefail
@@ -142,6 +149,8 @@ managed_exports = {
     'export NODE_PATH="$HOME/playwright-runtime/node_modules"',
     'export PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD="1"',
     'export PLAYWRIGHT_MCP_SANDBOX="0"',
+    'export EVANDER_PLAYWRIGHT_LAUNCH_HELPER="$HOME/.evander/playwright-launch.mjs"',
+    'export EVANDER_HTTP_TARGET_BROWSER_PROXY_URL="${EVANDER_HTTP_TARGET_BROWSER_PROXY_URL:-http://192.168.250.1:11778}"',
 }
 
 
@@ -182,6 +191,8 @@ filtered.extend(
         'export NODE_PATH="$EVANDER_PLAYWRIGHT_RUNTIME"',
         'export PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD="1"',
         'export PLAYWRIGHT_MCP_SANDBOX="0"',
+        'export EVANDER_PLAYWRIGHT_LAUNCH_HELPER="$HOME/.evander/playwright-launch.mjs"',
+        'export EVANDER_HTTP_TARGET_BROWSER_PROXY_URL="${EVANDER_HTTP_TARGET_BROWSER_PROXY_URL:-http://192.168.250.1:11778}"',
         'if [ -z "${PLAYWRIGHT_MCP_EXECUTABLE_PATH:-}" ] && command -v node >/dev/null 2>&1; then',
         '  if _evander_playwright_chromium="$(node -e \'const fs = require("fs"); const path = require("path"); const runtime = process.env.EVANDER_PLAYWRIGHT_RUNTIME; const { chromium } = require(path.join(runtime, "playwright")); const executable = chromium.executablePath(); if (!fs.existsSync(executable)) process.exit(1); process.stdout.write(executable);\' 2>/dev/null)" && [ -n "$_evander_playwright_chromium" ]; then',
         '    export PLAYWRIGHT_MCP_EXECUTABLE_PATH="$_evander_playwright_chromium"',
@@ -202,6 +213,8 @@ export PLAYWRIGHT_BROWSERS_PATH="$HOME/.cache/ms-playwright"
 export NODE_PATH="$EVANDER_PLAYWRIGHT_RUNTIME"
 export PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD="1"
 export PLAYWRIGHT_MCP_SANDBOX="0"
+export EVANDER_PLAYWRIGHT_LAUNCH_HELPER="$HOME/.evander/playwright-launch.mjs"
+export EVANDER_HTTP_TARGET_BROWSER_PROXY_URL="${EVANDER_HTTP_TARGET_BROWSER_PROXY_URL:-http://192.168.250.1:11778}"
 if _evander_playwright_chromium="$(node -e 'const fs = require("fs"); const path = require("path"); const runtime = process.env.EVANDER_PLAYWRIGHT_RUNTIME; const { chromium } = require(path.join(runtime, "playwright")); const executable = chromium.executablePath(); if (!fs.existsSync(executable)) process.exit(1); process.stdout.write(executable);' 2>/dev/null)" && [[ -n "${_evander_playwright_chromium}" ]]; then
   export PLAYWRIGHT_MCP_EXECUTABLE_PATH="${_evander_playwright_chromium}"
 else

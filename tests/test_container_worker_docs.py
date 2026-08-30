@@ -35,6 +35,7 @@ def test_container_worker_docs_describe_codex_home_preservation() -> None:
     assert "sudo iptables -S DOCKER-USER" in docs
     assert "evander-cli execution smoke-container-worker --json" in docs
     assert "container_worker_guest_http_target_relay_base_url" in docs
+    assert "container_worker_guest_http_target_browser_proxy_url" in docs
     assert "container_worker_guest_pypi_index_url" in docs
     assert "container_worker_guest_npm_registry_url" in docs
     assert "container_worker_images" in docs

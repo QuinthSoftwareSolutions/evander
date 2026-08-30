@@ -70,7 +70,10 @@ from ..domain.dependency_composition_recovery import (
 )
 from ..domain.git_work_contexts import finalize_active_git_work_contexts_for_task
 from ..domain.project_status import _recalculate_project_status
-from ..domain.preparation_failures import task_preparation_generation
+from ..domain.preparation_failures import (
+    task_git_work_context_generation,
+    task_preparation_generation,
+)
 from ..domain.role_task_allocation import (
     RoleTaskAllocationError,
     select_role_task_owner,
@@ -80,6 +83,9 @@ from ..domain.task_assessment import (
     TaskAssessmentBoundaryError,
     assess_task,
     require_task_can_finish,
+)
+from ..domain.task_preparation_invalidation import (
+    invalidate_task_preparation_after_edit,
 )
 from ..domain.task_supervision import queue_parent_resolution_transitions
 from ..domain.submitted_integration_recovery import (
@@ -1407,6 +1413,10 @@ class TeamTaskUpdateCommandService(TeamCommandExecutor):
                     message=f"task {normalized_task_id} does not exist",
                     correction_context={"task_id": normalized_task_id},
                 )
+            preparation_generation_before = task_git_work_context_generation(
+                state_model,
+                task.id,
+            )
             is_owner = task.owner_agent_id == agent.id
             project = state_model.projects.get(task.project_id)
             is_same_team_manager = bool(
@@ -1802,6 +1812,15 @@ class TeamTaskUpdateCommandService(TeamCommandExecutor):
                 task.dependency_task_ids = new_dependency_ids
                 changed = True
             if changed:
+                invalidate_task_preparation_after_edit(
+                    state_model,
+                    task_id=task.id,
+                    preparation_generation_before=preparation_generation_before,
+                    changed_fields=sorted(normalized_updates),
+                    sender_agent_id=agent.id,
+                    result=reconciliation_result,
+                    now=now,
+                )
                 task.updated_at = now
                 if task_state_can_wake_owner(task.state):
                     _mark_agent_work_due(
@@ -1840,7 +1859,23 @@ class TeamTaskUpdateCommandService(TeamCommandExecutor):
                 "blocker_event_ids": list(reconciliation_result["blocker_event_ids"]),
                 "resolved_blocker_event_ids": [],
                 "automatically_handled_inbox_item_ids": [],
+                "invalidated_git_work_context_ids": list(
+                    reconciliation_result.get("invalidated_git_work_context_ids") or []
+                ),
+                "created_preparation_invalidation_inbox_item_ids": list(
+                    reconciliation_result.get(
+                        "created_preparation_invalidation_inbox_item_ids"
+                    )
+                    or []
+                ),
             }
+            if "preparation_generation_before" in reconciliation_result:
+                response_payload["preparation_generation_before"] = (
+                    reconciliation_result["preparation_generation_before"]
+                )
+                response_payload["preparation_generation_after"] = (
+                    reconciliation_result["preparation_generation_after"]
+                )
             blocker_domain_ids: list[str] = []
             if (
                 changed

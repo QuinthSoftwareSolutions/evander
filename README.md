@@ -33,6 +33,7 @@ package, Git, and HTTP relays.
 - Configuration templates and implementation notes for evolving the scaffold into a production setup
 - A consolidated configuration parameter reference at `docs/configuration-reference.md`
 - A connector implementation and operations reference at `docs/connectors.md`
+- An asynchronous personal Alexa-to-agent bridge at `docs/alexa-agent-bridge.md`
 - A Host Directory security and operations reference at `docs/host-directories.md`
 
 ## Core Security Model
@@ -118,7 +119,10 @@ Directory-scoped config is rooted at `root`:
    sudo ./scripts/apply_firewall.sh
    ```
 
-  The default firewall policy allows host ports `22`, `8000`, `11434`, `11666`, `11777`, `11881`, `8081`, and `3142` so VMs can use SSH for Git remotes, MCP on `8000`, the OpenAI relay on `11434`, the NuGet relay on `11666`, the session-scoped HTTP target relay on `11777` for approved external web endpoints such as APP demo environments, the npm audit facade on `11881`, the Nexus package cache on `8081` for PyPI/npm package restores, and the apt-cacher-ng relay on `3142` for worker apt provisioning. The optional Qdrant semantic store binds to `127.0.0.1:6333` by default and is not exposed to guests.
+   The default firewall policy allows host ports `22`, `8000`, `11434`, `11666`, `11777`, `11778`,
+   `11881`, `8081`, and `3142`. Port `11778` is the authenticated browser forward proxy: seeded
+   browsers can reach only real origins registered as session HTTP targets while preserving
+   application CORS, cookies, and root-relative assets.
 
 6. Start the host-side services:
 
@@ -1468,4 +1472,4 @@ future outbound-send enablement.
 - The gateway is ready for integration adapters, not production credentials by default.
 - Network/firewall scripts assume Ubuntu 24.04 and nftables-backed libvirt hosts.
 - VM disk and seed artifacts default to `/var/lib/libvirt/images/evander`, so VM lifecycle scripts should be run with `sudo` unless you deliberately provision an alternate libvirt-accessible storage path.
-- Guests can reach only the specific host TCP ports you allow in `ALLOWED_TCP_PORTS`; the defaults are `22` for host SSH/Git, `8000` for MCP, `11434` for the host-side OpenAI relay or another OpenAI-compatible LLM endpoint, `11666` for the host-side NuGet relay, `11777` for the HTTP target relay, `11881` for the npm audit facade, `8081` for the host-side Nexus package cache, and `3142` for the host-side apt-cacher-ng relay.
+- Guests can reach only the specific host TCP ports you allow in `ALLOWED_TCP_PORTS`; `11777` is the path-based HTTP target relay and `11778` is the authenticated browser forward proxy. The remaining defaults continue to cover SSH, MCP, model/package relays, and package caches.

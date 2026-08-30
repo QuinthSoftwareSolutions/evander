@@ -105,6 +105,7 @@ evander_base_allowed_tcp_ports:
   - 11434
   - 11666
   - 11777
+  - 11778
 evander_control_plane_private_ip: "{{ ansible_default_ipv4.address | default('127.0.0.1') }}"
 
 # Control-plane apt cache for worker VM provisioning. This is intentionally
@@ -211,6 +212,9 @@ evander_worker_egress_policy_allow_tcp_endpoints:
   - name: control-plane http target relay
     host: "{{ evander_control_plane_private_ip }}"
     port: 11777
+  - name: control-plane HTTP target browser proxy
+    host: "{{ evander_control_plane_private_ip }}"
+    port: 11778
   - name: control-plane npm audit facade
     host: "{{ evander_control_plane_private_ip }}"
     port: "{{ evander_npm_audit_facade_port }}"
@@ -518,6 +522,7 @@ evander_services:
   apt_cache: true
   semantic_store: true
   http_target_relay: true
+  http_target_browser_proxy: true
   ado_worker: true
   proxy_issue_sync: true
   discord_ingest: true

@@ -5,6 +5,8 @@ import json
 import sqlite3
 import time
 from collections.abc import Mapping, Sequence
+from contextlib import closing
+from types import TracebackType
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -29,10 +31,23 @@ from .models import (
 
 ADDON_ID = "team-addon"
 STATE_DB_FILE = "state.db"
-SQLITE_SCHEMA_VERSION = 67
+SQLITE_SCHEMA_VERSION = 68
 _SQLITE_WAL_ENABLE_TIMEOUT_SECONDS = 5.0
 
 T = TypeVar("T")
+
+
+class _ClosingSqliteConnection(sqlite3.Connection):
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_value: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> bool:
+        try:
+            return super().__exit__(exc_type, exc_value, traceback)
+        finally:
+            self.close()
 
 
 @dataclass(frozen=True)
@@ -107,7 +122,7 @@ class TeamStateSqliteStore:
         # Do not take the process-local state lock or reapply WAL mode here. This
         # read is used by one-second UI polls and WAL readers can safely proceed
         # while a state update holds its write transaction.
-        with sqlite3.connect(self.path, timeout=30.0) as connection:
+        with closing(sqlite3.connect(self.path, timeout=30.0)) as connection:
             connection.row_factory = sqlite3.Row
             connection.execute(f"PRAGMA busy_timeout={SQLITE_BUSY_TIMEOUT_MS}")
             connection.execute("PRAGMA query_only=ON")
@@ -1881,6 +1896,12 @@ class TeamStateSqliteStore:
                 )
                 _ensure_column(
                     connection,
+                    table_name="team_git_work_contexts",
+                    column_name="preparation_generation",
+                    definition="TEXT",
+                )
+                _ensure_column(
+                    connection,
                     table_name="team_deliverables",
                     column_name="accepted_pinned_ref",
                     definition="TEXT",
@@ -1979,11 +2000,19 @@ class TeamStateSqliteStore:
 
     def _connect(self) -> sqlite3.Connection:
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        connection = sqlite3.connect(self.path, timeout=30.0)
-        connection.row_factory = sqlite3.Row
-        connection.execute(f"PRAGMA busy_timeout={SQLITE_BUSY_TIMEOUT_MS}")
-        self._enable_wal(connection)
-        connection.execute("PRAGMA foreign_keys=ON")
+        connection = sqlite3.connect(
+            self.path,
+            timeout=30.0,
+            factory=_ClosingSqliteConnection,
+        )
+        try:
+            connection.row_factory = sqlite3.Row
+            connection.execute(f"PRAGMA busy_timeout={SQLITE_BUSY_TIMEOUT_MS}")
+            self._enable_wal(connection)
+            connection.execute("PRAGMA foreign_keys=ON")
+        except BaseException:
+            connection.close()
+            raise
         return connection
 
     @staticmethod
@@ -5194,6 +5223,7 @@ class TeamStateSqliteStore:
                     if row["dependency_composition_manifest_json"] is not None
                     else None
                 ),
+                "preparation_generation": row["preparation_generation"],
                 "state": row["state"],
                 "created_at": row["created_at"],
                 "updated_at": row["updated_at"],
@@ -5211,9 +5241,9 @@ class TeamStateSqliteStore:
                     dependency_composition_recovery_id,
                     manual_dependency_git_sources_json,
                     dependency_composition_manifest_json,
-                    state, created_at, updated_at
+                    preparation_generation, state, created_at, updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     context["id"],
@@ -5233,6 +5263,7 @@ class TeamStateSqliteStore:
                         if context.get("dependency_composition_manifest") is not None
                         else None
                     ),
+                    context.get("preparation_generation"),
                     context.get("state", "active"),
                     context["created_at"],
                     context["updated_at"],
@@ -9120,6 +9151,7 @@ CREATE TABLE IF NOT EXISTS team_git_work_contexts (
     dependency_composition_recovery_id TEXT,
     manual_dependency_git_sources_json TEXT NOT NULL DEFAULT '[]',
     dependency_composition_manifest_json TEXT,
+    preparation_generation TEXT,
     state TEXT NOT NULL,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL

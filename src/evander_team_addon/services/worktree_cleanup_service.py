@@ -35,6 +35,7 @@ from ..models import (
     summarize_worktree_cleanup_inventory,
 )
 from ..repository import TeamStateRepository
+from .domain.preparation_failures import task_git_work_context_generation
 from .domain.task_assessment import TaskAssessmentService
 
 
@@ -377,7 +378,11 @@ class TeamWorktreeCleanupService:
                 except Exception:
                     resolved = False
                 reassigned = task.owner_agent_id != context.agent_id
-                if not resolved and not reassigned:
+                preparation_invalidated = _context_preparation_was_invalidated(
+                    state,
+                    context,
+                )
+                if not resolved and not reassigned and not preparation_invalidated:
                     continue
                 execution_target = execution_targets.get(context.id)
                 if execution_target is None:
@@ -414,7 +419,13 @@ class TeamWorktreeCleanupService:
                         worktree_path=context.worktree_path,
                     )
                     existing = state.worktree_cleanup_candidates.get(identity)
-                reason = "task_resolved" if resolved else "task_reassigned"
+                reason = (
+                    "task_resolved"
+                    if resolved
+                    else "task_reassigned"
+                    if reassigned
+                    else "preparation_invalidated"
+                )
                 if existing is not None:
                     if (
                         existing.state == WorktreeCleanupState.SUCCEEDED
@@ -1079,12 +1090,17 @@ def _team_state_safety_failure(
     except Exception:
         resolved = False
     reassigned = task.owner_agent_id != candidate.agent_id
-    if not resolved and not reassigned:
+    context = state.git_work_contexts.get(candidate.git_work_context_id)
+    preparation_invalidated = bool(
+        context is not None
+        and _context_preparation_was_invalidated(state, context)
+    )
+    if not resolved and not reassigned and not preparation_invalidated:
         return WorktreeCleanupSafetyFailure(
             check="task_not_cleanup_eligible",
             message=(
-                f"task {task.id} is neither resolved nor reassigned away from "
-                f"agent {candidate.agent_id}"
+                f"task {task.id} is neither resolved, reassigned away from "
+                f"agent {candidate.agent_id}, nor prepared under an invalidated generation"
             ),
             retryable=True,
         )
@@ -1203,6 +1219,30 @@ def _expected_commits_for_context(
         if _FULL_GIT_OBJECT_ID.fullmatch(fallback):
             return fallback, None
     return None, None
+
+
+def _context_preparation_was_invalidated(
+    state: TeamState,
+    context: GitWorkContext,
+) -> bool:
+    if context.state != GitWorkContextState.ABANDONED:
+        return False
+    if context.preparation_generation is not None:
+        try:
+            if context.preparation_generation != task_git_work_context_generation(
+                state,
+                context.task_id,
+            ):
+                return True
+        except Exception:
+            pass
+    return any(
+        item.task_id == context.task_id
+        and item.payload.get("kind") == "task_preparation_invalidated"
+        and context.id
+        in (item.payload.get("invalidated_git_work_context_ids") or [])
+        for item in state.inbox.values()
+    )
 
 
 def _prune_cleaned_git_context_metadata(

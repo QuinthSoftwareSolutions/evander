@@ -180,7 +180,8 @@ The bundled `evander_elastic_stack_addon` is a headless, general-purpose add-on
 for Elasticsearch and Kibana automation. It intentionally exposes semantic
 operations instead of an arbitrary authenticated HTTP client: agents can inspect
 cluster health, indices, mappings, Kibana status, data views, and saved objects;
-they can create or update data views, import bounded NDJSON saved-object bundles,
+they can bulk-index bounded JSON document batches into explicitly allowlisted
+indices, create or update data views, import bounded NDJSON saved-object bundles,
 and select the default data view. The same operations are available as workflow
 queries and effects.
 
@@ -211,13 +212,16 @@ directory-scoped `provider_state.elastic_stack`, for example:
           "elasticsearch": {
             "base_url": "https://operations-elasticsearch.example.net",
             "auth_profile": "demo-automation"
-          }
+          },
+          "write_index_patterns": ["demo-events-*"]
         }
       },
       "timeout_seconds": 30,
       "max_response_bytes": 2097152,
       "max_import_bytes": 10485760,
-      "max_import_objects": 1000
+      "max_import_objects": 1000,
+      "max_bulk_bytes": 5242880,
+      "max_bulk_documents": 1000
     }
   }
 }
@@ -241,7 +245,19 @@ secret into session metadata:
         "kibana": {
           "base_url": "https://demo-kibana.example.net",
           "auth_profile": "demo-automation"
-        }
+        },
+        "elasticsearch": {
+          "base_url": "https://demo-kibana.example.net/elasticsearch",
+          "auth_profile": "demo-automation"
+        },
+        "write_index_patterns": [
+          "workorderproductionitemfinished",
+          "productionitemfinished",
+          "stepcompleted",
+          "deviationcreated",
+          "productionitemscrapped",
+          "oeeupdatedforstation"
+        ]
       }
     }
   }
@@ -254,6 +270,17 @@ only the required `elastic_stack_*`, `elasticsearch_*`, and `kibana_*` MCP tool
 names to the session. Saved-object imports remain subject to the configured
 byte/object limits and to the target Kibana version's saved-object compatibility
 rules.
+
+Elasticsearch writes are disabled by default. The
+`elasticsearch_bulk_index_documents` tool and
+`effect:elasticsearch:bulk-index-documents` provider accept only a concrete
+lowercase index name matched by the target's `write_index_patterns`. They reject
+empty batches and cap each call by `max_bulk_documents` and `max_bulk_bytes`.
+Use `id_field` with a deterministic per-event value when a seed operation may be
+retried; Elasticsearch will then replace the same synthetic document instead of
+creating a duplicate. The tool returns bounded success and failure counts rather
+than the full bulk response. It does not expose arbitrary Elasticsearch methods,
+index deletion, or cluster administration.
 
 The add-on supports the public Elasticsearch and Kibana APIs used by Elastic Stack 9.5.2. Kibana
 9 returns only the overall level from `/api/status` to unauthenticated callers; the add-on
@@ -631,6 +658,21 @@ frontier is marked abandoned without changing its immutable source provenance,
 and a durable high-priority re-preparation request is queued for its owner. The
 cancellation audit records both the affected integration boundaries and the
 invalidated context IDs.
+
+Both **Planning** and **Task board** expose the same revision-checked task editor.
+If an operator changes preparation-relevant task fields after a Git checkout was
+prepared, Team abandons the old context, queues a high-priority fresh preparation,
+and shows that re-preparation state beside the task. Branch and worktree names are
+scoped by the preparation generation, so a later dispatch cannot accidentally
+reuse stale container metadata. Priority-only edits do not invalidate preparation.
+
+Policy-v2 integration deliverables with Git dependencies must carry the immutable,
+server-generated dependency-composition manifest from their current Git work
+context. A malformed submission is rejected atomically before deliverable or
+review records are created. Global Team maintenance also reconciles older
+nonterminal malformed candidates: it preserves their Git evidence, retires their
+review handoffs, rejects the candidate, reopens the task, and queues replacement
+work exactly once.
 
 The `Teams` tab includes an org-chart hierarchy view for each team. It renders
 the manager, subordinate agents, nested reporting lines, and unreachable or

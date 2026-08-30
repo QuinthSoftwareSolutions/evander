@@ -26,7 +26,7 @@ from evander_team_addon.git_naming import (
     validate_branch_name,
 )
 
-SCHEMA_VERSION = 18
+SCHEMA_VERSION = 19
 DEFAULT_TEAM_COST_WARNING_RATIO = Decimal("0.8")
 WORKTREE_CLEANUP_INVENTORY_SAMPLE_LIMIT = 200
 TEAM_CHAT_ATTACHMENT_DEFAULT_MIME_TYPES = (
@@ -413,7 +413,6 @@ class AgentAvatar(TeamModel):
     @classmethod
     def _optional_text(cls, value: object) -> str | None:
         return _optional_text(value)
-
 
 class AgentVoiceProfile(TeamModel):
     voice: str | None = None
@@ -2564,6 +2563,7 @@ class GitWorkContext(TeamModel):
     dependency_composition_recovery_id: str | None = None
     manual_dependency_git_sources: list[DependencyGitSource] = Field(default_factory=list)
     dependency_composition_manifest: DependencyCompositionManifest | None = None
+    preparation_generation: str | None = None
     state: GitWorkContextState = GitWorkContextState.ACTIVE
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)
@@ -2580,11 +2580,22 @@ class GitWorkContext(TeamModel):
         "dispatch_id",
         "worktree_path",
         "dependency_composition_recovery_id",
+        "preparation_generation",
         mode="before",
     )
     @classmethod
     def _optional_text(cls, value: object) -> str | None:
         return _optional_text(value)
+
+    @field_validator("preparation_generation")
+    @classmethod
+    def _preparation_generation(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = value.casefold()
+        if re.fullmatch(r"[0-9a-f]{20}", normalized) is None:
+            raise ValueError("preparation_generation must be a 20-character hex fingerprint")
+        return normalized
 
 
 class ReviewProfileCriterion(TeamModel):

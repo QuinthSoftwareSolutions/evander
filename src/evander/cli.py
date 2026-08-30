@@ -2455,6 +2455,7 @@ def status(
             "evander-team-runtime.target",
             "evander-openai-relay.service",
             "evander-http-target-relay.service",
+            "evander-http-target-browser-proxy.service",
             "evander-discord-wake.service",
             "evander-scheduled-wake.service",
             "evander-managed-git-refresh.service",
@@ -2474,10 +2475,14 @@ def status(
         gateway_health_url = vm_defaults.gateway_url
         relay_health_url = f"http://{_normalize_host_for_local_check(cfg.openai_relay_host)}:{cfg.openai_relay_port}/healthz"
         http_target_relay_health_url = f"http://{_normalize_host_for_local_check(cfg.http_target_relay_host)}:{cfg.http_target_relay_port}/healthz"
+        http_target_browser_proxy_health_url = f"http://{_normalize_host_for_local_check(cfg.http_target_browser_proxy_host)}:{cfg.http_target_browser_proxy_port}/healthz"
         health_results = [
             _check_health_endpoint("gateway", gateway_health_url),
             _check_health_endpoint("openai_relay", relay_health_url),
             _check_health_endpoint("http_target_relay", http_target_relay_health_url),
+            _check_health_endpoint(
+                "http_target_browser_proxy", http_target_browser_proxy_health_url
+            ),
         ]
         report["health"] = [asdict(result) for result in health_results]
         for endpoint in health_results:
