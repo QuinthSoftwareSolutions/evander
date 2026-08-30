@@ -4344,6 +4344,28 @@ def test_team_addon_planning_and_operations_views_include_renderer_dependencies(
         project_id="project",
         name="Planning readiness",
     )
+    invalidated_at = datetime(2026, 1, 3, tzinfo=UTC)
+
+    def _seed_preparation_invalidations(state: TeamState) -> TeamState:
+        for item_id, task_id, created_at in (
+            ("preparation-old", "waiting-task", invalidated_at),
+            ("preparation-current", "waiting-task", invalidated_at + timedelta(seconds=1)),
+            ("preparation-blocked", "blocked-task", invalidated_at),
+        ):
+            state.inbox[item_id] = AgentInboxItem(
+                id=item_id,
+                recipient_agent_id="backend",
+                sender_agent_id="lead",
+                task_id=task_id,
+                item_type=TeamInboxItemType.STATUS_REQUEST,
+                state=TeamInboxItemState.PENDING,
+                payload={"kind": "task_preparation_invalidated"},
+                created_at=created_at,
+                updated_at=created_at,
+            )
+        return state
+
+    repo.update(_seed_preparation_invalidations)
     client = _client(tmp_path)
 
     planning = client.get("/api/addons/team-addon/views/planning")
@@ -4354,11 +4376,24 @@ def test_team_addon_planning_and_operations_views_include_renderer_dependencies(
     assert set(planning_state["blockers"]) == set(repo.read().blockers)
     assert set(planning_state["blocker_events"]) == set(repo.read().blocker_events)
     assert planning_state["review_profiles"]["planning-readiness"]["name"] == ("Planning readiness")
+    assert set(planning_state["inbox"]) == {
+        "preparation-current",
+        "preparation-blocked",
+    }
+    assert set(planning_state["resource_tokens"]["inbox"]) == set(planning_state["inbox"])
     assert set(planning_payload["resource_tokens"]["review_profiles"]) == {"planning-readiness"}
     assert all(
         event["blocker_id"] in planning_state["blockers"]
         for event in planning_state["blocker_events"].values()
     )
+
+    task_board = client.get("/api/addons/team-addon/views/task-board")
+
+    assert task_board.status_code == 200
+    assert set(task_board.json()["data"]["state"]["inbox"]) == {
+        "preparation-current",
+        "preparation-blocked",
+    }
 
     operations = client.get("/api/addons/team-addon/views/operations")
 

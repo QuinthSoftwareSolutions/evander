@@ -214,6 +214,8 @@ def test_planning_ui_distinguishes_repreparation_and_active_review() -> None:
     ).read_text(encoding="utf-8")
 
     assert "function latestTaskPreparationInvalidation(taskId)" in source
+    assert "function indexTaskPreparationInvalidations(inbox)" in source
+    assert "taskPreparationInvalidationByTaskId.get(text(taskId))" in source
     assert source.count("${renderPlanningExecutionStatus(task)}") == 3
     assert "Repreparing after task edit" in source
     assert "Fresh preparation is queued." in source

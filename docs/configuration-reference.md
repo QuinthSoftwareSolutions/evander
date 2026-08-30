@@ -1755,7 +1755,7 @@ C# bridge under `integrations/teams-meeting-media-bridge`.
 | `http_target_relay_host`, `http_target_relay_port` | root `host-config.json`, provider config overlays | `src/evander/relays/http_target.py` listener bind and `src/evander/cli.py` status checks. |
 | `http_target_relay_timeout_seconds` | provider config overlays | `src/evander/relays/http_target.py` upstream request timeout. |
 | `http_target_browser_proxy_host`, `http_target_browser_proxy_port` | root `host-config.json`, VM config overlays | Browser forward-proxy listener and guest-reachable endpoint; the default port is `11778`. |
-| `http_target_browser_proxy_connect_timeout_seconds`, `http_target_browser_proxy_idle_timeout_seconds`, `http_target_browser_proxy_max_connections` | root `host-config.json` | Forward-proxy connection and resource bounds. |
+| `http_target_browser_proxy_connect_timeout_seconds`, `http_target_browser_proxy_header_timeout_seconds`, `http_target_browser_proxy_idle_timeout_seconds`, `http_target_browser_proxy_max_connections` | root `host-config.json` | Forward-proxy connection, unauthenticated header, tunnel-idle, and resource bounds. |
 
 The current HTTP target relay is upstream-auth-transparent: it allowlists the upstream destination
 by session and per-target alias, but it forwards guest `Authorization` headers and cookies instead

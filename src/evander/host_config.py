@@ -24,6 +24,7 @@ class HostConfig(BaseModel):
     http_target_browser_proxy_host: str = "0.0.0.0"
     http_target_browser_proxy_port: int = 11778
     http_target_browser_proxy_connect_timeout_seconds: float = 15.0
+    http_target_browser_proxy_header_timeout_seconds: float = 10.0
     http_target_browser_proxy_idle_timeout_seconds: float = 300.0
     http_target_browser_proxy_max_connections: int = 128
     nuget_relay_host: str = "0.0.0.0"
@@ -88,6 +89,9 @@ class HostConfig(BaseModel):
                 "http_target_browser_proxy_port": config.http_target_browser_proxy_port,
                 "http_target_browser_proxy_connect_timeout_seconds": (
                     config.http_target_browser_proxy_connect_timeout_seconds
+                ),
+                "http_target_browser_proxy_header_timeout_seconds": (
+                    config.http_target_browser_proxy_header_timeout_seconds
                 ),
                 "http_target_browser_proxy_idle_timeout_seconds": (
                     config.http_target_browser_proxy_idle_timeout_seconds
@@ -163,6 +167,9 @@ def build_runtime_gateway_config(host_config: HostConfig) -> GatewayConfig:
             "http_target_browser_proxy_port": host_config.http_target_browser_proxy_port,
             "http_target_browser_proxy_connect_timeout_seconds": (
                 host_config.http_target_browser_proxy_connect_timeout_seconds
+            ),
+            "http_target_browser_proxy_header_timeout_seconds": (
+                host_config.http_target_browser_proxy_header_timeout_seconds
             ),
             "http_target_browser_proxy_idle_timeout_seconds": (
                 host_config.http_target_browser_proxy_idle_timeout_seconds

@@ -433,6 +433,7 @@ class GatewayConfig(BaseModel):
     http_target_browser_proxy_host: str = "0.0.0.0"
     http_target_browser_proxy_port: int = Field(default=11778, gt=0, le=65535)
     http_target_browser_proxy_connect_timeout_seconds: float = Field(default=15.0, gt=0)
+    http_target_browser_proxy_header_timeout_seconds: float = Field(default=10.0, gt=0)
     http_target_browser_proxy_idle_timeout_seconds: float = Field(default=300.0, gt=0)
     http_target_browser_proxy_max_connections: int = Field(default=128, ge=1)
     nuget_relay_host: str = "0.0.0.0"

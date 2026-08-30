@@ -89,6 +89,7 @@ from evander_team_addon.models import (
     TaskMutationPolicy,
     TeamTaskKind,
     TeamTaskState,
+    TaskCancellation,
     TaskDeliverableContract,
     agent_project_ids,
     effective_outcome_kind_definitions,
@@ -4540,6 +4541,82 @@ def test_formal_integration_submission_rejects_missing_composition_manifest(
     assert "missing-manifest" not in state.deliverables
     assert "review-missing-manifest" not in state.review_requests
     assert state.tasks["task"].state != TeamTaskState.WAITING_FOR_REVIEW
+
+
+def test_formal_integration_submission_ignores_cancelled_dependency_manifest_sources(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _set_project_git(repo)
+    _seed_task(repo, task_id="dependency")
+    _seed_task(repo, task_id="task")
+
+    def _configure(state: TeamState) -> TeamState:
+        dependency = state.tasks["dependency"]
+        dependency.state = TeamTaskState.CANCELLED
+        dependency.cancellation = TaskCancellation(
+            reason_code="replaced",
+            reason="The retained dependency is no longer part of the integration.",
+            actor_kind="operator",
+            actor_id="operator:jonathan",
+        )
+        dependency.deliverable_ids = ["cancelled-dependency-deliverable"]
+        state.deliverables["cancelled-dependency-deliverable"] = Deliverable(
+            id="cancelled-dependency-deliverable",
+            task_id=dependency.id,
+            producer_agent_id="backend",
+            summary="Older accepted Git dependency evidence.",
+            state=TeamRecordState.ACCEPTED,
+            git_refs=DeliverableGitRefs(
+                agent_branch="agents/session-backend/dependency",
+                commit_sha="b" * 40,
+                submitted_commit_sha="b" * 40,
+            ),
+        )
+        task = state.tasks["task"]
+        task.integration_boundary = True
+        task.dependency_task_ids = [dependency.id]
+        task.deliverable_contract = TaskDeliverableContract(
+            require_git_provenance=True,
+        )
+        return state
+
+    repo.update(_configure)
+    _lease_agent_dispatch(repo, agent_id="backend", dispatch_id="dispatch-cancelled-source")
+    _seed_git_work_context(
+        repo,
+        commit_sha=None,
+        dispatch_id="dispatch-cancelled-source",
+    )
+
+    state, submitted = TeamDeliverableSubmissionCommandService(
+        repo,
+        git_candidate_commit_resolver=lambda **_kwargs: "c" * 40,
+    ).submit_deliverable_for_review_command(
+        session_id="session-backend",
+        deliverable={
+            "id": "cancelled-source-integration",
+            "task_id": "task",
+            "summary": "Candidate prepared without the cancelled dependency.",
+            "branch_context_id": "ctx-task",
+            "git_refs": {
+                "agent_branch": "agents/session-backend/task",
+                "commit_sha": "c" * 40,
+            },
+        },
+        reviews=[{"id": "review-cancelled-source", "reviewer_agent_id": "worker"}],
+        request_id="request-cancelled-source",
+    )
+
+    assert submitted["success"] is True, submitted
+    deliverable = state.deliverables["cancelled-source-integration"]
+    assert deliverable.acceptance_policy_version == 2
+    assert deliverable.dependency_composition_manifest is None
+
+    reconciliation = IntegrationManifestReconciliationService(repo).reconcile()
+
+    assert reconciliation["changed"] is False
+    assert repo.read().deliverables["cancelled-source-integration"].state == TeamRecordState.PENDING
 
 
 def test_legacy_missing_composition_manifest_is_reconciled_idempotently(

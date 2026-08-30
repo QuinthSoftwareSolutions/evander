@@ -128,6 +128,10 @@ def _require_current_dependency_composition_manifest(
         candidate.id
         for candidate in state.deliverables.values()
         if candidate.task_id in task.dependency_task_ids
+        and (
+            (dependency_task := state.tasks.get(candidate.task_id)) is not None
+            and dependency_task.state != TeamTaskState.CANCELLED
+        )
         and candidate.state == TeamRecordState.ACCEPTED
         and candidate.superseded_by_deliverable_id is None
         and _has_git_provenance(candidate)

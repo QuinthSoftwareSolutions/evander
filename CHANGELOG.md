@@ -1,5 +1,15 @@
 # Changelog
 
+## 2026-08-30 - Browser Proxy And Team Review Hardening
+
+- Bound browser proxy HTTP and TLS application authorities to the session-authorized target,
+  rejected excess connections without queueing sockets, and added a short unauthenticated
+  header and TLS ClientHello deadline.
+- Kept cancelled Team dependencies out of policy-v2 composition manifest requirements and
+  missing-manifest reconciliation, matching preparation and acceptance assessment.
+- Scoped Planning and Task board inbox payloads to the latest preparation invalidation per task
+  and indexed those records once for status rendering.
+
 ## 2026-08-30 - Bounded Elasticsearch Demo Seeding
 
 - Added an allowlist-gated, size- and document-bounded Elasticsearch bulk-index tool and workflow

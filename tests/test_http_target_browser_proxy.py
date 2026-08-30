@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import ssl
 from datetime import UTC, datetime, timedelta
 
 from evander.config import GatewayConfig
@@ -40,6 +41,25 @@ def _session(*base_urls: str) -> SessionManifest:
 def _auth(token: str = "correct-token") -> str:
     encoded = base64.b64encode(f"session-browser:{token}".encode()).decode()
     return f"Basic {encoded}"
+
+
+def _tls_client_hello(server_hostname: str | None) -> bytes:
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    context.check_hostname = False
+    context.verify_mode = ssl.CERT_NONE
+    incoming = ssl.MemoryBIO()
+    outgoing = ssl.MemoryBIO()
+    tls = context.wrap_bio(
+        incoming,
+        outgoing,
+        server_side=False,
+        server_hostname=server_hostname,
+    )
+    try:
+        tls.do_handshake()
+    except ssl.SSLWantReadError:
+        pass
+    return outgoing.read()
 
 
 def test_proxy_authenticates_session_and_authorizes_exact_origins() -> None:
@@ -96,23 +116,32 @@ def test_proxy_uses_live_session_targets_for_each_connection() -> None:
     proxy._authorize_origin(second, scheme="https", host="second.test", port=9443)
 
 
-def test_connect_tunnel_relays_bytes_and_denies_unlisted_authority() -> None:
+def test_connect_tunnel_binds_tls_sni_and_denies_unlisted_authority(monkeypatch) -> None:
     async def scenario() -> None:
-        async def echo(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
-            data = await reader.read(16)
-            writer.write(data)
-            await writer.drain()
+        upstream_payloads: asyncio.Queue[bytes] = asyncio.Queue()
+
+        async def capture(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+            await upstream_payloads.put(await reader.read(64 * 1024))
             writer.close()
 
-        echo_server = await asyncio.start_server(echo, "127.0.0.1", 0)
-        echo_port = echo_server.sockets[0].getsockname()[1]
+        upstream_server = await asyncio.start_server(capture, "127.0.0.1", 0)
+        upstream_port = upstream_server.sockets[0].getsockname()[1]
+        original_open_connection = asyncio.open_connection
+
+        async def open_connection(host, port, *args, **kwargs):
+            if host == "allowed.test":
+                host = "127.0.0.1"
+            return await original_open_connection(host, port, *args, **kwargs)
+
+        monkeypatch.setattr(asyncio, "open_connection", open_connection)
         config = GatewayConfig(
+            http_target_browser_proxy_header_timeout_seconds=2,
             http_target_browser_proxy_idle_timeout_seconds=2,
             http_target_browser_proxy_connect_timeout_seconds=2,
         )
         proxy = HttpTargetBrowserProxy(
             config,
-            provider_config_resolver=_Resolver(_session(f"https://127.0.0.1:{echo_port}")),
+            provider_config_resolver=_Resolver(_session(f"https://allowed.test:{upstream_port}")),
         )
         proxy_server = await asyncio.start_server(proxy.handle_client, "127.0.0.1", 0)
         proxy_port = proxy_server.sockets[0].getsockname()[1]
@@ -120,7 +149,7 @@ def test_connect_tunnel_relays_bytes_and_denies_unlisted_authority() -> None:
             reader, writer = await asyncio.open_connection("127.0.0.1", proxy_port)
             writer.write(
                 (
-                    f"CONNECT 127.0.0.1:{echo_port} HTTP/1.1\r\n"
+                    f"CONNECT allowed.test:{upstream_port} HTTP/1.1\r\n"
                     f"Proxy-Authorization: {_auth()}\r\n\r\n"
                 ).encode()
             )
@@ -128,17 +157,37 @@ def test_connect_tunnel_relays_bytes_and_denies_unlisted_authority() -> None:
             assert await reader.readuntil(b"\r\n\r\n") == (
                 b"HTTP/1.1 200 Connection Established\r\n\r\n"
             )
-            writer.write(b"proxy works")
+            allowed_client_hello = _tls_client_hello("allowed.test")
+            writer.write(allowed_client_hello)
             await writer.drain()
-            assert await reader.readexactly(len(b"proxy works")) == b"proxy works"
+            assert await asyncio.wait_for(upstream_payloads.get(), timeout=1) == (
+                allowed_client_hello
+            )
             writer.close()
             await writer.wait_closed()
 
             reader, writer = await asyncio.open_connection("127.0.0.1", proxy_port)
             writer.write(
                 (
-                    "CONNECT unlisted.test:443 HTTP/1.1\r\n"
+                    f"CONNECT allowed.test:{upstream_port} HTTP/1.1\r\n"
                     f"Proxy-Authorization: {_auth()}\r\n\r\n"
+                ).encode()
+            )
+            await writer.drain()
+            assert await reader.readuntil(b"\r\n\r\n") == (
+                b"HTTP/1.1 200 Connection Established\r\n\r\n"
+            )
+            writer.write(_tls_client_hello("unlisted.test"))
+            await writer.drain()
+            assert await asyncio.wait_for(reader.read(), timeout=1) == b""
+            assert await asyncio.wait_for(upstream_payloads.get(), timeout=1) == b""
+            writer.close()
+            await writer.wait_closed()
+
+            reader, writer = await asyncio.open_connection("127.0.0.1", proxy_port)
+            writer.write(
+                (
+                    f"CONNECT unlisted.test:443 HTTP/1.1\r\nProxy-Authorization: {_auth()}\r\n\r\n"
                 ).encode()
             )
             await writer.drain()
@@ -148,9 +197,9 @@ def test_connect_tunnel_relays_bytes_and_denies_unlisted_authority() -> None:
             await writer.wait_closed()
         finally:
             proxy_server.close()
-            echo_server.close()
+            upstream_server.close()
             await proxy_server.wait_closed()
-            await echo_server.wait_closed()
+            await upstream_server.wait_closed()
 
     asyncio.run(scenario())
 
@@ -183,7 +232,7 @@ def test_http_proxy_forwards_absolute_request_without_proxy_credentials() -> Non
             writer.write(
                 (
                     f"GET http://127.0.0.1:{upstream_port}/asset.js HTTP/1.1\r\n"
-                    f"Host: 127.0.0.1:{upstream_port}\r\n"
+                    "Host: unlisted.test\r\n"
                     f"Proxy-Authorization: {_auth()}\r\n\r\n"
                 ).encode()
             )
@@ -192,6 +241,8 @@ def test_http_proxy_forwards_absolute_request_without_proxy_credentials() -> Non
             assert response.endswith(b"forward")
             assert received.startswith(b"GET /asset.js HTTP/1.1\r\n")
             assert b"proxy-authorization" not in received.lower()
+            assert f"\r\nhost: 127.0.0.1:{upstream_port}\r\n".encode() in received.lower()
+            assert b"unlisted.test" not in received
             writer.close()
             await writer.wait_closed()
         finally:
@@ -199,5 +250,50 @@ def test_http_proxy_forwards_absolute_request_without_proxy_credentials() -> Non
             upstream_server.close()
             await proxy_server.wait_closed()
             await upstream_server.wait_closed()
+
+    asyncio.run(scenario())
+
+
+def test_proxy_rejects_excess_connections_without_queuing_and_expires_headers() -> None:
+    async def scenario() -> None:
+        proxy = HttpTargetBrowserProxy(
+            GatewayConfig(
+                http_target_browser_proxy_header_timeout_seconds=0.1,
+                http_target_browser_proxy_max_connections=1,
+            ),
+            provider_config_resolver=_Resolver(_session("https://allowed.test")),
+        )
+        proxy_server = await asyncio.start_server(proxy.handle_client, "127.0.0.1", 0)
+        proxy_port = proxy_server.sockets[0].getsockname()[1]
+        first_writer = None
+        second_writer = None
+        third_writer = None
+        try:
+            first_reader, first_writer = await asyncio.open_connection("127.0.0.1", proxy_port)
+            for _ in range(20):
+                if proxy._connection_slots.empty():
+                    break
+                await asyncio.sleep(0)
+            assert proxy._connection_slots.empty()
+
+            second_reader, second_writer = await asyncio.open_connection("127.0.0.1", proxy_port)
+            second_response = await asyncio.wait_for(second_reader.read(), timeout=1)
+            assert second_response.startswith(b"HTTP/1.1 503 Service Unavailable")
+
+            assert await asyncio.wait_for(first_reader.read(), timeout=1) == b""
+            assert proxy._connection_slots.qsize() == 1
+
+            third_reader, third_writer = await asyncio.open_connection("127.0.0.1", proxy_port)
+            third_writer.write(b"GET /healthz HTTP/1.1\r\nHost: proxy\r\n\r\n")
+            await third_writer.drain()
+            third_response = await asyncio.wait_for(third_reader.read(), timeout=1)
+            assert third_response.startswith(b"HTTP/1.1 200 OK")
+        finally:
+            for writer in (first_writer, second_writer, third_writer):
+                if writer is not None:
+                    writer.close()
+                    await writer.wait_closed()
+            proxy_server.close()
+            await proxy_server.wait_closed()
 
     asyncio.run(scenario())

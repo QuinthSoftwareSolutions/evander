@@ -184,6 +184,7 @@ const teamStateCollectionKeys = [
 ];
 
 let state = emptyState();
+let taskPreparationInvalidationByTaskId = new Map();
 let costState = emptyCostState();
 let runtimeFilter = null;
 let runtimeFilterTouched = false;
@@ -4410,7 +4411,31 @@ async function refreshCostBackfill() {
 }
 
 function normalizeState(payload) {
-  return { ...emptyState(), ...(payload || {}) };
+  const normalized = { ...emptyState(), ...(payload || {}) };
+  taskPreparationInvalidationByTaskId = indexTaskPreparationInvalidations(normalized.inbox);
+  return normalized;
+}
+
+function indexTaskPreparationInvalidations(inbox) {
+  const latestByTaskId = new Map();
+  values(inbox).forEach((item) => {
+    const taskId = text(item.task_id);
+    if (!taskId || text(item.payload?.kind) !== "task_preparation_invalidated") {
+      return;
+    }
+    const current = latestByTaskId.get(taskId);
+    if (
+      !current ||
+      String(item.created_at || "") > String(current.created_at || "") ||
+      (
+        String(item.created_at || "") === String(current.created_at || "") &&
+        byId(item, current) < 0
+      )
+    ) {
+      latestByTaskId.set(taskId, item);
+    }
+  });
+  return latestByTaskId;
 }
 
 function normalizeTemplates(payload) {
@@ -14100,18 +14125,7 @@ function latestDispatchForReview(reviewId) {
 }
 
 function latestTaskPreparationInvalidation(taskId) {
-  const normalizedTaskId = text(taskId);
-  return values(state.inbox)
-    .filter(
-      (item) =>
-        text(item.task_id) === normalizedTaskId &&
-        text(item.payload?.kind) === "task_preparation_invalidated",
-    )
-    .sort(
-      (left, right) =>
-        String(right.created_at || "").localeCompare(String(left.created_at || "")) ||
-        byId(left, right),
-    )[0] || null;
+  return taskPreparationInvalidationByTaskId.get(text(taskId)) || null;
 }
 
 function renderPlanningExecutionStatus(task) {

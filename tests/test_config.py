@@ -668,6 +668,21 @@ def test_runtime_gateway_config_carries_npm_audit_facade_bind_settings() -> None
     assert config.npm_audit_facade_port == 18181
 
 
+def test_runtime_gateway_config_carries_browser_proxy_header_timeout() -> None:
+    host_config = HostConfig(
+        runtime_dir="/tmp/evander-runtime",
+        http_target_browser_proxy_header_timeout_seconds=3.5,
+    )
+
+    config = build_runtime_gateway_config(host_config)
+
+    assert config.http_target_browser_proxy_header_timeout_seconds == 3.5
+    assert (
+        HostConfig.from_gateway_config(config).http_target_browser_proxy_header_timeout_seconds
+        == 3.5
+    )
+
+
 def test_azure_openai_provider_config_validates_and_normalizes_full_configuration() -> None:
     config = GatewayConfig.model_validate(
         {

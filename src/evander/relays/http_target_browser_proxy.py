@@ -7,6 +7,7 @@ import binascii
 import logging
 from contextlib import suppress
 from datetime import UTC, datetime
+from ipaddress import ip_address
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -18,6 +19,8 @@ from evander.session_auth import verify_mcp_session_proof_token
 
 LOGGER = logging.getLogger(__name__)
 MAX_HEADER_BYTES = 64 * 1024
+MAX_TLS_CLIENT_HELLO_BYTES = 128 * 1024
+MAX_TLS_RECORD_BYTES = (16 * 1024) + 2048
 BUFFER_SIZE = 64 * 1024
 
 
@@ -25,6 +28,10 @@ class ProxyRequestError(ValueError):
     def __init__(self, status: int, message: str) -> None:
         super().__init__(message)
         self.status = status
+
+
+class TLSClientHelloError(ValueError):
+    """Raised when a CONNECT tunnel does not begin with one bounded ClientHello."""
 
 
 class HttpTargetBrowserProxy:
@@ -38,15 +45,32 @@ class HttpTargetBrowserProxy:
     ) -> None:
         self.config = config
         self.provider_config_resolver = provider_config_resolver or ProviderConfigResolver(config)
-        self._connections = asyncio.Semaphore(config.http_target_browser_proxy_max_connections)
+        self._connection_slots: asyncio.Queue[None] = asyncio.Queue(
+            maxsize=config.http_target_browser_proxy_max_connections
+        )
+        for _ in range(config.http_target_browser_proxy_max_connections):
+            self._connection_slots.put_nowait(None)
 
     async def handle_client(
         self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
     ) -> None:
         peer = writer.get_extra_info("peername")
+        admitted = False
         try:
-            async with self._connections:
-                await self._handle_request(reader, writer)
+            try:
+                self._connection_slots.get_nowait()
+            except asyncio.QueueEmpty:
+                LOGGER.warning("browser proxy connection limit reached peer=%s", peer)
+                await asyncio.wait_for(
+                    self._send_error(writer, 503, "proxy connection limit reached"),
+                    timeout=min(
+                        1.0,
+                        self.config.http_target_browser_proxy_header_timeout_seconds,
+                    ),
+                )
+                return
+            admitted = True
+            await self._handle_request(reader, writer)
         except ProxyRequestError as exc:
             await self._send_error(writer, exc.status, str(exc))
         except (asyncio.IncompleteReadError, ConnectionError, TimeoutError):
@@ -55,6 +79,8 @@ class HttpTargetBrowserProxy:
             LOGGER.exception("browser proxy request failed peer=%s", peer)
             await self._send_error(writer, 502, "browser proxy request failed")
         finally:
+            if admitted:
+                self._connection_slots.put_nowait(None)
             writer.close()
             with suppress(Exception):
                 await writer.wait_closed()
@@ -64,7 +90,7 @@ class HttpTargetBrowserProxy:
     ) -> None:
         raw_headers = await asyncio.wait_for(
             reader.readuntil(b"\r\n\r\n"),
-            timeout=self.config.http_target_browser_proxy_idle_timeout_seconds,
+            timeout=self.config.http_target_browser_proxy_header_timeout_seconds,
         )
         if len(raw_headers) > MAX_HEADER_BYTES:
             raise ProxyRequestError(431, "proxy request headers are too large")
@@ -193,14 +219,40 @@ class HttpTargetBrowserProxy:
             asyncio.open_connection(host, port),
             timeout=self.config.http_target_browser_proxy_connect_timeout_seconds,
         )
-        client_writer.write(b"HTTP/1.1 200 Connection Established\r\n\r\n")
-        await client_writer.drain()
-        await self._relay_bidirectional(
-            client_reader,
-            client_writer,
-            upstream_reader,
-            upstream_writer,
-        )
+        try:
+            client_writer.write(b"HTTP/1.1 200 Connection Established\r\n\r\n")
+            await client_writer.drain()
+            try:
+                async with asyncio.timeout(
+                    self.config.http_target_browser_proxy_header_timeout_seconds
+                ):
+                    client_hello, server_name = await self._read_tls_client_hello(client_reader)
+                self._validate_tunnel_server_name(host, server_name)
+            except (
+                asyncio.IncompleteReadError,
+                ConnectionError,
+                TimeoutError,
+                TLSClientHelloError,
+            ) as exc:
+                LOGGER.warning(
+                    "browser proxy CONNECT TLS binding rejected authority=%s:%s reason=%s",
+                    host,
+                    port,
+                    exc,
+                )
+                return
+            upstream_writer.write(client_hello)
+            await upstream_writer.drain()
+            await self._relay_bidirectional(
+                client_reader,
+                client_writer,
+                upstream_reader,
+                upstream_writer,
+            )
+        finally:
+            upstream_writer.close()
+            with suppress(Exception):
+                await upstream_writer.wait_closed()
 
     async def _forward_http(
         self,
@@ -224,6 +276,7 @@ class HttpTargetBrowserProxy:
             for key, value in headers.items()
             if key not in {"proxy-authorization", "proxy-connection"}
         }
+        filtered_headers["host"] = self._http_host_header(host, port)
         if not is_upgrade:
             filtered_headers["connection"] = "close"
         path = parts.path or "/"
@@ -277,6 +330,130 @@ class HttpTargetBrowserProxy:
                 await upstream_writer.wait_closed()
 
     @staticmethod
+    async def _read_tls_client_hello(
+        reader: asyncio.StreamReader,
+    ) -> tuple[bytes, str | None]:
+        raw_records = bytearray()
+        handshake = bytearray()
+        client_hello_size: int | None = None
+        while client_hello_size is None or len(handshake) < client_hello_size:
+            record_header = await reader.readexactly(5)
+            content_type = record_header[0]
+            record_size = int.from_bytes(record_header[3:5], "big")
+            if content_type != 22:
+                raise TLSClientHelloError("CONNECT tunnel must begin with a TLS ClientHello")
+            if record_size < 1 or record_size > MAX_TLS_RECORD_BYTES:
+                raise TLSClientHelloError("TLS ClientHello record size is invalid")
+            if len(raw_records) + len(record_header) + record_size > MAX_TLS_CLIENT_HELLO_BYTES:
+                raise TLSClientHelloError("TLS ClientHello is too large")
+            record_payload = await reader.readexactly(record_size)
+            raw_records.extend(record_header)
+            raw_records.extend(record_payload)
+            handshake.extend(record_payload)
+            if client_hello_size is None and len(handshake) >= 4:
+                if handshake[0] != 1:
+                    raise TLSClientHelloError("CONNECT tunnel must begin with a TLS ClientHello")
+                client_hello_size = 4 + int.from_bytes(handshake[1:4], "big")
+                if client_hello_size > MAX_TLS_CLIENT_HELLO_BYTES:
+                    raise TLSClientHelloError("TLS ClientHello is too large")
+        client_hello = bytes(handshake[:client_hello_size])
+        return bytes(raw_records), HttpTargetBrowserProxy._client_hello_server_name(client_hello)
+
+    @staticmethod
+    def _client_hello_server_name(client_hello: bytes) -> str | None:
+        if len(client_hello) < 4 or client_hello[0] != 1:
+            raise TLSClientHelloError("invalid TLS ClientHello handshake")
+        if int.from_bytes(client_hello[1:4], "big") != len(client_hello) - 4:
+            raise TLSClientHelloError("invalid TLS ClientHello length")
+        body = memoryview(client_hello)[4:]
+        cursor = 0
+
+        def take(size: int) -> memoryview:
+            nonlocal cursor
+            if size < 0 or cursor + size > len(body):
+                raise TLSClientHelloError("truncated TLS ClientHello")
+            value = body[cursor : cursor + size]
+            cursor += size
+            return value
+
+        take(2 + 32)
+        take(int.from_bytes(take(1), "big"))
+        take(int.from_bytes(take(2), "big"))
+        take(int.from_bytes(take(1), "big"))
+        if cursor == len(body):
+            return None
+        extensions_size = int.from_bytes(take(2), "big")
+        if cursor + extensions_size != len(body):
+            raise TLSClientHelloError("invalid TLS ClientHello extensions length")
+        extensions_end = cursor + extensions_size
+        server_name: str | None = None
+        server_name_extension_seen = False
+        while cursor < extensions_end:
+            extension_type = int.from_bytes(take(2), "big")
+            extension_data = take(int.from_bytes(take(2), "big"))
+            if extension_type != 0:
+                continue
+            if server_name_extension_seen:
+                raise TLSClientHelloError("duplicate TLS server_name extension")
+            server_name_extension_seen = True
+            if len(extension_data) < 2:
+                raise TLSClientHelloError("invalid TLS server_name extension")
+            names_size = int.from_bytes(extension_data[:2], "big")
+            if names_size != len(extension_data) - 2:
+                raise TLSClientHelloError("invalid TLS server_name list length")
+            names_cursor = 2
+            while names_cursor < len(extension_data):
+                if names_cursor + 3 > len(extension_data):
+                    raise TLSClientHelloError("truncated TLS server_name entry")
+                name_type = extension_data[names_cursor]
+                name_size = int.from_bytes(
+                    extension_data[names_cursor + 1 : names_cursor + 3], "big"
+                )
+                names_cursor += 3
+                if names_cursor + name_size > len(extension_data):
+                    raise TLSClientHelloError("truncated TLS server_name value")
+                name_bytes = bytes(extension_data[names_cursor : names_cursor + name_size])
+                names_cursor += name_size
+                if name_type != 0:
+                    continue
+                if server_name is not None or not name_bytes:
+                    raise TLSClientHelloError("TLS ClientHello has ambiguous server names")
+                try:
+                    server_name = name_bytes.decode("ascii")
+                except UnicodeDecodeError as exc:
+                    raise TLSClientHelloError("TLS server_name must be ASCII") from exc
+        return server_name
+
+    @staticmethod
+    def _validate_tunnel_server_name(host: str, server_name: str | None) -> None:
+        normalized_host = host.strip("[]").rstrip(".").casefold()
+        try:
+            ip_address(normalized_host)
+        except ValueError:
+            try:
+                normalized_host = normalized_host.encode("idna").decode("ascii")
+            except UnicodeError as exc:
+                raise TLSClientHelloError("CONNECT authority is not a valid DNS name") from exc
+            if server_name is None:
+                raise TLSClientHelloError("TLS ClientHello server_name is required")
+        if server_name is None:
+            return
+        normalized_server_name = server_name.rstrip(".").casefold()
+        try:
+            normalized_server_name = normalized_server_name.encode("idna").decode("ascii")
+        except UnicodeError as exc:
+            raise TLSClientHelloError("TLS server_name is not a valid DNS name") from exc
+        if normalized_server_name != normalized_host:
+            raise TLSClientHelloError("TLS server_name does not match CONNECT authority")
+
+    @staticmethod
+    def _http_host_header(host: str, port: int) -> str:
+        normalized_host = host.rstrip(".")
+        if ":" in normalized_host and not normalized_host.startswith("["):
+            normalized_host = f"[{normalized_host}]"
+        return normalized_host if port == 80 else f"{normalized_host}:{port}"
+
+    @staticmethod
     def _parse_request_headers(raw: bytes) -> tuple[str, dict[str, str]]:
         try:
             lines = raw.decode("latin-1").split("\r\n")
@@ -318,7 +495,15 @@ class HttpTargetBrowserProxy:
         content_type: str = "text/plain; charset=utf-8",
         headers: dict[str, str] | None = None,
     ) -> None:
-        reasons = {200: "OK", 400: "Bad Request", 403: "Forbidden", 407: "Proxy Authentication Required", 431: "Request Header Fields Too Large", 502: "Bad Gateway"}
+        reasons = {
+            200: "OK",
+            400: "Bad Request",
+            403: "Forbidden",
+            407: "Proxy Authentication Required",
+            431: "Request Header Fields Too Large",
+            502: "Bad Gateway",
+            503: "Service Unavailable",
+        }
         writer.write(f"HTTP/1.1 {status} {reasons.get(status, 'Error')}\r\n".encode("ascii"))
         writer.write(f"Content-Length: {len(body)}\r\n".encode("ascii"))
         writer.write(f"Content-Type: {content_type}\r\nConnection: close\r\n".encode("ascii"))
