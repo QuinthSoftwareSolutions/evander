@@ -27,6 +27,7 @@ from evander_elastic_stack_addon.models import (
     settings_from_provider_state,
 )
 from evander_elastic_stack_addon.providers import (
+    ElasticsearchBulkIndexEffectProvider,
     ElasticsearchIndicesQueryProvider,
     KibanaImportSavedObjectsEffectProvider,
     KibanaSetDefaultDataViewEffectProvider,
@@ -58,7 +59,8 @@ def _provider_state() -> dict[str, Any]:
                     "elasticsearch": {
                         "base_url": "https://elastic.example.test",
                         "auth_profile": "demo-es",
-                    }
+                    },
+                    "write_index_patterns": ["events-*"],
                 }
             },
         }
@@ -74,6 +76,14 @@ def _session_metadata() -> dict[str, Any]:
                         "base_url": ("https://elastic-test-kibana.northeurope.cloudapp.azure.com"),
                         "auth_profile": "demo-caddy",
                     },
+                    "elasticsearch": {
+                        "base_url": (
+                            "https://elastic-test-kibana.northeurope.cloudapp.azure.com/"
+                            "elasticsearch"
+                        ),
+                        "auth_profile": "demo-caddy",
+                    },
+                    "write_index_patterns": ["demo-*"],
                     "metadata": {"environment_alias": "elastic-test"},
                 }
             }
@@ -102,8 +112,19 @@ def test_settings_merge_static_and_session_targets_without_exposing_auth_refs() 
 
     assert [target["target_id"] for target in targets] == ["app-demo", "static"]
     assert targets[0]["kibana_base_url"].startswith("https://elastic-test-kibana")
+    assert targets[0]["elasticsearch_base_url"].endswith("/elasticsearch")
+    assert targets[0]["write_index_patterns"] == ["demo-*"]
     assert "auth_profile" not in targets[0]
     assert "password_env" not in json.dumps(targets)
+
+
+@pytest.mark.parametrize("pattern", ["*", ".internal-*", "Demo-*", "../events-*"])
+def test_settings_reject_unrestricted_or_invalid_write_index_patterns(pattern: str) -> None:
+    state = _provider_state()
+    state["elastic_stack"]["targets"]["static"]["write_index_patterns"] = [pattern]
+
+    with pytest.raises(ValueError, match="write_index_patterns"):
+        settings_from_provider_state(state)
 
 
 def test_settings_reject_unknown_profiles_and_unrestricted_origin_patterns() -> None:
@@ -277,6 +298,133 @@ def test_elasticsearch_queries_use_api_key_and_restrict_index_paths() -> None:
     assert requests[0].url.path == "/_cat/indices/events-*"
     with pytest.raises(ValueError, match="unsupported"):
         client.elasticsearch_get_mappings("static", index_pattern="../_security")
+
+
+def test_elasticsearch_bulk_index_uses_bounded_ndjson_and_summarizes_failures() -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(
+            200,
+            json={
+                "errors": True,
+                "took": 9,
+                "items": [
+                    {"index": {"_index": "demo-events", "_id": "evt-1", "status": 201}},
+                    {
+                        "index": {
+                            "_index": "demo-events",
+                            "_id": "evt-2",
+                            "status": 400,
+                            "error": {
+                                "type": "mapper_parsing_exception",
+                                "reason": "bad timestamp",
+                            },
+                        }
+                    },
+                ],
+            },
+        )
+
+    result = _client(handler).elasticsearch_bulk_index_documents(
+        "app-demo",
+        index_name="demo-events",
+        documents=[
+            {"eventId": "evt-1", "Created": "2026-08-01T10:00:00Z", "count": 3},
+            {"eventId": "evt-2", "Created": "not-a-date", "count": 4},
+        ],
+        id_field="eventId",
+    )
+
+    assert result == {
+        "errors": True,
+        "took": 9,
+        "submitted_document_count": 2,
+        "indexed_document_count": 1,
+        "failed_document_count": 1,
+        "failures": [
+            {
+                "index": "demo-events",
+                "id": "evt-2",
+                "status": 400,
+                "error_type": "mapper_parsing_exception",
+                "reason": "bad timestamp",
+            }
+        ],
+        "failures_truncated": 0,
+    }
+    request = requests[0]
+    assert request.method == "POST"
+    assert request.url.path == "/elasticsearch/demo-events/_bulk"
+    assert request.url.params["refresh"] == "wait_for"
+    assert request.headers["content-type"] == "application/x-ndjson"
+    lines = request.content.decode().splitlines()
+    assert json.loads(lines[0]) == {"index": {"_id": "evt-1"}}
+    assert json.loads(lines[1]) == {
+        "eventId": "evt-1",
+        "Created": "2026-08-01T10:00:00Z",
+        "count": 3,
+    }
+
+
+def test_elasticsearch_bulk_index_enforces_target_index_and_payload_bounds() -> None:
+    client = _client(
+        lambda _request: httpx.Response(
+            200,
+            json={"errors": False, "items": [{"index": {"status": 201}}]},
+        )
+    )
+
+    with pytest.raises(ElasticStackConfigError, match="does not allow writes"):
+        client.elasticsearch_bulk_index_documents(
+            "app-demo",
+            index_name="production-events",
+            documents=[{"eventId": "evt-1"}],
+        )
+    with pytest.raises(ValueError, match="concrete lowercase"):
+        client.elasticsearch_bulk_index_documents(
+            "app-demo",
+            index_name="Demo-*",
+            documents=[{"eventId": "evt-1"}],
+        )
+    with pytest.raises(ValueError, match="missing non-empty id_field"):
+        client.elasticsearch_bulk_index_documents(
+            "app-demo",
+            index_name="demo-events",
+            documents=[{"Created": "2026-08-01T10:00:00Z"}],
+            id_field="eventId",
+        )
+    with pytest.raises(ValueError, match="max_bulk_documents"):
+        client.elasticsearch_bulk_index_documents(
+            "app-demo",
+            index_name="demo-events",
+            documents=[{"eventId": str(index)} for index in range(1001)],
+        )
+    with pytest.raises(ValueError, match="max_bulk_bytes"):
+        client.elasticsearch_bulk_index_documents(
+            "app-demo",
+            index_name="demo-events",
+            documents=[{"payload": "x" * (5 * 1024 * 1024)}],
+        )
+    with pytest.raises(ValueError, match="refresh"):
+        client.elasticsearch_bulk_index_documents(
+            "app-demo",
+            index_name="demo-events",
+            documents=[{"eventId": "evt-1"}],
+            refresh="true",
+        )
+
+
+def test_elasticsearch_bulk_index_rejects_incomplete_bulk_response() -> None:
+    client = _client(lambda _request: httpx.Response(200, json={"errors": True}))
+
+    with pytest.raises(ElasticStackApiError, match="bulk item results"):
+        client.elasticsearch_bulk_index_documents(
+            "app-demo",
+            index_name="demo-events",
+            documents=[{"eventId": "evt-1"}],
+        )
 
 
 def test_client_rejects_origin_before_sending_secret_and_redacts_upstream_errors() -> None:
@@ -594,6 +742,9 @@ def test_mcp_tools_are_policy_scoped_and_delegate_semantic_operations(monkeypatc
         def kibana_list_data_views(self, target_id: str, *, space_id: str | None = None):
             return {"data_view": [{"id": target_id, "space": space_id}]}
 
+        def elasticsearch_bulk_index_documents(self, target_id: str, **kwargs: Any):
+            return {"target_id": target_id, **kwargs}
+
     policy = Policy()
     runtime = SimpleNamespace(policy=policy)
     context = AddonContext(
@@ -612,13 +763,22 @@ def test_mcp_tools_are_policy_scoped_and_delegate_semantic_operations(monkeypatc
     views = tools["kibana_list_data_views"](
         "app-demo", space_id="presentation", session_id="session-1"
     )
+    bulk = tools["elasticsearch_bulk_index_documents"](
+        "app-demo",
+        "demo-events",
+        [{"eventId": "evt-1"}],
+        id_field="eventId",
+        session_id="session-1",
+    )
 
     assert names == MCP_TOOL_NAMES
     assert listed == {"items": [{"target_id": "app-demo"}], "count": 1}
     assert views["data_view"][0] == {"id": "app-demo", "space": "presentation"}
-    assert policy.calls[:2] == [
+    assert bulk["index_name"] == "demo-events"
+    assert policy.calls[:3] == [
         ("session-1", "elastic_stack_list_targets"),
         ("session-1", "kibana_list_data_views"),
+        ("session-1", "elasticsearch_bulk_index_documents"),
     ]
     with pytest.raises(ToolError, match="not allowed"):
         tools["kibana_import_saved_objects"](
@@ -633,6 +793,7 @@ def test_workflow_provider_registration_materializes_and_executes(monkeypatch) -
         "query:kibana:data-views",
     }
     assert set(registration.effect_providers) >= {
+        "effect:elasticsearch:bulk-index-documents",
         "effect:kibana:upsert-data-view",
         "effect:kibana:import-saved-objects",
     }
@@ -670,6 +831,22 @@ def test_workflow_provider_registration_materializes_and_executes(monkeypatch) -
         )
     )
     assert clear_default.data_view_id is None
+    bulk_definition = registration.node_definition_resolvers[
+        "effect:elasticsearch:bulk-index-documents"
+    ](
+        WorkflowNodeEnvelope(
+            id="bulk-index",
+            display_name="Bulk index documents",
+            type="effect:elasticsearch:bulk-index-documents",
+            config={
+                "target_id": "demo",
+                "index_name": "demo-events",
+                "documents": "${{gate-map.documents}}",
+                "id_field": "eventId",
+            },
+        )
+    )
+    assert bulk_definition.refresh == "wait_for"
 
     class FakeClient:
         def elasticsearch_list_indices(self, target_id: str, **kwargs):
@@ -677,6 +854,9 @@ def test_workflow_provider_registration_materializes_and_executes(monkeypatch) -
 
         def kibana_import_saved_objects(self, target_id: str, **kwargs):
             return {"success": True, "target_id": target_id, **kwargs}
+
+        def elasticsearch_bulk_index_documents(self, target_id: str, **kwargs):
+            return {"errors": False, "target_id": target_id, **kwargs}
 
     monkeypatch.setattr(
         "evander_elastic_stack_addon.providers.client_for_provider_context",
@@ -696,6 +876,14 @@ def test_workflow_provider_registration_materializes_and_executes(monkeypatch) -
     assert query.execute()["items"] == [
         {"index": "demo", "index_pattern": "events-*", "include_hidden": False}
     ]
+
+    bulk_effect = ElasticsearchBulkIndexEffectProvider()
+    bulk_effect.effect_definition = bulk_definition
+    bulk_effect.runtime_context = SimpleNamespace()
+    assert (
+        bulk_effect.execute(resolved_config={"documents": [{"eventId": "evt-1"}]})["index_name"]
+        == "demo-events"
+    )
 
     effect = KibanaImportSavedObjectsEffectProvider()
     effect.effect_definition = SimpleNamespace(

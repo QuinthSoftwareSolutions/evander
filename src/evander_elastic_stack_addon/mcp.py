@@ -18,6 +18,7 @@ LIST_TARGETS_TOOL = "elastic_stack_list_targets"
 ELASTICSEARCH_CLUSTER_HEALTH_TOOL = "elasticsearch_get_cluster_health"
 ELASTICSEARCH_LIST_INDICES_TOOL = "elasticsearch_list_indices"
 ELASTICSEARCH_GET_MAPPINGS_TOOL = "elasticsearch_get_mappings"
+ELASTICSEARCH_BULK_INDEX_DOCUMENTS_TOOL = "elasticsearch_bulk_index_documents"
 KIBANA_GET_STATUS_TOOL = "kibana_get_status"
 KIBANA_LIST_DATA_VIEWS_TOOL = "kibana_list_data_views"
 KIBANA_FIND_SAVED_OBJECTS_TOOL = "kibana_find_saved_objects"
@@ -30,6 +31,7 @@ MCP_TOOL_NAMES = (
     ELASTICSEARCH_CLUSTER_HEALTH_TOOL,
     ELASTICSEARCH_LIST_INDICES_TOOL,
     ELASTICSEARCH_GET_MAPPINGS_TOOL,
+    ELASTICSEARCH_BULK_INDEX_DOCUMENTS_TOOL,
     KIBANA_GET_STATUS_TOOL,
     KIBANA_LIST_DATA_VIEWS_TOOL,
     KIBANA_FIND_SAVED_OBJECTS_TOOL,
@@ -59,6 +61,11 @@ MCP_TOOL_CATALOG = (
         ELASTICSEARCH_GET_MAPPINGS_TOOL,
         "Get Elasticsearch mappings",
         "Read mappings for an approved index pattern.",
+    ),
+    _catalog(
+        ELASTICSEARCH_BULK_INDEX_DOCUMENTS_TOOL,
+        "Bulk index Elasticsearch documents",
+        "Index a bounded set of documents into an approved target and index.",
     ),
     _catalog(KIBANA_GET_STATUS_TOOL, "Get Kibana status", "Read Kibana service status."),
     _catalog(
@@ -193,6 +200,35 @@ def register_mcp_tools(server: Any, context: AddonContext) -> tuple[str, ...]:
             lambda client: client.elasticsearch_get_mappings(
                 target_id,
                 index_pattern=index_pattern,
+            ),
+        )
+
+    @server.tool(
+        name=ELASTICSEARCH_BULK_INDEX_DOCUMENTS_TOOL,
+        description=(
+            "Index bounded JSON documents into an approved Elasticsearch index. "
+            "Use id_field for repeatable synthetic-data seeding."
+        ),
+    )
+    def elasticsearch_bulk_index_documents(
+        target_id: str,
+        index_name: str,
+        documents: list[dict[str, Any]],
+        id_field: str | None = None,
+        refresh: str = "wait_for",
+        session_id: str | None = None,
+        ctx: Context | None = None,
+    ) -> dict[str, Any]:
+        return _invoke(
+            ELASTICSEARCH_BULK_INDEX_DOCUMENTS_TOOL,
+            session_id,
+            ctx,
+            lambda client: client.elasticsearch_bulk_index_documents(
+                target_id,
+                index_name=index_name,
+                documents=documents,
+                id_field=id_field,
+                refresh=refresh,
             ),
         )
 

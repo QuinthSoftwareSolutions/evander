@@ -282,9 +282,12 @@ require `repo`, while work-item syncs can run by project/work-item filters.
 
 For the bundled Elastic Stack Add-on, enabling `elastic-stack-addon` exposes
 bounded `elastic_stack_*`, `elasticsearch_*`, and `kibana_*` MCP tools and makes
-`query:elasticsearch:*`, `query:kibana:*`, and `effect:kibana:*` workflow
-providers available. Configure static targets, origin-restricted host-side auth
-profiles, request timeouts, and response/import limits under
+`query:elasticsearch:*`, `query:kibana:*`, `effect:elasticsearch:*`, and
+`effect:kibana:*` workflow providers available. Elasticsearch writes are off by
+default and require a target-level `write_index_patterns` allowlist; the bounded
+bulk tool is additionally constrained by `max_bulk_bytes` and
+`max_bulk_documents`. Configure static targets, origin-restricted host-side auth
+profiles, request timeouts, and response/import/bulk limits under
 `provider_state.elastic_stack`. A demo provisioner may also add target endpoints
 under `session.metadata.elastic_stack.targets`; session metadata can reference a
 configured auth profile but cannot carry or redefine its secret. See

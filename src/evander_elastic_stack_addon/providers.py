@@ -11,6 +11,7 @@ from evander.workflow.catalog import WorkflowEditorFieldDefinition, WorkflowEdit
 from evander.workflow.plugins import ProviderPluginRegistration
 
 from .models import (
+    ElasticsearchBulkIndexEffectDefinition,
     ElasticsearchClusterHealthQueryDefinition,
     ElasticsearchIndicesQueryDefinition,
     ElasticsearchMappingsQueryDefinition,
@@ -25,6 +26,7 @@ from .service import client_for_provider_context
 
 
 _DEFINITIONS: dict[str, type[Any]] = {
+    "effect:elasticsearch:bulk-index-documents": ElasticsearchBulkIndexEffectDefinition,
     "query:elasticsearch:cluster-health": ElasticsearchClusterHealthQueryDefinition,
     "query:elasticsearch:indices": ElasticsearchIndicesQueryDefinition,
     "query:elasticsearch:mappings": ElasticsearchMappingsQueryDefinition,
@@ -48,6 +50,7 @@ def register_providers() -> ProviderPluginRegistration:
             "query:kibana:saved-objects": KibanaSavedObjectsQueryProvider,
         },
         effect_providers={
+            "effect:elasticsearch:bulk-index-documents": ElasticsearchBulkIndexEffectProvider,
             "effect:kibana:upsert-data-view": KibanaUpsertDataViewEffectProvider,
             "effect:kibana:import-saved-objects": KibanaImportSavedObjectsEffectProvider,
             "effect:kibana:set-default-data-view": KibanaSetDefaultDataViewEffectProvider,
@@ -111,6 +114,19 @@ class ElasticsearchMappingsQueryProvider(_ElasticStackProviderMixin, QueryProvid
             index_pattern=_required(payload, "index_pattern"),
         )
         return {"result": result, "indices": result, "count": len(result)}
+
+
+class ElasticsearchBulkIndexEffectProvider(_ElasticStackProviderMixin, EffectProviderBase):
+    def execute(self, *, resolved_config: Mapping[str, Any] | None = None) -> dict[str, Any]:
+        payload = self._payload(resolved_config)
+        result = self._client(payload).elasticsearch_bulk_index_documents(
+            _required(payload, "target_id"),
+            index_name=_required(payload, "index_name"),
+            documents=_objects(payload.get("documents"), "documents"),
+            id_field=_optional(payload.get("id_field")),
+            refresh=payload.get("refresh", "wait_for"),
+        )
+        return {"result": result, **result}
 
 
 class KibanaStatusQueryProvider(_ElasticStackProviderMixin, QueryProviderBase):
@@ -246,6 +262,17 @@ def _strings(value: Any) -> list[str]:
     return [str(item).strip() for item in value if str(item).strip()]
 
 
+def _objects(value: Any, field_name: str) -> list[dict[str, Any]]:
+    if not isinstance(value, (list, tuple)) or not value:
+        raise ValueError(f"{field_name} must be a non-empty list of objects")
+    result: list[dict[str, Any]] = []
+    for position, item in enumerate(value, start=1):
+        if not isinstance(item, Mapping):
+            raise ValueError(f"{field_name} entry {position} must be an object")
+        result.append(dict(item))
+    return result
+
+
 def _field(
     key: str,
     label: str,
@@ -273,6 +300,19 @@ _TARGET_FIELDS = [
 ]
 
 _CATALOG = [
+    WorkflowEditorNodeCatalogEntry(
+        kind="effect",
+        type="effect:elasticsearch:bulk-index-documents",
+        label="Bulk index Elasticsearch documents",
+        description="Index bounded documents into an approved Elasticsearch index.",
+        fields=_TARGET_FIELDS[:2]
+        + [
+            _field("index_name", "Index name", required=True),
+            _field("documents", "Documents", "json", required=True, multiline=True),
+            _field("id_field", "Stable ID field"),
+            _field("refresh", "Refresh policy", default_value="wait_for"),
+        ],
+    ),
     WorkflowEditorNodeCatalogEntry(
         kind="query",
         type="query:elasticsearch:cluster-health",

@@ -4,6 +4,7 @@ import base64
 from collections.abc import Callable, Mapping
 from fnmatch import fnmatchcase
 import json
+import re
 from typing import Any
 from urllib.parse import quote, urlencode
 
@@ -31,6 +32,9 @@ class ElasticStackApiError(RuntimeError):
     def __init__(self, message: str, *, status_code: int | None = None) -> None:
         self.status_code = status_code
         super().__init__(message)
+
+
+_WRITE_INDEX_NAME = re.compile(r"^[a-z0-9][a-z0-9._-]{0,254}$")
 
 
 class ElasticStackClient:
@@ -226,6 +230,50 @@ class ElasticStackClient:
             path=f"/{quote(pattern, safe='*,-_.*')}/_mapping",
         )
 
+    def elasticsearch_bulk_index_documents(
+        self,
+        target_id: str,
+        *,
+        index_name: str,
+        documents: list[Mapping[str, Any]],
+        id_field: str | None = None,
+        refresh: str | bool = "wait_for",
+    ) -> dict[str, Any]:
+        endpoint = self._endpoint(target_id, "elasticsearch")
+        normalized_index = self._writable_index_name(target_id, index_name)
+        normalized_refresh = self._bulk_refresh(refresh)
+        content, document_count = self._bulk_ndjson(documents, id_field=id_field)
+        query = urlencode(
+            {
+                "refresh": normalized_refresh,
+                "filter_path": (
+                    "errors,took,items.*.status,items.*.error,items.*._id,items.*._index"
+                ),
+            }
+        )
+        result = self._response_json(
+            self._request(
+                endpoint=endpoint,
+                method="POST",
+                path=f"/{quote(normalized_index, safe='-_.')}/_bulk?{query}",
+                content=content,
+                content_type="application/x-ndjson",
+            )
+        )
+        if not isinstance(result, Mapping):
+            raise ElasticStackApiError("Elasticsearch returned an invalid bulk response")
+        failures = self._bulk_failures(result.get("items"), expected_count=document_count)
+        errors = bool(result.get("errors")) or bool(failures)
+        return {
+            "errors": errors,
+            "took": result.get("took"),
+            "submitted_document_count": document_count,
+            "indexed_document_count": document_count - len(failures),
+            "failed_document_count": len(failures),
+            "failures": failures[:20],
+            "failures_truncated": max(0, len(failures) - 20),
+        }
+
     def _endpoint(self, target_id: str, endpoint_name: str) -> ElasticStackEndpoint:
         normalized_target_id = normalize_identifier(target_id, field_name="target_id")
         target: ElasticStackTarget | None = self.settings.targets.get(normalized_target_id)
@@ -266,6 +314,8 @@ class ElasticStackClient:
         method: str,
         path: str,
         json_body: Any | None = None,
+        content: bytes | None = None,
+        content_type: str | None = None,
         files: dict[str, Any] | None = None,
         kibana_write: bool = False,
     ) -> httpx.Response:
@@ -280,6 +330,8 @@ class ElasticStackClient:
         headers = self._auth_headers(profile)
         headers["accept"] = "application/json"
         headers["accept-encoding"] = "identity"
+        if content_type:
+            headers["content-type"] = content_type
         if kibana_write:
             headers["kbn-xsrf"] = "evander-elastic-stack-addon"
         url = f"{endpoint.base_url.rstrip('/')}{path}"
@@ -294,6 +346,7 @@ class ElasticStackClient:
                     url,
                     headers=headers,
                     json=json_body,
+                    content=content,
                     files=files,
                 ) as streamed:
                     content = bytearray()
@@ -378,6 +431,101 @@ class ElasticStackClient:
         if not content.endswith(b"\n"):
             content += b"\n"
         return content, object_count
+
+    def _writable_index_name(self, target_id: str, value: str) -> str:
+        normalized = str(value or "").strip()
+        if not _WRITE_INDEX_NAME.fullmatch(normalized) or normalized in {".", ".."}:
+            raise ValueError("index_name must be a concrete lowercase Elasticsearch index name")
+        target = self.settings.targets[normalize_identifier(target_id, field_name="target_id")]
+        if not any(fnmatchcase(normalized, pattern) for pattern in target.write_index_patterns):
+            raise ElasticStackConfigError(
+                f"Elastic Stack target does not allow writes to index {normalized!r}"
+            )
+        return normalized
+
+    def _bulk_ndjson(
+        self,
+        documents: list[Mapping[str, Any]],
+        *,
+        id_field: str | None,
+    ) -> tuple[bytes, int]:
+        if not isinstance(documents, list) or not documents:
+            raise ValueError("documents must be a non-empty list")
+        if len(documents) > self.settings.max_bulk_documents:
+            raise ValueError("documents exceeds max_bulk_documents")
+        normalized_id_field = str(id_field or "").strip() or None
+        if normalized_id_field is not None and len(normalized_id_field) > 256:
+            raise ValueError("id_field must be at most 256 characters")
+        lines: list[str] = []
+        for position, document in enumerate(documents, start=1):
+            if not isinstance(document, Mapping):
+                raise ValueError(f"documents entry {position} must be an object")
+            source = dict(document)
+            action: dict[str, dict[str, str]] = {"index": {}}
+            if normalized_id_field is not None:
+                document_id = str(source.get(normalized_id_field) or "").strip()
+                if not document_id:
+                    raise ValueError(
+                        f"documents entry {position} is missing non-empty id_field "
+                        f"{normalized_id_field!r}"
+                    )
+                if len(document_id.encode("utf-8")) > 512:
+                    raise ValueError(f"documents entry {position} id exceeds 512 bytes")
+                action["index"]["_id"] = document_id
+            try:
+                lines.append(
+                    json.dumps(action, separators=(",", ":"), ensure_ascii=False, allow_nan=False)
+                )
+                lines.append(
+                    json.dumps(source, separators=(",", ":"), ensure_ascii=False, allow_nan=False)
+                )
+            except (TypeError, ValueError) as exc:
+                raise ValueError(f"documents entry {position} is not JSON serializable") from exc
+        content = ("\n".join(lines) + "\n").encode("utf-8")
+        if len(content) > self.settings.max_bulk_bytes:
+            raise ValueError("documents exceeds max_bulk_bytes")
+        return content, len(documents)
+
+    @staticmethod
+    def _bulk_refresh(value: str | bool) -> str:
+        if value is False:
+            return "false"
+        normalized = str(value or "").strip().lower()
+        if normalized not in {"false", "wait_for"}:
+            raise ValueError("refresh must be 'false' or 'wait_for'")
+        return normalized
+
+    @staticmethod
+    def _bulk_failures(value: Any, *, expected_count: int) -> list[dict[str, Any]]:
+        if not isinstance(value, list):
+            raise ElasticStackApiError("Elasticsearch returned invalid bulk item results")
+        if len(value) != expected_count:
+            raise ElasticStackApiError(
+                "Elasticsearch returned an unexpected number of bulk item results"
+            )
+        failures: list[dict[str, Any]] = []
+        for item in value:
+            if not isinstance(item, Mapping) or not item:
+                raise ElasticStackApiError("Elasticsearch returned an invalid bulk item")
+            operation = next(iter(item.values()))
+            if not isinstance(operation, Mapping):
+                raise ElasticStackApiError("Elasticsearch returned an invalid bulk operation")
+            status = operation.get("status")
+            if isinstance(status, int) and 200 <= status < 300 and not operation.get("error"):
+                continue
+            error = operation.get("error")
+            error_type = error.get("type") if isinstance(error, Mapping) else None
+            reason = error.get("reason") if isinstance(error, Mapping) else None
+            failures.append(
+                {
+                    "index": operation.get("_index"),
+                    "id": operation.get("_id"),
+                    "status": status,
+                    "error_type": error_type,
+                    "reason": str(reason)[:500] if reason is not None else None,
+                }
+            )
+        return failures
 
     @staticmethod
     def _response_json(response: httpx.Response) -> Any:

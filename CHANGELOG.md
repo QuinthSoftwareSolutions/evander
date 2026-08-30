@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-08-30 - Bounded Elasticsearch Demo Seeding
+
+- Added an allowlist-gated, size- and document-bounded Elasticsearch bulk-index tool and workflow
+  effect with deterministic document IDs for idempotent synthetic demo-history seeding.
+- Extended the APP demo operating guidance to populate three weeks of production-metrics history
+  before creating and verifying Kibana dashboards.
+
 ## 2026-08-30 - Session-scoped Browser Target Access
 
 - Added an authenticated forward proxy that lets seeded browsers use the real origins of a
