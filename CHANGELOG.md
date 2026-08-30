@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-08-30 - Session-scoped Browser Target Access
+
+- Added an authenticated forward proxy that lets seeded browsers use the real origins of a
+  session's configured HTTP targets without weakening VM or container default-deny egress.
+- Wired the browser proxy into both execution backends and updated APP demo workflows to browse
+  the public UI origin while retaining the path-based relay for programmatic API traffic.
+
 ## 2026-08-30 - Team Preparation Generation Safety
 
 - Persisted a semantic preparation generation on Team Git work contexts and scoped prepared

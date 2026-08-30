@@ -1114,6 +1114,7 @@ def _libvirt_create_vm(
                 "MSSQL_SA_PASSWORD",
                 "HOST_REPO_CODEX_SKILLS_DIR",
                 "EVANDER_MCP_SESSION_TOKEN",
+                "HTTP_TARGET_BROWSER_PROXY_URL",
             )
             launch_step = process_helpers.sudo_env_command(
                 [str(setup_script), *setup_args], run_env, allowed_env_keys

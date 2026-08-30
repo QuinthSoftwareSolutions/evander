@@ -257,6 +257,9 @@ CONFIG_FIELD_TOOLTIPS: dict[str, str] = {
     "container_worker_guest_http_target_relay_base_url": (
         "Container-visible HTTP target relay base URL used inside runner sessions."
     ),
+    "container_worker_guest_http_target_browser_proxy_url": (
+        "Guest-reachable forward proxy used by seeded browsers for session HTTP targets."
+    ),
     "container_worker_guest_nuget_relay_base_url": (
         "Container-visible NuGet relay base URL used inside runner sessions."
     ),
@@ -515,6 +518,12 @@ CONFIG_FIELD_TOOLTIPS: dict[str, str] = {
     ),
     "gateway_url": ("MCP gateway URL exposed to guests and used by CLI health checks."),
     "http_target_relay_host": ("Host address the generic HTTP target relay listens on."),
+    "http_target_browser_proxy_host": (
+        "Host address the session-scoped HTTP target browser proxy listens on."
+    ),
+    "http_target_browser_proxy_port": (
+        "Host port used by the session-scoped HTTP target browser proxy."
+    ),
     "http_target_relay_port": ("Port the generic HTTP target relay listens on."),
     "nuget_relay_host": ("Host address the NuGet relay listens on."),
     "nuget_relay_port": ("Port the NuGet relay listens on."),

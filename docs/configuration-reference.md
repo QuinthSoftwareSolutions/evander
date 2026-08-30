@@ -95,7 +95,7 @@ the checked-in example.
 
 | Parameter | Found in | Consumed by |
 |---|---|---|
-| `ALLOWED_TCP_PORTS` | `config/firewall.env.example` | `scripts/apply_firewall.sh` (nftables allow-list for guest->host TCP ports; current defaults include `22`, `8000`, `11434`, `11666`, `11777` for the HTTP target relay port, `11881` for the npm audit facade, `8081` for Nexus PyPI/npm, and `3142` for apt-cacher-ng). |
+| `ALLOWED_TCP_PORTS` | `config/firewall.env.example` | `scripts/apply_firewall.sh` (nftables allow-list for guest->host TCP ports; current defaults include `11777` for the HTTP target relay and `11778` for the browser proxy). |
 
 ## `config/ado-worker.env.example`
 
@@ -1568,7 +1568,7 @@ configuration file.
 | `gateway_url` | composed runtime config | `src/evander/cli.py` health checks / external endpoint references. |
 | `execution_backend`, `container_worker_base_url`, `container_worker_token_env`, `container_worker_default_image`, `container_worker_images`, `container_worker_codex_auth_mode`, `container_worker_active_tool_timeout_seconds`, `container_worker_job_timeout_seconds`, `container_worker_request_timeout_seconds`, `container_worker_workspace_persistence`, `container_worker_git_allowed_from` | root or directory `providers.json` | `src/evander/execution/container_worker_backend.py` and portable `effect:agent:*` container worker routing. `container_worker_default_image` is the fallback image; `container_worker_images` maps approved aliases to exact image refs such as the separate Codex and Claude runner images. `container_worker_codex_auth_mode` defaults to `metered_api` and is inherited only by Codex sessions. `container_worker_active_tool_timeout_seconds` defaults to 300 and lets the reconciler safely interrupt only a recognized stalled test or build process group while retaining the agent container; the 1800-second `container_worker_job_timeout_seconds` remains the whole-job fallback. `chatgpt_subscription` selects the worker-owned account only for public OpenAI container Codex turns; local and Azure routes use their configured private/API-key path without clearing the stored selection. A public subscription turn fails closed when the account is unavailable. A session override applies on its next turn without replacing the session. `container_worker_git_allowed_from` optionally overrides the `authorized_keys from=` restriction for session-scoped container Git write keys; when unset Evander derives it from `container_worker_base_url`. |
 | `agent_consultation_profiles`, `agent_consultation_default_profile`, `agent_consultation_max_wait_seconds`, `agent_consultation_retention_days`, `agent_consultation_token_secret_env` | root or directory `providers.json` | Request-scoped `consult_codebase` workers. Each named profile requires `model`, is restricted to `container_worker_vm`, and may set `agent_provider`, `model_provider_mode`, `container_image`, `timeout_seconds`, and `max_concurrency`. The gateway pins a managed-Git commit, persists the request, and returns after the bounded wait; the hidden system workflow creates and cleans up the worker. The token field names a host env var and defaults to `AGENT_PROMPT_TOKEN_SECRET`; it never contains the secret itself. |
-| `container_worker_guest_openai_base_url`, `container_worker_guest_anthropic_base_url`, `container_worker_guest_gateway_url`, `container_worker_guest_http_target_relay_base_url`, `container_worker_guest_nuget_relay_base_url`, `container_worker_guest_pypi_index_url`, `container_worker_guest_npm_registry_url` | root `providers.json` | Container session bootstrap files under `/home/agent` for Codex/Claude model relays, MCP gateway, HTTP target relay, NuGet restore traffic, and Nexus-backed PyPI/npm restores. |
+| `container_worker_guest_openai_base_url`, `container_worker_guest_anthropic_base_url`, `container_worker_guest_gateway_url`, `container_worker_guest_http_target_relay_base_url`, `container_worker_guest_http_target_browser_proxy_url`, `container_worker_guest_nuget_relay_base_url`, `container_worker_guest_pypi_index_url`, `container_worker_guest_npm_registry_url` | root `providers.json` | Container session bootstrap files under `/home/agent` for model relays, MCP, HTTP-target API/browser access, and package restores. |
 | `container_worker_mssql_enabled`, `container_worker_mssql_host`, `container_worker_mssql_port` | root `providers.json` | Gateway-side enablement and advertised worker SQL Server endpoint for `mssql_*` MCP provisioning tools. |
 | `model_provider_mode`, `openai_api_base_url`, `openai_api_key_env`, `openai_relay_timeout_seconds`, `local_openai_api_base_url`, `local_openai_api_key`, `local_openai_provider_name`, `azure_openai_endpoint`, `azure_openai_auth_mode`, `azure_openai_api_key_env`, `azure_openai_api_version`, `azure_openai_model_deployments`, `anthropic_api_base_url`, `anthropic_api_key_env`, `anthropic_api_version`, `anthropic_relay_timeout_seconds` | root or directory `providers.json` | `src/evander/relays/openai.py` host relay mode selection and upstream routing. Public mode is the default; local mode forwards OpenAI-compatible requests to a host-local endpoint such as Ollama and uses a placeholder configured key rather than a host secret env var. Azure mode requires the endpoint, host env-var name, api-version, and logical-model-to-deployment mapping. Anthropic mode forwards supported Messages API HTTP endpoints and injects host-side `x-api-key`. `azure_openai_auth_mode` currently accepts only `api_key`. Legacy `openai_provider_mode` is accepted as an alias for `model_provider_mode`. |
 | `local_openai_max_concurrency` | root `providers.json` | Optional host-global limit for concurrent agent turns whose fully resolved provider mode is `local_openai`, across VM and container-worker backends. Excess prompts enter the durable FIFO prompt queue and are admitted as running turns finish. Omit the field for unlimited concurrency. Child directories cannot override it. |
@@ -1751,6 +1751,8 @@ C# bridge under `integrations/teams-meeting-media-bridge`.
 |---|---|---|
 | `http_target_relay_host`, `http_target_relay_port` | root `host-config.json`, provider config overlays | `src/evander/relays/http_target.py` listener bind and `src/evander/cli.py` status checks. |
 | `http_target_relay_timeout_seconds` | provider config overlays | `src/evander/relays/http_target.py` upstream request timeout. |
+| `http_target_browser_proxy_host`, `http_target_browser_proxy_port` | root `host-config.json`, VM config overlays | Browser forward-proxy listener and guest-reachable endpoint; the default port is `11778`. |
+| `http_target_browser_proxy_connect_timeout_seconds`, `http_target_browser_proxy_idle_timeout_seconds`, `http_target_browser_proxy_max_connections` | root `host-config.json` | Forward-proxy connection and resource bounds. |
 
 The current HTTP target relay is upstream-auth-transparent: it allowlists the upstream destination
 by session and per-target alias, but it forwards guest `Authorization` headers and cookies instead
@@ -1759,6 +1761,12 @@ of injecting host-side credentials. Tokenized sessions may receive an
 base URL as opaque and append `/session/<session-id>/target/<alias>/`. The APP demo workflow is
 one consumer layered on top of this generic relay pattern and can register separate UI and API
 aliases for the same provisioned environment.
+
+The browser proxy authenticates with the existing session id and MCP session token, then permits
+only origins present in that session's current HTTP targets. It does not terminate TLS or rewrite
+content, so browsers retain the application's public origin and normal CORS behavior. HTTPS
+CONNECT authorization is origin-wide: a target configured with a path grants that session's
+browser access to the target's complete scheme, host, and port.
 
 ### NuGet relay keys
 

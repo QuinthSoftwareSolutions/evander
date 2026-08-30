@@ -107,6 +107,86 @@ def test_playwright_session_prompt_explains_repo_local_launch_contract() -> None
     assert PLAYWRIGHT_CONTAINER_PROMPT_MARKER in turn.prompt
 
 
+def test_playwright_launch_helper_applies_session_browser_proxy(tmp_path: Path) -> None:
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("node is required for the Playwright launch helper")
+    helper_file = next(
+        entry
+        for entry in _playwright_session_files()
+        if entry["destination_path"] == "/home/agent/.evander/playwright-launch.mjs"
+    )
+    helper_path = tmp_path / "playwright-launch.mjs"
+    helper_path.write_text(str(helper_file["content"]), encoding="utf-8")
+    env = {
+        **os.environ,
+        "PLAYWRIGHT_MCP_EXECUTABLE_PATH": "/opt/chromium",
+        "EVANDER_HTTP_TARGET_BROWSER_PROXY_URL": "http://control-plane.test:11778",
+        "EVANDER_SESSION_ID": "session-playwright",
+        "EVANDER_MCP_SESSION_TOKEN": "session-token",
+    }
+    result = subprocess.run(
+        [
+            node,
+            "-e",
+            (
+                "const helper = await import(process.argv[1]);"
+                "process.stdout.write(JSON.stringify(helper.seededChromiumLaunchOptions({ headless: true })));"
+            ),
+            helper_path.as_uri(),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout)["proxy"] == {
+        "server": "http://control-plane.test:11778",
+        "username": "session-playwright",
+        "password": "session-token",
+    }
+
+
+def test_playwright_launch_helper_rejects_conflicting_proxy(tmp_path: Path) -> None:
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("node is required for the Playwright launch helper")
+    helper_file = next(
+        entry
+        for entry in _playwright_session_files()
+        if entry["destination_path"] == "/home/agent/.evander/playwright-launch.mjs"
+    )
+    helper_path = tmp_path / "playwright-launch.mjs"
+    helper_path.write_text(str(helper_file["content"]), encoding="utf-8")
+    env = {
+        **os.environ,
+        "PLAYWRIGHT_MCP_EXECUTABLE_PATH": "/opt/chromium",
+        "EVANDER_HTTP_TARGET_BROWSER_PROXY_URL": "http://control-plane.test:11778",
+        "EVANDER_SESSION_ID": "session-playwright",
+        "EVANDER_MCP_SESSION_TOKEN": "session-token",
+    }
+    result = subprocess.run(
+        [
+            node,
+            "-e",
+            (
+                "const helper = await import(process.argv[1]);"
+                "helper.seededChromiumLaunchOptions({ proxy: { server: 'http://other.test' } });"
+            ),
+            helper_path.as_uri(),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+
+    assert result.returncode != 0
+    assert "cannot replace the Evander session proxy" in result.stderr
+
+
 def test_non_playwright_session_does_not_receive_launch_guidance_or_helper() -> None:
     session = SimpleNamespace(metadata={"playwright": False}, codex_auth_mode=None)
     command = container_prompt_command(

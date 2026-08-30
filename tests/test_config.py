@@ -25,6 +25,7 @@ from evander.models import (
 from evander.policy_config import EffectivePolicyConfig
 from evander.effects.providers.agent_session import (
     container_worker_guest_anthropic_base_url,
+    container_worker_guest_http_target_browser_proxy_url,
     container_worker_guest_http_target_relay_base_url,
     container_worker_guest_npm_registry_url,
     container_worker_guest_pypi_index_url,
@@ -580,6 +581,10 @@ def test_model_provider_mode_accepts_legacy_openai_provider_mode_alias() -> None
             "container_worker_guest_http_target_relay_base_url",
             " http://worker-http-target.test:11777/ ",
         ),
+        (
+            "container_worker_guest_http_target_browser_proxy_url",
+            " http://worker-http-target.test:11778/ ",
+        ),
         ("container_worker_guest_nuget_relay_base_url", " http://worker-nuget.test:11666/ "),
         (
             "container_worker_guest_pypi_index_url",
@@ -626,6 +631,10 @@ def test_http_url_fields_are_trimmed_and_trailing_slash_is_removed(
         ("container_worker_guest_anthropic_base_url", "worker-relay.test:11434"),
         ("container_worker_guest_gateway_url", "ftp://worker-gateway.test/mcp"),
         ("container_worker_guest_http_target_relay_base_url", "worker-http-target.test:11777"),
+        (
+            "container_worker_guest_http_target_browser_proxy_url",
+            "worker-http-target.test:11778",
+        ),
         ("container_worker_guest_nuget_relay_base_url", ""),
         ("container_worker_guest_pypi_index_url", "nexus.test:8081/repository/pypi-all/simple"),
         ("container_worker_guest_npm_registry_url", "ftp://nexus.test/repository/npm-all/"),
@@ -883,6 +892,22 @@ def test_container_worker_package_cache_url_derivation_does_not_change_relays() 
     assert container_worker_guest_anthropic_base_url(config) == "http://10.20.30.40:11434"
     assert container_worker_guest_nuget_relay_base_url(config) == "http://10.20.30.40:11666"
     assert container_worker_guest_http_target_relay_base_url(config) == "http://10.20.30.40:11777"
+    assert (
+        container_worker_guest_http_target_browser_proxy_url(config)
+        == "http://10.20.30.40:11778"
+    )
+
+    configured_relay = config.model_copy(
+        update={
+            "container_worker_guest_http_target_relay_base_url": (
+                "http://worker-private.test:11777"
+            )
+        }
+    )
+    assert (
+        container_worker_guest_http_target_browser_proxy_url(configured_relay)
+        == "http://worker-private.test:11778"
+    )
 
 
 def test_container_worker_mssql_config_fields_are_validated_and_redacted_by_default() -> None:

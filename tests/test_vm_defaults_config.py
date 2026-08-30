@@ -59,6 +59,7 @@ def test_vm_defaults_resolver_applies_root_and_child_overlays(tmp_path: Path) ->
         "ubuntu-noble": "noble-team.qcow2",
     }
     assert effective.guest_http_target_relay_base_url() == "http://10.0.0.1:14000"
+    assert effective.guest_http_target_browser_proxy_url() == "http://10.0.0.1:11778"
     assert effective.guest_openai_base_url() == "http://10.0.0.1:12000/v1"
     assert effective.guest_nuget_relay_base_url() == "http://10.0.0.1:13000"
 

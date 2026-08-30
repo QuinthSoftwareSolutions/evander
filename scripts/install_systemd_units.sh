@@ -69,6 +69,7 @@ EVANDER_UNITS=(
   evander-nuget-relay.service
   evander-npm-audit-facade.service
   evander-http-target-relay.service
+  evander-http-target-browser-proxy.service
   evander-ado-worker.service
   evander-proxy-issue-sync.service
   evander-discord-ingest.service
@@ -499,6 +500,10 @@ render_unit \
   "${SYSTEMD_DIR}/evander-http-target-relay.service"
 
 render_unit \
+  "${ROOT_DIR}/systemd/evander-http-target-browser-proxy.service.template" \
+  "${SYSTEMD_DIR}/evander-http-target-browser-proxy.service"
+
+render_unit \
   "${ROOT_DIR}/systemd/evander-ado-worker.service.template" \
   "${SYSTEMD_DIR}/evander-ado-worker.service"
 
@@ -559,6 +564,7 @@ Installed systemd units:
   evander-nuget-relay.service
   evander-npm-audit-facade.service
   evander-http-target-relay.service
+  evander-http-target-browser-proxy.service
   evander-ado-worker.service
   evander-proxy-issue-sync.service
   evander-discord-ingest.service
@@ -591,6 +597,7 @@ Next steps:
      sudo systemctl start evander-nuget-relay.service
      sudo systemctl start evander-npm-audit-facade.service
      sudo systemctl start evander-http-target-relay.service
+     sudo systemctl start evander-http-target-browser-proxy.service
      sudo systemctl start evander-ado-worker.service
      sudo systemctl start evander-proxy-issue-sync.service
      sudo systemctl start evander-discord-ingest.service

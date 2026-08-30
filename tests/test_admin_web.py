@@ -12173,6 +12173,8 @@ def test_admin_web_configuration_state_exposes_grouped_tabs(tmp_path: Path) -> N
         "http_target_relay_host",
         "http_target_relay_port",
         "http_target_relay_timeout_seconds",
+        "http_target_browser_proxy_host",
+        "http_target_browser_proxy_port",
     }
     nuget = next(section for section in network["sections"] if section["title"] == "NuGet")
     assert {field["field_name"] for field in nuget["fields"]} == {

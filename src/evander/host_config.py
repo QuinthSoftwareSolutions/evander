@@ -21,6 +21,11 @@ class HostConfig(BaseModel):
     openai_relay_port: int = 11434
     http_target_relay_host: str = "0.0.0.0"
     http_target_relay_port: int = 11777
+    http_target_browser_proxy_host: str = "0.0.0.0"
+    http_target_browser_proxy_port: int = 11778
+    http_target_browser_proxy_connect_timeout_seconds: float = 15.0
+    http_target_browser_proxy_idle_timeout_seconds: float = 300.0
+    http_target_browser_proxy_max_connections: int = 128
     nuget_relay_host: str = "0.0.0.0"
     nuget_relay_port: int = 11666
     npm_audit_facade_host: str = "0.0.0.0"
@@ -79,6 +84,17 @@ class HostConfig(BaseModel):
                 "openai_relay_port": config.openai_relay_port,
                 "http_target_relay_host": config.http_target_relay_host,
                 "http_target_relay_port": config.http_target_relay_port,
+                "http_target_browser_proxy_host": config.http_target_browser_proxy_host,
+                "http_target_browser_proxy_port": config.http_target_browser_proxy_port,
+                "http_target_browser_proxy_connect_timeout_seconds": (
+                    config.http_target_browser_proxy_connect_timeout_seconds
+                ),
+                "http_target_browser_proxy_idle_timeout_seconds": (
+                    config.http_target_browser_proxy_idle_timeout_seconds
+                ),
+                "http_target_browser_proxy_max_connections": (
+                    config.http_target_browser_proxy_max_connections
+                ),
                 "nuget_relay_host": config.nuget_relay_host,
                 "nuget_relay_port": config.nuget_relay_port,
                 "npm_audit_facade_host": config.npm_audit_facade_host,
@@ -143,6 +159,17 @@ def build_runtime_gateway_config(host_config: HostConfig) -> GatewayConfig:
             "openai_relay_port": host_config.openai_relay_port,
             "http_target_relay_host": host_config.http_target_relay_host,
             "http_target_relay_port": host_config.http_target_relay_port,
+            "http_target_browser_proxy_host": host_config.http_target_browser_proxy_host,
+            "http_target_browser_proxy_port": host_config.http_target_browser_proxy_port,
+            "http_target_browser_proxy_connect_timeout_seconds": (
+                host_config.http_target_browser_proxy_connect_timeout_seconds
+            ),
+            "http_target_browser_proxy_idle_timeout_seconds": (
+                host_config.http_target_browser_proxy_idle_timeout_seconds
+            ),
+            "http_target_browser_proxy_max_connections": (
+                host_config.http_target_browser_proxy_max_connections
+            ),
             "nuget_relay_host": host_config.nuget_relay_host,
             "nuget_relay_port": host_config.nuget_relay_port,
             "npm_audit_facade_host": host_config.npm_audit_facade_host,

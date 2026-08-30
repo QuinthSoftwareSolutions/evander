@@ -320,6 +320,7 @@ class GatewayConfig(BaseModel):
     container_worker_guest_anthropic_base_url: str | None = None
     container_worker_guest_gateway_url: str | None = None
     container_worker_guest_http_target_relay_base_url: str | None = None
+    container_worker_guest_http_target_browser_proxy_url: str | None = None
     container_worker_guest_nuget_relay_base_url: str | None = None
     container_worker_guest_pypi_index_url: str | None = None
     container_worker_guest_npm_registry_url: str | None = None
@@ -429,6 +430,11 @@ class GatewayConfig(BaseModel):
     http_target_relay_host: str = "0.0.0.0"
     http_target_relay_port: int = 11777
     http_target_relay_timeout_seconds: float = 300.0
+    http_target_browser_proxy_host: str = "0.0.0.0"
+    http_target_browser_proxy_port: int = Field(default=11778, gt=0, le=65535)
+    http_target_browser_proxy_connect_timeout_seconds: float = Field(default=15.0, gt=0)
+    http_target_browser_proxy_idle_timeout_seconds: float = Field(default=300.0, gt=0)
+    http_target_browser_proxy_max_connections: int = Field(default=128, ge=1)
     nuget_relay_host: str = "0.0.0.0"
     nuget_relay_port: int = 11666
     nuget_public_feed_base_url: str = "https://api.nuget.org"
@@ -586,6 +592,7 @@ class GatewayConfig(BaseModel):
         "container_worker_guest_anthropic_base_url",
         "container_worker_guest_gateway_url",
         "container_worker_guest_http_target_relay_base_url",
+        "container_worker_guest_http_target_browser_proxy_url",
         "container_worker_guest_nuget_relay_base_url",
         "container_worker_guest_pypi_index_url",
         "container_worker_guest_npm_registry_url",
@@ -646,6 +653,7 @@ class GatewayConfig(BaseModel):
         "container_worker_guest_anthropic_base_url",
         "container_worker_guest_gateway_url",
         "container_worker_guest_http_target_relay_base_url",
+        "container_worker_guest_http_target_browser_proxy_url",
         "container_worker_guest_nuget_relay_base_url",
         "container_worker_guest_pypi_index_url",
         "container_worker_guest_npm_registry_url",

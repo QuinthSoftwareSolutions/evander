@@ -59,6 +59,7 @@ def test_install_systemd_units_preflight_checks_for_mssql_worker_password_when_e
     assert "evander-teams-notifications.service" in text
     assert "evander-trigger-orchestrator.service" in text
     assert "evander-http-target-relay.service" in text
+    assert "evander-http-target-browser-proxy.service" in text
     assert "evander-didww-sip-bridge.service" in text
     assert "evander-admin-web.service" in text
     assert "evander-npm-audit-facade.service" in text

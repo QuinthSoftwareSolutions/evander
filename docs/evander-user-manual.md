@@ -8637,6 +8637,7 @@ The trigger worker illustrates why the distinction matters: its persistent unit 
 | `evander-nuget-relay.service` | `evander-nuget-relay` | Allowlisted NuGet feeds and cache | .NET workloads need packages |
 | `evander-npm-audit-facade.service` | `evander-npm-audit-facade` | Narrow npm audit/package-cache surface | Front-end workloads need it |
 | `evander-http-target-relay.service` | `evander-http-target-relay` | Session-scoped, allowlisted external HTTP targets | A workflow grants an HTTP target |
+| `evander-http-target-browser-proxy.service` | `evander-http-target-browser-proxy` | Authenticated browser access to session HTTP target origins | Seeded browser automation is used |
 | `evander-didww-sip-bridge.service` | `evander-didww-sip-bridge` | DIDWW/ARI telephony and realtime voice bridge | Telephony is configured |
 | `evander-ado-worker.service` | `evander-ado-worker` | Azure DevOps PR-feedback and completion polling | ADO PR automation is configured; work-item intake is workflow-owned |
 | `evander-proxy-issue-sync.service` | `evander-proxy-issue-sync` | Refreshes proxy issue status | Proxy issue providers are configured |
@@ -8654,7 +8655,7 @@ The container worker is intentionally absent from this list. `evander-worker-dae
 
 ## 28.3 Default guest-reachable ports
 
-The firewall's checked-in default is `ALLOWED_TCP_PORTS="22 8000 11434 11666 11777 11881 8081 3142"`. Allowing a port makes a narrow host surface reachable; it does not grant arbitrary host access.
+The firewall's checked-in default is `ALLOWED_TCP_PORTS="22 8000 11434 11666 11777 11778 11881 8081 3142"`. Allowing a port makes a narrow host surface reachable; it does not grant arbitrary host access.
 
 | Port | Surface | Typical guest use | Important qualification |
 |---:|---|---|---|
@@ -8663,6 +8664,7 @@ The firewall's checked-in default is `ALLOWED_TCP_PORTS="22 8000 11434 11666 117
 | 11434 | Model relay | OpenAI-compatible `/v1` and configured Anthropic surface | The host keeps upstream credentials |
 | 11666 | NuGet relay | Restore from configured NuGet feeds | It is not a general HTTP proxy; health is `/healthz` |
 | 11777 | HTTP target relay | Reach a session allowlist of external targets | Guest-supplied auth can pass through; host secrets are not injected |
+| 11778 | HTTP target browser proxy | Browse configured session target origins without rewriting them | Session id and proof token authenticate the proxy |
 | 11881 | npm audit facade | Narrow npm audit/cache operations | It is not general npm internet access |
 | 8081 | Nexus cache | PyPI/npm package cache when enabled | Optional host package-cache service |
 | 3142 | apt-cacher-ng | Worker provisioning package cache | Optional and primarily for provisioning |

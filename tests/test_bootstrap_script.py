@@ -370,7 +370,8 @@ def test_repo_local_app_multi_env_skill_exists() -> None:
     assert "Please create a APP demo" in skill
     assert "Use this skill by default for sandboxed agents" in skill
     assert "APP_API_TARGET_ALIAS" in skill
-    assert "APP_UI_TARGET_ALIAS" in skill
+    assert "EVANDER_HTTP_TARGET_BROWSER_PROXY_URL" in skill
+    assert "launchSeededChromium" in skill
     assert "OPENAI_BASE_URL" in skill
     assert "imagegen" in skill
     assert "never guess between multiple demo environments by recency alone" in skill

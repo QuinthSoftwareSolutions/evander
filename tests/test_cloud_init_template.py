@@ -11,6 +11,9 @@ def test_cloud_init_contains_provider_neutral_session_and_profile_exports() -> N
     assert "/home/agent/.agent/config.env" in template
     assert "EVANDER_PROVIDER_CONFIG_VERSION=1" in template
     assert "HTTP_TARGET_RELAY_BASE_URL=__HTTP_TARGET_RELAY_BASE_URL__" in template
+    assert (
+        "EVANDER_HTTP_TARGET_BROWSER_PROXY_URL=__HTTP_TARGET_BROWSER_PROXY_URL__" in template
+    )
     assert "EVANDER_LLM_BASE_URL=__LLM_BASE_URL__" in template
     assert "EVANDER_ANTHROPIC_BASE_URL=__ANTHROPIC_BASE_URL__" in template
     assert "ANTHROPIC_BASE_URL=__ANTHROPIC_BASE_URL__" in template

@@ -143,6 +143,7 @@ _CONTAINER_WORKER_PROVIDER_FIELDS: tuple[tuple[str, str], ...] = (
     ("providers", "container_worker_guest_anthropic_base_url"),
     ("providers", "container_worker_guest_gateway_url"),
     ("providers", "container_worker_guest_http_target_relay_base_url"),
+    ("providers", "container_worker_guest_http_target_browser_proxy_url"),
     ("providers", "container_worker_guest_nuget_relay_base_url"),
     ("providers", "container_worker_guest_pypi_index_url"),
     ("providers", "container_worker_guest_npm_registry_url"),
@@ -226,6 +227,8 @@ _VM_GATEWAY_FIELDS: tuple[tuple[str, str], ...] = (("vm", "gateway_url"),)
 _VM_HTTP_TARGET_RELAY_FIELDS: tuple[tuple[str, str], ...] = (
     ("vm", "http_target_relay_host"),
     ("vm", "http_target_relay_port"),
+    ("vm", "http_target_browser_proxy_host"),
+    ("vm", "http_target_browser_proxy_port"),
 )
 _VM_NUGET_RELAY_FIELDS: tuple[tuple[str, str], ...] = (
     ("vm", "nuget_relay_host"),

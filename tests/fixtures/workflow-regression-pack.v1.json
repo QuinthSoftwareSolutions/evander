@@ -299,7 +299,7 @@
       },
       {
         "config": {
-          "prompt": "APP API alias: ${{gate-map-app-demo-metadata-1.app_api_alias}}\nAPP UI alias: ${{gate-map-app-demo-metadata-1.app_ui_alias}}\nAPP API base URL: ${{gate-map-app-demo-metadata-1.app_base_url}}\nPublic UI URL: ${{gate-map-app-demo-metadata-1.app_public_url}}\nUI relay URL: $HTTP_TARGET_RELAY_BASE_URL/session/${{gate-filter-5.session_id}}/target/${{gate-map-app-demo-metadata-1.app_ui_alias}}/\nAPI relay URL: $HTTP_TARGET_RELAY_BASE_URL/session/${{gate-filter-5.session_id}}/target/${{gate-map-app-demo-metadata-1.app_api_alias}}/",
+          "prompt": "APP API alias: ${{gate-map-app-demo-metadata-1.app_api_alias}}\nAPP UI alias: ${{gate-map-app-demo-metadata-1.app_ui_alias}}\nAPP API base URL: ${{gate-map-app-demo-metadata-1.app_base_url}}\nPublic UI URL: ${{gate-map-app-demo-metadata-1.app_public_url}}\nBrowser UI URL: ${{gate-map-app-demo-metadata-1.app_public_url}} (launch Chromium with EVANDER_PLAYWRIGHT_LAUNCH_HELPER)\nAPI relay URL: $HTTP_TARGET_RELAY_BASE_URL/session/${{gate-filter-5.session_id}}/target/${{gate-map-app-demo-metadata-1.app_api_alias}}/",
           "resume_thread_id": "${{query-session-context-4.metadata.agent_thread_id ?? null}}"
         },
         "id": "effect-agent-prompt-9",

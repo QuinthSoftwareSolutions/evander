@@ -734,6 +734,19 @@ def container_worker_guest_http_target_relay_base_url(config: GatewayConfig) -> 
     )
 
 
+def container_worker_guest_http_target_browser_proxy_url(config: GatewayConfig) -> str:
+    configured = normalize_optional_string(
+        config.container_worker_guest_http_target_browser_proxy_url
+    )
+    if configured:
+        return configured
+    return _service_url_from_gateway_url(
+        container_worker_guest_http_target_relay_base_url(config),
+        port=config.http_target_browser_proxy_port,
+        path="",
+    )
+
+
 def container_worker_guest_pypi_index_url(config: GatewayConfig) -> str:
     configured = normalize_optional_string(config.container_worker_guest_pypi_index_url)
     if configured:
@@ -855,6 +868,7 @@ def build_container_session_files(
     http_target_relay_base_url = container_http_target_relay_base_url(
         config, mcp_session_token=mcp_session_token
     )
+    http_target_browser_proxy_url = container_worker_guest_http_target_browser_proxy_url(config)
     nuget_relay_base_url = container_worker_guest_nuget_relay_base_url(config)
     pypi_index_url = container_worker_guest_pypi_index_url(config)
     resolved_npm_registry_url = normalize_optional_http_url(
@@ -887,6 +901,7 @@ def build_container_session_files(
         "AGENT_PROVIDER": resolved_agent_provider,
         "EVANDER_GATEWAY_URL": gateway_url,
         "EVANDER_HTTP_TARGET_RELAY_BASE_URL": http_target_relay_base_url,
+        "EVANDER_HTTP_TARGET_BROWSER_PROXY_URL": http_target_browser_proxy_url,
         "EVANDER_LLM_BASE_URL": openai_base_url,
         "EVANDER_ANTHROPIC_BASE_URL": anthropic_base_url,
         "OPENAI_BASE_URL": openai_base_url,
@@ -1899,26 +1914,9 @@ def _container_profile_content(*, dotnet: bool, playwright: bool) -> str:
 
 
 def _playwright_launch_helper_content() -> str:
-    return """export function seededChromiumLaunchOptions(options = {}) {
-  if (options === null || typeof options !== "object" || Array.isArray(options)) {
-    throw new TypeError("Playwright launch options must be an object.");
-  }
-  const executablePath = process.env.PLAYWRIGHT_MCP_EXECUTABLE_PATH;
-  if (!executablePath) {
-    throw new Error(
-      "PLAYWRIGHT_MCP_EXECUTABLE_PATH is unavailable. Reprovision this session with playwright=true.",
-    );
-  }
-  return { ...options, executablePath };
-}
-
-export function launchSeededChromium(chromium, options = {}) {
-  if (!chromium || typeof chromium.launch !== "function") {
-    throw new TypeError("Pass the chromium export from the repository's Playwright package.");
-  }
-  return chromium.launch(seededChromiumLaunchOptions(options));
-}
-"""
+    return (
+        Path(__file__).resolve().parents[2] / "assets" / "playwright-launch.mjs"
+    ).read_text(encoding="utf-8")
 
 
 def _codex_config_content(
