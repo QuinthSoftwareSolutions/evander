@@ -78,6 +78,22 @@ def test_proxy_authenticates_session_and_authorizes_exact_origins() -> None:
         raise AssertionError("unconfigured origin was accepted")
 
 
+def test_proxy_canonicalizes_unicode_and_idna_target_hosts() -> None:
+    session = _session("https://bücher.example/app")
+    proxy = HttpTargetBrowserProxy(GatewayConfig(), provider_config_resolver=_Resolver(session))
+
+    proxy._authorize_origin(
+        session,
+        scheme="https",
+        host="xn--bcher-kva.example",
+        port=443,
+    )
+    proxy._validate_tunnel_server_name(
+        "xn--bcher-kva.example",
+        "xn--bcher-kva.example",
+    )
+
+
 def test_proxy_rejects_invalid_session_credentials() -> None:
     proxy = HttpTargetBrowserProxy(
         GatewayConfig(), provider_config_resolver=_Resolver(_session("https://example.test"))

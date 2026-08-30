@@ -3866,6 +3866,39 @@ def test_admin_service_creates_git_work_context_for_task_owner(tmp_path: Path) -
     assert repo.read().git_work_contexts[context_id].worktree_path == ("/worktrees/backend-task")
 
 
+def test_admin_service_rejects_stale_expected_git_preparation_generation(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _set_project_git(repo)
+    _seed_task(repo, task_id="task")
+    expected_generation = task_git_work_context_generation(repo.read(), "task")
+
+    def _change_project_repository(state: TeamState) -> TeamState:
+        assert state.projects["project"].git is not None
+        state.projects["project"].git.managed_repo_id = "mr_fedcba9876543210abcd"
+        return state
+
+    repo.update(_change_project_repository)
+
+    with pytest.raises(
+        ValueError,
+        match="preparation generation changed during Git worktree preparation",
+    ):
+        _team_admin_service(repo).create_git_work_context_with_id(
+            context_id="stale-preparation-context",
+            agent_id="backend",
+            task_id="task",
+            worktree_path="/worktrees/backend-task",
+            base_branch="main",
+            base_commit="base123",
+            agent_branch="agents/session-backend/task",
+            expected_preparation_generation=expected_generation,
+        )
+
+    assert repo.read().git_work_contexts == {}
+
+
 @pytest.mark.parametrize(
     "terminal_state",
     [

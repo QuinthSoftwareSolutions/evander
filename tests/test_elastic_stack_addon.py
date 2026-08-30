@@ -368,6 +368,30 @@ def test_elasticsearch_bulk_index_uses_bounded_ndjson_and_summarizes_failures() 
     }
 
 
+def test_elasticsearch_bulk_index_preserves_zero_document_id() -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(
+            200,
+            json={
+                "errors": False,
+                "items": [{"index": {"_index": "demo-events", "_id": "0", "status": 201}}],
+            },
+        )
+
+    result = _client(handler).elasticsearch_bulk_index_documents(
+        "app-demo",
+        index_name="demo-events",
+        documents=[{"eventId": 0, "count": 1}],
+        id_field="eventId",
+    )
+
+    assert result["indexed_document_count"] == 1
+    assert json.loads(requests[0].content.decode().splitlines()[0]) == {"index": {"_id": "0"}}
+
+
 def test_elasticsearch_bulk_index_enforces_target_index_and_payload_bounds() -> None:
     client = _client(
         lambda _request: httpx.Response(

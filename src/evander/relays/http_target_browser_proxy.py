@@ -173,7 +173,15 @@ class HttpTargetBrowserProxy:
         return session_id.strip(), token
 
     @staticmethod
-    def _target_origins(session: SessionManifest) -> set[tuple[str, str, int]]:
+    def _canonical_host(host: str) -> str:
+        normalized = host.strip("[]").rstrip(".")
+        try:
+            return normalized.encode("idna").decode("ascii").casefold()
+        except UnicodeError as exc:
+            raise ProxyRequestError(400, "target authority is not a valid host") from exc
+
+    @classmethod
+    def _target_origins(cls, session: SessionManifest) -> set[tuple[str, str, int]]:
         origins: set[tuple[str, str, int]] = set()
         for target in session.http_targets_metadata().targets.values():
             parts = urlsplit(target.base_url)
@@ -181,7 +189,7 @@ class HttpTargetBrowserProxy:
                 continue
             scheme = parts.scheme.lower()
             port = parts.port or (443 if scheme == "https" else 80)
-            origins.add((scheme, parts.hostname.casefold(), port))
+            origins.add((scheme, cls._canonical_host(parts.hostname), port))
         return origins
 
     @classmethod
@@ -193,12 +201,8 @@ class HttpTargetBrowserProxy:
         host: str,
         port: int,
     ) -> None:
-        origin = (scheme.casefold(), host.casefold().rstrip("."), port)
-        normalized_origins = {
-            (allowed_scheme, allowed_host.rstrip("."), allowed_port)
-            for allowed_scheme, allowed_host, allowed_port in cls._target_origins(session)
-        }
-        if origin not in normalized_origins:
+        origin = (scheme.casefold(), cls._canonical_host(host), port)
+        if origin not in cls._target_origins(session):
             LOGGER.warning(
                 "browser proxy origin denied session=%s authority=%s:%s",
                 session.session_id,
@@ -424,24 +428,22 @@ class HttpTargetBrowserProxy:
                     raise TLSClientHelloError("TLS server_name must be ASCII") from exc
         return server_name
 
-    @staticmethod
-    def _validate_tunnel_server_name(host: str, server_name: str | None) -> None:
-        normalized_host = host.strip("[]").rstrip(".").casefold()
+    @classmethod
+    def _validate_tunnel_server_name(cls, host: str, server_name: str | None) -> None:
+        try:
+            normalized_host = cls._canonical_host(host)
+        except ProxyRequestError as exc:
+            raise TLSClientHelloError("CONNECT authority is not a valid DNS name") from exc
         try:
             ip_address(normalized_host)
         except ValueError:
-            try:
-                normalized_host = normalized_host.encode("idna").decode("ascii")
-            except UnicodeError as exc:
-                raise TLSClientHelloError("CONNECT authority is not a valid DNS name") from exc
             if server_name is None:
                 raise TLSClientHelloError("TLS ClientHello server_name is required")
         if server_name is None:
             return
-        normalized_server_name = server_name.rstrip(".").casefold()
         try:
-            normalized_server_name = normalized_server_name.encode("idna").decode("ascii")
-        except UnicodeError as exc:
+            normalized_server_name = cls._canonical_host(server_name)
+        except ProxyRequestError as exc:
             raise TLSClientHelloError("TLS server_name is not a valid DNS name") from exc
         if normalized_server_name != normalized_host:
             raise TLSClientHelloError("TLS server_name does not match CONNECT authority")

@@ -27,6 +27,8 @@
         unit: apt-cacher-ng.service
       - key: http_target_relay
         unit: evander-http-target-relay.service
+      - key: http_target_browser_proxy
+        unit: evander-http-target-browser-proxy.service
       - key: ado_worker
         unit: evander-ado-worker.service
       - key: proxy_issue_sync
@@ -177,6 +179,8 @@
       port: "{{ evander_apt_cache_port }}"
     - key: http_target_relay
       port: 11777
+    - key: http_target_browser_proxy
+      port: 11778
     - key: teams_notifications
       port: "{{ evander_teams_notifications_listener_port }}"
       host: "{{ evander_teams_notifications_listener_host }}"
@@ -205,6 +209,8 @@
       url: "http://127.0.0.1:{{ evander_apt_cache_port }}/acng-report.html"
     - key: http_target_relay
       url: "http://127.0.0.1:11777/healthz"
+    - key: http_target_browser_proxy
+      url: "http://127.0.0.1:11778/healthz"
     - key: teams_notifications
       url: "http://{{ evander_teams_notifications_listener_endpoint_host }}:{{ evander_teams_notifications_listener_port }}/healthz"
   when: evander_services.get(item.key, false) | bool

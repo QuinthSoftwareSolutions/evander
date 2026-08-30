@@ -463,7 +463,8 @@ class ElasticStackClient:
             source = dict(document)
             action: dict[str, dict[str, str]] = {"index": {}}
             if normalized_id_field is not None:
-                document_id = str(source.get(normalized_id_field) or "").strip()
+                raw_document_id = source.get(normalized_id_field)
+                document_id = "" if raw_document_id is None else str(raw_document_id).strip()
                 if not document_id:
                     raise ValueError(
                         f"documents entry {position} is missing non-empty id_field "

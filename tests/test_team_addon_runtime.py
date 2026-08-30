@@ -9699,6 +9699,70 @@ def test_git_context_transaction_revalidates_exact_dependency_generation(
     assert repo.read().git_work_contexts == {}
 
 
+def test_git_context_transaction_rejects_project_generation_change_during_preparation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = _seed_team(tmp_path)
+
+    def _configure_project(state: TeamState) -> TeamState:
+        state.projects["project"].git = ProjectGitConfig(
+            managed_repo_id="mr_0123456789abcdefabcd",
+            base_branch="main",
+        )
+        state.agent_runtimes["backend"].active_dispatch_id = "dispatch-generation"
+        return state
+
+    state = repo.update(_configure_project)
+
+    def _prepare(*_args: object, **_kwargs: object) -> tuple[str, str]:
+        def _replace_project(current: TeamState) -> TeamState:
+            assert current.projects["project"].git is not None
+            current.projects["project"].git.managed_repo_id = "mr_fedcba9876543210abcd"
+            return current
+
+        repo.update(_replace_project)
+        return "/home/agent/worktrees/repo/task", "c" * 40
+
+    monkeypatch.setattr(
+        "evander_team_addon.providers._prepare_project_repo_task_worktree",
+        _prepare,
+    )
+
+    with pytest.raises(
+        DependencyGitPreparationError,
+        match="preparation generation changed during worktree preparation",
+    ):
+        _create_project_repo_git_work_contexts(
+            EffectRuntimeContext(
+                resolved_config={"runtime_dir": str(tmp_path)},
+                admin_service=SimpleNamespace(managed_git_admin=None),
+            ),
+            repo,
+            state=state,
+            agent_id="backend",
+            session_id="session-backend",
+            project_id="project",
+            project_repo={
+                "managed_repo_id": "mr_0123456789abcdefabcd",
+                "guest_repo_name": "repo",
+                "target_dir": "/home/agent/repo",
+                "execution_backend": "libvirt_vm",
+            },
+            dispatch_id="dispatch-generation",
+            tasks=[
+                {
+                    "id": "task",
+                    "project_id": "project",
+                    "owner_agent_id": "backend",
+                }
+            ],
+            base_branch="main",
+        )
+
+    assert repo.read().git_work_contexts == {}
+
+
 def test_wake_due_agents_reschedules_exhausted_state_conflict_without_agent_failure(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

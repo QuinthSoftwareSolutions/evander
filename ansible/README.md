@@ -107,6 +107,7 @@ Service toggles:
 - `evander_services.apt_cache`
 - `evander_services.semantic_store`
 - `evander_services.http_target_relay`
+- `evander_services.http_target_browser_proxy`
 - `evander_services.ado_worker`
 - `evander_services.proxy_issue_sync`
 - `evander_services.discord_ingest`

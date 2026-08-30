@@ -18,6 +18,8 @@
         unit: evander-npm-audit-facade.service
       - key: http_target_relay
         unit: evander-http-target-relay.service
+      - key: http_target_browser_proxy
+        unit: evander-http-target-browser-proxy.service
       - key: ado_worker
         unit: evander-ado-worker.service
       - key: proxy_issue_sync

@@ -645,6 +645,27 @@ def test_ansible_qdrant_semantic_store_defaults_and_role_contract() -> None:
     assert "http://{{ evander_qdrant_bind_host }}:{{ evander_qdrant_port }}/healthz" in verification
 
 
+def test_ansible_browser_proxy_runtime_and_verification_contract() -> None:
+    repo = Path(__file__).resolve().parents[1]
+    defaults = (repo / "ansible" / "group_vars" / "all" / "defaults.yml").read_text(
+        encoding="utf-8"
+    )
+    service_runtime = (
+        repo / "ansible" / "roles" / "service_runtime" / "tasks" / "main.yml"
+    ).read_text(encoding="utf-8")
+    verification = (repo / "ansible" / "roles" / "verification" / "tasks" / "main.yml").read_text(
+        encoding="utf-8"
+    )
+
+    assert "http_target_browser_proxy: true" in defaults
+    assert "key: http_target_browser_proxy" in service_runtime
+    assert "unit: evander-http-target-browser-proxy.service" in service_runtime
+    assert "key: http_target_browser_proxy" in verification
+    assert "unit: evander-http-target-browser-proxy.service" in verification
+    assert "port: 11778" in verification
+    assert "http://127.0.0.1:11778/healthz" in verification
+
+
 def test_ansible_azure_inventory_maps_nexus_password_from_vault() -> None:
     repo = Path(__file__).resolve().parents[1]
     azure = (repo / "ansible" / "group_vars" / "azure.example.yml").read_text(encoding="utf-8")

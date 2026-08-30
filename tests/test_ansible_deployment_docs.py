@@ -18,6 +18,7 @@ def test_ansible_readme_covers_ubuntu_azure_and_repo_native_entrypoints() -> Non
     assert "evander_services.apt_cache" in text
     assert "evander_services.npm_audit_facade" in text
     assert "evander_services.semantic_store" in text
+    assert "evander_services.http_target_browser_proxy" in text
     assert "evander_services.proxy_issue_sync" in text
     assert "evander_npm_audit_facade_port" in text
     assert "config/npm-audit-facade.env" in text

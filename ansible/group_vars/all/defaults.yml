@@ -522,6 +522,7 @@ evander_services:
   apt_cache: true
   semantic_store: true
   http_target_relay: true
+  http_target_browser_proxy: true
   ado_worker: true
   proxy_issue_sync: true
   discord_ingest: true

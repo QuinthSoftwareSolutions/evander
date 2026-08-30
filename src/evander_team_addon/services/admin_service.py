@@ -2307,6 +2307,7 @@ class TeamAdminService:
         commit_sha: str | None = None,
         dispatch_id: str | None = None,
         worktree_path: str | None = None,
+        expected_preparation_generation: str | None = None,
         dependency_git_sources: Sequence[Mapping[str, object] | DependencyGitSource] | None = None,
         dependency_composition_recovery_id: str | None = None,
         manual_dependency_git_sources: Sequence[Mapping[str, object] | DependencyGitSource]
@@ -2328,6 +2329,9 @@ class TeamAdminService:
         normalized_commit_sha = _optional_text(commit_sha)
         normalized_dispatch_id = _optional_text(dispatch_id)
         normalized_worktree_path = _optional_text(worktree_path)
+        normalized_expected_preparation_generation = _optional_text(
+            expected_preparation_generation
+        )
         normalized_dependency_git_sources = [
             source
             if isinstance(source, DependencyGitSource)
@@ -2394,6 +2398,14 @@ class TeamAdminService:
                 state,
                 task.id,
             )
+            if (
+                normalized_expected_preparation_generation is not None
+                and normalized_expected_preparation_generation != current_preparation_generation
+            ):
+                raise ValueError(
+                    f"task {task.id} preparation generation changed during Git "
+                    "worktree preparation"
+                )
             if task.git_base_commit_sha is not None:
                 if normalized_base_commit is None:
                     raise ValueError(

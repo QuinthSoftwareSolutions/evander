@@ -9041,6 +9041,34 @@ def _resolved_project_git_identity(value: object) -> GitIdentity:
     )
 
 
+def _project_repo_task_preparation_generation(
+    state: TeamState,
+    *,
+    task_id: str,
+    effective_base_branch: str | None,
+) -> str:
+    generation_task = state.tasks.get(task_id)
+    if (
+        generation_task is None
+        or generation_task.git_base_branch is not None
+        or effective_base_branch is None
+    ):
+        return task_git_work_context_generation(state, task_id)
+    generation_state = state.model_copy(
+        update={
+            "tasks": {
+                **state.tasks,
+                task_id: generation_task.model_copy(
+                    update={"git_base_branch": effective_base_branch},
+                    deep=True,
+                ),
+            }
+        },
+        deep=False,
+    )
+    return task_git_work_context_generation(generation_state, task_id)
+
+
 def _create_project_repo_git_work_contexts(
     context: Any,
     repo: TeamStateRepository,
@@ -9275,7 +9303,11 @@ def _create_project_repo_git_work_contexts(
                 pinned_base_tree = accepted_recovery.base_tree_hash
                 dependency_composition_mode = "adopt_resolved"
                 dependency_composition_recovery_id = accepted_recovery.id
-        preparation_generation = task_git_work_context_generation(state, task_id)
+        preparation_generation = _project_repo_task_preparation_generation(
+            state,
+            task_id=task_id,
+            effective_base_branch=effective_base_branch,
+        )
         agent_branch = _project_repo_agent_branch(
             session_id,
             task_id=task_id,
@@ -9482,6 +9514,20 @@ def _create_project_repo_git_work_contexts(
                             "worktree preparation; no lease was granted"
                         ),
                     )
+                current_preparation_generation = _project_repo_task_preparation_generation(
+                    current_state,
+                    task_id=task_id,
+                    effective_base_branch=effective_base_branch,
+                )
+                if current_preparation_generation != preparation_generation:
+                    raise DependencyGitPreparationError(
+                        task_id=task_id,
+                        message=(
+                            f"task {task_id} preparation generation changed during "
+                            f"worktree preparation from {preparation_generation} to "
+                            f"{current_preparation_generation}; no lease was granted"
+                        ),
+                    )
 
             last_conflict: TeamStateConflictError | None = None
             for _attempt in range(TEAM_WAKE_STATE_CONFLICT_MAX_ATTEMPTS):
@@ -9524,6 +9570,7 @@ def _create_project_repo_git_work_contexts(
                         base_commit=recorded_work_context_base_commit,
                         dispatch_id=dispatch_id,
                         worktree_path=worktree_path,
+                        expected_preparation_generation=preparation_generation,
                         dependency_git_sources=dependency_git_sources,
                         dependency_composition_recovery_id=(dependency_composition_recovery_id),
                         manual_dependency_git_sources=manual_dependency_git_sources,
