@@ -8,6 +8,11 @@
 - Documented the safe loopback-only detailed-status configuration validated with matching
   Elasticsearch and Kibana 9.5.2 containers.
 
+## 2026-08-29 - Task Board Task Editing
+
+- Added the existing task Edit action to Task Board cards so operators can update a task without
+  navigating to the separate Planning view.
+
 ## 2026-08-28 - Elastic Stack Proxy Compatibility
 
 - Requested identity-encoded Elastic Stack API responses so bounded streamed reads remain

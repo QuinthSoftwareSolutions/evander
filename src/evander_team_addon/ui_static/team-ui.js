@@ -13653,7 +13653,10 @@ function renderTaskBoardCard(task, focus) {
       ${task.cancellation ? renderTaskCancellation(task.cancellation, task) : ""}
       ${renderTaskBoardBlockerLine(task)}
       ${renderTaskBoardTechnicalDetails(task, unresolvedIds, worktreeContexts)}
-      <div class="record-actions">${taskCancellationButton(task)}</div>
+      <div class="record-actions">
+        ${editButton("task", task.id)}
+        ${taskCancellationButton(task)}
+      </div>
     </li>
   `;
 }

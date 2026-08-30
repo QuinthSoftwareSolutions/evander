@@ -12589,6 +12589,32 @@ test("team add-on project editor keeps human release policy in bounded controls"
   );
 });
 
+test("team add-on Task board exposes the existing task editor", async (t) => {
+  const { port } = await createTeamAddonServer(t, {
+    initialState: seededGitState(),
+  });
+  const page = await openBrowserPage(t, port);
+
+  await waitForRevision(page, 4);
+  await page.getByRole("tab", { name: "Task board" }).click();
+  await page.locator("#task-board-team-select").selectOption("team-alpha");
+  await page.locator("#task-board-project-select").selectOption("alpha-project");
+
+  const editableTaskCard = page.locator(
+    '.task-board-card[data-task-board-task-id="task-pending"]',
+  );
+  await editableTaskCard.getByRole("button", { name: "Edit", exact: true }).click();
+
+  const taskEditForm = page.locator("#edit-record-form");
+  await taskEditForm.waitFor({ state: "visible" });
+  assert.equal(
+    await taskEditForm.locator('[name="title"]').inputValue(),
+    "Draft pending delivery",
+  );
+  await taskEditForm.getByRole("button", { name: "Cancel", exact: true }).click();
+  await taskEditForm.waitFor({ state: "hidden" });
+});
+
 test("team add-on task cancellation is explicit audited and lifecycle-aware", async (t) => {
   const initialState = seededGitState();
   initialState.agents["alpha-lead"].display_name = "Grace Lead";
