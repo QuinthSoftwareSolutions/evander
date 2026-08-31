@@ -497,6 +497,14 @@ script name. The checked-in global workflow currently filters that trigger down 
 maps the derived demo-environment relay metadata with `gate:map`, and resumes the originating
 session after `effect:session:update-metadata` stores that metadata.
 
+The `app-demo-modification.v1-example` pack is the no-deployment continuation path for an already
+deployed named demo. It consumes `external.app-demo-change-requested`, derives the deterministic
+session from `payload.resourceBaseName`, renews the session to an eight-hour window with
+`effect:session:renew-if-expired`, refreshes the APP/browser and optional Elastic target metadata,
+then uses `effect:agent:enqueue-prompt` with the stored `metadata.agent_thread_id`. The external
+publisher must retain the workflow-event token server-side and must derive rather than accept
+caller-selected target URLs or session IDs.
+
 `trigger:approval:pending-created` watches the durable approval store for pending requests,
 scopes by `directory_path` with descendant matching, and accepts optional `action_types` and
 `tool_names` filters. Pending approval instances remain eligible until the queued trigger event
