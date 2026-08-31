@@ -1222,9 +1222,6 @@ class WorkerDaemon:
     ) -> WorkerReferenceRepoPrepareRecord:
         paths = WorkerSessionPaths.resolve(self.worker_root, session_id)
         self._ensure_allowed_git_source(request.repo_source)
-        self._sync_git_ssh_into_agent_home(
-            paths, required=_repo_source_requires_git_ssh(request.repo_source)
-        )
         with task_worktree_repository_lock(
             paths.root / ".locks" / f"reference-repo-{request.repo_name}.lock"
         ):
@@ -1247,7 +1244,8 @@ class WorkerDaemon:
             )
         git_env = _git_subprocess_env(paths.agent_home)
         cloned = False
-        if target_dir.exists() and any(target_dir.iterdir()):
+        populated_checkout = target_dir.exists() and any(target_dir.iterdir())
+        if populated_checkout:
             if _resolved_git_dir_within_checkout(target_dir, env=git_env) is None:
                 raise ValueError(
                     "reference repo Git metadata is missing or unsafe: "
@@ -1262,7 +1260,30 @@ class WorkerDaemon:
                     "reference repo target is not a checkout for requested source: "
                     f"/home/agent/repos/{request.repo_name}"
                 )
-        else:
+            if not self._is_prepared_reference_checkout(target_dir, git_env=git_env):
+                try:
+                    current_commit = self._git_commit_sha(target_dir, paths.agent_home)
+                except subprocess.CalledProcessError as exc:
+                    raise ValueError(
+                        "existing ordinary repository checkout has no commit: "
+                        f"/home/agent/repos/{request.repo_name}"
+                    ) from exc
+                return WorkerReferenceRepoPrepareRecord(
+                    session_id=paths.session_id,
+                    target_dir=f"/home/agent/repos/{request.repo_name}",
+                    guest_repo_name=request.repo_name,
+                    remote_url=request.repo_source,
+                    source_ref=request.source_ref,
+                    commit_sha=current_commit,
+                    cloned=False,
+                    checkout_updated=False,
+                    configuration_updated=False,
+                )
+
+        self._sync_git_ssh_into_agent_home(
+            paths, required=_repo_source_requires_git_ssh(request.repo_source)
+        )
+        if not populated_checkout:
             target_dir.mkdir(parents=True, exist_ok=True)
             subprocess.run(
                 ["git", "init", "--quiet", str(target_dir)],
@@ -1568,6 +1589,39 @@ class WorkerDaemon:
             line and not (line.startswith("?? ") and line[3:].startswith(".evander/"))
             for line in completed.stdout.splitlines()
         )
+
+    @staticmethod
+    def _is_prepared_reference_checkout(
+        target_dir: Path,
+        *,
+        git_env: dict[str, str],
+    ) -> bool:
+        completed = subprocess.run(
+            [
+                "git",
+                "-C",
+                str(target_dir),
+                "config",
+                "--local",
+                "--bool",
+                "--get",
+                "evander.referenceRepo",
+            ],
+            env=git_env,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        if completed.returncode == 1:
+            return False
+        if completed.returncode != 0:
+            raise subprocess.CalledProcessError(
+                completed.returncode,
+                completed.args,
+                output=completed.stdout,
+                stderr=completed.stderr,
+            )
+        return completed.stdout.strip().casefold() == "true"
 
     def prepare_task_worktree(
         self,

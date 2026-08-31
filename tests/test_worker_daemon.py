@@ -206,6 +206,137 @@ def test_worker_prepares_and_refreshes_clean_reference_repo_but_rejects_dirty_ch
         )
 
 
+@pytest.mark.parametrize("dirty", [False, True], ids=["clean", "dirty"])
+def test_worker_reference_prepare_reuses_ordinary_checkout_without_mutation(
+    tmp_path: Path,
+    dirty: bool,
+) -> None:
+    source = tmp_path / "source"
+    source.mkdir()
+    subprocess.run(["git", "init", "-q", "-b", "main"], cwd=source, check=True)
+    subprocess.run(["git", "config", "user.email", "test@example.invalid"], cwd=source, check=True)
+    subprocess.run(["git", "config", "user.name", "Worker Test"], cwd=source, check=True)
+    source_readme = source / "README.md"
+    source_readme.write_text("one\n", encoding="utf-8")
+    subprocess.run(["git", "add", "README.md"], cwd=source, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "one"], cwd=source, check=True)
+
+    daemon = WorkerDaemon(
+        runtime_dir=tmp_path / "runtime",
+        worker_root=tmp_path / "worker-root",
+        container_runtime=FakeContainerRuntime(),
+        token="test-token",
+        allowed_git_source_prefixes=[str(tmp_path)],
+    )
+    cloned = daemon.clone_repo(
+        "session-1",
+        WorkerRepoCloneRequest(repo_source=str(source), repo_name="repo"),
+    )
+    checkout = tmp_path / "worker-root" / "sessions" / "session-1" / "agent_home" / "repos" / "repo"
+    subprocess.run(
+        ["git", "remote", "add", "agent", str(tmp_path / "push-target.git")],
+        cwd=checkout,
+        check=True,
+    )
+    subprocess.run(
+        ["git", "config", "alias.push-agent", "push agent HEAD"], cwd=checkout, check=True
+    )
+    subprocess.run(["git", "config", "evander.gitAccessMode", "write"], cwd=checkout, check=True)
+    if dirty:
+        (checkout / "README.md").write_text("agent work\n", encoding="utf-8")
+
+    source_readme.write_text("two\n", encoding="utf-8")
+    subprocess.run(["git", "add", "README.md"], cwd=source, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "two"], cwd=source, check=True)
+    refreshed_source_commit = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=source,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    status_before = subprocess.run(
+        ["git", "status", "--porcelain"],
+        cwd=checkout,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout
+
+    prepared = daemon.prepare_reference_repo(
+        "session-1",
+        WorkerReferenceRepoPrepareRequest(
+            repo_source=str(source),
+            repo_name="repo",
+            source_ref="refs/heads/main",
+            commit_sha=refreshed_source_commit,
+            configuration_version="1",
+            update_existing=True,
+        ),
+    )
+
+    assert prepared.commit_sha == cloned.commit_sha
+    assert prepared.commit_sha != refreshed_source_commit
+    assert prepared.cloned is False
+    assert prepared.checkout_updated is False
+    assert prepared.configuration_updated is False
+    assert (
+        subprocess.run(
+            ["git", "branch", "--show-current"],
+            cwd=checkout,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+        == "main"
+    )
+    assert subprocess.run(
+        ["git", "remote", "get-url", "agent"],
+        cwd=checkout,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip() == str(tmp_path / "push-target.git")
+    assert (
+        subprocess.run(
+            ["git", "config", "--get", "alias.push-agent"],
+            cwd=checkout,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+        == "push agent HEAD"
+    )
+    assert (
+        subprocess.run(
+            ["git", "config", "--get", "evander.gitAccessMode"],
+            cwd=checkout,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+        == "write"
+    )
+    assert (
+        subprocess.run(
+            ["git", "status", "--porcelain"],
+            cwd=checkout,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout
+        == status_before
+    )
+    assert not (
+        tmp_path
+        / "worker-root"
+        / "sessions"
+        / "session-1"
+        / "reference-repository-state"
+        / "repo.json"
+    ).exists()
+
+
 def test_worker_reference_repo_rejects_clean_agent_commit_when_retaining_checkout(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

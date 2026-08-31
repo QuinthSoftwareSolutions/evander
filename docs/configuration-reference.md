@@ -2089,8 +2089,10 @@ evaluate the argument constraints.
 `prepare_reference_repository` is the on-demand persistent-agent read path for
 `container_worker_vm` sessions. It accepts one `managed_repo_id`, is bound to the authenticated
 calling session, refreshes the selected host-managed repository, and prepares its default branch as
-a detached read-only checkout. Grant it explicitly and constrain its repository boundary with an
-argument allowlist, for example:
+a detached read-only checkout. If the selected managed repository is already present as an ordinary
+session checkout, preparation is a no-op for that checkout: its current commit is returned without
+changing its branch, working tree, remotes, Git configuration, or existing access grant. Grant the
+tool explicitly and constrain its repository boundary with an argument allowlist, for example:
 
 ```json
 {
