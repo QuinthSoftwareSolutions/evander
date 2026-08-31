@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+import fcntl
+from multiprocessing import get_context
 import zlib
 
 import pytest
@@ -601,6 +603,64 @@ def test_execution_history_records_snapshot_directory_and_legacy_scope_is_root(t
 def test_retention_configuration_requires_compact_retention_when_enabled(tmp_path) -> None:
     with pytest.raises(ValueError, match="compact_history_retention_days is required"):
         SqliteWorkflowEventJournal(tmp_path / "orchestration.db", retention_days=30)
+
+
+def test_daily_retention_skips_while_another_process_holds_the_database_lock(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path = tmp_path / "orchestration.db"
+    ensure_orchestration_schema(path)
+    retention_calls = 0
+    original_retention = orchestration_db.run_orchestration_retention
+
+    def record_retention_call(*args, **kwargs):
+        nonlocal retention_calls
+        retention_calls += 1
+        return original_retention(*args, **kwargs)
+
+    monkeypatch.setattr(orchestration_db, "run_orchestration_retention", record_retention_call)
+    lock_path = path.with_name(f"{path.name}.retention.lock")
+    process_context = get_context("fork")
+    lock_ready = process_context.Event()
+    release_lock = process_context.Event()
+
+    def hold_lock() -> None:
+        with lock_path.open("a+b") as lock_file:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            lock_ready.set()
+            assert release_lock.wait(timeout=5)
+
+    lock_holder = process_context.Process(target=hold_lock)
+    lock_holder.start()
+    try:
+        assert lock_ready.wait(timeout=5)
+        result = orchestration_db.maybe_run_orchestration_retention(
+            path,
+            retention_days=30,
+            compact_history_retention_days=365,
+        )
+    finally:
+        release_lock.set()
+        lock_holder.join(timeout=5)
+        if lock_holder.is_alive():
+            lock_holder.terminate()
+            lock_holder.join(timeout=5)
+
+    assert lock_holder.exitcode == 0
+    assert result == orchestration_db.OrchestrationRetentionResult()
+    assert retention_calls == 0
+    orchestration_db.maybe_run_orchestration_retention(
+        path,
+        retention_days=30,
+        compact_history_retention_days=365,
+    )
+    orchestration_db.maybe_run_orchestration_retention(
+        path,
+        retention_days=30,
+        compact_history_retention_days=365,
+    )
+    assert retention_calls == 1
 
 
 def test_internal_completion_transport_is_not_a_duplicate_node_execution(tmp_path) -> None:

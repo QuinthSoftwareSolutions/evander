@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import fcntl
 import json
+import os
 import sqlite3
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -77,6 +79,35 @@ def connect_orchestration_db(path: Path | str) -> Iterator[sqlite3.Connection]:
             yield connection
     finally:
         connection.close()
+
+
+@contextmanager
+def _try_orchestration_retention_lock(path: Path | str) -> Iterator[bool]:
+    """Try to own daily retention across all processes using this database."""
+
+    db_path = Path(path)
+    lock_path = db_path.with_name(f"{db_path.name}.retention.lock")
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    flags = os.O_RDWR | os.O_CREAT | getattr(os, "O_CLOEXEC", 0)
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    fd = os.open(lock_path, flags, 0o600)
+    acquired = False
+    try:
+        os.fchmod(fd, 0o600)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            yield False
+            return
+        acquired = True
+        yield True
+    finally:
+        try:
+            if acquired:
+                fcntl.flock(fd, fcntl.LOCK_UN)
+        finally:
+            os.close(fd)
 
 
 def ensure_orchestration_schema(path: Path | str) -> None:
@@ -465,22 +496,25 @@ def maybe_run_orchestration_retention(
         raise ValueError(
             "compact_history_retention_days is required when retention_days is configured"
         )
-    ensure_orchestration_schema(path)
-    today = datetime.now(UTC).date().isoformat()
-    with connect_orchestration_db(path) as connection:
-        row = connection.execute(
-            "SELECT value_json FROM orchestration_metadata WHERE key = ?",
-            ("last_retention_date",),
-        ).fetchone()
-        if row is not None:
-            payload = json_loads_object(row["value_json"])
-            if payload.get("date") == today:
-                return OrchestrationRetentionResult()
-    return run_orchestration_retention(
-        path,
-        retention_days=retention_days,
-        compact_history_retention_days=compact_history_retention_days,
-    )
+    with _try_orchestration_retention_lock(path) as acquired:
+        if not acquired:
+            return OrchestrationRetentionResult()
+        ensure_orchestration_schema(path)
+        today = datetime.now(UTC).date().isoformat()
+        with connect_orchestration_db(path) as connection:
+            row = connection.execute(
+                "SELECT value_json FROM orchestration_metadata WHERE key = ?",
+                ("last_retention_date",),
+            ).fetchone()
+            if row is not None:
+                payload = json_loads_object(row["value_json"])
+                if payload.get("date") == today:
+                    return OrchestrationRetentionResult()
+        return run_orchestration_retention(
+            path,
+            retention_days=retention_days,
+            compact_history_retention_days=compact_history_retention_days,
+        )
 
 
 def maybe_checkpoint_orchestration_wal(
