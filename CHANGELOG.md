@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-08-31 - Exclusive Orchestration Retention
+
+- Serialized daily orchestration retention across host processes so concurrent repository startup
+  cannot pin a growing SQLite WAL and exhaust the control-plane filesystem.
+- Kept failed or interrupted maintenance retryable by releasing the process lock automatically and
+  recording the completed retention date only after all bounded batches finish.
+
 ## 2026-08-30 - Alexa Agent Bridge Example
 
 - Added a signed, deduplicated Alexa webhook workflow example that dispatches bounded personal
