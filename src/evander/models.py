@@ -147,6 +147,7 @@ class ToolName(str, Enum):
     GET_CODEBASE_CONSULTATION = "get_codebase_consultation"
     CANCEL_CODEBASE_CONSULTATION = "cancel_codebase_consultation"
     SUBMIT_CODEBASE_CONSULTATION_RESULT = "submit_codebase_consultation_result"
+    PREPARE_REFERENCE_REPOSITORY = "prepare_reference_repository"
     RUN_SCRIPT = "run_script"
     GET_WORKFLOW_SNAPSHOT = "get_workflow_snapshot"
     SEMANTIC_UPSERT_TEXT = "semantic_upsert_text"

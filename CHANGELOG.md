@@ -1,5 +1,15 @@
 # Changelog
 
+## 2026-08-31 - On-Demand Managed Reference Repositories
+
+- Added a session-bound `prepare_reference_repository` MCP tool that lets container agents
+  materialize only policy-allowlisted managed repositories when needed.
+- Reused the verified-refresh reference checkout path so newly provisioned access stays read-only,
+  refreshes through the host-owned mirror, reconciles repeat calls, and keeps upstream credentials
+  on the control plane.
+- Preserved an existing ordinary checkout and its writable grant as an in-place no-op instead of
+  converting it into a detached read-only reference checkout.
+
 ## 2026-08-31 - Exclusive Orchestration Retention
 
 - Serialized daily orchestration retention across host processes so concurrent repository startup

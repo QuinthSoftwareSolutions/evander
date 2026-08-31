@@ -2086,6 +2086,43 @@ This policy narrows `create_ado_backlog_item` only after the tool is already all
 agent still needs `allowed_tools` to include `create_ado_backlog_item` before the gateway will
 evaluate the argument constraints.
 
+`prepare_reference_repository` is the on-demand persistent-agent read path for
+`container_worker_vm` sessions. It accepts one `managed_repo_id`, is bound to the authenticated
+calling session, refreshes the selected host-managed repository, and prepares its default branch as
+a detached read-only checkout. If the selected managed repository is already present as an ordinary
+session checkout, preparation is a no-op for that checkout: its current commit is returned without
+changing its branch, working tree, remotes, Git configuration, or existing access grant. Grant the
+tool explicitly and constrain its repository boundary with an argument allowlist, for example:
+
+```json
+{
+  "allowed_tools": ["prepare_reference_repository"],
+  "tool_argument_policies": {
+    "prepare_reference_repository": [
+      {
+        "id": "reference-repository-boundary",
+        "constraints": [
+          {
+            "id": "managed-repository",
+            "path": "managed_repo_id",
+            "operator": "allowlist",
+            "values": [
+              "mr_0123456789abcdef0123",
+              "mr_abcdef0123456789abcd"
+            ]
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+This policy grants no write or push authority. The tool provisions only a session-scoped read grant,
+does no work during session creation, fails closed when refresh or checkout preparation fails, and
+returns the resolved ref, commit, and checkout directory without returning credentials or internal
+bare-repository paths.
+
 Teams delegated auth follows the same host-side model. The preferred operator flow is to sign in on
 the host with device code flow and keep the credential host-only. Directory-scoped `providers.json`
 overlays can bind a subtree to that host-managed Teams identity, while the legacy static env-token

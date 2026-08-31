@@ -126,6 +126,11 @@ class AgentPrepareReferenceRepositoriesEffectProvider(EffectProviderBase):
                 if _usable_read_grant(access_metadata):
                     access_reused = True
                 else:
+                    if _writable_grant(access_metadata):
+                        raise RuntimeError(
+                            "existing writable managed Git access is not usable; "
+                            "reference repository preparation will not replace it"
+                        )
                     managed_git = getattr(context.admin_service, "managed_git_admin", None)
                     resolve_internal = getattr(managed_git, "resolve_internal_repository", None)
                     if not callable(resolve_internal):
@@ -561,7 +566,13 @@ def _validate_resolved_repositories(
 def _usable_read_grant(grant: Mapping[str, Any] | None) -> bool:
     if not isinstance(grant, Mapping):
         return False
-    if str(grant.get("access_mode") or "").strip() not in {"read", "readonly", "read-only"}:
+    if str(grant.get("access_mode") or "").strip().casefold().replace("_", "-") not in {
+        "read",
+        "readonly",
+        "read-only",
+        "write",
+        "writable",
+    }:
         return False
     if str(grant.get("lifetime") or "").strip() != "session":
         return False
@@ -574,3 +585,12 @@ def _usable_read_grant(grant: Mapping[str, Any] | None) -> bool:
         return public_key_body in Path(authorized_keys_path).read_text(encoding="utf-8")
     except OSError:
         return False
+
+
+def _writable_grant(grant: Mapping[str, Any] | None) -> bool:
+    if not isinstance(grant, Mapping):
+        return False
+    return str(grant.get("access_mode") or "").strip().casefold().replace("_", "-") in {
+        "write",
+        "writable",
+    }

@@ -756,6 +756,120 @@ def test_prepare_reference_repositories_batches_exact_read_only_checkouts(
     assert [call["managed_repo_id"] for call in bind_calls] == ["mr-one"]
 
 
+def test_prepare_reference_repositories_reuses_existing_write_grant(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = GatewayConfig(
+        runtime_dir=tmp_path,
+        execution_backend="container_worker_vm",
+        container_worker_base_url="http://worker.test",
+    )
+    authorized_keys = tmp_path / "authorized_keys"
+    public_key_body = "AAAAC3NzaC1lZDI1NTE5AAAAIExistingWriteKey"
+    authorized_keys.write_text(
+        f'command="restricted-write" ssh-ed25519 {public_key_body} existing-write\n',
+        encoding="utf-8",
+    )
+    write_grant = {
+        "managed_repo_id": _MANAGED_REPO_ID,
+        "access_mode": "write",
+        "lifetime": "session",
+        "execution_backend": "container_worker_vm",
+        "git_ssh_alias": managed_git_ssh_alias("evander-git-host", _MANAGED_REPO_ID),
+        "public_key_body": public_key_body,
+        "authorized_keys_path": str(authorized_keys),
+        "authorized_ref_prefix": "refs/heads/agents/session-1/",
+        "authorized_pr_notes_ref": "refs/notes/agent-pr/session-1",
+    }
+    session_repository = JsonSessionManifestRepository(config.session_store_path)
+    session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-1",
+            directory_path="root/personal",
+            execution_backend="container_worker_vm",
+            allowed_tools=[],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+            metadata={
+                "managed_git_access_grants": {_MANAGED_REPO_ID: write_grant},
+            },
+        )
+    )
+    alias = managed_git_ssh_alias("evander-git-host", _MANAGED_REPO_ID)
+    clone_url = f"ssh://{alias}/runtime/managed-git/{_MANAGED_REPO_ID}.git"
+    admin_service = SimpleNamespace(
+        runtime=SimpleNamespace(
+            session_repository=session_repository,
+            provider_config=_ContainerResolverStub(config),
+        ),
+        get_managed_git_repository=lambda managed_repo_id, **kwargs: {
+            "managed_repo_id": managed_repo_id,
+            "canonical_repository_url": "https://example.invalid/repo.git",
+            "default_branch": "main",
+        },
+        refresh_managed_git_repository_if_branch_changed=lambda managed_repo_id, **kwargs: {
+            "managed_repo_id": managed_repo_id,
+            "branch": "main",
+            "probe_performed": True,
+            "probe_reused": False,
+            "refresh_performed": False,
+        },
+        resolve_managed_git_branch_commit=lambda managed_repo_id, **kwargs: "a" * 40,
+        resolve_managed_git_clone=lambda **kwargs: {
+            "managed_repo_id": kwargs["managed_repo_id"],
+            "clone_url": clone_url,
+            "repo_name": "repo",
+        },
+        bind_managed_git_repository=lambda **kwargs: None,
+    )
+    backend = _FakeContainerBackend()
+    monkeypatch.setattr(
+        "evander.effects.providers.agent_prepare_reference_repositories.container_backend",
+        lambda context, config: backend,
+    )
+    provider = AgentPrepareReferenceRepositoriesEffectProvider()
+    provider.initialize(
+        AgentPrepareReferenceRepositoriesEffectDefinition(
+            id="prepare-repository",
+            display_name="Prepare repository",
+            type="effect:agent:prepare-reference-repositories",
+            session_id="session-1",
+            directory_path="root/personal",
+            repositories=[{"managed_repo_id": _MANAGED_REPO_ID}],
+            refresh_upstream=True,
+        ),
+        EffectRuntimeContext(
+            resolved_config=config,
+            metadata={"directory_path": "root/personal"},
+            admin_service=admin_service,
+        ),
+    )
+
+    result = provider.execute()
+
+    assert result["repositories"][0]["access_reused"] is True
+    assert backend.git_write_keys == []
+    stored = session_repository.get_session("session-1")
+    assert stored is not None
+    assert stored.metadata["managed_git_access_grants"][_MANAGED_REPO_ID] == write_grant
+    assert public_key_body in authorized_keys.read_text(encoding="utf-8")
+
+    authorized_keys.write_text("", encoding="utf-8")
+    with pytest.raises(
+        RuntimeError,
+        match="reference repository preparation will not replace it",
+    ):
+        provider.execute()
+
+    assert backend.git_write_keys == []
+    assert len(backend.prepared_reference_repos) == 1
+    stored_after_failure = session_repository.get_session("session-1")
+    assert stored_after_failure is not None
+    assert (
+        stored_after_failure.metadata["managed_git_access_grants"][_MANAGED_REPO_ID] == write_grant
+    )
+
+
 def test_prepare_reference_repositories_runtime_inputs_require_managed_repo_ids() -> None:
     assert _normalize_repository_inputs([{"managed_repo_id": " mr-one ", "branch": " main "}]) == [
         {"managed_repo_id": "mr-one", "branch": "main"}
