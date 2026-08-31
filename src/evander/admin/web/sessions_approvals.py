@@ -288,6 +288,9 @@ _TOOL_DESCRIPTIONS: dict[ToolName, str] = {
     ToolName.SUBMIT_CODEBASE_CONSULTATION_RESULT: (
         "Submit the bounded structured result for a request-scoped consultation worker."
     ),
+    ToolName.PREPARE_REFERENCE_REPOSITORY: (
+        "Refresh and prepare one policy-allowed managed repository as a read-only checkout."
+    ),
     ToolName.RUN_SCRIPT: ("Run an approved host-side script on behalf of the session."),
     ToolName.GET_WORKFLOW_SNAPSHOT: (
         "Read the current workflow editor document and optional run snapshot."

@@ -3209,6 +3209,16 @@ and atomic ref transaction, including reserved-namespace and configured-default 
 authentication, network, malformed advertisement, and timeout failures fail closed instead of
 serving a cached ref.
 
+For agents that must respond before choosing a repository, omit the preparation effect from the
+startup path and grant `prepare_reference_repository` instead. Constrain its `managed_repo_id`
+argument with the session's `tool_argument_policies`; a typical policy uses one `allowlist`
+constraint containing the approved managed IDs. The agent calls the tool only when a repository is
+needed. The gateway binds the call to the authenticated session, always enables verified upstream
+refresh, provisions or reuses session-lifetime read-only access, and prepares the default branch as
+a detached reference checkout. A slow or failed request affects that tool call, not session
+creation or an earlier chat reply. Repeat calls are the supported pull/reconcile path; do not give
+the agent upstream credentials or rely on an unconstrained shell clone.
+
 With refresh enabled, the stored branch verification timestamp only lets requests that began before
 the same successful probe reuse it; it is not a freshness TTL and does not mark other branches or
 tags as refreshed. Preparation outputs and structured logs include `probe_performed`, `probe_reused`,

@@ -651,6 +651,15 @@ evander-cli git-repos clone-into-agent session-123 \
 Operation-scoped access is available on clone operations for one-shot disposable work and is
 removed after cloning.
 
+Container-worker agents that should choose repositories only when needed can use the
+`prepare_reference_repository` MCP tool. Grant the tool in the session's `allowed_tools` and use a
+`tool_argument_policies` allowlist on `managed_repo_id`; the permission does not eagerly clone any
+repository. Each call refreshes the selected host-managed mirror, provisions or reuses a
+session-scoped read-only grant, and prepares a detached checkout of the default branch. Repeating
+the call reconciles that checkout to the newly verified commit. The caller cannot target another
+session, upstream credentials remain host-owned, and unlisted repository IDs fail before Git work
+starts.
+
 Every Evander-provisioned managed Git read refreshes its exact repository through the host-owned
 `evander-managed-git-refresh.service` before refs are served. A failed upstream refresh fails the
 clone/fetch/pull instead of returning stale refs; agents never receive upstream credentials.
