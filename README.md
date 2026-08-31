@@ -11,7 +11,7 @@ package, Git, and HTTP relays.
   host-owned authentication, per-session operation grants, approvals, and artifact results
 - Directory-scoped Host Directories for relative listing, bounded artifact import, recoverable
   deletion, and settled new-file workflow triggers without exposing absolute host roots
-- A host-side OpenAI relay that keeps the API key on the host and exposes an OpenAI-compatible endpoint to guests
+- A host-side OpenAI relay that keeps the API key on the host, exposes an OpenAI-compatible endpoint to guests, and session-gates hosted web search plus image generation/editing
 - A provider-neutral model usage store and query node for persisted, privacy-preserving usage records
 - An optional host-side DIDWW SIP/OpenAI Realtime bridge for projected and fixed inbound phone calls
 - An optional Teams meeting media bridge with Azure Speech or OpenAI Realtime speech modes

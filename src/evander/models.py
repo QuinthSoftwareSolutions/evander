@@ -614,6 +614,7 @@ class SessionManifest(BaseModel):
     communication_file_blocked_extensions: list[str] = Field(default_factory=list)
     communication_file_require_approval_for_send: bool = False
     web_search_enabled: bool = False
+    image_generation_enabled: bool = False
     quotas: dict[str, int] = Field(default_factory=dict)
     expires_at: datetime
     created_at: datetime = Field(default_factory=utc_now)

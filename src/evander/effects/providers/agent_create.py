@@ -91,6 +91,7 @@ class AgentCreateEffectProvider(EffectProviderBase):
                 effect.communication_file_require_approval_for_send
             ),
             "web_search_enabled": effect.web_search_enabled,
+            "image_generation_enabled": effect.image_generation_enabled,
             "dotnet": effect.dotnet,
             "nuget": effect.nuget,
             "mssql": effect.mssql,
@@ -279,6 +280,9 @@ class AgentCreateEffectProvider(EffectProviderBase):
                 payload.get("communication_file_require_approval_for_send")
             ),
             web_search_enabled=as_bool_or_none(payload.get("web_search_enabled")),
+            image_generation_enabled=as_bool_or_none(
+                payload.get("image_generation_enabled")
+            ),
             dotnet=bool(payload.get("dotnet", False)),
             nuget=bool(payload.get("nuget", False)),
             mssql=bool(payload.get("mssql", False)),
@@ -425,6 +429,14 @@ class AgentCreateEffectProvider(EffectProviderBase):
             if requested_web_search_enabled is not None
             else bool(getattr(existing_session, "web_search_enabled", False))
         )
+        requested_image_generation_enabled = as_bool_or_none(
+            payload.get("image_generation_enabled")
+        )
+        effective_image_generation_enabled = (
+            requested_image_generation_enabled
+            if requested_image_generation_enabled is not None
+            else bool(getattr(existing_session, "image_generation_enabled", False))
+        )
         communication_allowlists = _agent_communication_allowlists(
             payload,
             config=config,
@@ -500,6 +512,7 @@ class AgentCreateEffectProvider(EffectProviderBase):
                 payload.get("communication_file_require_approval_for_send")
             ),
             web_search_enabled=effective_web_search_enabled,
+            image_generation_enabled=effective_image_generation_enabled,
             metadata=metadata,
         )
         manifest, mcp_session_token = ensure_session_mcp_auth_token(manifest)

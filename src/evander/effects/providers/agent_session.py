@@ -534,6 +534,7 @@ def build_container_session_manifest(
     communication_file_max_bytes: int | None = None,
     communication_file_require_approval_for_send: bool | None = None,
     web_search_enabled: bool = False,
+    image_generation_enabled: bool = False,
     metadata: dict[str, Any],
 ) -> SessionManifest:
     expires_delta = (
@@ -671,6 +672,7 @@ def build_container_session_manifest(
             else communication_file_require_approval_for_send
         ),
         web_search_enabled=web_search_enabled,
+        image_generation_enabled=image_generation_enabled,
         expires_at=datetime.now(UTC) + expires_delta,
         metadata=metadata,
     )

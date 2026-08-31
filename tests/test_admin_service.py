@@ -13947,6 +13947,7 @@ def test_update_session_policy_updates_allowlists_and_metadata(
             "communication_file_blocked_extensions": [".exe", " exe "],
             "communication_file_require_approval_for_send": True,
             "web_search_enabled": True,
+            "image_generation_enabled": True,
             "metadata": {"keep": "new-value"},
         },
     )
@@ -13973,6 +13974,7 @@ def test_update_session_policy_updates_allowlists_and_metadata(
     assert updated.communication_file_blocked_extensions == [".exe", "exe"]
     assert updated.communication_file_require_approval_for_send is True
     assert updated.web_search_enabled is True
+    assert updated.image_generation_enabled is True
     assert updated.metadata == {"keep": "new-value"}
 
     with pytest.raises(

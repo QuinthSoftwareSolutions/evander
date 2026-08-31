@@ -19,6 +19,10 @@
       },
       {
         "source_id": "effect-session-update-metadata-6",
+        "target_id": "effect-session-set-image-generation-1"
+      },
+      {
+        "source_id": "effect-session-set-image-generation-1",
         "target_id": "query-session-context-4"
       },
       {
@@ -289,6 +293,14 @@
         },
         "id": "effect-session-update-metadata-6",
         "type": "effect:session:update-metadata"
+      },
+      {
+        "config": {
+          "enabled": true,
+          "target": "${{gate-filter-5.session_id}}"
+        },
+        "id": "effect-session-set-image-generation-1",
+        "type": "effect:session:set-image-generation-enabled"
       },
       {
         "config": {

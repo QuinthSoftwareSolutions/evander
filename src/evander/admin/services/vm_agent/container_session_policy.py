@@ -119,6 +119,7 @@ class VmAgentContainerSessionPolicyMixin:
                 session.communication_file_require_approval_for_send
             ),
             "web_search_enabled": session.web_search_enabled,
+            "image_generation_enabled": session.image_generation_enabled,
             "codex_auth_mode": (
                 session.codex_auth_mode.value if session.codex_auth_mode is not None else None
             ),

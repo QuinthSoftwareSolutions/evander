@@ -5,6 +5,7 @@ import asyncio
 import json
 import logging
 import os
+import tempfile
 import time
 from hashlib import sha256
 from collections.abc import AsyncIterator
@@ -16,6 +17,7 @@ from urllib.parse import quote, unquote, urlencode
 
 import httpx
 import uvicorn
+from python_multipart.multipart import MultipartParser, parse_options_header
 from starlette.applications import Starlette
 from starlette.middleware import Middleware
 from starlette.requests import Request
@@ -72,6 +74,11 @@ HOSTED_WEB_SEARCH_TOOL_TYPES = {
     "web_search",
     "web_search_preview",
 }
+IMAGE_GENERATION_TOOL_TYPES = {"image_generation"}
+OPENAI_IMAGE_HTTP_ENDPOINTS = {
+    ("POST", "images/generations"),
+    ("POST", "images/edits"),
+}
 OPENAI_COMPATIBLE_HTTP_ENDPOINTS = {
     ("GET", "models"),
     ("POST", "responses"),
@@ -79,13 +86,15 @@ OPENAI_COMPATIBLE_HTTP_ENDPOINTS = {
     ("POST", "chat/completions"),
     ("POST", "completions"),
     ("POST", "embeddings"),
+    *OPENAI_IMAGE_HTTP_ENDPOINTS,
 }
 OPENAI_COMPATIBLE_WEBSOCKET_ENDPOINTS = {
     "responses",
 }
 OPENAI_COMPATIBLE_ENDPOINTS_DESCRIPTION = (
     "OpenAI relay currently supports GET /v1/models and POST /v1/responses, "
-    "/v1/responses/compact, /v1/chat/completions, /v1/completions, and /v1/embeddings"
+    "/v1/responses/compact, /v1/chat/completions, /v1/completions, /v1/embeddings, "
+    "/v1/images/generations, and /v1/images/edits"
 )
 PATH_SEGMENT_SAFE_CHARS = ":@!$&'()*+,;=-._~"
 MAX_PATH_DECODE_PASSES = 5
@@ -127,6 +136,7 @@ class RelayRequestContext:
     session_id: str
     config: GatewayConfig
     web_search_enabled: bool
+    image_generation_enabled: bool
 
 
 @dataclass(frozen=True)
@@ -141,6 +151,77 @@ class OpenAICompatibleUpstream:
     api_key: str | None
     api_key_source: str
     provider_name: str
+
+
+class _MultipartModelCapture:
+    """Capture only the small multipart `model` field while the request is spooled."""
+
+    def __init__(self, content_type: str, *, max_value_bytes: int = 256) -> None:
+        _media_type, options = parse_options_header(content_type)
+        boundary = options.get(b"boundary")
+        if not boundary:
+            raise ValueError("Multipart image edit request is missing a boundary")
+        self.max_value_bytes = max_value_bytes
+        self.header_field = bytearray()
+        self.header_value = bytearray()
+        self.headers: dict[bytes, bytes] = {}
+        self.capture_part = False
+        self.value = bytearray()
+        self.model: str | None = None
+        self.parser = MultipartParser(
+            boundary,
+            {
+                "on_part_begin": self._on_part_begin,
+                "on_part_data": self._on_part_data,
+                "on_part_end": self._on_part_end,
+                "on_header_begin": self._on_header_begin,
+                "on_header_field": self._on_header_field,
+                "on_header_value": self._on_header_value,
+                "on_header_end": self._on_header_end,
+                "on_headers_finished": self._on_headers_finished,
+            },
+        )
+
+    def write(self, chunk: bytes) -> None:
+        self.parser.write(chunk)
+
+    def finalize(self) -> None:
+        self.parser.finalize()
+
+    def _on_part_begin(self) -> None:
+        self.headers = {}
+        self.capture_part = False
+        self.value = bytearray()
+
+    def _on_header_begin(self) -> None:
+        self.header_field = bytearray()
+        self.header_value = bytearray()
+
+    def _on_header_field(self, data: bytes, start: int, end: int) -> None:
+        self.header_field.extend(data[start:end])
+
+    def _on_header_value(self, data: bytes, start: int, end: int) -> None:
+        self.header_value.extend(data[start:end])
+
+    def _on_header_end(self) -> None:
+        self.headers[bytes(self.header_field).lower()] = bytes(self.header_value)
+
+    def _on_headers_finished(self) -> None:
+        disposition = self.headers.get(b"content-disposition", b"")
+        _value, options = parse_options_header(disposition)
+        self.capture_part = options.get(b"name") == b"model"
+
+    def _on_part_data(self, data: bytes, start: int, end: int) -> None:
+        if not self.capture_part or len(self.value) >= self.max_value_bytes:
+            return
+        remaining = self.max_value_bytes - len(self.value)
+        self.value.extend(data[start : min(end, start + remaining)])
+
+    def _on_part_end(self) -> None:
+        if not self.capture_part:
+            return
+        text = self.value.decode("utf-8", errors="ignore").strip()
+        self.model = text or None
 
 
 class OpenAIRelay:
@@ -191,6 +272,31 @@ class OpenAIRelay:
                 return JSONResponse({"error": str(exc)}, status_code=400)
 
             upstream_path = request.path_params["path"]
+            try:
+                canonical_upstream_path = _canonical_relay_path(
+                    upstream_path,
+                    field_name="OpenAI relay path",
+                )
+            except ValueError:
+                canonical_upstream_path = ""
+            is_direct_image_request = (
+                request.method.upper(),
+                canonical_upstream_path,
+            ) in OPENAI_IMAGE_HTTP_ENDPOINTS
+            if is_direct_image_request and not request_context.image_generation_enabled:
+                relay._log_image_generation_denied(
+                    session_id=request_context.session_id,
+                    request_kind="http",
+                    path=request.url.path,
+                )
+                return relay._image_generation_disabled_response()
+            if is_direct_image_request:
+                return await relay._proxy_openai_image_http(
+                    request=request,
+                    request_context=request_context,
+                    upstream_path=canonical_upstream_path,
+                )
+
             request_body = await request.body()
             if (
                 not request_context.web_search_enabled
@@ -210,6 +316,16 @@ class OpenAIRelay:
                     },
                     status_code=403,
                 )
+            if (
+                not request_context.image_generation_enabled
+                and relay._request_body_declares_image_generation(request_body)
+            ):
+                relay._log_image_generation_denied(
+                    session_id=request_context.session_id,
+                    request_kind="http",
+                    path=request.url.path,
+                )
+                return relay._image_generation_disabled_response()
 
             if request_context.config.model_provider_mode == "anthropic":
                 return await relay._proxy_anthropic_http(
@@ -532,6 +648,7 @@ class OpenAIRelay:
                     upstream_path=upstream_path,
                     path=websocket.url.path,
                     web_search_enabled=request_context.web_search_enabled,
+                    image_generation_enabled=request_context.image_generation_enabled,
                     provider_name=openai_compatible_upstream.provider_name,
                 )
 
@@ -554,6 +671,184 @@ class OpenAIRelay:
                 WebSocketRoute("/v1/session/{session_id}/{path:path}", websocket_proxy),
                 WebSocketRoute("/v1/{path:path}", websocket_proxy),
             ],
+        )
+
+    async def _proxy_openai_image_http(
+        self,
+        *,
+        request: Request,
+        request_context: RelayRequestContext,
+        upstream_path: str,
+    ) -> Response:
+        if request_context.config.model_provider_mode in {"anthropic", "azure_openai"}:
+            return JSONResponse(
+                {
+                    "error": (
+                        "Direct OpenAI image generation and editing require the public "
+                        "or local OpenAI-compatible provider mode"
+                    )
+                },
+                status_code=501,
+            )
+
+        try:
+            upstream_path = self._supported_openai_compatible_http_path(
+                method=request.method,
+                upstream_path=upstream_path,
+            )
+        except ValueError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=501)
+
+        max_request_bytes = (
+            request_context.config.openai_image_edit_max_request_bytes
+            if upstream_path == "images/edits"
+            else request_context.config.openai_image_generation_max_request_bytes
+        )
+        content_length = request.headers.get("content-length")
+        if content_length:
+            try:
+                declared_length = int(content_length)
+            except ValueError:
+                return JSONResponse({"error": "Invalid Content-Length header"}, status_code=400)
+            if declared_length < 0:
+                return JSONResponse({"error": "Invalid Content-Length header"}, status_code=400)
+            if declared_length > max_request_bytes:
+                return self._image_request_too_large_response(max_request_bytes)
+
+        spool = tempfile.SpooledTemporaryFile(max_size=1_048_576, mode="w+b")
+        request_size = 0
+        request_hasher = sha256()
+        request_model: str | None = None
+        multipart_capture: _MultipartModelCapture | None = None
+        if upstream_path == "images/edits":
+            content_type = request.headers.get("content-type", "")
+            if not content_type.lower().startswith("multipart/form-data"):
+                spool.close()
+                return JSONResponse(
+                    {"error": "Image edit requests must use multipart/form-data"},
+                    status_code=400,
+                )
+            try:
+                multipart_capture = _MultipartModelCapture(content_type)
+            except ValueError as exc:
+                spool.close()
+                return JSONResponse({"error": str(exc)}, status_code=400)
+
+        try:
+            async for chunk in request.stream():
+                request_size += len(chunk)
+                if request_size > max_request_bytes:
+                    return self._image_request_too_large_response(max_request_bytes)
+                request_hasher.update(chunk)
+                spool.write(chunk)
+                if multipart_capture is not None:
+                    multipart_capture.write(chunk)
+            if multipart_capture is not None:
+                multipart_capture.finalize()
+                request_model = multipart_capture.model
+            spool.seek(0)
+            if upstream_path == "images/generations":
+                request_model = self._model_from_request_body(spool.read())
+                spool.seek(0)
+
+            upstream = self._openai_compatible_upstream(request_context.config)
+            if not upstream.api_key:
+                return JSONResponse(
+                    {
+                        "error": (
+                            "Host environment variable "
+                            f"{upstream.api_key_source} is not set."
+                        )
+                    },
+                    status_code=503,
+                )
+            upstream_url = self._upstream_http_url(
+                base_url=upstream.base_url,
+                upstream_path=upstream_path,
+                query_items=request.query_params.multi_items(),
+            )
+            headers = {
+                key: value
+                for key, value in request.headers.items()
+                if key.lower() not in HOP_BY_HOP_HEADERS
+            }
+            headers["accept-encoding"] = "identity"
+            headers["authorization"] = f"Bearer {upstream.api_key}"
+            headers["content-length"] = str(request_size)
+
+            async with httpx.AsyncClient(
+                timeout=request_context.config.openai_relay_timeout_seconds,
+                transport=self.transport,
+            ) as client:
+                started_at = time.perf_counter()
+                upstream_response = await client.request(
+                    method=request.method,
+                    url=upstream_url,
+                    headers=headers,
+                    content=self._spooled_file_chunks(spool),
+                )
+                try:
+                    self._record_model_usage_event(
+                        session_id=request_context.session_id,
+                        upstream_path=upstream_path,
+                        request_body=None,
+                        request_body_bytes=request_size or None,
+                        request_body_sha256=(
+                            request_hasher.hexdigest() if request_size else None
+                        ),
+                        request_model=request_model,
+                        upstream_response=upstream_response,
+                        duration_ms=self._duration_ms_since(started_at),
+                        provider_name=upstream.provider_name,
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "relay_http_model_usage_record_failed session_id=%s path=%s exception_class=%s exception_message=%s",
+                        request_context.session_id,
+                        request.url.path,
+                        exc.__class__.__name__,
+                        str(exc),
+                    )
+                return Response(
+                    content=upstream_response.content,
+                    status_code=upstream_response.status_code,
+                    headers=self._response_headers(upstream_response),
+                    media_type=upstream_response.headers.get("content-type"),
+                )
+        finally:
+            spool.close()
+
+    @staticmethod
+    async def _spooled_file_chunks(spool: Any) -> AsyncIterator[bytes]:
+        while True:
+            chunk = spool.read(64 * 1024)
+            if not chunk:
+                return
+            yield chunk
+
+    @staticmethod
+    def _image_request_too_large_response(max_request_bytes: int) -> JSONResponse:
+        return JSONResponse(
+            {
+                "error": (
+                    "Image request exceeds the configured session relay limit of "
+                    f"{max_request_bytes} bytes"
+                )
+            },
+            status_code=413,
+        )
+
+    @staticmethod
+    def _image_generation_disabled_response() -> JSONResponse:
+        return JSONResponse(
+            {
+                "error": (
+                    "Image generation is disabled for this session. Set "
+                    "session.image_generation_enabled=true to allow OpenAI image "
+                    "generation, editing, and Responses image_generation tools."
+                )
+            },
+            status_code=403,
         )
 
     async def _proxy_anthropic_http(
@@ -1071,10 +1366,13 @@ class OpenAIRelay:
         *,
         session_id: str,
         upstream_path: str,
-        request_body: bytes,
+        request_body: bytes | None,
         upstream_response: httpx.Response,
         duration_ms: int | None = None,
         provider_name: str = "openai",
+        request_body_bytes: int | None = None,
+        request_body_sha256: str | None = None,
+        request_model: str | None = None,
     ) -> None:
         if not self._is_model_usage_endpoint(upstream_path):
             return
@@ -1105,6 +1403,9 @@ class OpenAIRelay:
             ),
             duration_ms=duration_ms,
             provider_name=provider_name,
+            request_body_bytes=request_body_bytes,
+            request_body_sha256=request_body_sha256,
+            request_model=request_model,
         )
 
     def _record_stream_model_usage_event(
@@ -1208,6 +1509,9 @@ class OpenAIRelay:
         response_metadata: dict[str, Any],
         duration_ms: int | None,
         provider_name: str = "openai",
+        request_body_bytes: int | None = None,
+        request_body_sha256: str | None = None,
+        request_model: str | None = None,
     ) -> None:
         if not self._is_model_usage_endpoint(upstream_path):
             return
@@ -1220,17 +1524,34 @@ class OpenAIRelay:
             correlation_context = self.model_usage_store.get_active_correlation_context(
                 session_id=session_id,
             )
-        request_hash = sha256(request_body).hexdigest() if request_body else None
+        resolved_request_body_bytes = (
+            request_body_bytes
+            if request_body_bytes is not None
+            else len(request_body)
+            if request_body
+            else None
+        )
+        resolved_request_body_sha256 = (
+            request_body_sha256
+            if request_body_sha256 is not None
+            else sha256(request_body).hexdigest()
+            if request_body
+            else None
+        )
         extractor = MappingModelUsageExtractor(provider_name=provider_name)
         result = extractor.extract(
             ModelUsageExtractionRequest(
                 provider=provider_name,
                 provider_endpoint_identifier=upstream_path,
                 request_status=request_status,
-                model=response_payload.get("model") or self._model_from_request_body(request_body),
+                model=(
+                    response_payload.get("model")
+                    or request_model
+                    or self._model_from_request_body(request_body)
+                ),
                 duration_ms=duration_ms,
-                request_body_bytes=len(request_body) if request_body else None,
-                request_body_sha256=request_hash,
+                request_body_bytes=resolved_request_body_bytes,
+                request_body_sha256=resolved_request_body_sha256,
                 response_body_bytes=response_body_bytes,
                 response_body_sha256=response_body_sha256,
                 response_payload=response_payload,
@@ -1370,6 +1691,8 @@ class OpenAIRelay:
             "chat/completions",
             "completions",
             "messages",
+            "images/generations",
+            "images/edits",
         }
 
     @staticmethod
@@ -1496,6 +1819,7 @@ class OpenAIRelay:
             session_id=session_id,
             config=resolved_config,
             web_search_enabled=bool(session.web_search_enabled),
+            image_generation_enabled=bool(session.image_generation_enabled),
         )
 
     def _resolve_websocket_context(self, websocket: WebSocket) -> RelayRequestContext:
@@ -1516,6 +1840,7 @@ class OpenAIRelay:
             session_id=session_id,
             config=resolved_config,
             web_search_enabled=bool(session.web_search_enabled),
+            image_generation_enabled=bool(session.image_generation_enabled),
         )
 
     @staticmethod
@@ -1527,6 +1852,16 @@ class OpenAIRelay:
         except (UnicodeDecodeError, json.JSONDecodeError):
             return False
         return _payload_declares_hosted_web_search(payload)
+
+    @staticmethod
+    def _request_body_declares_image_generation(request_body: bytes) -> bool:
+        if not request_body:
+            return False
+        try:
+            payload = json.loads(request_body.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            return False
+        return _payload_declares_image_generation(payload)
 
     def _session_for_request_context(self, session_id: str):
         session = self.provider_config_resolver.session_store.get_session(session_id)
@@ -1629,6 +1964,15 @@ class OpenAIRelay:
     def _log_hosted_web_search_denied(*, session_id: str, request_kind: str, path: str) -> None:
         logger.warning(
             "relay_denied_hosted_web_search session_id=%s request_kind=%s path=%s",
+            session_id,
+            request_kind,
+            path,
+        )
+
+    @staticmethod
+    def _log_image_generation_denied(*, session_id: str, request_kind: str, path: str) -> None:
+        logger.warning(
+            "relay_denied_image_generation session_id=%s request_kind=%s path=%s",
             session_id,
             request_kind,
             path,
@@ -1773,6 +2117,7 @@ class OpenAIRelay:
         upstream_path: str = "",
         path: str = "",
         web_search_enabled: bool = True,
+        image_generation_enabled: bool = True,
         provider_name: str = "openai",
     ) -> None:
         try:
@@ -1817,6 +2162,21 @@ class OpenAIRelay:
                             reason="hosted web search is disabled for this session",
                         )
                         return
+                    if (
+                        not image_generation_enabled
+                        and _websocket_message_declares_image_generation(text)
+                    ):
+                        self._log_image_generation_denied(
+                            session_id=session_id or "",
+                            request_kind="websocket",
+                            path=path,
+                        )
+                        await upstream.close()
+                        await safe_close_client(
+                            code=1008,
+                            reason="image generation is disabled for this session",
+                        )
+                        return
                     await upstream.send(message["text"])
                     continue
                 if message.get("bytes") is not None:
@@ -1833,6 +2193,21 @@ class OpenAIRelay:
                         await safe_close_client(
                             code=1008,
                             reason="hosted web search is disabled for this session",
+                        )
+                        return
+                    if (
+                        not image_generation_enabled
+                        and _websocket_message_declares_image_generation(payload)
+                    ):
+                        self._log_image_generation_denied(
+                            session_id=session_id or "",
+                            request_kind="websocket",
+                            path=path,
+                        )
+                        await upstream.close()
+                        await safe_close_client(
+                            code=1008,
+                            reason="image generation is disabled for this session",
                         )
                         return
                     await upstream.send(message["bytes"])
@@ -1950,6 +2325,17 @@ def _websocket_message_declares_hosted_web_search(message: str | bytes) -> bool:
     return _payload_declares_hosted_web_search(payload)
 
 
+def _websocket_message_declares_image_generation(message: str | bytes) -> bool:
+    try:
+        if isinstance(message, bytes):
+            payload = json.loads(message.decode("utf-8"))
+        else:
+            payload = json.loads(message)
+    except (UnicodeDecodeError, json.JSONDecodeError, TypeError):
+        return False
+    return _payload_declares_image_generation(payload)
+
+
 def _canonical_relay_path(path: object, *, field_name: str) -> str:
     segments = _safe_path_segments(path, field_name=field_name)
     return "/".join(quote(segment, safe=PATH_SEGMENT_SAFE_CHARS) for segment in segments)
@@ -2017,6 +2403,38 @@ def _tool_declares_hosted_web_search(tool: Any) -> bool:
         return True
     nested_tools = tool.get("tools")
     return _tools_declare_hosted_web_search(nested_tools)
+
+
+def _payload_declares_image_generation(payload: Any) -> bool:
+    if isinstance(payload, list):
+        return any(_payload_declares_image_generation(item) for item in payload)
+    if not isinstance(payload, dict):
+        return False
+
+    tools = payload.get("tools")
+    if _tools_declare_image_generation(tools):
+        return True
+    for value in payload.values():
+        if isinstance(value, (dict, list)) and _payload_declares_image_generation(value):
+            return True
+    return False
+
+
+def _tools_declare_image_generation(tools: Any) -> bool:
+    if isinstance(tools, list):
+        return any(_tool_declares_image_generation(tool) for tool in tools)
+    if isinstance(tools, dict):
+        return _tool_declares_image_generation(tools)
+    return False
+
+
+def _tool_declares_image_generation(tool: Any) -> bool:
+    if not isinstance(tool, dict):
+        return False
+    raw_type = str(tool.get("type") or "").strip()
+    if raw_type in IMAGE_GENERATION_TOOL_TYPES:
+        return True
+    return _tools_declare_image_generation(tool.get("tools"))
 
 
 def _project_root() -> Path:

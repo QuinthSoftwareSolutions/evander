@@ -106,6 +106,12 @@ class SessionMetadataUpdater(Protocol):
     def session_update_metadata(self, *, target: str, metadata: dict[str, Any]) -> Any: ...
 
 
+class SessionImageGenerationPolicyUpdater(Protocol):
+    def session_set_image_generation_enabled(
+        self, *, target: str, enabled: bool
+    ) -> Any: ...
+
+
 class GitBranchPromoter(Protocol):
     def promote_agent_branch(self, **kwargs: Any) -> Any: ...
 
@@ -157,6 +163,7 @@ class ProviderRuntimePorts:
     session_lookup: SessionLookup | None = None
     issue_updater: IssueUpdater | None = None
     session_metadata_updater: SessionMetadataUpdater | None = None
+    session_image_generation_policy_updater: SessionImageGenerationPolicyUpdater | None = None
     git_branch_promoter: GitBranchPromoter | None = None
     pull_request_creator: PullRequestCreator | None = None
     git_merge_base_reader: GitMergeBaseReader | None = None

@@ -580,6 +580,7 @@ def test_default_registry_includes_all_known_effect_types() -> None:
         "effect:communication:send-message",
         "effect:notification:send",
         "effect:session:update-metadata",
+        "effect:session:set-image-generation-enabled",
         "effect:session:approve-mcp-tools-for-run",
         "effect:session:revoke-mcp-tool-approval-lease",
         "effect:session:renew-if-expired",
@@ -1723,6 +1724,7 @@ def test_agent_create_provider_passes_session_communication_policy() -> None:
         communication_file_max_bytes=4096,
         communication_file_require_approval_for_send=True,
         web_search_enabled=True,
+        image_generation_enabled=True,
         host_directory_grants={"shared": ["list"]},
     )
     admin_service = _AdminServiceStub(
@@ -1752,6 +1754,7 @@ def test_agent_create_provider_passes_session_communication_policy() -> None:
     assert admin_service.create_vm_calls[0]["communication_file_max_bytes"] == 4096
     assert admin_service.create_vm_calls[0]["communication_file_require_approval_for_send"] is True
     assert admin_service.create_vm_calls[0]["web_search_enabled"] is True
+    assert admin_service.create_vm_calls[0]["image_generation_enabled"] is True
     assert admin_service.create_vm_calls[0]["connector_grants"] is None
     assert admin_service.create_vm_calls[0]["host_directory_grants"] == {"shared": ["list"]}
     assert admin_service.create_vm_calls[0]["metadata"]["model_provider_mode"] == "local_openai"
@@ -5479,6 +5482,7 @@ def test_agent_create_clone_copy_and_prompt_use_container_session_backend(
             communication_file_max_bytes=2048,
             communication_file_require_approval_for_send=True,
             web_search_enabled=True,
+            image_generation_enabled=True,
             dotnet=True,
             nuget=True,
             playwright=True,
@@ -5536,6 +5540,7 @@ def test_agent_create_clone_copy_and_prompt_use_container_session_backend(
     assert manifest.communication_file_max_bytes == 2048
     assert manifest.communication_file_require_approval_for_send is True
     assert manifest.web_search_enabled is True
+    assert manifest.image_generation_enabled is True
     assert manifest.metadata["workflow"] == {"state": "active"}
     assert manifest.metadata["labels"] == {"agent_role": "reviewer"}
     assert manifest.metadata["playwright"] is True
@@ -7118,6 +7123,7 @@ def test_agent_create_container_upserts_when_session_exists(
             connector_grants={"manually-assigned": ["read"]},
             host_directory_grants={"shared": ["list"]},
             web_search_enabled=True,
+            image_generation_enabled=True,
             expires_at=datetime.now(UTC) + timedelta(hours=1),
             metadata={
                 "agent_provider": "claude",
@@ -7193,6 +7199,7 @@ def test_agent_create_container_upserts_when_session_exists(
     assert updated.connector_grants == {"manually-assigned": ["read"]}
     assert updated.host_directory_grants == {"shared": ["list"]}
     assert updated.web_search_enabled is True
+    assert updated.image_generation_enabled is True
     assert updated.metadata["execution_backend"] == "container_worker_vm"
     assert updated.metadata["agent_provider"] == "claude"
     assert updated.metadata["agent_thread_ids"] == {

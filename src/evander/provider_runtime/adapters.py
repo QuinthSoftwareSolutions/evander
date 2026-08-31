@@ -354,6 +354,14 @@ class AdminRuntimeProviderAdapter:
             metadata=metadata,
         )
 
+    def session_set_image_generation_enabled(self, *, target: str, enabled: bool) -> Any:
+        return self._call_required(
+            self._issue_git_method("session_set_image_generation_enabled"),
+            "session_set_image_generation_enabled",
+            target=target,
+            enabled=enabled,
+        )
+
     def promote_agent_branch(self, **kwargs: Any) -> Any:
         return self._call_required(
             self._managed_git_method("promote_agent_branch"),
@@ -486,6 +494,11 @@ def build_provider_runtime_ports(
         session_lookup=_pick(provider_runtime, "session_lookup", admin_adapter),
         issue_updater=_pick(provider_runtime, "issue_updater", admin_adapter),
         session_metadata_updater=_pick(provider_runtime, "session_metadata_updater", admin_adapter),
+        session_image_generation_policy_updater=_pick(
+            provider_runtime,
+            "session_image_generation_policy_updater",
+            admin_adapter,
+        ),
         git_branch_promoter=_pick(provider_runtime, "git_branch_promoter", admin_adapter),
         pull_request_creator=_pick(provider_runtime, "pull_request_creator", admin_adapter),
         git_merge_base_reader=_pick(provider_runtime, "git_merge_base_reader", admin_adapter),

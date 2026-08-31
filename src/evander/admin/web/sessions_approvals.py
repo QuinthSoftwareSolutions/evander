@@ -316,6 +316,7 @@ _TOOL_DESCRIPTIONS: dict[ToolName, str] = {
 
 _SESSION_POLICY_FIELD_KINDS: dict[str, str] = {
     "web_search_enabled": "bool",
+    "image_generation_enabled": "bool",
     "communication_file_receive_enabled": "bool",
     "communication_file_send_enabled": "bool",
     "communication_file_max_bytes": "int_or_null",
@@ -332,6 +333,7 @@ _SESSION_POLICY_FIELD_LABELS: dict[str, str] = {
     for field_name in COMMUNICATION_FILE_SESSION_POLICY_FIELDS
 }
 _SESSION_POLICY_FIELD_LABELS["web_search_enabled"] = "web search"
+_SESSION_POLICY_FIELD_LABELS["image_generation_enabled"] = "image generation"
 _SESSION_POLICY_FIELD_LABELS["tool_argument_policies"] = "tool argument policy"
 
 
@@ -341,6 +343,12 @@ def _session_policy_field_catalog() -> list[dict[str, str]]:
             "field_name": "web_search_enabled",
             "label": _SESSION_POLICY_FIELD_LABELS["web_search_enabled"],
             "kind": _SESSION_POLICY_FIELD_KINDS["web_search_enabled"],
+            "section": "Hosted tools",
+        },
+        {
+            "field_name": "image_generation_enabled",
+            "label": _SESSION_POLICY_FIELD_LABELS["image_generation_enabled"],
+            "kind": _SESSION_POLICY_FIELD_KINDS["image_generation_enabled"],
             "section": "Hosted tools",
         },
     ]

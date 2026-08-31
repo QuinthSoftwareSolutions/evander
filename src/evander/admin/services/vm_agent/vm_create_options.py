@@ -28,6 +28,7 @@ class VmAgentCreateOptionsMixin:
         communication_file_max_bytes: int | None = None,
         communication_file_require_approval_for_send: bool | None = None,
         web_search_enabled: bool | None = None,
+        image_generation_enabled: bool | None = None,
         directory_path: str = "root",
         metadata: dict[str, Any] | None = None,
         model_provider_mode: str | None = None,
@@ -51,6 +52,8 @@ class VmAgentCreateOptionsMixin:
             )
         if web_search_enabled is not None:
             payload["web_search_enabled"] = web_search_enabled
+        if image_generation_enabled is not None:
+            payload["image_generation_enabled"] = image_generation_enabled
         if metadata is not None:
             payload["metadata"] = metadata
 
@@ -126,6 +129,7 @@ class VmAgentCreateOptionsMixin:
         communication_file_max_bytes: int | None = None,
         communication_file_require_approval_for_send: bool | None = None,
         web_search_enabled: bool | None = None,
+        image_generation_enabled: bool | None = None,
         dotnet: bool = False,
         nuget: bool = False,
         mssql: bool = False,
@@ -151,6 +155,7 @@ class VmAgentCreateOptionsMixin:
                 communication_file_require_approval_for_send
             ),
             web_search_enabled=web_search_enabled,
+            image_generation_enabled=image_generation_enabled,
             directory_path=directory_path,
             metadata=metadata,
             model_provider_mode=model_provider_mode,

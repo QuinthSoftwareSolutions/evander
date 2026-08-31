@@ -1006,6 +1006,16 @@ and record the backup SHA-256 in the resulting artifact bundle.
 - Hosted OpenAI web search is denied by default at the relay. Set the session
   policy flag `web_search_enabled: true` only for agents that should be allowed
   to declare Responses `web_search` tools.
+- OpenAI image generation and editing are denied by default. Set the session
+  policy flag `image_generation_enabled: true` only for agents that should be
+  allowed to call `POST /v1/images/generations`, `POST /v1/images/edits`, or
+  declare Responses `image_generation` tools. The standard APP demo workflows
+  opt in after provisioning metadata is stored; ordinary sessions remain
+  disabled.
+- Direct image requests use host-injected OpenAI authentication. Generation
+  JSON is capped at 1 MiB by default; multipart edits are capped at 256 MiB,
+  spooled, and streamed upstream. Usage audit rows contain sizes, hashes, and
+  provider usage but not prompts or image/base64 content.
 - Codex bootstrap and resume paths set `web_search` from that session policy,
   defaulting to `disabled`.
 - For OpenAI/Codex-backed workflows while keeping guests off the public internet, run the relay on the host and leave `LLM_BASE_URL` at its default `http://192.168.250.1:11434/v1`.

@@ -177,6 +177,8 @@ DIRECTORY_CONFIG_DOMAIN_FIELDS: dict[str, frozenset[str]] = {
             "azure_openai_api_version",
             "azure_openai_model_deployments",
             "openai_relay_timeout_seconds",
+            "openai_image_generation_max_request_bytes",
+            "openai_image_edit_max_request_bytes",
             "anthropic_api_base_url",
             "anthropic_api_key_env",
             "anthropic_api_version",

@@ -16,7 +16,12 @@ from evander.config import GatewayConfig
 from evander.directory_config import DirectoryConfigStore
 from evander.directories import DirectoryService, DirectoryStore
 from evander.models import SessionManifest
-from evander.relays.openai import OpenAIRelay, create_app
+from evander.model_usage.runtime import register_model_usage_correlation_context
+from evander.relays.openai import (
+    OpenAIRelay,
+    _websocket_message_declares_image_generation,
+    create_app,
+)
 from evander.repositories.session_manifests import JsonSessionManifestRepository
 from evander.session_auth import session_mcp_auth_metadata
 
@@ -51,6 +56,7 @@ def write_session(
     session_id: str,
     directory_path: str = "root",
     web_search_enabled: bool = False,
+    image_generation_enabled: bool = False,
     expires_at: datetime | None = None,
     metadata: dict[str, object] | None = None,
 ) -> None:
@@ -61,10 +67,22 @@ def write_session(
             directory_path=directory_path,
             allowed_tools=[],
             web_search_enabled=web_search_enabled,
+            image_generation_enabled=image_generation_enabled,
             expires_at=expires_at or datetime.now(UTC) + timedelta(hours=1),
             metadata=metadata or {},
         ),
     )
+
+
+def request_asgi(app, method: str, path: str, **kwargs) -> httpx.Response:
+    async def run() -> httpx.Response:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app),
+            base_url="http://relay.test",
+        ) as client:
+            return await client.request(method, path, **kwargs)
+
+    return asyncio.run(run())
 
 
 def test_relay_returns_503_without_api_key(tmp_path: Path) -> None:
@@ -80,6 +98,228 @@ def test_relay_returns_503_without_api_key(tmp_path: Path) -> None:
 
     assert response.status_code == 503
     assert "OPENAI_API_KEY" in response.text
+
+
+def test_relay_rejects_direct_image_generation_without_session_opt_in(
+    tmp_path: Path,
+) -> None:
+    called = False
+
+    def handler(_: httpx.Request) -> httpx.Response:
+        nonlocal called
+        called = True
+        return httpx.Response(200, json={"created": 1, "data": []})
+
+    config = make_config(tmp_path)
+    write_session(config, session_id="session-1")
+    app = create_app(config, transport=httpx.MockTransport(handler))
+    os.environ["OPENAI_API_KEY"] = "host-key"
+
+    response = request_asgi(
+        app,
+        "POST",
+        "/v1/session/session-1/images/generations",
+        json={"model": "gpt-image-2", "prompt": "secret prompt"},
+    )
+
+    assert response.status_code == 403
+    assert "Image generation is disabled" in response.text
+    assert called is False
+
+
+def test_relay_rejects_responses_image_tool_without_session_opt_in(tmp_path: Path) -> None:
+    called = False
+
+    def handler(_: httpx.Request) -> httpx.Response:
+        nonlocal called
+        called = True
+        return httpx.Response(200, json={"id": "resp_test", "object": "response"})
+
+    config = make_config(tmp_path)
+    write_session(config, session_id="session-1")
+    app = create_app(config, transport=httpx.MockTransport(handler))
+    os.environ["OPENAI_API_KEY"] = "host-key"
+
+    response = request_asgi(
+        app,
+        "POST",
+        "/v1/session/session-1/responses",
+        json={
+            "model": "gpt-5.4",
+            "input": "draw a fixture",
+            "tools": [{"type": "image_generation"}],
+        },
+    )
+
+    assert response.status_code == 403
+    assert "Image generation is disabled" in response.text
+    assert called is False
+
+
+def test_websocket_image_tool_detection_ignores_completed_tool_output() -> None:
+    assert _websocket_message_declares_image_generation(
+        json.dumps(
+            {
+                "type": "session.update",
+                "session": {"tools": [{"type": "image_generation"}]},
+            }
+        )
+    )
+    assert not _websocket_message_declares_image_generation(
+        json.dumps(
+            {
+                "type": "response.output_item.done",
+                "item": {"type": "image_generation_call", "id": "image-1"},
+            }
+        )
+    )
+
+
+def test_relay_forwards_direct_image_generation_with_host_auth_and_opt_in(
+    tmp_path: Path,
+) -> None:
+    captured: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["url"] = str(request.url)
+        captured["authorization"] = request.headers.get("authorization")
+        captured["content_type"] = request.headers.get("content-type")
+        captured["payload"] = json.loads(request.read().decode("utf-8"))
+        return httpx.Response(
+            200,
+            json={
+                "created": 1,
+                "data": [{"b64_json": "do-not-persist"}],
+                "usage": {"input_tokens": 3, "output_tokens": 5, "total_tokens": 8},
+            },
+        )
+
+    config = make_config(tmp_path)
+    write_session(config, session_id="session-1", image_generation_enabled=True)
+    app = create_app(config, transport=httpx.MockTransport(handler))
+    os.environ["OPENAI_API_KEY"] = "host-key"
+
+    response = request_asgi(
+        app,
+        "POST",
+        "/v1/session/session-1/images/generations",
+        headers={"authorization": "Bearer guest-key"},
+        json={"model": "gpt-image-2", "prompt": "secret prompt", "quality": "low"},
+    )
+
+    assert response.status_code == 200
+    assert captured == {
+        "url": "https://api.openai.com/v1/images/generations",
+        "authorization": "Bearer host-key",
+        "content_type": "application/json",
+        "payload": {
+            "model": "gpt-image-2",
+            "prompt": "secret prompt",
+            "quality": "low",
+        },
+    }
+
+
+def test_relay_forwards_multipart_image_edit_without_reencoding_body(tmp_path: Path) -> None:
+    captured: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = request.read()
+        captured["authorization"] = request.headers.get("authorization")
+        captured["content_type"] = request.headers.get("content-type")
+        captured["body"] = body
+        return httpx.Response(200, json={"created": 1, "data": []})
+
+    config = make_config(tmp_path)
+    write_session(config, session_id="session-1", image_generation_enabled=True)
+    app = create_app(config, transport=httpx.MockTransport(handler))
+    os.environ["OPENAI_API_KEY"] = "host-key"
+
+    response = request_asgi(
+        app,
+        "POST",
+        "/v1/session/session-1/images/edits",
+        data={"model": "gpt-image-2", "prompt": "add a safety rail"},
+        files={"image": ("fixture.png", b"fake-png", "image/png")},
+    )
+
+    assert response.status_code == 200
+    assert captured["authorization"] == "Bearer host-key"
+    assert str(captured["content_type"]).startswith("multipart/form-data; boundary=")
+    assert b' name="model"' in captured["body"]
+    assert b"gpt-image-2" in captured["body"]
+    assert b"fake-png" in captured["body"]
+    events = OpenAIRelay(config).model_usage_store.list_events()
+    assert len(events) == 1
+    assert events[0].provider_endpoint_identifier == "images/edits"
+    assert events[0].model == "gpt-image-2"
+
+
+def test_relay_enforces_image_generation_request_limit_before_upstream(
+    tmp_path: Path,
+) -> None:
+    called = False
+
+    def handler(_: httpx.Request) -> httpx.Response:
+        nonlocal called
+        called = True
+        return httpx.Response(200, json={"created": 1, "data": []})
+
+    config = make_config(tmp_path).model_copy(
+        update={"openai_image_generation_max_request_bytes": 32}
+    )
+    write_session(config, session_id="session-1", image_generation_enabled=True)
+    app = create_app(config, transport=httpx.MockTransport(handler))
+    os.environ["OPENAI_API_KEY"] = "host-key"
+
+    response = request_asgi(
+        app,
+        "POST",
+        "/v1/session/session-1/images/generations",
+        json={"model": "gpt-image-2", "prompt": "x" * 64},
+    )
+
+    assert response.status_code == 413
+    assert "32 bytes" in response.text
+    assert called is False
+
+
+def test_image_usage_audit_does_not_persist_prompt_or_generated_data(tmp_path: Path) -> None:
+    config = make_config(tmp_path)
+    register_model_usage_correlation_context(
+        runtime_dir=config.runtime_dir,
+        session_id="session-1",
+        dispatch_id="dispatch-1",
+        model="gpt-image-2",
+    )
+    relay = OpenAIRelay(config)
+    request_body = json.dumps(
+        {"model": "gpt-image-2", "prompt": "private-prompt-marker"}
+    ).encode("utf-8")
+    response = httpx.Response(
+        200,
+        json={
+            "data": [{"b64_json": "private-image-marker"}],
+            "usage": {"input_tokens": 2, "output_tokens": 3, "total_tokens": 5},
+        },
+    )
+
+    relay._record_model_usage_event(
+        session_id="session-1",
+        upstream_path="images/generations",
+        request_body=request_body,
+        upstream_response=response,
+        provider_name="openai",
+    )
+
+    events = relay.model_usage_store.list_events(session_id="session-1")
+    assert len(events) == 1
+    serialized = events[0].model_dump_json()
+    assert events[0].provider_endpoint_identifier == "images/generations"
+    assert events[0].model == "gpt-image-2"
+    assert events[0].total_tokens == 5
+    assert "private-prompt-marker" not in serialized
+    assert "private-image-marker" not in serialized
 
 
 def test_relay_rejects_missing_session_id(tmp_path: Path) -> None:
