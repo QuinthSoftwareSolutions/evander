@@ -2901,6 +2901,25 @@ sudo journalctl -u evander-trigger-orchestrator.service -f
 The older `scripts/provision_exampleindustry_app_demo_environment.sh` wrapper is retained only for
 compatibility with older live workflow packs and should not be used for new provisioning graphs.
 
+For changes after deployment, enable `app-demo-modification.v1-example.json` as an operator-owned
+workflow pack (copy it to the corresponding `.json` name and add that name to the active workflow
+pack list). Its `external.app-demo-change-requested` path is deliberately independent of the
+provisioning graph:
+
+- the authenticated caller supplies a validated resource base name and instructions while the
+  host-facing API derives all target URLs and the deterministic `demo-agent-<resource>` session;
+- `effect:agent:create` with `existing_agent_behavior: upsert` preserves an existing container
+  session and thread metadata, while allowing a minimal demo to gain an agent on its first change;
+- `effect:session:renew-if-expired` uses both `extend_by: 8h` and
+  `renew_if_expires_within: 8h`, so every accepted change gets a fresh eight-hour working window;
+- APP, browser-proxy, and optional Elastic target metadata are refreshed before the session context
+  is read; and
+- `effect:agent:enqueue-prompt` resumes `metadata.agent_thread_id` and serializes overlapping
+  modification requests without queueing an Azure DevOps pipeline.
+
+Treat the workflow event machine token as a host secret. Do not expose it to the DemoPage browser,
+and do not accept caller-selected session IDs or arbitrary URLs in this ingress path.
+
 ### Teams and Discord ingest workers
 
 - `trigger:teams:new-message` and `trigger:teams:direct-message` events are produced by a

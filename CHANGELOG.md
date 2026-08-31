@@ -7,6 +7,12 @@
 - Kept failed or interrupted maintenance retryable by releasing the process lock automatically and
   recording the completed retention date only after all bounded batches finish.
 
+## 2026-08-31 - Resumable APP Demo Modifications
+
+- Added an operator workflow example for direct post-deployment APP demo changes that reuses the
+  deterministic demo agent, refreshes its session for eight hours, and queues the request on the
+  existing Codex thread without starting another Azure DevOps deployment.
+
 ## 2026-08-30 - Alexa Agent Bridge Example
 
 - Added a signed, deduplicated Alexa webhook workflow example that dispatches bounded personal
