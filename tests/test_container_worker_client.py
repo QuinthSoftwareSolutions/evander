@@ -447,6 +447,7 @@ def test_container_worker_client_requests_structured_task_worktree_cleanup(
     request = WorkerTaskWorktreeCleanupRequest(
         repo_name="repo",
         worktree_name="task-a-1234",
+        preparation_attempt_id="gitprep-task-a-1234",
         branch="agents/session-1/tasks/task-a-1234",
         expected_commit_sha="a" * 40,
         expected_target_dir="/home/agent/worktrees/repo/task-a-1234",
@@ -639,6 +640,7 @@ def test_container_worker_client_preserves_structured_dependency_conflict(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("WORKER_TOKEN", "secret-token")
+    requests: list[httpx.Request] = []
     conflict = {
         "base_branch": "main",
         "base_commit_sha": "a" * 40,
@@ -650,6 +652,7 @@ def test_container_worker_client_preserves_structured_dependency_conflict(
     }
 
     def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
         return httpx.Response(
             409,
             json={
@@ -671,6 +674,7 @@ def test_container_worker_client_preserves_structured_dependency_conflict(
             WorkerTaskWorktreeRequest(
                 repo_name="repo",
                 worktree_name="task-a-1234",
+                preparation_attempt_id="gitprep-task-a-1234",
                 branch="agents/session-1/tasks/task-a-1234",
                 base_ref="main",
             ),
@@ -680,6 +684,67 @@ def test_container_worker_client_preserves_structured_dependency_conflict(
         "error": "dependency Git composition conflict",
         "dependency_composition_conflict": conflict,
     }
+    assert len(requests) == 1
+
+
+def test_container_worker_client_retries_without_receipt_id_for_older_worker(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("WORKER_TOKEN", "secret-token")
+    requests: list[dict[str, object]] = []
+    base_commit = "a" * 40
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        payload = json.loads(request.content)
+        requests.append(payload)
+        if len(requests) == 1:
+            return httpx.Response(
+                409,
+                json={
+                    "error": (
+                        "1 validation error for WorkerTaskWorktreeRequest\n"
+                        "preparation_attempt_id\n"
+                        "  Extra inputs are not permitted [type=extra_forbidden]"
+                    )
+                },
+                request=request,
+            )
+        return httpx.Response(
+            200,
+            json={
+                "session_id": "session-1",
+                "repo_name": "repo",
+                "target_dir": "/home/agent/worktrees/repo/task-a-1234",
+                "branch": "agents/session-1/tasks/task-a-1234",
+                "commit_sha": base_commit,
+                "base_commit_sha": base_commit,
+                "created": True,
+            },
+            request=request,
+        )
+
+    worker = ContainerWorkerClient(
+        base_url="http://worker.test",
+        token_env="WORKER_TOKEN",
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+
+    record = worker.prepare_task_worktree(
+        "session-1",
+        WorkerTaskWorktreeRequest(
+            repo_name="repo",
+            worktree_name="task-a-1234",
+            preparation_attempt_id="gitprep-task-a-1234",
+            branch="agents/session-1/tasks/task-a-1234",
+            base_ref="main",
+        ),
+    )
+
+    assert len(requests) == 2
+    assert requests[0]["preparation_attempt_id"] == "gitprep-task-a-1234"
+    assert "preparation_attempt_id" not in requests[1]
+    assert record.created is True
+    assert record.preparation_attempt_id is None
 
 
 def test_container_worker_client_does_not_retry_read_timeout(

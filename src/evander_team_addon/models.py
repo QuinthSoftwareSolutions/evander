@@ -26,7 +26,7 @@ from evander_team_addon.git_naming import (
     validate_branch_name,
 )
 
-SCHEMA_VERSION = 19
+SCHEMA_VERSION = 20
 DEFAULT_TEAM_COST_WARNING_RATIO = Decimal("0.8")
 WORKTREE_CLEANUP_INVENTORY_SAMPLE_LIMIT = 200
 TEAM_CHAT_ATTACHMENT_DEFAULT_MIME_TYPES = (
@@ -195,6 +195,14 @@ class GitWorkContextState(str, Enum):
     ACTIVE = "active"
     SUBMITTED = "submitted"
     ABANDONED = "abandoned"
+
+
+class TeamGitPreparationAttemptState(str, Enum):
+    PENDING = "pending"
+    PREPARED = "prepared"
+    COMMITTED = "committed"
+    CLEANUP_PENDING = "cleanup_pending"
+    OPERATOR_ACTION_REQUIRED = "operator_action_required"
 
 
 class DependencyCompositionRecoveryState(str, Enum):
@@ -413,6 +421,7 @@ class AgentAvatar(TeamModel):
     @classmethod
     def _optional_text(cls, value: object) -> str | None:
         return _optional_text(value)
+
 
 class AgentVoiceProfile(TeamModel):
     voice: str | None = None
@@ -983,8 +992,7 @@ class Project(TeamModel):
         _ensure_unique([goal.id for goal in self.goals], "project goals")
         if self.git is not None and self.git.directory_path != self.directory_path:
             raise ValueError(
-                "project git directory_path must match the provider-neutral "
-                "project directory_path"
+                "project git directory_path must match the provider-neutral project directory_path"
             )
         return self
 
@@ -1261,9 +1269,7 @@ def external_source_evidence_content_digest(
     *,
     title: str | None,
     body: ExternalSourceEvidenceBody | Mapping[str, Any] | None,
-    acceptance_criteria: Sequence[
-        ExternalSourceEvidenceAcceptanceCriterion | Mapping[str, Any]
-    ],
+    acceptance_criteria: Sequence[ExternalSourceEvidenceAcceptanceCriterion | Mapping[str, Any]],
     discussion: Sequence[ExternalSourceEvidenceDiscussionEntry | Mapping[str, Any]],
     links: Sequence[ExternalSourceEvidenceLink | Mapping[str, Any]],
     metadata: Mapping[str, Any],
@@ -1396,10 +1402,7 @@ def external_source_evidence_snapshot_payload(
     payload = snapshot.model_dump(mode="json")
     effective_now = _ensure_utc(now or utc_now())
     effective_status = snapshot.freshness_status
-    if (
-        snapshot.expires_at is not None
-        and _ensure_utc(snapshot.expires_at) <= effective_now
-    ):
+    if snapshot.expires_at is not None and _ensure_utc(snapshot.expires_at) <= effective_now:
         effective_status = ExternalSourceEvidenceFreshnessStatus.EXPIRED
     payload["effective_freshness_status"] = effective_status.value
     return payload
@@ -1657,9 +1660,7 @@ class TaskMutationPolicy(TeamModel):
         fields = _unique_text_list(value or [], "locked_fields")
         unsupported = sorted(set(fields) - _TASK_MUTATION_POLICY_FIELDS)
         if unsupported:
-            raise ValueError(
-                "unsupported task mutation policy fields: " + ", ".join(unsupported)
-            )
+            raise ValueError("unsupported task mutation policy fields: " + ", ".join(unsupported))
         return fields
 
 
@@ -2598,6 +2599,98 @@ class GitWorkContext(TeamModel):
         return normalized
 
 
+class TeamGitPreparationAttempt(TeamModel):
+    """Server-owned identity and receipt for one physical task-worktree preparation."""
+
+    id: str
+    agent_id: str
+    session_id: str
+    task_id: str
+    project_id: str
+    latest_dispatch_id: str
+    managed_repo_id: str
+    directory_path: str = "root"
+    execution_backend: Literal["libvirt_vm", "container_worker_vm"]
+    worktree_path: str
+    branch: str
+    base_ref: str
+    preparation_generation: str
+    state: TeamGitPreparationAttemptState = TeamGitPreparationAttemptState.PENDING
+    worker_request_fingerprint: str | None = None
+    base_commit_sha: str | None = None
+    head_commit_sha: str | None = None
+    git_work_context_id: str | None = None
+    last_error: str | None = None
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
+    prepared_at: datetime | None = None
+    committed_at: datetime | None = None
+
+    @field_validator(
+        "id",
+        "agent_id",
+        "session_id",
+        "task_id",
+        "project_id",
+        "latest_dispatch_id",
+        "managed_repo_id",
+        "execution_backend",
+        "worktree_path",
+        "branch",
+        "base_ref",
+        mode="before",
+    )
+    @classmethod
+    def _required_text(cls, value: object, info) -> str:
+        return _required_text(value, info.field_name)
+
+    @field_validator("directory_path", mode="before")
+    @classmethod
+    def _directory_path(cls, value: object) -> str:
+        return DirectoryPath(segments=str(value or "root").strip() or "root").as_posix()
+
+    @field_validator("branch", mode="after")
+    @classmethod
+    def _branch(cls, value: str) -> str:
+        return validate_branch_name(value)
+
+    @field_validator("preparation_generation", mode="before")
+    @classmethod
+    def _preparation_generation(cls, value: object) -> str:
+        normalized = _required_text(value, "preparation_generation").casefold()
+        if re.fullmatch(r"[0-9a-f]{20}", normalized) is None:
+            raise ValueError("preparation_generation must be a 20-character hex fingerprint")
+        return normalized
+
+    @field_validator(
+        "worker_request_fingerprint",
+        "base_commit_sha",
+        "head_commit_sha",
+        "git_work_context_id",
+        "last_error",
+        mode="before",
+    )
+    @classmethod
+    def _optional_text(cls, value: object) -> str | None:
+        return _optional_text(value)
+
+    @model_validator(mode="after")
+    def _validate_receipt_lifecycle(self) -> "TeamGitPreparationAttempt":
+        if self.state in {
+            TeamGitPreparationAttemptState.PREPARED,
+            TeamGitPreparationAttemptState.COMMITTED,
+            TeamGitPreparationAttemptState.CLEANUP_PENDING,
+        }:
+            if self.worker_request_fingerprint is None or self.base_commit_sha is None:
+                raise ValueError("prepared Git attempt requires a worker receipt and base commit")
+            if self.prepared_at is None:
+                raise ValueError("prepared Git attempt requires prepared_at")
+        if self.state == TeamGitPreparationAttemptState.COMMITTED:
+            if self.git_work_context_id is None or self.committed_at is None:
+                raise ValueError("committed Git attempt requires its work context and timestamp")
+        return self
+
+
 class ReviewProfileCriterion(TeamModel):
     id: str
     label: str
@@ -3393,9 +3486,7 @@ class WorktreeCleanupCandidate(TeamModel):
                         migrated.get("updated_at") or migrated.get("eligible_at") or utc_now()
                     )
                 if migrated.get("operator_action_reason") is None:
-                    migrated["operator_action_reason"] = (
-                        failed_check or "legacy_recovery_required"
-                    )
+                    migrated["operator_action_reason"] = failed_check or "legacy_recovery_required"
         return migrated
 
     @field_validator(
@@ -3453,14 +3544,10 @@ class WorktreeCleanupCandidate(TeamModel):
                     "operator-action-required cleanup requires operator_action_required_at"
                 )
             if self.operator_action_reason is None:
-                raise ValueError(
-                    "operator-action-required cleanup requires operator_action_reason"
-                )
+                raise ValueError("operator-action-required cleanup requires operator_action_reason")
         if self.state == WorktreeCleanupState.SUPERSEDED:
             if self.superseded_by_git_work_context_id is None:
-                raise ValueError(
-                    "superseded cleanup requires superseded_by_git_work_context_id"
-                )
+                raise ValueError("superseded cleanup requires superseded_by_git_work_context_id")
             if self.completed_at is None:
                 raise ValueError("superseded cleanup requires completed_at")
         return self
@@ -4876,6 +4963,7 @@ class TeamState(TeamModel):
     human_review_decisions: dict[str, HumanReviewDecision] = Field(default_factory=dict)
     human_review_findings: dict[str, HumanReviewFinding] = Field(default_factory=dict)
     dispatches: dict[str, TeamDispatch] = Field(default_factory=dict)
+    git_preparation_attempts: dict[str, TeamGitPreparationAttempt] = Field(default_factory=dict)
     worktree_cleanup_candidates: dict[str, WorktreeCleanupCandidate] = Field(default_factory=dict)
     ephemeral_assignments: dict[str, EphemeralAssignment] = Field(default_factory=dict)
     git_promotions: dict[str, GitPromotionRecord] = Field(default_factory=dict)
@@ -5072,6 +5160,7 @@ class TeamState(TeamModel):
         self._validate_releases(errors)
         self._validate_human_reviews(errors)
         self._validate_dispatches(errors)
+        self._validate_git_preparation_attempts(errors)
         self._validate_worktree_cleanup_candidates(errors)
         self._validate_ephemeral_assignments(errors)
         self._validate_git_promotions(errors)
@@ -5122,6 +5211,7 @@ class TeamState(TeamModel):
             "human_review_decisions",
             "human_review_findings",
             "dispatches",
+            "git_preparation_attempts",
             "worktree_cleanup_candidates",
             "ephemeral_assignments",
             "git_promotions",
@@ -6950,6 +7040,48 @@ class TeamState(TeamModel):
                     f"worktree cleanup {candidate.id} references missing project "
                     f"{candidate.project_id}"
                 )
+
+    def _validate_git_preparation_attempts(self, errors: list[str]) -> None:
+        for attempt in self.git_preparation_attempts.values():
+            if attempt.agent_id not in self.agents:
+                errors.append(
+                    f"Git preparation attempt {attempt.id} references missing agent "
+                    f"{attempt.agent_id}"
+                )
+            task = self.tasks.get(attempt.task_id)
+            if task is None:
+                errors.append(
+                    f"Git preparation attempt {attempt.id} references missing task "
+                    f"{attempt.task_id}"
+                )
+            elif task.project_id != attempt.project_id:
+                errors.append(
+                    f"Git preparation attempt {attempt.id} task belongs to project "
+                    f"{task.project_id}"
+                )
+            project = self.projects.get(attempt.project_id)
+            if project is None:
+                errors.append(
+                    f"Git preparation attempt {attempt.id} references missing project "
+                    f"{attempt.project_id}"
+                )
+            if attempt.state == TeamGitPreparationAttemptState.COMMITTED:
+                context = self.git_work_contexts.get(attempt.git_work_context_id or "")
+                if context is None:
+                    errors.append(
+                        f"Git preparation attempt {attempt.id} references missing committed "
+                        f"work context {attempt.git_work_context_id}"
+                    )
+                elif (
+                    context.agent_id != attempt.agent_id
+                    or context.task_id != attempt.task_id
+                    or context.agent_branch != attempt.branch
+                    or context.worktree_path != attempt.worktree_path
+                ):
+                    errors.append(
+                        f"Git preparation attempt {attempt.id} committed context provenance "
+                        "does not match"
+                    )
 
     def _validate_ephemeral_assignments(self, errors: list[str]) -> None:
         for assignment in self.ephemeral_assignments.values():

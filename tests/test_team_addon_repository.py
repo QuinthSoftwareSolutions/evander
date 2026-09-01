@@ -2342,9 +2342,7 @@ def test_source_linked_operator_reply_rejects_mixed_external_return_paths(
 
     assert result["success"] is False
     assert result["errors"][0]["code"] == "chat_return_path_mismatch"
-    assert result["errors"][0]["correction_context"]["source_message_ids"] == (
-        source_message_ids
-    )
+    assert result["errors"][0]["correction_context"]["source_message_ids"] == (source_message_ids)
     assert state.external_chat_deliveries == {}
     assert all(
         state.conversation_messages[message_id].status == "delivered_in_dispatch"
@@ -3580,9 +3578,7 @@ def test_project_lead_reports_task_blocker_from_project_diagnostic_scope(
     repo = _seed_hierarchy(tmp_path)
     _seed_task(repo, task_id="worker-correction", owner_agent_id="worker")
     _lease_agent_dispatch(repo, agent_id="lead", dispatch_id="dispatch-lead-diagnostic")
-    assert "worker-correction" not in repo.read().dispatches[
-        "dispatch-lead-diagnostic"
-    ].task_ids
+    assert "worker-correction" not in repo.read().dispatches["dispatch-lead-diagnostic"].task_ids
 
     state, result = _command_service(repo).report_blocker_command(
         session_id="session-lead",
@@ -4229,12 +4225,12 @@ def test_legacy_acceptance_verification_waiver_endpoint_is_idempotent_noop(
     )
     assert submitted["success"] is True
     before = repo.read()
-    state, deliverable = (
-        _team_admin_service(repo).authorize_deliverable_acceptance_verification_waiver_as_operator(
-            deliverable_id="deliverable-waived",
-            reason="The disposable verifier is unavailable; equivalent protected CI passed.",
-            operator_actor_id="operator:jonathan",
-        )
+    state, deliverable = _team_admin_service(
+        repo
+    ).authorize_deliverable_acceptance_verification_waiver_as_operator(
+        deliverable_id="deliverable-waived",
+        reason="The disposable verifier is unavailable; equivalent protected CI passed.",
+        operator_actor_id="operator:jonathan",
     )
     assert deliverable.verification is None
     assert state.revision == before.revision
@@ -4568,9 +4564,7 @@ def test_formal_integration_submission_rejects_missing_composition_manifest(
     )
 
     assert submitted["success"] is False
-    assert submitted["errors"][0]["code"] == (
-        "dependency_composition_manifest_required"
-    )
+    assert submitted["errors"][0]["code"] == ("dependency_composition_manifest_required")
     assert "missing-manifest" not in state.deliverables
     assert "review-missing-manifest" not in state.review_requests
     assert state.tasks["task"].state != TeamTaskState.WAITING_FOR_REVIEW
@@ -4710,10 +4704,7 @@ def test_legacy_missing_composition_manifest_is_reconciled_idempotently(
             source_kind=TeamBlockerSourceKind.DELIVERABLE,
             source_id="legacy-malformed-deliverable",
             summary="Composition manifest is missing.",
-            reason_code=(
-                "deliverable_acceptance_deferred:"
-                "dependency_composition_manifest_missing"
-            ),
+            reason_code=("deliverable_acceptance_deferred:dependency_composition_manifest_missing"),
             initial_owner_agent_id="backend",
             team_id="team",
             project_id="project",
@@ -4756,8 +4747,7 @@ def test_legacy_missing_composition_manifest_is_reconciled_idempotently(
     recovery_items = [
         item
         for item in state.inbox.values()
-        if item.payload.get("kind")
-        == "dependency_composition_manifest_recovery_required"
+        if item.payload.get("kind") == "dependency_composition_manifest_recovery_required"
     ]
     assert len(recovery_items) == 1
     assert recovery_items[0].priority == TeamInboxPriority.HIGH
@@ -4765,14 +4755,16 @@ def test_legacy_missing_composition_manifest_is_reconciled_idempotently(
     second = service.reconcile()
 
     assert second["changed"] is False
-    assert len(
-        [
-            item
-            for item in repo.read().inbox.values()
-            if item.payload.get("kind")
-            == "dependency_composition_manifest_recovery_required"
-        ]
-    ) == 1
+    assert (
+        len(
+            [
+                item
+                for item in repo.read().inbox.values()
+                if item.payload.get("kind") == "dependency_composition_manifest_recovery_required"
+            ]
+        )
+        == 1
+    )
 
 
 def test_formal_submission_rejects_stale_preparation_generation_atomically(
@@ -6496,6 +6488,106 @@ def test_operator_resolution_wakes_execution_stall_source(tmp_path: Path) -> Non
     )
 
 
+def test_operator_resolution_wakes_actionable_explicit_git_preparation_task(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _seed_task(repo, task_id="task-git-preparation", owner_agent_id="worker")
+    future = datetime(2026, 8, 31, 12, tzinfo=UTC)
+
+    def _seed_preparation_blocker(state: TeamState) -> TeamState:
+        state.agent_runtimes["worker"].next_wake_at = future
+        state.blockers["operator-git-preparation"] = TeamBlocker(
+            id="operator-git-preparation",
+            team_id="team",
+            project_id="project",
+            task_id="task-git-preparation",
+            source_kind=TeamBlockerSourceKind.EXPLICIT,
+            source_id="dependency-git-preparation:task-git-preparation",
+            owner_agent_id="manager",
+            affected_task_ids=["task-git-preparation"],
+            route=TeamBlockerRoute.OPERATOR,
+            reason_code="dependency_git_preparation_failed",
+            summary="Task worktree preparation requires recovery.",
+        )
+        return state
+
+    state = repo.update(_seed_preparation_blocker)
+    state, result = _team_admin_service(repo).resolve_terminal_blocker_as_operator(
+        blocker_id="operator-git-preparation",
+        note="The preparation checkout was safely recovered.",
+        operator_actor_id="operator:admin",
+        expected_revision=state.revision,
+    )
+
+    wake_events = [
+        event
+        for event in result["events"]
+        if event["event_type"] == AGENT_WAKE_REQUESTED_EVENT_TYPE
+    ]
+    assert len(wake_events) == 1
+    assert wake_events[0]["payload"]["agent_id"] == "worker"
+    assert wake_events[0]["payload"]["reason"] == "task_ready"
+    assert wake_events[0]["delay_seconds"] == DEFAULT_AGENT_WAKE_REQUEST_DEBOUNCE_SECONDS
+    assert state.agent_runtimes["worker"].next_wake_at is None
+    assert any(
+        record.intent_type == AGENT_WAKE_REQUESTED_EVENT_TYPE
+        and record.payload["payload"]["agent_id"] == "worker"
+        for record in repo.list_outbox_records()
+    )
+
+
+def test_operator_resolution_does_not_wake_task_with_another_open_blocker(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _seed_task(repo, task_id="task-still-blocked", owner_agent_id="worker")
+    future = datetime(2026, 8, 31, 12, tzinfo=UTC)
+
+    def _seed_blockers(state: TeamState) -> TeamState:
+        state.agent_runtimes["worker"].next_wake_at = future
+        state.tasks["task-still-blocked"].state = TeamTaskState.BLOCKED
+        for blocker_id, route in (
+            ("operator-resolved-blocker", TeamBlockerRoute.OPERATOR),
+            ("remaining-owned-blocker", TeamBlockerRoute.OWNED),
+        ):
+            resolves_task_source = blocker_id == "operator-resolved-blocker"
+            state.blockers[blocker_id] = TeamBlocker(
+                id=blocker_id,
+                team_id="team",
+                project_id="project",
+                task_id="task-still-blocked",
+                source_kind=(
+                    TeamBlockerSourceKind.TASK
+                    if resolves_task_source
+                    else TeamBlockerSourceKind.EXPLICIT
+                ),
+                source_id=(
+                    "task-still-blocked" if resolves_task_source else f"external:{blocker_id}"
+                ),
+                owner_agent_id="manager",
+                affected_task_ids=["task-still-blocked"],
+                route=route,
+                summary="Task remains blocked until every dependency is restored.",
+            )
+        return state
+
+    state = repo.update(_seed_blockers)
+    state, result = _team_admin_service(repo).resolve_terminal_blocker_as_operator(
+        blocker_id="operator-resolved-blocker",
+        note="Only one external dependency was restored.",
+        operator_actor_id="operator:admin",
+        expected_revision=state.revision,
+    )
+
+    assert all(
+        event["event_type"] != AGENT_WAKE_REQUESTED_EVENT_TYPE
+        for event in result.get("events") or []
+    )
+    assert state.agent_runtimes["worker"].next_wake_at == future
+    assert repo.list_outbox_records(intent_type=AGENT_WAKE_REQUESTED_EVENT_TYPE) == []
+
+
 @pytest.mark.parametrize(
     ("source_kind", "source_id", "source_collection"),
     [
@@ -7631,10 +7723,7 @@ def test_repository_reassign_task_for_role_changes_owner_and_finalizes_git_conte
     assert result["previous_owner_agent_id"] == "backend"
     assert result["selected_owner_agent_id"] == "backend-peer"
     assert state.tasks["role-reassigned"].owner_agent_id == "backend-peer"
-    assert (
-        state.git_work_contexts["ctx-role-reassigned"].state
-        == GitWorkContextState.ABANDONED
-    )
+    assert state.git_work_contexts["ctx-role-reassigned"].state == GitWorkContextState.ABANDONED
     assert result["outbox_record_ids"]
 
 
@@ -7968,9 +8057,9 @@ def test_update_task_command_invalidates_prepared_generation(
         context_id="ctx-before-command-edit",
         dispatch_id=None,
     )
-    generation_before = repo.read().git_work_contexts[
-        "ctx-before-command-edit"
-    ].preparation_generation
+    generation_before = (
+        repo.read().git_work_contexts["ctx-before-command-edit"].preparation_generation
+    )
     _lease_agent_dispatch(repo, agent_id="backend", dispatch_id="dispatch-edit-task")
 
     state, result = _command_service(repo).update_task_command(
@@ -7984,9 +8073,7 @@ def test_update_task_command_invalidates_prepared_generation(
     assert state.git_work_contexts["ctx-before-command-edit"].state == (
         GitWorkContextState.ABANDONED
     )
-    assert result["invalidated_git_work_context_ids"] == [
-        "ctx-before-command-edit"
-    ]
+    assert result["invalidated_git_work_context_ids"] == ["ctx-before-command-edit"]
     assert result["preparation_generation_before"] == generation_before
     assert result["preparation_generation_after"] != generation_before
     [inbox_id] = result["created_preparation_invalidation_inbox_item_ids"]
@@ -8209,10 +8296,7 @@ def test_workflow_managed_task_keeps_topology_but_allows_reassignment(
         request_id="request-managed-cancel",
     )
     assert cancellation["success"] is False
-    assert (
-        cancellation["errors"][0]["code"]
-        == "task_mutation_policy_cancellation_locked"
-    )
+    assert cancellation["errors"][0]["code"] == "task_mutation_policy_cancellation_locked"
     assert state.tasks["managed-task"].state == TeamTaskState.PENDING
 
     state, reassignment = service.update_task_command(
@@ -9170,6 +9254,7 @@ def test_repository_reemits_chat_event_when_active_dispatch_releases(
         reason="agent backend already has active Team dispatch team-dispatch-active",
     )
     if message_status == "delivered_in_dispatch":
+
         def _mark_delivered(state):
             delivered_message = state.conversation_messages[message.id]
             delivered_message.status = "delivered_in_dispatch"
@@ -10258,9 +10343,13 @@ def test_repository_round_trips_review_repository_snapshot_and_reads_legacy_null
             ("review/snapshot:one",),
         )
 
-    assert TeamStateRepository(tmp_path).read().review_requests[
-        "review/snapshot:one"
-    ].repository_snapshot is None
+    assert (
+        TeamStateRepository(tmp_path)
+        .read()
+        .review_requests["review/snapshot:one"]
+        .repository_snapshot
+        is None
+    )
 
 
 def test_git_review_snapshot_uses_authoritative_task_base_and_rejects_missing_base(
@@ -10309,7 +10398,9 @@ def test_git_review_snapshot_uses_authoritative_task_base_and_rejects_missing_ba
         deliverable_id="missing-base-deliverable",
         task_id="missing-base-task",
     )
-    with pytest.raises(ValueError, match="no immutable candidate or authoritative task base commit"):
+    with pytest.raises(
+        ValueError, match="no immutable candidate or authoritative task base commit"
+    ):
         _team_admin_service(repo).record_review_request(
             review_request_id="review-missing-base",
             deliverable_id="missing-base-deliverable",
@@ -10849,6 +10940,7 @@ def test_repository_ignores_retired_json_state(tmp_path: Path) -> None:
 
     assert state.revision == 0
     assert state.teams == {}
+
 
 def test_task_state_entered_at_changes_only_on_state_transition(
     tmp_path: Path,
@@ -14043,13 +14135,10 @@ def test_apply_agent_action_rejects_workflow_paused_task_creation_state(
     )
 
     assert result["success"] is False
-    assert result["errors"] == [
-        "waiting_for_input is reserved for operator-owned workflows"
-    ]
+    assert result["errors"] == ["waiting_for_input is reserved for operator-owned workflows"]
     assert state.tasks == {}
     assert not any(
-        event["event_type"] == AGENT_WAKE_REQUESTED_EVENT_TYPE
-        for event in result["events"]
+        event["event_type"] == AGENT_WAKE_REQUESTED_EVENT_TYPE for event in result["events"]
     )
 
 
@@ -14944,13 +15033,13 @@ def test_legacy_pending_acceptance_verification_no_longer_suppresses_review_wake
     )
 
     def _attach_legacy_pending_verification(state_model: TeamState) -> TeamState:
-        state_model.deliverables["legacy-verification-deliverable"].verification = (
-            DeliverableVerification(
-                status="pending",
-                provenance="server_release_equivalent",
-                run_id="legacy-acceptance-run",
-                candidate_commit_sha="a" * 40,
-            )
+        state_model.deliverables[
+            "legacy-verification-deliverable"
+        ].verification = DeliverableVerification(
+            status="pending",
+            provenance="server_release_equivalent",
+            run_id="legacy-acceptance-run",
+            candidate_commit_sha="a" * 40,
         )
         return state_model
 
@@ -14963,9 +15052,7 @@ def test_legacy_pending_acceptance_verification_no_longer_suppresses_review_wake
 
     assert len(leases) == 1
     assert leases[0]["reason"] == "review"
-    assert leases[0]["dispatch"]["review_request_ids"] == [
-        "legacy-verification-review"
-    ]
+    assert leases[0]["dispatch"]["review_request_ids"] == ["legacy-verification-review"]
 
 
 def test_partial_inbox_handling_does_not_make_unchanged_review_look_new(
@@ -22718,7 +22805,9 @@ def test_historical_deliverable_waiver_is_not_reused_at_release_intake(
 
     assert result["success"] is True
     assert state.release_packages["release-preacceptance-waived"].verification_waivers == []
-    assert any("verification_waivers input was ignored" in warning for warning in result["warnings"])
+    assert any(
+        "verification_waivers input was ignored" in warning for warning in result["warnings"]
+    )
     assert state.deliverables["deliverable"].verification.waiver.created_at == waived_at
 
 
@@ -22758,7 +22847,9 @@ def test_ordinary_release_role_can_ignore_legacy_verification_waiver(
 
     assert result["success"] is True
     assert state.release_packages["release-unauthorized-waiver"].verification_waivers == []
-    assert any("verification_waivers input was ignored" in warning for warning in result["warnings"])
+    assert any(
+        "verification_waivers input was ignored" in warning for warning in result["warnings"]
+    )
 
 
 def test_failed_agent_verification_remains_advisory_at_release_intake(tmp_path: Path) -> None:
@@ -22797,7 +22888,9 @@ def test_failed_agent_verification_remains_advisory_at_release_intake(tmp_path: 
 
     assert result["success"] is True
     assert state.release_packages["release-failed"].verification_waivers == []
-    assert any("verification_waivers input was ignored" in warning for warning in result["warnings"])
+    assert any(
+        "verification_waivers input was ignored" in warning for warning in result["warnings"]
+    )
 
 
 def test_operator_legacy_verification_waiver_input_is_ignored(tmp_path: Path) -> None:
@@ -22830,7 +22923,9 @@ def test_operator_legacy_verification_waiver_input_is_ignored(tmp_path: Path) ->
 
     assert result["success"] is True
     assert state.release_packages["operator-waived"].verification_waivers == []
-    assert any("verification_waivers input was ignored" in warning for warning in result["warnings"])
+    assert any(
+        "verification_waivers input was ignored" in warning for warning in result["warnings"]
+    )
 
 
 def test_canonical_push_waits_for_candidate_verification_and_release_review(
@@ -22992,9 +23087,7 @@ def test_release_reruns_verification_even_with_exact_legacy_acceptance_evidence(
         state.deliverables["deliverable"].verification = DeliverableVerification(
             status="passed",
             summary="Server-owned acceptance verification passed.",
-            evidence_refs=[
-                "team://deliverables/deliverable/acceptance-verifications/acceptance-1"
-            ],
+            evidence_refs=["team://deliverables/deliverable/acceptance-verifications/acceptance-1"],
             provenance="server_release_equivalent",
             run_id="acceptance-1",
             candidate_commit_sha="candidate-feedface",
@@ -23023,9 +23116,7 @@ def test_release_reruns_verification_even_with_exact_legacy_acceptance_evidence(
             ],
         },
     )
-    promotion_id = state.release_packages[
-        "release-reused-verification"
-    ].git_promotion_record_ids[0]
+    promotion_id = state.release_packages["release-reused-verification"].git_promotion_record_ids[0]
 
     state, result = _team_git_release_service(repo).record_git_promotion_result(
         promotion_id=promotion_id,
@@ -23042,8 +23133,7 @@ def test_release_reruns_verification_even_with_exact_legacy_acceptance_evidence(
     assert run.command_results[0].state == "pending"
     assert "reused_release_verification" not in result
     assert any(
-        event["event_type"] == "team.release.verification_requested"
-        for event in result["events"]
+        event["event_type"] == "team.release.verification_requested" for event in result["events"]
     )
     assert release.review_request_ids == []
 
@@ -23078,17 +23168,13 @@ def test_release_does_not_reuse_mismatched_server_acceptance_verification(
     def _configure_mismatched_evidence(state):
         state.projects["project"].release_policy = ProjectReleasePolicy(
             container_image="verifier:v2" if mismatch == "container_image" else "verifier:v1",
-            resource_limits=(
-                {"cpus": 2.0} if mismatch == "resource_limits" else {"cpus": 1.0}
-            ),
+            resource_limits=({"cpus": 2.0} if mismatch == "resource_limits" else {"cpus": 1.0}),
             verification_commands=[policy_command],
             allow_ungated=True,
         )
         state.deliverables["deliverable"].verification = DeliverableVerification(
             status="passed",
-            evidence_refs=[
-                "team://deliverables/deliverable/acceptance-verifications/acceptance-1"
-            ],
+            evidence_refs=["team://deliverables/deliverable/acceptance-verifications/acceptance-1"],
             provenance="server_release_equivalent",
             run_id="acceptance-1",
             candidate_commit_sha=(
@@ -23135,8 +23221,7 @@ def test_release_does_not_reuse_mismatched_server_acceptance_verification(
     assert run.state == "pending"
     assert run.provenance == "server_executed"
     assert any(
-        event["event_type"] == "team.release.verification_requested"
-        for event in result["events"]
+        event["event_type"] == "team.release.verification_requested" for event in result["events"]
     )
     assert release.review_request_ids == []
 
@@ -23902,9 +23987,7 @@ def test_operator_can_retry_rejected_review_for_explicit_immutable_candidate_exc
         commit_sha="candidate-rejected",
         outputs={"tree_hash": "review-rejected-tree"},
     )
-    review_id = state.release_packages[
-        "release-rejected-review-exception"
-    ].review_request_ids[0]
+    review_id = state.release_packages["release-rejected-review-exception"].review_request_ids[0]
     state, _ = _team_agent_action_service(repo).apply_agent_action(
         action={
             "agent_id": "worker",
@@ -23912,9 +23995,7 @@ def test_operator_can_retry_rejected_review_for_explicit_immutable_candidate_exc
                 {
                     "review_request_id": review_id,
                     "state": "rejected",
-                    "findings": [
-                        "The sealed ancestor has noncompliant commit metadata."
-                    ],
+                    "findings": ["The sealed ancestor has noncompliant commit metadata."],
                 }
             ],
         },
@@ -26554,9 +26635,9 @@ def test_record_review_decision_repository_stores_criteria(tmp_path: Path) -> No
     assert review.state == TeamRecordState.ACCEPTED
     assert [c.criterion_id for c in review.criteria] == ["tests"]
     assert review.criteria[0].evidence_refs == ["test://repository-round-trip"]
-    assert TeamStateRepository(tmp_path).read().review_requests[
-        "review-1"
-    ].criteria[0].evidence_refs == ["test://repository-round-trip"]
+    assert TeamStateRepository(tmp_path).read().review_requests["review-1"].criteria[
+        0
+    ].evidence_refs == ["test://repository-round-trip"]
 
 
 def test_register_teamless_agent(tmp_path: Path) -> None:

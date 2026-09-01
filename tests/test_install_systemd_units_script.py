@@ -93,6 +93,10 @@ def test_team_runtime_services_register_and_restart_as_one_generation() -> None:
 
     assert "evander-team-runtime.target" in script
     assert "sudo systemctl restart evander-team-runtime.target" in script
+    assert "evander-gateway.service evander-admin-web.service" in script
+    assert "evander-trigger-orchestrator.service evander-effect-orchestrator.service" in script
+    assert "runtime_generation.state is coherent" in script
+    assert "stale_components is empty" in script
     assert all(
         filename.replace(".template", "") in target for filename in component_templates.values()
     )

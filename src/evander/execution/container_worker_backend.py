@@ -366,6 +366,7 @@ class ContainerWorkerVmExecutionBackend:
         session_id: str,
         repo_name: str,
         worktree_name: str,
+        preparation_attempt_id: str | None = None,
         branch: str,
         base_ref: str,
         expected_base_commit_sha: str | None = None,
@@ -384,6 +385,7 @@ class ContainerWorkerVmExecutionBackend:
             WorkerTaskWorktreeRequest(
                 repo_name=repo_name,
                 worktree_name=worktree_name,
+                preparation_attempt_id=preparation_attempt_id,
                 branch=branch,
                 base_ref=base_ref,
                 expected_base_commit_sha=expected_base_commit_sha,
@@ -408,6 +410,7 @@ class ContainerWorkerVmExecutionBackend:
         session_id: str,
         repo_name: str,
         worktree_name: str,
+        preparation_attempt_id: str | None = None,
         branch: str,
         expected_commit_sha: str,
         expected_target_dir: str,
@@ -418,6 +421,7 @@ class ContainerWorkerVmExecutionBackend:
             WorkerTaskWorktreeCleanupRequest(
                 repo_name=repo_name,
                 worktree_name=worktree_name,
+                preparation_attempt_id=preparation_attempt_id,
                 branch=branch,
                 expected_commit_sha=expected_commit_sha,
                 expected_target_dir=expected_target_dir,

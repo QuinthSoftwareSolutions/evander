@@ -289,7 +289,7 @@ tools are the only Team action path.
    configured ingress/wake services:
 
    ```bash
-   sudo systemctl restart evander-team-runtime.target
+   sudo systemctl restart evander-team-runtime.target evander-gateway.service evander-admin-web.service evander-trigger-orchestrator.service evander-effect-orchestrator.service
    sudo systemctl start evander-discord-ingest.service evander-discord-wake.service
    sudo systemctl start evander-scheduled-wake.service
    sudo systemctl start evander-teams-ingest.service evander-teams-meeting-ingest.service
@@ -306,6 +306,11 @@ tools are the only Team action path.
    ```bash
    evander-cli status --runtime-dir runtime --json
    ```
+
+   Require `runtime_generation.state` to be `coherent` and
+   `stale_components` to be empty. A Team wake running under systemd fails before
+   leasing work or creating a checkout while the registered services are
+   missing, split, or older than the current checkout.
 
    Confirm the migration grep from the implementation plan shows only expected
    migration-history, deleted-code, or removal-test references. In Admin Web,
@@ -3051,7 +3056,7 @@ Before running install mode, ensure preflight is clean (or only warning-only), t
 
 ```bash
 sudo systemctl start evander-firewall.service
-sudo systemctl restart evander-team-runtime.target
+sudo systemctl restart evander-team-runtime.target evander-gateway.service evander-admin-web.service evander-trigger-orchestrator.service evander-effect-orchestrator.service
 sudo systemctl start evander-openai-relay.service
 sudo systemctl start evander-didww-sip-bridge.service
 sudo systemctl start evander-nuget-relay.service
@@ -3387,13 +3392,26 @@ later pass attempts physical removal only after
 Regardless of mode, never bypass a deferred or `operator_action_required` candidate
 with `git-repos maintenance` or a recursive delete.
 
-Current Team state schema 17 / SQLite schema 65 includes provider-neutral
-project directory scopes, frozen cleanup configuration scopes, bounded cleanup
-disposition evidence, and record-level persistence. Before upgrading, take a
-consistent `state.db` backup, then deploy and restart the four Team control-plane
-services together with `sudo systemctl restart evander-team-runtime.target`.
-`evander-cli status --runtime-dir runtime` treats absent, incomplete, split, or
-previous-boot generation registrations as degraded. Do not run old and new Team
+Task-worktree creation is recorded as a deterministic Team preparation attempt
+before the worker is called. Container workers persist a host-owned receipt for
+the exact request, branch, path, base, and HEAD. If Team state conflicts after
+physical creation, the next dispatch may replay only that matching pristine
+receipt; a changed request or dirty checkout is retained for operator recovery.
+When preparation inputs change, the task resolves, or ownership changes before
+the Git context commits, global maintenance moves the obsolete receipted checkout
+into the same audited cleanup pipeline as invalidated Git work contexts. Successful
+container cleanup retires the matching worker receipt so a later deterministic
+preparation cannot collide with a receipt for an already-removed checkout.
+
+Current Team state schema 20 / SQLite schema 69 includes provider-neutral
+project directory scopes, durable Git preparation receipts, frozen cleanup
+configuration scopes, bounded cleanup disposition evidence, and record-level
+persistence. Before upgrading, take a
+consistent `state.db` backup, then deploy and restart the target plus its four Team
+control-plane services in one `systemctl restart` transaction. Naming the services
+explicitly also covers the first installation, when the target was not already active.
+`evander-cli status --runtime-dir runtime` treats absent, incomplete, split,
+stale, or previous-boot generation registrations as degraded. Do not run old and new Team
 readers concurrently during a schema migration.
 
 Issue, session, and Team deletion removes bindings and SSH authorization, not the shared

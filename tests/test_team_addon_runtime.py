@@ -102,6 +102,7 @@ from evander_team_addon.models import (
     TeamInboxItemState,
     TeamInboxItemType,
     TeamInboxPriority,
+    TeamGitPreparationAttemptState,
     TeamOutboxRecord,
     TeamOutboxStatus,
     TeamRecordState,
@@ -157,6 +158,7 @@ from evander_team_addon.providers import (
     _build_team_chat_prompt,
     _completed_agent_prompt_records,
     _create_project_repo_git_work_contexts,
+    _ensure_project_repo_git_preparation_attempt,
     _review_artifact_destination_path,
     _publish_deliverable_artifact_bundle,
     _publish_team_events,
@@ -164,6 +166,7 @@ from evander_team_addon.providers import (
     _project_repo_task_dependency_git_sources,
     _resolved_project_git_identity,
     _record_dependency_git_preparation_blocker,
+    _record_project_repo_git_preparation_receipt,
     _record_wake_failure,
     _validate_project_repo_git_work_context,
     _validate_review_repository_dispatch_compatibility,
@@ -1093,9 +1096,9 @@ def test_admin_task_contract_edit_invalidates_active_git_preparation(
         expected_revision=repo.read().revision,
     )
     _seed_git_work_context(repo, context_id="ctx-before-contract-edit")
-    generation_before = repo.read().git_work_contexts[
-        "ctx-before-contract-edit"
-    ].preparation_generation
+    generation_before = (
+        repo.read().git_work_contexts["ctx-before-contract-edit"].preparation_generation
+    )
 
     updated = admin.update_task(
         task_id="task",
@@ -1116,14 +1119,10 @@ def test_admin_task_contract_edit_invalidates_active_git_preparation(
         if item.payload.get("kind") == "task_preparation_invalidated"
     )
     assert recovery.recipient_agent_id == "backend"
-    assert recovery.payload["invalidated_git_work_context_ids"] == [
-        "ctx-before-contract-edit"
-    ]
+    assert recovery.payload["invalidated_git_work_context_ids"] == ["ctx-before-contract-edit"]
     assert recovery.payload["preparation_generation_before"] == generation_before
     assert recovery.payload["preparation_generation_after"] != generation_before
-    assert recovery.payload["required_action"] == (
-        "reprepare_from_current_task_specification"
-    )
+    assert recovery.payload["required_action"] == ("reprepare_from_current_task_specification")
 
 
 def test_admin_priority_edit_keeps_current_git_preparation(
@@ -1138,9 +1137,7 @@ def test_admin_priority_edit_keeps_current_git_preparation(
         expected_revision=repo.read().revision,
     )
 
-    assert updated.git_work_contexts["ctx-priority-only"].state == (
-        GitWorkContextState.ACTIVE
-    )
+    assert updated.git_work_contexts["ctx-priority-only"].state == (GitWorkContextState.ACTIVE)
     assert not any(
         item.payload.get("kind") == "task_preparation_invalidated"
         for item in updated.inbox.values()
@@ -2749,6 +2746,39 @@ def test_duplicate_release_package_feedback_points_to_existing_package(
         and "do not reuse the same id" in hint
         for hint in feedback["correction_hints"]
     )
+
+
+def test_systemd_team_wake_fails_before_leasing_when_runtime_generation_is_stale(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("INVOCATION_ID", "systemd-invocation")
+    monkeypatch.setattr(
+        "evander_team_addon.providers.require_current_runtime_generation",
+        lambda _runtime_dir: (_ for _ in ()).throw(
+            RuntimeError("Team runtime generation is not current")
+        ),
+    )
+    resumer = FakeResumer()
+    provider = TeamWakeDueAgentsEffectProvider()
+    provider.initialize(
+        TeamWakeDueAgentsEffectDefinition(
+            id="wake-stale-runtime",
+            display_name="Wake",
+            type="effect:team:wake-due-agents",
+        ),
+        EffectRuntimeContext(
+            resolved_config={"runtime_dir": str(tmp_path)},
+            agent_resumer=resumer,
+            session_lookup=FakeSessionStore(),
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="not current"):
+        provider.execute()
+
+    assert resumer.calls == []
+    assert not (tmp_path / "addons" / "team-addon" / "state.db").exists()
 
 
 @pytest.mark.parametrize(
@@ -8011,12 +8041,10 @@ def test_wake_due_agents_provider_prepares_project_repo_when_configured(
     assert project_repo["branch_context_id"]
     preparation_generation = task_git_work_context_generation(repo.read(), "task")
     expected_agent_branch = (
-        "agents/session-backend/tasks/task-0ebb429f-prep-"
-        f"{preparation_generation[:12]}"
+        f"agents/session-backend/tasks/task-0ebb429f-prep-{preparation_generation[:12]}"
     )
     expected_worktree_path = (
-        "/home/agent/worktrees/Truman/task-0ebb429f-prep-"
-        f"{preparation_generation[:12]}"
+        f"/home/agent/worktrees/Truman/task-0ebb429f-prep-{preparation_generation[:12]}"
     )
     assert project_repo["agent_branch"] == expected_agent_branch
     git_context = project_repo["git_work_contexts"][0]
@@ -9034,7 +9062,228 @@ def test_task_level_git_base_commit_pin_is_used_for_first_preparation(
     assert prepared["pinned_base_commit"] == pinned_commit
     assert prepared["pinned_base_tree"] is None
     assert len(rows) == 1
-    assert next(iter(result_state.git_work_contexts.values())).base_commit == (pinned_commit)
+    assert next(iter(result_state.git_work_contexts.values())).base_commit == pinned_commit
+
+
+def test_git_preparation_receipt_survives_context_commit_conflict_and_retries(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = _seed_team(tmp_path)
+    base_commit = "a" * 40
+
+    def _seed_git(state: TeamState) -> TeamState:
+        state.projects["project"].git = ProjectGitConfig(
+            managed_repo_id="mr_0123456789abcdefabcd",
+            directory_path="root",
+            base_branch="main",
+        )
+        state.tasks["task"].git_base_branch = "main"
+        state.agent_runtimes["backend"].active_dispatch_id = "dispatch-receipt"
+        return state
+
+    state = repo.update(_seed_git)
+    preparation_attempt_ids: list[str] = []
+    prior_base_commits: list[object] = []
+
+    def _prepare(_context: object, **kwargs: object) -> tuple[str, str]:
+        attempt_id = str(kwargs["preparation_attempt_id"])
+        preparation_attempt_ids.append(attempt_id)
+        prior_base_commits.append(kwargs["prior_base_commit"])
+        kwargs["preparation_receipt_result"].update(
+            {
+                "request_fingerprint": "f" * 64,
+                "head_commit_sha": base_commit,
+                "receipt_reused": len(preparation_attempt_ids) > 1,
+                "verified_clean": True,
+            }
+        )
+        return (
+            f"/home/agent/worktrees/repo/{kwargs['worktree_name']}",
+            base_commit,
+        )
+
+    monkeypatch.setattr(
+        "evander_team_addon.providers._prepare_project_repo_task_worktree",
+        _prepare,
+    )
+    monkeypatch.setattr(
+        "evander_team_addon.providers._project_repo_task_dependency_git_sources",
+        lambda *_args, **_kwargs: [],
+    )
+    original_create = TeamAdminService.create_git_work_context_with_id
+    conflict_calls = 0
+
+    def _conflict_then_create(self: TeamAdminService, **kwargs: object):
+        nonlocal conflict_calls
+        if conflict_calls < 3:
+            conflict_calls += 1
+            raise TeamStateConflictError(expected_revision=1, current_revision=2)
+        return original_create(self, **kwargs)
+
+    monkeypatch.setattr(
+        TeamAdminService,
+        "create_git_work_context_with_id",
+        _conflict_then_create,
+    )
+    context = EffectRuntimeContext(
+        resolved_config={"runtime_dir": str(tmp_path)},
+        admin_service=SimpleNamespace(managed_git_admin=None),
+    )
+    arguments = {
+        "state": state,
+        "agent_id": "backend",
+        "session_id": "session-backend",
+        "project_id": "project",
+        "project_repo": {
+            "managed_repo_id": "mr_0123456789abcdefabcd",
+            "guest_repo_name": "repo",
+            "target_dir": "/home/agent/repo",
+            "execution_backend": "libvirt_vm",
+        },
+        "dispatch_id": "dispatch-receipt",
+        "tasks": [
+            {
+                "id": "task",
+                "project_id": "project",
+                "owner_agent_id": "backend",
+                "git_base_branch": "main",
+            }
+        ],
+        "base_branch": "main",
+    }
+
+    with pytest.raises(TeamStateConflictError):
+        _create_project_repo_git_work_contexts(context, repo, **arguments)
+
+    after_failure = repo.read()
+    [attempt] = list(after_failure.git_preparation_attempts.values())
+    assert attempt.state == TeamGitPreparationAttemptState.PREPARED
+    assert attempt.base_commit_sha == base_commit
+    assert after_failure.git_work_contexts == {}
+
+    arguments["state"] = after_failure
+    result_state, rows, _metrics = _create_project_repo_git_work_contexts(
+        context,
+        repo,
+        **arguments,
+    )
+
+    assert preparation_attempt_ids == [attempt.id, attempt.id]
+    assert prior_base_commits == [None, base_commit]
+    assert len(rows) == 1
+    assert result_state.git_preparation_attempts[attempt.id].state == (
+        TeamGitPreparationAttemptState.COMMITTED
+    )
+    assert result_state.git_preparation_attempts[attempt.id].git_work_context_id in (
+        result_state.git_work_contexts
+    )
+
+
+def test_changed_preparation_generation_enqueues_receipted_attempt_cleanup(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_team(tmp_path)
+    common = {
+        "agent_id": "backend",
+        "session_id": "session-backend",
+        "task_id": "task",
+        "project_id": "project",
+        "dispatch_id": "dispatch-preparation",
+        "managed_repo_id": "mr_0123456789abcdefabcd",
+        "directory_path": "root",
+        "execution_backend": "container_worker_vm",
+        "branch": "agents/session-backend/tasks/task-preparation",
+        "base_ref": "main",
+    }
+    first_path = "/home/agent/worktrees/repo/task-prep-a"
+    _ensure_project_repo_git_preparation_attempt(
+        repo,
+        attempt_id="gitprep-generation-a",
+        worktree_path=first_path,
+        preparation_generation="a" * 20,
+        **common,
+    )
+    _record_project_repo_git_preparation_receipt(
+        repo,
+        attempt_id="gitprep-generation-a",
+        receipt={
+            "request_fingerprint": "f" * 64,
+            "head_commit_sha": "1" * 40,
+        },
+        base_commit_sha="1" * 40,
+        worktree_path=first_path,
+    )
+
+    state = _ensure_project_repo_git_preparation_attempt(
+        repo,
+        attempt_id="gitprep-generation-b",
+        worktree_path="/home/agent/worktrees/repo/task-prep-b",
+        preparation_generation="b" * 20,
+        **common,
+    )
+
+    first = state.git_preparation_attempts["gitprep-generation-a"]
+    assert first.state == TeamGitPreparationAttemptState.CLEANUP_PENDING
+    candidate = state.worktree_cleanup_candidates["cleanup-gitprep-generation-a"]
+    assert candidate.git_work_context_id == "preparation:gitprep-generation-a"
+    assert candidate.worktree_path == first_path
+    assert candidate.expected_head == "1" * 40
+    assert candidate.retained_commit_sha is None
+    assert state.git_preparation_attempts["gitprep-generation-b"].state == (
+        TeamGitPreparationAttemptState.PENDING
+    )
+
+
+def test_changed_managed_repository_enqueues_receipted_attempt_cleanup(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_team(tmp_path)
+    common = {
+        "agent_id": "backend",
+        "session_id": "session-backend",
+        "task_id": "task",
+        "project_id": "project",
+        "dispatch_id": "dispatch-preparation",
+        "directory_path": "root",
+        "execution_backend": "container_worker_vm",
+        "branch": "agents/session-backend/tasks/task-preparation",
+        "base_ref": "main",
+        "preparation_generation": "a" * 20,
+    }
+    first_path = "/home/agent/worktrees/old-repo/task-prep"
+    _ensure_project_repo_git_preparation_attempt(
+        repo,
+        attempt_id="gitprep-old-repository",
+        managed_repo_id="mr_0123456789abcdefabcd",
+        worktree_path=first_path,
+        **common,
+    )
+    _record_project_repo_git_preparation_receipt(
+        repo,
+        attempt_id="gitprep-old-repository",
+        receipt={
+            "request_fingerprint": "f" * 64,
+            "head_commit_sha": "1" * 40,
+        },
+        base_commit_sha="1" * 40,
+        worktree_path=first_path,
+    )
+
+    state = _ensure_project_repo_git_preparation_attempt(
+        repo,
+        attempt_id="gitprep-new-repository",
+        managed_repo_id="mr_fedcba9876543210abcd",
+        worktree_path="/home/agent/worktrees/new-repo/task-prep",
+        **common,
+    )
+
+    assert state.git_preparation_attempts["gitprep-old-repository"].state == (
+        TeamGitPreparationAttemptState.CLEANUP_PENDING
+    )
+    candidate = state.worktree_cleanup_candidates["cleanup-gitprep-old-repository"]
+    assert candidate.managed_repo_id == "mr_0123456789abcdefabcd"
+    assert candidate.worktree_path == first_path
 
 
 @pytest.mark.parametrize(

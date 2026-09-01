@@ -2410,6 +2410,8 @@ def status(
             "missing_components": [],
             "errors": {},
             "generations": [],
+            "current_generation": None,
+            "stale_components": [],
         },
         "sessions": {
             "total": 0,
@@ -2574,6 +2576,8 @@ def status(
         )
     if generation["missing_components"]:
         typer.echo("- missing: " + ", ".join(generation["missing_components"]))
+    if generation.get("stale_components"):
+        typer.echo("- stale: " + ", ".join(generation["stale_components"]))
 
     session_summary = report["sessions"]
     typer.echo("\nSessions")

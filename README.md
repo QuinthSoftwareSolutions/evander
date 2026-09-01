@@ -263,7 +263,7 @@ Install the gateway and relay services:
 sudo ./scripts/install_systemd_units.sh
 $EDITOR config/admin-web.env
 $EDITOR config/firewall.env
-sudo systemctl restart evander-team-runtime.target
+sudo systemctl restart evander-team-runtime.target evander-gateway.service evander-admin-web.service evander-trigger-orchestrator.service evander-effect-orchestrator.service
 sudo systemctl start evander-firewall.service
 sudo systemctl start evander-openai-relay.service
 sudo systemctl start evander-didww-sip-bridge.service
@@ -1237,9 +1237,11 @@ Example `get_pull_request` result shape (Azure DevOps):
   - The command summarizes config loading, runtime path permissions, key systemd units,
     gateway/relay reachability, session expiration health, and whether the gateway, Admin Web,
     trigger orchestrator, and effect orchestrator registered one coherent loaded-code generation.
-  - Any state other than `coherent`—including missing registration or a record from a previous
-    host boot—is degraded. Deploy and restart with
+  - Any state other than `coherent`—including missing registration, a record from a previous
+    host boot, or a registration older than the current checkout—is degraded. Deploy and restart with
     `sudo systemctl restart evander-team-runtime.target` so every writer loads the same code.
+    Systemd Team wakes fail before leasing an agent or creating a task worktree until this
+    current-generation check passes.
 - **Wake worker lock contention:** a wake worker exits because another instance is running.
   - Check the configured worker lock path and active systemd processes before restarting.
 - **Provider API failures while replying:** gateway tool errors from GitHub/Azure DevOps calls.

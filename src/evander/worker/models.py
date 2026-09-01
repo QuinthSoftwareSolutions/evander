@@ -441,6 +441,7 @@ class WorkerTaskWorktreeRequest(BaseModel):
 
     repo_name: str
     worktree_name: str
+    preparation_attempt_id: str | None = None
     branch: str
     base_ref: str
     expected_base_commit_sha: str | None = None
@@ -460,6 +461,15 @@ class WorkerTaskWorktreeRequest(BaseModel):
     @classmethod
     def normalize_component(cls, value: object, info: ValidationInfo) -> str:
         return str(validate_worker_component_id(value, field_name=info.field_name))
+
+    @field_validator("preparation_attempt_id", mode="before")
+    @classmethod
+    def normalize_preparation_attempt_id(cls, value: object) -> str | None:
+        return validate_worker_component_id(
+            value,
+            field_name="preparation_attempt_id",
+            allow_none=True,
+        )
 
     @field_validator("branch", "base_ref", "resolved_dependency_branch", mode="before")
     @classmethod
@@ -575,6 +585,10 @@ class WorkerTaskWorktreeRecord(BaseModel):
     composed_commit_sha: str | None = None
     composed_tree_hash: str | None = None
     created: bool
+    preparation_attempt_id: str | None = None
+    preparation_request_fingerprint: str | None = None
+    preparation_receipt_reused: bool = False
+    verified_clean: bool = True
 
 
 class WorkerTaskWorktreeCleanupRequest(BaseModel):
@@ -582,6 +596,7 @@ class WorkerTaskWorktreeCleanupRequest(BaseModel):
 
     repo_name: str
     worktree_name: str
+    preparation_attempt_id: str | None = None
     branch: str
     expected_commit_sha: str
     expected_target_dir: str
@@ -591,6 +606,15 @@ class WorkerTaskWorktreeCleanupRequest(BaseModel):
     @classmethod
     def normalize_component(cls, value: object, info: ValidationInfo) -> str:
         return str(validate_worker_component_id(value, field_name=info.field_name))
+
+    @field_validator("preparation_attempt_id", mode="before")
+    @classmethod
+    def normalize_preparation_attempt_id(cls, value: object) -> str | None:
+        return validate_worker_component_id(
+            value,
+            field_name="preparation_attempt_id",
+            allow_none=True,
+        )
 
     @field_validator("branch", mode="before")
     @classmethod

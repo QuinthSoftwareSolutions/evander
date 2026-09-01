@@ -589,8 +589,11 @@ Next steps:
   8. Populate ${ROOT_DIR}/config/admin-web.env from the example file and keep Admin Web password/session secrets in ${LOCAL_SECRETS_FILE} or another service-manager secret source.
   9. Optionally edit ${ROOT_DIR}/config/firewall.env to change allowed host ports.
   10. Start the Team control plane as one generation:
-     sudo systemctl restart evander-team-runtime.target
-  11. Start any additional services you use:
+     sudo systemctl restart evander-team-runtime.target evander-gateway.service evander-admin-web.service evander-trigger-orchestrator.service evander-effect-orchestrator.service
+  11. Verify every Team component loaded the current checkout generation:
+     ${ROOT_DIR}/.venv/bin/evander-cli status --runtime-dir ${ROOT_DIR}/runtime --json
+     Continue only when runtime_generation.state is coherent and stale_components is empty.
+  12. Start any additional services you use:
      sudo systemctl start evander-firewall.service
      sudo systemctl start evander-openai-relay.service
      sudo systemctl start evander-didww-sip-bridge.service
