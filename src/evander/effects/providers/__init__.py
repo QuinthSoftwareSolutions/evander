@@ -45,6 +45,7 @@ __all__ = [
     "SessionApproveMcpToolsForRunEffectProvider",
     "SessionRevokeMcpToolApprovalLeaseEffectProvider",
     "SessionRenewIfExpiredEffectProvider",
+    "SessionSetImageGenerationEnabledEffectProvider",
     "EventScheduleEffectProvider",
     "VmCopyFilesEffectProvider",
     "VmCreateEffectProvider",
@@ -98,6 +99,9 @@ _EXPORT_MODULES = {
     "SessionApproveMcpToolsForRunEffectProvider": ".session_approve_mcp_tools",
     "SessionRevokeMcpToolApprovalLeaseEffectProvider": (".session_revoke_mcp_tool_approval_lease"),
     "SessionRenewIfExpiredEffectProvider": ".session_renew_if_expired",
+    "SessionSetImageGenerationEnabledEffectProvider": (
+        ".session_set_image_generation_enabled"
+    ),
     "VmCopyFilesEffectProvider": ".vm_copy_files",
     "VmCreateEffectProvider": ".vm_create",
     "VmExecEffectProvider": ".vm_exec",

@@ -1802,6 +1802,7 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
         "communication_file_require_approval_for_send",
         "communication_file_max_bytes",
         "web_search_enabled",
+        "image_generation_enabled",
         "dotnet",
         "nuget",
         "mssql",
@@ -1868,6 +1869,11 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
     assert agent_create_fields["web_search_enabled"]["kind"] == "boolean"
     assert agent_create_fields["web_search_enabled"]["bindable"] is True
     assert "web_search" in agent_create_fields["web_search_enabled"]["description"]
+    assert agent_create_fields["image_generation_enabled"]["kind"] == "boolean"
+    assert agent_create_fields["image_generation_enabled"]["bindable"] is True
+    assert "generate and edit images" in (
+        agent_create_fields["image_generation_enabled"]["description"]
+    )
     assert agent_create_fields["allowed_tools"]["options"]
     assert {
         "value": ToolName.RUN_SCRIPT.value,
@@ -15160,6 +15166,7 @@ def test_admin_web_agents_create_vm_uses_agent_crud_payload(tmp_path: Path, monk
         "communication_file_max_bytes": 4096,
         "communication_file_require_approval_for_send": True,
         "web_search_enabled": False,
+        "image_generation_enabled": False,
         "dotnet": True,
         "nuget": True,
         "mssql": True,

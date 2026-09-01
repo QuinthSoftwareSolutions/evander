@@ -78,6 +78,9 @@ from evander.effects.providers.state_update import StateUpdateEffectProvider
 from evander.effects.providers.session_update_metadata import (
     SessionUpdateMetadataEffectProvider,
 )
+from evander.effects.providers.session_set_image_generation_enabled import (
+    SessionSetImageGenerationEnabledEffectProvider,
+)
 from evander.effects.providers.session_approve_mcp_tools import (
     SessionApproveMcpToolsForRunEffectProvider,
 )
@@ -289,6 +292,9 @@ def register_providers() -> dict[str, dict[str, type]]:
                 SessionRevokeMcpToolApprovalLeaseEffectProvider
             ),
             "effect:session:update-metadata": SessionUpdateMetadataEffectProvider,
+            "effect:session:set-image-generation-enabled": (
+                SessionSetImageGenerationEnabledEffectProvider
+            ),
             "effect:session:renew-if-expired": SessionRenewIfExpiredEffectProvider,
             "effect:git:ensure-managed-repo": GitEnsureManagedRepoEffectProvider,
             "effect:git:promote-agent-branch": GitPromoteAgentBranchEffectProvider,

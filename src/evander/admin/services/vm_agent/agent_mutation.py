@@ -57,6 +57,7 @@ class VmAgentMutationMixin:
             "http_targets",
             "metadata",
             "web_search_enabled",
+            "image_generation_enabled",
             "email_mailboxes",
             "email_folders",
             "email_folder_allowlist_by_mailbox",
@@ -129,6 +130,7 @@ class VmAgentMutationMixin:
                 "http_targets",
                 "metadata",
                 "web_search_enabled",
+                "image_generation_enabled",
                 *COMMUNICATION_FILE_SESSION_POLICY_FIELDS,
             )
             if key in body

@@ -476,6 +476,27 @@ class IssueGitAdminService:
             "metadata": dict(updated_manifest.metadata),
         }
 
+    def session_set_image_generation_enabled(
+        self, *, target: str, enabled: bool
+    ) -> dict[str, Any]:
+        if not isinstance(enabled, bool):
+            raise ValueError("enabled must be a boolean")
+        session_repository = self._session_repository()
+        session_id, manifest = self._resolve_session_target(target)
+        updated_manifest = manifest.model_copy(update={"image_generation_enabled": enabled})
+        session_repository.upsert_session(updated_manifest)
+        return {
+            "success": True,
+            "action": "session_set_image_generation_enabled",
+            "message": (
+                f"{'Enabled' if enabled else 'Disabled'} image generation for {session_id}"
+            ),
+            "session_id": session_id,
+            "vm_name": updated_manifest.vm_id,
+            "directory_path": updated_manifest.directory_path,
+            "image_generation_enabled": updated_manifest.image_generation_enabled,
+        }
+
     def session_context_query(self, *, target: str) -> dict[str, Any]:
         session_id, manifest = self._resolve_session_target(target)
         return {

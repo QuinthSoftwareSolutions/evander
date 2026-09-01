@@ -1291,6 +1291,15 @@ _EFFECT_OUTPUT_SCHEMAS = {
         "directory_path": {"type": "string"},
         "metadata": {"type": "object"},
     },
+    "effect:session:set-image-generation-enabled": {
+        "success": {"type": "boolean"},
+        "action": {"type": "string"},
+        "message": {"type": "string"},
+        "session_id": {"type": "string"},
+        "vm_name": {"type": ["string", "null"]},
+        "directory_path": {"type": "string"},
+        "image_generation_enabled": {"type": "boolean"},
+    },
     "effect:session:renew-if-expired": {
         "success": {"type": "boolean"},
         "action": {"type": "string"},

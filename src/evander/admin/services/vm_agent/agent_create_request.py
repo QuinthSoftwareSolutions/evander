@@ -211,6 +211,14 @@ class VmAgentCreateRequestMixin:
                     if "web_search_enabled" in payload
                     else False
                 ),
+                image_generation_enabled=(
+                    _normalize_session_policy_bool(
+                        payload.get("image_generation_enabled"),
+                        field_name="image_generation_enabled",
+                    )
+                    if "image_generation_enabled" in payload
+                    else False
+                ),
                 dotnet=bool(payload.get("dotnet", False)),
                 nuget=bool(payload.get("nuget", False)),
                 mssql=bool(payload.get("mssql", False)),
@@ -392,6 +400,14 @@ class VmAgentCreateRequestMixin:
                     field_name="web_search_enabled",
                 )
                 if "web_search_enabled" in payload
+                else False
+            ),
+            image_generation_enabled=(
+                _normalize_session_policy_bool(
+                    payload.get("image_generation_enabled"),
+                    field_name="image_generation_enabled",
+                )
+                if "image_generation_enabled" in payload
                 else False
             ),
         ).model_copy(

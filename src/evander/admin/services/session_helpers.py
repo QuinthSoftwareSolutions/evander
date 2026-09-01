@@ -327,6 +327,7 @@ def build_issue_session_manifest(
     communication_file_max_bytes: int | None = None,
     communication_file_require_approval_for_send: bool | None = None,
     web_search_enabled: bool = False,
+    image_generation_enabled: bool = False,
 ) -> SessionManifest:
     resolved_allowed_tools: list[McpToolName] = [
         ToolName.APPROVAL_SUBMIT,
@@ -473,6 +474,7 @@ def build_issue_session_manifest(
             else communication_file_require_approval_for_send
         ),
         web_search_enabled=web_search_enabled,
+        image_generation_enabled=image_generation_enabled,
         expires_at=utc_now() + resolve_session_ttl(policy, ttl_hours, ttl_seconds=ttl_seconds),
         metadata=metadata,
     )
@@ -545,7 +547,10 @@ COMMUNICATION_FILE_SESSION_POLICY_FIELDS: tuple[str, ...] = (
     "communication_file_require_approval_for_send",
 )
 
-SESSION_BOOL_POLICY_FIELDS: tuple[str, ...] = ("web_search_enabled",)
+SESSION_BOOL_POLICY_FIELDS: tuple[str, ...] = (
+    "web_search_enabled",
+    "image_generation_enabled",
+)
 
 
 def normalize_session_policy_bool(value: object, *, field_name: str) -> bool:

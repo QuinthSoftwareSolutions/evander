@@ -661,6 +661,9 @@ def _builtin_node_schema_resolvers() -> dict[str, Any]:
             provider_models.SessionRevokeMcpToolApprovalLeaseEffectDefinition
         ),
         "effect:session:update-metadata": provider_models.SessionUpdateMetadataEffectDefinition,
+        "effect:session:set-image-generation-enabled": (
+            provider_models.SessionSetImageGenerationEnabledEffectDefinition
+        ),
         "effect:session:renew-if-expired": (provider_models.SessionRenewIfExpiredEffectDefinition),
         "effect:git:ensure-managed-repo": provider_models.GitEnsureManagedRepoEffectDefinition,
         "effect:git:promote-agent-branch": provider_models.GitPromoteAgentBranchEffectDefinition,

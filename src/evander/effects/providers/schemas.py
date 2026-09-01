@@ -269,6 +269,7 @@ class AgentCreateEffectDefinition(EffectDefinition):
     communication_file_max_bytes: ConfigValue | None = None
     communication_file_require_approval_for_send: ConfigValue | None = None
     web_search_enabled: ConfigValue | None = None
+    image_generation_enabled: ConfigValue | None = None
     dotnet: ConfigValue | None = None
     nuget: ConfigValue | None = None
     mssql: ConfigValue | None = None
@@ -1159,6 +1160,23 @@ class SessionUpdateMetadataEffectDefinition(EffectDefinition):
         if not any(value is not None for value in selectors):
             raise ValueError(
                 "effect:session:update-metadata requires target, session_id, or vm_name"
+            )
+        return self
+
+
+class SessionSetImageGenerationEnabledEffectDefinition(EffectDefinition):
+    type: Literal["effect:session:set-image-generation-enabled"]
+    target: ConfigValue | None = None
+    session_id: ConfigValue | None = None
+    vm_name: ConfigValue | None = None
+    enabled: ConfigValue
+
+    @model_validator(mode="after")
+    def validate_target_selector(self) -> "SessionSetImageGenerationEnabledEffectDefinition":
+        selectors = [self.target, self.session_id, self.vm_name]
+        if not any(value is not None for value in selectors):
+            raise ValueError(
+                "effect:session:set-image-generation-enabled requires target, session_id, or vm_name"
             )
         return self
 

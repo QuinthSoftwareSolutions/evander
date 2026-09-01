@@ -233,6 +233,31 @@ def test_issue_git_admin_service_session_update_metadata_updates_store(tmp_path:
     assert context["metadata"] == updated.metadata
 
 
+def test_issue_git_admin_service_sets_session_image_generation_policy(tmp_path: Path) -> None:
+    admin, _store = _build_issue_admin(tmp_path)
+    service = IssueGitAdminService(_issue_git_dependencies(admin))
+    admin.runtime.session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-1",
+            vm_id="vm-1",
+            directory_path="root",
+            allowed_tools=[],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        )
+    )
+
+    result = service.session_set_image_generation_enabled(
+        target="session-1",
+        enabled=True,
+    )
+
+    updated = admin.runtime.session_repository.get_session("session-1")
+    assert updated is not None
+    assert updated.image_generation_enabled is True
+    assert result["success"] is True
+    assert result["image_generation_enabled"] is True
+
+
 def test_issue_git_admin_service_create_update_and_delete_local_issue(
     tmp_path: Path, monkeypatch: object
 ) -> None:

@@ -124,6 +124,9 @@ class EffectProviderFactory:
             session_lookup=self._provider_runtime_ports.session_lookup,
             issue_updater=self._provider_runtime_ports.issue_updater,
             session_metadata_updater=self._provider_runtime_ports.session_metadata_updater,
+            session_image_generation_policy_updater=(
+                self._provider_runtime_ports.session_image_generation_policy_updater
+            ),
             git_branch_promoter=self._provider_runtime_ports.git_branch_promoter,
             pull_request_creator=self._provider_runtime_ports.pull_request_creator,
             code_consultation_service_factory=self.code_consultation_service_factory,

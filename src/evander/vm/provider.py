@@ -883,6 +883,7 @@ def _libvirt_create_vm(
     communication_file_max_bytes: int | None = None,
     communication_file_require_approval_for_send: bool | None = None,
     web_search_enabled: bool | None = None,
+    image_generation_enabled: bool | None = None,
     dotnet: bool = False,
     nuget: bool = False,
     mssql: bool = False,
@@ -960,6 +961,8 @@ def _libvirt_create_vm(
             )
         if web_search_enabled is not None:
             policy_update["web_search_enabled"] = web_search_enabled
+        if image_generation_enabled is not None:
+            policy_update["image_generation_enabled"] = image_generation_enabled
         if allowed_contact_ids is not None:
             policy_update["allowed_contact_ids"] = allowed_contact_ids
         manifest = existing_session.model_copy(
@@ -1001,6 +1004,7 @@ def _libvirt_create_vm(
                 communication_file_require_approval_for_send
             ),
             web_search_enabled=bool(web_search_enabled),
+            image_generation_enabled=bool(image_generation_enabled),
         )
     normalized_labels = session_helpers.normalize_session_labels(labels or {})
     if normalized_labels:

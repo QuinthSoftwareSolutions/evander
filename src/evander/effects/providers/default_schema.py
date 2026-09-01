@@ -51,6 +51,7 @@ from evander.effects.providers.schemas import (
     SessionApproveMcpToolsForRunEffectDefinition,
     SessionRenewIfExpiredEffectDefinition,
     SessionRevokeMcpToolApprovalLeaseEffectDefinition,
+    SessionSetImageGenerationEnabledEffectDefinition,
     SessionUpdateMetadataEffectDefinition,
     VmBootstrapFrontendEffectDefinition,
     VmBootstrapPythonEffectDefinition,
@@ -121,6 +122,9 @@ _EFFECT_MODEL_BY_TYPE = {
         SessionRevokeMcpToolApprovalLeaseEffectDefinition
     ),
     "effect:session:update-metadata": SessionUpdateMetadataEffectDefinition,
+    "effect:session:set-image-generation-enabled": (
+        SessionSetImageGenerationEnabledEffectDefinition
+    ),
     "effect:session:renew-if-expired": SessionRenewIfExpiredEffectDefinition,
     "effect:git:ensure-managed-repo": GitEnsureManagedRepoEffectDefinition,
     "effect:git:promote-agent-branch": GitPromoteAgentBranchEffectDefinition,

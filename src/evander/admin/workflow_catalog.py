@@ -790,6 +790,9 @@ _WORKFLOW_EDITOR_NODE_DESCRIPTIONS: dict[str, str] = {
         "Send a notification through a directory-scoped communication target."
     ),
     "effect:session:update-metadata": "Patch metadata on a host-side session record.",
+    "effect:session:set-image-generation-enabled": (
+        "Enable or disable session-gated image generation and editing."
+    ),
     "effect:session:approve-mcp-tools-for-run": (
         "Approve MCP tools for one agent session during the current workflow run."
     ),
@@ -2435,6 +2438,16 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
                 description="Allow the created session to use OpenAI-hosted web_search tools through the OpenAI relay.",
             ),
             _field(
+                "image_generation_enabled",
+                "Image generation",
+                "boolean",
+                bindable=True,
+                description=(
+                    "Allow the created session to generate and edit images through "
+                    "the session-gated OpenAI relay."
+                ),
+            ),
+            _field(
                 "dotnet",
                 "Dotnet",
                 "boolean",
@@ -3776,6 +3789,26 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
             _field("session_id", "Session ID", "string", bindable=True),
             _field("vm_name", "VM name", "string", bindable=True),
             _field("metadata", "Metadata", "json", required=True, bindable=True),
+        ],
+    ),
+    WorkflowEditorNodeCatalogEntry(
+        kind="effect",
+        type="effect:session:set-image-generation-enabled",
+        label="Session image generation",
+        fields=[
+            _field("target", "Target", "string", bindable=True),
+            _field("session_id", "Session ID", "string", bindable=True),
+            _field("vm_name", "VM name", "string", bindable=True),
+            _field(
+                "enabled",
+                "Enabled",
+                "boolean",
+                required=True,
+                bindable=True,
+                description=(
+                    "Allow this session to generate and edit images through the OpenAI relay."
+                ),
+            ),
         ],
     ),
     WorkflowEditorNodeCatalogEntry(

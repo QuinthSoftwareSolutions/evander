@@ -1,5 +1,14 @@
 # Changelog
 
+## 2026-08-31 - Session-Gated Image Generation
+
+- Added an opt-in session policy and workflow effect for OpenAI image generation and editing,
+  with direct Images API and Responses tool enforcement across HTTP and WebSocket relay paths.
+- Added bounded JSON and multipart request handling, host-owned authentication, and usage auditing
+  that records hashes and sizes without retaining prompts, uploads, or generated image data.
+- Enabled the capability only in the APP demo and demo-modification workflows while keeping all
+  other sessions disabled by default, and documented the guest image-generation handoff.
+
 ## 2026-08-31 - On-Demand Managed Reference Repositories
 
 - Added a session-bound `prepare_reference_repository` MCP tool that lets container agents

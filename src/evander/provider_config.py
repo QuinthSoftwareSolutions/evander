@@ -103,6 +103,8 @@ class EffectProviderConfig(BaseModel):
     openai_api_base_url: str = "https://api.openai.com/v1"
     openai_api_key_env: str = "OPENAI_API_KEY"
     openai_relay_timeout_seconds: float = 300.0
+    openai_image_generation_max_request_bytes: int = Field(default=1_048_576, ge=1)
+    openai_image_edit_max_request_bytes: int = Field(default=268_435_456, ge=1)
     local_openai_api_base_url: str = "http://127.0.0.1:11434/v1"
     local_openai_api_key: str = "ollama"
     local_openai_provider_name: str = "local_openai"
@@ -133,6 +135,8 @@ class QueryProviderConfig(BaseModel):
     openai_api_base_url: str = "https://api.openai.com/v1"
     openai_api_key_env: str = "OPENAI_API_KEY"
     openai_relay_timeout_seconds: float = 300.0
+    openai_image_generation_max_request_bytes: int = Field(default=1_048_576, ge=1)
+    openai_image_edit_max_request_bytes: int = Field(default=268_435_456, ge=1)
     local_openai_api_base_url: str = "http://127.0.0.1:11434/v1"
     local_openai_api_key: str = "ollama"
     local_openai_provider_name: str = "local_openai"
@@ -155,6 +159,7 @@ class ProviderSessionManifest(BaseModel):
     directory_path: str = "root"
     allowed_contact_ids: list[str] | None = None
     web_search_enabled: bool = False
+    image_generation_enabled: bool = False
     expires_at: datetime | None = None
 
 

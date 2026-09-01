@@ -309,6 +309,12 @@ CONFIG_FIELD_TOOLTIPS: dict[str, str] = {
         "Name of the host environment variable that holds the upstream OpenAI API key in public OpenAI mode."
     ),
     "openai_relay_timeout_seconds": ("Upstream request timeout in seconds for the OpenAI relay."),
+    "openai_image_generation_max_request_bytes": (
+        "Maximum JSON request size accepted for session-gated image generation."
+    ),
+    "openai_image_edit_max_request_bytes": (
+        "Maximum multipart request size accepted for session-gated image edits."
+    ),
     "local_openai_api_base_url": (
         "Host-local OpenAI-compatible API base URL used by the relay in local_openai mode."
     ),

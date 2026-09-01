@@ -416,6 +416,8 @@ class GatewayConfig(BaseModel):
     azure_openai_api_version: str = "preview"
     azure_openai_model_deployments: dict[str, str] = Field(default_factory=dict)
     openai_relay_timeout_seconds: float = 300.0
+    openai_image_generation_max_request_bytes: int = Field(default=1_048_576, ge=1)
+    openai_image_edit_max_request_bytes: int = Field(default=268_435_456, ge=1)
     anthropic_api_base_url: str = "https://api.anthropic.com"
     anthropic_api_key_env: str = "ANTHROPIC_API_KEY"
     anthropic_api_version: str = "2023-06-01"
