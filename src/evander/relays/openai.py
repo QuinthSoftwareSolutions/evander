@@ -17,7 +17,11 @@ from urllib.parse import quote, unquote, urlencode
 
 import httpx
 import uvicorn
-from python_multipart.multipart import MultipartParser, parse_options_header
+from python_multipart.multipart import (
+    MultipartParseError,
+    MultipartParser,
+    parse_options_header,
+)
 from starlette.applications import Starlette
 from starlette.middleware import Middleware
 from starlette.requests import Request
@@ -99,6 +103,7 @@ OPENAI_COMPATIBLE_ENDPOINTS_DESCRIPTION = (
 PATH_SEGMENT_SAFE_CHARS = ":@!$&'()*+,;=-._~"
 MAX_PATH_DECODE_PASSES = 5
 OPENAI_AUTH_PATH_SCOPE_TOKEN_KEY = "evander_openai_mcp_session_token"
+MULTIPART_MODEL_CAPTURE_MAX_HEADER_BYTES = 16 * 1024
 
 
 def _rewrite_openai_auth_path(path: str) -> tuple[str, str] | None:
@@ -156,15 +161,23 @@ class OpenAICompatibleUpstream:
 class _MultipartModelCapture:
     """Capture only the small multipart `model` field while the request is spooled."""
 
-    def __init__(self, content_type: str, *, max_value_bytes: int = 256) -> None:
+    def __init__(
+        self,
+        content_type: str,
+        *,
+        max_value_bytes: int = 256,
+        max_header_bytes: int = MULTIPART_MODEL_CAPTURE_MAX_HEADER_BYTES,
+    ) -> None:
         _media_type, options = parse_options_header(content_type)
         boundary = options.get(b"boundary")
         if not boundary:
             raise ValueError("Multipart image edit request is missing a boundary")
         self.max_value_bytes = max_value_bytes
+        self.max_header_bytes = max_header_bytes
+        self.part_header_bytes = 0
         self.header_field = bytearray()
         self.header_value = bytearray()
-        self.headers: dict[bytes, bytes] = {}
+        self.content_disposition = b""
         self.capture_part = False
         self.value = bytearray()
         self.model: str | None = None
@@ -189,7 +202,8 @@ class _MultipartModelCapture:
         self.parser.finalize()
 
     def _on_part_begin(self) -> None:
-        self.headers = {}
+        self.part_header_bytes = 0
+        self.content_disposition = b""
         self.capture_part = False
         self.value = bytearray()
 
@@ -198,18 +212,32 @@ class _MultipartModelCapture:
         self.header_value = bytearray()
 
     def _on_header_field(self, data: bytes, start: int, end: int) -> None:
-        self.header_field.extend(data[start:end])
+        value = data[start:end]
+        self._count_header_bytes(len(value))
+        self.header_field.extend(value)
 
     def _on_header_value(self, data: bytes, start: int, end: int) -> None:
-        self.header_value.extend(data[start:end])
+        value = data[start:end]
+        self._count_header_bytes(len(value))
+        if bytes(self.header_field).lower() == b"content-disposition":
+            self.header_value.extend(value)
 
     def _on_header_end(self) -> None:
-        self.headers[bytes(self.header_field).lower()] = bytes(self.header_value)
+        if bytes(self.header_field).lower() == b"content-disposition":
+            self.content_disposition = bytes(self.header_value)
+        self.header_field = bytearray()
+        self.header_value = bytearray()
 
     def _on_headers_finished(self) -> None:
-        disposition = self.headers.get(b"content-disposition", b"")
-        _value, options = parse_options_header(disposition)
+        _value, options = parse_options_header(self.content_disposition)
         self.capture_part = options.get(b"name") == b"model"
+
+    def _count_header_bytes(self, count: int) -> None:
+        self.part_header_bytes += count
+        if self.part_header_bytes > self.max_header_bytes:
+            raise MultipartParseError(
+                f"Multipart part headers exceed the relay limit of {self.max_header_bytes} bytes"
+            )
 
     def _on_part_data(self, data: bytes, start: int, end: int) -> None:
         if not self.capture_part or len(self.value) >= self.max_value_bytes:
@@ -719,6 +747,7 @@ class OpenAIRelay:
         request_size = 0
         request_hasher = sha256()
         request_model: str | None = None
+        request_declares_stream = False
         multipart_capture: _MultipartModelCapture | None = None
         if upstream_path == "images/edits":
             content_type = request.headers.get("content-type", "")
@@ -742,13 +771,21 @@ class OpenAIRelay:
                 request_hasher.update(chunk)
                 spool.write(chunk)
                 if multipart_capture is not None:
-                    multipart_capture.write(chunk)
+                    try:
+                        multipart_capture.write(chunk)
+                    except MultipartParseError as exc:
+                        return self._malformed_multipart_response(exc)
             if multipart_capture is not None:
-                multipart_capture.finalize()
+                try:
+                    multipart_capture.finalize()
+                except MultipartParseError as exc:
+                    return self._malformed_multipart_response(exc)
                 request_model = multipart_capture.model
             spool.seek(0)
             if upstream_path == "images/generations":
-                request_model = self._model_from_request_body(spool.read())
+                generation_body = spool.read()
+                request_model = self._model_from_request_body(generation_body)
+                request_declares_stream = self._request_body_declares_stream(generation_body)
                 spool.seek(0)
 
             upstream = self._openai_compatible_upstream(request_context.config)
@@ -775,6 +812,22 @@ class OpenAIRelay:
             headers["accept-encoding"] = "identity"
             headers["authorization"] = f"Bearer {upstream.api_key}"
             headers["content-length"] = str(request_size)
+
+            if request_declares_stream:
+                return await self._stream_response(
+                    request=request,
+                    session_id=request_context.session_id,
+                    upstream_path=upstream_path,
+                    upstream_url=upstream_url,
+                    headers=headers,
+                    request_body=None,
+                    request_content=self._spooled_file_chunks(spool),
+                    request_body_bytes=request_size or None,
+                    request_body_sha256=(request_hasher.hexdigest() if request_size else None),
+                    request_model=request_model,
+                    timeout_seconds=request_context.config.openai_relay_timeout_seconds,
+                    provider_name=upstream.provider_name,
+                )
 
             async with httpx.AsyncClient(
                 timeout=request_context.config.openai_relay_timeout_seconds,
@@ -836,6 +889,13 @@ class OpenAIRelay:
                 )
             },
             status_code=413,
+        )
+
+    @staticmethod
+    def _malformed_multipart_response(exc: MultipartParseError) -> JSONResponse:
+        return JSONResponse(
+            {"error": f"Malformed multipart image edit request: {exc}"},
+            status_code=400,
         )
 
     @staticmethod
@@ -976,11 +1036,15 @@ class OpenAIRelay:
         upstream_path: str,
         upstream_url: str,
         headers: dict[str, str],
-        request_body: bytes,
+        request_body: bytes | None,
         timeout_seconds: float,
         provider_name: str = "openai",
         operator_steering_note: OperatorSteeringNote | None = None,
         local_openai_tool_compatibility: LocalOpenAIToolCompatibility | None = None,
+        request_content: bytes | AsyncIterator[bytes] | None = None,
+        request_body_bytes: int | None = None,
+        request_body_sha256: str | None = None,
+        request_model: str | None = None,
     ) -> StreamingResponse:
         self.stream_started_count += 1
         stream_id = self.stream_started_count
@@ -1003,7 +1067,7 @@ class OpenAIRelay:
             method=request.method,
             url=upstream_url,
             headers=headers,
-            content=request_body,
+            content=request_body if request_content is None else request_content,
         )
         started_at = time.perf_counter()
         try:
@@ -1113,6 +1177,9 @@ class OpenAIRelay:
                         response_payload=stream_payload,
                         duration_ms=self._duration_ms_since(started_at),
                         provider_name=provider_name,
+                        request_body_bytes=request_body_bytes,
+                        request_body_sha256=request_body_sha256,
+                        request_model=request_model,
                     )
                 except Exception as exc:
                     logger.warning(
@@ -1413,13 +1480,16 @@ class OpenAIRelay:
         *,
         session_id: str,
         upstream_path: str,
-        request_body: bytes,
+        request_body: bytes | None,
         upstream_response: httpx.Response,
         response_body_bytes: int,
         response_body_sha256: str | None,
         response_payload: dict[str, Any],
         duration_ms: int | None,
         provider_name: str = "openai",
+        request_body_bytes: int | None = None,
+        request_body_sha256: str | None = None,
+        request_model: str | None = None,
     ) -> None:
         if not self._is_model_usage_endpoint(upstream_path):
             return
@@ -1450,6 +1520,9 @@ class OpenAIRelay:
             ),
             duration_ms=duration_ms,
             provider_name=provider_name,
+            request_body_bytes=request_body_bytes,
+            request_body_sha256=request_body_sha256,
+            request_model=request_model,
         )
 
     def _record_websocket_model_usage_event(

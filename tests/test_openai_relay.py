@@ -255,6 +255,122 @@ def test_relay_forwards_multipart_image_edit_without_reencoding_body(tmp_path: P
     assert events[0].model == "gpt-image-2"
 
 
+def test_relay_rejects_oversized_multipart_part_headers_before_upstream(
+    tmp_path: Path,
+) -> None:
+    called = False
+
+    def handler(_: httpx.Request) -> httpx.Response:
+        nonlocal called
+        called = True
+        return httpx.Response(200, json={"created": 1, "data": []})
+
+    config = make_config(tmp_path)
+    write_session(config, session_id="session-1", image_generation_enabled=True)
+    app = create_app(config, transport=httpx.MockTransport(handler))
+    os.environ["OPENAI_API_KEY"] = "host-key"
+    boundary = "bounded-header"
+    body = (
+        f"--{boundary}\r\nX-Oversized: ".encode()
+        + (b"a" * (16 * 1024))
+        + f"\r\n\r\npayload\r\n--{boundary}--\r\n".encode()
+    )
+
+    response = request_asgi(
+        app,
+        "POST",
+        "/v1/session/session-1/images/edits",
+        headers={"content-type": f"multipart/form-data; boundary={boundary}"},
+        content=body,
+    )
+
+    assert response.status_code == 400
+    assert "headers exceed the relay limit" in response.text
+    assert called is False
+
+
+def test_relay_rejects_malformed_multipart_image_edit_before_upstream(
+    tmp_path: Path,
+) -> None:
+    called = False
+
+    def handler(_: httpx.Request) -> httpx.Response:
+        nonlocal called
+        called = True
+        return httpx.Response(200, json={"created": 1, "data": []})
+
+    config = make_config(tmp_path)
+    write_session(config, session_id="session-1", image_generation_enabled=True)
+    app = create_app(config, transport=httpx.MockTransport(handler))
+    os.environ["OPENAI_API_KEY"] = "host-key"
+    boundary = "malformed-header"
+    body = (
+        f"--{boundary}\r\n".encode()
+        + b'Content-Disposition form-data; name="model"\r\n\r\n'
+        + f"gpt-image-2\r\n--{boundary}--\r\n".encode()
+    )
+
+    response = request_asgi(
+        app,
+        "POST",
+        "/v1/session/session-1/images/edits",
+        headers={"content-type": f"multipart/form-data; boundary={boundary}"},
+        content=body,
+    )
+
+    assert response.status_code == 400
+    assert "Malformed multipart image edit request" in response.text
+    assert called is False
+
+
+def test_relay_streams_partial_image_generation_events(tmp_path: Path) -> None:
+    captured: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["authorization"] = request.headers.get("authorization")
+        captured["payload"] = json.loads(request.content.decode("utf-8"))
+        return httpx.Response(
+            200,
+            headers={"content-type": "text/event-stream"},
+            stream=_CleanStream(),
+        )
+
+    config = make_config(tmp_path)
+    write_session(config, session_id="session-1", image_generation_enabled=True)
+    relay = OpenAIRelay(config, transport=httpx.MockTransport(handler))
+    os.environ["OPENAI_API_KEY"] = "host-key"
+
+    response = request_asgi(
+        relay.create_app(),
+        "POST",
+        "/v1/session/session-1/images/generations",
+        json={
+            "model": "gpt-image-2",
+            "prompt": "private streamed prompt",
+            "stream": True,
+            "partial_images": 2,
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/event-stream")
+    assert response.content == b"data: first\n\ndata: second\n\n"
+    assert captured["authorization"] == "Bearer host-key"
+    assert captured["payload"] == {
+        "model": "gpt-image-2",
+        "prompt": "private streamed prompt",
+        "stream": True,
+        "partial_images": 2,
+    }
+    assert relay.stream_started_count == 1
+    assert relay.stream_clean_end_count == 1
+    events = relay.model_usage_store.list_events()
+    assert len(events) == 1
+    assert events[0].provider_endpoint_identifier == "images/generations"
+    assert events[0].model == "gpt-image-2"
+    assert "private streamed prompt" not in events[0].model_dump_json()
+
+
 def test_relay_enforces_image_generation_request_limit_before_upstream(
     tmp_path: Path,
 ) -> None:
