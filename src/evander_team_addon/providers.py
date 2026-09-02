@@ -218,6 +218,7 @@ from .provider_schemas import (
     TeamRecordOperatorEscalationDeliveryEffectDefinition,
     TeamRecordHumanReviewPreparationResultEffectDefinition,
     TeamRegisterAgentEffectDefinition,
+    TeamRestoreAgentEffectDefinition,
     TeamReindexMemoryEffectDefinition,
     TeamRequestEphemeralAgentsEffectDefinition,
     TeamStateQueryDefinition,
@@ -1595,6 +1596,64 @@ _TEAM_WORKFLOW_EDITOR_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
                 "Display name",
                 "string",
                 description="Optional durable display name for Team roster and audit history.",
+            ),
+            _revision_field(),
+        ],
+    ),
+    _catalog_entry(
+        "effect",
+        "effect:team:restore-agent",
+        "Restore Team agent",
+        "Reattach a fully archived Team agent to a distinct, unbound core session.",
+        [
+            _catalog_field(
+                "agent_id",
+                "Agent ID",
+                "string",
+                required=True,
+                description="Fully archived persistent Team agent to restore.",
+            ),
+            _catalog_field(
+                "new_session_id",
+                "New session ID",
+                "string",
+                required=True,
+                description=(
+                    "Existing unexpired and unbound core session for the restored generation."
+                ),
+            ),
+            _catalog_field(
+                "expected_old_session_id",
+                "Expected old session ID",
+                "string",
+                required=True,
+                description="Archived session-binding guard for safe restoration.",
+            ),
+            _catalog_field(
+                "expected_team_id",
+                "Expected Team ID",
+                "string",
+                required=True,
+                description="Retained Team identity guard and target Team for restoration.",
+            ),
+            _catalog_field(
+                "role_id",
+                "Role ID",
+                "string",
+                required=True,
+                description="Active Team role for the restored agent.",
+            ),
+            _catalog_field(
+                "project_id",
+                "Project ID",
+                "string",
+                description="Optional Team project membership to recreate.",
+            ),
+            _catalog_field(
+                "reports_to_agent_id",
+                "Reports to agent ID",
+                "string",
+                description="Optional active same-Team manager to reattach.",
             ),
             _revision_field(),
         ],
@@ -5079,6 +5138,85 @@ class TeamRegisterAgentEffectProvider(EffectProviderBase):
         )
 
 
+class TeamRestoreAgentEffectProvider(EffectProviderBase):
+    @classmethod
+    def validate_definition(cls, effect_definition):
+        if isinstance(effect_definition, WorkflowNodeEnvelope):
+            return _materialize(TeamRestoreAgentEffectDefinition, effect_definition)
+        return effect_definition
+
+    def execute(self, *, resolved_config: Mapping[str, Any] | None = None) -> dict[str, Any]:
+        payload = _definition_payload(
+            self.effect_definition,
+            "agent_id",
+            "new_session_id",
+            "expected_old_session_id",
+            "expected_team_id",
+            "role_id",
+            "project_id",
+            "reports_to_agent_id",
+            "expected_revision",
+        )
+        if resolved_config:
+            payload.update(dict(resolved_config))
+        repo = TeamStateRepository(_runtime_dir(self.runtime_context))
+        agent_id = _optional_text(payload.get("agent_id"))
+        new_session_id = _optional_text(payload.get("new_session_id"))
+        previous_session_id = _optional_text(payload.get("expected_old_session_id"))
+        team_id = _optional_text(payload.get("expected_team_id"))
+        project_id = _optional_text(payload.get("project_id"))
+        try:
+            result = TeamWorkflowAgentLifecycleService(
+                repo,
+                session_lookup=_session_repository_from_context(self.runtime_context),
+                workflow_directory_path=scoped_effect_directory_path(self.runtime_context),
+            ).restore_agent(
+                agent_id=_required_text(payload.get("agent_id"), "agent_id"),
+                new_session_id=_required_text(payload.get("new_session_id"), "new_session_id"),
+                expected_old_session_id=_required_text(
+                    payload.get("expected_old_session_id"),
+                    "expected_old_session_id",
+                ),
+                expected_team_id=_required_text(
+                    payload.get("expected_team_id"),
+                    "expected_team_id",
+                ),
+                role_id=_required_text(payload.get("role_id"), "role_id"),
+                project_id=project_id,
+                reports_to_agent_id=_optional_text(payload.get("reports_to_agent_id")),
+                expected_revision=_optional_int(payload.get("expected_revision"), default=None),
+            )
+        except TeamStateConflictError as exc:
+            return _restore_agent_effect_error_result(
+                revision=exc.current_revision,
+                agent_id=agent_id,
+                previous_session_id=previous_session_id,
+                session_id=new_session_id,
+                team_id=team_id,
+                project_id=project_id,
+                error=str(exc),
+                expected_revision=exc.expected_revision,
+                current_revision=exc.current_revision,
+            )
+        except (RuntimeError, TypeError, ValueError) as exc:
+            return _restore_agent_effect_error_result(
+                revision=repo.read().revision,
+                agent_id=agent_id,
+                previous_session_id=previous_session_id,
+                session_id=new_session_id,
+                team_id=team_id,
+                project_id=project_id,
+                error=str(exc),
+            )
+        return _restore_agent_effect_success_result(
+            state=result.state,
+            agent=result.agent,
+            previous_session_id=result.previous_session_id,
+            restored=result.restored,
+            already_restored=result.already_restored,
+        )
+
+
 class TeamRetireAgentEffectProvider(EffectProviderBase):
     @classmethod
     def validate_definition(cls, effect_definition):
@@ -7288,6 +7426,7 @@ def register_providers() -> ProviderPluginRegistration:
             "effect:team:create-case": TeamCreateCaseEffectProvider,
             "effect:team:update-case": TeamUpdateCaseEffectProvider,
             "effect:team:register-agent": TeamRegisterAgentEffectProvider,
+            "effect:team:restore-agent": TeamRestoreAgentEffectProvider,
             "effect:team:retire-agent": TeamRetireAgentEffectProvider,
             "effect:team:request-ephemeral-agents": TeamRequestEphemeralAgentsEffectProvider,
             "effect:team:mark-ephemeral-spawned": TeamMarkEphemeralSpawnedEffectProvider,
@@ -7380,6 +7519,9 @@ def register_providers() -> ProviderPluginRegistration:
             ),
             "effect:team:register-agent": (
                 lambda node: _materialize(TeamRegisterAgentEffectDefinition, node)
+            ),
+            "effect:team:restore-agent": (
+                lambda node: _materialize(TeamRestoreAgentEffectDefinition, node)
             ),
             "effect:team:retire-agent": (
                 lambda node: _materialize(TeamRetireAgentEffectDefinition, node)
@@ -13663,6 +13805,61 @@ def _register_agent_effect_error_result(
         "revision": revision,
         "created": False,
         "agent_id": agent_id,
+        "session_id": session_id,
+        "team_id": team_id,
+        "project_id": project_id,
+        "agent": None,
+        "error": error,
+    }
+    if expected_revision is not None:
+        result["expected_revision"] = expected_revision
+    if current_revision is not None:
+        result["current_revision"] = current_revision
+    return result
+
+
+def _restore_agent_effect_success_result(
+    *,
+    state: TeamState,
+    agent: Any,
+    previous_session_id: str,
+    restored: bool,
+    already_restored: bool,
+) -> dict[str, Any]:
+    return {
+        "success": True,
+        "revision": state.revision,
+        "restored": restored,
+        "already_restored": already_restored,
+        "agent_id": agent.id,
+        "previous_session_id": previous_session_id,
+        "session_id": agent.session_id,
+        "team_id": agent.team_id,
+        "project_id": next(iter(agent_project_ids(state, agent.id)), None),
+        "agent": agent.model_dump(mode="json"),
+        "error": None,
+    }
+
+
+def _restore_agent_effect_error_result(
+    *,
+    revision: int,
+    agent_id: str | None,
+    previous_session_id: str | None,
+    session_id: str | None,
+    team_id: str | None,
+    project_id: str | None,
+    error: str,
+    expected_revision: int | None = None,
+    current_revision: int | None = None,
+) -> dict[str, Any]:
+    result: dict[str, Any] = {
+        "success": False,
+        "revision": revision,
+        "restored": False,
+        "already_restored": False,
+        "agent_id": agent_id,
+        "previous_session_id": previous_session_id,
         "session_id": session_id,
         "team_id": team_id,
         "project_id": project_id,

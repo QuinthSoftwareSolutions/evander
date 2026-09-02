@@ -15,25 +15,32 @@ from evander.models import utc_now
 from evander.provider_runtime.adapters import AdminRuntimeProviderAdapter
 from evander.queries.providers.base import QueryRuntimeContext
 from evander_team_addon.models import (
+    AgentContextClearingPolicy,
+    AgentRuntime,
     AgentStatus,
     EphemeralAssignment,
     EphemeralAssignmentState,
+    EphemeralAgentPolicy,
     GovernanceRuntime,
     ReleasePackage,
     RolePermission,
     TeamCaseStatus,
+    TeamDispatch,
+    TeamDispatchStatus,
     TeamRecordState,
     TeamTaskState,
 )
 from evander_team_addon.provider_schemas import (
     TeamPublishOutboxEventsEffectDefinition,
     TeamRegisterAgentEffectDefinition,
+    TeamRestoreAgentEffectDefinition,
     TeamRetireAgentEffectDefinition,
     TeamSessionRoutingQueryDefinition,
 )
 from evander_team_addon.providers import (
     TeamPublishOutboxEventsEffectProvider,
     TeamRegisterAgentEffectProvider,
+    TeamRestoreAgentEffectProvider,
     TeamRetireAgentEffectProvider,
     TeamSessionRoutingQueryProvider,
     register_providers,
@@ -41,6 +48,9 @@ from evander_team_addon.providers import (
 from evander_team_addon.repository import TeamStateRepository
 from evander_team_addon.services.agent_action_service import TeamAgentActionService
 from evander_team_addon.services.admin_service import TeamAdminService
+from evander_team_addon.services.workflow_agent_lifecycle_service import (
+    TeamWorkflowAgentLifecycleService,
+)
 
 
 @dataclass
@@ -108,6 +118,7 @@ def _register(
     *,
     session_id: str,
     agent_id: str | None = None,
+    project_id: str | None = None,
     reports_to_agent_id: str | None = "manager",
     directory_path: str = "root",
     expected_revision: int | None = None,
@@ -122,6 +133,45 @@ def _register(
             team_id="team",
             role_id="support",
             agent_id=agent_id,
+            project_id=project_id,
+            reports_to_agent_id=reports_to_agent_id,
+            expected_revision=expected_revision,
+        ),
+        EffectRuntimeContext(
+            resolved_config={"runtime_dir": str(runtime_dir)},
+            session_lookup=sessions,
+            metadata={"directory_path": directory_path},
+        ),
+    )
+    return provider.execute()
+
+
+def _restore(
+    runtime_dir: Path,
+    sessions: object,
+    *,
+    agent_id: str,
+    new_session_id: str,
+    expected_old_session_id: str,
+    expected_team_id: str = "team",
+    role_id: str = "support",
+    project_id: str | None = None,
+    reports_to_agent_id: str | None = "manager",
+    directory_path: str = "root",
+    expected_revision: int | None = None,
+) -> dict[str, object]:
+    provider = TeamRestoreAgentEffectProvider()
+    provider.initialize(
+        TeamRestoreAgentEffectDefinition(
+            id=f"restore-{agent_id}",
+            display_name="Restore Team agent",
+            type="effect:team:restore-agent",
+            agent_id=agent_id,
+            new_session_id=new_session_id,
+            expected_old_session_id=expected_old_session_id,
+            expected_team_id=expected_team_id,
+            role_id=role_id,
+            project_id=project_id,
             reports_to_agent_id=reports_to_agent_id,
             expected_revision=expected_revision,
         ),
@@ -279,6 +329,412 @@ def test_lifecycle_effects_accept_completed_replays_with_original_revision(
     assert retirement_retry["revision"] == repo.read().revision
 
 
+def test_restore_agent_rebinds_new_session_resets_runtime_and_preserves_history(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_team(tmp_path)
+    admin = TeamAdminService(repo)
+    admin.create_project(
+        project_id="project",
+        team_id="team",
+        name="Lifecycle Project",
+        lead_agent_id="manager",
+        lead_session_id=None,
+        expected_revision=repo.read().revision,
+    )
+    sessions = _Sessions(
+        _Session("old-session", expires_at=utc_now() + timedelta(hours=1)),
+        _Session("new-session", expires_at=utc_now() + timedelta(hours=1)),
+    )
+    assert _register(
+        tmp_path,
+        sessions,
+        session_id="old-session",
+        agent_id="support-agent",
+        project_id="project",
+    )["success"]
+    admin.update_agent(
+        agent_id="support-agent",
+        ephemeral_policy=EphemeralAgentPolicy(max_concurrent=3),
+        expected_revision=repo.read().revision,
+    )
+    admin.create_case(
+        case_id="historical-case",
+        team_id="team",
+        project_id="project",
+        title="Completed investigation",
+        owner_agent_id="support-agent",
+        status=TeamCaseStatus.CLOSED,
+        expected_revision=repo.read().revision,
+    )
+    admin.create_or_update_memory(
+        memory_id="historical-memory",
+        team_id="team",
+        project_id="project",
+        agent_id="support-agent",
+        scope="agent_private",
+        kind="other",
+        title="Prior generation",
+        summary="Retain durable knowledge across execution sessions.",
+        expected_revision=repo.read().revision,
+    )
+    completed_at = utc_now()
+
+    def _seed_old_runtime_and_dispatch(state):
+        state.agent_runtimes["support-agent"] = AgentRuntime(
+            agent_id="support-agent",
+            wake_reason="old work",
+            no_progress_count=3,
+            context_clearing_policy=AgentContextClearingPolicy.WORK_LINEAGE,
+            context_clearing_idle_grace_seconds=321,
+            context_rotation_pending=True,
+            context_rotation_requested_by="operator",
+            context_rotation_reason="manual",
+            last_handoff_summary="Old execution-context handoff.",
+            last_thread_id="old-model-thread",
+        )
+        state.dispatches["old-dispatch"] = TeamDispatch(
+            id="old-dispatch",
+            agent_id="support-agent",
+            session_id="old-session",
+            cause_kind="scheduled",
+            status=TeamDispatchStatus.COMPLETED,
+            completed_at=completed_at,
+        )
+        return state
+
+    repo.update(_seed_old_runtime_and_dispatch)
+    assert _retire(
+        tmp_path,
+        sessions,
+        agent_id="support-agent",
+        session_id="old-session",
+    )["success"]
+    sessions.sessions.pop("old-session")
+    restoration_revision = repo.read().revision
+
+    restored = _restore(
+        tmp_path,
+        sessions,
+        agent_id="support-agent",
+        new_session_id="new-session",
+        expected_old_session_id="old-session",
+        project_id="project",
+        expected_revision=restoration_revision,
+    )
+
+    assert restored["success"] is True
+    assert restored["restored"] is True
+    assert restored["already_restored"] is False
+    assert restored["previous_session_id"] == "old-session"
+    assert restored["session_id"] == "new-session"
+    state = repo.read()
+    agent = state.agents["support-agent"]
+    assert agent.status == AgentStatus.ACTIVE
+    assert agent.team_id == "team"
+    assert agent.role_id == "support"
+    assert agent.session_id == "new-session"
+    assert agent.reports_to_agent_id == "manager"
+    assert agent.retired_team_id is None
+    assert agent.ephemeral_policy.max_concurrent == 3
+    runtime = state.agent_runtimes["support-agent"]
+    assert runtime.wake_leased_until is None
+    assert runtime.active_dispatch_id is None
+    assert runtime.wake_reason is None
+    assert runtime.no_progress_count == 0
+    assert runtime.context_clearing_policy == AgentContextClearingPolicy.WORK_LINEAGE
+    assert runtime.context_clearing_idle_grace_seconds == 321
+    assert runtime.auto_context_clearing_enabled is True
+    assert runtime.context_rotation_pending is False
+    assert runtime.context_rotation_requested_by is None
+    assert runtime.context_rotation_reason is None
+    assert runtime.last_handoff_summary is None
+    assert runtime.last_thread_id is None
+    assert runtime.work_lineage_thread_ids == {}
+    assert state.dispatches["old-dispatch"].session_id == "old-session"
+    assert state.cases["historical-case"].owner_agent_id == "support-agent"
+    assert state.memories["historical-memory"].agent_id == "support-agent"
+    assert set(state.agents["manager"].subordinate_agent_ids) == {"support-agent"}
+    assert {
+        assignment.project_id
+        for assignment in state.project_assignments.values()
+        if assignment.agent_id == "support-agent"
+    } == {"project"}
+    revision_after_restore = state.revision
+
+    retry = _restore(
+        tmp_path,
+        sessions,
+        agent_id="support-agent",
+        new_session_id="new-session",
+        expected_old_session_id="old-session",
+        project_id="project",
+        expected_revision=restoration_revision,
+    )
+    assert retry["success"] is True
+    assert retry["already_restored"] is True
+    assert retry["revision"] == revision_after_restore
+    receipt = repo.get_idempotency_record(
+        tool_name="effect:team:restore-agent",
+        caller_identity="workflow-agent-lifecycle",
+        scope_kind="agent",
+        scope_id="support-agent",
+        request_id="new-session",
+    )
+    assert receipt is not None
+    assert receipt.response_payload["previous_session_id"] == "old-session"
+
+    inexact_retry = _restore(
+        tmp_path,
+        sessions,
+        agent_id="support-agent",
+        new_session_id="new-session",
+        expected_old_session_id="different-old-session",
+        project_id="project",
+    )
+    assert inexact_retry["success"] is False
+    assert "idempotency key reused" in str(inexact_retry["error"])
+    assert repo.read().revision == revision_after_restore
+
+
+def test_restore_agent_checks_replay_in_transaction_after_a_competing_restore(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    repo = _seed_team(tmp_path)
+    sessions = _Sessions(
+        _Session("old-session", expires_at=utc_now() + timedelta(hours=1)),
+        _Session("new-session", expires_at=utc_now() + timedelta(hours=1)),
+    )
+    assert _register(
+        tmp_path,
+        sessions,
+        session_id="old-session",
+        agent_id="support-agent",
+    )["success"]
+    assert _retire(
+        tmp_path,
+        sessions,
+        agent_id="support-agent",
+        session_id="old-session",
+    )["success"]
+    restoration_revision = repo.read().revision
+    competing_repo = TeamStateRepository(tmp_path)
+    competing_service = TeamWorkflowAgentLifecycleService(
+        competing_repo,
+        session_lookup=sessions,
+        workflow_directory_path="root",
+    )
+    service = TeamWorkflowAgentLifecycleService(
+        repo,
+        session_lookup=sessions,
+        workflow_directory_path="root",
+    )
+    original_check_replay = repo.check_idempotency_replay
+    original_transactional_update = repo.update_with_command_transaction
+    competing_restore_completed = False
+
+    def _complete_competing_restore() -> None:
+        nonlocal competing_restore_completed
+        if competing_restore_completed:
+            return
+        competing_restore_completed = True
+        result = competing_service.restore_agent(
+            agent_id="support-agent",
+            new_session_id="new-session",
+            expected_old_session_id="old-session",
+            expected_team_id="team",
+            role_id="support",
+            reports_to_agent_id="manager",
+            expected_revision=restoration_revision,
+        )
+        assert result.already_restored is False
+
+    def _race_after_replay_lookup(**kwargs):
+        replay = original_check_replay(**kwargs)
+        if replay is None:
+            _complete_competing_restore()
+        return replay
+
+    def _race_before_transaction(mutator, *, expected_revision=None):
+        _complete_competing_restore()
+        return original_transactional_update(mutator, expected_revision=expected_revision)
+
+    monkeypatch.setattr(repo, "check_idempotency_replay", _race_after_replay_lookup)
+    monkeypatch.setattr(repo, "update_with_command_transaction", _race_before_transaction)
+
+    result = service.restore_agent(
+        agent_id="support-agent",
+        new_session_id="new-session",
+        expected_old_session_id="old-session",
+        expected_team_id="team",
+        role_id="support",
+        reports_to_agent_id="manager",
+        expected_revision=restoration_revision,
+    )
+
+    assert competing_restore_completed is True
+    assert result.restored is True
+    assert result.already_restored is True
+    assert result.state.revision == restoration_revision + 1
+    assert result.agent.session_id == "new-session"
+
+
+def test_restore_agent_rejects_archived_retained_team(tmp_path: Path) -> None:
+    repo = _seed_team(tmp_path)
+    admin = TeamAdminService(repo)
+    sessions = _Sessions(
+        _Session("old-session", expires_at=utc_now() + timedelta(hours=1)),
+        _Session("new-session", expires_at=utc_now() + timedelta(hours=1)),
+    )
+    assert _register(
+        tmp_path,
+        sessions,
+        session_id="old-session",
+        agent_id="support-agent",
+    )["success"]
+    assert _retire(
+        tmp_path,
+        sessions,
+        agent_id="support-agent",
+        session_id="old-session",
+    )["success"]
+    admin.update_team(
+        team_id="team",
+        archived=True,
+        expected_revision=repo.read().revision,
+    )
+    revision_before_rejection = repo.read().revision
+
+    rejected = _restore(
+        tmp_path,
+        sessions,
+        agent_id="support-agent",
+        new_session_id="new-session",
+        expected_old_session_id="old-session",
+        reports_to_agent_id=None,
+        expected_revision=revision_before_rejection,
+    )
+
+    assert rejected["success"] is False
+    assert rejected["error"] == "team team is archived"
+    state = repo.read()
+    assert state.revision == revision_before_rejection
+    assert state.agents["support-agent"].status == AgentStatus.ARCHIVED
+    assert state.agents["support-agent"].team_id is None
+
+
+def test_restore_agent_rejects_invalid_agent_session_scope_and_revision(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_team(tmp_path)
+    sessions = _Sessions(
+        _Session("old-session", expires_at=utc_now() + timedelta(hours=1)),
+        _Session("new-session", expires_at=utc_now() + timedelta(hours=1)),
+        _Session("bound-session", expires_at=utc_now() + timedelta(hours=1)),
+        _Session("expired-session", expires_at=utc_now() - timedelta(seconds=1)),
+        _Session(
+            "outside-session",
+            directory_path="other",
+            expires_at=utc_now() + timedelta(hours=1),
+        ),
+    )
+    assert _register(
+        tmp_path,
+        sessions,
+        session_id="old-session",
+        agent_id="support-agent",
+    )["success"]
+    assert _register(
+        tmp_path,
+        sessions,
+        session_id="bound-session",
+        agent_id="other-agent",
+    )["success"]
+
+    non_archived = _restore(
+        tmp_path,
+        sessions,
+        agent_id="support-agent",
+        new_session_id="new-session",
+        expected_old_session_id="old-session",
+    )
+    assert non_archived["success"] is False
+    assert "not fully archived" in str(non_archived["error"])
+
+    assert _retire(
+        tmp_path,
+        sessions,
+        agent_id="support-agent",
+        session_id="old-session",
+    )["success"]
+    revision_before_rejections = repo.read().revision
+
+    wrong_old_session = _restore(
+        tmp_path,
+        sessions,
+        agent_id="support-agent",
+        new_session_id="new-session",
+        expected_old_session_id="wrong-session",
+    )
+    bound_session = _restore(
+        tmp_path,
+        sessions,
+        agent_id="support-agent",
+        new_session_id="bound-session",
+        expected_old_session_id="old-session",
+    )
+    expired_session = _restore(
+        tmp_path,
+        sessions,
+        agent_id="support-agent",
+        new_session_id="expired-session",
+        expected_old_session_id="old-session",
+    )
+    outside_session = _restore(
+        tmp_path,
+        sessions,
+        agent_id="support-agent",
+        new_session_id="outside-session",
+        expected_old_session_id="old-session",
+        directory_path="root/workflow",
+    )
+    missing_session = _restore(
+        tmp_path,
+        sessions,
+        agent_id="support-agent",
+        new_session_id="missing-session",
+        expected_old_session_id="old-session",
+    )
+    same_session = _restore(
+        tmp_path,
+        sessions,
+        agent_id="support-agent",
+        new_session_id="old-session",
+        expected_old_session_id="old-session",
+    )
+    stale_revision = _restore(
+        tmp_path,
+        sessions,
+        agent_id="support-agent",
+        new_session_id="new-session",
+        expected_old_session_id="old-session",
+        expected_revision=revision_before_rejections - 1,
+    )
+
+    assert "does not match expected_old_session_id" in str(wrong_old_session["error"])
+    assert "already bound to Team agent other-agent" in str(bound_session["error"])
+    assert "expired" in str(expired_session["error"])
+    assert "outside workflow directory" in str(outside_session["error"])
+    assert "does not exist" in str(missing_session["error"])
+    assert "must differ" in str(same_session["error"])
+    assert stale_revision["success"] is False
+    assert stale_revision["expected_revision"] == revision_before_rejections - 1
+    assert stale_revision["current_revision"] == revision_before_rejections
+    assert repo.read().revision == revision_before_rejections
+    assert repo.read().agents["support-agent"].status == AgentStatus.ARCHIVED
+
+
 def test_lifecycle_effects_use_the_production_session_lookup_contract(tmp_path: Path) -> None:
     repo = _seed_team(tmp_path)
     adapter = AdminRuntimeProviderAdapter(
@@ -289,7 +745,12 @@ def test_lifecycle_effects_use_the_production_session_lookup_contract(tmp_path: 
                         "production-session",
                         directory_path="root/workflow",
                         expires_at=utc_now() + timedelta(hours=1),
-                    )
+                    ),
+                    _Session(
+                        "replacement-session",
+                        directory_path="root/workflow",
+                        expires_at=utc_now() + timedelta(hours=1),
+                    ),
                 )
             )
         )
@@ -312,6 +773,19 @@ def test_lifecycle_effects_use_the_production_session_lookup_contract(tmp_path: 
     )
     assert retired["success"] is True
     assert repo.read().agents["production-agent"].status == AgentStatus.ARCHIVED
+    # Session cleanup may be eventual; a terminal old record does not prevent a
+    # distinct replacement binding.
+    assert "production-session" in adapter.read_all_sessions()
+
+    restored = _restore(
+        tmp_path,
+        adapter,
+        agent_id="production-agent",
+        new_session_id="replacement-session",
+        expected_old_session_id="production-session",
+    )
+    assert restored["success"] is True
+    assert repo.read().agents["production-agent"].session_id == "replacement-session"
 
 
 def test_register_agent_rejects_non_cleaned_ephemeral_session_binding(tmp_path: Path) -> None:
@@ -991,6 +1465,10 @@ def test_lifecycle_effects_are_registered_with_output_contracts() -> None:
     assert (
         registration.effect_providers["effect:team:register-agent"]
         is TeamRegisterAgentEffectProvider
+    )
+    assert (
+        registration.effect_providers["effect:team:restore-agent"]
+        is TeamRestoreAgentEffectProvider
     )
     assert (
         registration.effect_providers["effect:team:retire-agent"] is TeamRetireAgentEffectProvider
