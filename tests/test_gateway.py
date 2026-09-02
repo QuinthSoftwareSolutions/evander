@@ -45,6 +45,7 @@ from evander.models import (
     PullRequestItem,
     SessionManifest,
     ToolName,
+    UpdatePullRequestResponse,
 )
 from evander.policy import PolicyError
 from evander.repositories.session_tool_approval_leases import (
@@ -552,6 +553,7 @@ def test_create_server_registers_schedule_resume_and_cancel_scheduled_wake_tools
     pr_feedback_tool_names = {
         "list_pull_requests",
         "get_pull_request",
+        "update_pull_request",
         "has_pending_feedback",
         "list_unread_feedback",
         "list_all_feedback",
@@ -1863,6 +1865,30 @@ def test_request_pr_review_schema_advertises_allowed_provider_values(tmp_path: P
 
     assert provider_schema["type"] == "string"
     assert provider_schema["enum"] == ["github", "azure_devops"]
+
+
+def test_update_pull_request_schema_advertises_azure_devops_aliases(tmp_path: Path) -> None:
+    context = build_runtime(
+        GatewayConfig(
+            runtime_dir=tmp_path,
+            audit_log_path=tmp_path / "audit.jsonl",
+            session_store_path=tmp_path / "sessions.json",
+            approval_store_path=tmp_path / "approvals.json",
+            draft_store_path=tmp_path / "drafts.json",
+            email_store_path=tmp_path / "emails.json",
+            discord_command_store_path=tmp_path / "discord.json",
+        )
+    )
+    server = create_server(context)
+
+    update_tool = next(
+        tool for tool in server._tool_manager.list_tools() if tool.name == "update_pull_request"
+    )
+    provider_schema = update_tool.parameters["properties"]["provider"]
+
+    assert provider_schema["type"] == "string"
+    assert provider_schema["enum"] == ["azure_devops", "azure-devops", "ado"]
+    assert "description" in update_tool.parameters["properties"]
 
 
 def test_mssql_tools_call_container_worker_backend_and_redact_audit(
@@ -3683,6 +3709,121 @@ def test_get_pull_request_supports_github_without_token(
 
     assert result["provider"] == "github"
     assert result["pr_id"] == "17"
+
+
+def test_update_pull_request_enforces_policy_and_updates_metadata(tmp_path: Path) -> None:
+    context = build_runtime(
+        GatewayConfig(
+            runtime_dir=tmp_path,
+            audit_log_path=tmp_path / "audit.jsonl",
+            session_store_path=tmp_path / "sessions.json",
+            approval_store_path=tmp_path / "approvals.json",
+            draft_store_path=tmp_path / "drafts.json",
+            email_store_path=tmp_path / "emails.json",
+            discord_command_store_path=tmp_path / "discord.json",
+        )
+    )
+    context.session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-1",
+            allowed_tools=[],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        ),
+    )
+    captured: dict[str, object] = {}
+
+    class FakePrQueryService:
+        def update_pull_request(self, **kwargs: object) -> UpdatePullRequestResponse:
+            captured.update(kwargs)
+            return UpdatePullRequestResponse(
+                updated=True,
+                provider="azure_devops",
+                repo="repo-1",
+                pr_id="17",
+                status="active",
+                title="Keep title",
+                description="Replacement description",
+                url="https://dev.azure.com/org/project/_git/repo-1/pullrequest/17",
+                tags=["agent-owned"],
+                added_tags=["agent-owned"],
+            )
+
+    context.pr_query_service = FakePrQueryService()
+    server = create_server(context)
+    arguments = {
+        "session_id": "session-1",
+        "provider": "ado",
+        "repo": "repo-1",
+        "pr_id": "17",
+        "project": "Project A",
+        "description": "Replacement description",
+        "add_tags": ["agent-owned", "AGENT-OWNED"],
+        "expected_statuses": ["active", "ACTIVE"],
+    }
+
+    with pytest.raises(ToolError, match="Tool update_pull_request is not allowed"):
+        _call_tool(server, "update_pull_request", arguments)
+
+    context.session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-1",
+            allowed_tools=[ToolName.UPDATE_PULL_REQUEST],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        ),
+    )
+    result = _call_tool(server, "update_pull_request", arguments)
+
+    assert captured == {
+        "provider": "azure_devops",
+        "repo": "repo-1",
+        "pr_id": "17",
+        "project": "Project A",
+        "title": None,
+        "description": "Replacement description",
+        "status": None,
+        "add_tags": ["agent-owned"],
+        "remove_tags": [],
+        "expected_statuses": ["active"],
+    }
+    assert result["updated"] is True
+    assert result["description"] == "Replacement description"
+
+
+def test_update_pull_request_requires_a_change_and_disjoint_tags(tmp_path: Path) -> None:
+    context = build_runtime(
+        GatewayConfig(
+            runtime_dir=tmp_path,
+            audit_log_path=tmp_path / "audit.jsonl",
+            session_store_path=tmp_path / "sessions.json",
+            approval_store_path=tmp_path / "approvals.json",
+            draft_store_path=tmp_path / "drafts.json",
+            email_store_path=tmp_path / "emails.json",
+            discord_command_store_path=tmp_path / "discord.json",
+        )
+    )
+    context.session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-1",
+            allowed_tools=[ToolName.UPDATE_PULL_REQUEST],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        ),
+    )
+    server = create_server(context)
+    base_arguments = {
+        "session_id": "session-1",
+        "provider": "azure_devops",
+        "repo": "repo-1",
+        "pr_id": "17",
+    }
+
+    with pytest.raises(ToolError, match="at least one pull request update field is required"):
+        _call_tool(server, "update_pull_request", base_arguments)
+    with pytest.raises(ToolError, match="same pull request tag cannot be added and removed"):
+        _call_tool(
+            server,
+            "update_pull_request",
+            {**base_arguments, "add_tags": ["ready"], "remove_tags": ["READY"]},
+        )
 
 
 def test_schedule_resume_enforces_tool_policy_and_validates_args(tmp_path) -> None:

@@ -10,6 +10,7 @@ from evander.runtime_generation import (
     TEAM_RUNTIME_COMPONENTS,
     read_runtime_generation_status,
     register_runtime_generation,
+    require_current_runtime_generation,
     resolve_runtime_generation,
 )
 
@@ -70,9 +71,10 @@ def test_runtime_generation_fingerprints_tracked_and_untracked_runtime_sources(
         ],
         check=True,
     )
-    monkeypatch.setattr("evander.runtime_generation._package_version", lambda: "1.0.0")
+    monkeypatch.setattr("evander.runtime_generation._package_version", lambda: "0.9.0")
 
     clean = resolve_runtime_generation(tmp_path)
+    assert clean.version == "1.0.0"
     assert clean.dirty_fingerprint is None
 
     tracked_source.write_text("GENERATION = 2\n", encoding="utf-8")
@@ -147,6 +149,30 @@ def test_runtime_generation_registry_reports_missing_components(tmp_path) -> Non
         "trigger-orchestrator",
         "effect-orchestrator",
     ]
+
+
+def test_runtime_generation_registry_detects_coherent_but_stale_services(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    monkeypatch.setattr("evander.runtime_generation._package_version", lambda: "1.0.0")
+    for component in TEAM_RUNTIME_COMPONENTS:
+        register_runtime_generation(
+            project_dir=tmp_path,
+            runtime_dir=runtime_dir,
+            component=component,
+        )
+
+    monkeypatch.setattr("evander.runtime_generation._package_version", lambda: "1.0.1")
+    status = read_runtime_generation_status(runtime_dir)
+
+    assert status["state"] == "stale"
+    assert status["coherent"] is False
+    assert status["stale_components"] == sorted(TEAM_RUNTIME_COMPONENTS)
+    assert status["current_generation"]["version"] == "1.0.1"
+    with pytest.raises(RuntimeError, match="restart evander-team-runtime.target"):
+        require_current_runtime_generation(runtime_dir)
 
 
 def test_runtime_generation_registry_rejects_previous_boot_records(

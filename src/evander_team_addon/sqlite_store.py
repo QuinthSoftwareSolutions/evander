@@ -31,7 +31,7 @@ from .models import (
 
 ADDON_ID = "team-addon"
 STATE_DB_FILE = "state.db"
-SQLITE_SCHEMA_VERSION = 68
+SQLITE_SCHEMA_VERSION = 69
 _SQLITE_WAL_ENABLE_TIMEOUT_SECONDS = 5.0
 
 T = TypeVar("T")
@@ -1164,9 +1164,7 @@ class TeamStateSqliteStore:
                     definition="TEXT NOT NULL DEFAULT 'root'",
                 )
                 if previous_schema_version < 63:
-                    for project_row in connection.execute(
-                        "SELECT id, git_json FROM team_projects"
-                    ):
+                    for project_row in connection.execute("SELECT id, git_json FROM team_projects"):
                         git_payload = (
                             _json_loads(project_row["git_json"])
                             if project_row["git_json"] is not None
@@ -2091,6 +2089,7 @@ class TeamStateSqliteStore:
             "human_review_decisions": {},
             "human_review_findings": {},
             "dispatches": {},
+            "git_preparation_attempts": {},
             "worktree_cleanup_candidates": {},
             "ephemeral_assignments": {},
             "git_promotions": {},
@@ -2130,6 +2129,7 @@ class TeamStateSqliteStore:
         self._read_release_verification_runs(connection, payload)
         self._read_human_reviews(connection, payload)
         self._read_dispatches(connection, payload)
+        self._read_git_preparation_attempts(connection, payload)
         self._read_worktree_cleanup_candidates(connection, payload)
         self._read_ephemeral_assignments(connection, payload)
         self._read_git_promotions(connection, payload)
@@ -2190,6 +2190,10 @@ class TeamStateSqliteStore:
             findings=payload["human_review_findings"],
         )
         self._write_dispatches(connection, payload["dispatches"])
+        self._write_git_preparation_attempts(
+            connection,
+            payload["git_preparation_attempts"],
+        )
         self._write_worktree_cleanup_candidates(
             connection,
             payload["worktree_cleanup_candidates"],
@@ -2954,8 +2958,7 @@ class TeamStateSqliteStore:
         payload: dict[str, Any],
     ) -> None:
         for row in connection.execute(
-            "SELECT id, payload_json "
-            "FROM team_external_source_evidence_snapshots ORDER BY id"
+            "SELECT id, payload_json FROM team_external_source_evidence_snapshots ORDER BY id"
         ):
             payload["external_source_evidence_snapshots"][row["id"]] = _json_loads(
                 row["payload_json"]
@@ -4922,6 +4925,38 @@ class TeamStateSqliteStore:
                 )
 
     @staticmethod
+    def _read_git_preparation_attempts(
+        connection: sqlite3.Connection,
+        payload: dict[str, Any],
+    ) -> None:
+        for row in connection.execute(
+            "SELECT id, payload_json FROM team_git_preparation_attempts ORDER BY id"
+        ):
+            payload["git_preparation_attempts"][row["id"]] = _json_loads(row["payload_json"])
+
+    @staticmethod
+    def _write_git_preparation_attempts(
+        connection: sqlite3.Connection,
+        attempts: dict[str, Any],
+    ) -> None:
+        for attempt in attempts.values():
+            connection.execute(
+                """
+                INSERT INTO team_git_preparation_attempts(
+                    id, task_id, agent_id, state, updated_at, payload_json
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    attempt["id"],
+                    attempt["task_id"],
+                    attempt["agent_id"],
+                    attempt["state"],
+                    attempt["updated_at"],
+                    _json_dumps(attempt),
+                ),
+            )
+
+    @staticmethod
     def _read_worktree_cleanup_candidates(
         connection: sqlite3.Connection,
         payload: dict[str, Any],
@@ -5875,9 +5910,7 @@ def _migrate_worktree_cleanup_directory_scopes(connection: sqlite3.Connection) -
             git_payload = _json_loads(row["project_git_json"])
             if isinstance(git_payload, dict):
                 raw_directory_path = str(git_payload.get("directory_path") or "").strip()
-        payload["directory_path"] = DirectoryPath(
-            segments=raw_directory_path or "root"
-        ).as_posix()
+        payload["directory_path"] = DirectoryPath(segments=raw_directory_path or "root").as_posix()
         connection.execute(
             "UPDATE team_worktree_cleanup_candidates SET payload_json = ? WHERE id = ?",
             (_json_dumps(payload), row["id"]),
@@ -5986,9 +6019,7 @@ def _migrate_worktree_cleanup_retry_dispositions(connection: sqlite3.Connection)
             next_state = "operator_action_required"
             if payload.get("operator_action_required_at") is None:
                 payload["operator_action_required_at"] = (
-                    payload.get("updated_at")
-                    or payload.get("eligible_at")
-                    or utc_now().isoformat()
+                    payload.get("updated_at") or payload.get("eligible_at") or utc_now().isoformat()
                 )
             if payload.get("operator_action_reason") is None:
                 payload["operator_action_reason"] = failed_check or "legacy_recovery_required"
@@ -7693,6 +7724,7 @@ _STATE_TABLES = (
     "team_memory_artifact_refs",
     "team_dependency_composition_recoveries",
     "team_git_work_contexts",
+    "team_git_preparation_attempts",
     "team_git_promotions",
     "team_worktree_cleanup_candidates",
     "team_external_source_evidence_snapshots",
@@ -7968,6 +8000,11 @@ _PERSISTENCE_GROUPS = (
             ("team_dispatches", "id", "dispatches"),
         ),
         "_write_dispatches",
+    ),
+    (
+        ("git_preparation_attempts",),
+        (("team_git_preparation_attempts", "id", "git_preparation_attempts"),),
+        "_write_git_preparation_attempts",
     ),
     (
         ("worktree_cleanup_candidates",),
@@ -9027,6 +9064,17 @@ CREATE TABLE IF NOT EXISTS team_worktree_cleanup_candidates (
 );
 CREATE INDEX IF NOT EXISTS idx_team_worktree_cleanup_state_eligible
     ON team_worktree_cleanup_candidates(state, eligible_at, id);
+
+CREATE TABLE IF NOT EXISTS team_git_preparation_attempts (
+    id TEXT PRIMARY KEY,
+    task_id TEXT NOT NULL,
+    agent_id TEXT NOT NULL,
+    state TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    payload_json TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_team_git_preparation_attempts_task_state
+    ON team_git_preparation_attempts(task_id, state, updated_at, id);
 
 CREATE TABLE IF NOT EXISTS team_ephemeral_assignments (
     id TEXT PRIMARY KEY,

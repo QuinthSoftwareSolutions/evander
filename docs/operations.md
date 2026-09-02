@@ -289,7 +289,7 @@ tools are the only Team action path.
    configured ingress/wake services:
 
    ```bash
-   sudo systemctl restart evander-team-runtime.target
+   sudo systemctl restart evander-team-runtime.target evander-gateway.service evander-admin-web.service evander-trigger-orchestrator.service evander-effect-orchestrator.service
    sudo systemctl start evander-discord-ingest.service evander-discord-wake.service
    sudo systemctl start evander-scheduled-wake.service
    sudo systemctl start evander-teams-ingest.service evander-teams-meeting-ingest.service
@@ -306,6 +306,11 @@ tools are the only Team action path.
    ```bash
    evander-cli status --runtime-dir runtime --json
    ```
+
+   Require `runtime_generation.state` to be `coherent` and
+   `stale_components` to be empty. A Team wake running under systemd fails before
+   leasing work or creating a checkout while the registered services are
+   missing, split, or older than the current checkout.
 
    Confirm the migration grep from the implementation plan shows only expected
    migration-history, deleted-code, or removal-test references. In Admin Web,
@@ -2162,6 +2167,10 @@ without exposing provider credentials in the VM.
    - `get_pull_request(provider, repo, pr_id, include_reviewers?, include_commits?)`
      to fetch a single provider PR record, map stable top-level fields (title/status/branches/commits/reviewers),
      and preserve provider-specific details in `raw`.
+   - `update_pull_request(provider, repo, pr_id, description?, title?, status?, add_tags?,
+     remove_tags?, expected_statuses?, project?)` to update Azure DevOps PR metadata through
+     directory-scoped host credentials. The description argument replaces the full description;
+     use `expected_statuses=["active"]` when the request must not mutate a closed PR.
    - `resolve_ado_identity(query)` to resolve `me`, an email/UPN, display name, ADO id, or descriptor
      before using personal activity filters.
    - `list_ado_pr_comment_activity(repo, since, author?, until?, project?, statuses?, top?, skip?,
@@ -2496,6 +2505,8 @@ work and let the trigger orchestrator start a temporary review VM.
 
 - Enqueue review work with `request_pr_review(session_id, provider, repo, pr_id, ...)`.
 - Consume queued review requests with `trigger:review:new-request`.
+- Update Azure DevOps PR metadata with `update_pull_request(...)` only when that tool is explicitly
+  allowed for the session; directory policy may additionally require per-invocation approval.
 - Publish review output with:
   - `post_pr_comment(...)` for top-level PR conversation comments
   - `post_pr_inline_comment(...)` for one file/line finding; prefer this over writing
@@ -3051,7 +3062,7 @@ Before running install mode, ensure preflight is clean (or only warning-only), t
 
 ```bash
 sudo systemctl start evander-firewall.service
-sudo systemctl restart evander-team-runtime.target
+sudo systemctl restart evander-team-runtime.target evander-gateway.service evander-admin-web.service evander-trigger-orchestrator.service evander-effect-orchestrator.service
 sudo systemctl start evander-openai-relay.service
 sudo systemctl start evander-didww-sip-bridge.service
 sudo systemctl start evander-nuget-relay.service
@@ -3387,14 +3398,39 @@ later pass attempts physical removal only after
 Regardless of mode, never bypass a deferred or `operator_action_required` candidate
 with `git-repos maintenance` or a recursive delete.
 
-Current Team state schema 17 / SQLite schema 65 includes provider-neutral
-project directory scopes, frozen cleanup configuration scopes, bounded cleanup
-disposition evidence, and record-level persistence. Before upgrading, take a
-consistent `state.db` backup, then deploy and restart the four Team control-plane
-services together with `sudo systemctl restart evander-team-runtime.target`.
-`evander-cli status --runtime-dir runtime` treats absent, incomplete, split, or
-previous-boot generation registrations as degraded. Do not run old and new Team
-readers concurrently during a schema migration.
+Task-worktree creation is recorded as a deterministic Team preparation attempt
+before the worker is called. Container workers persist a host-owned receipt for
+the exact request, branch, path, base, and HEAD. If Team state conflicts after
+physical creation, the next dispatch may replay only that matching pristine
+receipt; a changed request or dirty checkout is retained for operator recovery.
+When preparation inputs change, the task resolves, or ownership changes before
+the Git context commits, global maintenance moves the obsolete receipted checkout
+into the same audited cleanup pipeline as invalidated Git work contexts. Successful
+container cleanup retires the matching worker receipt and every committed attempt
+covered by the terminal physical-worktree lineage, including attempts bound to an
+older dispatch context. The receipt records the prepared HEAD for replay identity;
+cleanup independently validates the terminal HEAD, which may contain later task commits.
+If the effect process stops after a container worker writes its receipt but before Team
+records the prepared HEAD, cleanup resolves that still-pristine HEAD from the matching
+worker-owned receipt. Reusing a deterministic attempt ID after successful cleanup resets
+its prior terminal candidate as a fresh cleanup lifecycle rather than stranding the new
+checkout behind old success evidence.
+Retrying an operator-action-required invalidated preparation restores its cleanup-pending
+state before safety checks run. During rolling upgrades, cleanup omits a known legacy
+receipt ID and retries strict older workers without the new field, so pre-receipt
+checkouts remain removable.
+
+Current Team state schema 20 / SQLite schema 69 includes provider-neutral
+project directory scopes, durable Git preparation receipts, frozen cleanup
+configuration scopes, bounded cleanup disposition evidence, and record-level
+persistence. Before upgrading, take a
+consistent `state.db` backup, then deploy and restart the target plus its four Team
+control-plane services in one `systemctl restart` transaction. Naming the services
+explicitly also covers the first installation, when the target was not already active.
+`evander-cli status --runtime-dir runtime` treats absent, incomplete, split,
+stale, or previous-boot generation registrations as degraded. Systemd invocations of both
+ordinary due-agent and governance-manager Team wakes refuse state access until that generation
+is current. Do not run old and new Team readers concurrently during a schema migration.
 
 Issue, session, and Team deletion removes bindings and SSH authorization, not the shared
 repository. Unpublished refs and repositories are retained until an operator explicitly deletes

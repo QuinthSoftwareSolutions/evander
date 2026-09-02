@@ -441,6 +441,7 @@ class WorkerTaskWorktreeRequest(BaseModel):
 
     repo_name: str
     worktree_name: str
+    preparation_attempt_id: str | None = None
     branch: str
     base_ref: str
     expected_base_commit_sha: str | None = None
@@ -460,6 +461,15 @@ class WorkerTaskWorktreeRequest(BaseModel):
     @classmethod
     def normalize_component(cls, value: object, info: ValidationInfo) -> str:
         return str(validate_worker_component_id(value, field_name=info.field_name))
+
+    @field_validator("preparation_attempt_id", mode="before")
+    @classmethod
+    def normalize_preparation_attempt_id(cls, value: object) -> str | None:
+        return validate_worker_component_id(
+            value,
+            field_name="preparation_attempt_id",
+            allow_none=True,
+        )
 
     @field_validator("branch", "base_ref", "resolved_dependency_branch", mode="before")
     @classmethod
@@ -575,6 +585,10 @@ class WorkerTaskWorktreeRecord(BaseModel):
     composed_commit_sha: str | None = None
     composed_tree_hash: str | None = None
     created: bool
+    preparation_attempt_id: str | None = None
+    preparation_request_fingerprint: str | None = None
+    preparation_receipt_reused: bool = False
+    verified_clean: bool = True
 
 
 class WorkerTaskWorktreeCleanupRequest(BaseModel):
@@ -582,8 +596,9 @@ class WorkerTaskWorktreeCleanupRequest(BaseModel):
 
     repo_name: str
     worktree_name: str
+    preparation_attempt_id: str | None = None
     branch: str
-    expected_commit_sha: str
+    expected_commit_sha: str | None = None
     expected_target_dir: str
     dry_run: bool = False
 
@@ -591,6 +606,15 @@ class WorkerTaskWorktreeCleanupRequest(BaseModel):
     @classmethod
     def normalize_component(cls, value: object, info: ValidationInfo) -> str:
         return str(validate_worker_component_id(value, field_name=info.field_name))
+
+    @field_validator("preparation_attempt_id", mode="before")
+    @classmethod
+    def normalize_preparation_attempt_id(cls, value: object) -> str | None:
+        return validate_worker_component_id(
+            value,
+            field_name="preparation_attempt_id",
+            allow_none=True,
+        )
 
     @field_validator("branch", mode="before")
     @classmethod
@@ -602,7 +626,9 @@ class WorkerTaskWorktreeCleanupRequest(BaseModel):
 
     @field_validator("expected_commit_sha", mode="before")
     @classmethod
-    def normalize_expected_commit_sha(cls, value: object) -> str:
+    def normalize_expected_commit_sha(cls, value: object) -> str | None:
+        if value is None:
+            return None
         text = str(value or "").strip().casefold()
         if not re.fullmatch(r"(?:[0-9a-f]{40}|[0-9a-f]{64})", text):
             raise ValueError("expected_commit_sha must be a full Git object ID")
@@ -623,6 +649,10 @@ class WorkerTaskWorktreeCleanupRequest(BaseModel):
         if self.expected_target_dir != expected:
             raise ValueError(
                 "expected_target_dir does not match the deterministic task worktree path"
+            )
+        if self.expected_commit_sha is None and self.preparation_attempt_id is None:
+            raise ValueError(
+                "cleanup requires expected_commit_sha or a preparation_attempt_id receipt"
             )
         return self
 

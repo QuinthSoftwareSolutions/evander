@@ -28,6 +28,8 @@ from ..models import (
     TeamDispatchActivity,
     TeamDispatchActivityStatus,
     TeamDispatchStatus,
+    TeamGitPreparationAttempt,
+    TeamGitPreparationAttemptState,
     TeamState,
     WORKTREE_CLEANUP_TRANSIENT_FAILURE_CHECKS,
     WorktreeCleanupCandidate,
@@ -139,10 +141,10 @@ class EffectTaskWorktreeCleanupBackend:
         repository: TeamStateRepository | None = None,
     ) -> None:
         self._context = context
-        # Keep the optional argument for callers compiled against the earlier
-        # constructor. Physical cleanup must use the scope frozen on the
-        # candidate rather than re-reading mutable project configuration.
-        _ = repository
+        # Physical scope remains frozen on the candidate. The repository is
+        # consulted only for the server-owned receipt identity tied to that
+        # frozen worktree lineage.
+        self._repository = repository
 
     def execution_backend_for_session(
         self,
@@ -169,7 +171,6 @@ class EffectTaskWorktreeCleanupBackend:
         dry_run: bool,
     ) -> Mapping[str, Any]:
         repo_name, worktree_name = _task_worktree_components(candidate.worktree_path)
-        expected_commit_sha = _required_expected_commit_sha(candidate)
         if candidate.execution_backend == "container_worker_vm":
             _selected, config = selected_execution_backend_for_target(
                 self._context,
@@ -179,6 +180,22 @@ class EffectTaskWorktreeCleanupBackend:
                 },
                 directory_path=candidate.directory_path,
             )
+            preparation_attempt_id = _cleanup_preparation_receipt_attempt_id(
+                self._repository.read() if self._repository is not None else None,
+                candidate,
+            )
+            preparation_receipt_kwargs = (
+                {"preparation_attempt_id": preparation_attempt_id}
+                if preparation_attempt_id is not None
+                else {}
+            )
+            expected_commit_sha = (
+                _required_expected_commit_sha(candidate)
+                if candidate.expected_head is not None
+                else None
+            )
+            if expected_commit_sha is None and preparation_attempt_id is None:
+                expected_commit_sha = _required_expected_commit_sha(candidate)
             record = container_backend(self._context, config).cleanup_task_worktree(
                 session_id=candidate.session_id,
                 repo_name=repo_name,
@@ -187,6 +204,7 @@ class EffectTaskWorktreeCleanupBackend:
                 expected_commit_sha=expected_commit_sha,
                 expected_target_dir=candidate.worktree_path,
                 dry_run=dry_run,
+                **preparation_receipt_kwargs,
             )
             payload = (
                 record.model_dump(mode="python") if hasattr(record, "model_dump") else dict(record)
@@ -197,6 +215,7 @@ class EffectTaskWorktreeCleanupBackend:
             raise ValueError(
                 f"unsupported task worktree cleanup backend {candidate.execution_backend!r}"
             )
+        expected_commit_sha = _required_expected_commit_sha(candidate)
         repo_dir = f"/home/agent/repos/{repo_name}"
         worktrees_root = f"/home/agent/worktrees/{repo_name}"
         lock_path = _libvirt_task_worktree_lock_path(repo_name)
@@ -350,6 +369,122 @@ class TeamWorktreeCleanupService:
 
             assessments = TaskAssessmentService(state)
             _supersede_stale_cleanup_generations(state, now=effective_now)
+            for attempt in sorted(
+                state.git_preparation_attempts.values(),
+                key=lambda item: (
+                    _ensure_utc(item.created_at),
+                    _ensure_utc(item.updated_at),
+                    item.id,
+                ),
+            ):
+                if attempt.state not in {
+                    TeamGitPreparationAttemptState.PENDING,
+                    TeamGitPreparationAttemptState.PREPARED,
+                    TeamGitPreparationAttemptState.CLEANUP_PENDING,
+                }:
+                    continue
+                task = state.tasks.get(attempt.task_id)
+                if task is None:
+                    continue
+                try:
+                    resolved = (
+                        assessments.assess(task.id).resolution_status
+                        == TaskResolutionStatus.RESOLVED
+                    )
+                except Exception:
+                    resolved = False
+                reassigned = task.owner_agent_id != attempt.agent_id
+                preparation_invalidated = (
+                    attempt.state == TeamGitPreparationAttemptState.CLEANUP_PENDING
+                    or _preparation_attempt_was_invalidated(state, attempt)
+                )
+                if not resolved and not reassigned and not preparation_invalidated:
+                    continue
+                reason = (
+                    "task_resolved"
+                    if resolved
+                    else "task_reassigned"
+                    if reassigned
+                    else "preparation_invalidated"
+                )
+                candidate_id = f"cleanup-{attempt.id}"
+                existing = state.worktree_cleanup_candidates.get(candidate_id)
+                if existing is None:
+                    state.worktree_cleanup_candidates[candidate_id] = WorktreeCleanupCandidate(
+                        id=candidate_id,
+                        agent_id=attempt.agent_id,
+                        session_id=attempt.session_id,
+                        task_id=attempt.task_id,
+                        project_id=attempt.project_id,
+                        git_work_context_id=f"preparation:{attempt.id}",
+                        managed_repo_id=attempt.managed_repo_id,
+                        directory_path=attempt.directory_path,
+                        execution_backend=attempt.execution_backend,
+                        worktree_path=attempt.worktree_path,
+                        branch=attempt.branch,
+                        base_ref=attempt.base_ref,
+                        expected_head=attempt.head_commit_sha,
+                        retained_commit_sha=None,
+                        reason=reason,
+                        eligible_at=max(
+                            effective_now,
+                            _ensure_utc(attempt.updated_at) + grace,
+                        ),
+                        created_at=effective_now,
+                        updated_at=effective_now,
+                    )
+                    counts["enqueued"] += 1
+                    candidate_refreshed = False
+                elif existing.state in _TERMINAL_CLEANUP_STATES:
+                    existing.agent_id = attempt.agent_id
+                    existing.session_id = attempt.session_id
+                    existing.task_id = attempt.task_id
+                    existing.project_id = attempt.project_id
+                    existing.git_work_context_id = f"preparation:{attempt.id}"
+                    existing.managed_repo_id = attempt.managed_repo_id
+                    existing.directory_path = attempt.directory_path
+                    existing.execution_backend = attempt.execution_backend
+                    existing.worktree_path = attempt.worktree_path
+                    existing.branch = attempt.branch
+                    existing.base_ref = attempt.base_ref
+                    existing.expected_head = attempt.head_commit_sha
+                    existing.retained_commit_sha = None
+                    existing.state = WorktreeCleanupState.PENDING
+                    existing.reason = reason
+                    existing.eligible_at = max(
+                        effective_now,
+                        _ensure_utc(attempt.updated_at) + grace,
+                    )
+                    existing.attempt_count = 0
+                    existing.automatic_retry_count = 0
+                    existing.last_safety_check = None
+                    existing.last_error = None
+                    existing.operator_action_required_at = None
+                    existing.operator_action_reason = None
+                    existing.superseded_by_git_work_context_id = None
+                    existing.last_operator_retry_at = None
+                    existing.last_operator_retry_by = None
+                    existing.last_operator_retry_reason = None
+                    _set_ignored_file_evidence(existing, [])
+                    existing.ignored_bytes = 0
+                    existing.worktree_bytes = 0
+                    existing.reclaimed_bytes = 0
+                    existing.completed_at = None
+                    existing.updated_at = effective_now
+                    counts["refreshed"] += 1
+                    candidate_refreshed = True
+                else:
+                    existing.reason = reason
+                    existing.updated_at = effective_now
+                    candidate_refreshed = False
+                if attempt.state == TeamGitPreparationAttemptState.PREPARED:
+                    attempt.state = TeamGitPreparationAttemptState.CLEANUP_PENDING
+                    attempt.last_error = (
+                        f"uncommitted task preparation scheduled for cleanup: {reason}"
+                    )
+                    attempt.updated_at = effective_now
+                    if existing is not None and not candidate_refreshed:
+                        counts["refreshed"] += 1
             selected_context_ids = _cleanup_context_ids_to_enqueue(state)
             for context in sorted(
                 state.git_work_contexts.values(),
@@ -635,6 +770,21 @@ class TeamWorktreeCleanupService:
             current.last_operator_retry_by = normalized_actor
             current.last_operator_retry_reason = normalized_reason
             current.updated_at = effective_now
+            if current.git_work_context_id.startswith("preparation:"):
+                attempt_id = current.git_work_context_id.partition(":")[2]
+                attempt = state.git_preparation_attempts.get(attempt_id)
+                if (
+                    attempt is not None
+                    and attempt.state == TeamGitPreparationAttemptState.OPERATOR_ACTION_REQUIRED
+                ):
+                    attempt.state = (
+                        TeamGitPreparationAttemptState.CLEANUP_PENDING
+                        if attempt.worker_request_fingerprint is not None
+                        and attempt.base_commit_sha is not None
+                        else TeamGitPreparationAttemptState.PENDING
+                    )
+                    attempt.last_error = None
+                    attempt.updated_at = effective_now
             requeued = current.model_copy(deep=True)
             return state
 
@@ -919,6 +1069,13 @@ class TeamWorktreeCleanupService:
             if state == WorktreeCleanupState.OPERATOR_ACTION_REQUIRED:
                 current.operator_action_required_at = now
                 current.operator_action_reason = operator_reason or failed_check
+                if current.git_work_context_id.startswith("preparation:"):
+                    attempt_id = current.git_work_context_id.partition(":")[2]
+                    attempt = team_state.git_preparation_attempts.get(attempt_id)
+                    if attempt is not None:
+                        attempt.state = TeamGitPreparationAttemptState.OPERATOR_ACTION_REQUIRED
+                        attempt.last_error = message
+                        attempt.updated_at = now
             else:
                 current.operator_action_required_at = None
                 current.operator_action_reason = None
@@ -969,6 +1126,9 @@ class TeamWorktreeCleanupService:
             current.completed_at = now
             current.updated_at = now
             _prune_cleaned_git_context_metadata(state, current)
+            if current.git_work_context_id.startswith("preparation:"):
+                attempt_id = current.git_work_context_id.partition(":")[2]
+                state.git_preparation_attempts.pop(attempt_id, None)
             return state
 
         self._repository.update_with_dispatch_activity(
@@ -1051,6 +1211,7 @@ class TeamWorktreeCleanupService:
             updated_at=now,
         )
 
+
 def _team_state_safety_failure(
     state: TeamState,
     candidate: WorktreeCleanupCandidate,
@@ -1091,9 +1252,23 @@ def _team_state_safety_failure(
         resolved = False
     reassigned = task.owner_agent_id != candidate.agent_id
     context = state.git_work_contexts.get(candidate.git_work_context_id)
+    preparation_attempt = None
+    if candidate.git_work_context_id.startswith("preparation:"):
+        preparation_attempt = state.git_preparation_attempts.get(
+            candidate.git_work_context_id.partition(":")[2]
+        )
     preparation_invalidated = bool(
-        context is not None
-        and _context_preparation_was_invalidated(state, context)
+        (context is not None and _context_preparation_was_invalidated(state, context))
+        or (
+            preparation_attempt is not None
+            and (
+                preparation_attempt.state == TeamGitPreparationAttemptState.CLEANUP_PENDING
+                or (
+                    preparation_attempt.state == TeamGitPreparationAttemptState.PENDING
+                    and _preparation_attempt_was_invalidated(state, preparation_attempt)
+                )
+            )
+        )
     )
     if not resolved and not reassigned and not preparation_invalidated:
         return WorktreeCleanupSafetyFailure(
@@ -1154,14 +1329,22 @@ def _team_state_safety_failure(
             message=str(exc),
             retryable=False,
         )
+    receipt_authoritative_pending_cleanup = bool(
+        candidate.execution_backend == "container_worker_vm"
+        and candidate.expected_head is None
+        and preparation_attempt is not None
+        and preparation_attempt.state == TeamGitPreparationAttemptState.PENDING
+    )
     try:
         expected = _required_expected_commit_sha(candidate)
     except ValueError as exc:
-        return WorktreeCleanupSafetyFailure(
-            check="expected_head_missing",
-            message=str(exc),
-            retryable=False,
-        )
+        if not receipt_authoritative_pending_cleanup:
+            return WorktreeCleanupSafetyFailure(
+                check="expected_head_missing",
+                message=str(exc),
+                retryable=False,
+            )
+        expected = None
     retained = candidate.retained_commit_sha
     if retained is not None:
         retained = retained.casefold()
@@ -1239,10 +1422,27 @@ def _context_preparation_was_invalidated(
     return any(
         item.task_id == context.task_id
         and item.payload.get("kind") == "task_preparation_invalidated"
-        and context.id
-        in (item.payload.get("invalidated_git_work_context_ids") or [])
+        and context.id in (item.payload.get("invalidated_git_work_context_ids") or [])
         for item in state.inbox.values()
     )
+
+
+def _preparation_attempt_was_invalidated(
+    state: TeamState,
+    attempt: TeamGitPreparationAttempt,
+) -> bool:
+    project = state.projects.get(attempt.project_id)
+    project_git = project.git if project is not None else None
+    if (
+        project_git is None
+        or project_git.managed_repo_id != attempt.managed_repo_id
+        or project_git.directory_path != attempt.directory_path
+    ):
+        return True
+    # Generation replacement already moves the old attempt to CLEANUP_PENDING.
+    # Do not reconstruct that fingerprint here: dependency recovery can select
+    # an effective base that is intentionally not persisted on the task.
+    return False
 
 
 def _prune_cleaned_git_context_metadata(
@@ -1254,6 +1454,19 @@ def _prune_cleaned_git_context_metadata(
         for deliverable in state.deliverables.values()
         if (context_id := deliverable.git_refs.branch_context_id) is not None
     }
+    cleaned_lineage_context_ids = {
+        context.id
+        for context in state.git_work_contexts.values()
+        if context.state != GitWorkContextState.ACTIVE
+        and _cleanup_context_lineage(state, context) == _cleanup_candidate_lineage(candidate)
+    }
+    bound_attempt_ids = [
+        attempt_id
+        for attempt_id, attempt in state.git_preparation_attempts.items()
+        if attempt.git_work_context_id in cleaned_lineage_context_ids
+    ]
+    for attempt_id in bound_attempt_ids:
+        state.git_preparation_attempts.pop(attempt_id, None)
     prunable = [
         context.id
         for context in state.git_work_contexts.values()
@@ -1263,6 +1476,54 @@ def _prune_cleaned_git_context_metadata(
     ]
     for context_id in prunable:
         del state.git_work_contexts[context_id]
+
+
+def _cleanup_preparation_receipt_attempt_id(
+    state: TeamState | None,
+    candidate: WorktreeCleanupCandidate,
+) -> str | None:
+    if candidate.git_work_context_id.startswith("preparation:"):
+        attempt_id = candidate.git_work_context_id.partition(":")[2]
+        if state is None:
+            return attempt_id
+        attempt = state.git_preparation_attempts.get(attempt_id)
+        matching_attempts = [attempt] if attempt is not None else []
+    elif state is None:
+        return None
+    else:
+        cleaned_lineage_context_ids = {
+            context.id
+            for context in state.git_work_contexts.values()
+            if context.state != GitWorkContextState.ACTIVE
+            and _cleanup_context_lineage(state, context) == _cleanup_candidate_lineage(candidate)
+        }
+        matching_attempts = [
+            attempt
+            for attempt in state.git_preparation_attempts.values()
+            if attempt.git_work_context_id in cleaned_lineage_context_ids
+        ]
+    receipt_attempts = [
+        attempt
+        for attempt in matching_attempts
+        if attempt is not None
+        and attempt.agent_id == candidate.agent_id
+        and attempt.task_id == candidate.task_id
+        and attempt.project_id == candidate.project_id
+        and attempt.execution_backend == candidate.execution_backend
+        and attempt.session_id == candidate.session_id
+        and attempt.managed_repo_id == candidate.managed_repo_id
+        and attempt.directory_path == candidate.directory_path
+        and _cleanup_worktree_path_identity(attempt.worktree_path)
+        == _cleanup_worktree_path_identity(candidate.worktree_path)
+        and attempt.branch == candidate.branch
+        and not str(attempt.worker_request_fingerprint or "").startswith("legacy-container-worker:")
+    ]
+    if len(receipt_attempts) > 1:
+        raise RuntimeError(
+            f"cleanup candidate {candidate.id} has multiple preparation receipts "
+            "for one worktree lineage"
+        )
+    return receipt_attempts[0].id if receipt_attempts else None
 
 
 def _cleanup_candidate_identity(
@@ -1326,8 +1587,7 @@ def _cleanup_context_ids_to_enqueue(state: TeamState) -> set[str]:
             nonterminal_lineages.add(lineage)
 
     candidate_context_ids = {
-        candidate.git_work_context_id
-        for candidate in state.worktree_cleanup_candidates.values()
+        candidate.git_work_context_id for candidate in state.worktree_cleanup_candidates.values()
     }
     return {
         context.id
@@ -1341,17 +1601,9 @@ def _newest_cleanup_contexts_by_lineage(
 ) -> dict[tuple[str, str, str, str], GitWorkContext]:
     newest_by_lineage: dict[tuple[str, str, str, str], GitWorkContext] = {}
     for context in state.git_work_contexts.values():
-        if context.worktree_path is None:
+        lineage = _cleanup_context_lineage(state, context)
+        if lineage is None:
             continue
-        session_id = _git_work_context_session_id(state, context)
-        if session_id is None:
-            continue
-        lineage = (
-            context.agent_id,
-            session_id,
-            _cleanup_worktree_path_identity(context.worktree_path),
-            context.agent_branch,
-        )
         current = newest_by_lineage.get(lineage)
         if current is None or (
             _ensure_utc(context.created_at),
@@ -1364,6 +1616,23 @@ def _newest_cleanup_contexts_by_lineage(
         ):
             newest_by_lineage[lineage] = context
     return newest_by_lineage
+
+
+def _cleanup_context_lineage(
+    state: TeamState,
+    context: GitWorkContext,
+) -> tuple[str, str, str, str] | None:
+    if context.worktree_path is None:
+        return None
+    session_id = _git_work_context_session_id(state, context)
+    if session_id is None:
+        return None
+    return (
+        context.agent_id,
+        session_id,
+        _cleanup_worktree_path_identity(context.worktree_path),
+        context.agent_branch,
+    )
 
 
 def _cleanup_candidate_lineage(

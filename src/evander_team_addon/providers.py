@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import os
 import re
 import shlex
 from collections.abc import Mapping, Sequence
@@ -61,6 +62,7 @@ from evander.git_identity import (
     GitIdentity,
 )
 from evander.models import tool_name_value
+from evander.runtime_generation import require_current_runtime_generation
 from evander.model_usage.runtime import register_model_usage_correlation_context
 from evander.messaging.targets import load_communication_targets_config
 from evander.messaging.discord_inbox_store import DiscordInboxStore
@@ -167,8 +169,11 @@ from .models import (
     TeamDispatch,
     TeamDispatchStatus,
     TeamConversationMessage,
+    TeamGitPreparationAttempt,
+    TeamGitPreparationAttemptState,
     TeamState,
     TeamTaskState,
+    WorktreeCleanupCandidate,
     agent_project_ids,
     external_source_evidence_snapshot_payload,
     team_session_health_payload,
@@ -2414,6 +2419,8 @@ class TeamWakeDueAgentsEffectProvider(EffectProviderBase):
 
     def execute(self, *, resolved_config: Mapping[str, Any] | None = None) -> dict[str, Any]:
         runtime_dir = _runtime_dir(self.runtime_context)
+        if os.environ.get("INVOCATION_ID"):
+            require_current_runtime_generation(runtime_dir)
         state_db_path = addon_storage_path(runtime_dir, ADDON_ID, STATE_DB_FILE)
         repo = TeamStateRepository(runtime_dir)
         effective_resolved_config = dict(resolved_config) if resolved_config is not None else None
@@ -2477,9 +2484,9 @@ class TeamWakeDueAgentsEffectProvider(EffectProviderBase):
         integration_manifest_reconciliation_error: str | None = None
         if run_global_maintenance:
             try:
-                integration_manifest_reconciliation = (
-                    IntegrationManifestReconciliationService(repo).reconcile()
-                )
+                integration_manifest_reconciliation = IntegrationManifestReconciliationService(
+                    repo
+                ).reconcile()
                 if integration_manifest_reconciliation.get("events"):
                     integration_manifest_reconciliation["published_event_ids"] = (
                         _publish_team_events(
@@ -2488,9 +2495,7 @@ class TeamWakeDueAgentsEffectProvider(EffectProviderBase):
                         )
                     )
             except Exception as exc:
-                integration_manifest_reconciliation_error = (
-                    str(exc) or exc.__class__.__name__
-                )
+                integration_manifest_reconciliation_error = str(exc) or exc.__class__.__name__
         human_correction_reconciliation: dict[str, Any] = {}
         human_correction_reconciliation_error: str | None = None
         if run_global_maintenance:
@@ -3068,9 +3073,7 @@ class TeamWakeDueAgentsEffectProvider(EffectProviderBase):
             "candidate_correction_reconciliation_error": (
                 candidate_correction_reconciliation_error
             ),
-            "integration_manifest_reconciliation": (
-                integration_manifest_reconciliation
-            ),
+            "integration_manifest_reconciliation": (integration_manifest_reconciliation),
             "integration_manifest_reconciliation_error": (
                 integration_manifest_reconciliation_error
             ),
@@ -3587,6 +3590,8 @@ class TeamWakeGovernanceManagersEffectProvider(EffectProviderBase):
 
     def execute(self, *, resolved_config: Mapping[str, Any] | None = None) -> dict[str, Any]:
         runtime_dir = _runtime_dir(self.runtime_context)
+        if os.environ.get("INVOCATION_ID"):
+            require_current_runtime_generation(runtime_dir)
         state_db_path = addon_storage_path(runtime_dir, ADDON_ID, STATE_DB_FILE)
         repo = TeamStateRepository(runtime_dir)
         effective_resolved_config = dict(resolved_config) if resolved_config is not None else None
@@ -9069,6 +9074,212 @@ def _project_repo_task_preparation_generation(
     return task_git_work_context_generation(generation_state, task_id)
 
 
+def _project_repo_task_worktree_name(
+    *,
+    task_id: str,
+    preparation_generation: str | None,
+    identity_commit: str | None,
+) -> str:
+    task_slug = _slug_id_part(task_id, fallback="task")[:40]
+    task_hash = hashlib.sha256(task_id.encode("utf-8")).hexdigest()[:8]
+    candidate_suffix = f"-{identity_commit.casefold()[:12]}" if identity_commit else ""
+    generation_suffix = ""
+    if preparation_generation is not None:
+        normalized_generation = preparation_generation.strip().casefold()
+        if re.fullmatch(r"[0-9a-f]{20}", normalized_generation) is None:
+            raise ValueError("preparation_generation must be a 20-character hex fingerprint")
+        generation_suffix = f"-prep-{normalized_generation[:12]}"
+    return f"{task_slug}-{task_hash}{candidate_suffix}{generation_suffix}"
+
+
+def _project_repo_git_preparation_attempt_id(
+    *,
+    agent_id: str,
+    session_id: str,
+    task_id: str,
+    managed_repo_id: str,
+    branch: str,
+    preparation_generation: str,
+) -> str:
+    material = json.dumps(
+        {
+            "agent_id": agent_id,
+            "session_id": session_id,
+            "task_id": task_id,
+            "managed_repo_id": managed_repo_id,
+            "branch": branch,
+            "preparation_generation": preparation_generation,
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return f"gitprep-{hashlib.sha256(material.encode('utf-8')).hexdigest()[:24]}"
+
+
+def _ensure_project_repo_git_preparation_attempt(
+    repo: TeamStateRepository,
+    *,
+    attempt_id: str,
+    agent_id: str,
+    session_id: str,
+    task_id: str,
+    project_id: str,
+    dispatch_id: str,
+    managed_repo_id: str,
+    directory_path: str,
+    execution_backend: str,
+    worktree_path: str,
+    branch: str,
+    base_ref: str,
+    preparation_generation: str,
+) -> TeamState:
+    now = datetime.now(UTC)
+
+    def _mutate(state: TeamState) -> TeamState:
+        for prior in state.git_preparation_attempts.values():
+            if (
+                prior.id == attempt_id
+                or prior.agent_id != agent_id
+                or prior.task_id != task_id
+                or prior.state
+                in {
+                    TeamGitPreparationAttemptState.COMMITTED,
+                    TeamGitPreparationAttemptState.CLEANUP_PENDING,
+                    TeamGitPreparationAttemptState.OPERATOR_ACTION_REQUIRED,
+                }
+            ):
+                continue
+            prior.updated_at = now
+            prior.last_error = "task preparation inputs changed before the prior attempt committed"
+            if prior.base_commit_sha is None or prior.head_commit_sha is None:
+                prior.state = TeamGitPreparationAttemptState.OPERATOR_ACTION_REQUIRED
+                continue
+            prior.state = TeamGitPreparationAttemptState.CLEANUP_PENDING
+            cleanup_id = f"cleanup-{prior.id}"
+            state.worktree_cleanup_candidates.setdefault(
+                cleanup_id,
+                WorktreeCleanupCandidate(
+                    id=cleanup_id,
+                    agent_id=prior.agent_id,
+                    session_id=prior.session_id,
+                    task_id=prior.task_id,
+                    project_id=prior.project_id,
+                    git_work_context_id=f"preparation:{prior.id}",
+                    managed_repo_id=prior.managed_repo_id,
+                    directory_path=prior.directory_path,
+                    execution_backend=prior.execution_backend,
+                    worktree_path=prior.worktree_path,
+                    branch=prior.branch,
+                    base_ref=prior.base_ref,
+                    expected_head=prior.head_commit_sha,
+                    retained_commit_sha=None,
+                    reason="preparation_invalidated",
+                    eligible_at=now,
+                    created_at=now,
+                    updated_at=now,
+                ),
+            )
+
+        expected = TeamGitPreparationAttempt(
+            id=attempt_id,
+            agent_id=agent_id,
+            session_id=session_id,
+            task_id=task_id,
+            project_id=project_id,
+            latest_dispatch_id=dispatch_id,
+            managed_repo_id=managed_repo_id,
+            directory_path=directory_path,
+            execution_backend=execution_backend,
+            worktree_path=worktree_path,
+            branch=branch,
+            base_ref=base_ref,
+            preparation_generation=preparation_generation,
+            created_at=now,
+            updated_at=now,
+        )
+        existing = state.git_preparation_attempts.get(attempt_id)
+        if existing is None:
+            state.git_preparation_attempts[attempt_id] = expected
+            return state
+        identity_fields = (
+            "agent_id",
+            "session_id",
+            "task_id",
+            "project_id",
+            "managed_repo_id",
+            "directory_path",
+            "execution_backend",
+            "branch",
+            "base_ref",
+            "preparation_generation",
+        )
+        if any(getattr(existing, name) != getattr(expected, name) for name in identity_fields):
+            raise RuntimeError(
+                f"Git preparation attempt {attempt_id} already exists with different identity"
+            )
+        if existing.state in {
+            TeamGitPreparationAttemptState.CLEANUP_PENDING,
+            TeamGitPreparationAttemptState.OPERATOR_ACTION_REQUIRED,
+        }:
+            raise RuntimeError(
+                f"Git preparation attempt {attempt_id} requires recovery before reuse"
+            )
+        existing.latest_dispatch_id = dispatch_id
+        existing.updated_at = now
+        existing.last_error = None
+        return state
+
+    return repo.update(_mutate)
+
+
+def _record_project_repo_git_preparation_receipt(
+    repo: TeamStateRepository,
+    *,
+    attempt_id: str,
+    receipt: Mapping[str, Any],
+    base_commit_sha: str,
+    worktree_path: str,
+) -> TeamState:
+    now = datetime.now(UTC)
+
+    def _mutate(state: TeamState) -> TeamState:
+        attempt = state.git_preparation_attempts.get(attempt_id)
+        if attempt is None:
+            raise RuntimeError(f"Git preparation attempt {attempt_id} is missing")
+        if attempt.state in {
+            TeamGitPreparationAttemptState.CLEANUP_PENDING,
+            TeamGitPreparationAttemptState.OPERATOR_ACTION_REQUIRED,
+        }:
+            raise RuntimeError(f"Git preparation attempt {attempt_id} is no longer current")
+        fingerprint = _required_text(
+            receipt.get("request_fingerprint"),
+            "preparation request fingerprint",
+        )
+        head_commit = _required_text(
+            receipt.get("head_commit_sha"),
+            "prepared head commit",
+        ).casefold()
+        if attempt.worker_request_fingerprint not in {None, fingerprint}:
+            raise RuntimeError(
+                f"Git preparation attempt {attempt_id} returned a different worker receipt"
+            )
+        if attempt.base_commit_sha not in {None, base_commit_sha.casefold()}:
+            raise RuntimeError(
+                f"Git preparation attempt {attempt_id} returned a different base commit"
+            )
+        attempt.worker_request_fingerprint = fingerprint
+        attempt.worktree_path = _required_text(worktree_path, "prepared worktree path")
+        attempt.base_commit_sha = base_commit_sha.casefold()
+        attempt.head_commit_sha = head_commit
+        attempt.state = TeamGitPreparationAttemptState.PREPARED
+        attempt.prepared_at = attempt.prepared_at or now
+        attempt.updated_at = now
+        attempt.last_error = None
+        return state
+
+    return repo.update(_mutate)
+
+
 def _create_project_repo_git_work_contexts(
     context: Any,
     repo: TeamStateRepository,
@@ -9346,12 +9557,70 @@ def _create_project_repo_git_work_contexts(
                     message=str(exc),
                 ) from None
             raise
+        worktree_name = _project_repo_task_worktree_name(
+            task_id=task_id,
+            preparation_generation=preparation_generation,
+            identity_commit=(continuation_identity_commit or pinned_base_commit),
+        )
+        directory_path = (
+            _optional_text(
+                getattr(
+                    getattr(state.projects.get(project_id), "git", None),
+                    "directory_path",
+                    None,
+                )
+            )
+            or "root"
+        )
+        selected_backend, _selected_config = selected_execution_backend_for_target(
+            context,
+            {"session_id": session_id},
+            directory_path=directory_path,
+        )
+        execution_backend = (
+            _optional_text(project_repo.get("execution_backend")) or selected_backend
+        )
+        preparation_attempt_id = _project_repo_git_preparation_attempt_id(
+            agent_id=agent_id,
+            session_id=session_id,
+            task_id=task_id,
+            managed_repo_id=managed_repo_id,
+            branch=agent_branch,
+            preparation_generation=preparation_generation,
+        )
+        expected_worktree_path = f"/home/agent/worktrees/{task_worktree_repo_name}/{worktree_name}"
+        state = _ensure_project_repo_git_preparation_attempt(
+            repo,
+            attempt_id=preparation_attempt_id,
+            agent_id=agent_id,
+            session_id=session_id,
+            task_id=task_id,
+            project_id=project_id,
+            dispatch_id=dispatch_id,
+            managed_repo_id=managed_repo_id,
+            directory_path=directory_path,
+            execution_backend=execution_backend,
+            worktree_path=expected_worktree_path,
+            branch=agent_branch,
+            base_ref=worktree_base_ref or "HEAD",
+            preparation_generation=preparation_generation,
+        )
+        preparation_attempt = state.git_preparation_attempts[preparation_attempt_id]
+        use_preparation_receipt = (
+            preparation_attempt.state != TeamGitPreparationAttemptState.COMMITTED
+        )
+        if (
+            preparation_attempt.state == TeamGitPreparationAttemptState.PREPARED
+            and prior_base_commit is None
+        ):
+            prior_base_commit = preparation_attempt.base_commit_sha
         with team_task_worktree_cleanup_lock(
             runtime_dir=_runtime_dir(context),
             session_id=session_id,
             repo_name=task_worktree_repo_name,
         ):
             composition_result: dict[str, Any] = {}
+            preparation_receipt_result: dict[str, Any] = {}
             try:
                 worktree_path, base_commit = _prepare_project_repo_task_worktree(
                     context,
@@ -9360,6 +9629,10 @@ def _create_project_repo_git_work_contexts(
                     task_id=task_id,
                     agent_branch=agent_branch,
                     base_ref=worktree_base_ref or "HEAD",
+                    worktree_name=worktree_name,
+                    preparation_attempt_id=(
+                        preparation_attempt_id if use_preparation_receipt else None
+                    ),
                     worktree_identity_commit=(continuation_identity_commit),
                     preparation_generation=preparation_generation,
                     prior_base_commit=prior_base_commit,
@@ -9372,6 +9645,7 @@ def _create_project_repo_git_work_contexts(
                     resolved_dependency_commit_sha=resolved_dependency_commit_sha,
                     dependency_merge_author_identity=dependency_merge_author_identity,
                     composition_result=composition_result,
+                    preparation_receipt_result=preparation_receipt_result,
                 )
             except DependencyGitPreparationError as exc:
                 if exc.conflict is not None:
@@ -9390,6 +9664,30 @@ def _create_project_repo_git_work_contexts(
                         }
                     )
                 raise
+            if use_preparation_receipt:
+                preparation_receipt_result.setdefault(
+                    "request_fingerprint",
+                    "provider:"
+                    + hashlib.sha256(
+                        json.dumps(
+                            {
+                                "attempt_id": preparation_attempt_id,
+                                "worktree_path": worktree_path,
+                                "base_commit": base_commit,
+                            },
+                            sort_keys=True,
+                            separators=(",", ":"),
+                        ).encode("utf-8")
+                    ).hexdigest(),
+                )
+                preparation_receipt_result.setdefault("head_commit_sha", base_commit)
+                state = _record_project_repo_git_preparation_receipt(
+                    repo,
+                    attempt_id=preparation_attempt_id,
+                    receipt=preparation_receipt_result,
+                    base_commit_sha=base_commit,
+                    worktree_path=worktree_path,
+                )
             recorded_work_context_base_commit = (
                 pinned_base_commit
                 if continuation_sources and pinned_base_commit is not None
@@ -9571,6 +9869,9 @@ def _create_project_repo_git_work_contexts(
                         dispatch_id=dispatch_id,
                         worktree_path=worktree_path,
                         expected_preparation_generation=preparation_generation,
+                        preparation_attempt_id=(
+                            preparation_attempt_id if use_preparation_receipt else None
+                        ),
                         dependency_git_sources=dependency_git_sources,
                         dependency_composition_recovery_id=(dependency_composition_recovery_id),
                         manual_dependency_git_sources=manual_dependency_git_sources,
@@ -9757,8 +10058,7 @@ def _project_repo_agent_branch(
             raise ValueError("preparation_generation must be a 20-character hex fingerprint")
         generation_suffix = f"-prep-{normalized_generation[:12]}"
     return validate_branch_name(
-        f"agents/{session_id}/tasks/{task_slug}-{task_hash}"
-        f"{candidate_suffix}{generation_suffix}"
+        f"agents/{session_id}/tasks/{task_slug}-{task_hash}{candidate_suffix}{generation_suffix}"
     )
 
 
@@ -10460,9 +10760,7 @@ def _prior_project_repo_task_base_commit(
         and _optional_text(getattr(context_model, "base_branch", None)) == base_branch
         and (
             preparation_generation is None
-            or _optional_text(
-                getattr(context_model, "preparation_generation", None)
-            )
+            or _optional_text(getattr(context_model, "preparation_generation", None))
             == preparation_generation
         )
         and (
@@ -10519,6 +10817,8 @@ def _prepare_project_repo_task_worktree(
     task_id: str,
     agent_branch: str,
     base_ref: str,
+    worktree_name: str | None = None,
+    preparation_attempt_id: str | None = None,
     worktree_identity_commit: str | None = None,
     preparation_generation: str | None = None,
     prior_base_commit: str | None = None,
@@ -10531,19 +10831,16 @@ def _prepare_project_repo_task_worktree(
     resolved_dependency_commit_sha: str | None = None,
     dependency_merge_author_identity: GitIdentity = DEFAULT_AGENT_GIT_IDENTITY,
     composition_result: dict[str, Any] | None = None,
+    preparation_receipt_result: dict[str, Any] | None = None,
 ) -> tuple[str, str]:
     repo_name = _required_text(project_repo.get("guest_repo_name"), "guest_repo_name")
-    task_slug = _slug_id_part(task_id, fallback="task")[:40]
     task_hash = hashlib.sha256(task_id.encode("utf-8")).hexdigest()[:8]
     identity_commit = worktree_identity_commit or pinned_base_commit
-    candidate_suffix = f"-{identity_commit.casefold()[:12]}" if identity_commit is not None else ""
-    generation_suffix = ""
-    if preparation_generation is not None:
-        normalized_generation = preparation_generation.strip().casefold()
-        if re.fullmatch(r"[0-9a-f]{20}", normalized_generation) is None:
-            raise ValueError("preparation_generation must be a 20-character hex fingerprint")
-        generation_suffix = f"-prep-{normalized_generation[:12]}"
-    worktree_name = f"{task_slug}-{task_hash}{candidate_suffix}{generation_suffix}"
+    resolved_worktree_name = worktree_name or _project_repo_task_worktree_name(
+        task_id=task_id,
+        preparation_generation=preparation_generation,
+        identity_commit=identity_commit,
+    )
     directory_path = str(getattr(context, "metadata", {}).get("directory_path") or "root")
     selected_backend, config = selected_execution_backend_for_target(
         context,
@@ -10575,7 +10872,7 @@ def _prepare_project_repo_task_worktree(
             record = container_backend(context, config).prepare_task_worktree(
                 session_id=session_id,
                 repo_name=repo_name,
-                worktree_name=worktree_name,
+                worktree_name=resolved_worktree_name,
                 branch=agent_branch,
                 base_ref=base_ref,
                 expected_base_commit_sha=expected_base_commit,
@@ -10587,6 +10884,11 @@ def _prepare_project_repo_task_worktree(
                 resolved_dependency_commit_sha=resolved_dependency_commit_sha,
                 dependency_merge_author_name=dependency_merge_author_identity.name,
                 dependency_merge_author_email=dependency_merge_author_identity.email,
+                **(
+                    {"preparation_attempt_id": preparation_attempt_id}
+                    if preparation_attempt_id is not None
+                    else {}
+                ),
                 **dependency_composition_kwargs,
             )
         except ContainerWorkerClientError as exc:
@@ -10610,7 +10912,19 @@ def _prepare_project_repo_task_worktree(
                 f"expected {agent_branch!r}"
             )
         record_created = bool(getattr(record, "created", False))
-        if not record_created and prior_base_commit is None and pinned_base_commit is None:
+        receipt_reused = bool(getattr(record, "preparation_receipt_reused", False))
+        receipt_matches = (
+            preparation_attempt_id is not None
+            and getattr(record, "preparation_attempt_id", None) == preparation_attempt_id
+            and receipt_reused
+            and bool(getattr(record, "verified_clean", False))
+        )
+        if (
+            not record_created
+            and prior_base_commit is None
+            and pinned_base_commit is None
+            and not receipt_matches
+        ):
             raise RuntimeError(
                 "reused task worktree has no authoritative server-recorded base; "
                 f"preserve {record.target_dir} and use an audited provenance recovery"
@@ -10679,6 +10993,49 @@ def _prepare_project_repo_task_worktree(
                 value = _optional_text(getattr(record, record_field_name, None))
                 if value is not None:
                     composition_result[field_name] = value.casefold()
+        if preparation_receipt_result is not None and preparation_attempt_id is not None:
+            receipt_attempt_id = _optional_text(getattr(record, "preparation_attempt_id", None))
+            receipt_fingerprint = _optional_text(
+                getattr(record, "preparation_request_fingerprint", None)
+            )
+            if receipt_attempt_id is not None or receipt_fingerprint is not None:
+                if receipt_attempt_id != preparation_attempt_id:
+                    raise RuntimeError(
+                        "container worker returned a preparation receipt for a different attempt"
+                    )
+                request_fingerprint = _required_text(
+                    receipt_fingerprint,
+                    "preparation request fingerprint",
+                )
+            else:
+                request_fingerprint = (
+                    "legacy-container-worker:"
+                    + hashlib.sha256(
+                        json.dumps(
+                            {
+                                "attempt_id": preparation_attempt_id,
+                                "target_dir": record.target_dir,
+                                "branch": record.branch,
+                                "base_commit_sha": base_commit_sha,
+                                "head_commit_sha": record.commit_sha,
+                            },
+                            sort_keys=True,
+                            separators=(",", ":"),
+                        ).encode("utf-8")
+                    ).hexdigest()
+                )
+            preparation_receipt_result.update(
+                {
+                    "request_fingerprint": request_fingerprint,
+                    "head_commit_sha": _required_text(
+                        getattr(record, "commit_sha", None),
+                        "prepared head commit",
+                    ).casefold(),
+                    "receipt_reused": receipt_reused
+                    or (receipt_attempt_id is None and not record_created),
+                    "verified_clean": bool(getattr(record, "verified_clean", False)),
+                }
+            )
         return record.target_dir, base_commit_sha
     if execution_backend != "libvirt_vm":
         raise RuntimeError(
@@ -10686,7 +11043,7 @@ def _prepare_project_repo_task_worktree(
         )
 
     clone_dir = _required_text(project_repo.get("target_dir"), "target_dir")
-    worktree_path = f"/home/agent/worktrees/{repo_name}/{worktree_name}"
+    worktree_path = f"/home/agent/worktrees/{repo_name}/{resolved_worktree_name}"
     quoted_target = shlex.quote(worktree_path)
     quoted_branch = shlex.quote(agent_branch)
     quoted_base = shlex.quote(base_ref)
@@ -11321,6 +11678,36 @@ def _prepare_project_repo_task_worktree(
                 value,
             ):
                 composition_result[field_name] = value
+    if preparation_receipt_result is not None and preparation_attempt_id is not None:
+        head_commit_sha = next(
+            (
+                line.strip().casefold()
+                for line in reversed(str(result.get("stdout") or "").splitlines())
+                if re.fullmatch(r"(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})", line.strip())
+            ),
+            base_commit_sha,
+        )
+        material = json.dumps(
+            {
+                "attempt_id": preparation_attempt_id,
+                "worktree_path": worktree_path,
+                "branch": agent_branch,
+                "base_commit_sha": base_commit_sha,
+                "head_commit_sha": head_commit_sha,
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        preparation_receipt_result.update(
+            {
+                "request_fingerprint": (
+                    "libvirt:" + hashlib.sha256(material.encode("utf-8")).hexdigest()
+                ),
+                "head_commit_sha": head_commit_sha,
+                "receipt_reused": False,
+                "verified_clean": True,
+            }
+        )
     return worktree_path, base_commit_sha
 
 

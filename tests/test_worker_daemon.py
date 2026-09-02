@@ -1512,9 +1512,7 @@ def test_worker_reconciles_task_worktree_helpers_without_replacing_other_state(
         base_ref="main",
     )
     prepared = daemon.prepare_task_worktree("session-1", request)
-    helper_target = (
-        paths.agent_home / "worktrees" / "repo" / request.worktree_name / ".evander"
-    )
+    helper_target = paths.agent_home / "worktrees" / "repo" / request.worktree_name / ".evander"
     local_state = helper_target / "local-state.json"
     local_state.write_text('{"keep":true}\n', encoding="utf-8")
     (helper_target / "bin" / "push-agent").write_text("stale\n", encoding="utf-8")
@@ -1635,9 +1633,7 @@ def test_worker_refuses_symlinked_task_worktree_helper_directory(tmp_path: Path)
         base_ref="main",
     )
     prepared = daemon.prepare_task_worktree("session-1", request)
-    helper_target = (
-        paths.agent_home / "worktrees" / "repo" / request.worktree_name / ".evander"
-    )
+    helper_target = paths.agent_home / "worktrees" / "repo" / request.worktree_name / ".evander"
     outside = tmp_path / "outside"
     outside.mkdir()
     shutil.rmtree(helper_target / "bin")
@@ -1650,6 +1646,115 @@ def test_worker_refuses_symlinked_task_worktree_helper_directory(tmp_path: Path)
         )
 
     assert list(outside.iterdir()) == []
+
+
+def test_worker_replays_host_owned_task_worktree_preparation_receipt(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "receipt-source"
+    source.mkdir()
+    subprocess.run(["git", "init", "-q", "-b", "main"], cwd=source, check=True)
+    subprocess.run(["git", "config", "user.email", "test@example.invalid"], cwd=source, check=True)
+    subprocess.run(["git", "config", "user.name", "Worker Test"], cwd=source, check=True)
+    (source / "README.md").write_text("base\n", encoding="utf-8")
+    subprocess.run(["git", "add", "README.md"], cwd=source, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "base"], cwd=source, check=True)
+
+    worker_root = tmp_path / "worker-root"
+    daemon = WorkerDaemon(
+        runtime_dir=tmp_path / "runtime",
+        worker_root=worker_root,
+        container_runtime=FakeContainerRuntime(),
+        token="test-token",
+        allowed_git_source_prefixes=[str(tmp_path)],
+    )
+    daemon.clone_repo(
+        "session-1",
+        WorkerRepoCloneRequest(repo_source=str(source), repo_name="repo"),
+    )
+    request = WorkerTaskWorktreeRequest(
+        repo_name="repo",
+        worktree_name="task-receipt-1234",
+        preparation_attempt_id="gitprep-receipt-1234",
+        branch="agents/session-1/tasks/task-receipt-1234",
+        base_ref="main",
+    )
+
+    created = daemon.prepare_task_worktree("session-1", request)
+    restarted = WorkerDaemon(
+        runtime_dir=tmp_path / "runtime",
+        worker_root=worker_root,
+        container_runtime=FakeContainerRuntime(),
+        token="test-token",
+        allowed_git_source_prefixes=[str(tmp_path)],
+    )
+    replayed = restarted.prepare_task_worktree("session-1", request)
+    strengthened = restarted.prepare_task_worktree(
+        "session-1",
+        request.model_copy(update={"expected_base_commit_sha": created.base_commit_sha}),
+    )
+
+    assert created.created is True
+    assert created.preparation_receipt_reused is False
+    assert replayed.created is False
+    assert replayed.preparation_receipt_reused is True
+    assert replayed.preparation_attempt_id == request.preparation_attempt_id
+    assert replayed.preparation_request_fingerprint == created.preparation_request_fingerprint
+    assert replayed.base_commit_sha == created.base_commit_sha
+    assert replayed.commit_sha == created.commit_sha
+    assert replayed.verified_clean is True
+    assert strengthened.preparation_receipt_reused is True
+    assert strengthened.base_commit_sha == created.base_commit_sha
+
+    with pytest.raises(ValueError, match="different request"):
+        restarted.prepare_task_worktree(
+            "session-1",
+            request.model_copy(update={"base_ref": "refs/heads/main"}),
+        )
+
+
+def test_worker_receipt_replay_preserves_dirty_task_worktree(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "dirty-receipt-source"
+    source.mkdir()
+    subprocess.run(["git", "init", "-q", "-b", "main"], cwd=source, check=True)
+    subprocess.run(["git", "config", "user.email", "test@example.invalid"], cwd=source, check=True)
+    subprocess.run(["git", "config", "user.name", "Worker Test"], cwd=source, check=True)
+    (source / "README.md").write_text("base\n", encoding="utf-8")
+    subprocess.run(["git", "add", "README.md"], cwd=source, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "base"], cwd=source, check=True)
+    daemon = WorkerDaemon(
+        runtime_dir=tmp_path / "runtime",
+        worker_root=tmp_path / "worker-root",
+        container_runtime=FakeContainerRuntime(),
+        token="test-token",
+        allowed_git_source_prefixes=[str(tmp_path)],
+    )
+    daemon.clone_repo(
+        "session-1",
+        WorkerRepoCloneRequest(repo_source=str(source), repo_name="repo"),
+    )
+    request = WorkerTaskWorktreeRequest(
+        repo_name="repo",
+        worktree_name="task-dirty-receipt-1234",
+        preparation_attempt_id="gitprep-dirty-receipt-1234",
+        branch="agents/session-1/tasks/task-dirty-receipt-1234",
+        base_ref="main",
+    )
+    prepared = daemon.prepare_task_worktree("session-1", request)
+    (
+        Path(
+            prepared.target_dir.replace(
+                "/home/agent",
+                str(WorkerSessionPaths.resolve(daemon.worker_root, "session-1").agent_home),
+            )
+        )
+        / "user-change.txt"
+    ).write_text("keep\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="contains user changes"):
+        daemon.prepare_task_worktree("session-1", request)
 
 
 def test_worker_composes_exact_dependency_git_source_before_task_work(
@@ -1732,21 +1837,27 @@ def test_worker_composes_exact_dependency_git_source_before_task_work(
 
     assert prepared.created is True
     assert prepared.base_commit_sha == prepared.commit_sha
-    assert prepared.composition_root_commit_sha == subprocess.run(
-        ["git", "rev-parse", "refs/heads/main"],
-        cwd=source,
-        check=True,
-        capture_output=True,
-        text=True,
-    ).stdout.strip()
+    assert (
+        prepared.composition_root_commit_sha
+        == subprocess.run(
+            ["git", "rev-parse", "refs/heads/main"],
+            cwd=source,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+    )
     assert prepared.composed_commit_sha == prepared.commit_sha
-    assert prepared.composed_tree_hash == subprocess.run(
-        ["git", "rev-parse", "HEAD^{tree}"],
-        cwd=target,
-        check=True,
-        capture_output=True,
-        text=True,
-    ).stdout.strip()
+    assert (
+        prepared.composed_tree_hash
+        == subprocess.run(
+            ["git", "rev-parse", "HEAD^{tree}"],
+            cwd=target,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+    )
     assert (
         subprocess.run(
             ["git", "rev-parse", "refs/heads/agents/session-1/tasks/task-ui-1234"],
@@ -1783,12 +1894,12 @@ def test_worker_composes_exact_dependency_git_source_before_task_work(
     assert json.loads(provenance) == [
         {
             "branch": "agents/predecessor/tasks/domain",
-                "commit_sha": dependency_commit,
-                "deliverable_id": "deliverable-domain",
-                "dependency_task_id": "task-domain",
-                "pinned_ref": pinned_ref,
-                "relationship_kind": "required_contribution",
-            }
+            "commit_sha": dependency_commit,
+            "deliverable_id": "deliverable-domain",
+            "dependency_task_id": "task-domain",
+            "pinned_ref": pinned_ref,
+            "relationship_kind": "required_contribution",
+        }
     ]
     identity = subprocess.run(
         ["git", "show", "-s", "--format=%an%n%ae%n%cn%n%ce", "HEAD"],
@@ -2904,17 +3015,23 @@ def test_worker_uses_authoritative_task_pin_after_base_branch_advances(
     assert prepared.created is True
     assert prepared.base_commit_sha == prepared_base
     assert prepared.commit_sha == prepared_base
-    checkout = WorkerSessionPaths.resolve(
-        daemon.worker_root,
-        "session-1",
-    ).repo_root / "repo"
-    assert subprocess.run(
-        ["git", "rev-parse", "origin/main"],
-        cwd=checkout,
-        check=True,
-        capture_output=True,
-        text=True,
-    ).stdout.strip() == advanced_base
+    checkout = (
+        WorkerSessionPaths.resolve(
+            daemon.worker_root,
+            "session-1",
+        ).repo_root
+        / "repo"
+    )
+    assert (
+        subprocess.run(
+            ["git", "rev-parse", "origin/main"],
+            cwd=checkout,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+        == advanced_base
+    )
 
 
 def test_worker_rejects_existing_task_branch_without_authoritative_base(
@@ -2960,10 +3077,13 @@ def test_worker_rejects_existing_task_branch_without_authoritative_base(
         "session-1",
         WorkerRepoCloneRequest(repo_source=str(source), repo_name="repo"),
     )
-    checkout = WorkerSessionPaths.resolve(
-        daemon.worker_root,
-        "session-1",
-    ).repo_root / "repo"
+    checkout = (
+        WorkerSessionPaths.resolve(
+            daemon.worker_root,
+            "session-1",
+        ).repo_root
+        / "repo"
+    )
     branch = "agents/session-1/tasks/reused-branch"
     subprocess.run(["git", "branch", branch, orphan_commit], cwd=checkout, check=True)
     target = (
@@ -3278,15 +3398,26 @@ def test_worker_cleanup_removes_safe_task_worktree_and_inventory_ignored_files(
     )
     worktree_name = "task-a-1234"
     branch = "agents/session-1/tasks/task-a-1234"
+    preparation_attempt_id = "gitprep-task-a-1234"
+    preparation_request = WorkerTaskWorktreeRequest(
+        repo_name="repo",
+        worktree_name=worktree_name,
+        preparation_attempt_id=preparation_attempt_id,
+        branch=branch,
+        base_ref="main",
+        expected_base_commit_sha=clone.commit_sha,
+    )
     prepared = daemon.prepare_task_worktree(
         "session-1",
-        WorkerTaskWorktreeRequest(
-            repo_name="repo",
-            worktree_name=worktree_name,
-            branch=branch,
-            base_ref="main",
-        ),
+        preparation_request,
     )
+    paths = WorkerSessionPaths.resolve(daemon.worker_root, "session-1")
+    receipt_path = (
+        paths.root / "task-worktree-preparation-receipts" / f"{preparation_attempt_id}.json"
+    )
+    assert receipt_path.is_file()
+    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    assert receipt["commit_sha"] == prepared.commit_sha
     target = (
         tmp_path
         / "worker-root"
@@ -3297,6 +3428,23 @@ def test_worker_cleanup_removes_safe_task_worktree_and_inventory_ignored_files(
         / "repo"
         / worktree_name
     )
+    (target / "TASK.md").write_text("completed\n", encoding="utf-8")
+    subprocess.run(["git", "config", "user.email", "test@example.invalid"], cwd=target, check=True)
+    subprocess.run(["git", "config", "user.name", "Worker Test"], cwd=target, check=True)
+    subprocess.run(["git", "add", "TASK.md"], cwd=target, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "complete task"], cwd=target, check=True)
+    completed_commit = (
+        subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=target,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        .stdout.strip()
+        .casefold()
+    )
+    assert completed_commit != prepared.commit_sha
     cache = target / "cache"
     cache.mkdir()
     generated = cache / "generated.bin"
@@ -3304,8 +3452,9 @@ def test_worker_cleanup_removes_safe_task_worktree_and_inventory_ignored_files(
     request = WorkerTaskWorktreeCleanupRequest(
         repo_name="repo",
         worktree_name=worktree_name,
+        preparation_attempt_id=preparation_attempt_id,
         branch=branch,
-        expected_commit_sha=prepared.commit_sha,
+        expected_commit_sha=completed_commit,
         expected_target_dir=prepared.target_dir,
     )
 
@@ -3319,6 +3468,7 @@ def test_worker_cleanup_removes_safe_task_worktree_and_inventory_ignored_files(
     assert inventory.pruned is False
     assert inventory.validation_count == 1
     assert target.exists()
+    assert receipt_path.is_file()
 
     removed = daemon.cleanup_task_worktree("session-1", request)
     repeated = daemon.cleanup_task_worktree("session-1", request)
@@ -3333,12 +3483,25 @@ def test_worker_cleanup_removes_safe_task_worktree_and_inventory_ignored_files(
     assert removed.worktree_bytes >= removed.ignored_bytes
     assert removed.reclaimed_bytes == removed.worktree_bytes
     assert not target.exists()
+    assert not receipt_path.exists()
     assert repeated.state == "already_absent"
     assert repeated.removed is False
     assert repeated.pruned is True
     assert repeated.validation_count == 2
     assert repeated.reclaimed_bytes == 0
+    reprepared = daemon.prepare_task_worktree("session-1", preparation_request)
+    assert reprepared.created is True
+    assert reprepared.preparation_receipt_reused is False
+    assert receipt_path.is_file()
     assert clone.commit_sha == prepared.commit_sha
+    assert reprepared.commit_sha == completed_commit
+    receipt_authoritative = daemon.cleanup_task_worktree(
+        "session-1",
+        request.model_copy(update={"expected_commit_sha": None}),
+    )
+    assert receipt_authoritative.state == "removed"
+    assert receipt_authoritative.expected_commit_sha == completed_commit
+    assert not receipt_path.exists()
 
 
 def test_worker_cleanup_record_allows_final_non_force_git_validation() -> None:
@@ -3364,6 +3527,20 @@ def test_worker_cleanup_record_allows_final_non_force_git_validation() -> None:
 
     assert record.validation_count == 3
     assert record.tracked_paths == ["README.md"]
+
+
+def test_worker_cleanup_request_requires_expected_head_or_preparation_receipt() -> None:
+    with pytest.raises(
+        ValidationError,
+        match="expected_commit_sha or a preparation_attempt_id receipt",
+    ):
+        WorkerTaskWorktreeCleanupRequest(
+            repo_name="repo",
+            worktree_name="task-a-1234",
+            branch="agents/session-1/tasks/task-a-1234",
+            expected_commit_sha=None,
+            expected_target_dir="/home/agent/worktrees/repo/task-a-1234",
+        )
 
 
 def test_worker_cleanup_endpoint_offloads_blocking_git_work(

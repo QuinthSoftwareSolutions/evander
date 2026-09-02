@@ -71,6 +71,7 @@ from ..models import (
     TeamCostBudgetWindowKind,
     TeamInboxItemType,
     TeamInboxPriority,
+    TeamGitPreparationAttemptState,
     TeamIdempotencyRecord,
     TeamMemoryKind,
     TeamMemoryRecord,
@@ -487,9 +488,7 @@ def _attach_external_source_evidence_snapshot(
     for case_id in case_ids:
         case = _require_present(state.cases, case_id, "case")
         if case.team_id != snapshot.team_id:
-            raise ValueError(
-                f"case {case.id} does not belong to snapshot team {snapshot.team_id}"
-            )
+            raise ValueError(f"case {case.id} does not belong to snapshot team {snapshot.team_id}")
         if snapshot.project_id is not None and case.project_id != snapshot.project_id:
             raise ValueError(
                 f"case {case.id} does not belong to snapshot project {snapshot.project_id}"
@@ -509,9 +508,7 @@ def _attach_external_source_evidence_snapshot(
         task = _require_present(state.tasks, task_id, "task")
         project = _require_present(state.projects, task.project_id, "project")
         if project.team_id != snapshot.team_id:
-            raise ValueError(
-                f"task {task.id} does not belong to snapshot team {snapshot.team_id}"
-            )
+            raise ValueError(f"task {task.id} does not belong to snapshot team {snapshot.team_id}")
         if snapshot.project_id is not None and task.project_id != snapshot.project_id:
             raise ValueError(
                 f"task {task.id} does not belong to snapshot project {snapshot.project_id}"
@@ -576,8 +573,7 @@ def _unfrozen_project_worktree_context_ids(
         if task is None or task.project_id != project.id:
             continue
         covered = any(
-            candidate.project_id == project.id
-            and candidate.git_work_context_id == context.id
+            candidate.project_id == project.id and candidate.git_work_context_id == context.id
             for candidate in state.worktree_cleanup_candidates.values()
         )
         if not covered:
@@ -994,11 +990,24 @@ class TeamAdminService:
                     }
                 )
                 return state
-            restored_task_owner_id = _prepare_blocker_source_for_resolution(
+            _prepare_blocker_source_for_resolution(
                 state,
                 blocker=blocker,
                 now=now,
             )
+            affected_task_ids = {
+                task_id
+                for task_id in (
+                    blocker.task_id,
+                    *blocker.affected_task_ids,
+                    (
+                        blocker.source_id
+                        if blocker.source_kind == TeamBlockerSourceKind.TASK
+                        else None
+                    ),
+                )
+                if task_id is not None
+            }
             event = resolve_blocker(
                 state,
                 blocker=blocker,
@@ -1021,8 +1030,7 @@ class TeamAdminService:
                     now=now,
                 )
                 deliverable_acceptance_route_handled = bool(
-                    acceptance_completed
-                    or result.get("deliverable_acceptance_deferred")
+                    acceptance_completed or result.get("deliverable_acceptance_deferred")
                 )
             if blocker.source_kind == TeamBlockerSourceKind.AGENT_EXECUTION_STALL:
                 _mark_agent_work_due(
@@ -1039,28 +1047,43 @@ class TeamAdminService:
                     delay_seconds=DEFAULT_AGENT_WAKE_REQUEST_DEBOUNCE_SECONDS,
                     idempotency_suffix=blocker.id,
                 )
-            if (
-                restored_task_owner_id is not None
-                and not deliverable_acceptance_route_handled
-            ):
+            preparation_recovery_item = (
+                create_rejected_candidate_correction_preparation_recovery_inbox(
+                    state,
+                    blocker=blocker,
+                    result=result,
+                    now=now,
+                )
+            )
+            ready_owner_ids: set[str] = set()
+            if not deliverable_acceptance_route_handled:
+                for task_id in sorted(affected_task_ids):
+                    task = state.tasks.get(task_id)
+                    if task is None or task.owner_agent_id is None:
+                        continue
+                    try:
+                        readiness = assess_task(state, task.id).readiness.value
+                    except TaskAssessmentBoundaryError:
+                        continue
+                    if readiness == "actionable":
+                        ready_owner_ids.add(task.owner_agent_id)
+            if preparation_recovery_item is not None:
+                ready_owner_ids.discard(preparation_recovery_item.recipient_agent_id)
+            for ready_owner_id in sorted(ready_owner_ids):
                 _mark_agent_work_due(
                     state,
-                    agent_id=restored_task_owner_id,
+                    agent_id=ready_owner_id,
                     now=now,
                 )
                 _append_agent_wake_requested_event(
                     state,
-                    agent_id=restored_task_owner_id,
+                    agent_id=ready_owner_id,
                     result=result,
                     reason="task_ready",
                     now=now,
                     delay_seconds=DEFAULT_AGENT_WAKE_REQUEST_DEBOUNCE_SECONDS,
+                    idempotency_suffix=blocker.id,
                 )
-            create_rejected_candidate_correction_preparation_recovery_inbox(
-                state,
-                blocker=blocker,
-                result=result,
-            )
             result.update(
                 {
                     "success": True,
@@ -1635,9 +1658,7 @@ class TeamAdminService:
                 team.operator_communication_target_id = operator_communication_target_id
             if set_cost_budget_renewal_mode:
                 previous_renewal_mode = team.cost_budget_renewal_mode
-                team.cost_budget_renewal_mode = _cost_budget_renewal_mode(
-                    cost_budget_renewal_mode
-                )
+                team.cost_budget_renewal_mode = _cost_budget_renewal_mode(cost_budget_renewal_mode)
                 active_window = _active_team_cost_budget_window(team)
                 if (
                     previous_renewal_mode != TeamCostBudgetRenewalMode.MONTHLY_UTC
@@ -1647,9 +1668,7 @@ class TeamAdminService:
                     # A mode change must not retroactively discard spend from the
                     # current manual window.  Its first monthly renewal is the next
                     # UTC month boundary after this edit.
-                    active_window.monthly_renewal_not_before = _next_utc_month_start(
-                        mutation_now
-                    )
+                    active_window.monthly_renewal_not_before = _next_utc_month_start(mutation_now)
             if set_max_cost_usd:
                 previous_max_cost_usd = team.max_cost_usd
                 team.max_cost_usd = _optional_cost_limit(max_cost_usd)
@@ -2001,8 +2020,7 @@ class TeamAdminService:
         ).as_posix()
         if git is not None and git.directory_path != normalized_directory_path:
             raise ValueError(
-                "project git directory_path must match the provider-neutral "
-                "project directory_path"
+                "project git directory_path must match the provider-neutral project directory_path"
             )
         goal_inputs = list(goals or [])
         current_state = self._repository.read()
@@ -2236,9 +2254,7 @@ class TeamAdminService:
             _validate_role_assignment(
                 role,
                 team_id=project.team_id,
-                project_ids=sorted(
-                    set(agent_project_ids(state, next_lead.id)).union({project.id})
-                ),
+                project_ids=sorted(set(agent_project_ids(state, next_lead.id)).union({project.id})),
             )
 
             now = utc_now()
@@ -2246,14 +2262,11 @@ class TeamAdminService:
                 (
                     assignment
                     for assignment in state.project_assignments.values()
-                    if assignment.project_id == project.id
-                    and assignment.agent_id == next_lead.id
+                    if assignment.project_id == project.id and assignment.agent_id == next_lead.id
                 ),
                 key=lambda assignment: assignment.id,
             )
-            retained_assignment = (
-                next_lead_assignments[0] if next_lead_assignments else None
-            )
+            retained_assignment = next_lead_assignments[0] if next_lead_assignments else None
             if retained_assignment is None:
                 assignment_id = _project_assignment_id(
                     project.id,
@@ -2308,6 +2321,7 @@ class TeamAdminService:
         dispatch_id: str | None = None,
         worktree_path: str | None = None,
         expected_preparation_generation: str | None = None,
+        preparation_attempt_id: str | None = None,
         dependency_git_sources: Sequence[Mapping[str, object] | DependencyGitSource] | None = None,
         dependency_composition_recovery_id: str | None = None,
         manual_dependency_git_sources: Sequence[Mapping[str, object] | DependencyGitSource]
@@ -2329,9 +2343,8 @@ class TeamAdminService:
         normalized_commit_sha = _optional_text(commit_sha)
         normalized_dispatch_id = _optional_text(dispatch_id)
         normalized_worktree_path = _optional_text(worktree_path)
-        normalized_expected_preparation_generation = _optional_text(
-            expected_preparation_generation
-        )
+        normalized_expected_preparation_generation = _optional_text(expected_preparation_generation)
+        normalized_preparation_attempt_id = _optional_text(preparation_attempt_id)
         normalized_dependency_git_sources = [
             source
             if isinstance(source, DependencyGitSource)
@@ -2403,9 +2416,37 @@ class TeamAdminService:
                 and normalized_expected_preparation_generation != current_preparation_generation
             ):
                 raise ValueError(
-                    f"task {task.id} preparation generation changed during Git "
-                    "worktree preparation"
+                    f"task {task.id} preparation generation changed during Git worktree preparation"
                 )
+            preparation_attempt = (
+                state.git_preparation_attempts.get(normalized_preparation_attempt_id)
+                if normalized_preparation_attempt_id is not None
+                else None
+            )
+            if normalized_preparation_attempt_id is not None:
+                if preparation_attempt is None:
+                    raise ValueError(
+                        f"Git preparation attempt {normalized_preparation_attempt_id} is missing"
+                    )
+                if preparation_attempt.state not in {
+                    TeamGitPreparationAttemptState.PREPARED,
+                    TeamGitPreparationAttemptState.COMMITTED,
+                }:
+                    raise ValueError(
+                        f"Git preparation attempt {preparation_attempt.id} is "
+                        f"{preparation_attempt.state.value}, not prepared"
+                    )
+                if (
+                    preparation_attempt.agent_id != agent.id
+                    or preparation_attempt.task_id != task.id
+                    or preparation_attempt.branch != normalized_agent_branch
+                    or preparation_attempt.worktree_path != normalized_worktree_path
+                    or preparation_attempt.preparation_generation != current_preparation_generation
+                ):
+                    raise ValueError(
+                        f"Git preparation attempt {preparation_attempt.id} does not match "
+                        "the work context provenance"
+                    )
             if task.git_base_commit_sha is not None:
                 if normalized_base_commit is None:
                     raise ValueError(
@@ -2435,9 +2476,7 @@ class TeamAdminService:
                         normalized_dependency_composition_recovery_id
                     ),
                     manual_dependency_git_sources=(normalized_manual_dependency_git_sources),
-                    dependency_composition_manifest=(
-                        normalized_dependency_composition_manifest
-                    ),
+                    dependency_composition_manifest=(normalized_dependency_composition_manifest),
                     preparation_generation=current_preparation_generation,
                     base_branch=effective_base_branch,
                     base_commit=normalized_base_commit,
@@ -2452,6 +2491,11 @@ class TeamAdminService:
                         "different resource provenance"
                     )
                 created_context_id = effective_context_id
+                if preparation_attempt is not None:
+                    preparation_attempt.state = TeamGitPreparationAttemptState.COMMITTED
+                    preparation_attempt.git_work_context_id = effective_context_id
+                    preparation_attempt.committed_at = preparation_attempt.committed_at or utc_now()
+                    preparation_attempt.updated_at = utc_now()
                 return state
             created_context_id = effective_context_id
             now = utc_now()
@@ -2473,6 +2517,11 @@ class TeamAdminService:
                 created_at=now,
                 updated_at=now,
             )
+            if preparation_attempt is not None:
+                preparation_attempt.state = TeamGitPreparationAttemptState.COMMITTED
+                preparation_attempt.git_work_context_id = effective_context_id
+                preparation_attempt.committed_at = now
+                preparation_attempt.updated_at = now
             return state
 
         state = self._repository.update(_mutate, expected_revision=expected_revision)
@@ -2988,9 +3037,7 @@ class TeamAdminService:
         acceptance_criteria: Sequence[
             Mapping[str, Any] | ExternalSourceEvidenceAcceptanceCriterion
         ] = (),
-        discussion: Sequence[
-            Mapping[str, Any] | ExternalSourceEvidenceDiscussionEntry
-        ] = (),
+        discussion: Sequence[Mapping[str, Any] | ExternalSourceEvidenceDiscussionEntry] = (),
         links: Sequence[Mapping[str, Any] | ExternalSourceEvidenceLink] = (),
         metadata: Mapping[str, Any] | None = None,
         content_digest: str | None = None,
@@ -3011,9 +3058,7 @@ class TeamAdminService:
         normalized_external_version = _required_text(external_version, "external_version")
         normalized_fetched_at = _evidence_utc_datetime(fetched_at, "fetched_at")
         normalized_expires_at = (
-            _evidence_utc_datetime(expires_at, "expires_at")
-            if expires_at is not None
-            else None
+            _evidence_utc_datetime(expires_at, "expires_at") if expires_at is not None else None
         )
         normalized_freshness_status = (
             freshness_status
@@ -3086,8 +3131,7 @@ class TeamAdminService:
                     and snapshot.project_id == normalized_project_id
                     and snapshot.provider_type == normalized_provider_type
                     and snapshot.source_type == normalized_source_type
-                    and snapshot.external_identifier
-                    == normalized_external_identifier
+                    and snapshot.external_identifier == normalized_external_identifier
                     and snapshot.external_version == normalized_external_version
                 ),
                 key=lambda snapshot: (snapshot.created_at, snapshot.id),
@@ -3101,25 +3145,20 @@ class TeamAdminService:
                     ),
                     identity_matches[0],
                 )
-                if any(
-                    snapshot.content_digest != computed_digest
-                    for snapshot in identity_matches
-                ):
+                if any(snapshot.content_digest != computed_digest for snapshot in identity_matches):
                     raise ValueError(
                         "external source evidence version already exists with "
                         "different normalized content"
                     )
                 if normalized_snapshot_id is not None and all(
-                    snapshot.id != normalized_snapshot_id
-                    for snapshot in identity_matches
+                    snapshot.id != normalized_snapshot_id for snapshot in identity_matches
                 ):
                     raise ValueError(
                         "external source evidence identity already exists as "
                         f"{existing.id}, not requested id {normalized_snapshot_id}"
                     )
                 if any(
-                    snapshot.access_classification
-                    != normalized_access_classification
+                    snapshot.access_classification != normalized_access_classification
                     for snapshot in identity_matches
                 ):
                     raise ValueError(
@@ -4479,9 +4518,7 @@ class TeamAdminService:
                 "expected_dependent_task_ids is required when rebind_dependents is true"
             )
         if not normalized_rebind_dependents and normalized_expected_dependent_ids:
-            raise ValueError(
-                "expected_dependent_task_ids requires rebind_dependents=true"
-            )
+            raise ValueError("expected_dependent_task_ids requires rebind_dependents=true")
         cancellation_result: dict[str, Any] = {"events": []}
 
         def _mutate(state_model: TeamState) -> TeamState:
@@ -4584,9 +4621,7 @@ class TeamAdminService:
                 successor_task_id=normalized_successor_id,
                 rebind_dependents=normalized_rebind_dependents,
                 rebound_dependent_task_ids=rebound_dependent_task_ids,
-                rebound_integration_boundary_task_ids=(
-                    affected_integration_boundary_task_ids
-                ),
+                rebound_integration_boundary_task_ids=(affected_integration_boundary_task_ids),
                 invalidated_git_work_context_ids=invalidated_git_work_context_ids,
                 cancelled_at=now,
             )
@@ -4622,9 +4657,7 @@ class TeamAdminService:
                 queue_rebound_integration_preparation_recovery(
                     state_model,
                     plan=replacement_plan,
-                    invalidated_git_context_ids_by_task=(
-                        invalidated_git_context_ids_by_task
-                    ),
+                    invalidated_git_context_ids_by_task=(invalidated_git_context_ids_by_task),
                     preparation_generations_before=preparation_generations_before,
                     sender_agent_id=None,
                     result=cancellation_result,
@@ -4712,9 +4745,7 @@ class TeamAdminService:
 
         state = self._repository.update_with_outbox(
             _mutate,
-            outbox_records=lambda: _team_event_outbox_records(
-                repair_result.get("events") or []
-            ),
+            outbox_records=lambda: _team_event_outbox_records(repair_result.get("events") or []),
             expected_revision=expected_revision,
         )
         return state, repair_result
@@ -4778,28 +4809,22 @@ class TeamAdminService:
                 integration_task_id=normalized_integration_id,
                 replacement_task_id=normalized_replacement_id,
                 expected_dependency_task_ids=normalized_expected_dependency_ids,
-                expected_required_contribution_task_ids=(
-                    normalized_expected_contribution_ids
-                ),
+                expected_required_contribution_task_ids=(normalized_expected_contribution_ids),
                 reason=normalized_reason,
                 git_base_commit_sha=normalized_git_base_commit_sha,
                 git_base_branch=normalized_git_base_branch,
                 actor_kind="operator",
             )
             before_blocker_event_ids = set(state_model.blocker_events)
-            _changed_domain_ids, state_changed = (
-                apply_submitted_integration_boundary_recovery(
-                    state_model,
-                    plan=plan,
-                    actor_kind="operator",
-                    actor_id=normalized_actor_id,
-                    result=recovery_result,
-                    now=now,
-                )
+            _changed_domain_ids, state_changed = apply_submitted_integration_boundary_recovery(
+                state_model,
+                plan=plan,
+                actor_kind="operator",
+                actor_id=normalized_actor_id,
+                result=recovery_result,
+                now=now,
             )
-            blocker_event_ids = sorted(
-                set(state_model.blocker_events) - before_blocker_event_ids
-            )
+            blocker_event_ids = sorted(set(state_model.blocker_events) - before_blocker_event_ids)
             if blocker_event_ids:
                 recovery_result["blocker_event_ids"] = blocker_event_ids
             if state_changed:
@@ -4814,9 +4839,7 @@ class TeamAdminService:
                         delay_seconds=DEFAULT_AGENT_WAKE_REQUEST_DEBOUNCE_SECONDS,
                         payload_extra={
                             "task_id": replacement.id,
-                            "recovery_kind": (
-                                "submitted_integration_boundary_recovery"
-                            ),
+                            "recovery_kind": ("submitted_integration_boundary_recovery"),
                         },
                     )
                 _recalculate_project_status(state_model, replacement.project_id)
@@ -4824,9 +4847,7 @@ class TeamAdminService:
 
         state = self._repository.update_with_outbox(
             _mutate,
-            outbox_records=lambda: _team_event_outbox_records(
-                recovery_result.get("events") or []
-            ),
+            outbox_records=lambda: _team_event_outbox_records(recovery_result.get("events") or []),
             expected_revision=expected_revision,
         )
         return state, recovery_result

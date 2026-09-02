@@ -263,7 +263,7 @@ Install the gateway and relay services:
 sudo ./scripts/install_systemd_units.sh
 $EDITOR config/admin-web.env
 $EDITOR config/firewall.env
-sudo systemctl restart evander-team-runtime.target
+sudo systemctl restart evander-team-runtime.target evander-gateway.service evander-admin-web.service evander-trigger-orchestrator.service evander-effect-orchestrator.service
 sudo systemctl start evander-firewall.service
 sudo systemctl start evander-openai-relay.service
 sudo systemctl start evander-didww-sip-bridge.service
@@ -1148,6 +1148,10 @@ Use this when you want the guest to wake only for new review feedback and post t
    `searchCriteria.status`), and pagination continues with `next_cursor`.
    Use `get_pull_request(provider, repo, pr_id, include_reviewers?, include_commits?)`
    to fetch one PR with normalized fields plus a provider-complete `raw` payload.
+   Use `update_pull_request(provider, repo, pr_id, description?, title?, status?, add_tags?,
+   remove_tags?, expected_statuses?, project?)` for an explicitly authorized Azure DevOps
+   metadata update. `description` replaces the complete PR description; omit it to leave the
+   description unchanged and use `expected_statuses=["active"]` to guard against stale requests.
    For full thread history, including already-consumed items and agent-authored replies suppressed
    from wake/unread checks, call `list_all_feedback`.
    Workflow graphs can also use `query:pull-request:list` and `effect:pull-request:update`
@@ -1237,9 +1241,11 @@ Example `get_pull_request` result shape (Azure DevOps):
   - The command summarizes config loading, runtime path permissions, key systemd units,
     gateway/relay reachability, session expiration health, and whether the gateway, Admin Web,
     trigger orchestrator, and effect orchestrator registered one coherent loaded-code generation.
-  - Any state other than `coherent`—including missing registration or a record from a previous
-    host boot—is degraded. Deploy and restart with
+  - Any state other than `coherent`—including missing registration, a record from a previous
+    host boot, or a registration older than the current checkout—is degraded. Deploy and restart with
     `sudo systemctl restart evander-team-runtime.target` so every writer loads the same code.
+    Systemd Team wakes fail before leasing an agent or creating a task worktree until this
+    current-generation check passes.
 - **Wake worker lock contention:** a wake worker exits because another instance is running.
   - Check the configured worker lock path and active systemd processes before restarting.
 - **Provider API failures while replying:** gateway tool errors from GitHub/Azure DevOps calls.

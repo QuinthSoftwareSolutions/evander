@@ -162,11 +162,23 @@ class ContainerWorkerClient:
         session_id: str,
         request: WorkerTaskWorktreeRequest,
     ) -> WorkerTaskWorktreeRecord:
-        response = self._request(
-            "POST",
-            f"/v1/sessions/{session_id}/worktrees",
-            json=request.model_dump(mode="json", exclude_none=True),
-        )
+        path = f"/v1/sessions/{session_id}/worktrees"
+        try:
+            response = self._request(
+                "POST",
+                path,
+                json=request.model_dump(mode="json", exclude_none=True),
+            )
+        except ContainerWorkerClientError as exc:
+            if not _worker_rejected_preparation_attempt_id(request, exc):
+                raise
+            response = self._request(
+                "POST",
+                path,
+                json=request.model_copy(update={"preparation_attempt_id": None}).model_dump(
+                    mode="json", exclude_none=True
+                ),
+            )
         return WorkerTaskWorktreeRecord.model_validate(
             self._json_dict(response, operation="prepare task worktree")
         )
@@ -176,11 +188,23 @@ class ContainerWorkerClient:
         session_id: str,
         request: WorkerTaskWorktreeCleanupRequest,
     ) -> WorkerTaskWorktreeCleanupRecord:
-        response = self._request(
-            "POST",
-            f"/v1/sessions/{session_id}/worktrees/cleanup",
-            json=request.model_dump(mode="json", exclude_none=True),
-        )
+        path = f"/v1/sessions/{session_id}/worktrees/cleanup"
+        try:
+            response = self._request(
+                "POST",
+                path,
+                json=request.model_dump(mode="json", exclude_none=True),
+            )
+        except ContainerWorkerClientError as exc:
+            if not _worker_rejected_preparation_attempt_id(request, exc):
+                raise
+            response = self._request(
+                "POST",
+                path,
+                json=request.model_copy(update={"preparation_attempt_id": None}).model_dump(
+                    mode="json", exclude_none=True
+                ),
+            )
         return WorkerTaskWorktreeCleanupRecord.model_validate(
             self._json_dict(response, operation="clean up task worktree")
         )
@@ -453,6 +477,21 @@ class ContainerWorkerClient:
         if isinstance(payload, dict):
             return sanitize_text(str(sanitize_metadata(payload)))
         return sanitize_text(str(payload))
+
+
+def _worker_rejected_preparation_attempt_id(
+    request: WorkerTaskWorktreeRequest | WorkerTaskWorktreeCleanupRequest,
+    exc: ContainerWorkerClientError,
+) -> bool:
+    """Recognize the strict validation response from pre-receipt worker daemons."""
+
+    if request.preparation_attempt_id is None or exc.status_code not in {400, 409}:
+        return False
+    payload = exc.payload or {}
+    error = str(payload.get("error") or "").casefold()
+    return "preparation_attempt_id" in error and (
+        "extra_forbidden" in error or "extra inputs are not permitted" in error
+    )
 
 
 def _int_header(response: httpx.Response, name: str) -> int | None:

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import errno
+import hashlib
 import json
 import logging
 import os
@@ -652,9 +653,7 @@ class WorkerDaemon:
                 else None
             )
             elapsed = (
-                (datetime.now(UTC) - started_at).total_seconds()
-                if started_at is not None
-                else None
+                (datetime.now(UTC) - started_at).total_seconds() if started_at is not None else None
             )
             if threshold <= 0 or elapsed is None or elapsed < threshold:
                 return record
@@ -1653,6 +1652,58 @@ class WorkerDaemon:
             description="task worktree target",
         )
         target_exists = target_dir.exists()
+        requested_expected_base_commit_sha = request.expected_base_commit_sha
+        requested_expected_base_tree_hash = request.expected_base_tree_hash
+        preparation_fingerprint = self._task_worktree_preparation_fingerprint(request)
+        preparation_receipt = self._read_task_worktree_preparation_receipt(
+            paths,
+            request.preparation_attempt_id,
+        )
+        if preparation_receipt is not None:
+            if preparation_receipt.get("request_fingerprint") != preparation_fingerprint:
+                raise ValueError(
+                    "task worktree preparation attempt was already used with a different request"
+                )
+            for field_name, expected in (
+                ("repo_name", request.repo_name),
+                ("worktree_name", request.worktree_name),
+                ("branch", request.branch),
+                (
+                    "target_dir",
+                    f"/home/agent/worktrees/{request.repo_name}/{request.worktree_name}",
+                ),
+            ):
+                if preparation_receipt.get(field_name) != expected:
+                    raise ValueError(
+                        f"task worktree preparation receipt {field_name} does not match request"
+                    )
+            if not target_exists:
+                raise ValueError(
+                    "task worktree preparation receipt exists but its checkout is missing; "
+                    "use a new preparation generation"
+                )
+            receipt_base = str(preparation_receipt.get("base_commit_sha") or "").strip()
+            if re.fullmatch(r"(?:[0-9a-f]{40}|[0-9a-f]{64})", receipt_base) is None:
+                raise ValueError("task worktree preparation receipt has no authoritative base")
+            requested_base = preparation_receipt.get("requested_expected_base_commit_sha")
+            if request.expected_base_commit_sha not in {None, requested_base, receipt_base}:
+                raise ValueError(
+                    "task worktree preparation request conflicts with its receipted base"
+                )
+            requested_tree = preparation_receipt.get("requested_expected_base_tree_hash")
+            if request.expected_base_tree_hash not in {None, requested_tree}:
+                raise ValueError(
+                    "task worktree preparation request conflicts with its receipted base tree"
+                )
+            # The first call already verified any pinned composition root and
+            # tree. Replay validates the resulting host-owned receipt and the
+            # live checkout against its final base.
+            request = request.model_copy(
+                update={
+                    "expected_base_commit_sha": receipt_base,
+                    "expected_base_tree_hash": None,
+                }
+            )
         if target_exists and request.expected_base_commit_sha is None:
             raise ValueError(
                 "existing task worktree has no authoritative server-recorded "
@@ -1660,6 +1711,14 @@ class WorkerDaemon:
                 "recovery"
             )
         env = _git_subprocess_env(paths.agent_home)
+        if preparation_receipt is not None and self._task_worktree_has_user_changes(
+            target_dir,
+            git_env=env,
+        ):
+            raise ValueError(
+                "task worktree preparation receipt cannot be replayed because the checkout "
+                "contains user changes; preserve it for operator recovery"
+            )
         self._validate_git_branch(repo_dir, request.branch, env=env)
         subprocess.run(
             ["git", "config", "extensions.worktreeConfig", "true"],
@@ -2003,7 +2062,7 @@ class WorkerDaemon:
                 branch=request.branch,
                 env=env,
             )
-        return WorkerTaskWorktreeRecord(
+        record = WorkerTaskWorktreeRecord(
             session_id=paths.session_id,
             repo_name=request.repo_name,
             target_dir=(f"/home/agent/worktrees/{request.repo_name}/{request.worktree_name}"),
@@ -2014,7 +2073,190 @@ class WorkerDaemon:
             composed_commit_sha=composed_commit_sha,
             composed_tree_hash=composed_tree_hash,
             created=created,
+            preparation_attempt_id=request.preparation_attempt_id,
+            preparation_request_fingerprint=(
+                preparation_fingerprint if request.preparation_attempt_id is not None else None
+            ),
+            preparation_receipt_reused=preparation_receipt is not None,
+            verified_clean=True,
         )
+        if preparation_receipt is not None:
+            for field_name in ("commit_sha", "base_commit_sha"):
+                expected_value = preparation_receipt.get(field_name)
+                actual_value = getattr(record, field_name)
+                if expected_value != actual_value:
+                    raise ValueError(
+                        f"task worktree preparation receipt {field_name} no longer matches checkout"
+                    )
+        elif request.preparation_attempt_id is not None:
+            self._write_task_worktree_preparation_receipt(
+                paths,
+                record,
+                request_fingerprint=preparation_fingerprint,
+                requested_expected_base_commit_sha=(requested_expected_base_commit_sha),
+                requested_expected_base_tree_hash=requested_expected_base_tree_hash,
+            )
+        return record
+
+    @staticmethod
+    def _task_worktree_preparation_fingerprint(
+        request: WorkerTaskWorktreeRequest,
+    ) -> str:
+        payload = request.model_dump(mode="json", exclude_none=True)
+        payload.pop("preparation_attempt_id", None)
+        # A later Team dispatch may add the already-receipted base as an
+        # explicit expectation. The receipt itself pins that value, so this
+        # strengthening must not create a different physical-attempt identity.
+        payload.pop("expected_base_commit_sha", None)
+        payload.pop("expected_base_tree_hash", None)
+        serialized = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+        return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+
+    @staticmethod
+    def _task_worktree_has_user_changes(
+        target_dir: Path,
+        *,
+        git_env: dict[str, str],
+    ) -> bool:
+        completed = subprocess.run(
+            ["git", "-C", str(target_dir), "status", "--porcelain", "--untracked-files=all"],
+            env=git_env,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        return any(
+            line and not (line.startswith("?? ") and line[3:].startswith(".evander/"))
+            for line in completed.stdout.splitlines()
+        )
+
+    @staticmethod
+    def _task_worktree_preparation_receipt_path(
+        paths: WorkerSessionPaths,
+        attempt_id: str,
+    ) -> Path:
+        return paths.root / "task-worktree-preparation-receipts" / f"{attempt_id}.json"
+
+    def _read_task_worktree_preparation_receipt(
+        self,
+        paths: WorkerSessionPaths,
+        attempt_id: str | None,
+    ) -> dict[str, Any] | None:
+        if attempt_id is None:
+            return None
+        receipt_path = self._task_worktree_preparation_receipt_path(paths, attempt_id)
+        ensure_resolved_path_within(
+            base=paths.root,
+            candidate=receipt_path,
+            description="task worktree preparation receipt",
+        )
+        try:
+            raw_receipt = self._read_managed_text_file_no_follow(
+                receipt_path,
+                label="task worktree preparation receipt",
+            )
+        except FileNotFoundError:
+            return None
+        try:
+            payload = json.loads(raw_receipt)
+        except json.JSONDecodeError as exc:
+            raise ValueError("task worktree preparation receipt is unreadable") from exc
+        if not isinstance(payload, dict) or payload.get("version") != 1:
+            raise ValueError("task worktree preparation receipt is invalid")
+        return payload
+
+    def _write_task_worktree_preparation_receipt(
+        self,
+        paths: WorkerSessionPaths,
+        record: WorkerTaskWorktreeRecord,
+        *,
+        request_fingerprint: str,
+        requested_expected_base_commit_sha: str | None = None,
+        requested_expected_base_tree_hash: str | None = None,
+    ) -> None:
+        attempt_id = record.preparation_attempt_id
+        if attempt_id is None:
+            return
+        receipt_path = self._task_worktree_preparation_receipt_path(paths, attempt_id)
+        receipt_dir = receipt_path.parent
+        try:
+            receipt_dir.mkdir(mode=0o700)
+        except FileExistsError:
+            pass
+        try:
+            receipt_dir_stat = receipt_dir.lstat()
+        except OSError as exc:
+            raise ValueError("task worktree preparation receipt directory is unavailable") from exc
+        if not stat.S_ISDIR(receipt_dir_stat.st_mode) or stat.S_ISLNK(receipt_dir_stat.st_mode):
+            raise ValueError("task worktree preparation receipt directory must be a directory")
+        receipt_dir.chmod(0o700)
+        self._write_managed_text_file_no_follow(
+            receipt_path,
+            json.dumps(
+                {
+                    "version": 1,
+                    "preparation_attempt_id": attempt_id,
+                    "request_fingerprint": request_fingerprint,
+                    "repo_name": record.repo_name,
+                    "worktree_name": Path(record.target_dir).name,
+                    "target_dir": record.target_dir,
+                    "branch": record.branch,
+                    "commit_sha": record.commit_sha,
+                    "base_commit_sha": record.base_commit_sha,
+                    "requested_expected_base_commit_sha": (requested_expected_base_commit_sha),
+                    "requested_expected_base_tree_hash": requested_expected_base_tree_hash,
+                },
+                sort_keys=True,
+            )
+            + "\n",
+            mode=0o600,
+            label="task worktree preparation receipt",
+        )
+
+    def _validated_task_worktree_preparation_receipt(
+        self,
+        paths: WorkerSessionPaths,
+        request: WorkerTaskWorktreeCleanupRequest,
+    ) -> dict[str, Any] | None:
+        attempt_id = request.preparation_attempt_id
+        if attempt_id is None:
+            return None
+        receipt = self._read_task_worktree_preparation_receipt(paths, attempt_id)
+        if receipt is None:
+            return None
+        expected_values = (
+            ("preparation_attempt_id", attempt_id),
+            ("repo_name", request.repo_name),
+            ("worktree_name", request.worktree_name),
+            ("target_dir", request.expected_target_dir),
+            ("branch", request.branch),
+        )
+        for field_name, expected in expected_values:
+            if receipt.get(field_name) != expected:
+                raise ValueError(
+                    f"task worktree preparation receipt {field_name} does not match cleanup"
+                )
+        prepared_commit = str(receipt.get("commit_sha") or "").strip().casefold()
+        if re.fullmatch(r"(?:[0-9a-f]{40}|[0-9a-f]{64})", prepared_commit) is None:
+            raise ValueError("task worktree preparation receipt commit_sha is invalid")
+        return receipt
+
+    def _delete_task_worktree_preparation_receipt(
+        self,
+        paths: WorkerSessionPaths,
+        request: WorkerTaskWorktreeCleanupRequest,
+    ) -> None:
+        attempt_id = request.preparation_attempt_id
+        if attempt_id is None:
+            return
+        receipt = self._validated_task_worktree_preparation_receipt(paths, request)
+        if receipt is None:
+            return
+        receipt_path = self._task_worktree_preparation_receipt_path(paths, attempt_id)
+        try:
+            receipt_path.unlink()
+        except FileNotFoundError:
+            return
 
     @classmethod
     def _reconcile_task_worktree_helpers(
@@ -2898,23 +3140,44 @@ class WorkerDaemon:
             raise ValueError(
                 "expected_target_dir does not match the deterministic task worktree path"
             )
+        expected_commit_sha = request.expected_commit_sha
+        if expected_commit_sha is None:
+            receipt = self._validated_task_worktree_preparation_receipt(paths, request)
+            if receipt is None:
+                raise ValueError(
+                    "task worktree cleanup requires its preparation receipt when "
+                    "expected_commit_sha is omitted"
+                )
+            expected_commit_sha = str(receipt["commit_sha"]).strip().casefold()
+        lock_path = self._task_worktree_lock_path(paths, request.repo_name)
         outcome = cleanup_task_worktree_checkout(
             trusted_root=paths.agent_home,
             repo_dir=repo_dir,
             worktrees_root=worktrees_root,
             target_dir=target_dir,
             branch=request.branch,
-            expected_commit_sha=request.expected_commit_sha,
-            lock_path=self._task_worktree_lock_path(paths, request.repo_name),
+            expected_commit_sha=expected_commit_sha,
+            lock_path=lock_path,
             dry_run=request.dry_run,
         )
+        if (
+            request.preparation_attempt_id is not None
+            and not request.dry_run
+            and outcome.state in {"removed", "already_absent"}
+        ):
+            with task_worktree_repository_lock(lock_path):
+                if target_dir.exists():
+                    raise ValueError(
+                        "task worktree reappeared before its preparation receipt was retired"
+                    )
+                self._delete_task_worktree_preparation_receipt(paths, request)
         return WorkerTaskWorktreeCleanupRecord(
             session_id=paths.session_id,
             repo_name=request.repo_name,
             worktree_name=request.worktree_name,
             target_dir=expected_target_dir,
             branch=request.branch,
-            expected_commit_sha=request.expected_commit_sha,
+            expected_commit_sha=expected_commit_sha,
             actual_branch=outcome.actual_branch,
             actual_commit_sha=outcome.actual_commit_sha,
             state=outcome.state,
@@ -5835,9 +6098,7 @@ def _codex_active_tool_context(
                 event = json.loads(raw_line)
             except ValueError:
                 continue
-            if not _codex_event_is_in_window(
-                event, started_at=started_at, finished_at=finished_at
-            ):
+            if not _codex_event_is_in_window(event, started_at=started_at, finished_at=finished_at):
                 continue
             timestamp = event.get("timestamp") if isinstance(event, dict) else None
             latest_event_timestamp = _latest_codex_timestamp(latest_event_timestamp, timestamp)

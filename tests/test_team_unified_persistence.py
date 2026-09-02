@@ -77,7 +77,7 @@ def test_persistence_registry_covers_every_collection_and_table_once() -> None:
         table for _group, specs, _writer in _PERSISTENCE_GROUPS for table, _column, _field in specs
     ]
 
-    assert len(fields) == len(set(fields)) == 39
+    assert len(fields) == len(set(fields)) == 40
     assert len(tables) == len(set(tables))
     assert set(tables) == set(_STATE_TABLES)
 
@@ -195,9 +195,7 @@ def test_task_mutation_policy_round_trips_as_immutable_workflow_metadata(
     )
 
     repository.update(
-        lambda state: (
-            setattr(state.tasks["task"], "mutation_policy", policy) or state
-        )
+        lambda state: setattr(state.tasks["task"], "mutation_policy", policy) or state
     )
 
     assert repository.read().tasks["task"].mutation_policy == policy
@@ -1582,9 +1580,7 @@ def test_sqlite_migration_adds_unified_columns_and_backfills_relationships(
         }
         cleanup_candidate_columns = {
             str(row[1])
-            for row in connection.execute(
-                "PRAGMA table_info(team_worktree_cleanup_candidates)"
-            )
+            for row in connection.execute("PRAGMA table_info(team_worktree_cleanup_candidates)")
         }
         tables = {
             str(row[0])
@@ -1817,12 +1813,10 @@ def test_sqlite_migration_derives_project_directory_scope_from_legacy_git(
         )
         connection.execute("ALTER TABLE team_projects DROP COLUMN directory_path")
         connection.execute(
-            "UPDATE team_state_metadata SET value = '62' "
-            "WHERE key = 'sqlite_schema_version'"
+            "UPDATE team_state_metadata SET value = '62' WHERE key = 'sqlite_schema_version'"
         )
         connection.execute(
-            "UPDATE team_state_metadata SET value = '16' "
-            "WHERE key = 'state_schema_version'"
+            "UPDATE team_state_metadata SET value = '16' WHERE key = 'state_schema_version'"
         )
 
     migrated_repository = TeamStateRepository(tmp_path)
@@ -1895,8 +1889,7 @@ def test_sqlite_migration_freezes_legacy_cleanup_candidate_project_scope(
         for candidate_id in ("cleanup", "cleanup-pruned"):
             candidate_payload = json.loads(
                 connection.execute(
-                    "SELECT payload_json FROM team_worktree_cleanup_candidates "
-                    "WHERE id = ?",
+                    "SELECT payload_json FROM team_worktree_cleanup_candidates WHERE id = ?",
                     (candidate_id,),
                 ).fetchone()[0]
             )
@@ -1921,8 +1914,7 @@ def test_sqlite_migration_freezes_legacy_cleanup_candidate_project_scope(
             (legacy_directory_path, json.dumps(git_payload)),
         )
         connection.execute(
-            "UPDATE team_state_metadata SET value = '63' "
-            "WHERE key = 'sqlite_schema_version'"
+            "UPDATE team_state_metadata SET value = '63' WHERE key = 'sqlite_schema_version'"
         )
 
     migrated_repository = TeamStateRepository(tmp_path)
@@ -1931,9 +1923,7 @@ def test_sqlite_migration_freezes_legacy_cleanup_candidate_project_scope(
 
     assert migrated.directory_path == legacy_directory_path
     assert migrated.git_work_context_id == "context-cleanup-migration"
-    assert migrated_candidates["cleanup-pruned"].git_work_context_id == (
-        "legacy:cleanup-pruned"
-    )
+    assert migrated_candidates["cleanup-pruned"].git_work_context_id == ("legacy:cleanup-pruned")
     with sqlite3.connect(migrated_repository.store.path) as connection:
         stored_rows = {
             row[0]: (row[1], json.loads(row[2]))
@@ -1950,13 +1940,9 @@ def test_sqlite_migration_freezes_legacy_cleanup_candidate_project_scope(
         ).fetchone()[0]
     assert stored_rows["cleanup"][0] == "context-cleanup-migration"
     assert stored_rows["cleanup"][1]["directory_path"] == legacy_directory_path
-    assert stored_rows["cleanup"][1]["git_work_context_id"] == (
-        "context-cleanup-migration"
-    )
+    assert stored_rows["cleanup"][1]["git_work_context_id"] == ("context-cleanup-migration")
     assert stored_rows["cleanup-pruned"][0] == "legacy:cleanup-pruned"
-    assert stored_rows["cleanup-pruned"][1]["git_work_context_id"] == (
-        "legacy:cleanup-pruned"
-    )
+    assert stored_rows["cleanup-pruned"][1]["git_work_context_id"] == ("legacy:cleanup-pruned")
     assert sqlite_schema_version == str(SQLITE_SCHEMA_VERSION)
 
 

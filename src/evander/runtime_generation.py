@@ -6,6 +6,7 @@ import importlib.metadata
 import json
 import os
 import subprocess
+import tomllib
 from collections.abc import Mapping, Sequence
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
@@ -63,6 +64,19 @@ def _package_version() -> str:
         return "unknown"
 
 
+def _source_version(project_dir: Path) -> str:
+    try:
+        payload = tomllib.loads((project_dir / "pyproject.toml").read_text(encoding="utf-8"))
+    except (OSError, tomllib.TOMLDecodeError):
+        return _package_version()
+    project = payload.get("project")
+    if isinstance(project, dict):
+        version = str(project.get("version") or "").strip()
+        if version:
+            return version
+    return _package_version()
+
+
 def _current_boot_id() -> str | None:
     try:
         return _BOOT_ID_PATH.read_text(encoding="utf-8").strip() or None
@@ -117,10 +131,12 @@ def resolve_runtime_generation(
     env: Mapping[str, str] | None = None,
 ) -> RuntimeGenerationIdentity:
     runtime_env = os.environ if env is None else env
-    version = _package_version()
+    version = _source_version(project_dir)
     configured = str(runtime_env.get(_GENERATION_ENV) or "").strip()
     commit = _run_git(project_dir, ["rev-parse", "HEAD"])
-    commit_sha = commit.stdout.decode("ascii", errors="ignore").strip() if commit.returncode == 0 else ""
+    commit_sha = (
+        commit.stdout.decode("ascii", errors="ignore").strip() if commit.returncode == 0 else ""
+    )
     normalized_commit = commit_sha or None
     dirty_fingerprint = _dirty_fingerprint(project_dir) if normalized_commit is not None else None
     material = "\0".join((version, normalized_commit or "no-git", dirty_fingerprint or "clean"))
@@ -133,9 +149,7 @@ def resolve_runtime_generation(
         commit_sha=normalized_commit,
         dirty_fingerprint=dirty_fingerprint,
         source=(
-            f"env-label:{_GENERATION_ENV}+{identity_source}"
-            if configured
-            else identity_source
+            f"env-label:{_GENERATION_ENV}+{identity_source}" if configured else identity_source
         ),
     )
 
@@ -154,9 +168,7 @@ def register_runtime_generation(
 ) -> RuntimeGenerationRegistration:
     normalized_component = component.strip()
     if normalized_component not in TEAM_RUNTIME_COMPONENTS:
-        raise ValueError(
-            f"component must be one of: {', '.join(TEAM_RUNTIME_COMPONENTS)}"
-        )
+        raise ValueError(f"component must be one of: {', '.join(TEAM_RUNTIME_COMPONENTS)}")
     identity = resolve_runtime_generation(project_dir, env=env)
     record = RuntimeGenerationRegistration(
         component=normalized_component,
@@ -166,7 +178,9 @@ def register_runtime_generation(
         dirty_fingerprint=identity.dirty_fingerprint,
         source=identity.source,
         boot_id=_current_boot_id(),
-        invocation_id=str((os.environ if env is None else env).get(_SYSTEMD_INVOCATION_ENV) or "").strip()
+        invocation_id=str(
+            (os.environ if env is None else env).get(_SYSTEMD_INVOCATION_ENV) or ""
+        ).strip()
         or None,
         registered_at=(now or datetime.now(UTC)).astimezone(UTC).isoformat(),
     )
@@ -192,6 +206,7 @@ def read_runtime_generation_status(
     runtime_dir: Path,
     *,
     components: Sequence[str] = TEAM_RUNTIME_COMPONENTS,
+    project_dir: Path | None = None,
 ) -> dict[str, Any]:
     records: dict[str, dict[str, Any]] = {}
     errors: dict[str, str] = {}
@@ -218,12 +233,33 @@ def read_runtime_generation_status(
 
     missing = [component for component in components if component not in records]
     generations = sorted({str(record["generation"]) for record in records.values()})
+    current_identity: RuntimeGenerationIdentity | None = None
+    current_identity_error: str | None = None
+    try:
+        current_identity = resolve_runtime_generation(project_dir or Path(runtime_dir).parent)
+    except Exception as exc:
+        current_identity_error = str(exc) or exc.__class__.__name__
+    stale_components = sorted(
+        component
+        for component, record in records.items()
+        if current_identity is not None
+        and (
+            str(record.get("version") or "") != current_identity.version
+            or (str(record.get("commit_sha") or "").strip() or None) != current_identity.commit_sha
+            or (str(record.get("dirty_fingerprint") or "").strip() or None)
+            != current_identity.dirty_fingerprint
+        )
+    )
+    if current_identity_error is not None:
+        errors["current_source"] = current_identity_error
     if not records and not errors:
         state = "not_registered"
     elif errors or missing:
         state = "incomplete"
     elif len(generations) != 1:
         state = "split"
+    elif stale_components:
+        state = "stale"
     else:
         state = "coherent"
     return {
@@ -233,7 +269,35 @@ def read_runtime_generation_status(
         "missing_components": missing,
         "errors": errors,
         "generations": generations,
+        "current_generation": (asdict(current_identity) if current_identity is not None else None),
+        "stale_components": stale_components,
     }
+
+
+def require_current_runtime_generation(
+    runtime_dir: Path,
+    *,
+    project_dir: Path | None = None,
+    components: Sequence[str] = TEAM_RUNTIME_COMPONENTS,
+) -> dict[str, Any]:
+    status = read_runtime_generation_status(
+        runtime_dir,
+        project_dir=project_dir,
+        components=components,
+    )
+    if status["state"] != "coherent":
+        details: list[str] = [f"state={status['state']}"]
+        if status["missing_components"]:
+            details.append("missing=" + ",".join(status["missing_components"]))
+        if status["stale_components"]:
+            details.append("stale=" + ",".join(status["stale_components"]))
+        if status["errors"]:
+            details.append("errors=" + ",".join(sorted(status["errors"])))
+        raise RuntimeError(
+            "Team runtime generation is not current; restart "
+            "evander-team-runtime.target and verify evander-cli status (" + "; ".join(details) + ")"
+        )
+    return status
 
 
 def main(argv: Sequence[str] | None = None) -> int:

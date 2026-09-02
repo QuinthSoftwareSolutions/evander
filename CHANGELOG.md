@@ -1,5 +1,27 @@
 # Changelog
 
+## 2026-09-02 - Agent Pull Request Metadata Updates
+
+- Added the policy-controlled `update_pull_request` MCP tool for Azure DevOps title, description,
+  status, and tag updates using directory-scoped host credentials, optional current-status guards,
+  normalized provider aliases, audited results, and approval-policy support.
+
+## 2026-08-31 - Durable Team Preparation Recovery
+
+- Persisted deterministic Team Git preparation attempts and host-owned container-worker receipts
+  so an exact pristine checkout can be resumed after a state conflict without trusting guest Git
+  configuration; invalidated, resolved-task, and reassigned attempts now enter audited worktree
+  cleanup. Successful physical removal retires receipts and attempts across the cleaned worktree
+  lineage without equating the prepared and terminal HEADs, operator retries restore invalidated
+  cleanup eligibility, interrupted pending attempts can clean against their worker-owned receipt,
+  reused deterministic IDs reactivate prior terminal candidates, and cleanup remains compatible
+  with workers deployed before receipt IDs were supported.
+- Made operator resolution of an explicit preparation blocker enqueue the affected actionable task
+  owner through the existing durable wake outbox while suppressing wakes when another gate remains.
+- Detect coherent-but-stale Team service registrations and fail every systemd Team wake, including
+  governance-manager wakes, before state access or leasing until the grouped runtime restart loads
+  the current checkout.
+
 ## 2026-08-31 - Session-Gated Image Generation
 
 - Added an opt-in session policy and workflow effect for OpenAI image generation and editing,

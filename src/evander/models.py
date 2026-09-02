@@ -127,6 +127,7 @@ class ToolName(str, Enum):
     POST_PR_FEEDBACK_REPLY = "post_pr_feedback_reply"
     LIST_PULL_REQUESTS = "list_pull_requests"
     GET_PULL_REQUEST = "get_pull_request"
+    UPDATE_PULL_REQUEST = "update_pull_request"
     RESOLVE_ADO_IDENTITY = "resolve_ado_identity"
     LIST_ADO_PR_COMMENT_ACTIVITY = "list_ado_pr_comment_activity"
     LIST_ADO_PR_COMMIT_ACTIVITY = "list_ado_pr_commit_activity"
@@ -1906,6 +1907,59 @@ class ListPullRequestsResponse(BaseModel):
     next_cursor: str | None = None
 
 
+class UpdatePullRequestRequest(BaseModel):
+    session_id: str = Field(min_length=1)
+    provider: Literal["azure_devops"]
+    repo: str = Field(min_length=1)
+    pr_id: str = Field(min_length=1)
+    project: str | None = None
+    title: str | None = None
+    description: str | None = None
+    status: str | None = None
+    add_tags: list[str] = Field(default_factory=list)
+    remove_tags: list[str] = Field(default_factory=list)
+    expected_statuses: list[str] = Field(default_factory=list)
+
+    @field_validator("add_tags", "remove_tags", "expected_statuses", mode="before")
+    @classmethod
+    def normalize_string_lists(cls, value: object) -> list[str]:
+        if value is None:
+            return []
+        if isinstance(value, str):
+            value = [value]
+        if not isinstance(value, list):
+            raise ValueError("pull request tag/status fields must be a list of strings")
+        normalized: list[str] = []
+        seen: set[str] = set()
+        for item in value:
+            text = str(item).strip()
+            if not text:
+                continue
+            key = text.casefold()
+            if key in seen:
+                continue
+            seen.add(key)
+            normalized.append(text)
+        return normalized
+
+    @model_validator(mode="after")
+    def validate_update(self) -> UpdatePullRequestRequest:
+        if (
+            self.title is None
+            and self.description is None
+            and self.status is None
+            and not self.add_tags
+            and not self.remove_tags
+        ):
+            raise ValueError("at least one pull request update field is required")
+        tag_overlap = {tag.casefold() for tag in self.add_tags} & {
+            tag.casefold() for tag in self.remove_tags
+        }
+        if tag_overlap:
+            raise ValueError("the same pull request tag cannot be added and removed")
+        return self
+
+
 class UpdatePullRequestResponse(BaseModel):
     success: bool = True
     updated: bool = False
@@ -1916,6 +1970,7 @@ class UpdatePullRequestResponse(BaseModel):
     pr_id: str
     status: str | None = None
     title: str | None = None
+    description: str | None = None
     url: str | None = None
     tags: list[str] = Field(default_factory=list)
     added_tags: list[str] = Field(default_factory=list)
