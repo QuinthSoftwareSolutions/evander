@@ -1,6 +1,7 @@
 export type BuiltinAdminTab =
   | "dashboard"
   | "agents"
+  | "subscriptions"
   | "approvals"
   | "artifacts"
   | "addons"
@@ -79,6 +80,7 @@ export const TABS: ReadonlyArray<AdminTabDefinition> = [
   },
   { key: "reports", label: "Reports", shortLabel: "Reports", description: "Workflow activity and operational reporting.", group: "overview" },
   { key: "agents", label: "Agents", shortLabel: "Agents", description: "Active and historical execution targets.", group: "operations" },
+  { key: "subscriptions", label: "Subscriptions", shortLabel: "Subs", description: "Worker-owned ChatGPT subscription profiles and capacity.", group: "infrastructure" },
   { key: "sessions", label: "Sessions", shortLabel: "Sessions", description: "Session state, tools, and wake schedules.", group: "operations" },
   { key: "issues", label: "Issues", shortLabel: "Issues", description: "Local issue intake and issue records.", group: "operations" },
   { key: "approvals", label: "Approvals", shortLabel: "Approvals", description: "Review guarded approval requests and queued decisions.", group: "operations" },

@@ -4,8 +4,9 @@
 
 The daemon is intentionally primarily an execution envelope. It does not receive control-plane
 API keys, publish pull requests, decide policy, or turn platform summaries into agent memory. When
-ChatGPT subscription execution is enabled, the worker additionally owns the one durable Codex
-account file used by its auth broker; that file is never mounted into job containers.
+ChatGPT subscription execution is enabled, the worker additionally owns a registry of named Codex
+authentication profiles and their durable credential homes; those files are never mounted into job
+containers.
 
 ## Control-Plane Configuration
 
@@ -51,12 +52,14 @@ the agent container, accepts no caller-supplied command or PID, and records the 
 interruption in execution metadata. The Admin Web execution list exposes the active tool and an
 operator control for the same safe interruption. Keep `container_worker_job_timeout_seconds` as
 the final, whole-job deadline if the agent cannot recover.
-`container_worker_codex_auth_mode` sets the inherited Codex usage source. Keep `metered_api` for
-the existing OpenAI relay, or select `chatgpt_subscription` after configuring and signing in the
-worker account. A session-level selection overrides this default. The subscription selection is
-effective only for container Codex turns whose effective `model_provider_mode` is
-`openai_public`. A `local_openai` or `azure_openai` turn uses its configured private/API-key route
-without rewriting the stored selection, and non-Codex agents do not inherit this Codex default.
+`container_worker_codex_auth_mode` remains the inherited Codex usage source for compatibility.
+Keep `metered_api` for the existing OpenAI relay, or use `chatgpt_subscription` with an explicitly
+selected session profile. The directory-selected `container_worker_base_url` determines the
+effective worker; directory configuration does not select, default, grant, or restrict profiles.
+The subscription selection is effective only for container Codex turns whose effective
+`model_provider_mode` is `openai_public`. A `local_openai` or `azure_openai` turn uses its
+configured private/API-key route without rewriting stored session state, and non-Codex agents do
+not inherit this Codex default.
 
 The same image catalog is used by request-scoped codebase consultations. A named
 `agent_consultation_profiles` entry selects the model, provider mode, image alias, deadline, and
@@ -397,21 +400,31 @@ evander-cli execution smoke-container-worker --json
 
 This optional path lets container-worker Codex sessions use the operator's ChatGPT subscription
 instead of the metered OpenAI relay when their effective `model_provider_mode` is
-`openai_public`. It does not add another worker profile or assign an account to one agent: all
-subscription-mode agents on the worker share the single signed-in operator account. Metered and
-subscription agents can run on the same worker.
+`openai_public`. Each agent session selects a named profile on its effective worker. Different
+profiles may run concurrently; multiple sessions and workflows may also share one profile.
 
-The worker auth broker is the only owner of
-`<worker-root>/codex-auth/auth.json`. It holds an exclusive lock at
-`<worker-root>/codex-auth/.broker.lock`, serializes login, logout, account reads, and refreshes, and
-coalesces concurrent refresh requests. A second broker for the same directory refuses to start.
-The managed auth app-server is the only process allowed to write the file. The utility container
-that hosts that app-server mounts only `codex-auth/`; it is not a separate Evander worker and does
-not mount any session workspace. It runs as the configured worker container UID/GID so its files
-remain owned and readable only by the worker service account. Its deterministic Docker name also
-prevents a replacement daemon from starting a second writer if a hard crash leaves the previous
-utility container alive; the replacement fails closed. After confirming the old worker daemon is
-gone, remove that stale `evander-codex-auth-*` container before restarting authentication.
+The registry at `<worker-root>/codex-auth/profiles.json` stores only immutable `profile_id`,
+editable display name, enabled state, pinned account ID, and timestamps. It never stores access or
+refresh tokens. Profile IDs are validated lowercase slugs and cannot be renamed or deleted in V1.
+The reserved profile `default` preserves old profile-less sessions and continues to use the legacy
+`<worker-root>/codex-auth/auth.json` home without moving credentials. Named profiles use
+`<worker-root>/codex-auth/profiles/<profile-id>/auth.json`.
+
+Each profile lazily owns a separate auth broker, exclusive file lock, and managed App Server
+process. Broker operations serialize within one profile, while independent profiles can read and
+refresh concurrently. When the App Server runs in a utility container, its deterministic name and
+mount are unique to the profile. It mounts only that profile's auth home, never a session
+workspace, and runs as the configured worker container UID/GID. All profile brokers share the same
+restricted OpenAI egress proxy. After confirming an old worker daemon is gone, remove only the
+specific stale `evander-codex-auth-*` utility container before retrying that profile.
+The compatibility broker lock remains at `<worker-root>/codex-auth/.broker.lock`; named-profile
+locks live at `<worker-root>/codex-auth/profiles/<profile-id>/.broker.lock`.
+
+The first successful device login pins the OpenAI account ID in the registry. A later login must
+resolve to the same account; a mismatch is logged out and rejected. Use a new profile ID for a
+different account. Broker status uses App Server `account/read`, `account/rateLimits/read`, and
+`account/usage/read` and returns only safe identity, plan, limit/reset, and summarized usage fields.
+Tokens are never returned, and reset credits are reported but never consumed automatically.
 
 Each subscription job starts its own Codex app-server inside the disposable runner container and
 logs in through Codex's external-token mode. Those credentials remain in that process's memory:
@@ -450,16 +463,16 @@ but must not grant them direct public egress. Keep the proxy's allowlist narrow 
 Codex's service endpoints change.
 
 After deployment, sign in to Admin Web as an Admin with `admin.owner` permission at `root`, unlock
-privileged operations, open **Agents**, and use **Worker ChatGPT subscription** to start device
-login. Complete the displayed link and code, then wait for the status to show signed in. Account
-status, login start/status, cancellation, and logout all require both checks; ownership of a child
-directory is insufficient because this is one worker-global account. Login start, cancellation,
-and logout are audited without recording tokens.
+privileged operations, and open **Subscriptions**. Create a profile, start device login, complete
+the displayed link and code, and wait for the profile to show signed in with its pinned account.
+Creation, rename, enable/disable, login, cancellation, and logout are privileged worker operations;
+ownership of a child directory is insufficient. Mutations are audited without recording tokens.
 
-Choose **Metered API** or **ChatGPT subscription** when creating a container Codex agent, or edit
-an existing agent's policy. The new selection applies to the next turn and preserves that
-session's Codex thread. Multiple agents can use the account concurrently; only account-file and
-token-refresh operations are serialized.
+Choose **Metered API** or **ChatGPT subscription** when creating a container Codex agent. New UI
+subscription agents must select one enabled profile. The binding is written to the session and
+cannot change: create a replacement session for another profile. An existing unbound metered
+session may receive its first profile only when explicitly switched to subscription mode. An
+existing-agent upsert that omits the profile preserves its current binding.
 
 `chatgpt_subscription` is effective only for a container Codex turn on the public OpenAI route.
 If the effective `model_provider_mode` is `local_openai` or `azure_openai`, Evander runs the turn
@@ -468,10 +481,28 @@ switching the session back to `openai_public` makes the preference effective aga
 harnesses do not inherit the Codex auth default, and an explicit `chatgpt_subscription` override
 on a non-Codex agent is rejected.
 
-That route selection is separate from subscription failure handling. Once a public Codex turn
-actually selects `chatgpt_subscription`, missing or expired worker credentials fail that turn. Evander never
-falls back from subscription mode to metered usage. Logging out removes the worker account, so
-subsequent public subscription turns fail closed until an authorized root owner signs in again.
+That route selection is separate from subscription capacity handling. Before creating a job, the
+worker checks the selected broker. Signed-out, disabled, unavailable, and rate-limited profiles
+return a structured deferral with profile ID, reason, and reset-aware retry time. The control plane
+persists the original prompt without consuming the ordinary retry ledger. If App Server reports
+rate-limit exhaustion during a turn, the terminal execution enters the same durable replay path.
+
+Subscription queues have no automatic expiry. They preserve FIFO ordering within one worker
+profile while other profiles dispatch concurrently. A reported reset timestamp is authoritative;
+without one, backoff grows exponentially to a 15-minute cap. Profile login, re-enable, and manual
+refresh wake reconciliation, and ordinary effect-orchestrator polling is the fallback. Admin Web
+shows the profile, queue reason, and retry time on agent and workflow state and permits an
+authorized manual cancellation. Evander never
+falls back from subscription mode to metered usage.
+
+V1 supports ChatGPT device login only. Business and Enterprise access tokens are not accepted as
+profile credentials in this release, even though OpenAI supports them for trusted automation. See
+the [OpenAI access-token documentation](https://learn.chatgpt.com/docs/enterprise/access-tokens)
+and the [OpenAI App Server documentation](https://learn.chatgpt.com/docs/app-server).
+
+The control plane mirrors profile list/create/read/update, device-login, and logout operations
+under `/api/admin/codex-subscriptions`. The older `/api/admin/codex-auth` surface remains a
+compatibility alias for `default`.
 
 ## Session Durability
 
@@ -824,6 +855,14 @@ Authorization: Bearer <EVANDER_WORKER_TOKEN>
 Routes:
 
 - `GET /v1/telemetry`
+- `GET /v1/codex-auth/profiles`
+- `POST /v1/codex-auth/profiles`
+- `GET /v1/codex-auth/profiles/{profile_id}`
+- `PATCH /v1/codex-auth/profiles/{profile_id}`
+- `POST /v1/codex-auth/profiles/{profile_id}/device-login`
+- `GET /v1/codex-auth/profiles/{profile_id}/device-login/{login_id}`
+- `DELETE /v1/codex-auth/profiles/{profile_id}/device-login/{login_id}`
+- `DELETE /v1/codex-auth/profiles/{profile_id}/session`
 - `GET /v1/codex-auth`
 - `POST /v1/codex-auth/device-login`
 - `GET /v1/codex-auth/device-login/{login_id}`
@@ -849,10 +888,14 @@ Routes:
 - `DELETE /v1/sessions/{session_id}/mssql/databases/{logical_name}`
 - `GET /healthz`
 
+The singleton `/v1/codex-auth` routes are compatibility aliases for reserved profile `default`.
+Profiles have no hard-delete endpoint in V1.
+
 `POST /v1/jobs` accepts `session_id`, optional `job_id`, `image`, `command`, optional `codex_turn`,
 optional `repo_source`, optional `clone_branch`, optional `working_directory`, `resource_limits`,
-and sanitized `metadata`. `codex_turn` is the structured prompt/auth-mode contract used by
-subscription execution; it never contains credentials. Raw `env`, `environment`, and
+and sanitized `metadata`. `codex_turn` is the structured prompt/auth-mode/profile contract used by
+subscription execution; it never contains credentials. A capacity preflight can return HTTP 429
+with a `deferral` object containing `profile_id`, `reason`, and optional `retry_at`. Raw `env`, `environment`, and
 `environment_variables` request fields are rejected. If `repo_source` is present, it must match a
 configured allowed Git source prefix. Repository-specific managed Git SSH aliases are accepted
 only for their corresponding managed repository beneath that prefix.

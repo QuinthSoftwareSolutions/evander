@@ -5890,6 +5890,161 @@ def test_agent_create_preserves_subscription_preference_for_local_openai_fallbac
     assert turn.auth_mode is CodexAuthMode.METERED_API
 
 
+def test_agent_create_named_subscription_profiles_are_persisted_and_write_once(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = GatewayConfig(
+        runtime_dir=tmp_path,
+        execution_backend="container_worker_vm",
+        container_worker_base_url="http://worker.test",
+        model_provider_mode="openai_public",
+    )
+    session_repository = JsonSessionManifestRepository(config.session_store_path)
+    admin_service = SimpleNamespace(
+        runtime=SimpleNamespace(
+            session_repository=session_repository,
+            provider_config=_ContainerResolverStub(config),
+        )
+    )
+    backend = _FakeContainerBackend()
+    backend.client = SimpleNamespace(
+        codex_auth_profile_status=lambda profile_id: {
+            "profile_id": profile_id,
+            "enabled": True,
+        }
+    )
+    monkeypatch.setattr(
+        "evander.effects.providers.agent_create.container_backend",
+        lambda context, config: backend,
+    )
+    factory = EffectProviderFactory(
+        provider_config_resolver=_ContainerResolverStub(config),
+        admin_service=admin_service,
+    )
+
+    for session_id, profile_id in (
+        ("workflow-a", "team-a"),
+        ("workflow-b", "team-b"),
+        ("workflow-c", "team-a"),
+    ):
+        output = factory.build(
+            AgentCreateEffectDefinition(
+                id=f"agent-create-{session_id}",
+                display_name="Create",
+                type="effect:agent:create",
+                execution_backend="container_worker_vm",
+                session_id=session_id,
+                codex_auth_mode=CodexAuthMode.CHATGPT_SUBSCRIPTION,
+                subscription_profile_id=profile_id,
+            )
+        ).execute()
+        assert output["subscription_profile_id"] == profile_id
+
+    assert session_repository.get_session("workflow-a").subscription_profile_id == "team-a"
+    assert session_repository.get_session("workflow-b").subscription_profile_id == "team-b"
+    assert session_repository.get_session("workflow-c").subscription_profile_id == "team-a"
+    turn = container_codex_turn_spec(
+        prompt="Continue",
+        model="gpt-5.4",
+        resume_thread_id=None,
+        session=session_repository.get_session("workflow-a"),
+        config=config,
+        agent_provider="codex",
+    )
+    assert turn is not None
+    assert turn.auth_mode is CodexAuthMode.CHATGPT_SUBSCRIPTION
+    assert turn.subscription_profile_id == "team-a"
+
+    factory.build(
+        AgentCreateEffectDefinition(
+            id="agent-create-upsert-preserve",
+            display_name="Preserve",
+            type="effect:agent:create",
+            execution_backend="container_worker_vm",
+            session_id="workflow-a",
+            existing_agent_behavior="upsert",
+        )
+    ).execute()
+    assert session_repository.get_session("workflow-a").subscription_profile_id == "team-a"
+
+    with pytest.raises(ValueError, match="write-once"):
+        factory.build(
+            AgentCreateEffectDefinition(
+                id="agent-create-upsert-reassign",
+                display_name="Reassign",
+                type="effect:agent:create",
+                execution_backend="container_worker_vm",
+                session_id="workflow-a",
+                existing_agent_behavior="upsert",
+                codex_auth_mode=CodexAuthMode.CHATGPT_SUBSCRIPTION,
+                subscription_profile_id="team-b",
+            )
+        ).execute()
+
+    factory.build(
+        AgentCreateEffectDefinition(
+            id="agent-create-metered",
+            display_name="Create metered",
+            type="effect:agent:create",
+            execution_backend="container_worker_vm",
+            session_id="metered-session",
+            codex_auth_mode=CodexAuthMode.METERED_API,
+        )
+    ).execute()
+    factory.build(
+        AgentCreateEffectDefinition(
+            id="agent-create-metered-subscription",
+            display_name="Bind metered session",
+            type="effect:agent:create",
+            execution_backend="container_worker_vm",
+            session_id="metered-session",
+            existing_agent_behavior="upsert",
+            codex_auth_mode=CodexAuthMode.CHATGPT_SUBSCRIPTION,
+            subscription_profile_id="team-b",
+        )
+    ).execute()
+    metered_session = session_repository.get_session("metered-session")
+    assert metered_session.codex_auth_mode is CodexAuthMode.CHATGPT_SUBSCRIPTION
+    assert metered_session.subscription_profile_id == "team-b"
+
+    factory.build(
+        AgentCreateEffectDefinition(
+            id="agent-create-legacy-default",
+            display_name="Create legacy default",
+            type="effect:agent:create",
+            execution_backend="container_worker_vm",
+            session_id="legacy-default",
+            codex_auth_mode=CodexAuthMode.CHATGPT_SUBSCRIPTION,
+        )
+    ).execute()
+    with pytest.raises(ValueError, match="profile-bound"):
+        factory.build(
+            AgentCreateEffectDefinition(
+                id="agent-create-legacy-switch",
+                display_name="Switch legacy binding",
+                type="effect:agent:create",
+                execution_backend="container_worker_vm",
+                session_id="legacy-default",
+                existing_agent_behavior="upsert",
+                codex_auth_mode=CodexAuthMode.METERED_API,
+            )
+        ).execute()
+
+
+def test_agent_create_subscription_profile_selector_is_not_bindable() -> None:
+    with pytest.raises(ValidationError, match="lowercase slug"):
+        AgentCreateEffectDefinition(
+            id="agent-create",
+            display_name="Create",
+            type="effect:agent:create",
+            execution_backend="container_worker_vm",
+            session_id="session-1",
+            codex_auth_mode=CodexAuthMode.CHATGPT_SUBSCRIPTION,
+            subscription_profile_id="${{trigger.profile_id}}",
+        )
+
+
 def test_agent_create_container_can_select_configured_image_alias(
     tmp_path,
     monkeypatch: pytest.MonkeyPatch,

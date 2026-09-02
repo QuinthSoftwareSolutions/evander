@@ -27,6 +27,9 @@ from evander.effects.providers.resume_thread_metadata import (
     resume_thread_metadata_key as normalize_resume_thread_metadata_key,
 )
 from evander.execution import ExecutionBackendKind, ExecutionSpec, build_execution_backend
+from evander.execution.container_worker_client import (
+    CodexSubscriptionDeferredClientError,
+)
 from evander.local_inference_capacity import (
     LOCAL_INFERENCE_QUEUE_REASON,
     LocalInferenceCapacityAdmission,
@@ -272,6 +275,13 @@ class AgentEnqueuePromptQueueDispatchHook(EffectLifecycleHookBase):
             current_records = queue_store.read_all()
             record = current_records.get(queue_key)
             if record is None:
+                continue
+            if not self._retry_not_before_ready(record):
+                continue
+            if self._has_earlier_subscription_profile_record(
+                records=current_records,
+                queue_key=queue_key,
+            ):
                 continue
             if self._has_earlier_local_capacity_record(
                 records=current_records,
@@ -539,6 +549,36 @@ class AgentEnqueuePromptQueueDispatchHook(EffectLifecycleHookBase):
             and getattr(records[key], "queue_reason", None) == LOCAL_INFERENCE_QUEUE_REASON
             for key in ordered[: ordered.index(queue_key)]
         )
+
+    @classmethod
+    def _has_earlier_subscription_profile_record(
+        cls,
+        *,
+        records: dict[str, Any],
+        queue_key: str,
+    ) -> bool:
+        current = records.get(queue_key)
+        profile_id = str(getattr(current, "subscription_profile_id", "") or "").strip()
+        if not profile_id:
+            return False
+        ordered = cls._fifo_queue_keys(records)
+        try:
+            current_index = ordered.index(queue_key)
+        except ValueError:
+            return False
+        return any(
+            str(getattr(records[key], "subscription_profile_id", "") or "").strip() == profile_id
+            for key in ordered[:current_index]
+        )
+
+    @staticmethod
+    def _retry_not_before_ready(record: Any) -> bool:
+        retry_at = getattr(record, "retry_not_before", None)
+        if not isinstance(retry_at, datetime):
+            return True
+        if retry_at.tzinfo is None:
+            retry_at = retry_at.replace(tzinfo=UTC)
+        return retry_at.astimezone(UTC) <= datetime.now(UTC)
 
     @classmethod
     def _has_earlier_claimed_replay_record(
@@ -891,7 +931,9 @@ class AgentEnqueuePromptQueueDispatchHook(EffectLifecycleHookBase):
             return False
         session_id, session, config = context
 
-        if self._queued_prompt_session_is_expired(queue_key=queue_key, session=session):
+        if not str(
+            getattr(record, "subscription_profile_id", "") or ""
+        ).strip() and self._queued_prompt_session_is_expired(queue_key=queue_key, session=session):
             self._delete_queue_record_if_current(
                 queue_store=queue_store,
                 queue_key=queue_key,
@@ -1040,18 +1082,41 @@ class AgentEnqueuePromptQueueDispatchHook(EffectLifecycleHookBase):
                                     if codex_turn is not None
                                     else {}
                                 ),
+                                **(
+                                    {
+                                        "subscription_profile_id": (
+                                            codex_turn.subscription_profile_id
+                                        )
+                                    }
+                                    if codex_turn is not None
+                                    and codex_turn.subscription_profile_id is not None
+                                    else {}
+                                ),
                                 "resume_thread_id": effective_resume_thread_id,
                                 "queued": True,
                             },
                         )
                     )
                 )
-        except Exception:
+        except Exception as exc:
             self._release_local_inference_capacity(
                 worker=worker,
                 admission=capacity_admission,
             )
             self._release_enqueue_prompt_claim(worker=worker, claim=prompt_lock_claim)
+            if isinstance(exc, CodexSubscriptionDeferredClientError):
+                try:
+                    queue_store.defer_capacity(
+                        record,
+                        queue_reason=exc.deferral.queue_reason,
+                        retry_at=exc.deferral.retry_at,
+                    )
+                except Exception:
+                    logger.warning(
+                        "Could not persist subscription capacity deferral queue_key=%s",
+                        queue_key,
+                        exc_info=True,
+                    )
             return False
         self._mark_local_inference_running(
             worker=worker,

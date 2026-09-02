@@ -16,6 +16,7 @@ from evander.codex_auth import (
     CodexAuthMode,
     CodexTurnSpec,
     effective_codex_auth_mode,
+    effective_subscription_profile_id,
     normalize_codex_auth_mode,
 )
 from evander.config import GatewayConfig
@@ -512,6 +513,7 @@ def build_container_session_manifest(
     directory_path: str,
     model: str | None,
     codex_auth_mode: CodexAuthMode | None = None,
+    subscription_profile_id: str | None = None,
     ttl_hours: int | None,
     allowed_tools: list[str] | None,
     connector_grants: dict[str, list[str]] | None = None,
@@ -626,6 +628,7 @@ def build_container_session_manifest(
         vm_provider=ExecutionBackendKind.CONTAINER_WORKER_VM.value,
         model=model,
         codex_auth_mode=codex_auth_mode,
+        subscription_profile_id=subscription_profile_id,
         directory_path=directory_path,
         allowed_tools=resolved_tools,
         connector_grants=connector_grants or {},
@@ -1183,6 +1186,11 @@ def container_codex_turn_spec(
         auth_mode = CodexAuthMode.METERED_API
     return CodexTurnSpec(
         auth_mode=auth_mode,
+        subscription_profile_id=(
+            effective_subscription_profile_id(session=session)
+            if auth_mode is CodexAuthMode.CHATGPT_SUBSCRIPTION
+            else None
+        ),
         prompt=prompt,
         model=model,
         resume_thread_id=_container_resume_thread_id(resume_thread_id),
@@ -1914,9 +1922,9 @@ def _container_profile_content(*, dotnet: bool, playwright: bool) -> str:
 
 
 def _playwright_launch_helper_content() -> str:
-    return (
-        Path(__file__).resolve().parents[2] / "assets" / "playwright-launch.mjs"
-    ).read_text(encoding="utf-8")
+    return (Path(__file__).resolve().parents[2] / "assets" / "playwright-launch.mjs").read_text(
+        encoding="utf-8"
+    )
 
 
 def _codex_config_content(

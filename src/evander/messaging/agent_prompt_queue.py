@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 from collections.abc import Mapping
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -92,6 +92,9 @@ class QueuedAgentPromptRecord(BaseModel):
     model: str | None = None
     model_provider_mode: str | None = None
     queue_reason: str | None = None
+    subscription_profile_id: str | None = None
+    retry_not_before: datetime | None = None
+    capacity_deferral_count: int = Field(default=0, ge=0)
     vm_user: str = Field(min_length=1, default="agent")
     dispatch_id: str | None = None
     resume_thread_id: str | None = None
@@ -106,7 +109,7 @@ class QueuedAgentPromptRecord(BaseModel):
     updated_at: datetime = Field(default_factory=utc_now)
     coalesced_count: int = Field(default=1, ge=1)
     retry_key: str | None = None
-    retry_count: int = Field(default=1, ge=1)
+    retry_count: int = Field(default=0, ge=0)
     max_retries: int | None = Field(default=None, ge=1)
 
     @field_validator("resume_mode")
@@ -296,15 +299,66 @@ class AgentPromptQueueStore:
         record: QueuedAgentPromptRecord,
         *,
         max_retries: int = 3,
+        count_retry: bool = True,
+        coalesce: bool = True,
     ) -> QueuedAgentPromptRecord:
-        record = self.retry_ledger.claim_retry(record=record, max_retries=max_retries)
+        if count_retry:
+            record = self.retry_ledger.claim_retry(record=record, max_retries=max_retries)
 
         def updater(records: dict[str, QueuedAgentPromptRecord]) -> QueuedAgentPromptRecord:
             existing = records.get(record.queue_key)
-            if existing is not None:
+            if existing is not None and coalesce:
                 record.created_at = existing.created_at
                 record.coalesced_count = existing.coalesced_count + 1
             records[record.queue_key] = record
             return record
+
+        return self.store.update_all(updater)
+
+    def defer_capacity(
+        self,
+        record: QueuedAgentPromptRecord,
+        *,
+        queue_reason: str,
+        retry_at: datetime | None,
+    ) -> QueuedAgentPromptRecord:
+        """Persist a capacity deferral without touching the ordinary retry ledger."""
+
+        now = utc_now()
+        fallback_seconds = min(15 * 60, 15 * (2 ** min(record.capacity_deferral_count, 6)))
+        reported_retry_at = retry_at
+        if reported_retry_at is not None:
+            if reported_retry_at.tzinfo is None:
+                reported_retry_at = reported_retry_at.replace(tzinfo=UTC)
+            else:
+                reported_retry_at = reported_retry_at.astimezone(UTC)
+            if reported_retry_at <= now:
+                reported_retry_at = None
+        retry_not_before = reported_retry_at or (now + timedelta(seconds=fallback_seconds))
+        record.queue_reason = queue_reason
+        record.retry_not_before = retry_not_before
+        record.capacity_deferral_count += 1
+        record.updated_at = now
+        return self.put(record, count_retry=False, coalesce=False)
+
+    def make_subscription_profile_ready(self, profile_id: str) -> int:
+        """Make deferred work eligible after an operator-observed capacity change."""
+
+        normalized = str(profile_id or "").strip()
+        if not normalized:
+            return 0
+        now = utc_now()
+
+        def updater(records: dict[str, QueuedAgentPromptRecord]) -> int:
+            changed = 0
+            for record in records.values():
+                if record.subscription_profile_id != normalized:
+                    continue
+                if record.retry_not_before is None:
+                    continue
+                record.retry_not_before = None
+                record.updated_at = now
+                changed += 1
+            return changed
 
         return self.store.update_all(updater)

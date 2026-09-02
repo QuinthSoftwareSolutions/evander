@@ -71,6 +71,7 @@ from evander.capacity_health import (
     TelemetryError,
     TelemetryStatus,
 )
+from evander.codex_auth import CodexAuthMode
 from evander.config import GatewayConfig
 from evander.daemons.effect_orchestrator import (
     EffectExecutionRecord,
@@ -100,6 +101,10 @@ from evander.messaging.targets import (
     COMMUNICATION_TARGETS_DOMAIN,
     SqliteCommunicationTargetsRepository,
     communication_targets_db_path,
+)
+from evander.messaging.agent_prompt_queue import (
+    AgentPromptQueueStore,
+    QueuedAgentPromptRecord,
 )
 from evander.model_usage.pricing import (
     clear_model_pricing_catalog_cache,
@@ -1781,6 +1786,7 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
         "model",
         "model_provider_mode",
         "codex_auth_mode",
+        "subscription_profile_id",
         "vm_user",
         "vm_image",
         "ttl_hours",
@@ -16059,6 +16065,63 @@ def test_admin_web_agents_delete_container_session_uses_persisted_worker_url(
     assert fake_backend.deleted_sessions == ["container-session"]
     assert service.runtime.session_repository.get_session("container-session") is None
     assert repository.read_all() == {}
+
+
+def test_admin_web_owner_can_cancel_indefinitely_queued_subscription_prompt(
+    tmp_path: Path,
+) -> None:
+    service = build_admin_runtime(write_config(tmp_path))
+    service.runtime.session_repository.upsert_session(
+        SessionManifest(
+            session_id="subscription-session",
+            vm_provider="container_worker_vm",
+            vm_provider_id="subscription-target",
+            codex_auth_mode=CodexAuthMode.CHATGPT_SUBSCRIPTION,
+            subscription_profile_id="team-a",
+            allowed_tools=[],
+            expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
+            metadata={"execution_backend": "container_worker_vm"},
+        )
+    )
+    queue_store = AgentPromptQueueStore(service.config.runtime_dir / "queued-agent-prompts.json")
+    queued = queue_store.defer_capacity(
+        QueuedAgentPromptRecord(
+            queue_key="subscription-queue-1",
+            target="subscription-session",
+            vm_name="subscription-target",
+            session_id="subscription-session",
+            prompt="Resume after capacity returns",
+            effect_id="effect-subscription",
+            subscription_profile_id="team-a",
+            dispatch_id="dispatch-subscription-1",
+        ),
+        queue_reason="subscription_rate_limited",
+        retry_at=None,
+    )
+    client = TestClient(create_app(service))
+
+    locked = client.delete(
+        "/api/admin/agents/subscription-session/queued-prompts/"
+        "subscription-queue-1?backend=container_worker_vm"
+    )
+    assert locked.status_code == 403
+    assert queue_store.get(queued.queue_key) is not None
+
+    _unlock_privileged_operations(client)
+    cancelled = client.delete(
+        "/api/admin/agents/subscription-session/queued-prompts/"
+        "subscription-queue-1?backend=container_worker_vm"
+    )
+
+    assert cancelled.status_code == 200
+    assert cancelled.json() == {
+        "success": True,
+        "agent_id": "subscription-session",
+        "queue_key": "subscription-queue-1",
+        "dispatch_id": "dispatch-subscription-1",
+        "cancelled": True,
+    }
+    assert queue_store.get(queued.queue_key) is None
 
 
 def test_admin_web_agents_delete_ambiguous_vm_session_link_fails(

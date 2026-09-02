@@ -106,6 +106,49 @@ class ExitingTurnProcess(FakeTurnProcess):
         return {"turn": {"id": "turn-1", "status": "inProgress", "items": []}}
 
 
+class RateLimitedTurnProcess(FakeTurnProcess):
+    def request(
+        self,
+        method: str,
+        params: dict[str, Any] | None = None,
+        *,
+        timeout_seconds: float | None = None,
+    ) -> dict[str, Any]:
+        if method != "turn/start":
+            return super().request(method, params, timeout_seconds=timeout_seconds)
+        value = dict(params or {})
+        self.requests.append((method, value))
+        self.notification_handler(
+            "turn/completed",
+            {
+                "threadId": value["threadId"],
+                "turn": {
+                    "id": "turn-rate-limited",
+                    "status": "failed",
+                    "error": {
+                        "message": "usage rate limit reached",
+                        "resetsAt": "2026-08-01T12:30:00Z",
+                    },
+                },
+            },
+        )
+        return {"turn": {"id": "turn-rate-limited", "status": "inProgress", "items": []}}
+
+
+class RateLimitedRequestProcess(FakeTurnProcess):
+    def request(
+        self,
+        method: str,
+        params: dict[str, Any] | None = None,
+        *,
+        timeout_seconds: float | None = None,
+    ) -> dict[str, Any]:
+        if method != "turn/start":
+            return super().request(method, params, timeout_seconds=timeout_seconds)
+        self.requests.append((method, dict(params or {})))
+        raise CodexAppServerError("Codex app-server request failed: usage rate limit reached")
+
+
 def test_subscription_runner_resumes_thread_and_keeps_tokens_out_of_logs(tmp_path: Path) -> None:
     FakeTurnProcess.instances.clear()
     broker = FakeBroker()
@@ -248,6 +291,68 @@ def test_subscription_runner_fails_when_app_server_exits_before_completion(
     assert "exited before reporting turn completion" in (tmp_path / "turn.log").read_text(
         encoding="utf-8"
     )
+
+
+def test_subscription_runner_classifies_mid_turn_rate_limit_for_durable_replay(
+    tmp_path: Path,
+) -> None:
+    metadata: list[dict[str, Any]] = []
+    runner = CodexSubscriptionTurnRunner(
+        command=("codex", "app-server", "--stdio"),
+        turn=CodexTurnSpec(
+            auth_mode=CodexAuthMode.CHATGPT_SUBSCRIPTION,
+            subscription_profile_id="team-a",
+            prompt="Continue the task",
+            model="gpt-5.4",
+        ),
+        cwd="/home/agent",
+        broker=FakeBroker(),  # type: ignore[arg-type]
+        initial_tokens=CodexExternalAuthTokens("access-secret", "account-1", "plus"),
+        log_path=tmp_path / "turn.log",
+        finished_marker=tmp_path / "turn.exit",
+        metadata_callback=metadata.append,
+        process_factory=RateLimitedTurnProcess,  # type: ignore[arg-type]
+    )
+
+    runner.run()
+
+    assert (tmp_path / "turn.exit").read_text(encoding="utf-8") == "1"
+    assert metadata[-1]["subscription_profile_id"] == "team-a"
+    assert metadata[-1]["codex_subscription_deferral"] == {
+        "profile_id": "team-a",
+        "reason": "rate_limited",
+        "retry_at": "2026-08-01T12:30:00Z",
+    }
+
+
+def test_subscription_runner_classifies_rate_limit_request_error_for_durable_replay(
+    tmp_path: Path,
+) -> None:
+    metadata: list[dict[str, Any]] = []
+    runner = CodexSubscriptionTurnRunner(
+        command=("codex", "app-server", "--stdio"),
+        turn=CodexTurnSpec(
+            auth_mode=CodexAuthMode.CHATGPT_SUBSCRIPTION,
+            subscription_profile_id="team-a",
+            prompt="Continue the task",
+            model="gpt-5.4",
+        ),
+        cwd="/home/agent",
+        broker=FakeBroker(),  # type: ignore[arg-type]
+        initial_tokens=CodexExternalAuthTokens("access-secret", "account-1", "plus"),
+        log_path=tmp_path / "turn.log",
+        finished_marker=tmp_path / "turn.exit",
+        metadata_callback=metadata.append,
+        process_factory=RateLimitedRequestProcess,  # type: ignore[arg-type]
+    )
+
+    runner.run()
+
+    assert (tmp_path / "turn.exit").read_text(encoding="utf-8") == "1"
+    assert metadata[-1]["codex_subscription_deferral"] == {
+        "profile_id": "team-a",
+        "reason": "rate_limited",
+    }
 
 
 def test_subscription_runner_does_not_start_process_after_early_cancellation(

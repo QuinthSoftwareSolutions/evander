@@ -1,9 +1,37 @@
 from __future__ import annotations
 
+from datetime import datetime
 from enum import Enum
+import re
 from typing import Literal
 
-from pydantic import AnyHttpUrl, BaseModel, ConfigDict, Field, field_validator
+from pydantic import AnyHttpUrl, BaseModel, ConfigDict, Field, field_validator, model_validator
+
+
+DEFAULT_SUBSCRIPTION_PROFILE_ID = "default"
+SUBSCRIPTION_PROFILE_ID_PATTERN = re.compile(r"^[a-z0-9](?:[a-z0-9._-]{0,62}[a-z0-9])?$")
+
+
+def normalize_subscription_profile_id(
+    value: object,
+    *,
+    allow_none: bool = True,
+) -> str | None:
+    if value is None:
+        if allow_none:
+            return None
+        raise ValueError("subscription_profile_id is required")
+    text = str(value).strip()
+    if not text:
+        if allow_none:
+            return None
+        raise ValueError("subscription_profile_id is required")
+    if not SUBSCRIPTION_PROFILE_ID_PATTERN.fullmatch(text):
+        raise ValueError(
+            "subscription_profile_id must be a lowercase slug of 1-64 letters, "
+            "numbers, dots, underscores, or dashes"
+        )
+    return text
 
 
 class CodexAuthMode(str, Enum):
@@ -41,6 +69,7 @@ class CodexTurnSpec(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     auth_mode: CodexAuthMode = CodexAuthMode.METERED_API
+    subscription_profile_id: str | None = None
     prompt: str = Field(min_length=1)
     model: str = Field(min_length=1)
     resume_thread_id: str | None = None
@@ -63,6 +92,63 @@ class CodexTurnSpec(BaseModel):
             return None
         text = str(value).strip()
         return text or None
+
+    @field_validator("subscription_profile_id", mode="before")
+    @classmethod
+    def normalize_profile_id(cls, value: object) -> str | None:
+        return normalize_subscription_profile_id(value)
+
+    @model_validator(mode="after")
+    def validate_subscription_profile_mode(self) -> "CodexTurnSpec":
+        if (
+            self.subscription_profile_id is not None
+            and self.auth_mode is not CodexAuthMode.CHATGPT_SUBSCRIPTION
+        ):
+            raise ValueError("subscription_profile_id requires auth_mode='chatgpt_subscription'")
+        return self
+
+
+class CodexSubscriptionDeferral(BaseModel):
+    """Safe structured capacity result returned by a subscription worker."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    profile_id: str
+    reason: Literal["signed_out", "disabled", "unavailable", "rate_limited"]
+    retry_at: datetime | None = None
+
+    @field_validator("profile_id", mode="before")
+    @classmethod
+    def normalize_profile_id(cls, value: object) -> str:
+        return str(normalize_subscription_profile_id(value, allow_none=False))
+
+    @property
+    def queue_reason(self) -> str:
+        return f"subscription_{self.reason}"
+
+
+class CodexSubscriptionDeferredError(RuntimeError):
+    def __init__(self, deferral: CodexSubscriptionDeferral, message: str | None = None) -> None:
+        self.deferral = deferral
+        super().__init__(
+            message or f"ChatGPT subscription profile {deferral.profile_id!r} is {deferral.reason}"
+        )
+
+
+def effective_subscription_profile_id(*, session: object | None) -> str | None:
+    """Resolve profile-less legacy subscription sessions to the reserved default."""
+
+    explicit = normalize_subscription_profile_id(
+        getattr(session, "subscription_profile_id", None) if session is not None else None
+    )
+    if explicit is not None:
+        return explicit
+    mode = normalize_codex_auth_mode(
+        getattr(session, "codex_auth_mode", None) if session is not None else None
+    )
+    if mode is CodexAuthMode.CHATGPT_SUBSCRIPTION:
+        return DEFAULT_SUBSCRIPTION_PROFILE_ID
+    return None
 
 
 def effective_codex_auth_mode(*, session: object | None, config: object) -> CodexAuthMode:

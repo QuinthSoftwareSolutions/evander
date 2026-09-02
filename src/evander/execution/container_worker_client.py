@@ -10,6 +10,7 @@ from urllib.parse import quote
 
 import httpx
 
+from evander.codex_auth import CodexSubscriptionDeferral
 from evander.worker.models import (
     WorkerFileWriteRecord,
     WorkerFileWriteRequest,
@@ -52,6 +53,19 @@ class ContainerWorkerClientError(RuntimeError):
         self.status_code = status_code
 
 
+class CodexSubscriptionDeferredClientError(ContainerWorkerClientError):
+    def __init__(
+        self,
+        message: str,
+        *,
+        deferral: CodexSubscriptionDeferral,
+        payload: dict[str, Any] | None = None,
+        status_code: int | None = None,
+    ) -> None:
+        super().__init__(message, payload=payload, status_code=status_code)
+        self.deferral = deferral
+
+
 class ContainerWorkerClient:
     def __init__(
         self,
@@ -90,6 +104,48 @@ class ContainerWorkerClient:
     def codex_auth_status(self) -> dict[str, Any]:
         response = self._request("GET", "/v1/codex-auth")
         return self._json_dict(response, operation="read Codex auth status")
+
+    def list_codex_auth_profiles(self) -> dict[str, Any]:
+        response = self._request("GET", "/v1/codex-auth/profiles")
+        return self._json_dict(response, operation="list Codex auth profiles")
+
+    def create_codex_auth_profile(self, payload: dict[str, Any]) -> dict[str, Any]:
+        response = self._request("POST", "/v1/codex-auth/profiles", json=payload)
+        return self._json_dict(response, operation="create Codex auth profile")
+
+    def codex_auth_profile_status(self, profile_id: str) -> dict[str, Any]:
+        encoded = quote(str(profile_id), safe="")
+        response = self._request("GET", f"/v1/codex-auth/profiles/{encoded}")
+        return self._json_dict(response, operation="read Codex auth profile")
+
+    def patch_codex_auth_profile(self, profile_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        encoded = quote(str(profile_id), safe="")
+        response = self._request("PATCH", f"/v1/codex-auth/profiles/{encoded}", json=payload)
+        return self._json_dict(response, operation="update Codex auth profile")
+
+    def start_codex_profile_device_login(self, profile_id: str) -> dict[str, Any]:
+        encoded = quote(str(profile_id), safe="")
+        response = self._request("POST", f"/v1/codex-auth/profiles/{encoded}/device-login")
+        return self._json_dict(response, operation="start Codex profile device login")
+
+    def codex_profile_device_login_status(self, profile_id: str, login_id: str) -> dict[str, Any]:
+        profile = quote(str(profile_id), safe="")
+        login = quote(str(login_id), safe="")
+        response = self._request("GET", f"/v1/codex-auth/profiles/{profile}/device-login/{login}")
+        return self._json_dict(response, operation="read Codex profile device login")
+
+    def cancel_codex_profile_device_login(self, profile_id: str, login_id: str) -> dict[str, Any]:
+        profile = quote(str(profile_id), safe="")
+        login = quote(str(login_id), safe="")
+        response = self._request(
+            "DELETE", f"/v1/codex-auth/profiles/{profile}/device-login/{login}"
+        )
+        return self._json_dict(response, operation="cancel Codex profile device login")
+
+    def logout_codex_auth_profile(self, profile_id: str) -> dict[str, Any]:
+        encoded = quote(str(profile_id), safe="")
+        response = self._request("DELETE", f"/v1/codex-auth/profiles/{encoded}/session")
+        return self._json_dict(response, operation="log out Codex auth profile")
 
     def start_codex_device_login(self) -> dict[str, Any]:
         response = self._request("POST", "/v1/codex-auth/device-login")
@@ -428,11 +484,26 @@ class ContainerWorkerClient:
                 error_payload = response.json()
             except ValueError:
                 error_payload = None
+            safe_payload = error_payload if isinstance(error_payload, dict) else None
+            deferral_payload = safe_payload.get("deferral") if safe_payload else None
+            if isinstance(deferral_payload, dict):
+                try:
+                    deferral = CodexSubscriptionDeferral.model_validate(deferral_payload)
+                except ValueError:
+                    deferral = None
+                if deferral is not None:
+                    raise CodexSubscriptionDeferredClientError(
+                        f"container worker deferred subscription work for profile "
+                        f"{deferral.profile_id}: {deferral.reason}",
+                        deferral=deferral,
+                        payload=safe_payload,
+                        status_code=response.status_code,
+                    )
             raise ContainerWorkerClientError(
                 f"container worker {method_normalized} {path} returned HTTP "
                 f"{response.status_code}: "
                 f"{self._safe_response_text(response)}",
-                payload=error_payload if isinstance(error_payload, dict) else None,
+                payload=safe_payload,
                 status_code=response.status_code,
             )
         return response

@@ -129,6 +129,7 @@ def _compact_agent_record_payload(
             "target_name",
             "session_id",
             "directory_path",
+            "subscription_profile_id",
             "status",
             "started_at",
             "finished_at",
@@ -445,6 +446,54 @@ def agent_routes(
             }
         )
 
+    async def cancel_queued_prompt(request: Request) -> JSONResponse:
+        agent_id = request.path_params["agent_id"]
+        queue_key = request.path_params["queue_key"]
+        try:
+            directory_path = await run_in_threadpool(
+                agent_directory_path,
+                agent_id,
+                backend=_string_query(request, "backend"),
+            )
+            if error_response := require_owner_privileged(request, directory_path=directory_path):
+                return error_response
+            from evander.messaging.agent_prompt_queue import (
+                AgentPromptQueueStore,
+                queued_agent_prompt_dispatch_id,
+            )
+
+            store = AgentPromptQueueStore(service.runtime_dir / "queued-agent-prompts.json")
+            record = store.get(queue_key)
+            if record is None:
+                return json_error("Queued prompt not found.", status_code=404)
+            agent = await run_in_threadpool(
+                service.vm_agent_admin.get_agent,
+                agent_id,
+                backend=_string_query(request, "backend"),
+                directory_path=directory_path,
+                reconcile_containers=False,
+                omit_vm_state=True,
+            )
+            candidates = service.vm_agent_admin._agent_prompt_queue_candidates(agent)
+            if not service.vm_agent_admin._agent_prompt_queue_record_matches(
+                record, candidates=candidates
+            ):
+                return json_error("Queued prompt does not belong to this agent.", status_code=404)
+            dispatch_id = queued_agent_prompt_dispatch_id(record)
+            if not store.delete_if_dispatch_id(queue_key, dispatch_id):
+                return json_error("Queued prompt changed; refresh and retry.", status_code=409)
+        except ValueError as exc:
+            return json_error(str(exc), status_code=400)
+        return JSONResponse(
+            {
+                "success": True,
+                "agent_id": agent_id,
+                "queue_key": queue_key,
+                "dispatch_id": dispatch_id,
+                "cancelled": True,
+            }
+        )
+
     async def get_agent_log(request: Request) -> JSONResponse:
         agent_id = request.path_params["agent_id"]
         backend = _string_query(request, "backend")
@@ -690,6 +739,11 @@ def agent_routes(
             "/api/admin/agents/{agent_id:str}/executions",
             get_agent_executions,
             methods=["GET"],
+        ),
+        Route(
+            "/api/admin/agents/{agent_id:str}/queued-prompts/{queue_key:path}",
+            cancel_queued_prompt,
+            methods=["DELETE"],
         ),
         Route("/api/admin/agents/{agent_id:str}", get_agent, methods=["GET"]),
         Route("/api/admin/agents/{agent_id:str}", patch_agent, methods=["PATCH"]),

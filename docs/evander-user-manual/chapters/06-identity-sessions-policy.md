@@ -193,11 +193,12 @@ permission is the union of matching group assignments and matching direct workfl
 inheritance is downward only: an assignment on `mission-control` does not authorize its parent or
 sibling.
 
-Some resources are worker-global rather than directory-owned. In particular, the one ChatGPT
-subscription account shared by a container worker can be inspected, signed in, cancelled during
-login, or signed out only by an authenticated operator with privileged operations unlocked and
-effective `admin.owner` permission at `root`. Ownership of only a child directory is insufficient,
-because changing that account affects subscription-mode agents from every directory on the worker.
+Some resources are worker-global rather than directory-owned. In particular, named ChatGPT
+subscription profiles on a container worker can be created, enabled or disabled, signed in,
+cancelled during login, or signed out only by an authenticated operator with privileged operations
+unlocked and effective `admin.owner` permission at `root`. Ownership of only a child directory is
+insufficient because directories select infrastructure, not profile access. Each session's profile
+binding is immutable, and the first successful login pins that profile's OpenAI account ID.
 
 ### Privileged-operation lock implementation
 
@@ -350,8 +351,8 @@ human's group does not automatically revoke an already issued agent session.
   scope, and privileged lock.
 - `src/evander/admin/web/users.py` and `tests/test_admin_web_user_store.py` — user/group
   administration, bootstrap, migration, and owner protection.
-- `src/evander/admin/web/codex_auth.py` — privileged root-owner authorization for the worker-global
-  ChatGPT subscription account.
+- `src/evander/admin/web/codex_auth.py` — privileged root-owner authorization for worker-owned
+  ChatGPT subscription profiles.
 - `src/evander/admin/services/session_helpers.py` and
   `frontend/admin-web/src/features/sessions/SessionsScreen.tsx` — canonical session-policy
   updates and explicit legacy communication conversion.

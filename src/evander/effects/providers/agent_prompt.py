@@ -16,6 +16,7 @@ from evander.agent_context_retry import (
     context_retry_target_chars,
 )
 from evander.config import GatewayConfig
+from evander.codex_auth import CodexSubscriptionDeferral
 from evander.events.models import NODE_OUTPUTS_CONTEXT_KEY
 from evander.events.provider_models import AgentPromptEffectDefinition
 from evander.execution import (
@@ -23,6 +24,9 @@ from evander.execution import (
     ExecutionSpec,
     ExecutionStatusKind,
     build_execution_backend,
+)
+from evander.execution.container_worker_client import (
+    CodexSubscriptionDeferredClientError,
 )
 from evander.local_inference_capacity import (
     LOCAL_INFERENCE_QUEUE_REASON,
@@ -690,6 +694,16 @@ class AgentPromptEffectProvider(EffectProviderBase):
                                     if codex_turn is not None
                                     else {}
                                 ),
+                                **(
+                                    {
+                                        "subscription_profile_id": (
+                                            codex_turn.subscription_profile_id
+                                        )
+                                    }
+                                    if codex_turn is not None
+                                    and codex_turn.subscription_profile_id is not None
+                                    else {}
+                                ),
                             },
                         )
                     )
@@ -697,6 +711,43 @@ class AgentPromptEffectProvider(EffectProviderBase):
         except Exception as exc:
             if runtime_dir is not None:
                 local_inference_capacity_store(runtime_dir).release(capacity_admission.slot_id)
+            if isinstance(exc, CodexSubscriptionDeferredClientError):
+                deferral = exc.deferral
+                record = enqueue_agent_prompt(
+                    runtime_dir=runtime_dir,
+                    target=self._normalize_optional_string(payload.get("target")) or session_id,
+                    vm_name=session_id,
+                    session_id=session_id,
+                    prompt=prompt,
+                    model=resolved_model,
+                    model_provider_mode=effective_config.model_provider_mode,
+                    queue_reason=deferral.queue_reason,
+                    subscription_profile_id=deferral.profile_id,
+                    retry_not_before=deferral.retry_at,
+                    capacity_deferral=True,
+                    vm_user="agent",
+                    dispatch_id=dispatch_id,
+                    resume_thread_id=resume_thread_id,
+                    resume_thread_metadata_key=resume_thread_metadata_key,
+                    resume_thread_metadata_collection=resume_thread_metadata_collection,
+                    effect_id=self._effect().id,
+                    queue_key=f"{self._effect().id}:{dispatch_id}",
+                    metadata=queue_metadata,
+                    workflow_context=workflow_context,
+                    workflow_for_execution_ids=workflow_for_execution_ids,
+                )
+                return {
+                    "dispatch_id": dispatch_id,
+                    "success": True,
+                    "queued": True,
+                    "queue_key": record.queue_key,
+                    "queue_reason": record.queue_reason,
+                    "retry_not_before": record.retry_not_before,
+                    "subscription_profile_id": record.subscription_profile_id,
+                    "session_id": session_id,
+                    "model": resolved_model,
+                    "model_provider_mode": effective_config.model_provider_mode,
+                }
             detail = self._normalize_optional_string(exc) or type(exc).__name__
             message = (
                 "effect:agent:prompt container dispatch failed "
@@ -884,6 +935,15 @@ class AgentPromptEffectProvider(EffectProviderBase):
                 execution_id=execution_id,
             )
             return 0
+        if cls._defer_subscription_waiting_record(
+            worker=worker,
+            record=record,
+            backend=backend,
+            status=status,
+            session_id=session_id,
+            execution_id=execution_id,
+        ):
+            return 1
         logs = ""
         try:
             logs = backend.get_log_snapshot(execution_id, lines=400)
@@ -918,6 +978,106 @@ class AgentPromptEffectProvider(EffectProviderBase):
         )
         cls._finalize_waiting_record(worker=worker, record=record, queue_record=queue_record)
         return 1
+
+    @classmethod
+    def _defer_subscription_waiting_record(
+        cls,
+        *,
+        worker: Any,
+        record: Any,
+        backend: Any,
+        status: Any,
+        session_id: str,
+        execution_id: str,
+    ) -> bool:
+        metadata = getattr(status, "metadata", None)
+        raw_deferral = (
+            metadata.get("codex_subscription_deferral") if isinstance(metadata, Mapping) else None
+        )
+        if not isinstance(raw_deferral, Mapping):
+            return False
+        try:
+            deferral = CodexSubscriptionDeferral.model_validate(raw_deferral)
+        except ValueError:
+            return False
+        runtime_dir = resolve_runtime_dir(worker)
+        prompt = cls._record_text_value(record, "prompt")
+        if runtime_dir is None or not prompt:
+            return False
+        dispatch_id = str(record.outputs.get("dispatch_id") or "").strip()
+        target = cls._record_text_value(record, "target") or session_id
+        vm_name = cls._record_text_value(record, "vm_name") or session_id
+        queue_key = (
+            cls._record_text_value(record, "queue_key")
+            or f"{record.effect_id}:{dispatch_id}:subscription"
+        )
+        input_payload = getattr(record, "input_payload", None)
+        workflow_context = workflow_context_from_sources(
+            execution_context=input_payload,
+            input_payload=input_payload,
+            context_key=NODE_OUTPUTS_CONTEXT_KEY,
+        )
+        workflow_for_execution_ids = workflow_for_execution_ids_from_sources(
+            execution_context=input_payload,
+            input_payload=input_payload,
+            context_key=_FOR_EXECUTION_IDS_PAYLOAD_KEY,
+        )
+        queued = enqueue_agent_prompt(
+            runtime_dir=runtime_dir,
+            target=target,
+            vm_name=vm_name,
+            session_id=session_id,
+            prompt=prompt,
+            model=cls._record_text_value(record, "model"),
+            model_provider_mode=cls._record_text_value(record, "model_provider_mode"),
+            queue_reason=deferral.queue_reason,
+            subscription_profile_id=deferral.profile_id,
+            retry_not_before=deferral.retry_at,
+            capacity_deferral=True,
+            vm_user=cls._record_text_value(record, "vm_user") or "agent",
+            dispatch_id=dispatch_id or None,
+            resume_thread_id=cls._record_text_value(record, "resume_thread_id"),
+            resume_mode=cls._record_text_value(record, "resume_mode"),
+            resume_thread_metadata_key=cls._record_text_value(record, "resume_thread_metadata_key"),
+            resume_thread_metadata_collection=cls._record_text_value(
+                record, "resume_thread_metadata_collection"
+            ),
+            effect_id=str(record.effect_id),
+            queue_key=queue_key,
+            metadata={
+                "workflow_run_id": str(getattr(record, "trace_id", "") or ""),
+            },
+            workflow_context=workflow_context,
+            workflow_for_execution_ids=workflow_for_execution_ids,
+        )
+        if status.status != ExecutionStatusKind.DESTROYED:
+            try:
+                backend.destroy(execution_id)
+            except Exception:
+                pass
+        finished_at = datetime.now(UTC)
+        record.status = "succeeded"
+        record.outputs = {
+            **record.outputs,
+            "success": True,
+            "queued": True,
+            "queue_key": queued.queue_key,
+            "queue_reason": queued.queue_reason,
+            "subscription_profile_id": queued.subscription_profile_id,
+            "retry_not_before": queued.retry_not_before,
+        }
+        record.error = None
+        record.finished_at = finished_at
+        worker.execution_store.put(record)
+        worker._update_event_delivery_state(record.event_id)
+        if dispatch_id:
+            clear_model_usage_correlation_context(
+                runtime_dir=runtime_dir,
+                dispatch_id=dispatch_id,
+            )
+        cls._release_enqueue_prompt_lock(worker=worker, record=record, outputs=record.outputs)
+        cls._release_local_inference_capacity(worker=worker, record=record, outputs=record.outputs)
+        return True
 
     @classmethod
     def _interrupt_stalled_container_active_tool_if_expired(
@@ -976,7 +1136,11 @@ class AgentPromptEffectProvider(EffectProviderBase):
             started_at = datetime.fromisoformat(normalized)
         except ValueError:
             return None
-        return started_at.replace(tzinfo=UTC) if started_at.tzinfo is None else started_at.astimezone(UTC)
+        return (
+            started_at.replace(tzinfo=UTC)
+            if started_at.tzinfo is None
+            else started_at.astimezone(UTC)
+        )
 
     @classmethod
     def _timeout_container_waiting_record_if_expired(
@@ -1734,6 +1898,11 @@ class AgentPromptEffectProvider(EffectProviderBase):
                             "model": model,
                             "model_provider_mode": getattr(config, "model_provider_mode", None),
                             "codex_auth_mode": codex_turn.auth_mode.value,
+                            **(
+                                {"subscription_profile_id": (codex_turn.subscription_profile_id)}
+                                if codex_turn.subscription_profile_id is not None
+                                else {}
+                            ),
                             "context_retry_mode": CONTEXT_RETRY_MODE_REDUCED,
                             "context_retry_attempt": attempt + 1,
                             "context_retry_max_attempts": max_attempts,

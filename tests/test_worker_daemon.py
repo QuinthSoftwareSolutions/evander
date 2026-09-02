@@ -5365,6 +5365,15 @@ def test_subscription_job_uses_worker_owned_read_only_completion_signal(
             return ["codex-app-server"]
 
     class SubscriptionBroker:
+        def status(self):
+            return {
+                "signed_in": True,
+                "available": True,
+                "account_id": "account-1",
+                "plan_type": "plus",
+                "rate_limits": [],
+            }
+
         def external_tokens(self, **kwargs):
             del kwargs
             return CodexExternalAuthTokens("access-secret", "account-1", "plus")

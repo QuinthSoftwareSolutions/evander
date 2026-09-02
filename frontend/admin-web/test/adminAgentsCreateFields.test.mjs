@@ -14,8 +14,8 @@ const agentCreateShared = readFileSync(
   new URL("../src/features/agents/agentCreateShared.ts", import.meta.url),
   "utf8",
 );
-const codexAuthPanel = readFileSync(
-  new URL("../src/features/agents/CodexAuthPanel.tsx", import.meta.url),
+const subscriptionsPage = readFileSync(
+  new URL("../src/features/subscriptions/SubscriptionsPage.tsx", import.meta.url),
   "utf8",
 );
 const sessionGrantEditors = readFileSync(
@@ -130,31 +130,23 @@ test("container Codex usage can switch per agent without transporting credential
   );
   assert.match(editPayloadSource, /codex_auth_mode:/);
   assert.doesNotMatch(editPayloadSource, /allowed_tools|model:|ttl_hours|labels:|web_search_enabled|grants|http_targets/);
-  assert.doesNotMatch(codexAuthPanel, /accessToken|refreshToken|OPENAI_API_KEY/);
-  assert.match(codexAuthPanel, /\/api\/admin\/codex-auth\/device-login/);
-  assert.match(codexAuthPanel, /Shared worker ChatGPT subscription account/);
-  assert.match(codexAuthPanel, /not\s+specific to the selected agent/);
-  assert.match(codexAuthPanel, /does not switch any agent to subscription usage/);
-  assert.match(codexAuthPanel, /selectedAgentUsage\?\.mode === "metered_api"/);
-  assert.match(codexAuthPanel, /selected agent still metered/);
-  assert.match(codexAuthPanel, /is\s+still using Metered API/);
-  assert.match(codexAuthPanel, /suffix\(login\.directoryPath\)/);
-  assert.match(codexAuthPanel, /const originDirectoryPath = login\.directoryPath;/);
-  assert.match(codexAuthPanel, /setLogin\(\{ \.\.\.payload, directoryPath: originDirectoryPath \}\);/);
-  assert.match(codexAuthPanel, /login\?\.status === "pending"/);
+  assert.doesNotMatch(subscriptionsPage, /accessToken|refreshToken|OPENAI_API_KEY/);
+  assert.match(subscriptionsPage, /\/api\/admin\/codex-subscriptions/);
+  assert.match(subscriptionsPage, /Worker-owned authentication/);
+  assert.match(subscriptionsPage, /Pinned account id/);
+  assert.match(subscriptionsPage, /Rate limits/);
+  assert.match(subscriptionsPage, /Queued prompts/);
+  assert.match(subscriptionsPage, /login\.status === "pending"/);
 });
 
-test("shared worker auth is page-wide and agent usage shows its effective source", () => {
-  const globalControls = sourceBetweenIn(
-    agentsPage,
-    '<section className="agents-global-controls" aria-label="Shared worker account">',
-    '<section className="feature-sidebar">',
-  );
-  assert.match(globalControls, /<CodexAuthPanel/);
-  assert.doesNotMatch(
-    sourceBetweenIn(agentsPage, '<section className="feature-content">', "{showCreateForm ?"),
-    /<CodexAuthPanel/,
-  );
+test("worker auth is profile-aware and agent usage shows its immutable binding", () => {
+  assert.doesNotMatch(agentsPage, /<CodexAuthPanel/);
+  assert.match(agentCreateDialog, /showCreateSubscriptionProfile/);
+  assert.match(agentCreateDialog, /Select a ChatGPT subscription profile/);
+  assert.match(agentCreateDialog, /subscription_profiles/);
+  assert.match(agentsPage, /Subscription profile/);
+  assert.match(agentsPage, /effective_subscription_profile_id/);
+  assert.match(agentsPage, /Profile \$\{selectedAgentPolicy\.effective_subscription_profile_id\} is immutable/);
   assert.match(agentsPage, /function codexUsageForAgent\(/);
   assert.match(agentsPage, /hostRecord\(agent\.host, "codex_usage"\)/);
   assert.match(agentsPage, /effective_codex_auth_mode/);

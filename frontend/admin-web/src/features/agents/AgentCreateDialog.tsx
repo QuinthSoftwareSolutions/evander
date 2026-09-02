@@ -148,6 +148,11 @@ function resetBackendSensitiveFields(
       (!nextAgentProvider || nextAgentProvider === "codex")
         ? form.codexAuthMode
         : "",
+    subscriptionProfileId:
+      nextBackend === "container_worker_vm" &&
+      (!nextAgentProvider || nextAgentProvider === "codex")
+        ? form.subscriptionProfileId
+        : "",
   };
 }
 
@@ -218,6 +223,16 @@ export function AgentCreateDialog({
   const showCreateCodexAuthMode =
     createForm.backend === "container_worker_vm" &&
     (!createForm.agentProvider || createForm.agentProvider === "codex");
+  const effectiveCreateCodexAuthMode = createForm.codexAuthMode
+    || createOptions?.container_worker.codex_auth_mode
+    || "metered_api";
+  const effectiveCreateModelProviderMode = createForm.modelProviderMode
+    || createOptions?.container_worker.model_provider_mode
+    || "openai_public";
+  const createSubscriptionModeSelected = showCreateCodexAuthMode
+    && effectiveCreateCodexAuthMode === "chatgpt_subscription";
+  const showCreateSubscriptionProfile = createSubscriptionModeSelected
+    && effectiveCreateModelProviderMode === "openai_public";
   const createCommunicationTargetOptions = createOptions?.communication_targets ?? [];
   const createEmailMailboxOptions = createOptions?.email_mailboxes ?? [];
 
@@ -240,6 +255,14 @@ export function AgentCreateDialog({
       );
       return;
     }
+    if (createSubscriptionModeSelected && effectiveCreateModelProviderMode !== "openai_public") {
+      setInlineValidation("ChatGPT subscription profiles require the Public OpenAI model relay.");
+      return;
+    }
+    if (createSubscriptionModeSelected && !createForm.subscriptionProfileId.trim()) {
+      setInlineValidation("Select a ChatGPT subscription profile.");
+      return;
+    }
     if (createLabelsValidationError) {
       setInlineValidation(createLabelsValidationError);
       return;
@@ -248,7 +271,16 @@ export function AgentCreateDialog({
       setInlineValidation(createHttpTargetsValidationError);
       return;
     }
-    const submittedForm = createForm;
+    const submittedForm = {
+      ...createForm,
+      codexAuthMode:
+        createSubscriptionModeSelected && !createForm.codexAuthMode
+          ? "chatgpt_subscription"
+          : createForm.codexAuthMode,
+      subscriptionProfileId: createSubscriptionModeSelected
+        ? createForm.subscriptionProfileId
+        : "",
+    };
     const createPayload = buildCreatePayload(submittedForm, directoryPath);
     const targetLabel = agentCreateTargetLabel(submittedForm);
     setSubmitting(true);
@@ -319,6 +351,10 @@ export function AgentCreateDialog({
                           nextAgentProvider && nextAgentProvider !== "codex"
                             ? ""
                             : current.codexAuthMode,
+                        subscriptionProfileId:
+                          nextAgentProvider && nextAgentProvider !== "codex"
+                            ? ""
+                            : current.subscriptionProfileId,
                       };
                     })
                   }
@@ -369,6 +405,10 @@ export function AgentCreateDialog({
                       setCreateForm((current) => ({
                         ...current,
                         codexAuthMode: event.target.value,
+                        subscriptionProfileId:
+                          event.target.value === "chatgpt_subscription"
+                            ? current.subscriptionProfileId
+                            : "",
                       }))
                     }
                   >
@@ -377,6 +417,36 @@ export function AgentCreateDialog({
                     <option value="chatgpt_subscription">ChatGPT subscription</option>
                   </select>
                 </span>
+              </label>
+            ) : null}
+            {showCreateSubscriptionProfile ? (
+              <label className="field-stack">
+                <CreateFieldLabel tooltip="Worker-owned ChatGPT account binding. This selection is fixed for the lifetime of the agent session.">
+                  Subscription profile
+                </CreateFieldLabel>
+                <span className="select-field-control">
+                  <select
+                    value={createForm.subscriptionProfileId}
+                    onChange={(event) =>
+                      setCreateForm((current) => ({
+                        ...current,
+                        subscriptionProfileId: event.target.value,
+                      }))
+                    }
+                  >
+                    <option value="">Select a profile</option>
+                    {(createOptions?.container_worker.subscription_profiles ?? []).map((profile) => (
+                      <option key={profile.profile_id} value={profile.profile_id}>
+                        {profile.display_name} ({profile.profile_id})
+                      </option>
+                    ))}
+                  </select>
+                </span>
+                {(createOptions?.container_worker.subscription_profiles ?? []).length === 0 ? (
+                  <span className="field-description">
+                    No enabled profiles are available on this worker. Create or enable one on Subscriptions.
+                  </span>
+                ) : null}
               </label>
             ) : null}
             <label className="field-stack">

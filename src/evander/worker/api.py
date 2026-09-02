@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import subprocess
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from contextlib import asynccontextmanager
 from collections.abc import AsyncIterator
 from pathlib import Path
@@ -12,6 +12,8 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import JSONResponse, PlainTextResponse, Response
 from starlette.routing import Route
+
+from evander.codex_auth import CodexSubscriptionDeferredError
 
 from .models import (
     DEFAULT_WORKER_ROOT,
@@ -26,6 +28,7 @@ from .models import (
     WorkerTaskWorktreeRequest,
 )
 from .codex_auth_broker import CodexAuthBroker, CodexAuthBrokerError
+from .codex_auth_profiles import CodexAuthBrokerRegistry
 from .codex_egress_proxy import RestrictedCodexEgressProxy
 from .runtime import ContainerRuntime
 from .sandbox_profile import WorkerSandboxProfile
@@ -70,6 +73,94 @@ def build_worker_app(daemon: WorkerDaemon) -> Starlette:
     async def codex_auth_status(_: Request) -> JSONResponse:
         return JSONResponse(await run_in_threadpool(daemon.codex_auth_status))
 
+    async def list_codex_auth_profiles(_: Request) -> JSONResponse:
+        return JSONResponse(await run_in_threadpool(daemon.list_codex_auth_profiles))
+
+    async def create_codex_auth_profile(request: Request) -> JSONResponse:
+        try:
+            payload = await request.json()
+            if not isinstance(payload, dict):
+                raise ValueError("profile request must be an object")
+            record = await run_in_threadpool(daemon.create_codex_auth_profile, payload)
+        except ValueError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=400)
+        except CodexAuthBrokerError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=409)
+        return JSONResponse(record, status_code=201)
+
+    async def codex_auth_profile_status(request: Request) -> JSONResponse:
+        try:
+            record = await run_in_threadpool(
+                daemon.codex_auth_profile_status,
+                request.path_params["profile_id"],
+            )
+        except (ValueError, CodexAuthBrokerError) as exc:
+            return JSONResponse({"error": str(exc)}, status_code=404)
+        return JSONResponse(record)
+
+    async def patch_codex_auth_profile(request: Request) -> JSONResponse:
+        try:
+            payload = await request.json()
+            if not isinstance(payload, dict):
+                raise ValueError("profile request must be an object")
+            record = await run_in_threadpool(
+                daemon.patch_codex_auth_profile,
+                request.path_params["profile_id"],
+                payload,
+            )
+        except ValueError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=400)
+        except CodexAuthBrokerError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=404)
+        return JSONResponse(record)
+
+    async def start_codex_profile_device_login(request: Request) -> JSONResponse:
+        try:
+            record = await run_in_threadpool(
+                daemon.start_codex_profile_device_login,
+                request.path_params["profile_id"],
+            )
+        except CodexSubscriptionDeferredError as exc:
+            return JSONResponse(
+                {"error": str(exc), "deferral": exc.deferral.model_dump(mode="json")},
+                status_code=409,
+            )
+        except (ValueError, CodexAuthBrokerError) as exc:
+            return JSONResponse({"error": str(exc)}, status_code=502)
+        return JSONResponse(record, status_code=201)
+
+    async def codex_profile_device_login_status(request: Request) -> JSONResponse:
+        try:
+            record = await run_in_threadpool(
+                daemon.codex_profile_device_login_status,
+                request.path_params["profile_id"],
+                request.path_params["login_id"],
+            )
+        except (ValueError, CodexAuthBrokerError) as exc:
+            return JSONResponse({"error": str(exc)}, status_code=404)
+        return JSONResponse(record)
+
+    async def cancel_codex_profile_device_login(request: Request) -> JSONResponse:
+        try:
+            record = await run_in_threadpool(
+                daemon.cancel_codex_profile_device_login,
+                request.path_params["profile_id"],
+                request.path_params["login_id"],
+            )
+        except (ValueError, CodexAuthBrokerError) as exc:
+            return JSONResponse({"error": str(exc)}, status_code=404)
+        return JSONResponse(record)
+
+    async def logout_codex_profile(request: Request) -> JSONResponse:
+        try:
+            record = await run_in_threadpool(
+                daemon.logout_codex_profile,
+                request.path_params["profile_id"],
+            )
+        except (ValueError, CodexAuthBrokerError) as exc:
+            return JSONResponse({"error": str(exc)}, status_code=502)
+        return JSONResponse(record)
+
     async def start_codex_device_login(_: Request) -> JSONResponse:
         try:
             record = await run_in_threadpool(daemon.start_codex_device_login)
@@ -111,6 +202,11 @@ def build_worker_app(daemon: WorkerDaemon) -> Starlette:
             record = await run_in_threadpool(daemon.start_job, job_request)
         except ValueError as exc:
             return JSONResponse({"error": str(exc)}, status_code=400)
+        except CodexSubscriptionDeferredError as exc:
+            return JSONResponse(
+                {"error": str(exc), "deferral": exc.deferral.model_dump(mode="json")},
+                status_code=429,
+            )
         except CodexAuthBrokerError as exc:
             return JSONResponse({"error": str(exc)}, status_code=409)
         except RuntimeError as exc:
@@ -332,9 +428,7 @@ def build_worker_app(daemon: WorkerDaemon) -> Starlette:
             if not isinstance(payload, dict):
                 raise ValueError("interrupt request must be an object")
             max_elapsed_raw = payload.get("max_elapsed_seconds")
-            max_elapsed_seconds = (
-                float(max_elapsed_raw) if max_elapsed_raw is not None else None
-            )
+            max_elapsed_seconds = float(max_elapsed_raw) if max_elapsed_raw is not None else None
             if max_elapsed_seconds is not None and max_elapsed_seconds <= 0:
                 raise ValueError("max_elapsed_seconds must be greater than zero")
             reason = str(payload.get("reason") or "operator_requested").strip()
@@ -428,6 +522,38 @@ def build_worker_app(daemon: WorkerDaemon) -> Starlette:
             Route("/healthz", health, methods=["GET"]),
             Route("/v1/telemetry", telemetry, methods=["GET"]),
             Route("/v1/codex-auth", codex_auth_status, methods=["GET"]),
+            Route("/v1/codex-auth/profiles", list_codex_auth_profiles, methods=["GET"]),
+            Route("/v1/codex-auth/profiles", create_codex_auth_profile, methods=["POST"]),
+            Route(
+                "/v1/codex-auth/profiles/{profile_id}",
+                codex_auth_profile_status,
+                methods=["GET"],
+            ),
+            Route(
+                "/v1/codex-auth/profiles/{profile_id}",
+                patch_codex_auth_profile,
+                methods=["PATCH"],
+            ),
+            Route(
+                "/v1/codex-auth/profiles/{profile_id}/device-login",
+                start_codex_profile_device_login,
+                methods=["POST"],
+            ),
+            Route(
+                "/v1/codex-auth/profiles/{profile_id}/device-login/{login_id}",
+                codex_profile_device_login_status,
+                methods=["GET"],
+            ),
+            Route(
+                "/v1/codex-auth/profiles/{profile_id}/device-login/{login_id}",
+                cancel_codex_profile_device_login,
+                methods=["DELETE"],
+            ),
+            Route(
+                "/v1/codex-auth/profiles/{profile_id}/session",
+                logout_codex_profile,
+                methods=["DELETE"],
+            ),
             Route("/v1/codex-auth/device-login", start_codex_device_login, methods=["POST"]),
             Route(
                 "/v1/codex-auth/device-login/{login_id}",
@@ -526,7 +652,9 @@ def create_app(
     mssql_container_host: str = "172.17.0.1",
     mssql_sqlcmd_path: str = "sqlcmd",
     codex_auth_broker: CodexAuthBroker | None = None,
+    codex_auth_registry: CodexAuthBrokerRegistry | None = None,
     codex_auth_command: Sequence[str] | None = None,
+    codex_auth_command_factory: Callable[[str, Path], Sequence[str]] | None = None,
     codex_egress_proxy_url: str | None = None,
     codex_egress_proxy: RestrictedCodexEgressProxy | None = None,
     codex_egress_proxy_bind_host: str | None = None,
@@ -552,7 +680,9 @@ def create_app(
         mssql_container_host=mssql_container_host,
         mssql_sqlcmd_path=mssql_sqlcmd_path,
         codex_auth_broker=codex_auth_broker,
+        codex_auth_registry=codex_auth_registry,
         codex_auth_command=codex_auth_command,
+        codex_auth_command_factory=codex_auth_command_factory,
         codex_egress_proxy_url=codex_egress_proxy_url,
         codex_egress_proxy=codex_egress_proxy,
         codex_egress_proxy_bind_host=codex_egress_proxy_bind_host,

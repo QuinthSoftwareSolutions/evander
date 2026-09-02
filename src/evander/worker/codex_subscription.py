@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import json
 import os
 import shutil
 import stat
@@ -10,7 +11,11 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
-from evander.codex_auth import CodexTurnSpec
+from evander.codex_auth import (
+    DEFAULT_SUBSCRIPTION_PROFILE_ID,
+    CodexSubscriptionDeferral,
+    CodexTurnSpec,
+)
 
 from .codex_app_server import CodexAppServerError, CodexAppServerProcess
 from .codex_auth_broker import CodexAuthBroker, CodexExternalAuthTokens
@@ -52,6 +57,7 @@ class CodexSubscriptionTurnRunner:
         self._turn_result: dict[str, Any] | None = None
         self._thread_id: str | None = None
         self._turn_id: str | None = None
+        self._deferral: CodexSubscriptionDeferral | None = None
         self._process: CodexAppServerProcess | None = None
         self._thread: threading.Thread | None = None
         self._log_lock = threading.Lock()
@@ -154,9 +160,22 @@ class CodexSubscriptionTurnRunner:
                 message = (
                     _turn_error_message(error) or f"turn ended with status {status or 'unknown'}"
                 )
+                self._deferral = _turn_capacity_deferral(
+                    error,
+                    profile_id=(
+                        self.turn.subscription_profile_id or DEFAULT_SUBSCRIPTION_PROFILE_ID
+                    ),
+                )
                 self._append_log(f"codex error: {message}\n")
         except Exception as exc:  # noqa: BLE001 - background job boundary.
             if not self._cancelled.is_set():
+                if self._deferral is None:
+                    self._deferral = _turn_capacity_deferral(
+                        str(exc),
+                        profile_id=(
+                            self.turn.subscription_profile_id or DEFAULT_SUBSCRIPTION_PROFILE_ID
+                        ),
+                    )
                 self._append_log(
                     f"codex error: {self._redact(str(exc) or exc.__class__.__name__)}\n"
                 )
@@ -171,6 +190,10 @@ class CodexSubscriptionTurnRunner:
                 if process is not None:
                     process.close()
                     self._process = None
+            # Persist the structured outcome before releasing the container's
+            # completion wait. Otherwise a fast status poll can observe the
+            # terminal exit without the deferral needed for durable replay.
+            self._publish_metadata(exit_code=exit_code)
             try:
                 write_completion_marker_no_follow(self.finished_marker, exit_code)
             except OSError as exc:
@@ -182,8 +205,6 @@ class CodexSubscriptionTurnRunner:
                     "codex_subscription_completion_marker_failed exception_class=%s",
                     exc.__class__.__name__,
                 )
-            finally:
-                self._publish_metadata(exit_code=exit_code)
 
     def _open_thread(self, process: CodexAppServerProcess) -> str:
         thread_id = self.turn.resume_thread_id
@@ -284,7 +305,14 @@ class CodexSubscriptionTurnRunner:
             return
         metadata: dict[str, Any] = {
             "codex_auth_mode": "chatgpt_subscription",
+            "subscription_profile_id": (
+                self.turn.subscription_profile_id or DEFAULT_SUBSCRIPTION_PROFILE_ID
+            ),
         }
+        if self._deferral is not None:
+            metadata["codex_subscription_deferral"] = self._deferral.model_dump(
+                mode="json", exclude_none=True
+            )
         if self._thread_id:
             metadata["codex_subscription_thread_id"] = self._thread_id
         if self._turn_id:
@@ -304,6 +332,67 @@ def _turn_error_message(error: object) -> str | None:
         text = str(error).strip()
         return text or None
     return None
+
+
+def _turn_capacity_deferral(
+    error: object,
+    *,
+    profile_id: str,
+) -> CodexSubscriptionDeferral | None:
+    """Recognize App Server subscription exhaustion without relying on one error shape."""
+
+    flattened = json.dumps(error, sort_keys=True, default=str).casefold()
+    indicators = (
+        "rate_limit",
+        "rate limit",
+        "usage limit",
+        "quota",
+        "rate-limit-reached",
+        "insufficient_quota",
+    )
+    if not any(indicator in flattened for indicator in indicators):
+        return None
+    retry_at = _find_reset_timestamp(error)
+    return CodexSubscriptionDeferral(
+        profile_id=profile_id,
+        reason="rate_limited",
+        retry_at=retry_at,
+    )
+
+
+def _find_reset_timestamp(value: object) -> object | None:
+    if isinstance(value, dict):
+        for key, candidate in value.items():
+            normalized = str(key).replace("_", "").casefold()
+            if normalized in {"resetsat", "retryat", "resetat"}:
+                parsed = _parse_reset_timestamp(candidate)
+                if parsed is not None:
+                    return parsed
+        for candidate in value.values():
+            parsed = _find_reset_timestamp(candidate)
+            if parsed is not None:
+                return parsed
+    elif isinstance(value, list):
+        for candidate in value:
+            parsed = _find_reset_timestamp(candidate)
+            if parsed is not None:
+                return parsed
+    return None
+
+
+def _parse_reset_timestamp(value: object) -> object | None:
+    from datetime import UTC, datetime
+
+    if isinstance(value, (int, float)):
+        return datetime.fromtimestamp(float(value), tz=UTC)
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return parsed.replace(tzinfo=UTC) if parsed.tzinfo is None else parsed.astimezone(UTC)
 
 
 def write_completion_marker_no_follow(path: Path, exit_code: int) -> None:

@@ -4472,13 +4472,14 @@ group assignments and matching direct workflow grants. Scope inheritance
 is downward only: an assignment on <code>mission-control</code> does not
 authorize its parent or sibling.</p>
 <p>Some resources are worker-global rather than directory-owned. In
-particular, the one ChatGPT subscription account shared by a container
-worker can be inspected, signed in, cancelled during login, or signed
-out only by an authenticated operator with privileged operations
-unlocked and effective <code>admin.owner</code> permission at
-<code>root</code>. Ownership of only a child directory is insufficient,
-because changing that account affects subscription-mode agents from
-every directory on the worker.</p>
+particular, named ChatGPT subscription profiles on a container worker
+can be created, enabled or disabled, signed in, cancelled during login,
+or signed out only by an authenticated operator with privileged
+operations unlocked and effective <code>admin.owner</code> permission at
+<code>root</code>. Ownership of only a child directory is insufficient
+because directories select infrastructure, not profile access. Each
+session&#39;s profile binding is immutable, and the first successful login
+pins that profile&#39;s OpenAI account ID.</p>
 <h3 id="privileged-operation-lock-implementation">Privileged-operation
 lock implementation</h3>
 <p>Authentication and RBAC answer whether an operator <em>may</em>
@@ -4701,8 +4702,8 @@ password storage, groups, permission scope, and privileged lock.</li>
 <code>tests/test_admin_web_user_store.py</code> — user/group
 administration, bootstrap, migration, and owner protection.</li>
 <li><code>src/evander/admin/web/codex_auth.py</code> — privileged
-root-owner authorization for the worker-global ChatGPT subscription
-account.</li>
+root-owner authorization for worker-owned ChatGPT subscription
+profiles.</li>
 <li><code>src/evander/admin/services/session_helpers.py</code> and
 <code>frontend/admin-web/src/features/sessions/SessionsScreen.tsx</code>
 — canonical session-policy updates and explicit legacy communication
@@ -6038,11 +6039,11 @@ reachability or worker state.</td>
 directory/session model override.</td>
 </tr>
 <tr class="even">
-<td>ChatGPT subscription turn says the account is not signed in</td>
-<td>The session selected the worker&#39;s subscription account, but the
-broker has no usable login.</td>
-<td>Ask a root owner to inspect the worker account; do not switch
-silently to a metered credential.</td>
+<td>ChatGPT subscription work is queued</td>
+<td>The session&#39;s named worker profile is signed out, disabled,
+unavailable, or rate-limited.</td>
+<td>Ask a root owner to inspect <strong>Subscriptions</strong>; preserve
+the queued prompt and do not switch silently to metered API.</td>
 </tr>
 <tr class="odd">
 <td>VM starts but guest tools are stale</td>
@@ -6236,11 +6237,10 @@ allowlist. The current backend does not provide worker scheduling,
 autoscaling, Kubernetes, general secret transport, or a general internet
 path. The worker bearer token stays on the control plane. Provider keys
 stay behind host relays.</p>
-<p>An optional ChatGPT subscription account follows the same
-host-ownership principle but uses a worker-local broker and restricted
-HTTPS proxy instead of putting the account or a provider key in the
-container. It does not turn the container network into a general public
-route.</p>
+<p>Optional named ChatGPT subscription profiles follow the same
+host-ownership principle but use worker-local brokers and a restricted
+HTTPS proxy instead of putting accounts or provider keys in containers.
+They do not turn the container network into a general public route.</p>
 <p>SQL Server is also intentionally separate.
 <code>effect:agent:create</code> rejects the VM-style
 <code>mssql=true</code> and <code>mssql_init_root</code> options for
@@ -6283,13 +6283,16 @@ change the ordinary prompt or test jobs of a persistent Team agent.</p>
 API and ChatGPT subscription usage</h3>
 <p>Container-worker Codex sessions can choose between
 <code>metered_api</code> and <code>chatgpt_subscription</code>.
-<code>container_worker_codex_auth_mode</code> supplies the
-directory-resolved default, while a session&#39;s nullable
-<code>codex_auth_mode</code> is an explicit override. The setting
-applies only to Codex on <code>container_worker_vm</code>; it is not a
-Claude default and subscription mode is rejected as an explicit Claude
-override. Changing an existing session&#39;s selection takes effect on its
-next turn and keeps the existing Codex thread history.</p>
+<code>container_worker_codex_auth_mode</code> supplies a
+directory-resolved compatibility default, while a session&#39;s nullable
+<code>codex_auth_mode</code> is an explicit override. Directory
+configuration chooses the effective worker but never chooses, grants, or
+restricts its profiles. New UI-created subscription agents select an
+enabled named profile. That binding is fixed for the session; replace
+the agent to change it. A metered session may receive its first profile
+only while explicitly switching to subscription mode. Existing
+profile-less subscription sessions use reserved profile
+<code>default</code>.</p>
 <p>The subscription selection is effective only for a turn whose model
 provider mode is <code>openai_public</code>. A local OpenAI-compatible
 or Azure OpenAI turn keeps using its configured private endpoint and
@@ -6297,24 +6300,24 @@ API-key route even when the stored session preference says
 <code>chatgpt_subscription</code>. Evander does not rewrite that
 preference, so a later public-OpenAI turn can use it. Chapter 10
 describes the network-routing distinction.</p>
-<p>There is one signed-in ChatGPT account per worker, shared by every
-subscription-mode agent on that worker. The worker auth broker is the
-sole durable writer of its <code>auth.json</code>, holds an exclusive
-ownership lock, and serializes login, logout, account reads, and token
-refresh. Concurrent refresh requests are coalesced. Each disposable job
-authenticates its own Codex app-server from an in-memory external-token
+<p>Each named profile has an independent auth home, broker, file lock,
+and managed App Server process. Profile refreshes can run concurrently,
+but operations within one profile remain serialized. The first
+successful device login pins the OpenAI account ID. Every disposable job
+authenticates its own App Server from an in-memory external-token
 snapshot; it receives no account-file mount, token environment variable,
-command-line token, or persisted account metadata. Public HTTPS goes
-only through the worker&#39;s allowlisted CONNECT proxy, while the ordinary
-container egress policy remains default-deny.</p>
-<p>This path fails closed. If the worker account is absent, logged out,
-cannot refresh, or the broker cannot prove exclusive ownership, a
-subscription turn fails instead of falling back to metered API use.
-Login start, cancellation, and logout are audited. Because the account
-is worker-global, Admin Web account controls require an authenticated
-operator, an unlocked privileged-operations session, and effective
-<code>admin.owner</code> permission at <code>root</code>; ownership of
-one child directory is not enough.</p>
+command-line token, or persisted token metadata. All profiles share the
+worker&#39;s allowlisted CONNECT proxy while ordinary container egress
+remains default-deny.</p>
+<p>This path queues and fails closed. Preflight or mid-turn capacity
+exhaustion persists the original prompt indefinitely with profile,
+reason, and reset-aware retry time; per-profile FIFO does not block
+other profiles and does not consume the ordinary retry ledger. It never
+falls back to metered API. Profile management is audited and requires an
+authenticated operator, unlocked privileged operations, and effective
+<code>admin.owner</code> at <code>root</code>; child-directory ownership
+is not enough. V1 supports ChatGPT device login, not Business or
+Enterprise access-token profiles.</p>
 <h2 id="administrator-reference-persistence-and-cleanup">Administrator
 reference: persistence and cleanup</h2>
 <p>Stopping and destroying are intentionally different. Stopping a VM
@@ -6367,8 +6370,8 @@ the target is present in the container execution mapping, unless
 <code>--backend container_worker_vm</code> is supplied. These commands
 never change the configured default backend.</p>
 <p>For subscription-mode Codex, a root owner should also open
-<strong>Agents → Worker ChatGPT subscription</strong>, verify the worker
-account status, and complete device login when required. Verify that
+<strong>Subscriptions</strong>, verify the selected profile status and
+pinned account, and complete device login when required. Verify that
 worker egress policy allows only the configured subscription proxy and
 that the proxy&#39;s OpenAI/ChatGPT hostname allowlist is current. Do not
 copy the broker&#39;s account file into a job for diagnosis; a missing login
@@ -6459,7 +6462,7 @@ request appropriate to that job.</p>
 <tr class="even">
 <td>A model</td>
 <td>Model relay, or the worker&#39;s brokered subscription route</td>
-<td>Keep provider keys or the shared ChatGPT account outside the agent
+<td>Keep provider keys and named ChatGPT profiles outside the agent
 workspace and constrain the upstream destination.</td>
 </tr>
 <tr class="odd">
@@ -6617,10 +6620,11 @@ policy close.</td>
 <td>Use a supported API; the relay is not a generic reverse proxy.</td>
 </tr>
 <tr class="odd">
-<td>Subscription mode selected but worker account unavailable</td>
-<td>The Codex turn fails without a metered fallback.</td>
-<td>Have a root owner inspect broker/account status; do not copy account
-credentials into the job.</td>
+<td>Subscription profile has no capacity</td>
+<td>The original Codex prompt remains durably queued without a metered
+fallback.</td>
+<td>Have a root owner inspect <strong>Subscriptions</strong>; do not
+copy profile credentials into the job.</td>
 </tr>
 <tr class="even">
 <td>Azure NuGet PAT missing</td>
@@ -6786,9 +6790,9 @@ routing remains provider-specific</h3>
 Codex route, not a new credential accepted by every provider. A
 <code>chatgpt_subscription</code> preference becomes effective only when
 the turn&#39;s model provider mode is <code>openai_public</code>. The
-disposable job gets an in-memory token snapshot from the worker auth
-broker and reaches only allowlisted OpenAI/ChatGPT HTTPS hosts through
-the worker&#39;s CONNECT proxy; it receives neither the broker&#39;s
+disposable job gets an in-memory token snapshot from the selected worker
+profile broker and reaches only allowlisted OpenAI/ChatGPT HTTPS hosts
+through the worker&#39;s CONNECT proxy; it receives neither the broker&#39;s
 <code>auth.json</code> nor direct public egress.</p>
 <p>For <code>local_openai</code> and <code>azure_openai</code>, Evander
 deliberately computes the turn as <code>metered_api</code> and keeps the
@@ -6796,11 +6800,13 @@ configured private endpoint and API-key/relay behavior. It leaves the
 stored session preference unchanged. This distinction matters when
 diagnosing a session that moves between provider modes: seeing
 <code>chatgpt_subscription</code> in session policy does not mean a
-local Ollama or Azure request was sent with the worker account.</p>
+local Ollama or Azure request was sent with the worker profile.</p>
 <p>Subscription authentication also fails closed. An absent login,
-refresh failure, broker ownership failure, or restricted-proxy failure
-does not cause a quiet retry against the host&#39;s metered OpenAI
-credential. Chapter 9 covers account ownership and lifecycle.</p>
+disabled profile, refresh failure, rate limit, broker ownership failure,
+or restricted-proxy failure does not cause a quiet retry against the
+host&#39;s metered OpenAI credential. Capacity deferrals retain the original
+prompt in a per-profile FIFO queue. Chapter 9 covers profile ownership
+and lifecycle.</p>
 <h3 id="local-model-routing-is-still-a-relay-boundary">Local-model
 routing is still a relay boundary</h3>
 <p>A host-local model is not a reason to connect the guest directly to
@@ -17132,12 +17138,12 @@ groups: <strong>Overview</strong> contains Dashboard and Reports;
 Approvals, and Artifacts; <strong>Automation</strong> contains Workflow
 and Skills; <strong>Extensions</strong> contains Add-ons, Connectors,
 Host Directories, and add-on-contributed areas;
-<strong>Infrastructure</strong> contains VMs and Workers; and
-<strong>Governance</strong> contains Tool Visibility, MCP Tools, Tool
-Calls, Configuration, and Users &amp; Groups. Use <strong>Find
-page</strong> or <code>Ctrl+K</code> / <code>Command+K</code> to search
-the currently visible built-in and add-on areas without changing their
-hash routes or directory scope.</p>
+<strong>Infrastructure</strong> contains Subscriptions, Git
+Repositories, VMs, and Workers; and <strong>Governance</strong> contains
+Tool Visibility, MCP Tools, Tool Calls, Configuration, and Users &amp;
+Groups. Use <strong>Find page</strong> or <code>Ctrl+K</code> /
+<code>Command+K</code> to search the currently visible built-in and
+add-on areas without changing their hash routes or directory scope.</p>
 <p>Inside <strong>Configuration</strong>, a second compact navigator
 exposes the active area&#39;s settings and utilities. <strong>Find
 setting</strong> searches operator labels and help alongside technical
@@ -17173,86 +17179,91 @@ the first available section, and an unknown field is ignored.</p>
 work?</td>
 </tr>
 <tr class="odd">
+<td>Subscriptions</td>
+<td>Which named worker ChatGPT profiles are signed in, enabled,
+rate-limited, running jobs, or holding queued prompts?</td>
+</tr>
+<tr class="even">
 <td>Approvals</td>
 <td>Which gated tool calls require an operator decision?</td>
 </tr>
-<tr class="even">
+<tr class="odd">
 <td>Artifacts</td>
 <td>Which durable agent archives can be resolved or downloaded?</td>
 </tr>
-<tr class="odd">
+<tr class="even">
 <td>Add-ons</td>
 <td>Which runtime extensions are available, enabled, or awaiting
 refresh/restart?</td>
 </tr>
-<tr class="even">
+<tr class="odd">
 <td>Skills</td>
 <td>Which packaged agent capabilities are visible and managed?</td>
 </tr>
-<tr class="odd">
+<tr class="even">
 <td>VMs</td>
 <td>Which libvirt machines exist, and what is their lifecycle
 state?</td>
 </tr>
-<tr class="even">
+<tr class="odd">
 <td>Issues</td>
 <td>Which local/provider issue records are available for work
 intake?</td>
 </tr>
-<tr class="odd">
+<tr class="even">
 <td>Sessions</td>
 <td>Which agent sessions are active, paused, terminal, or awaiting
 intervention?</td>
 </tr>
-<tr class="even">
+<tr class="odd">
 <td>Tool Visibility</td>
 <td>Which tools does a session actually see, and what binding or denial
 explains that result?</td>
 </tr>
-<tr class="odd">
+<tr class="even">
 <td>MCP Tools</td>
 <td>Which directory policy controls approval and denial for each
 tool?</td>
 </tr>
-<tr class="even">
+<tr class="odd">
 <td>Connectors</td>
 <td>Which named host-side integrations and operations are available in
 this directory?</td>
 </tr>
-<tr class="odd">
+<tr class="even">
 <td>Host Directories</td>
 <td>Which approved host roots, agent capabilities, health checks, and
 quarantined entries are managed here?</td>
 </tr>
-<tr class="even">
+<tr class="odd">
 <td>Git Repositories</td>
 <td>Which managed repositories are registered, when were they refreshed,
 and what host commit identity do they use?</td>
 </tr>
-<tr class="odd">
+<tr class="even">
 <td>Tool Calls</td>
 <td>What was invoked, allowed, denied, or failed?</td>
 </tr>
-<tr class="even">
+<tr class="odd">
 <td>Configuration</td>
 <td>Which host and directory-scoped values resolve here?</td>
 </tr>
-<tr class="odd">
+<tr class="even">
 <td>Reports</td>
 <td>What happened during orchestration and operations, including effects
 and gates?</td>
 </tr>
-<tr class="even">
+<tr class="odd">
 <td>Users &amp; Groups</td>
 <td>Who can authenticate, and which groups/permissions govern operator
 access?</td>
 </tr>
-<tr class="odd">
+<tr class="even">
 <td>Workers</td>
 <td>Which host/background systemd workers are configured, active, or
 reporting journal errors?</td>
 </tr>
-<tr class="even">
+<tr class="odd">
 <td>Workflow</td>
 <td>Which pack revision is active, what do its graphs define, and what
 is the runtime activity?</td>

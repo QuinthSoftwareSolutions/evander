@@ -204,24 +204,23 @@ Common tasks:
    options, optional HTTP targets, Host Directory grants, and optional Codex skills. Each HTTP target gives the session a
    named HTTP(S) base URL through the host relay; it does not enable general internet access or
    supply target credentials. Container-worker Codex agents can also choose **Metered API** or
-   **ChatGPT subscription** as their usage source.
-8. Use the policy edit action to adjust an existing agent's host-side policy. A changed Codex usage
-   source applies on the next turn without replacing the session or its thread history. HTTP
-   targets and Host Directory capabilities can also be added, changed, or removed here.
-9. When you are an Admin owner at `root`, use **Worker ChatGPT subscription** to inspect the
-   worker-global account, start or cancel device-code sign-in, and sign out. These account actions
-   require both root ownership and an unlocked privileged session because every subscription-mode
-   agent on that worker shares the account.
-10. Use the skill install action to copy managed Codex skills into an existing session.
-11. Use the prompt action to queue a direct prompt for the selected agent. The dialog accepts a
+   **ChatGPT subscription** as their usage source. A new subscription agent must also select one
+   enabled worker profile; this binding cannot be changed after creation.
+8. Use the policy edit action to adjust an existing agent's host-side policy. HTTP targets and Host
+   Directory capabilities can be added, changed, or removed here. A profile-bound agent cannot
+   switch profiles or return to metered mode; create a replacement agent instead.
+9. Use the skill install action to copy managed Codex skills into an existing session.
+10. Use the prompt action to queue a direct prompt for the selected agent. The dialog accepts a
    multiline prompt and an optional resume thread ID, prefilled from the session's latest known
    agent thread when available.
-12. Use **Operator steering** to interrupt and steer a container worker session's active dispatch,
+11. Use **Operator steering** to interrupt and steer a container worker session's active dispatch,
     or to queue a legacy relay-delivered note for non-container sessions.
+12. For subscription work that is waiting, inspect its profile, queue reason, and retry time. An
+    authorized root owner can cancel the indefinitely queued prompt from the agent detail.
 13. Use lifecycle actions only after confirming the target and directory are correct.
 
 The same independent sidebar scrolling applies to the other card-list/detail pages, including
-Sessions, VMs, Issues, Approvals, Workers, Skills, Add-ons, Connectors, Host Directories, users and groups, MCP Tools,
+Subscriptions, Sessions, VMs, Issues, Approvals, Workers, Skills, Add-ons, Connectors, Host Directories, users and groups, MCP Tools,
 Tool Visibility, and report navigation. Their existing card contents and density are unchanged.
 
 Notes:
@@ -230,8 +229,8 @@ Notes:
 - ChatGPT subscription use applies only to container-worker Codex turns whose effective model
   provider is public OpenAI. Local OpenAI and Azure OpenAI turns keep their configured private
   API-key route while retaining the saved preference, and Claude agents do not inherit a Codex
-  usage-source default. A public-OpenAI subscription turn fails rather than falling back when the
-  worker account is unavailable.
+  usage-source default. Unavailable public-OpenAI subscription work queues on its selected profile
+  rather than falling back to metered API.
 - Skill choices come from the managed Skills tab.
 - The page's automatic list refresh uses a short-lived cached summary so it does not reconcile
   every container execution or probe VM agent state on each poll. Use **Refresh** when you need a
@@ -245,6 +244,34 @@ Notes:
   across that combined execution history. Refresh and paging use bounded worker log-page reads;
   they do not eagerly transfer every historical execution log.
 - Some actions are unavailable until privileged operations are unlocked.
+
+## Subscriptions
+
+The Subscriptions tab manages ChatGPT subscription profiles on the container worker selected by
+the current directory's infrastructure configuration. Profiles are worker-owned: selecting a
+different directory may point at another worker, but directories do not grant or hide profiles on
+the same worker.
+
+Common tasks:
+
+1. Open **Subscriptions** and verify the displayed worker URL.
+2. Unlock privileges as a user with `admin.owner` at `root`.
+3. Create a profile using an immutable lowercase slug and an editable display name.
+4. Start **Login**, open the device-login URL, enter the displayed code, and wait for completion.
+   The first successful login pins the OpenAI account ID. Create another profile rather than
+   logging the profile in as a different account.
+5. Inspect sign-in state, account identity, plan, safe rate-limit buckets/reset timestamps, usage
+   summary, active jobs, and queued prompts. No access or refresh token is shown.
+6. Rename, enable, disable, log out, or refresh a profile as needed. Profiles are not hard-deleted
+   in V1. Re-enable, successful login, and refresh wake durable queue reconciliation.
+
+Signed-out, disabled, unavailable, and rate-limited subscription work remains queued without an
+automatic expiry or metered API fallback. FIFO order is enforced within one profile while other
+profiles can run concurrently. The reserved `default` profile represents legacy profile-less
+sessions and keeps the worker's existing login compatible.
+
+V1 accepts ChatGPT device login only. Business and Enterprise access tokens are not a profile
+login option in this release.
 
 ## Approvals
 

@@ -56,6 +56,30 @@ class FakeManagedClient:
                 "verificationUrl": "https://example.test/device",
                 "userCode": "ABCD-EFGH",
             }
+        if method == "account/rateLimits/read":
+            return {
+                "rateLimits": {
+                    "limitId": "codex",
+                    "limitName": "Codex",
+                    "planType": "plus",
+                    "primary": {
+                        "usedPercent": 73.5,
+                        "windowDurationMins": 300,
+                        "resetsAt": 1_800_000_000,
+                        "accessToken": "must-not-leak",
+                    },
+                },
+                "rateLimitResetCredits": {
+                    "availableCount": 1,
+                    "credits": [{"id": "credit-1", "status": "available", "token": "secret"}],
+                },
+                "refreshToken": "must-not-leak",
+            }
+        if method == "account/usage/read":
+            return {
+                "summary": {"lifetimeTokens": 1234, "accessToken": "must-not-leak"},
+                "dailyUsageBuckets": [{"startDate": "2026-08-01", "tokens": 99, "token": "secret"}],
+            }
         if method in {"account/login/cancel", "account/logout"}:
             return {}
         raise AssertionError(f"unexpected request: {method}")
@@ -187,6 +211,36 @@ def test_login_notification_never_blocks_reader_behind_cancel_request(tmp_path: 
         assert broker.device_login_status("login-1")["status"] == "completed"
     finally:
         broker.close()
+
+
+def test_status_reports_safe_account_limits_and_usage_without_token_material(
+    tmp_path: Path,
+) -> None:
+    auth_home = tmp_path / "codex-auth"
+    auth_home.mkdir()
+    _write_auth(
+        auth_home / "auth.json",
+        access_token=_jwt(plan="plus", expiration=int(time.time()) + 3600, marker="status"),
+    )
+    broker = CodexAuthBroker(
+        auth_home=auth_home,
+        client_factory=lambda *args, **kwargs: FakeManagedClient(auth_home / "auth.json", **kwargs),
+    )
+    try:
+        status = broker.status()
+    finally:
+        broker.close()
+
+    assert status["signed_in"] is True
+    assert status["account_id"] == "account-1"
+    assert status["email"] == "owner@example.test"
+    assert status["plan_type"] == "plus"
+    assert status["rate_limits"]["default"]["primary"]["used_percent"] == 73.5
+    assert status["usage"]["summary"]["lifetime_tokens"] == 1234
+    serialized = json.dumps(status).casefold()
+    assert "must-not-leak" not in serialized
+    assert "refresh_token" not in serialized
+    assert '"access_token":' not in serialized
 
 
 def _write_auth(path: Path, *, access_token: str) -> None:

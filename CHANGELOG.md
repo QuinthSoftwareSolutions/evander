@@ -1,5 +1,16 @@
 # Changelog
 
+## 2026-09-02 - Named Codex Subscription Profiles
+
+- Added worker-owned named ChatGPT subscription profiles with independent device-login homes,
+  immutable account pinning, safe account/rate-limit/usage status, compatibility aliases for the
+  legacy `default` profile, and root-owner Admin management.
+- Added immutable profile selection to container Codex agent creation and workflow nodes while
+  preserving existing profile-less subscription sessions as `default`.
+- Added subscription-capacity preflight and mid-turn deferral handling with durable, reset-aware,
+  per-profile FIFO prompt replay, cross-profile concurrency, visible queue reasons, manual
+  cancellation, and no metered API fallback.
+
 ## 2026-09-02 - Team Work-Lineage Context Routing
 
 - Added a per-agent `work_lineage` context policy that gives each independent task family its own

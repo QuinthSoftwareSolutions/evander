@@ -872,6 +872,19 @@ effective only when `model_provider_mode` resolves to `openai_public`.
 routes without rewriting the stored preference. Missing credentials fail
 closed only when a public Codex turn actually selects subscription mode.
 
+`effect:agent:create.subscription_profile_id` is a fixed, non-bindable profile
+slug. It is valid only with `execution_backend: container_worker_vm`,
+`agent_provider: codex`, `model_provider_mode: openai_public`, and
+`codex_auth_mode: chatgpt_subscription`. The workflow editor obtains every
+enabled option from the node's effective worker; directory configuration does
+not default, grant, or restrict the list. The session persists the selection.
+Omitting the field on an existing-agent upsert preserves its binding, and a
+bound session cannot change profiles. A metered session can receive its first
+profile only in the same explicit update that switches it to subscription
+mode. Legacy profile-less subscription sessions resolve to reserved profile
+`default`; newly created subscription agents in Admin Web require a named
+selection.
+
 `effect:agent:create` also accepts `vm_image` as a libvirt-only VM template
 selector. The selector resolves against the directory-scoped `vm.json`
 `libvirt_vm_templates` catalog, falls back to `libvirt_vm_default_template`
@@ -1599,7 +1612,7 @@ configuration file.
 | `default_session_ttl_seconds` | composed runtime config | `src/evander/cli.py` session creation defaults. |
 | `bind_network_cidr` | composed runtime config | `src/evander/config.py` validation/normalization (policy-bound network constraints). |
 | `gateway_url` | composed runtime config | `src/evander/cli.py` health checks / external endpoint references. |
-| `execution_backend`, `container_worker_base_url`, `container_worker_token_env`, `container_worker_default_image`, `container_worker_images`, `container_worker_codex_auth_mode`, `container_worker_active_tool_timeout_seconds`, `container_worker_job_timeout_seconds`, `container_worker_request_timeout_seconds`, `container_worker_workspace_persistence`, `container_worker_git_allowed_from` | root or directory `providers.json` | `src/evander/execution/container_worker_backend.py` and portable `effect:agent:*` container worker routing. `container_worker_default_image` is the fallback image; `container_worker_images` maps approved aliases to exact image refs such as the separate Codex and Claude runner images. `container_worker_codex_auth_mode` defaults to `metered_api` and is inherited only by Codex sessions. `container_worker_active_tool_timeout_seconds` defaults to 300 and lets the reconciler safely interrupt only a recognized stalled test or build process group while retaining the agent container; the 1800-second `container_worker_job_timeout_seconds` remains the whole-job fallback. `chatgpt_subscription` selects the worker-owned account only for public OpenAI container Codex turns; local and Azure routes use their configured private/API-key path without clearing the stored selection. A public subscription turn fails closed when the account is unavailable. A session override applies on its next turn without replacing the session. `container_worker_git_allowed_from` optionally overrides the `authorized_keys from=` restriction for session-scoped container Git write keys; when unset Evander derives it from `container_worker_base_url`. |
+| `execution_backend`, `container_worker_base_url`, `container_worker_token_env`, `container_worker_default_image`, `container_worker_images`, `container_worker_codex_auth_mode`, `container_worker_active_tool_timeout_seconds`, `container_worker_job_timeout_seconds`, `container_worker_request_timeout_seconds`, `container_worker_workspace_persistence`, `container_worker_git_allowed_from` | root or directory `providers.json` | `src/evander/execution/container_worker_backend.py` and portable `effect:agent:*` container worker routing. `container_worker_default_image` is the fallback image; `container_worker_images` maps approved aliases to exact image refs such as the separate Codex and Claude runner images. `container_worker_codex_auth_mode` defaults to `metered_api` and remains an inherited compatibility choice only for Codex sessions. `container_worker_base_url` selects the effective worker, but directory config never chooses, grants, or restricts that worker's subscription profiles. Named profile selection is session/workflow state. `container_worker_active_tool_timeout_seconds` defaults to 300 and lets the reconciler safely interrupt only a recognized stalled test or build process group while retaining the agent container; the 1800-second `container_worker_job_timeout_seconds` remains the whole-job fallback. `chatgpt_subscription` applies only to public OpenAI container Codex turns; local and Azure routes use their configured private/API-key path without clearing stored session state. Unavailable subscription capacity queues rather than falling back to API billing. `container_worker_git_allowed_from` optionally overrides the `authorized_keys from=` restriction for session-scoped container Git write keys; when unset Evander derives it from `container_worker_base_url`. |
 | `agent_consultation_profiles`, `agent_consultation_default_profile`, `agent_consultation_max_wait_seconds`, `agent_consultation_retention_days`, `agent_consultation_token_secret_env` | root or directory `providers.json` | Request-scoped `consult_codebase` workers. Each named profile requires `model`, is restricted to `container_worker_vm`, and may set `agent_provider`, `model_provider_mode`, `container_image`, `timeout_seconds`, and `max_concurrency`. The gateway pins a managed-Git commit, persists the request, and returns after the bounded wait; the hidden system workflow creates and cleans up the worker. The token field names a host env var and defaults to `AGENT_PROMPT_TOKEN_SECRET`; it never contains the secret itself. |
 | `container_worker_guest_openai_base_url`, `container_worker_guest_anthropic_base_url`, `container_worker_guest_gateway_url`, `container_worker_guest_http_target_relay_base_url`, `container_worker_guest_http_target_browser_proxy_url`, `container_worker_guest_nuget_relay_base_url`, `container_worker_guest_pypi_index_url`, `container_worker_guest_npm_registry_url` | root `providers.json` | Container session bootstrap files under `/home/agent` for model relays, MCP, HTTP-target API/browser access, and package restores. |
 | `container_worker_mssql_enabled`, `container_worker_mssql_host`, `container_worker_mssql_port` | root `providers.json` | Gateway-side enablement and advertised worker SQL Server endpoint for `mssql_*` MCP provisioning tools. |
@@ -1610,10 +1623,11 @@ configuration file.
 | `contacts`, `user_contact_links` | root or directory `contacts.json` | `src/evander/directory_config.py`, `src/evander/retell_phone.py`, `src/evander/voice_sessions.py`, and the admin Users API for directory-scoped contacts and user attachments. |
 | `redacted_keys` | root policy config | `src/evander/gateway/server.py` request/response redaction in logs. |
 
-The worker ChatGPT account is not directory-scoped. Admin Web account status, device-login
-start/status/cancellation, and logout require both an unlocked privileged-operations session and
-`admin.owner` permission at `root`, even when the worker connection is resolved from another
-directory's provider configuration.
+Worker ChatGPT profiles are not directory-scoped. Admin Web profile creation, enable/disable,
+login, and logout require both an unlocked privileged-operations session and `admin.owner`
+permission at `root`, even when the worker connection is resolved from another directory's
+provider configuration. Profile metadata contains identity and timestamps only; access and refresh
+tokens remain in worker-owned auth homes and never appear in configuration or Admin responses.
 
 ### OpenAI relay keys
 

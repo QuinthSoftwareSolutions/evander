@@ -156,6 +156,7 @@ class WorkflowConfigAdminService:
         self._workflow_reports_admin = dependencies.workflow_reports_admin
         self._addon_catalog = dependencies.addon_catalog
         self._managed_git_admin = dependencies.managed_git_admin
+        self._codex_auth_admin: Any | None = None
         history_runtime_dir = _resolve_path_setting(
             base_dir=self.project_dir,
             value=self.config.runtime_dir,
@@ -168,6 +169,9 @@ class WorkflowConfigAdminService:
 
     def set_workflow_reports_admin(self, workflow_reports_admin: Any) -> None:
         self._workflow_reports_admin = workflow_reports_admin
+
+    def set_codex_auth_admin(self, codex_auth_admin: Any) -> None:
+        self._codex_auth_admin = codex_auth_admin
 
     def admin_config_mutation_lock(self) -> ContextManager[None]:
         return self._admin_config_mutation_lock()
@@ -2133,6 +2137,7 @@ class WorkflowConfigAdminService:
         managed_git_repository_options = self._managed_git_reference_repository_options(
             directory_path
         )
+        subscription_profile_options = self._subscription_profile_options(directory_path)
         host_directory_trigger_options = self._directory_resource_trigger_options(directory_path)
         provider_catalog = self._load_workflow_provider_catalog(
             self._read_worker_provider_loader_config("trigger-orchestrator")
@@ -2172,6 +2177,8 @@ class WorkflowConfigAdminService:
                     else field.model_copy(update={"options": agent_communication_target_options})
                     if node.type == "effect:agent:create"
                     and field.key == "communication_target_ids"
+                    else field.model_copy(update={"options": subscription_profile_options})
+                    if node.type == "effect:agent:create" and field.key == "subscription_profile_id"
                     else field
                     for field in node.fields
                 ]
@@ -2266,6 +2273,40 @@ class WorkflowConfigAdminService:
             nodes=nodes,
             internal_events=internal_event_catalog_entries,
         )
+
+    def _subscription_profile_options(
+        self, directory_path: str | None
+    ) -> list[WorkflowEditorFieldOption]:
+        if self._codex_auth_admin is None:
+            return []
+        normalized = self._normalize_directory_reference(directory_path)
+        try:
+            payload = self._codex_auth_admin.list_profiles(normalized)
+        except Exception:
+            return []
+        options: list[WorkflowEditorFieldOption] = []
+        for profile in payload.get("profiles", []):
+            if not isinstance(profile, Mapping) or not bool(profile.get("enabled")):
+                continue
+            profile_id = str(profile.get("profile_id") or "").strip()
+            if not profile_id:
+                continue
+            options.append(
+                _field_option(
+                    profile_id,
+                    str(profile.get("display_name") or profile_id),
+                    description=(
+                        str(profile.get("email") or "").strip()
+                        or str(profile.get("plan_type") or "").strip()
+                        or None
+                    ),
+                    metadata={
+                        "signed_in": bool(profile.get("signed_in")),
+                        "account_id": profile.get("account_id"),
+                    },
+                )
+            )
+        return options
 
     def _managed_git_reference_repository_options(
         self,

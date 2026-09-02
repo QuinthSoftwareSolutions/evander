@@ -769,6 +769,7 @@ _EFFECT_OUTPUT_SCHEMAS = {
         "vm_name": {"type": "string"},
         "agent_home": {"type": "string"},
         "repo_root": {"type": "string"},
+        "subscription_profile_id": {"type": ["string", "null"]},
         "skipped": {"type": "boolean"},
     },
     "effect:agent:destroy": {

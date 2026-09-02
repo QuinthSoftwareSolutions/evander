@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from evander.codex_auth import effective_subscription_profile_id
 from evander.admin.services.vm_agent.common import (
     AgentRecord,
     Any,
@@ -223,6 +224,9 @@ class VmAgentContainerRecordInventoryMixin:
             target_name=record.target_name,
             session_id=record.session_id,
             directory_path=self._agent_record_directory_path(record.directory_path),
+            subscription_profile_id=(
+                effective_subscription_profile_id(session=session) if session is not None else None
+            ),
             status=status,
             started_at=record.started_at,
             finished_at=record.finished_at,
@@ -343,6 +347,7 @@ class VmAgentContainerRecordInventoryMixin:
             target_name=target_name,
             session_id=session.session_id,
             directory_path=self._agent_record_directory_path(session.directory_path),
+            subscription_profile_id=effective_subscription_profile_id(session=session),
             status=status,
             started_at=None,
             finished_at=None,

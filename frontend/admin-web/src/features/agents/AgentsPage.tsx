@@ -18,7 +18,6 @@ import {
 import { Tooltip } from "../admin/Tooltip";
 import { readAdminHashQuery } from "../admin/hash";
 import { AgentCreateDialog } from "./AgentCreateDialog";
-import { CodexAuthPanel } from "./CodexAuthPanel";
 import {
   createOperationIsActive,
   createOperationMessage,
@@ -735,6 +734,11 @@ function sessionPolicyForAgent(agent: AgentRecord | null): AgentSessionPolicy | 
       rawPolicy.codex_auth_mode === "chatgpt_subscription"
         ? rawPolicy.codex_auth_mode
         : null,
+    subscription_profile_id: hostString(rawPolicy, "subscription_profile_id"),
+    effective_subscription_profile_id: hostString(
+      rawPolicy,
+      "effective_subscription_profile_id",
+    ),
     effective_codex_auth_mode:
       rawPolicy.effective_codex_auth_mode === "chatgpt_subscription"
         ? "chatgpt_subscription"
@@ -1848,6 +1852,28 @@ export function AgentsPage() {
     }
   }
 
+  async function handleCancelQueuedPrompt(record: AgentPromptQueueRecord) {
+    if (!selectedAgent) return;
+    const actionKey = `cancel-queue:${record.queue_key}`;
+    setBusyAction(actionKey);
+    try {
+      const query = new URLSearchParams({ backend: selectedAgent.backend });
+      await fetchJson(
+        `/api/admin/agents/${encodeURIComponent(selectedAgent.agent_id)}/queued-prompts/${encodeURIComponent(record.queue_key)}?${query.toString()}`,
+        { method: "DELETE" },
+      );
+      setStatus(`Cancelled queued prompt ${record.queue_key}.`);
+      setError(null);
+      await refreshAgents();
+      setAgentDetailReloadNonce((current) => current + 1);
+    } catch (reason: unknown) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+      setStatus(null);
+    } finally {
+      setBusyAction(null);
+    }
+  }
+
   async function loadMoreAgentExecutions() {
     if (
       !selectedAgent ||
@@ -2026,28 +2052,6 @@ export function AgentsPage() {
 
   return (
     <div className="agents-page-shell">
-      <section className="agents-global-controls" aria-label="Shared worker account">
-        <div className="agents-global-controls-heading">
-          <div>
-            <div className="eyebrow">Page-wide worker configuration</div>
-            <h2>Shared worker account</h2>
-          </div>
-          <p className="muted-text">Applies across container agents in this directory.</p>
-        </div>
-        <CodexAuthPanel
-          directoryPath={selectedDirectoryPath}
-          privilegedUnlocked={privilegedUnlocked}
-          selectedAgentUsage={
-            selectedAgent && selectedAgentCodexUsage
-              ? {
-                  agentLabel: selectedAgent.target_name || selectedAgent.agent_id,
-                  mode: selectedAgentCodexUsage.mode,
-                }
-              : null
-          }
-        />
-      </section>
-
       <div className="feature-page agents-page">
       <section className="feature-sidebar">
         <div className="feature-sidebar-header">
@@ -2388,6 +2392,7 @@ export function AgentsPage() {
                     <span>Codex usage</span>
                     <select
                       value={editForm.codexAuthMode}
+                      disabled={Boolean(selectedAgentPolicy?.effective_subscription_profile_id)}
                       onChange={(event) =>
                         setEditForm((current) => ({
                           ...current,
@@ -2400,7 +2405,9 @@ export function AgentsPage() {
                       <option value="chatgpt_subscription">ChatGPT subscription</option>
                     </select>
                     <span className="field-description">
-                      Applies on the next turn. Existing Codex thread history is preserved.
+                      {selectedAgentPolicy?.effective_subscription_profile_id
+                        ? `Profile ${selectedAgentPolicy.effective_subscription_profile_id} is immutable. Create a new agent to change it.`
+                        : "Applies on the next turn. Existing Codex thread history is preserved."}
                     </span>
                   </label>
                 </div>
@@ -2634,6 +2641,10 @@ export function AgentsPage() {
                         <dt>Latest status</dt>
                         <dd>{hostString(selectedAgent.host, "last_status") ?? selectedAgent.status}</dd>
                       </div>
+                      <div>
+                        <dt>Subscription profile</dt>
+                        <dd>{selectedAgent.subscription_profile_id ?? selectedAgentPolicy?.effective_subscription_profile_id ?? "None"}</dd>
+                      </div>
                     </>
                   ) : (
                     <>
@@ -2735,9 +2746,22 @@ export function AgentsPage() {
                             <span>
                               {record.coalesced_count} prompt{record.coalesced_count === 1 ? "" : "s"}
                             </span>
+                            {record.subscription_profile_id ? <span>Profile: {record.subscription_profile_id}</span> : null}
+                            {record.queue_reason ? <span>Reason: {record.queue_reason}</span> : null}
+                            {record.retry_not_before ? <span>Retry after: {formatTimestamp(record.retry_not_before)}</span> : null}
                           </div>
                           {record.prompt_preview ? (
                             <p className="agent-prompt-queue-preview">{record.prompt_preview}</p>
+                          ) : null}
+                          {record.subscription_profile_id ? (
+                            <button
+                              className="admin-action-button compact danger"
+                              type="button"
+                              disabled={!privilegedUnlocked || busyAction !== null}
+                              onClick={() => void handleCancelQueuedPrompt(record)}
+                            >
+                              {busyAction === `cancel-queue:${record.queue_key}` ? "Cancelling..." : "Cancel queued prompt"}
+                            </button>
                           ) : null}
                         </div>
                       ))}

@@ -7,6 +7,7 @@ import pytest
 
 from evander.capacity_health import TelemetryStatus
 from evander.execution.container_worker_client import (
+    CodexSubscriptionDeferredClientError,
     ContainerWorkerClient,
     ContainerWorkerClientError,
 )
@@ -132,6 +133,10 @@ def test_container_worker_client_codex_auth_routes_use_worker_auth(
     def handler(request: httpx.Request) -> httpx.Response:
         seen.append((request.method, request.url.path))
         assert request.headers["authorization"] == "Bearer secret-token"
+        if request.url.path == "/v1/codex-auth/profiles":
+            if request.method == "GET":
+                return httpx.Response(200, json={"profiles": []}, request=request)
+            return httpx.Response(201, json={"profile_id": "team-a"}, request=request)
         if request.url.path.endswith("/device-login") and request.method == "POST":
             payload: dict[str, object] = {"login_id": "login/1", "status": "pending"}
             return httpx.Response(201, json=payload, request=request)
@@ -139,6 +144,12 @@ def test_container_worker_client_codex_auth_routes_use_worker_auth(
             return httpx.Response(
                 200,
                 json={"login_id": "login/1", "status": "pending"},
+                request=request,
+            )
+        if "/profiles/" in request.url.path:
+            return httpx.Response(
+                200,
+                json={"profile_id": "team-a", "signed_in": False},
                 request=request,
             )
         return httpx.Response(200, json={"signed_in": False}, request=request)
@@ -154,13 +165,76 @@ def test_container_worker_client_codex_auth_routes_use_worker_auth(
     assert worker.codex_device_login_status("login/1")["status"] == "pending"
     assert worker.cancel_codex_device_login("login/1")["status"] == "pending"
     assert worker.logout_codex_auth() == {"signed_in": False}
+    assert worker.list_codex_auth_profiles() == {"profiles": []}
+    assert (
+        worker.create_codex_auth_profile({"profile_id": "team-a", "display_name": "Team A"})[
+            "profile_id"
+        ]
+        == "team-a"
+    )
+    assert worker.codex_auth_profile_status("team-a")["profile_id"] == "team-a"
+    assert worker.patch_codex_auth_profile("team-a", {"enabled": False})["profile_id"] == "team-a"
+    assert worker.start_codex_profile_device_login("team-a")["login_id"] == "login/1"
+    assert worker.codex_profile_device_login_status("team-a", "login/1")["status"] == "pending"
+    assert worker.cancel_codex_profile_device_login("team-a", "login/1")["status"] == "pending"
+    assert worker.logout_codex_auth_profile("team-a")["signed_in"] is False
     assert seen == [
         ("GET", "/v1/codex-auth"),
         ("POST", "/v1/codex-auth/device-login"),
         ("GET", "/v1/codex-auth/device-login/login/1"),
         ("DELETE", "/v1/codex-auth/device-login/login/1"),
         ("DELETE", "/v1/codex-auth"),
+        ("GET", "/v1/codex-auth/profiles"),
+        ("POST", "/v1/codex-auth/profiles"),
+        ("GET", "/v1/codex-auth/profiles/team-a"),
+        ("PATCH", "/v1/codex-auth/profiles/team-a"),
+        ("POST", "/v1/codex-auth/profiles/team-a/device-login"),
+        ("GET", "/v1/codex-auth/profiles/team-a/device-login/login/1"),
+        ("DELETE", "/v1/codex-auth/profiles/team-a/device-login/login/1"),
+        ("DELETE", "/v1/codex-auth/profiles/team-a/session"),
     ]
+
+
+def test_container_worker_client_surfaces_structured_subscription_deferral(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("WORKER_TOKEN", "secret-token")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            429,
+            json={
+                "error": "subscription capacity unavailable",
+                "deferral": {
+                    "profile_id": "team-a",
+                    "reason": "rate_limited",
+                    "retry_at": "2026-08-01T12:30:00Z",
+                },
+            },
+            request=request,
+        )
+
+    worker = ContainerWorkerClient(
+        base_url="http://worker.test",
+        token_env="WORKER_TOKEN",
+        max_connect_attempts=1,
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+
+    with pytest.raises(CodexSubscriptionDeferredClientError) as exc_info:
+        worker.create(
+            WorkerJobRequest(
+                session_id="session-1",
+                job_id="job-1",
+                image="runner:latest",
+                command=["true"],
+            )
+        )
+
+    assert exc_info.value.status_code == 429
+    assert exc_info.value.deferral.profile_id == "team-a"
+    assert exc_info.value.deferral.reason == "rate_limited"
+    assert exc_info.value.deferral.retry_at.isoformat() == "2026-08-01T12:30:00+00:00"
 
 
 def test_container_worker_client_telemetry_uses_auth_and_parses_payload(

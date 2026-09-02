@@ -20,7 +20,11 @@ from evander.admin.services.vm_agent.common import (
     resolve_libvirt_vm_template_selector,
 )
 from evander.session_auth import ensure_session_mcp_auth_token
-from evander.codex_auth import CodexAuthMode, normalize_codex_auth_mode
+from evander.codex_auth import (
+    CodexAuthMode,
+    normalize_codex_auth_mode,
+    normalize_subscription_profile_id,
+)
 from evander.connectors.grants import resolve_and_validate_connector_grants
 from evander.host_directories.grants import (
     resolve_and_validate_host_directory_grants,
@@ -279,14 +283,42 @@ class VmAgentCreateRequestMixin:
             backend.config
         )
         codex_auth_mode = normalize_codex_auth_mode(payload.get("codex_auth_mode"))
+        subscription_profile_id = normalize_subscription_profile_id(
+            payload.get("subscription_profile_id")
+        )
         if (
             codex_auth_mode is CodexAuthMode.CHATGPT_SUBSCRIPTION
             and str(agent_provider).strip().casefold() != "codex"
         ):
             raise ValueError("chatgpt_subscription is supported only for Codex agents")
+        if (
+            subscription_profile_id is not None
+            and codex_auth_mode is not CodexAuthMode.CHATGPT_SUBSCRIPTION
+        ):
+            raise ValueError(
+                "subscription_profile_id requires codex_auth_mode='chatgpt_subscription'"
+            )
         requested_model_provider_mode = normalize_model_provider_mode_override(
             payload.get(MODEL_PROVIDER_MODE_METADATA_KEY)
         )
+        effective_model_provider_mode = (
+            requested_model_provider_mode
+            or str(getattr(backend.config, "model_provider_mode", "") or "").strip()
+        )
+        if (
+            subscription_profile_id is not None
+            and codex_auth_mode is CodexAuthMode.CHATGPT_SUBSCRIPTION
+            and effective_model_provider_mode != "openai_public"
+        ):
+            raise ValueError(
+                "chatgpt_subscription is supported only with model_provider_mode='openai_public'"
+            )
+        if subscription_profile_id is not None:
+            profile_status = backend.client.codex_auth_profile_status(subscription_profile_id)
+            if not bool(profile_status.get("enabled")):
+                raise ValueError(
+                    f"Codex subscription profile {subscription_profile_id!r} is disabled"
+                )
         container_image_selection = resolve_container_worker_image_selector(
             self._agent_optional_string(payload, "container_image"),
             default_image=backend.config.container_worker_default_image,
@@ -417,6 +449,7 @@ class VmAgentCreateRequestMixin:
                 "vm_provider_id": target_name,
                 "model": model,
                 "codex_auth_mode": codex_auth_mode,
+                "subscription_profile_id": subscription_profile_id,
                 "metadata": metadata,
             }
         )
@@ -480,6 +513,7 @@ class VmAgentCreateRequestMixin:
             "repo_root": session_record.repo_root_container_path,
             "container_image": container_image_selection["image"],
             "container_image_alias": container_image_selection["image_alias"],
+            "subscription_profile_id": subscription_profile_id,
             "effective_tool_policy": self.effective_tool_policy_payload(session),
         }
 
@@ -499,6 +533,18 @@ class VmAgentCreateRequestMixin:
             {"alias": alias, "image_ref": image_ref}
             for alias, image_ref in sorted(provider_config.container_worker_images.items())
         ]
+        subscription_profiles: list[dict[str, object]] = []
+        try:
+            profile_payload = self.container_worker_backend(
+                directory_path=normalized_directory
+            ).client.list_codex_auth_profiles()
+            subscription_profiles = [
+                dict(profile)
+                for profile in profile_payload.get("profiles", [])
+                if isinstance(profile, Mapping) and bool(profile.get("enabled"))
+            ]
+        except Exception:
+            subscription_profiles = []
         connector_config = self.runtime.provider_config.resolve_connectors_for_directory(
             normalized_directory
         )
@@ -600,6 +646,9 @@ class VmAgentCreateRequestMixin:
             "container_worker": {
                 "default_image": provider_config.container_worker_default_image,
                 "images": container_images,
+                "codex_auth_mode": provider_config.container_worker_codex_auth_mode,
+                "model_provider_mode": provider_config.model_provider_mode,
+                "subscription_profiles": subscription_profiles,
             },
         }
 
