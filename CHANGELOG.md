@@ -8,6 +8,13 @@
 - Updated the Azure CLI repository template to use namespaced Ansible facts for compatibility with
   newer ansible-core releases.
 
+## 2026-09-02 - Portable Team Release-verifier CPU Limits
+
+- Stopped applying a fixed eight-CPU quota when a Team release policy omits `cpus`, allowing
+  disposable verification jobs to use the worker's available CPU capacity while retaining the
+  elevated 2,048 process/thread safeguard. Explicit project CPU, memory, and PID limits continue
+  to override the defaults for new verification sessions and infrastructure retries.
+
 ## 2026-09-02 - Agent Pull Request Metadata Updates
 
 - Added the policy-controlled `update_pull_request` MCP tool for Azure DevOps title, description,

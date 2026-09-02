@@ -118,11 +118,10 @@ def _session(
     return session
 
 
-def test_release_verification_session_gets_expanded_process_budget() -> None:
+def test_release_verification_session_gets_expanded_process_budget_without_cpu_quota() -> None:
     session = SimpleNamespace(metadata={"team_release_verification": True})
 
     assert container_worker_resource_limits_for_session(session) == {
-        "cpus": 8.0,
         "pids_limit": 2048,
     }
 
@@ -146,17 +145,16 @@ def test_release_verification_session_resource_limits_override_fallbacks() -> No
     }
 
 
-def test_release_verification_session_partial_limits_keep_fallbacks() -> None:
+def test_release_verification_session_partial_limits_keep_process_fallback() -> None:
     session = SimpleNamespace(
         metadata={
             "team_release_verification": True,
-            "container_worker_resource_limits": {"memory": "6g"},
+            "container_worker_resource_limits": {"memory": "6g", "cpus": None},
         }
     )
 
     assert container_worker_resource_limits_for_session(session) == {
         "memory": "6g",
-        "cpus": 8.0,
         "pids_limit": 2048,
     }
 

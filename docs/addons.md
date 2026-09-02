@@ -2372,11 +2372,12 @@ positive integer `pids_limit` values. For example:
 ```
 
 Admin Web's project release-policy JSON editor persists these values with the
-project. Omitted values inherit the verifier defaults: 8 CPUs and 2,048
-processes/threads, while memory remains governed by the worker/host default.
-Resource limits are infrastructure configuration rather than candidate
-evidence, so the live project policy is applied when each disposable verifier
-session is created, including an authorized retry of the same pinned candidate.
+project. Omitted CPU and memory values use the worker/host defaults; the verifier
+retains a 2,048 process/thread default. Only an explicitly configured CPU value
+creates a Docker CPU quota. Resource limits are infrastructure configuration
+rather than candidate evidence, so the live project policy is applied when each
+disposable verifier session is created, including an authorized retry of the
+same pinned candidate.
 
 A nonzero verification-command exit is a candidate failure: the release is
 terminally rejected and requires changed, reviewed content in a new release.

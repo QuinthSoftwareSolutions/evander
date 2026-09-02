@@ -66,7 +66,6 @@ NEXUS_NPM_GROUP_REPOSITORY = "npm-all"
 DEFAULT_CODEX_AGENT_MODEL = "gpt-5.4"
 DEFAULT_CLAUDE_AGENT_MODEL = "claude-sonnet-4-6"
 PLAYWRIGHT_CONTAINER_JOB_PIDS_LIMIT = 1024
-TEAM_RELEASE_VERIFICATION_CONTAINER_JOB_CPUS = 8.0
 TEAM_RELEASE_VERIFICATION_CONTAINER_JOB_PIDS_LIMIT = 2048
 PLAYWRIGHT_CONTAINER_PROMPT_MARKER = "[Evander seeded Playwright]"
 PLAYWRIGHT_CONTAINER_PROMPT_GUIDANCE = """[Evander seeded Playwright]
@@ -296,7 +295,6 @@ def container_worker_resource_limits_for_session(
             )
     if isinstance(metadata, Mapping) and metadata.get("team_release_verification") is True:
         limits: dict[str, str | int | float] = {
-            "cpus": TEAM_RELEASE_VERIFICATION_CONTAINER_JOB_CPUS,
             "pids_limit": TEAM_RELEASE_VERIFICATION_CONTAINER_JOB_PIDS_LIMIT,
         }
         limits.update(explicit_limits)

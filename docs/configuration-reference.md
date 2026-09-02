@@ -856,10 +856,11 @@ another field for a Playwright session: without an explicit object, Playwright
 sessions receive `pids_limit: 1024`, while other sessions inherit the strict
 worker default of `512`; an object containing only `cpus` does not retain the
 Playwright-specific `1024` value. Team release-verification sessions are
-different: their `8` CPU and `2048` PID defaults are merged with explicit
-session fields. The Team project's `release_policy.resource_limits` editor is
-the normal project-wide control for those disposable verifiers and is separate
-from an ordinary persistent agent's session metadata.
+different: their `2048` PID default is merged with explicit session fields,
+while CPU and memory use the worker/host defaults unless explicitly configured.
+The Team project's `release_policy.resource_limits` editor is the normal
+project-wide control for those disposable verifiers and is separate from an
+ordinary persistent agent's session metadata.
 
 `effect:agent:create.codex_auth_mode` accepts `metered_api` or
 `chatgpt_subscription` for container-worker sessions. Omitting it on an

@@ -1,15 +1,15 @@
 {
   "edition": "1.0",
-  "generated_at": "2026-08-30T09:03:32.610193+00:00",
+  "generated_at": "2026-09-02T06:11:50.417978+00:00",
   "outputs": {
-    "docs/evander-user-manual.docx": "15633a3673b54294ee689ef230339c75c1c24ccae8cc4d47789a3af227eb92f7",
-    "docs/evander-user-manual.html": "27076bde81a67437948e97cb90a11ed1e5c74196fc0155759cc8160991da3c9f",
-    "docs/evander-user-manual.md": "59669349f2fb477ddccd17c42214c185682355630bd0a583a30e9f132cf6307d",
-    "docs/evander-user-manual.pdf": "782475231ad9d5fa6b48fb610dc1dba35b8fb366473e62d884541d35209b51e2"
+    "docs/evander-user-manual.docx": "60e43dd9b10c53f1130debf0f8372c2e13e6b3f7332240300584407643250d49",
+    "docs/evander-user-manual.html": "b05421c41ff3405b7e351cae365bd4678dc87039c15a264f38da309f526b9bea",
+    "docs/evander-user-manual.md": "6f53679e830fe0fea7dea642bc47743564837852a6caa7011ff1ba18d7d9200f",
+    "docs/evander-user-manual.pdf": "5173b25813c7b7be49ba0c8a3ac01f21e8bb5d5baf4dcef45ea42626edf4a940"
   },
   "project_version": "0.3.1",
   "schema_version": 1,
-  "source_fingerprint": "05f685e06bad5f34dc34f8127ee4b624561f8cd2a1db4330a05991bcaac53829",
+  "source_fingerprint": "5ed1f1a8e8a08d2c5d4a1e31934fcc963879842d4b8456ad1e1ec4a24eb105b0",
   "sources": {
     "docs/assets/evander-user-manual/diagrams/01-system-context.png": "88b5f56516d2fb85a84d3489717a4d48e14aa4192a1b5e51af64e4abb4a75ed9",
     "docs/assets/evander-user-manual/diagrams/01-system-context.svg": "18d491c26e0ce3a23714ed59cbbd78c14a912c2c209dfd906eebcece38c470de",
@@ -68,7 +68,7 @@
     "docs/evander-user-manual/chapters/06-identity-sessions-policy.md": "0614a8f64378750312a6fe9f76a0b5a450179401885120530c058d39e54acf2d",
     "docs/evander-user-manual/chapters/07-mcp-approvals-audit.md": "60e04615aba47bd3c4daaae749246ac7c7d728c2f04421b5b888a2e7d8ae0767",
     "docs/evander-user-manual/chapters/08-workflow-runtime.md": "d9928d567fa3bec19f4cc64afa81cde46d116b6e6cb44fd59c0f46328552094a",
-    "docs/evander-user-manual/chapters/09-execution-backends.md": "8e7fa6e5cd303dec14200a6604f814824a931f5021be6e747f8c57fd0a4d161e",
+    "docs/evander-user-manual/chapters/09-execution-backends.md": "4e05d233d8ed79638c3f7bd5adde8a79577ec4ba61f182a61fd058d69bda48ec",
     "docs/evander-user-manual/chapters/10-networking-relays-secrets.md": "da9e1864baa8aab42b806d63d402f305d063277d4df7a4f77ffdc915df03ecf3",
     "docs/evander-user-manual/chapters/11-managed-git-artifacts-consultations.md": "f7e272b76de7b6a6aca2747c2128b6694a508a8437c032962cdbe1e912be9e5a",
     "docs/evander-user-manual/chapters/12-issues-provider-integrations.md": "23c86f998b19313c3f24369975c9c983751eab3b597733f1bb26534bc1ea0a53",
@@ -83,7 +83,7 @@
     "docs/evander-user-manual/chapters/21-team-communication.md": "55f64e277e066e24492b5f3d6205602c69d2dbe6933ad2db3b66d02abdf5be12",
     "docs/evander-user-manual/chapters/22-team-delivery-review.md": "d0a7f8358ec05f57c6baa6dbd82b85a2decf9b3f0c9e8d4006808aa94cfff6a2",
     "docs/evander-user-manual/chapters/23-team-ephemeral-delegation.md": "33d43370b60e4367e5d9a45e666d37e13ee9a74ca70e24d403d65a8783d77202",
-    "docs/evander-user-manual/chapters/24-team-git-releases.md": "0f71bea729e09f4ff495c8d2f943777fa40dbc8804b51e0621158579d34474de",
+    "docs/evander-user-manual/chapters/24-team-git-releases.md": "65659537b880d412906ba065faca1345ce21d2c9d57d7000abeea7dca61435a1",
     "docs/evander-user-manual/chapters/25-team-governance-memory-cost-internals.md": "53ec9bd0f5087a633a47eadedf03e55ffeab9bfe8f328b7e03f4df40a93d1b0d",
     "docs/evander-user-manual/chapters/26-engineering-extension.md": "c39a9d57c8e7bd7ecbf8d2c560fa036c0c0f7fc4e6bb0f32f71a9b5906f1b653",
     "docs/evander-user-manual/chapters/27-design-history.md": "8416ddbb00e95e5a9b9780689de38d0e7c3739898312a0e4e3d14e5ffceee847",
