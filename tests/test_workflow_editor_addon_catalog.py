@@ -117,6 +117,7 @@ def test_workflow_editor_catalog_includes_team_addon_nodes_when_enabled(
     create_case = nodes["effect:team:create-case"]
     update_case = nodes["effect:team:update-case"]
     register_agent = nodes["effect:team:register-agent"]
+    restore_agent = nodes["effect:team:restore-agent"]
     retire_agent = nodes["effect:team:retire-agent"]
     publish_review = nodes["effect:team:publish-review-branch"]
     consolidate = nodes["effect:team:consolidate-git-branches"]
@@ -206,10 +207,19 @@ def test_workflow_editor_catalog_includes_team_addon_nodes_when_enabled(
     assert update_case_fields["case_id"]["required"] is True
     assert update_case_fields["description"]["multiline"] is True
     register_agent_fields = {field["key"]: field for field in register_agent["fields"]}
+    restore_agent_fields = {field["key"]: field for field in restore_agent["fields"]}
     retire_agent_fields = {field["key"]: field for field in retire_agent["fields"]}
     assert register_agent_fields["session_id"]["required"] is True
     assert register_agent_fields["team_id"]["required"] is True
     assert register_agent_fields["role_id"]["required"] is True
+    assert restore_agent["label"] == "Restore Team agent"
+    assert restore_agent_fields["agent_id"]["required"] is True
+    assert restore_agent_fields["new_session_id"]["required"] is True
+    assert restore_agent_fields["expected_old_session_id"]["required"] is True
+    assert restore_agent_fields["expected_team_id"]["required"] is True
+    assert restore_agent_fields["role_id"]["required"] is True
+    assert restore_agent_fields["project_id"]["required"] is False
+    assert restore_agent_fields["reports_to_agent_id"]["required"] is False
     assert retire_agent_fields["agent_id"]["required"] is True
     assert retire_agent_fields["expected_session_id"]["required"] is True
     assert retire_agent_fields["expected_team_id"]["required"] is True
