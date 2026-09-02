@@ -716,7 +716,6 @@ class TeamRuntimeService:
                 lineage_context_active = (
                     runtime.context_clearing_policy
                     == AgentContextClearingPolicy.WORK_LINEAGE
-                    and not runtime.context_rotation_pending
                 )
                 if pending_reviews and not lineage_context_active:
                     selected_review = pending_reviews[0]
@@ -889,6 +888,8 @@ class TeamRuntimeService:
                             *active_tasks,
                         ),
                     )
+                    if not candidate_lineage_ids and rotation_pending:
+                        candidate_lineage_ids = [None]
                     selected_lineage_work: tuple[
                         list[Any],
                         list[Any],
@@ -2141,6 +2142,47 @@ class TeamRuntimeService:
             return state
 
         return self._repository.update(_mutate)
+
+    def invalidate_agent_work_lineage_thread_binding(
+        self,
+        *,
+        agent_id: str,
+        dispatch_id: str,
+        resume_thread_id: str,
+        now: datetime | None = None,
+    ) -> tuple[TeamState, bool]:
+        """Remove the exact lineage binding rejected by the agent provider."""
+
+        normalized_agent_id = _required_text(agent_id, "agent_id")
+        normalized_dispatch_id = _required_text(dispatch_id, "dispatch_id")
+        normalized_thread_id = _required_text(resume_thread_id, "resume_thread_id")
+        effective_now = _ensure_utc(now or utc_now())
+        invalidated = False
+
+        def _mutate(state: TeamState) -> TeamState:
+            nonlocal invalidated
+            dispatch = _require_present(state.dispatches, normalized_dispatch_id, "dispatch")
+            if dispatch.agent_id != normalized_agent_id:
+                raise ValueError(
+                    f"dispatch {dispatch.id} belongs to agent {dispatch.agent_id}, "
+                    f"not {normalized_agent_id}"
+                )
+            lineage_id = dispatch.work_lineage_id
+            if lineage_id is None:
+                return state
+            runtime = state.agent_runtimes.setdefault(
+                normalized_agent_id,
+                AgentRuntime(agent_id=normalized_agent_id),
+            )
+            if runtime.work_lineage_thread_ids.get(lineage_id) != normalized_thread_id:
+                return state
+            runtime.work_lineage_thread_ids.pop(lineage_id, None)
+            runtime.updated_at = effective_now
+            invalidated = True
+            return state
+
+        state = self._repository.update(_mutate)
+        return state, invalidated
 
     def mark_agent_dispatch_leased(
         self,

@@ -10,6 +10,8 @@
 - Updated Admin Web context controls and observability so lineage-routed agents do not show a
   misleading global reset age or token count, and disabled manual clearing for policies that
   already determine context per wake.
+- Preserved single-lineage routing through pending manual resets and recovered recreated agents
+  from stale lineage thread bindings by retrying the affected wake with a fresh context.
 
 ## 2026-09-02 - Deployment Service Reconciliation Reliability
 

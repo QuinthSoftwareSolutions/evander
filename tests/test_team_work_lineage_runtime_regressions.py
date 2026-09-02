@@ -32,6 +32,7 @@ from evander_team_addon.models import (
 from evander_team_addon.repository import TeamStateRepository
 from evander_team_addon.services.admin_service import TeamAdminService
 from evander_team_addon.services.runtime_service import TeamRuntimeService
+from evander_team_addon.services.wake_prompt_context import work_lineage_resume_thread_id
 
 
 NOW = datetime(2026, 1, 1, tzinfo=UTC)
@@ -113,6 +114,86 @@ def _defer_backend(repo: TeamStateRepository) -> None:
         return state
 
     repo.update(_mutate)
+
+
+def test_pending_manual_reset_keeps_work_lineage_dispatch_routing(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_repo(tmp_path)
+    state = _create_task(repo, task_id="task-a", priority=1)
+    state = _create_task(repo, task_id="task-b", priority=2)
+    runtime_service = TeamRuntimeService(repo)
+    runtime_service.request_agent_context_rotation(
+        agent_id="backend",
+        requested_by="operator:test",
+    )
+    _state, handoff_leases = runtime_service.lease_due_agents(
+        agent_id="backend",
+        respect_wake_interval=False,
+    )
+    assert len(handoff_leases) == 1
+    assert handoff_leases[0]["dispatch"]["cause_kind"] == "context_handoff"
+    runtime_service.record_agent_context_handoff(
+        agent_id="backend",
+        dispatch_id=handoff_leases[0]["dispatch_id"],
+        summary="Continue each task family in an isolated fresh context.",
+    )
+    _set_work_lineage_policy(repo, "backend")
+
+    lineage_a = str(state.tasks["task-a"].work_lineage_id)
+
+    def _seed_old_binding(state_model: TeamState) -> TeamState:
+        runtime = state_model.agent_runtimes["backend"]
+        assert runtime.context_rotation_pending is True
+        assert runtime.context_handoff_preparation_pending is False
+        runtime.work_lineage_thread_ids[lineage_a] = "thread-before-reset"
+        return state_model
+
+    repo.update(_seed_old_binding)
+    state, leases = runtime_service.lease_due_agents(
+        agent_id="backend",
+        respect_wake_interval=False,
+    )
+
+    assert len(leases) == 1
+    lease = leases[0]
+    assert lease["dispatch"]["work_lineage_id"] == lineage_a
+    assert lease["dispatch"]["task_ids"] == ["task-a"]
+    assert "task-b" not in lease["dispatch"]["task_ids"]
+    assert work_lineage_resume_thread_id(lease) is None
+    assert state.agent_runtimes["backend"].context_rotation_pending is True
+
+
+def test_pending_manual_reset_without_ready_work_can_finish_after_policy_change(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_repo(tmp_path)
+    runtime_service = TeamRuntimeService(repo)
+    runtime_service.request_agent_context_rotation(
+        agent_id="backend",
+        requested_by="operator:test",
+    )
+    _state, handoff_leases = runtime_service.lease_due_agents(
+        agent_id="backend",
+        respect_wake_interval=False,
+    )
+    runtime_service.record_agent_context_handoff(
+        agent_id="backend",
+        dispatch_id=handoff_leases[0]["dispatch_id"],
+        summary="No ready work remains in the old context.",
+    )
+    _set_work_lineage_policy(repo, "backend")
+
+    state, leases = runtime_service.lease_due_agents(
+        agent_id="backend",
+        respect_wake_interval=False,
+    )
+
+    assert len(leases) == 1
+    assert leases[0]["dispatch"]["work_lineage_id"] is None
+    assert leases[0]["dispatch"]["task_ids"] == []
+    assert work_lineage_resume_thread_id(leases[0]) is None
+    assert state.agent_runtimes["backend"].context_rotation_pending is True
 
 
 def test_manager_initial_release_authority_is_limited_to_selected_lineage(

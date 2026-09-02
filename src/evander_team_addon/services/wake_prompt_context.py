@@ -74,6 +74,8 @@ def work_lineage_resume_thread_id(lease: Mapping[str, Any]) -> str | None:
         return None
     if _optional_text(runtime.get("context_clearing_policy")) != "work_lineage":
         return None
+    if bool(runtime.get("context_rotation_pending")):
+        return None
     lineage_id = _optional_text(dispatch.get("work_lineage_id"))
     bindings = runtime.get("work_lineage_thread_ids")
     if lineage_id is None or not isinstance(bindings, Mapping):

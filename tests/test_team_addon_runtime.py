@@ -26,6 +26,7 @@ from evander.execution import ExecutionStatusKind
 from evander.gate_runtime import filter_when_matches
 from evander.review_snapshots import team_deliverable_snapshot_ref
 from evander.model_usage.store import ModelUsageStore
+from evander.messaging.agent_prompt_queue import AgentPromptQueueStore, QueuedAgentPromptRecord
 from evander.messaging.targets import (
     SqliteCommunicationTargetsRepository,
     communication_targets_db_path,
@@ -955,6 +956,105 @@ def test_work_lineage_thread_binding_resumes_explicit_thread_and_disables_manual
         expected_revision=repo.read().revision,
     )
     assert transitioned.agent_runtimes["backend"].work_lineage_thread_ids == {}
+
+
+@pytest.mark.parametrize("failure_mode", ["result", "exception", "queued"])
+def test_work_lineage_missing_thread_retries_once_with_fresh_context(
+    tmp_path: Path,
+    failure_mode: str,
+) -> None:
+    repo = _seed_team(tmp_path)
+    _team_admin_service(repo).update_agent(
+        agent_id="backend",
+        context_clearing_policy=AgentContextClearingPolicy.WORK_LINEAGE,
+        set_context_clearing_policy=True,
+        expected_revision=repo.read().revision,
+    )
+    lineage_id = str(repo.read().tasks["task"].work_lineage_id)
+
+    def _bind_stale_thread(state: TeamState) -> TeamState:
+        state.agent_runtimes["backend"].work_lineage_thread_ids[lineage_id] = "thread-stale"
+        return state
+
+    repo.update(_bind_stale_thread)
+
+    class MissingThenFreshResumer:
+        def __init__(self) -> None:
+            self.calls: list[dict[str, object]] = []
+
+        def enqueue_agent_prompt(self, **kwargs: object) -> dict[str, object]:
+            self.calls.append(dict(kwargs))
+            if len(self.calls) == 1:
+                if failure_mode == "exception":
+                    raise RuntimeError("No rollout found for session ID thread-stale")
+                if failure_mode == "queued":
+                    queue_key = "team-stale-thread-retry"
+                    AgentPromptQueueStore(tmp_path / "queued-agent-prompts.json").put(
+                        QueuedAgentPromptRecord(
+                            queue_key=queue_key,
+                            target="session-backend",
+                            vm_name="vm-backend",
+                            session_id="session-backend",
+                            prompt=str(kwargs["prompt"]),
+                            dispatch_id=str(kwargs["dispatch_id"]),
+                            resume_thread_id="thread-stale",
+                            resume_mode="same_context",
+                            effect_id="admin-agent-prompt:libvirt_vm:session-backend",
+                        )
+                    )
+                    return {
+                        "success": True,
+                        "queued": True,
+                        "queue_key": queue_key,
+                        "provider_details": {
+                            "dispatch_error": (
+                                "resume_agent failed; No rollout found for session ID thread-stale"
+                            ),
+                            "queue_key": queue_key,
+                        },
+                    }
+                return {
+                    "success": False,
+                    "message": "No rollout found for session ID thread-stale",
+                }
+            return {"success": True, "thread_id": "thread-fresh"}
+
+        resume_agent = enqueue_agent_prompt
+
+    resumer = MissingThenFreshResumer()
+    provider = TeamWakeDueAgentsEffectProvider()
+    provider.initialize(
+        TeamWakeDueAgentsEffectDefinition(
+            id="wake",
+            display_name="Wake",
+            type="effect:team:wake-due-agents",
+            limit=1,
+        ),
+        EffectRuntimeContext(
+            resolved_config={"runtime_dir": str(tmp_path)},
+            agent_resumer=resumer,
+            vm_file_copier=FakeFileCopier(),
+            session_lookup=FakeSessionStore(),
+        ),
+    )
+
+    result = provider.execute()
+
+    assert result["success"] is True
+    assert len(resumer.calls) == 2
+    assert resumer.calls[0]["resume_thread_id"] == "thread-stale"
+    assert resumer.calls[0]["resume_mode"] == "same_context"
+    assert resumer.calls[1]["resume_thread_id"] is None
+    assert resumer.calls[1]["resume_mode"] == "new_context"
+    assert '"context_mode": "fresh_full"' in str(resumer.calls[1]["prompt"])
+    runtime = repo.read().agent_runtimes["backend"]
+    assert runtime.work_lineage_thread_ids == {lineage_id: "thread-fresh"}
+    assert (
+        AgentPromptQueueStore(tmp_path / "queued-agent-prompts.json").get(
+            "team-stale-thread-retry"
+        )
+        is None
+    )
 
 
 def test_release_work_lineage_inherits_single_input_and_forks_mixed_inputs(

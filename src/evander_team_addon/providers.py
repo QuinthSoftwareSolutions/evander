@@ -64,6 +64,7 @@ from evander.git_identity import (
 from evander.models import tool_name_value
 from evander.runtime_generation import require_current_runtime_generation
 from evander.model_usage.runtime import register_model_usage_correlation_context
+from evander.messaging.agent_prompt_queue import AgentPromptQueueStore
 from evander.messaging.targets import load_communication_targets_config
 from evander.messaging.discord_inbox_store import DiscordInboxStore
 from evander.repositories.mcp_transport_bindings import JsonMcpTransportBindingRepository
@@ -2886,15 +2887,61 @@ class TeamWakeDueAgentsEffectProvider(EffectProviderBase):
                     dispatch_id=lease["dispatch_id"],
                     effect_id=_optional_text(getattr(self.effect_definition, "id", None)),
                 )
-                result = _enqueue_team_agent_prompt(
-                    resumer,
-                    target=agent["session_id"],
-                    prompt=prompt,
-                    resume_mode=effective_resume_mode,
-                    resume_thread_id=work_lineage_resume_thread_id(lease),
-                    dispatch_id=lease["dispatch_id"],
-                )
-                result_payload = _coerce_mapping(result)
+                resume_thread_id = work_lineage_resume_thread_id(lease)
+                try:
+                    result = _enqueue_team_agent_prompt(
+                        resumer,
+                        target=agent["session_id"],
+                        prompt=prompt,
+                        resume_mode=effective_resume_mode,
+                        resume_thread_id=resume_thread_id,
+                        dispatch_id=lease["dispatch_id"],
+                    )
+                except Exception as exc:
+                    result_payload = {"success": False, "error": str(exc)}
+                    if not _resume_failure_reports_missing_thread(
+                        result_payload,
+                        resume_thread_id=resume_thread_id,
+                    ):
+                        raise
+                else:
+                    result_payload = _coerce_mapping(result)
+                if _resume_failure_reports_missing_thread(
+                    result_payload,
+                    resume_thread_id=resume_thread_id,
+                ):
+                    state, invalidated = TeamRuntimeService(
+                        repo
+                    ).invalidate_agent_work_lineage_thread_binding(
+                        agent_id=agent["id"],
+                        dispatch_id=lease["dispatch_id"],
+                        resume_thread_id=resume_thread_id or "",
+                    )
+                    retry_allowed = _discard_failed_team_prompt_queue_record(
+                        repo,
+                        result=result_payload,
+                        dispatch_id=lease["dispatch_id"],
+                    )
+                    if invalidated and retry_allowed:
+                        lease = {
+                            **lease,
+                            "runtime": state.agent_runtimes[agent["id"]].model_dump(mode="json"),
+                        }
+                        leases[lease_index] = lease
+                        effective_resume_mode = "new_context"
+                        prompt = _build_prompt(
+                            lease,
+                            effective_resume_mode=effective_resume_mode,
+                        )
+                        result = _enqueue_team_agent_prompt(
+                            resumer,
+                            target=agent["session_id"],
+                            prompt=prompt,
+                            resume_mode=effective_resume_mode,
+                            resume_thread_id=None,
+                            dispatch_id=lease["dispatch_id"],
+                        )
+                        result_payload = _coerce_mapping(result)
                 if _result_reports_failure(result_payload):
                     error = _resume_failure_message(result_payload)
                     state = _record_wake_failure(repo, lease=lease, error=error)
@@ -14320,6 +14367,100 @@ def _resume_failure_message(result: Mapping[str, Any]) -> str:
         or _optional_text(result.get("error"))
         or "resume_agent failed"
     )
+
+
+def _resume_failure_reports_missing_thread(
+    result: Mapping[str, Any],
+    *,
+    resume_thread_id: str | None,
+) -> bool:
+    normalized_thread_id = _optional_text(resume_thread_id)
+    if normalized_thread_id is None:
+        return False
+
+    mappings = [result]
+    for key in ("provider_details", "details", "result"):
+        nested = result.get(key)
+        if isinstance(nested, Mapping):
+            mappings.append(nested)
+    if not _result_reports_failure(result) and not any(
+        _optional_text(payload.get("dispatch_error")) is not None for payload in mappings
+    ):
+        return False
+    missing_codes = {
+        "conversation_not_found",
+        "missing_resume_thread",
+        "resume_thread_missing",
+        "resume_thread_not_found",
+        "rollout_not_found",
+        "thread_missing",
+        "thread_not_found",
+    }
+    for payload in mappings:
+        for key in ("code", "error_code", "reason_code"):
+            code = _optional_text(payload.get(key))
+            if code is not None and code.lower().replace("-", "_") in missing_codes:
+                return True
+
+    thread_id_text = normalized_thread_id.lower()
+    for payload in mappings:
+        for key in (
+            "message",
+            "error",
+            "detail",
+            "diagnostic",
+            "stderr",
+            "dispatch_error",
+        ):
+            message = _optional_text(payload.get(key))
+            if message is None:
+                continue
+            normalized = " ".join(message.lower().split())
+            missing = any(
+                marker in normalized
+                for marker in (
+                    "not found",
+                    "does not exist",
+                    "no such",
+                    "unknown",
+                    "missing",
+                    "no rollout found",
+                    "no thread found",
+                    "no conversation found",
+                    "could not find",
+                    "failed to find",
+                )
+            )
+            if not missing:
+                continue
+            if any(subject in normalized for subject in ("thread", "conversation", "rollout")):
+                return True
+            if "session" in normalized and thread_id_text in normalized:
+                return True
+    return False
+
+
+def _discard_failed_team_prompt_queue_record(
+    repo: TeamStateRepository,
+    *,
+    result: Mapping[str, Any],
+    dispatch_id: object,
+) -> bool:
+    if not bool(result.get("queued")):
+        return True
+    normalized_dispatch_id = _optional_text(dispatch_id)
+    queue_key = _optional_text(result.get("queue_key"))
+    if queue_key is None:
+        provider_details = result.get("provider_details")
+        if isinstance(provider_details, Mapping):
+            queue_key = _optional_text(provider_details.get("queue_key"))
+    if normalized_dispatch_id is None or queue_key is None:
+        return False
+    queue_store = AgentPromptQueueStore(repo.runtime_dir / "queued-agent-prompts.json")
+    queued = queue_store.get(queue_key)
+    if queued is None:
+        return True
+    return queue_store.delete_if_dispatch_id(queue_key, normalized_dispatch_id)
 
 
 def _filtered_team_state_payload(
