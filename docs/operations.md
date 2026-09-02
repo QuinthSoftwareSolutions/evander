@@ -3400,8 +3400,12 @@ receipt; a changed request or dirty checkout is retained for operator recovery.
 When preparation inputs change, the task resolves, or ownership changes before
 the Git context commits, global maintenance moves the obsolete receipted checkout
 into the same audited cleanup pipeline as invalidated Git work contexts. Successful
-container cleanup retires the matching worker receipt so a later deterministic
-preparation cannot collide with a receipt for an already-removed checkout.
+container cleanup retires the matching worker receipt and every committed attempt
+covered by the terminal physical-worktree lineage, including attempts bound to an
+older dispatch context. Retrying an operator-action-required invalidated preparation
+restores its cleanup-pending state before safety checks run. During rolling upgrades,
+cleanup omits a known legacy receipt ID and retries strict older workers without the
+new field, so pre-receipt checkouts remain removable.
 
 Current Team state schema 20 / SQLite schema 69 includes provider-neutral
 project directory scopes, durable Git preparation receipts, frozen cleanup

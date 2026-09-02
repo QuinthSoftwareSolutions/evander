@@ -747,6 +747,71 @@ def test_container_worker_client_retries_without_receipt_id_for_older_worker(
     assert record.preparation_attempt_id is None
 
 
+def test_container_worker_client_cleanup_retries_without_receipt_id_for_older_worker(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("WORKER_TOKEN", "secret-token")
+    requests: list[dict[str, object]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        payload = json.loads(request.content)
+        requests.append(payload)
+        if len(requests) == 1:
+            return httpx.Response(
+                400,
+                json={
+                    "error": (
+                        "1 validation error for WorkerTaskWorktreeCleanupRequest\n"
+                        "preparation_attempt_id\n"
+                        "  Extra inputs are not permitted [type=extra_forbidden]"
+                    )
+                },
+                request=request,
+            )
+        return httpx.Response(
+            200,
+            json={
+                "session_id": "session-1",
+                "repo_name": "repo",
+                "worktree_name": "task-a-1234",
+                "target_dir": "/home/agent/worktrees/repo/task-a-1234",
+                "branch": "agents/session-1/tasks/task-a-1234",
+                "expected_commit_sha": "a" * 40,
+                "state": "removed",
+                "safe_to_remove": True,
+                "removed": True,
+                "pruned": True,
+                "dry_run": False,
+                "validation_count": 2,
+                "message": "task worktree removed and registration pruned",
+            },
+            request=request,
+        )
+
+    worker = ContainerWorkerClient(
+        base_url="http://worker.test",
+        token_env="WORKER_TOKEN",
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+
+    record = worker.cleanup_task_worktree(
+        "session-1",
+        WorkerTaskWorktreeCleanupRequest(
+            repo_name="repo",
+            worktree_name="task-a-1234",
+            preparation_attempt_id="gitprep-task-a-1234",
+            branch="agents/session-1/tasks/task-a-1234",
+            expected_commit_sha="a" * 40,
+            expected_target_dir="/home/agent/worktrees/repo/task-a-1234",
+        ),
+    )
+
+    assert record.state == "removed"
+    assert len(requests) == 2
+    assert requests[0]["preparation_attempt_id"] == "gitprep-task-a-1234"
+    assert "preparation_attempt_id" not in requests[1]
+
+
 def test_container_worker_client_does_not_retry_read_timeout(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -188,11 +188,23 @@ class ContainerWorkerClient:
         session_id: str,
         request: WorkerTaskWorktreeCleanupRequest,
     ) -> WorkerTaskWorktreeCleanupRecord:
-        response = self._request(
-            "POST",
-            f"/v1/sessions/{session_id}/worktrees/cleanup",
-            json=request.model_dump(mode="json", exclude_none=True),
-        )
+        path = f"/v1/sessions/{session_id}/worktrees/cleanup"
+        try:
+            response = self._request(
+                "POST",
+                path,
+                json=request.model_dump(mode="json", exclude_none=True),
+            )
+        except ContainerWorkerClientError as exc:
+            if not _worker_rejected_preparation_attempt_id(request, exc):
+                raise
+            response = self._request(
+                "POST",
+                path,
+                json=request.model_copy(update={"preparation_attempt_id": None}).model_dump(
+                    mode="json", exclude_none=True
+                ),
+            )
         return WorkerTaskWorktreeCleanupRecord.model_validate(
             self._json_dict(response, operation="clean up task worktree")
         )
@@ -468,7 +480,7 @@ class ContainerWorkerClient:
 
 
 def _worker_rejected_preparation_attempt_id(
-    request: WorkerTaskWorktreeRequest,
+    request: WorkerTaskWorktreeRequest | WorkerTaskWorktreeCleanupRequest,
     exc: ContainerWorkerClientError,
 ) -> bool:
     """Recognize the strict validation response from pre-receipt worker daemons."""

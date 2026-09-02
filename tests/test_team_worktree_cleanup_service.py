@@ -537,6 +537,83 @@ def test_cleanup_retires_committed_attempt_before_pruning_its_context(tmp_path) 
     assert candidate.state == WorktreeCleanupState.SUCCEEDED
 
 
+def test_cleanup_retires_attempt_bound_to_older_context_in_cleaned_lineage(tmp_path) -> None:
+    repository = _seed_cleanup_state(tmp_path)
+    now = datetime(2026, 8, 24, 12, tzinfo=UTC)
+    attempt_id = "gitprep-older-lineage-context"
+
+    def _seed_multiple_dispatch_contexts(state: TeamState) -> TeamState:
+        old_context = state.git_work_contexts.pop("context")
+        old_context.id = "context-first-dispatch"
+        old_context.created_at = now - timedelta(hours=2)
+        old_context.updated_at = now - timedelta(hours=2)
+        state.git_work_contexts[old_context.id] = old_context
+        state.git_work_contexts["context-latest-dispatch"] = GitWorkContext(
+            id="context-latest-dispatch",
+            agent_id="backend",
+            task_id="task",
+            agent_branch=old_context.agent_branch,
+            base_branch="main",
+            base_commit=_BASE_COMMIT,
+            commit_sha=_BASE_COMMIT,
+            worktree_path=_WORKTREE_PATH,
+            state=GitWorkContextState.ABANDONED,
+            created_at=now - timedelta(hours=1),
+            updated_at=now - timedelta(hours=1),
+        )
+        state.git_preparation_attempts[attempt_id] = TeamGitPreparationAttempt(
+            id=attempt_id,
+            agent_id="backend",
+            session_id="session-backend",
+            task_id="task",
+            project_id="project",
+            latest_dispatch_id="dispatch-first",
+            managed_repo_id=_MANAGED_REPO_ID,
+            directory_path="root",
+            execution_backend="container_worker_vm",
+            worktree_path=_WORKTREE_PATH,
+            branch=old_context.agent_branch,
+            base_ref="main",
+            preparation_generation="a" * 20,
+            state=TeamGitPreparationAttemptState.COMMITTED,
+            worker_request_fingerprint="f" * 64,
+            base_commit_sha=_BASE_COMMIT,
+            head_commit_sha=_BASE_COMMIT,
+            git_work_context_id=old_context.id,
+            prepared_at=now - timedelta(hours=2),
+            committed_at=now - timedelta(hours=2),
+            created_at=now - timedelta(hours=2),
+            updated_at=now - timedelta(hours=2),
+        )
+        return state
+
+    repository.update(_seed_multiple_dispatch_contexts)
+    service = TeamWorktreeCleanupService(
+        repository,
+        FakeCleanupBackend([_removed_outcome()]),
+    )
+
+    result = service.reconcile(now=now, grace_seconds=0, dry_run=False)
+
+    assert result.succeeded_count == 1
+    cleaned = repository.read()
+    [candidate] = cleaned.worktree_cleanup_candidates.values()
+    assert candidate.git_work_context_id == "context-latest-dispatch"
+    assert attempt_id not in cleaned.git_preparation_attempts
+    assert "context-first-dispatch" in cleaned.git_work_contexts
+
+    def _apply_retention(state: TeamState) -> TeamState:
+        reconcile_git_work_context_lifecycle(
+            state,
+            now=now + timedelta(days=1),
+            prune_before=now + timedelta(days=1),
+        )
+        return state
+
+    retained = repository.update(_apply_retention)
+    assert "context-first-dispatch" not in retained.git_work_contexts
+
+
 def test_invalidated_preparation_is_cleanup_eligible_before_task_resolution(
     tmp_path,
 ) -> None:
@@ -561,6 +638,106 @@ def test_invalidated_preparation_is_cleanup_eligible_before_task_resolution(
     assert candidate.reason == "preparation_invalidated"
     result = service.reconcile(now=now, grace_seconds=0, dry_run=False)
     assert result.succeeded_count == 1
+
+
+def test_operator_requeue_restores_invalidated_preparation_cleanup_eligibility(
+    tmp_path,
+) -> None:
+    repository = _seed_cleanup_state(tmp_path, task_state=TeamTaskState.IN_PROGRESS)
+    now = datetime(2026, 8, 24, 12, tzinfo=UTC)
+    attempt_id = "gitprep-invalidated-requeue"
+    candidate_id = f"cleanup-{attempt_id}"
+    worktree_path = "/home/agent/worktrees/project/task-invalidated-requeue"
+
+    def _seed_invalidated_attempt(state: TeamState) -> TeamState:
+        state.git_work_contexts.clear()
+        state.git_preparation_attempts[attempt_id] = TeamGitPreparationAttempt(
+            id=attempt_id,
+            agent_id="backend",
+            session_id="session-backend",
+            task_id="task",
+            project_id="project",
+            latest_dispatch_id="dispatch-invalidated",
+            managed_repo_id=_MANAGED_REPO_ID,
+            directory_path="root",
+            execution_backend="container_worker_vm",
+            worktree_path=worktree_path,
+            branch="agents/session-backend/tasks/task-invalidated-requeue",
+            base_ref="main",
+            preparation_generation="a" * 20,
+            state=TeamGitPreparationAttemptState.CLEANUP_PENDING,
+            worker_request_fingerprint="f" * 64,
+            base_commit_sha=_BASE_COMMIT,
+            head_commit_sha=_BASE_COMMIT,
+            prepared_at=now,
+            created_at=now,
+            updated_at=now,
+        )
+        state.worktree_cleanup_candidates[candidate_id] = WorktreeCleanupCandidate(
+            id=candidate_id,
+            agent_id="backend",
+            session_id="session-backend",
+            task_id="task",
+            project_id="project",
+            git_work_context_id=f"preparation:{attempt_id}",
+            managed_repo_id=_MANAGED_REPO_ID,
+            execution_backend="container_worker_vm",
+            worktree_path=worktree_path,
+            branch="agents/session-backend/tasks/task-invalidated-requeue",
+            base_ref="main",
+            expected_head=_BASE_COMMIT,
+            reason="preparation_invalidated",
+            eligible_at=now,
+            created_at=now,
+            updated_at=now,
+        )
+        return state
+
+    repository.update(_seed_invalidated_attempt)
+    backend = FakeCleanupBackend(
+        [
+            {
+                "state": "refused",
+                "safe_to_remove": False,
+                "failed_check": "tracked_changes",
+                "message": "tracked changes prevent cleanup",
+            },
+            _removed_outcome(),
+        ]
+    )
+    service = TeamWorktreeCleanupService(repository, backend)
+
+    first = service.reconcile(now=now, grace_seconds=0, retry_seconds=0)
+
+    assert first.operator_action_required_count == 1
+    halted = repository.read()
+    assert halted.worktree_cleanup_candidates[candidate_id].state == (
+        WorktreeCleanupState.OPERATOR_ACTION_REQUIRED
+    )
+    assert halted.git_preparation_attempts[attempt_id].state == (
+        TeamGitPreparationAttemptState.OPERATOR_ACTION_REQUIRED
+    )
+
+    service.requeue_operator_action(
+        candidate_id,
+        requested_by="operator:admin",
+        reason="The tracked edits were reviewed and committed.",
+        now=now + timedelta(seconds=1),
+        expected_revision=repository.read_revision(),
+    )
+
+    requeued = repository.read()
+    assert requeued.git_preparation_attempts[attempt_id].state == (
+        TeamGitPreparationAttemptState.CLEANUP_PENDING
+    )
+    second = service.reconcile(
+        now=now + timedelta(seconds=1),
+        grace_seconds=0,
+        retry_seconds=0,
+    )
+    assert second.succeeded_count == 1
+    assert len(backend.calls) == 2
+    assert attempt_id not in repository.read().git_preparation_attempts
 
 
 def test_cleanup_uses_enqueued_directory_after_project_scope_moves(
@@ -2032,9 +2209,50 @@ def test_cleanup_candidate_uses_newest_context_not_opaque_id_order(
 
 
 def test_effect_backend_delegates_container_cleanup_with_exact_expectations(
+    tmp_path,
     monkeypatch,
 ) -> None:
     calls: list[dict[str, Any]] = []
+    repository = _seed_cleanup_state(tmp_path)
+    now = datetime(2026, 8, 24, 12, tzinfo=UTC)
+
+    def _seed_committed_attempt(state: TeamState) -> TeamState:
+        first_context = state.git_work_contexts["context"]
+        state.git_work_contexts["context-latest"] = first_context.model_copy(
+            update={
+                "id": "context-latest",
+                "created_at": now + timedelta(seconds=1),
+                "updated_at": now + timedelta(seconds=1),
+            },
+            deep=True,
+        )
+        state.git_preparation_attempts["gitprep-committed-receipt"] = TeamGitPreparationAttempt(
+            id="gitprep-committed-receipt",
+            agent_id="backend",
+            session_id="session-backend",
+            task_id="task",
+            project_id="project",
+            latest_dispatch_id="dispatch-prepared",
+            managed_repo_id=_MANAGED_REPO_ID,
+            directory_path="root",
+            execution_backend="container_worker_vm",
+            worktree_path=_WORKTREE_PATH,
+            branch="agents/session-backend/tasks/task-12345678",
+            base_ref="main",
+            preparation_generation="a" * 20,
+            state=TeamGitPreparationAttemptState.COMMITTED,
+            worker_request_fingerprint="f" * 64,
+            base_commit_sha=_BASE_COMMIT,
+            head_commit_sha=_BASE_COMMIT,
+            git_work_context_id="context",
+            prepared_at=now,
+            committed_at=now,
+            created_at=now,
+            updated_at=now,
+        )
+        return state
+
+    repository.update(_seed_committed_attempt)
 
     class FakeContainerBackend:
         def cleanup_task_worktree(self, **kwargs: Any) -> SimpleNamespace:
@@ -2068,7 +2286,7 @@ def test_effect_backend_delegates_container_cleanup_with_exact_expectations(
         session_id="session-backend",
         task_id="task",
         project_id="project",
-        git_work_context_id="context",
+        git_work_context_id="context-latest",
         managed_repo_id=_MANAGED_REPO_ID,
         execution_backend="container_worker_vm",
         worktree_path=_WORKTREE_PATH,
@@ -2078,7 +2296,8 @@ def test_effect_backend_delegates_container_cleanup_with_exact_expectations(
     )
 
     result = EffectTaskWorktreeCleanupBackend(
-        SimpleNamespace(metadata={"directory_path": "root"})
+        SimpleNamespace(metadata={"directory_path": "root"}),
+        repository=repository,
     ).cleanup(candidate, dry_run=True)
 
     assert result["state"] == "already_absent"
@@ -2087,6 +2306,7 @@ def test_effect_backend_delegates_container_cleanup_with_exact_expectations(
             "session_id": "session-backend",
             "repo_name": "project",
             "worktree_name": "task-12345678",
+            "preparation_attempt_id": "gitprep-committed-receipt",
             "branch": "agents/session-backend/tasks/task-12345678",
             "expected_commit_sha": _BASE_COMMIT,
             "expected_target_dir": _WORKTREE_PATH,
@@ -2114,6 +2334,102 @@ def test_effect_backend_delegates_container_cleanup_with_exact_expectations(
         "expected_target_dir": _WORKTREE_PATH,
         "dry_run": False,
     }
+
+
+def test_effect_backend_omits_receipt_id_for_legacy_worker_attempt(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    calls: list[dict[str, Any]] = []
+    repository = _seed_cleanup_state(tmp_path, task_state=TeamTaskState.IN_PROGRESS)
+    now = datetime(2026, 8, 24, 12, tzinfo=UTC)
+    attempt_id = "gitprep-legacy-worker-cleanup"
+    worktree_path = "/home/agent/worktrees/project/task-legacy-worker"
+
+    def _seed_legacy_attempt(state: TeamState) -> TeamState:
+        state.git_work_contexts.clear()
+        state.git_preparation_attempts[attempt_id] = TeamGitPreparationAttempt(
+            id=attempt_id,
+            agent_id="backend",
+            session_id="session-backend",
+            task_id="task",
+            project_id="project",
+            latest_dispatch_id="dispatch-legacy-worker",
+            managed_repo_id=_MANAGED_REPO_ID,
+            directory_path="root",
+            execution_backend="container_worker_vm",
+            worktree_path=worktree_path,
+            branch="agents/session-backend/tasks/task-legacy-worker",
+            base_ref="main",
+            preparation_generation="a" * 20,
+            state=TeamGitPreparationAttemptState.CLEANUP_PENDING,
+            worker_request_fingerprint="legacy-container-worker:" + "f" * 64,
+            base_commit_sha=_BASE_COMMIT,
+            head_commit_sha=_BASE_COMMIT,
+            prepared_at=now,
+            created_at=now,
+            updated_at=now,
+        )
+        return state
+
+    repository.update(_seed_legacy_attempt)
+
+    class FakeContainerBackend:
+        def cleanup_task_worktree(self, **kwargs: Any) -> SimpleNamespace:
+            calls.append(kwargs)
+            return SimpleNamespace(
+                model_dump=lambda mode: {
+                    "state": "removed",
+                    "safe_to_remove": True,
+                    "removed": True,
+                    "pruned": True,
+                    "validation_count": 2,
+                    "message": "removed",
+                    "ignored_paths": [],
+                    "reclaimed_bytes": 0,
+                }
+            )
+
+    monkeypatch.setattr(
+        "evander_team_addon.services.worktree_cleanup_service."
+        "selected_execution_backend_for_target",
+        lambda *_args, **_kwargs: ("container_worker_vm", SimpleNamespace()),
+    )
+    monkeypatch.setattr(
+        "evander_team_addon.services.worktree_cleanup_service.container_backend",
+        lambda *_args, **_kwargs: FakeContainerBackend(),
+    )
+    candidate = WorktreeCleanupCandidate(
+        id=f"cleanup-{attempt_id}",
+        agent_id="backend",
+        session_id="session-backend",
+        task_id="task",
+        project_id="project",
+        git_work_context_id=f"preparation:{attempt_id}",
+        managed_repo_id=_MANAGED_REPO_ID,
+        execution_backend="container_worker_vm",
+        worktree_path=worktree_path,
+        branch="agents/session-backend/tasks/task-legacy-worker",
+        expected_head=_BASE_COMMIT,
+        reason="preparation_invalidated",
+    )
+
+    EffectTaskWorktreeCleanupBackend(
+        SimpleNamespace(metadata={"directory_path": "root"}),
+        repository=repository,
+    ).cleanup(candidate, dry_run=False)
+
+    assert calls == [
+        {
+            "session_id": "session-backend",
+            "repo_name": "project",
+            "worktree_name": "task-legacy-worker",
+            "branch": "agents/session-backend/tasks/task-legacy-worker",
+            "expected_commit_sha": _BASE_COMMIT,
+            "expected_target_dir": worktree_path,
+            "dry_run": False,
+        }
+    ]
 
 
 def test_libvirt_preparation_uses_cleanup_lock_and_records_base_commit(tmp_path) -> None:

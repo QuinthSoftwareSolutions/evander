@@ -5,7 +5,9 @@
 - Persisted deterministic Team Git preparation attempts and host-owned container-worker receipts
   so an exact pristine checkout can be resumed after a state conflict without trusting guest Git
   configuration; invalidated, resolved-task, and reassigned attempts now enter audited worktree
-  cleanup, which retires matching worker receipts after successful physical removal.
+  cleanup. Successful physical removal retires receipts and attempts across the cleaned worktree
+  lineage, operator retries restore invalidated cleanup eligibility, and cleanup remains compatible
+  with workers deployed before receipt IDs were supported.
 - Made operator resolution of an explicit preparation blocker enqueue the affected actionable task
   owner through the existing durable wake outbox while suppressing wakes when another gate remains.
 - Detect coherent-but-stale Team service registrations and fail systemd wake dispatch before
