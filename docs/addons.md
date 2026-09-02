@@ -929,6 +929,19 @@ role, optional project membership, reporting edge, and unique session binding
 before changing Team state. An exact retry is a successful no-op. The existing
 Admin registration route remains available for its broader operator workflow.
 
+When a later workflow needs the same logical agent after retirement, use
+`effect:team:restore-agent` with a newly created core session. The effect requires
+the archived agent's prior session and retained Team identities as guards, then
+atomically reattaches its role, optional project membership, and optional manager.
+The replacement session must be distinct, unexpired, unbound, and inside the
+workflow directory scope. Restoration resets transient wake, dispatch, rotation,
+and model-thread runtime state while preserving the logical agent's operator-set
+context policy and idle grace, plus its durable cases, tasks, memories, and
+completed dispatch history. An exact restored-binding retry is a successful no-op.
+The old core session may already be absent or may remain as a terminal/audit
+record; restoration does not recover or reuse it. Workflows remain responsible
+for completing any outstanding old-session cleanup.
+
 Use `effect:team:retire-agent` after a workflow has retired children before
 parents and cleared the agent's Team work. It checks the expected Team and
 session identities, returns all ordinary Team removal blockers, removes project

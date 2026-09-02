@@ -4,21 +4,26 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
+from uuid import uuid4
 
 from evander.messaging.wake_dispatch import directory_is_within_scope
 from evander.models import utc_now
 
 from ..models import (
+    AgentContextClearingPolicy,
     AgentProjectAssignment,
     AgentProjectAssignmentKind,
+    AgentRuntime,
     AgentStatus,
     EphemeralAssignmentState,
     PersistentAgent,
+    TeamIdempotencyRecord,
     TeamState,
     TeamRole,
     agent_project_ids,
 )
 from ..repository import TeamStateConflictError, TeamStateRepository
+from ..sqlite_store import TeamIdempotencyConflictError
 from .domain.agent_access import (
     _agent_team_removal_blockers,
     _project_assignment_id,
@@ -52,6 +57,15 @@ class TeamWorkflowAgentRetirementResult:
     agent: PersistentAgent
     retired: bool
     already_retired: bool
+
+
+@dataclass(frozen=True)
+class TeamWorkflowAgentRestorationResult:
+    state: TeamState
+    agent: PersistentAgent
+    restored: bool
+    already_restored: bool
+    previous_session_id: str
 
 
 class TeamWorkflowAgentLifecycleService:
@@ -281,6 +295,145 @@ class TeamWorkflowAgentLifecycleService:
             already_retired=False,
         )
 
+    def restore_agent(
+        self,
+        *,
+        agent_id: str,
+        new_session_id: str,
+        expected_old_session_id: str,
+        expected_team_id: str,
+        role_id: str,
+        project_id: str | None = None,
+        reports_to_agent_id: str | None = None,
+        expected_revision: int | None = None,
+    ) -> TeamWorkflowAgentRestorationResult:
+        normalized = _RestorationRequest(
+            agent_id=_required_text(agent_id, "agent_id"),
+            new_session_id=_required_text(new_session_id, "new_session_id"),
+            expected_old_session_id=_required_text(
+                expected_old_session_id,
+                "expected_old_session_id",
+            ),
+            expected_team_id=_required_text(expected_team_id, "expected_team_id"),
+            role_id=_required_text(role_id, "role_id"),
+            project_id=_optional_text(project_id),
+            reports_to_agent_id=_optional_text(reports_to_agent_id),
+        )
+        if normalized.new_session_id == normalized.expected_old_session_id:
+            raise ValueError("new_session_id must differ from expected_old_session_id")
+        self._require_workflow_session(normalized.new_session_id, require_unexpired=True)
+        idempotency_payload = _restoration_idempotency_payload(normalized)
+        payload_digest = self._repository.normalized_payload_digest(idempotency_payload)
+        already_restored = False
+
+        def _mutate(state: TeamState, tx: Any) -> TeamState:
+            nonlocal already_restored
+            concurrent_replay = tx.get_idempotency_record(
+                tool_name="effect:team:restore-agent",
+                caller_identity="workflow-agent-lifecycle",
+                scope_kind="agent",
+                scope_id=normalized.agent_id,
+                request_id=normalized.new_session_id,
+            )
+            if concurrent_replay is not None:
+                if concurrent_replay.normalized_payload_digest != payload_digest:
+                    raise TeamIdempotencyConflictError(
+                        tool_name="effect:team:restore-agent",
+                        caller_identity="workflow-agent-lifecycle",
+                        scope_kind="agent",
+                        scope_id=normalized.agent_id,
+                        request_id=normalized.new_session_id,
+                        existing_digest=concurrent_replay.normalized_payload_digest,
+                        attempted_digest=payload_digest,
+                    )
+                existing = self._exact_restoration(state, normalized)
+                if existing is None:
+                    raise ValueError(
+                        f"completed restoration for agent {normalized.agent_id} no longer "
+                        "matches the current Team binding"
+                    )
+                already_restored = True
+                return state
+            _require_revision(state, expected_revision)
+            agent = self._validate_restoration(state, normalized)
+            # Revalidate the core session while holding the Team state write lock so a
+            # concurrent Team mutation cannot make a stale validation authoritative.
+            self._require_workflow_session(normalized.new_session_id, require_unexpired=True)
+            agent.team_id = normalized.expected_team_id
+            agent.role_id = normalized.role_id
+            agent.session_id = normalized.new_session_id
+            agent.reports_to_agent_id = normalized.reports_to_agent_id
+            agent.retired_team_id = None
+            # Delegation limits belong to the logical agent, not its backing session.
+            # Retirement leaves the override intact, so restoration must preserve it.
+            agent.status = AgentStatus.ACTIVE
+            if normalized.project_id is not None:
+                assignment_id = _project_assignment_id(
+                    normalized.project_id,
+                    agent.id,
+                    AgentProjectAssignmentKind.PROJECT_MEMBER,
+                    existing_ids=state.project_assignments,
+                )
+                state.project_assignments[assignment_id] = AgentProjectAssignment(
+                    id=assignment_id,
+                    team_id=normalized.expected_team_id,
+                    project_id=normalized.project_id,
+                    agent_id=agent.id,
+                    role_id=normalized.role_id,
+                    kind=AgentProjectAssignmentKind.PROJECT_MEMBER,
+                )
+            if normalized.reports_to_agent_id is not None:
+                superior = state.agents[normalized.reports_to_agent_id]
+                superior.subordinate_agent_ids = _append_unique(
+                    superior.subordinate_agent_ids,
+                    agent.id,
+                )
+            # The execution session is a new generation. Do not carry leases, model
+            # thread ids, context-rotation state, or other runtime lineage across it.
+            # Context clearing mode and idle grace are operator-owned policy for the
+            # logical agent, however, so they survive the backing-session replacement.
+            previous_runtime = state.agent_runtimes.get(agent.id)
+            state.agent_runtimes[agent.id] = AgentRuntime(
+                agent_id=agent.id,
+                context_clearing_policy=(
+                    previous_runtime.context_clearing_policy
+                    if previous_runtime is not None
+                    else AgentContextClearingPolicy.OFF
+                ),
+                context_clearing_idle_grace_seconds=(
+                    previous_runtime.context_clearing_idle_grace_seconds
+                    if previous_runtime is not None
+                    else 0
+                ),
+            )
+            tx.store_idempotency_record(
+                TeamIdempotencyRecord(
+                    id=f"idempotency-{uuid4().hex}",
+                    tool_name="effect:team:restore-agent",
+                    caller_identity="workflow-agent-lifecycle",
+                    scope_kind="agent",
+                    scope_id=normalized.agent_id,
+                    request_id=normalized.new_session_id,
+                    normalized_payload_digest=payload_digest,
+                    response_payload={
+                        "agent_id": normalized.agent_id,
+                        "previous_session_id": normalized.expected_old_session_id,
+                        "session_id": normalized.new_session_id,
+                    },
+                    created_domain_ids=[normalized.agent_id],
+                )
+            )
+            return state
+
+        state = self._repository.update_with_command_transaction(_mutate)
+        return TeamWorkflowAgentRestorationResult(
+            state=state,
+            agent=state.agents[normalized.agent_id],
+            restored=True,
+            already_restored=already_restored,
+            previous_session_id=normalized.expected_old_session_id,
+        )
+
     def _exact_registration(
         self,
         state: TeamState,
@@ -329,6 +482,71 @@ class TeamWorkflowAgentLifecycleService:
             raise ValueError(f"agent {request.agent_id} already exists with a different binding")
         return None
 
+    def _exact_restoration(
+        self,
+        state: TeamState,
+        request: "_RestorationRequest",
+    ) -> PersistentAgent | None:
+        agent = state.agents.get(request.agent_id)
+        if agent is None:
+            return None
+        if not _restoration_matches(agent, state=state, request=request):
+            return None
+        return agent
+
+    def _validate_restoration(
+        self,
+        state: TeamState,
+        request: "_RestorationRequest",
+    ) -> PersistentAgent:
+        agent = _require_present(state.agents, request.agent_id, "agent")
+        if not _is_fully_retired(agent):
+            raise ValueError(f"agent {agent.id} is not fully archived")
+        if agent.session_id != request.expected_old_session_id:
+            raise ValueError(
+                f"agent {agent.id} session does not match expected_old_session_id"
+            )
+        if agent.retired_team_id != request.expected_team_id:
+            raise ValueError(f"agent {agent.id} team does not match expected_team_id")
+        lingering_assignment = next(
+            (
+                assignment
+                for assignment in state.project_assignments.values()
+                if assignment.agent_id == agent.id
+            ),
+            None,
+        )
+        if lingering_assignment is not None:
+            raise ValueError(
+                f"agent {agent.id} still has project assignment {lingering_assignment.id}"
+            )
+        bound_agent = next(
+            (
+                candidate
+                for candidate in state.agents.values()
+                if candidate.session_id == request.new_session_id
+            ),
+            None,
+        )
+        if bound_agent is not None:
+            raise ValueError(
+                f"session {request.new_session_id} is already bound to Team agent "
+                f"{bound_agent.id}"
+            )
+        registration = _RegistrationRequest(
+            session_id=request.new_session_id,
+            team_id=request.expected_team_id,
+            role_id=request.role_id,
+            agent_id=request.agent_id,
+            project_id=request.project_id,
+            reports_to_agent_id=request.reports_to_agent_id,
+            display_name=agent.display_name,
+        )
+        self._validate_registration_scope(state, registration)
+        if request.reports_to_agent_id == agent.id:
+            raise ValueError("agent cannot report to itself")
+        return agent
+
     def _validate_new_registration(
         self,
         state: TeamState,
@@ -355,7 +573,9 @@ class TeamWorkflowAgentLifecycleService:
         state: TeamState,
         request: "_RegistrationRequest",
     ) -> None:
-        _require_present(state.teams, request.team_id, "team")
+        team = _require_present(state.teams, request.team_id, "team")
+        if team.archived:
+            raise ValueError(f"team {team.id} is archived")
         role = _require_present(state.roles, request.role_id, "role")
         if role.archived:
             raise ValueError(f"role {role.id} is archived")
@@ -437,6 +657,17 @@ class _RegistrationRequest:
     display_name: str | None
 
 
+@dataclass(frozen=True)
+class _RestorationRequest:
+    agent_id: str
+    new_session_id: str
+    expected_old_session_id: str
+    expected_team_id: str
+    role_id: str
+    project_id: str | None
+    reports_to_agent_id: str | None
+
+
 class _RegistrationAlreadyExists(RuntimeError):
     pass
 
@@ -463,6 +694,37 @@ def _registration_matches(
         and set(agent_project_ids(state, agent.id))
         == ({request.project_id} if request.project_id is not None else set())
     )
+
+
+def _restoration_matches(
+    agent: PersistentAgent,
+    *,
+    state: TeamState,
+    request: _RestorationRequest,
+) -> bool:
+    return (
+        agent.id == request.agent_id
+        and agent.session_id == request.new_session_id
+        and agent.team_id == request.expected_team_id
+        and agent.role_id == request.role_id
+        and agent.reports_to_agent_id == request.reports_to_agent_id
+        and agent.status == AgentStatus.ACTIVE
+        and agent.retired_team_id is None
+        and set(agent_project_ids(state, agent.id))
+        == ({request.project_id} if request.project_id is not None else set())
+    )
+
+
+def _restoration_idempotency_payload(request: _RestorationRequest) -> dict[str, str | None]:
+    return {
+        "agent_id": request.agent_id,
+        "new_session_id": request.new_session_id,
+        "expected_old_session_id": request.expected_old_session_id,
+        "expected_team_id": request.expected_team_id,
+        "role_id": request.role_id,
+        "project_id": request.project_id,
+        "reports_to_agent_id": request.reports_to_agent_id,
+    }
 
 
 def _is_fully_retired(agent: PersistentAgent) -> bool:
@@ -516,5 +778,6 @@ __all__ = [
     "TeamAgentRetirementBlockedError",
     "TeamWorkflowAgentLifecycleService",
     "TeamWorkflowAgentRegistrationResult",
+    "TeamWorkflowAgentRestorationResult",
     "TeamWorkflowAgentRetirementResult",
 ]

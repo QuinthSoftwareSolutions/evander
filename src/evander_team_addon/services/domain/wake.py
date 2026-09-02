@@ -121,7 +121,10 @@ def _dispatch_case_payloads(
             return
         review = state.review_requests.get(review_id.strip())
         if review is not None:
-            _add_deliverable(review.deliverable_id)
+            if review.deliverable_id is not None:
+                _add_deliverable(review.deliverable_id)
+            elif review.release_package_id is not None:
+                _add_release(review.release_package_id)
 
     def _add_release(release_id: object) -> None:
         if not isinstance(release_id, str):
@@ -146,6 +149,10 @@ def _dispatch_case_payloads(
             _add_review(blocker.source_id)
         elif blocker.source_kind == TeamBlockerSourceKind.RELEASE_PACKAGE:
             _add_release(blocker.source_id)
+        elif blocker.source_kind == TeamBlockerSourceKind.HUMAN_REVIEW_REQUEST:
+            request = state.human_review_requests.get(blocker.source_id)
+            if request is not None:
+                _add_release(request.release_package_id)
 
     for blocker_id in dispatch.blocker_ids:
         blocker = state.blockers.get(blocker_id)

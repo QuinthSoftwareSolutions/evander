@@ -261,6 +261,7 @@ def _manager_fallback_summary_payload(
             state,
             team_id=team.id,
         )
+        if deliverable.task_id not in excluded_tasks
     ]
     reviewer_candidates = _manager_fallback_reviewer_candidates(
         state,

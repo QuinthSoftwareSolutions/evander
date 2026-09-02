@@ -11,6 +11,16 @@
   per-profile FIFO prompt replay, cross-profile concurrency, visible queue reasons, manual
   cancellation, and no metered API fallback.
 
+## 2026-09-02 - Archived Team Agent Session Restoration
+
+- Added a workflow-only `effect:team:restore-agent` primitive that atomically restores a fully
+  archived logical Team agent against a distinct, live, in-scope core session while recreating
+  its role, project, and reporting edges, preserving operator-owned delegation and context policy,
+  and resetting transient runtime/context lineage.
+- Enforced old-session, active retained-Team, session-uniqueness, expiry, directory-scope, and Team
+  state revision guards with transactionally idempotent exact-binding retries and structured
+  workflow failure results.
+
 ## 2026-09-02 - Team Work-Lineage Context Routing
 
 - Added a per-agent `work_lineage` context policy that gives each independent task family its own
@@ -21,6 +31,8 @@
 - Updated Admin Web context controls and observability so lineage-routed agents do not show a
   misleading global reset age or token count, and disabled manual clearing for policies that
   already determine context per wake.
+- Preserved single-lineage routing through pending manual resets and recovered recreated agents
+  from stale lineage thread bindings by retrying the affected wake with a fresh context.
 
 ## 2026-09-02 - Deployment Service Reconciliation Reliability
 

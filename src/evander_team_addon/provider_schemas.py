@@ -268,6 +268,18 @@ class TeamRegisterAgentEffectDefinition(EffectDefinition):
     expected_revision: ConfigValue | None = None
 
 
+class TeamRestoreAgentEffectDefinition(EffectDefinition):
+    type: Literal["effect:team:restore-agent"]
+    agent_id: ConfigValue
+    new_session_id: ConfigValue
+    expected_old_session_id: ConfigValue
+    expected_team_id: ConfigValue
+    role_id: ConfigValue
+    project_id: ConfigValue | None = None
+    reports_to_agent_id: ConfigValue | None = None
+    expected_revision: ConfigValue | None = None
+
+
 class TeamRetireAgentEffectDefinition(EffectDefinition):
     type: Literal["effect:team:retire-agent"]
     agent_id: ConfigValue
@@ -711,6 +723,21 @@ TEAM_OUTPUT_SCHEMAS: dict[str, dict[str, dict[str, Any]]] = {
         "revision": {"type": "integer"},
         "created": {"type": "boolean"},
         "agent_id": {"type": ["string", "null"]},
+        "session_id": {"type": ["string", "null"]},
+        "team_id": {"type": ["string", "null"]},
+        "project_id": {"type": ["string", "null"]},
+        "agent": {"type": ["object", "null"]},
+        "error": {"type": ["string", "null"]},
+        "expected_revision": {"type": ["integer", "null"]},
+        "current_revision": {"type": ["integer", "null"]},
+    },
+    "effect:team:restore-agent": {
+        "success": {"type": "boolean"},
+        "revision": {"type": "integer"},
+        "restored": {"type": "boolean"},
+        "already_restored": {"type": "boolean"},
+        "agent_id": {"type": ["string", "null"]},
+        "previous_session_id": {"type": ["string", "null"]},
         "session_id": {"type": ["string", "null"]},
         "team_id": {"type": ["string", "null"]},
         "project_id": {"type": ["string", "null"]},

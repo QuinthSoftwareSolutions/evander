@@ -107,6 +107,8 @@ from .models import (
     agent_project_ids,
     current_failed_action_records,
     external_source_evidence_snapshot_payload,
+    filter_work_lineage_payloads,
+    filter_work_lineage_references,
     project_assignments_for_agent,
     effective_role_permissions,
     runtime_operations_payload,
@@ -5067,6 +5069,14 @@ def _team_state_payload_for_request(
             if isinstance(message_payload, Mapping)
             and message_payload.get("conversation_id") in allowed_conversation_ids
         }
+        payload["work_lineages"] = filter_work_lineage_payloads(
+            payload.get("work_lineages"),
+            visible_conversation_ids=allowed_conversation_ids,
+        )
+        filter_work_lineage_references(
+            payload,
+            visible_lineage_ids=set(payload["work_lineages"]),
+        )
     _window_state_history_payload(
         payload,
         state,
