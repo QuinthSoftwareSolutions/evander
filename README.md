@@ -1148,6 +1148,10 @@ Use this when you want the guest to wake only for new review feedback and post t
    `searchCriteria.status`), and pagination continues with `next_cursor`.
    Use `get_pull_request(provider, repo, pr_id, include_reviewers?, include_commits?)`
    to fetch one PR with normalized fields plus a provider-complete `raw` payload.
+   Use `update_pull_request(provider, repo, pr_id, description?, title?, status?, add_tags?,
+   remove_tags?, expected_statuses?, project?)` for an explicitly authorized Azure DevOps
+   metadata update. `description` replaces the complete PR description; omit it to leave the
+   description unchanged and use `expected_statuses=["active"]` to guard against stale requests.
    For full thread history, including already-consumed items and agent-authored replies suppressed
    from wake/unread checks, call `list_all_feedback`.
    Workflow graphs can also use `query:pull-request:list` and `effect:pull-request:update`

@@ -1102,6 +1102,14 @@ For ADO work-item discovery, `query_mode=structured_filters` uses the structured
 while `query_mode=manual_wiql` uses the explicit WIQL text and ignores structured filters. Omitted
 `query_mode` preserves legacy behavior by inferring Manual WIQL when `wiql` is set.
 
+The session-scoped `update_pull_request` MCP tool exposes Azure DevOps PR title, description,
+status, and tag updates to explicitly authorized agents. It accepts `azure_devops`,
+`azure-devops`, or `ado`, always resolves the organization and PAT from the caller's directory,
+and permits only the project selector to be supplied by the caller. Omitted metadata stays
+unchanged; an empty `description` clears the full description, and `expected_statuses` skips the
+mutation if the current provider status is no longer expected. The normal `allowed_tools`,
+`approval_required_tools`, `mcp_tool_policies`, and tool-argument policy controls apply.
+
 `query:pull-request:get`, `query:pull-request:work-items`, `query:pull-request:list`, `query:pull-request:feedback`,
 `effect:pull-request:update`, `effect:pull-request:add-tag`, and
 `effect:pull-request:remove-tag` accept Azure DevOps `provider` as

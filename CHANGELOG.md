@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-09-02 - Agent Pull Request Metadata Updates
+
+- Added the policy-controlled `update_pull_request` MCP tool for Azure DevOps title, description,
+  status, and tag updates using directory-scoped host credentials, optional current-status guards,
+  normalized provider aliases, audited results, and approval-policy support.
+
 ## 2026-08-31 - Durable Team Preparation Recovery
 
 - Persisted deterministic Team Git preparation attempts and host-owned container-worker receipts

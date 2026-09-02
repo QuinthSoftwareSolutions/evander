@@ -25,10 +25,11 @@ from evander.models import (
     ScheduleResumeResponse,
     SubmitPrReviewRequest,
     ToolName,
+    UpdatePullRequestRequest,
     WakeScheduleDefinition,
 )
 from evander.policy import PolicyError
-from evander.services import normalize_pr_feedback_provider
+from evander.services import normalize_pr_automation_provider, normalize_pr_feedback_provider
 from evander.gateway.session_context import _resolve_session_id_from_context
 
 AdoMentionRefsArgument = Annotated[
@@ -220,6 +221,101 @@ def register_pr_tools(
             audit_failure(
                 request.session_id,
                 ToolName.GET_PULL_REQUEST,
+                args,
+                str(exc),
+                decision="error",
+                error_class="unexpected_error",
+            )
+            raise
+
+    @server.tool()
+    def update_pull_request(
+        provider: Literal["azure_devops", "azure-devops", "ado"],
+        repo: str,
+        pr_id: str,
+        project: str | None = None,
+        title: str | None = None,
+        description: str | None = None,
+        status: str | None = None,
+        add_tags: list[str] | None = None,
+        remove_tags: list[str] | None = None,
+        expected_statuses: list[str] | None = None,
+        *,
+        session_id: str | None = None,
+        ctx: Context | None = None,
+    ) -> dict[str, Any]:
+        """Update an Azure DevOps pull request through the session's host integration.
+
+        Omitted fields remain unchanged. ``description`` replaces the complete PR description;
+        pass an empty string to clear it. Use ``expected_statuses`` to skip the mutation when the
+        PR is no longer in an expected state, such as ``active``.
+        """
+        resolved_session_id = _resolve_session_id_from_context(
+            session_id, ctx, transport_session_map=transport_session_map
+        )
+        request = UpdatePullRequestRequest(
+            session_id=resolved_session_id,
+            provider=normalize_pr_automation_provider(provider),
+            repo=repo.strip(),
+            pr_id=pr_id.strip(),
+            project=project.strip() if isinstance(project, str) and project.strip() else None,
+            title=title,
+            description=description,
+            status=status.strip() if isinstance(status, str) and status.strip() else None,
+            add_tags=add_tags or [],
+            remove_tags=remove_tags or [],
+            expected_statuses=expected_statuses or [],
+        )
+        args = request.model_dump(mode="json")
+        try:
+            context.policy.require_tool(resolved_session_id, ToolName.UPDATE_PULL_REQUEST)
+            response = context.pr_query_service_for_session(
+                resolved_session_id
+            ).update_pull_request(
+                provider=request.provider,
+                repo=request.repo,
+                pr_id=request.pr_id,
+                project=request.project,
+                title=request.title,
+                description=request.description,
+                status=request.status,
+                add_tags=request.add_tags,
+                remove_tags=request.remove_tags,
+                expected_statuses=request.expected_statuses,
+            )
+            result = response.model_dump(mode="json")
+            audit_success(
+                resolved_session_id,
+                ToolName.UPDATE_PULL_REQUEST,
+                args,
+                {
+                    "provider": response.provider,
+                    "repo": response.repo,
+                    "pr_id": response.pr_id,
+                    "updated": response.updated,
+                    "skipped": response.skipped,
+                    "status": response.status,
+                    "tags": response.tags,
+                },
+            )
+            return result
+        except PolicyError as exc:
+            audit_failure(resolved_session_id, ToolName.UPDATE_PULL_REQUEST, args, str(exc))
+            raise
+        except (httpx.HTTPError, ValueError) as exc:
+            audit_failure(
+                resolved_session_id,
+                ToolName.UPDATE_PULL_REQUEST,
+                args,
+                str(exc),
+                decision="error",
+                error_class="adapter_http_error",
+            )
+            raise
+        except Exception as exc:
+            audit_failure(
+                resolved_session_id,
+                ToolName.UPDATE_PULL_REQUEST,
                 args,
                 str(exc),
                 decision="error",

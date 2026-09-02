@@ -213,6 +213,31 @@ def test_admin_service_tool_visibility_payload_classifies_update_title_tool(
     assert visible.label == "update ado backlog title"
 
 
+def test_admin_service_tool_visibility_payload_classifies_update_pull_request_tool(
+    tmp_path: Path,
+) -> None:
+    service = build_admin_runtime(write_config(tmp_path))
+    service.runtime.session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-1",
+            vm_id="vm-1",
+            vm_provider="libvirt",
+            allowed_tools=[ToolName.UPDATE_PULL_REQUEST],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        ),
+    )
+
+    payload = service.approval_audit_admin.tool_visibility_payload(target="session-1")
+    rows = _tool_rows(payload)
+
+    visible = rows[ToolName.UPDATE_PULL_REQUEST.value]
+    assert visible.visibility_state is ToolVisibilityState.VISIBLE
+    assert visible.source == "session.allowed_tools"
+    assert visible.category == "Pull requests"
+    assert visible.provider == "pull_requests"
+    assert visible.label == "update pull request"
+
+
 def test_admin_service_tool_visibility_payload_flags_stale_manifest(
     tmp_path: Path,
 ) -> None:

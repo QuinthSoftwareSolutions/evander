@@ -5360,6 +5360,7 @@ class AzureDevOpsPrQueryProvider:
                     pr_id=pr_id,
                     status=current_status,
                     title=str(current_payload.get("title", "")).strip() or None,
+                    description=_normalize_optional_text(current_payload.get("description")),
                     url=_azure_pr_web_url(current_payload),
                     tags=current_tags,
                     raw=current_payload,
@@ -5441,6 +5442,13 @@ class AzureDevOpsPrQueryProvider:
             title=str(latest_payload.get("title", "")).strip()
             or str(current_payload.get("title", "")).strip()
             or None,
+            description=(
+                _normalize_optional_text(latest_payload.get("description"))
+                if "description" in latest_payload
+                else _normalize_optional_text(description)
+                if description is not None
+                else _normalize_optional_text(current_payload.get("description"))
+            ),
             url=_azure_pr_web_url(latest_payload) or _azure_pr_web_url(current_payload),
             tags=latest_tags,
             added_tags=added_tags,

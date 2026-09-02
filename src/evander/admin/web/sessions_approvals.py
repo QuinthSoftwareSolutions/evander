@@ -238,6 +238,9 @@ _TOOL_DESCRIPTIONS: dict[ToolName, str] = {
         "List pull requests available to the session through the configured provider."
     ),
     ToolName.GET_PULL_REQUEST: "Fetch the latest details for a specific pull request.",
+    ToolName.UPDATE_PULL_REQUEST: (
+        "Update Azure DevOps pull request metadata or tags using the host integration."
+    ),
     ToolName.LIST_ADO_PR_COMMENT_ACTIVITY: (
         "Find Azure DevOps pull request comments matching an author and date range."
     ),

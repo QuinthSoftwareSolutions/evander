@@ -757,6 +757,7 @@ def test_azure_query_provider_update_pull_request_updates_metadata_and_tags(
                 json={
                     "pullRequestId": 17,
                     "title": "New title",
+                    "description": "New description",
                     "status": "abandoned",
                     "_links": {
                         "web": {"href": "https://dev.azure.com/org/proj/_git/repo-1/pullrequest/17"}
@@ -794,6 +795,7 @@ def test_azure_query_provider_update_pull_request_updates_metadata_and_tags(
     assert result.skipped is False
     assert result.status == "abandoned"
     assert result.title == "New title"
+    assert result.description == "New description"
     assert result.added_tags == ["reviewed"]
     assert result.removed_tags == ["stale"]
     assert result.tags == ["ready", "reviewed"]

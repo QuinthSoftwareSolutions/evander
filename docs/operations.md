@@ -2167,6 +2167,10 @@ without exposing provider credentials in the VM.
    - `get_pull_request(provider, repo, pr_id, include_reviewers?, include_commits?)`
      to fetch a single provider PR record, map stable top-level fields (title/status/branches/commits/reviewers),
      and preserve provider-specific details in `raw`.
+   - `update_pull_request(provider, repo, pr_id, description?, title?, status?, add_tags?,
+     remove_tags?, expected_statuses?, project?)` to update Azure DevOps PR metadata through
+     directory-scoped host credentials. The description argument replaces the full description;
+     use `expected_statuses=["active"]` when the request must not mutate a closed PR.
    - `resolve_ado_identity(query)` to resolve `me`, an email/UPN, display name, ADO id, or descriptor
      before using personal activity filters.
    - `list_ado_pr_comment_activity(repo, since, author?, until?, project?, statuses?, top?, skip?,
@@ -2501,6 +2505,8 @@ work and let the trigger orchestrator start a temporary review VM.
 
 - Enqueue review work with `request_pr_review(session_id, provider, repo, pr_id, ...)`.
 - Consume queued review requests with `trigger:review:new-request`.
+- Update Azure DevOps PR metadata with `update_pull_request(...)` only when that tool is explicitly
+  allowed for the session; directory policy may additionally require per-invocation approval.
 - Publish review output with:
   - `post_pr_comment(...)` for top-level PR conversation comments
   - `post_pr_inline_comment(...)` for one file/line finding; prefer this over writing
