@@ -16,11 +16,15 @@ from ...models import (
     EphemeralAssignmentState,
     PersistentAgent,
     ReviewRequest,
+    TeamBlocker,
+    TeamBlockerSourceKind,
+    TeamDispatch,
     TeamInboxItemState,
     TeamInboxPriority,
     TeamRecordState,
     TeamState,
     TeamTaskState,
+    agent_lead_project_ids,
     wake_work_changed_since_latest_attempt,
     release_package_payload_with_derived,
     runtime_operations_payload,
@@ -87,6 +91,150 @@ def _case_payloads_for_team(state: TeamState, team_id: str) -> list[dict[str, An
     ]
     cases.sort(key=lambda item: (_priority_sort_value(item.priority), item.updated_at, item.id))
     return [case.model_dump(mode="json") for case in cases]
+
+
+def _dispatch_case_payloads(
+    state: TeamState,
+    *,
+    agent: PersistentAgent,
+    dispatch: TeamDispatch,
+) -> dict[str, Any]:
+    """Partition active cases into dispatch detail and a bounded-prompt index source.
+
+    The dispatch is the authority for full case detail. A broader case index is
+    useful only for management and Chat wakes where an operator can refer to a
+    case by name without first supplying a durable record id.
+    """
+
+    task_ids = set(dispatch.task_ids)
+    related_case_ids: set[str] = set()
+
+    def _add_deliverable(deliverable_id: object) -> None:
+        if not isinstance(deliverable_id, str):
+            return
+        deliverable = state.deliverables.get(deliverable_id.strip())
+        if deliverable is not None:
+            task_ids.add(deliverable.task_id)
+
+    def _add_review(review_id: object) -> None:
+        if not isinstance(review_id, str):
+            return
+        review = state.review_requests.get(review_id.strip())
+        if review is not None:
+            _add_deliverable(review.deliverable_id)
+
+    def _add_release(release_id: object) -> None:
+        if not isinstance(release_id, str):
+            return
+        release = state.release_packages.get(release_id.strip())
+        if release is None:
+            return
+        for deliverable_id in release.deliverable_ids:
+            _add_deliverable(deliverable_id)
+        if release.review_correction_task_id is not None:
+            task_ids.add(release.review_correction_task_id)
+
+    def _add_blocker(blocker: TeamBlocker) -> None:
+        if blocker.task_id is not None:
+            task_ids.add(blocker.task_id)
+        task_ids.update(blocker.affected_task_ids)
+        if blocker.source_kind == TeamBlockerSourceKind.TASK:
+            task_ids.add(blocker.source_id)
+        elif blocker.source_kind == TeamBlockerSourceKind.DELIVERABLE:
+            _add_deliverable(blocker.source_id)
+        elif blocker.source_kind == TeamBlockerSourceKind.REVIEW_REQUEST:
+            _add_review(blocker.source_id)
+        elif blocker.source_kind == TeamBlockerSourceKind.RELEASE_PACKAGE:
+            _add_release(blocker.source_id)
+
+    for blocker_id in dispatch.blocker_ids:
+        blocker = state.blockers.get(blocker_id)
+        if blocker is not None:
+            _add_blocker(blocker)
+    for review_id in dispatch.review_request_ids:
+        _add_review(review_id)
+    for deliverable_id in dispatch.initial_release_decision_deliverable_ids:
+        _add_deliverable(deliverable_id)
+    for authority in dispatch.review_routing_authorities:
+        task_ids.add(authority.task_id)
+        _add_deliverable(authority.deliverable_id)
+
+    for inbox_id in dispatch.inbox_item_ids:
+        item = state.inbox.get(inbox_id)
+        if item is None:
+            continue
+        if item.task_id is not None:
+            task_ids.add(item.task_id)
+        payload = item.payload if isinstance(item.payload, Mapping) else {}
+        case_id = payload.get("case_id")
+        if isinstance(case_id, str) and case_id.strip():
+            related_case_ids.add(case_id.strip())
+        task_id = payload.get("task_id")
+        if isinstance(task_id, str) and task_id.strip():
+            task_ids.add(task_id.strip())
+        _add_deliverable(payload.get("deliverable_id"))
+        _add_review(payload.get("review_request_id"))
+        blocker_id = payload.get("blocker_id")
+        if isinstance(blocker_id, str):
+            blocker = state.blockers.get(blocker_id.strip())
+            if blocker is not None:
+                _add_blocker(blocker)
+        _add_release(payload.get("release_package_id"))
+
+    for task_id in tuple(task_ids):
+        task = state.tasks.get(task_id)
+        if task is not None and task.case_id is not None:
+            related_case_ids.add(task.case_id)
+    related_case_ids.update(
+        case.id for case in state.cases.values() if set(case.task_ids).intersection(task_ids)
+    )
+
+    active_cases = [
+        case
+        for case in state.cases.values()
+        if case.team_id == agent.team_id
+        and case.status.value in ACTIVE_TEAM_CASE_STATUS_VALUES
+    ]
+    active_cases.sort(
+        key=lambda item: (_priority_sort_value(item.priority), item.updated_at, item.id)
+    )
+    linked_cases = [case for case in active_cases if case.id in related_case_ids]
+
+    team = state.teams.get(agent.team_id) if agent.team_id is not None else None
+    is_team_manager = team is not None and team.manager_agent_id == agent.id
+    lead_project_ids = set(agent_lead_project_ids(state, agent.id))
+    active_owned_task_ids = {task.id for task in _active_tasks_for_agent(state, agent.id)}
+    index_project_ids = set(dispatch.project_ids) if dispatch.cause_kind == "team_chat" else set()
+    unrelated_visible_cases = [
+        case
+        for case in active_cases
+        if case.id not in related_case_ids
+        and (
+            is_team_manager
+            or case.project_id in lead_project_ids
+            or case.project_id in index_project_ids
+            or case.owner_agent_id == agent.id
+            or bool(set(case.task_ids).intersection(active_owned_task_ids))
+        )
+    ]
+    include_case_index = bool(
+        is_team_manager or lead_project_ids or dispatch.cause_kind == "team_chat"
+    )
+    index_cases = unrelated_visible_cases if include_case_index else []
+    return {
+        "cases": [case.model_dump(mode="json") for case in linked_cases],
+        "case_index": [
+            {
+                "id": case.id,
+                "title": case.title,
+                "status": case.status.value,
+                "priority": case.priority.value,
+                "project_id": case.project_id,
+            }
+            for case in index_cases
+        ],
+        "unrelated_case_count": len(unrelated_visible_cases),
+    }
 
 
 def _release_package_payloads_for_agent(
@@ -463,6 +611,7 @@ __all__ = [
     "_active_tasks_for_agent",
     "_case_payloads_for_agent",
     "_case_payloads_for_team",
+    "_dispatch_case_payloads",
     "_release_package_payloads_for_agent",
     "_runtime_attention_payloads_for_agent",
     "_wakeable_inbox_items",

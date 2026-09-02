@@ -21,6 +21,13 @@
   status, and tag updates using directory-scoped host credentials, optional current-status guards,
   normalized provider aliases, audited results, and approval-policy support.
 
+## 2026-09-02 - Dispatch-Scoped Team Wake Context
+
+- Limited full case detail in Team wake prompts to cases structurally linked to the immutable
+  dispatch while retaining a bounded five-field case index for fresh management and Chat wakes.
+- Replaced non-actionable per-agent session rows with a compact health summary while preserving
+  explicit missing, expired, unhealthy, failed, stalled, stopped, and exited rows.
+
 ## 2026-08-31 - Durable Team Preparation Recovery
 
 - Persisted deterministic Team Git preparation attempts and host-owned container-worker receipts

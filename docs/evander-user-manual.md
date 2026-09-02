@@ -5800,6 +5800,17 @@ model names, and provider names do not. During a retained delta,
 scope and its task, inbox, blocker, review, project, and Git records without
 widening membership.
 
+Case and session context remain intentionally selective even in
+<code>fresh_full</code>. Full compact case rows are included only when a
+structured task, blocker, review, release decision, or inbox reference links
+the case to the immutable dispatch. Fresh Team Chat and management wakes add a
+bounded <code>case_index</code> for other visible active cases containing only
+ID, title, status, priority, and project. Session health includes a count
+summary on every ordinary context and emits individual rows only for missing,
+expired, unhealthy, failed, stalled, stopped, or exited sessions or executions.
+Use the existing case read tools or runtime-operations views when complete
+catalog detail is needed.
+
 Manual and expired-idle rotations also make one bounded 120-second attempt to resume
 the prior context and record a single advisory self-handoff. The summary is
 limited to 1,200 characters, is clearly separate from durable Team state, and

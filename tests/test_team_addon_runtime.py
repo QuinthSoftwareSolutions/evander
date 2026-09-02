@@ -185,6 +185,7 @@ from evander_team_addon.services.domain.wake import (
     AGENT_WAKE_REQUESTED_EVENT_TYPE,
     _case_payloads_for_agent,
     _case_payloads_for_team,
+    _dispatch_case_payloads,
 )
 from evander_team_addon.services.domain.preparation_failures import (
     task_git_work_context_generation,
@@ -2485,6 +2486,193 @@ def test_wake_case_payloads_include_only_active_case_statuses(tmp_path: Path) ->
     assert {case["id"] for case in _case_payloads_for_team(state, "team")} == expected_case_ids
 
 
+def test_dispatch_case_payloads_keep_structurally_related_cases_and_hide_unrelated_detail(
+    tmp_path: Path,
+) -> None:
+    state = _seed_team(tmp_path).read()
+    state.tasks["task"].case_id = "case-task"
+    state.cases["case-task"] = TeamCase(
+        id="case-task",
+        team_id="team",
+        project_id="project",
+        title="Task case",
+        task_ids=["task"],
+    )
+    state.tasks["review-task"] = AgentTask(
+        id="review-task",
+        owner_agent_id="lead",
+        project_id="project",
+        case_id="case-review",
+        priority=1,
+        title="Review task",
+        description="Produce a review candidate.",
+        created_by_agent_id="manager",
+    )
+    state.cases["case-review"] = TeamCase(
+        id="case-review",
+        team_id="team",
+        project_id="project",
+        title="Review case",
+        task_ids=["review-task"],
+    )
+    state.deliverables["deliverable-review"] = Deliverable(
+        id="deliverable-review",
+        task_id="review-task",
+        producer_agent_id="lead",
+        summary="Review candidate.",
+    )
+    state.review_requests["review"] = ReviewRequest(
+        id="review",
+        deliverable_id="deliverable-review",
+        reviewer_agent_id="backend",
+    )
+    state.cases["case-inbox"] = TeamCase(
+        id="case-inbox",
+        team_id="team",
+        project_id="project",
+        title="Inbox case",
+    )
+    state.inbox["inbox-case"] = AgentInboxItem(
+        id="inbox-case",
+        recipient_agent_id="backend",
+        item_type=TeamInboxItemType.OPERATOR_DIRECTIVE,
+        payload={"case_id": "case-inbox"},
+    )
+    state.tasks["blocker-task"] = AgentTask(
+        id="blocker-task",
+        owner_agent_id="lead",
+        project_id="project",
+        case_id="case-blocker",
+        priority=1,
+        title="Blocked task",
+        description="Recover blocked work.",
+        created_by_agent_id="manager",
+    )
+    state.cases["case-blocker"] = TeamCase(
+        id="case-blocker",
+        team_id="team",
+        project_id="project",
+        title="Blocker case",
+        task_ids=["blocker-task"],
+    )
+    state.blockers["blocker"] = TeamBlocker(
+        id="blocker",
+        team_id="team",
+        project_id="project",
+        source_kind=TeamBlockerSourceKind.TASK,
+        source_id="blocker-task",
+        owner_agent_id="backend",
+        summary="Task is blocked.",
+    )
+    state.cases["case-unrelated"] = TeamCase(
+        id="case-unrelated",
+        team_id="team",
+        project_id="project",
+        title="Unrelated owned case",
+        owner_agent_id="backend",
+    )
+    dispatch = TeamDispatch(
+        id="dispatch-cases",
+        agent_id="backend",
+        session_id="session-backend",
+        cause_kind="review",
+        task_ids=["task"],
+        blocker_ids=["blocker"],
+        review_request_ids=["review"],
+        inbox_item_ids=["inbox-case"],
+        project_ids=["project"],
+    )
+
+    payload = _dispatch_case_payloads(
+        state,
+        agent=state.agents["backend"],
+        dispatch=dispatch,
+    )
+
+    assert {case["id"] for case in payload["cases"]} == {
+        "case-inbox",
+        "case-blocker",
+        "case-review",
+        "case-task",
+    }
+    assert payload["case_index"] == []
+    assert payload["unrelated_case_count"] == 1
+
+
+def test_dispatch_case_payloads_give_chat_a_project_case_index(tmp_path: Path) -> None:
+    state = _seed_team(tmp_path).read()
+    state.cases["case-chat"] = TeamCase(
+        id="case-chat",
+        team_id="team",
+        project_id="project",
+        title="Case named in Chat",
+    )
+    dispatch = TeamDispatch(
+        id="dispatch-chat-cases",
+        agent_id="backend",
+        session_id="session-backend",
+        cause_kind="team_chat",
+        project_ids=["project"],
+    )
+
+    payload = _dispatch_case_payloads(
+        state,
+        agent=state.agents["backend"],
+        dispatch=dispatch,
+    )
+
+    assert payload["cases"] == []
+    assert [case["id"] for case in payload["case_index"]] == ["case-chat"]
+    assert payload["unrelated_case_count"] == 1
+
+
+def test_dispatch_case_payloads_give_manager_minimal_unrelated_case_index(
+    tmp_path: Path,
+) -> None:
+    state = _seed_team(tmp_path).read()
+    state.cases["case-linked"] = TeamCase(
+        id="case-linked",
+        team_id="team",
+        project_id="project",
+        title="Linked case",
+        task_ids=["task"],
+    )
+    state.tasks["task"].case_id = "case-linked"
+    state.cases["case-unrelated"] = TeamCase(
+        id="case-unrelated",
+        team_id="team",
+        project_id="project",
+        title="Unrelated case",
+        description="This detail must not enter the index.",
+    )
+    dispatch = TeamDispatch(
+        id="dispatch-manager-cases",
+        agent_id="manager",
+        session_id="session-manager",
+        cause_kind="manager_fallback",
+        task_ids=["task"],
+        project_ids=["project"],
+    )
+
+    payload = _dispatch_case_payloads(
+        state,
+        agent=state.agents["manager"],
+        dispatch=dispatch,
+    )
+
+    assert [case["id"] for case in payload["cases"]] == ["case-linked"]
+    assert payload["case_index"] == [
+        {
+            "id": "case-unrelated",
+            "title": "Unrelated case",
+            "status": "open",
+            "priority": "normal",
+            "project_id": "project",
+        }
+    ]
+    assert payload["unrelated_case_count"] == 1
+
+
 def test_compact_wake_context_omits_resolved_and_closed_cases() -> None:
     context = build_compact_wake_context(
         {
@@ -2507,6 +2695,63 @@ def test_compact_wake_context_omits_resolved_and_closed_cases() -> None:
         "case-waiting",
     }
     assert context["omitted_counts"]["cases_non_current"] == 2
+
+
+def test_compact_wake_context_limits_case_index_and_filters_nonactionable_sessions() -> None:
+    context = build_compact_wake_context(
+        {
+            "agent": {"id": "manager"},
+            "cases": [{"id": "linked", "status": "open", "title": "Linked"}],
+            "case_index": [
+                {
+                    "id": f"case-{index:02d}",
+                    "project_id": "project",
+                    "status": "open",
+                    "priority": "normal",
+                    "title": f"Case {index:02d}",
+                    "description": "must not be projected",
+                }
+                for index in range(14)
+            ],
+            "unrelated_case_count": 14,
+            "session_health": [
+                {"agent_id": "active", "session_present": True, "status": "active"},
+                {"agent_id": "unknown", "session_present": True, "status": "unknown"},
+                {"agent_id": "missing", "session_present": False, "status": "missing"},
+                {"agent_id": "failed", "agent_execution_status": "failed"},
+                {"agent_id": "stopped", "container_lifecycle_state": "stopped"},
+            ],
+        },
+        fresh_context=True,
+    )
+
+    assert len(context["case_index"]) == 12
+    assert all("description" not in case for case in context["case_index"])
+    assert context["omitted_counts"] == {
+        "case_index": 2,
+        "cases_outside_dispatch": 14,
+    }
+    assert context["session_health_summary"] == {
+        "checked_count": 5,
+        "attention_required_count": 3,
+        "non_actionable_omitted_count": 2,
+    }
+    assert {row["agent"] for row in context["session_health"]} == {
+        "failed",
+        "missing",
+        "stopped",
+    }
+    retained = build_compact_wake_context(
+        {
+            "agent": {"id": "manager"},
+            "case_index": context["case_index"],
+            "unrelated_case_count": 14,
+            "session_health": [],
+        },
+        fresh_context=False,
+    )
+    assert "case_index" not in retained
+    assert retained["omitted_counts"]["cases_outside_dispatch"] == 14
 
 
 def test_compact_wake_context_keeps_only_references_to_terminal_releases() -> None:
@@ -6854,19 +7099,12 @@ def test_wake_due_agents_provider_includes_expired_session_health_in_prompt(
             "is_expired": True,
             "status": "expired",
         },
-        {
-            "agent": "lead",
-            "team_id": "team",
-            "project_ids": ["project"],
-            "lead_project_ids": ["project"],
-            "role_id": "project__project-lead",
-            "session_id": "session-lead",
-            "session_present": True,
-            "expires_at": None,
-            "is_expired": False,
-            "status": "unknown",
-        },
     ]
+    assert context["session_health_summary"] == {
+        "checked_count": 2,
+        "attention_required_count": 1,
+        "non_actionable_omitted_count": 1,
+    }
 
 
 def test_wake_due_agents_provider_delivers_latest_action_feedback(
