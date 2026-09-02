@@ -142,6 +142,7 @@ from .domain.work_due import (
     _agent_has_open_execution_stall,
     _mark_agent_work_due,
 )
+from .domain.work_lineage import ensure_task_work_lineages
 
 
 class TeamAgentActionService:
@@ -592,6 +593,7 @@ class TeamAgentActionService:
                 task_creation_plans,
                 actor=agent,
             )
+            created_task_ids: list[str] = []
             for plan in task_creation_plans:
                 graph_error = graph_errors.get(plan.task_id)
                 if graph_error is not None:
@@ -601,7 +603,9 @@ class TeamAgentActionService:
                     state_model,
                     plan=plan,
                     actor=agent,
+                    assign_work_lineage=False,
                 )
+                created_task_ids.append(created_id)
                 result["created_task_ids"].append(created_id)
                 projects_to_recalc.add(state_model.tasks[created_id].project_id)
                 _append_agent_wake_requested_event(
@@ -613,6 +617,10 @@ class TeamAgentActionService:
                     delay_seconds=DEFAULT_AGENT_WAKE_REQUEST_DEBOUNCE_SECONDS,
                 )
                 _mark_progress()
+            ensure_task_work_lineages(
+                state_model,
+                (state_model.tasks[task_id] for task_id in created_task_ids),
+            )
 
             for index, question in enumerate(
                 _list_of_mappings(normalized_action.get("questions"), "questions")

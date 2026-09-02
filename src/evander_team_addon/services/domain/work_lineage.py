@@ -5,6 +5,7 @@ from collections.abc import Iterable, Mapping
 from ...models import (
     AgentTask,
     ReleasePackage,
+    TeamBlockerSourceKind,
     TeamState,
     TeamWorkLineage,
     WorkLineageChatSourceRef,
@@ -66,6 +67,52 @@ def ensure_task_work_lineage(
         now=now,
     )
     return lineage_id
+
+
+def ensure_task_work_lineages(
+    state: TeamState,
+    tasks: Iterable[AgentTask],
+    *,
+    chat_source_refs: Iterable[WorkLineageChatSourceRef] = (),
+) -> dict[str, str]:
+    """Assign task lineages after all members of a creation batch exist.
+
+    Task creation accepts forward parent references. Walking those references
+    before assigning a task prevents a child that appears first in the input
+    from receiving a provisional root lineage of its own.
+    """
+
+    refs = list(chat_source_refs)
+    resolved: dict[str, str] = {}
+    visiting: set[str] = set()
+
+    def _ensure(task: AgentTask) -> str:
+        if task.work_lineage_id is not None:
+            append_work_lineage_chat_sources(
+                state,
+                lineage_id=task.work_lineage_id,
+                refs=refs,
+            )
+            resolved[task.id] = task.work_lineage_id
+            return task.work_lineage_id
+        if task.id not in visiting:
+            visiting.add(task.id)
+            for related_task_id in (task.parent_task_id, task.originating_task_id):
+                related_task = state.tasks.get(related_task_id or "")
+                if related_task is not None and related_task.work_lineage_id is None:
+                    _ensure(related_task)
+            visiting.remove(task.id)
+        lineage_id = ensure_task_work_lineage(
+            state,
+            task,
+            chat_source_refs=refs,
+        )
+        resolved[task.id] = lineage_id
+        return lineage_id
+
+    for task in tasks:
+        _ensure(task)
+    return resolved
 
 
 def append_work_lineage_chat_sources(
@@ -175,6 +222,8 @@ def work_lineage_id_for_record(state: TeamState, record: object) -> str | None:
         return None
     if isinstance(record, AgentTask):
         return record.work_lineage_id
+    if isinstance(record, ReleasePackage):
+        return record.work_lineage_id
     direct = work_lineage_id_for_task_related_record(state, record)
     if direct is not None:
         return direct
@@ -207,11 +256,33 @@ def work_lineage_id_for_record(state: TeamState, record: object) -> str | None:
             return dispatch.work_lineage_id
     source_id = getattr(record, "source_id", None)
     if isinstance(source_id, str):
+        raw_source_kind = getattr(record, "source_kind", None)
+        try:
+            source_kind = (
+                raw_source_kind
+                if isinstance(raw_source_kind, TeamBlockerSourceKind)
+                else TeamBlockerSourceKind(str(raw_source_kind))
+            )
+        except ValueError:
+            source_kind = None
+        declared_collection = {
+            TeamBlockerSourceKind.TASK: state.tasks,
+            TeamBlockerSourceKind.DELIVERABLE: state.deliverables,
+            TeamBlockerSourceKind.REVIEW_REQUEST: state.review_requests,
+            TeamBlockerSourceKind.RELEASE_PACKAGE: state.release_packages,
+            TeamBlockerSourceKind.HUMAN_REVIEW_REQUEST: state.human_review_requests,
+        }.get(source_kind)
+        if declared_collection is not None:
+            nested = declared_collection.get(source_id)
+            return work_lineage_id_for_record(state, nested) if nested is not None else None
+        if source_kind is not None and source_kind != TeamBlockerSourceKind.EXPLICIT:
+            return None
         for collection in (
             state.tasks,
             state.deliverables,
             state.review_requests,
             state.release_packages,
+            state.human_review_requests,
         ):
             nested = collection.get(source_id)
             if nested is not None:
@@ -223,6 +294,7 @@ __all__ = [
     "append_work_lineage_chat_sources",
     "chat_source_refs_for_dispatch",
     "ensure_task_work_lineage",
+    "ensure_task_work_lineages",
     "ensure_release_work_lineage",
     "work_lineage_id_for_task_related_record",
     "work_lineage_id_for_record",

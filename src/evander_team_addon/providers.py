@@ -177,6 +177,8 @@ from .models import (
     WorktreeCleanupCandidate,
     agent_project_ids,
     external_source_evidence_snapshot_payload,
+    filter_work_lineage_payloads,
+    filter_work_lineage_references,
     team_session_health_payload,
     team_state_payload,
 )
@@ -14581,6 +14583,7 @@ def _filtered_team_state_payload(
         for key, value in filtered.get("conversation_messages", {}).items()
         if value.get("conversation_id") in visible_conversation_ids
     }
+    visible_conversation_message_ids = set(filtered["conversation_messages"])
     filtered["release_packages"] = {
         key: {
             **value,
@@ -14594,6 +14597,83 @@ def _filtered_team_state_payload(
         )
     }
     visible_release_ids = set(filtered["release_packages"])
+    visible_managed_repo_ids = {
+        managed_repo_id
+        for value in filtered["projects"].values()
+        if isinstance(git := value.get("git"), Mapping)
+        if (managed_repo_id := _optional_text(git.get("managed_repo_id"))) is not None
+    }
+    scoped_dispatch_payloads = {
+        key: value
+        for key, value in filtered.get("dispatches", {}).items()
+        if value.get("agent_id") in visible_agent_ids
+        and (
+            project_id is None
+            or bool(set(_string_items(value.get("project_ids"))).intersection(visible_project_ids))
+        )
+        and (
+            team_id is None
+            or not value.get("project_ids")
+            or bool(set(_string_items(value.get("project_ids"))).intersection(visible_project_ids))
+        )
+        and (
+            agent_id is None
+            or not value.get("project_ids")
+            or bool(set(_string_items(value.get("project_ids"))).intersection(visible_project_ids))
+        )
+    }
+    filtered["dispatches"] = {
+        key: {
+            **value,
+            "task_ids": _filter_ids(value.get("task_ids"), visible_task_ids),
+            "review_request_ids": _filter_ids(
+                value.get("review_request_ids"),
+                visible_review_ids,
+            ),
+            "inbox_item_ids": _filter_ids(value.get("inbox_item_ids"), set(filtered["inbox"])),
+            "project_ids": _filter_ids(value.get("project_ids"), visible_project_ids),
+            "managed_repo_ids": _filter_ids(
+                value.get("managed_repo_ids"),
+                visible_managed_repo_ids,
+            ),
+            "source_evidence_snapshot_ids": _filter_ids(
+                value.get("source_evidence_snapshot_ids"),
+                set(filtered["external_source_evidence_snapshots"]),
+            ),
+            "chat_message_ids": _filter_ids(
+                value.get("chat_message_ids"),
+                visible_conversation_message_ids,
+            ),
+            "initial_release_decision_deliverable_ids": _filter_ids(
+                value.get("initial_release_decision_deliverable_ids"),
+                visible_deliverable_ids,
+            ),
+            "review_routing_authorities": [
+                {
+                    **authority,
+                    "consumed_at": (
+                        authority.get("consumed_at")
+                        if authority.get("consumed_by_review_request_id")
+                        in visible_review_ids
+                        else None
+                    ),
+                    "consumed_by_review_request_id": (
+                        authority.get("consumed_by_review_request_id")
+                        if authority.get("consumed_by_review_request_id")
+                        in visible_review_ids
+                        else None
+                    ),
+                }
+                for authority in _mapping_items(value.get("review_routing_authorities"))
+                if authority.get("reviewer_agent_id") in visible_agent_ids
+                and authority.get("project_id") in visible_project_ids
+                and authority.get("task_id") in visible_task_ids
+                and authority.get("deliverable_id") in visible_deliverable_ids
+            ],
+        }
+        for key, value in scoped_dispatch_payloads.items()
+    }
+    visible_dispatch_ids = set(filtered["dispatches"])
     visible_human_review_ids = {
         request.id
         for request in state.human_review_requests.values()
@@ -14604,6 +14684,7 @@ def _filtered_team_state_payload(
             value,
             visible_task_ids=visible_task_ids,
             visible_agent_ids=visible_agent_ids,
+            visible_dispatch_ids=visible_dispatch_ids,
         )
         for key, value in filtered.get("blockers", {}).items()
         if _blocker_payload_is_visible(
@@ -14619,10 +14700,76 @@ def _filtered_team_state_payload(
         )
     }
     visible_blocker_ids = set(filtered["blockers"])
+    visible_dispatch_cause_ids = {
+        "task": visible_task_ids,
+        "blocker": visible_blocker_ids,
+        "review": visible_review_ids,
+        "inbox": set(filtered["inbox"]),
+        "low_priority_inbox": set(filtered["inbox"]),
+        "team_chat": visible_conversation_message_ids,
+        "action_feedback": set(filtered["action_records"]),
+    }
+    visible_wake_work_record_ids = {
+        "inbox": set(filtered["inbox"]),
+        "review": visible_review_ids,
+        "open_work": visible_task_ids,
+        "deliverables": visible_deliverable_ids,
+        "review_requests": visible_review_ids,
+        "pending_inbox": set(filtered["inbox"]),
+        "latest_failed_actions": set(filtered["action_records"]),
+        "pending_initial_release_decisions": visible_deliverable_ids,
+    }
+    filtered["dispatches"] = {
+        key: {
+            **value,
+            "blocker_ids": _filter_ids(value.get("blocker_ids"), visible_blocker_ids),
+            "action_feedback_dispatch_ids": _filter_ids(
+                value.get("action_feedback_dispatch_ids"),
+                visible_dispatch_ids,
+            ),
+            "wake_work_record_fingerprints": _filter_wake_work_record_fingerprints(
+                value.get("wake_work_record_fingerprints"),
+                visible_ids_by_kind=visible_wake_work_record_ids,
+            ),
+            "cause_id": (
+                value.get("cause_id")
+                if value.get("cause_id") is None
+                or (
+                    value.get("cause_kind") in visible_dispatch_cause_ids
+                    and value.get("cause_id")
+                    in visible_dispatch_cause_ids[str(value.get("cause_kind"))]
+                )
+                else None
+            ),
+        }
+        for key, value in filtered["dispatches"].items()
+    }
+    visible_lineage_ids = {
+        lineage_id
+        for collection_name in ("tasks", "release_packages")
+        for value in filtered[collection_name].values()
+        if (lineage_id := _optional_text(value.get("work_lineage_id"))) is not None
+    }
+    if project_id is None:
+        visible_lineage_ids.update(
+            lineage_id
+            for dispatch_id, raw_dispatch in scoped_dispatch_payloads.items()
+            if (
+                scoped_dispatch := filtered["dispatches"].get(dispatch_id)
+            ) is not None
+            and _dispatch_work_scope_survives(raw_dispatch, scoped_dispatch)
+            if (lineage_id := _optional_text(raw_dispatch.get("work_lineage_id"))) is not None
+        )
+    filtered["work_lineages"] = filter_work_lineage_payloads(
+        filtered.get("work_lineages"),
+        visible_conversation_ids=visible_conversation_ids,
+        visible_lineage_ids=visible_lineage_ids,
+    )
     filtered["blocker_events"] = {
         key: _scoped_blocker_event_payload(
             value,
             visible_agent_ids=visible_agent_ids,
+            visible_dispatch_ids=visible_dispatch_ids,
         )
         for key, value in filtered.get("blocker_events", {}).items()
         if value.get("blocker_id") in visible_blocker_ids
@@ -14696,22 +14843,14 @@ def _filtered_team_state_payload(
         visible_release_ids=visible_release_ids,
         visible_git_promotion_ids=visible_git_promotion_ids,
         visible_assignment_ids=set(filtered["ephemeral_assignments"]),
+        visible_dispatch_ids=visible_dispatch_ids,
     )
     visible_session_ids = {
         session_id
         for value in filtered["agents"].values()
         if (session_id := _optional_text(value.get("session_id"))) is not None
     }
-    visible_dispatch_ids = {
-        dispatch_id
-        for value in filtered.get("agent_runtimes", {}).values()
-        if (dispatch_id := _optional_text(value.get("active_dispatch_id"))) is not None
-    }
-    visible_dispatch_ids.update(
-        dispatch_id
-        for value in _mapping_items(filtered["runtime_operations"].get("agents"))
-        if (dispatch_id := _optional_text(value.get("active_dispatch_id"))) is not None
-    )
+    visible_dispatch_ids = set(filtered["dispatches"])
     visible_stand_down_ids = {
         stand_down_id
         for value in filtered["agents"].values()
@@ -14740,6 +14879,24 @@ def _filtered_team_state_payload(
         )
         for key, value in filtered["agents"].items()
     }
+    filtered["agent_runtimes"] = {
+        key: {
+            **value,
+            "active_dispatch_id": (
+                value.get("active_dispatch_id")
+                if value.get("active_dispatch_id") in visible_dispatch_ids
+                else None
+            ),
+        }
+        for key, value in filtered["agent_runtimes"].items()
+    }
+    # Several collections above are rebuilt from the full state after their
+    # initial scope pass. Enforce lineage referential closure only after those
+    # projections and the final dispatch update are complete.
+    filter_work_lineage_references(
+        filtered,
+        visible_lineage_ids=set(filtered["work_lineages"]),
+    )
     return filtered
 
 
@@ -14825,11 +14982,19 @@ def _filter_runtime_operations(
     visible_release_ids: set[str],
     visible_git_promotion_ids: set[str],
     visible_assignment_ids: set[str],
+    visible_dispatch_ids: set[str],
 ) -> dict[str, Any]:
     if not isinstance(value, dict):
         return {"generated_at": None, "agents": [], "attention": []}
     agents = [
-        row
+        {
+            **row,
+            "active_dispatch_id": (
+                row.get("active_dispatch_id")
+                if row.get("active_dispatch_id") in visible_dispatch_ids
+                else None
+            ),
+        }
         for row in _mapping_items(value.get("agents"))
         if _optional_text(row.get("id")) in visible_agent_ids
     ]
@@ -14837,6 +15002,7 @@ def _filter_runtime_operations(
         _scoped_runtime_attention_row(
             row,
             visible_task_ids=visible_task_ids,
+            visible_dispatch_ids=visible_dispatch_ids,
         )
         for row in _mapping_items(value.get("attention"))
         if _runtime_row_is_visible(
@@ -14869,8 +15035,14 @@ def _scoped_runtime_attention_row(
     row: dict[str, Any],
     *,
     visible_task_ids: set[str],
+    visible_dispatch_ids: set[str],
 ) -> dict[str, Any]:
     payload = dict(row)
+    if (
+        payload.get("dispatch_id") is not None
+        and payload.get("dispatch_id") not in visible_dispatch_ids
+    ):
+        payload["dispatch_id"] = None
     if payload.get("kind") not in {
         "blocked_task",
         "waiting_dependency_task",
@@ -14935,6 +15107,71 @@ def _filter_ids(value: object, allowed: set[str]) -> list[str]:
     return [item for item in _string_items(value) if item in allowed]
 
 
+def _filter_wake_work_record_fingerprints(
+    value: object,
+    *,
+    visible_ids_by_kind: Mapping[str, set[str]],
+) -> dict[str, str]:
+    if not isinstance(value, Mapping):
+        return {}
+    filtered: dict[str, str] = {}
+    for raw_key, raw_fingerprint in value.items():
+        key = _optional_text(raw_key)
+        fingerprint = _optional_text(raw_fingerprint)
+        if key is None or fingerprint is None:
+            continue
+        kind, separator, record_id = key.partition(":")
+        if not separator:
+            continue
+        allowed_ids = visible_ids_by_kind.get(kind)
+        if kind == "routing_gaps":
+            # Routing-gap identities are opaque digests, not durable record IDs.
+            filtered[key] = fingerprint
+            continue
+        if allowed_ids is None or record_id not in allowed_ids:
+            continue
+        filtered[key] = fingerprint
+    return filtered
+
+
+def _dispatch_work_scope_survives(
+    raw_dispatch: Mapping[str, Any],
+    scoped_dispatch: Mapping[str, Any],
+) -> bool:
+    durable_id_fields = (
+        "task_ids",
+        "blocker_ids",
+        "review_request_ids",
+        "inbox_item_ids",
+        "project_ids",
+        "managed_repo_ids",
+        "source_evidence_snapshot_ids",
+        "chat_message_ids",
+        "action_feedback_dispatch_ids",
+        "initial_release_decision_deliverable_ids",
+    )
+    if any(
+        _string_items(raw_dispatch.get(field_name))
+        != _string_items(scoped_dispatch.get(field_name))
+        for field_name in durable_id_fields
+    ):
+        return False
+    if _mapping_items(raw_dispatch.get("review_routing_authorities")) != _mapping_items(
+        scoped_dispatch.get("review_routing_authorities")
+    ):
+        return False
+    raw_fingerprints = raw_dispatch.get("wake_work_record_fingerprints")
+    scoped_fingerprints = scoped_dispatch.get("wake_work_record_fingerprints")
+    if (
+        dict(raw_fingerprints) if isinstance(raw_fingerprints, Mapping) else {}
+    ) != (
+        dict(scoped_fingerprints) if isinstance(scoped_fingerprints, Mapping) else {}
+    ):
+        return False
+    raw_cause_id = _optional_text(raw_dispatch.get("cause_id"))
+    return raw_cause_id is None or raw_cause_id == _optional_text(scoped_dispatch.get("cause_id"))
+
+
 def _blocker_payload_is_visible(
     value: object,
     *,
@@ -14994,6 +15231,7 @@ def _scoped_blocker_payload(
     *,
     visible_task_ids: set[str],
     visible_agent_ids: set[str],
+    visible_dispatch_ids: set[str],
 ) -> dict[str, Any]:
     return {
         **value,
@@ -15017,6 +15255,11 @@ def _scoped_blocker_payload(
             if value.get("delegate_agent_id") in visible_agent_ids
             else None
         ),
+        "active_dispatch_id": (
+            value.get("active_dispatch_id")
+            if value.get("active_dispatch_id") in visible_dispatch_ids
+            else None
+        ),
     }
 
 
@@ -15024,6 +15267,7 @@ def _scoped_blocker_event_payload(
     value: dict[str, Any],
     *,
     visible_agent_ids: set[str],
+    visible_dispatch_ids: set[str],
 ) -> dict[str, Any]:
     return {
         **value,
@@ -15037,6 +15281,11 @@ def _scoped_blocker_event_payload(
         ),
         "to_agent_id": (
             value.get("to_agent_id") if value.get("to_agent_id") in visible_agent_ids else None
+        ),
+        "dispatch_id": (
+            value.get("dispatch_id")
+            if value.get("dispatch_id") in visible_dispatch_ids
+            else None
         ),
     }
 

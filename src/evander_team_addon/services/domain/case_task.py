@@ -1022,6 +1022,7 @@ def _apply_task_creation_plan(
     plan: _TaskCreationPlan,
     actor: PersistentAgent,
     chat_source_refs: list[Any] | None = None,
+    assign_work_lineage: bool = True,
 ) -> str:
     now = utc_now()
     state.tasks[plan.task_id] = AgentTask(
@@ -1045,11 +1046,12 @@ def _apply_task_creation_plan(
         created_at=now,
         updated_at=now,
     )
-    ensure_task_work_lineage(
-        state,
-        state.tasks[plan.task_id],
-        chat_source_refs=chat_source_refs or (),
-    )
+    if assign_work_lineage:
+        ensure_task_work_lineage(
+            state,
+            state.tasks[plan.task_id],
+            chat_source_refs=chat_source_refs or (),
+        )
     if plan.case_id is not None:
         _link_task_to_case(state, task_id=plan.task_id, case_id=plan.case_id, now=now)
     if task_state_can_wake_owner(plan.task_state):

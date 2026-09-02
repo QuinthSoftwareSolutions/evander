@@ -3801,6 +3801,79 @@ class TeamWorkLineage(TeamModel):
         return self
 
 
+def filter_work_lineage_payloads(
+    value: object,
+    *,
+    visible_conversation_ids: set[str],
+    visible_lineage_ids: set[str] | None = None,
+) -> dict[str, dict[str, Any]]:
+    """Return lineage metadata without disclosing out-of-scope Chat anchors.
+
+    When ``visible_lineage_ids`` is omitted, Chat-backed lineages are visible
+    only when at least one of their source conversations is visible. Lineages
+    without Chat anchors remain visible because they carry no Chat metadata.
+    Scoped state projections retain only structurally referenced lineages while
+    still removing any source refs outside their Chat scope.
+    """
+
+    if not isinstance(value, Mapping):
+        return {}
+    filtered: dict[str, dict[str, Any]] = {}
+    for lineage_id, raw_lineage in value.items():
+        if not isinstance(lineage_id, str) or not isinstance(raw_lineage, Mapping):
+            continue
+        raw_refs = raw_lineage.get("chat_source_refs")
+        refs = raw_refs if isinstance(raw_refs, list) else []
+        visible_refs = [
+            dict(ref)
+            for ref in refs
+            if isinstance(ref, Mapping) and ref.get("conversation_id") in visible_conversation_ids
+        ]
+        if visible_lineage_ids is None:
+            include_lineage = not refs or bool(visible_refs)
+        else:
+            include_lineage = lineage_id in visible_lineage_ids
+        if include_lineage:
+            filtered[lineage_id] = {
+                **dict(raw_lineage),
+                "chat_source_refs": visible_refs,
+            }
+    return filtered
+
+
+def filter_work_lineage_references(
+    payload: dict[str, Any],
+    *,
+    visible_lineage_ids: set[str],
+) -> None:
+    """Remove lineage references that are absent from a filtered state payload."""
+
+    for collection_name in ("tasks", "release_packages", "dispatches"):
+        collection = payload.get(collection_name)
+        if not isinstance(collection, Mapping):
+            continue
+        for row in collection.values():
+            if not isinstance(row, dict):
+                continue
+            lineage_id = row.get("work_lineage_id")
+            if lineage_id is not None and lineage_id not in visible_lineage_ids:
+                row["work_lineage_id"] = None
+    runtimes = payload.get("agent_runtimes")
+    if not isinstance(runtimes, Mapping):
+        return
+    for runtime in runtimes.values():
+        if not isinstance(runtime, dict):
+            continue
+        thread_ids = runtime.get("work_lineage_thread_ids")
+        runtime["work_lineage_thread_ids"] = {
+            lineage_id: thread_id
+            for lineage_id, thread_id in (
+                thread_ids.items() if isinstance(thread_ids, Mapping) else ()
+            )
+            if lineage_id in visible_lineage_ids
+        }
+
+
 class TeamChatMutationAuthorization(TeamModel):
     """Server-issued mutation scope snapshot for one operator chat message."""
 
