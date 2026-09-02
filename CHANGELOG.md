@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-09-02 - Deployment Service Reconciliation Reliability
+
+- Deferred systemd service changes until automatic apt maintenance is idle, consolidated the
+  manager reload, and retried transient service-manager calls so a concurrent package-triggered
+  systemd re-exec cannot falsely fail an otherwise successful control-plane deployment.
+- Updated the Azure CLI repository template to use namespaced Ansible facts for compatibility with
+  newer ansible-core releases.
+
 ## 2026-09-02 - Agent Pull Request Metadata Updates
 
 - Added the policy-controlled `update_pull_request` MCP tool for Azure DevOps title, description,

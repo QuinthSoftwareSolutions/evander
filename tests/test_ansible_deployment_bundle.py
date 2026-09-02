@@ -985,6 +985,32 @@ def test_ansible_restarts_services_after_managed_config_changes() -> None:
     assert "'restarted'" in service_runtime
 
 
+def test_ansible_serializes_service_changes_with_automatic_apt_maintenance() -> None:
+    repo = Path(__file__).resolve().parents[1]
+    service_runtime = (
+        repo / "ansible" / "roles" / "service_runtime" / "tasks" / "main.yml"
+    ).read_text(encoding="utf-8")
+
+    assert "Wait for automatic apt maintenance before reconciling services" in service_runtime
+    assert "apt-daily.service" in service_runtime
+    assert "apt-daily-upgrade.service" in service_runtime
+    assert "evander_apt_maintenance_state.stdout_lines" in service_runtime
+    assert "Reload systemd manager configuration" in service_runtime
+    assert service_runtime.count("daemon_reload: true") == 1
+    assert "until: evander_systemd_daemon_reload is succeeded" in service_runtime
+    assert "until: evander_systemd_service_reconcile is succeeded" in service_runtime
+
+
+def test_ansible_azure_cli_repo_uses_namespaced_distribution_fact() -> None:
+    repo = Path(__file__).resolve().parents[1]
+    host_prereqs = (
+        repo / "ansible" / "roles" / "host_prereqs" / "tasks" / "main.yml"
+    ).read_text(encoding="utf-8")
+
+    assert 'ansible_facts["distribution_release"]' in host_prereqs
+    assert "ansible_distribution_release" not in host_prereqs
+
+
 def test_ansible_ado_worker_defaults_omit_retired_setup_keys() -> None:
     repo = Path(__file__).resolve().parents[1]
     defaults = (repo / "ansible" / "group_vars" / "all" / "defaults.yml").read_text(
