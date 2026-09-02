@@ -301,8 +301,9 @@ from .services.domain.project_status import (
 )
 from .services.domain.wake import (
     AGENT_WAKE_REQUESTED_EVENT_TYPE,
-    _case_payloads_for_agent,
     _append_agent_wake_requested_event,
+    _case_payloads_for_agent,
+    _dispatch_case_payloads,
     _release_package_payloads_for_agent,
     _runtime_attention_payloads_for_agent,
 )
@@ -3339,7 +3340,11 @@ def _team_chat_wake_lease(
                 project_id=project.id,
             )
         ],
-        "cases": _case_payloads_for_agent(state, agent.id),
+        **_dispatch_case_payloads(
+            state,
+            agent=agent,
+            dispatch=dispatch,
+        ),
         "external_source_evidence_snapshots": [
             external_source_evidence_snapshot_payload(
                 state.external_source_evidence_snapshots[snapshot_id]

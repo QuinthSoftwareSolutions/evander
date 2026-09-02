@@ -152,8 +152,7 @@ from .domain.wake import (
     _agent_immediate_wake_request,
     _append_agent_wake_requested_event,
     _append_follow_up_agent_wake_requested_event,
-    _case_payloads_for_agent,
-    _case_payloads_for_team,
+    _dispatch_case_payloads,
     _ordinary_wake_work_for_agent,
     _pending_inbox_for_agent,
     _pending_reviews_for_agent,
@@ -1086,7 +1085,11 @@ class TeamRuntimeService:
                                 project_id=visible_project_id,
                             )
                         ],
-                        "cases": _case_payloads_for_agent(state_model, agent.id),
+                        **_dispatch_case_payloads(
+                            state_model,
+                            agent=agent,
+                            dispatch=durable_dispatch,
+                        ),
                         "external_source_evidence_snapshots": [
                             external_source_evidence_snapshot_payload(
                                 state_model.external_source_evidence_snapshots[snapshot_id],
@@ -1420,7 +1423,11 @@ class TeamRuntimeService:
                             task_payload_with_assessment(state_model, task)
                             for task in manager_tasks
                         ],
-                        "cases": _case_payloads_for_team(state_model, team.id),
+                        **_dispatch_case_payloads(
+                            state_model,
+                            agent=manager,
+                            dispatch=durable_dispatch,
+                        ),
                         "external_source_evidence_snapshots": [
                             external_source_evidence_snapshot_payload(
                                 state_model.external_source_evidence_snapshots[snapshot_id],

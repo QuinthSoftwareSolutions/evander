@@ -1279,6 +1279,14 @@ set:
   `context_mode: retained_delta`: it carries the current immutable dispatch
   delta but intentionally omits stable identity, role, subordinate, project,
   outcome-catalog, and session details already present in the conversation.
+  Case detail is dispatch-scoped: tasks, blockers, reviews, release decisions,
+  and structured inbox references select the active cases included in full.
+  Fresh Team Chat and management wakes also receive a bounded `case_index`
+  containing only the ID, title, status, priority, and project of other visible
+  active cases. Session health is summary-first on every wake; only missing,
+  expired, unhealthy, failed, stalled, stopped, or exited rows are included
+  individually. The full case catalog and runtime health inventory remain
+  available through their existing read and operator surfaces.
   `team_get_current_dispatch_context` hydrates the active dispatch's frozen
   scope on demand, returning the scoped tasks, inbox items, blockers, reviews,
   projects, and Git contexts without widening its membership.
