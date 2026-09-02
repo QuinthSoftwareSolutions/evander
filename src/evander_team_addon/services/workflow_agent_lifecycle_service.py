@@ -324,31 +324,6 @@ class TeamWorkflowAgentLifecycleService:
         self._require_workflow_session(normalized.new_session_id, require_unexpired=True)
         idempotency_payload = _restoration_idempotency_payload(normalized)
         payload_digest = self._repository.normalized_payload_digest(idempotency_payload)
-        replay = self._repository.check_idempotency_replay(
-            tool_name="effect:team:restore-agent",
-            caller_identity="workflow-agent-lifecycle",
-            scope_kind="agent",
-            scope_id=normalized.agent_id,
-            request_id=normalized.new_session_id,
-            normalized_payload_digest=payload_digest,
-        )
-        before = self._repository.read()
-        if replay is not None:
-            existing = self._exact_restoration(before, normalized)
-            if existing is None:
-                raise ValueError(
-                    f"completed restoration for agent {normalized.agent_id} no longer matches "
-                    "the current Team binding"
-                )
-            return TeamWorkflowAgentRestorationResult(
-                state=before,
-                agent=existing,
-                restored=True,
-                already_restored=True,
-                previous_session_id=normalized.expected_old_session_id,
-            )
-        _require_revision(before, expected_revision)
-        self._validate_restoration(before, normalized)
         already_restored = False
 
         def _mutate(state: TeamState, tx: Any) -> TeamState:
@@ -380,7 +355,7 @@ class TeamWorkflowAgentLifecycleService:
                 already_restored = True
                 return state
             _require_revision(state, expected_revision)
-            agent, role = self._validate_restoration(state, normalized)
+            agent = self._validate_restoration(state, normalized)
             # Revalidate the core session while holding the Team state write lock so a
             # concurrent Team mutation cannot make a stale validation authoritative.
             self._require_workflow_session(normalized.new_session_id, require_unexpired=True)
@@ -389,7 +364,8 @@ class TeamWorkflowAgentLifecycleService:
             agent.session_id = normalized.new_session_id
             agent.reports_to_agent_id = normalized.reports_to_agent_id
             agent.retired_team_id = None
-            agent.ephemeral_policy = role.ephemeral_policy.model_copy(deep=True)
+            # Delegation limits belong to the logical agent, not its backing session.
+            # Retirement leaves the override intact, so restoration must preserve it.
             agent.status = AgentStatus.ACTIVE
             if normalized.project_id is not None:
                 assignment_id = _project_assignment_id(
@@ -522,7 +498,7 @@ class TeamWorkflowAgentLifecycleService:
         self,
         state: TeamState,
         request: "_RestorationRequest",
-    ) -> tuple[PersistentAgent, TeamRole]:
+    ) -> PersistentAgent:
         agent = _require_present(state.agents, request.agent_id, "agent")
         if not _is_fully_retired(agent):
             raise ValueError(f"agent {agent.id} is not fully archived")
@@ -569,7 +545,7 @@ class TeamWorkflowAgentLifecycleService:
         self._validate_registration_scope(state, registration)
         if request.reports_to_agent_id == agent.id:
             raise ValueError("agent cannot report to itself")
-        return agent, state.roles[request.role_id]
+        return agent
 
     def _validate_new_registration(
         self,
@@ -597,7 +573,9 @@ class TeamWorkflowAgentLifecycleService:
         state: TeamState,
         request: "_RegistrationRequest",
     ) -> None:
-        _require_present(state.teams, request.team_id, "team")
+        team = _require_present(state.teams, request.team_id, "team")
+        if team.archived:
+            raise ValueError(f"team {team.id} is archived")
         role = _require_present(state.roles, request.role_id, "role")
         if role.archived:
             raise ValueError(f"role {role.id} is archived")

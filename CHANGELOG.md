@@ -4,10 +4,11 @@
 
 - Added a workflow-only `effect:team:restore-agent` primitive that atomically restores a fully
   archived logical Team agent against a distinct, live, in-scope core session while recreating
-  its role, project, and reporting edges, preserving operator-owned context policy, and resetting
-  transient runtime/context lineage.
-- Enforced old-session, retained-Team, session-uniqueness, expiry, directory-scope, and Team state
-  revision guards with idempotent exact-binding retries and structured workflow failure results.
+  its role, project, and reporting edges, preserving operator-owned delegation and context policy,
+  and resetting transient runtime/context lineage.
+- Enforced old-session, active retained-Team, session-uniqueness, expiry, directory-scope, and Team
+  state revision guards with transactionally idempotent exact-binding retries and structured
+  workflow failure results.
 
 ## 2026-09-02 - Team Work-Lineage Context Routing
 

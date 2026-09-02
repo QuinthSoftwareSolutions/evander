@@ -20,6 +20,7 @@ from evander_team_addon.models import (
     AgentStatus,
     EphemeralAssignment,
     EphemeralAssignmentState,
+    EphemeralAgentPolicy,
     GovernanceRuntime,
     ReleasePackage,
     RolePermission,
@@ -47,6 +48,9 @@ from evander_team_addon.providers import (
 from evander_team_addon.repository import TeamStateRepository
 from evander_team_addon.services.agent_action_service import TeamAgentActionService
 from evander_team_addon.services.admin_service import TeamAdminService
+from evander_team_addon.services.workflow_agent_lifecycle_service import (
+    TeamWorkflowAgentLifecycleService,
+)
 
 
 @dataclass
@@ -349,6 +353,11 @@ def test_restore_agent_rebinds_new_session_resets_runtime_and_preserves_history(
         agent_id="support-agent",
         project_id="project",
     )["success"]
+    admin.update_agent(
+        agent_id="support-agent",
+        ephemeral_policy=EphemeralAgentPolicy(max_concurrent=3),
+        expected_revision=repo.read().revision,
+    )
     admin.create_case(
         case_id="historical-case",
         team_id="team",
@@ -427,6 +436,7 @@ def test_restore_agent_rebinds_new_session_resets_runtime_and_preserves_history(
     assert agent.session_id == "new-session"
     assert agent.reports_to_agent_id == "manager"
     assert agent.retired_team_id is None
+    assert agent.ephemeral_policy.max_concurrent == 3
     runtime = state.agent_runtimes["support-agent"]
     assert runtime.wake_leased_until is None
     assert runtime.active_dispatch_id is None
@@ -485,6 +495,133 @@ def test_restore_agent_rebinds_new_session_resets_runtime_and_preserves_history(
     assert inexact_retry["success"] is False
     assert "idempotency key reused" in str(inexact_retry["error"])
     assert repo.read().revision == revision_after_restore
+
+
+def test_restore_agent_checks_replay_in_transaction_after_a_competing_restore(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    repo = _seed_team(tmp_path)
+    sessions = _Sessions(
+        _Session("old-session", expires_at=utc_now() + timedelta(hours=1)),
+        _Session("new-session", expires_at=utc_now() + timedelta(hours=1)),
+    )
+    assert _register(
+        tmp_path,
+        sessions,
+        session_id="old-session",
+        agent_id="support-agent",
+    )["success"]
+    assert _retire(
+        tmp_path,
+        sessions,
+        agent_id="support-agent",
+        session_id="old-session",
+    )["success"]
+    restoration_revision = repo.read().revision
+    competing_repo = TeamStateRepository(tmp_path)
+    competing_service = TeamWorkflowAgentLifecycleService(
+        competing_repo,
+        session_lookup=sessions,
+        workflow_directory_path="root",
+    )
+    service = TeamWorkflowAgentLifecycleService(
+        repo,
+        session_lookup=sessions,
+        workflow_directory_path="root",
+    )
+    original_check_replay = repo.check_idempotency_replay
+    original_transactional_update = repo.update_with_command_transaction
+    competing_restore_completed = False
+
+    def _complete_competing_restore() -> None:
+        nonlocal competing_restore_completed
+        if competing_restore_completed:
+            return
+        competing_restore_completed = True
+        result = competing_service.restore_agent(
+            agent_id="support-agent",
+            new_session_id="new-session",
+            expected_old_session_id="old-session",
+            expected_team_id="team",
+            role_id="support",
+            reports_to_agent_id="manager",
+            expected_revision=restoration_revision,
+        )
+        assert result.already_restored is False
+
+    def _race_after_replay_lookup(**kwargs):
+        replay = original_check_replay(**kwargs)
+        if replay is None:
+            _complete_competing_restore()
+        return replay
+
+    def _race_before_transaction(mutator, *, expected_revision=None):
+        _complete_competing_restore()
+        return original_transactional_update(mutator, expected_revision=expected_revision)
+
+    monkeypatch.setattr(repo, "check_idempotency_replay", _race_after_replay_lookup)
+    monkeypatch.setattr(repo, "update_with_command_transaction", _race_before_transaction)
+
+    result = service.restore_agent(
+        agent_id="support-agent",
+        new_session_id="new-session",
+        expected_old_session_id="old-session",
+        expected_team_id="team",
+        role_id="support",
+        reports_to_agent_id="manager",
+        expected_revision=restoration_revision,
+    )
+
+    assert competing_restore_completed is True
+    assert result.restored is True
+    assert result.already_restored is True
+    assert result.state.revision == restoration_revision + 1
+    assert result.agent.session_id == "new-session"
+
+
+def test_restore_agent_rejects_archived_retained_team(tmp_path: Path) -> None:
+    repo = _seed_team(tmp_path)
+    admin = TeamAdminService(repo)
+    sessions = _Sessions(
+        _Session("old-session", expires_at=utc_now() + timedelta(hours=1)),
+        _Session("new-session", expires_at=utc_now() + timedelta(hours=1)),
+    )
+    assert _register(
+        tmp_path,
+        sessions,
+        session_id="old-session",
+        agent_id="support-agent",
+    )["success"]
+    assert _retire(
+        tmp_path,
+        sessions,
+        agent_id="support-agent",
+        session_id="old-session",
+    )["success"]
+    admin.update_team(
+        team_id="team",
+        archived=True,
+        expected_revision=repo.read().revision,
+    )
+    revision_before_rejection = repo.read().revision
+
+    rejected = _restore(
+        tmp_path,
+        sessions,
+        agent_id="support-agent",
+        new_session_id="new-session",
+        expected_old_session_id="old-session",
+        reports_to_agent_id=None,
+        expected_revision=revision_before_rejection,
+    )
+
+    assert rejected["success"] is False
+    assert rejected["error"] == "team team is archived"
+    state = repo.read()
+    assert state.revision == revision_before_rejection
+    assert state.agents["support-agent"].status == AgentStatus.ARCHIVED
+    assert state.agents["support-agent"].team_id is None
 
 
 def test_restore_agent_rejects_invalid_agent_session_scope_and_revision(
