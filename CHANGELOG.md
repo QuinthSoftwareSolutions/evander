@@ -1,5 +1,16 @@
 # Changelog
 
+## 2026-09-02 - Team Work-Lineage Context Routing
+
+- Added a per-agent `work_lineage` context policy that gives each independent task family its own
+  resumable model thread, carries the lineage through successor and release-correction work, and
+  dispatches only one lineage at a time while leaving unrelated work queued.
+- Captured exact Team Chat source-message anchors when Chat creates root tasks, added an
+  agent-owned paginated conversation-history tool for later recall, and kept taskless wakes fresh.
+- Updated Admin Web context controls and observability so lineage-routed agents do not show a
+  misleading global reset age or token count, and disabled manual clearing for policies that
+  already determine context per wake.
+
 ## 2026-09-02 - Deployment Service Reconciliation Reliability
 
 - Deferred systemd service changes until automatic apt maintenance is idle, consolidated the

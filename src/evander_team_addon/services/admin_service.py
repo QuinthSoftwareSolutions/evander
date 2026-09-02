@@ -164,6 +164,7 @@ from .domain.context_rotation import (
     _set_context_clearing_idle_grace_seconds,
     _set_context_clearing_policy,
 )
+from .domain.work_lineage import ensure_task_work_lineage
 from .domain.deliverables import (
     _superseded_deliverable_for_rework,
     _validate_deliverable_outcomes_against_task_contract,
@@ -2896,6 +2897,7 @@ class TeamAdminService:
                         AgentRuntime(agent_id=agent.id),
                     )
                     runtime.last_context_rotated_at = now
+                    runtime.work_lineage_thread_ids = {}
                     runtime.updated_at = now
             if set_display_name:
                 agent.display_name = display_name
@@ -3959,6 +3961,7 @@ class TeamAdminService:
                 created_at=now,
                 updated_at=now,
             )
+            ensure_task_work_lineage(state_model, state_model.tasks[effective_task_id])
             if state == TeamTaskState.BLOCKED:
                 project = _require_present(
                     state_model.projects,
@@ -5684,6 +5687,7 @@ class TeamAdminService:
                     created_at=now,
                     updated_at=now,
                 )
+                ensure_task_work_lineage(state, state.tasks[task_ids[task_template.id]])
 
             result["success"] = True
             result["created_agent_ids"] = dict(result["agent_ids"])

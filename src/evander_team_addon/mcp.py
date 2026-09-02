@@ -161,6 +161,7 @@ TEAM_LIST_OUTCOME_KINDS_TOOL = "team_list_outcome_kinds"
 TEAM_GET_OUTCOME_KIND_TOOL = "team_get_outcome_kind"
 TEAM_LIST_RUNTIME_ATTENTION_TOOL = "team_list_runtime_attention"
 TEAM_SEARCH_MEMORY_TOOL = "team_search_memory"
+TEAM_LIST_CONVERSATION_MESSAGES_TOOL = "team_list_conversation_messages"
 
 ORDINARY_TEAM_MCP_TOOL_NAMES = (
     TEAM_RECORD_NOTE_TOOL,
@@ -249,6 +250,7 @@ READ_TEAM_MCP_TOOL_NAMES = (
     TEAM_GET_OUTCOME_KIND_TOOL,
     TEAM_LIST_RUNTIME_ATTENTION_TOOL,
     TEAM_SEARCH_MEMORY_TOOL,
+    TEAM_LIST_CONVERSATION_MESSAGES_TOOL,
 )
 IMPLEMENTED_ORDINARY_TEAM_MCP_TOOL_NAMES = (
     TEAM_RECORD_NOTE_TOOL,
@@ -3456,6 +3458,85 @@ def _register_read_tools(
     resolver: TeamMcpContextResolver,
     context: AddonContext,
 ) -> None:
+    def team_list_conversation_messages(
+        conversation_id: str,
+        before_message_id: str | None = None,
+        limit: int = 20,
+        session_id: str | None = None,
+    ) -> dict[str, Any]:
+        caller = resolver.resolve(
+            session_id=session_id,
+            tool_name=TEAM_LIST_CONVERSATION_MESSAGES_TOOL,
+        )
+        if caller.agent is None or caller.agent.status.value != "active":
+            raise ToolError(
+                f"{TEAM_LIST_CONVERSATION_MESSAGES_TOOL} requires an active persistent agent"
+            )
+        conversation = caller.state.conversations.get(str(conversation_id).strip())
+        if conversation is None or conversation.agent_id != caller.agent.id:
+            raise ToolError("conversation not found or not assigned to the caller")
+        bounded_limit = max(1, min(50, int(limit)))
+        rows = sorted(
+            (
+                message
+                for message in caller.state.conversation_messages.values()
+                if message.conversation_id == conversation.id
+            ),
+            key=lambda message: (message.created_at, message.id),
+        )
+        if before_message_id is not None:
+            anchor = next(
+                (index for index, message in enumerate(rows) if message.id == before_message_id),
+                None,
+            )
+            if anchor is None:
+                raise ToolError("before_message_id does not belong to the conversation")
+            rows = rows[:anchor]
+        page = rows[-bounded_limit:]
+        message_payloads: list[dict[str, Any]] = []
+        for message in page:
+            payload = message.model_dump(mode="json")
+            payload["attachments"] = [
+                {
+                    key: value
+                    for key, value in attachment.model_dump(mode="json").items()
+                    if key
+                    in {
+                        "id",
+                        "message_id",
+                        "conversation_id",
+                        "filename",
+                        "mime_type",
+                        "byte_count",
+                        "sha256",
+                        "sender",
+                        "external_source",
+                        "created_at",
+                    }
+                }
+                for attachment_id in message.attachment_ids
+                if (attachment := caller.state.chat_attachments.get(attachment_id)) is not None
+            ]
+            message_payloads.append(payload)
+        return {
+            "success": True,
+            "agent_id": caller.agent.id,
+            "conversation_id": conversation.id,
+            "messages": message_payloads,
+            "message_count": len(message_payloads),
+            "has_older": len(rows) > len(page),
+            "oldest_message_id": page[0].id if page else None,
+            "newest_message_id": page[-1].id if page else None,
+        }
+
+    server.add_tool(
+        team_list_conversation_messages,
+        name=TEAM_LIST_CONVERSATION_MESSAGES_TOOL,
+        description=(
+            "Page backward through the caller's own durable Team Chat conversation history."
+        ),
+    )
+
     def team_list_tasks(
         session_id: str | None = None,
         project_id: str | None = None,

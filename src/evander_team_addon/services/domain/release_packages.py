@@ -56,6 +56,7 @@ from .task_assessment import (
     require_release_scope,
     require_task_resolved,
 )
+from .work_lineage import ensure_release_work_lineage
 
 
 GIT_RELEASE_RECOVERY_EVENT_TYPE = "team.git.release_recovery_requested"
@@ -1282,6 +1283,7 @@ def _build_release_package(
         created_at=now,
         updated_at=now,
     )
+    ensure_release_work_lineage(state, state.release_packages[release_id])
     disposition_ids = mark_initial_release_requested(
         state,
         deliverable_ids=deliverable_ids,

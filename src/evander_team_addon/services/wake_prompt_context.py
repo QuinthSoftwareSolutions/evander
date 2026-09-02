@@ -57,12 +57,28 @@ def wake_uses_fresh_context(
         policy = _optional_text(runtime.get("context_clearing_policy"))
         if policy == "every_wake":
             return True
+        if policy == "work_lineage":
+            return work_lineage_resume_thread_id(lease) is None
     if lease.get("has_prior_successful_wake") is False:
         return True
     normalized_resume_mode = _optional_text(effective_resume_mode)
     if normalized_resume_mode is not None:
         return normalized_resume_mode == "new_context"
     return not runtime_behavior_available
+
+
+def work_lineage_resume_thread_id(lease: Mapping[str, Any]) -> str | None:
+    runtime = lease.get("runtime")
+    dispatch = lease.get("dispatch")
+    if not isinstance(runtime, Mapping) or not isinstance(dispatch, Mapping):
+        return None
+    if _optional_text(runtime.get("context_clearing_policy")) != "work_lineage":
+        return None
+    lineage_id = _optional_text(dispatch.get("work_lineage_id"))
+    bindings = runtime.get("work_lineage_thread_ids")
+    if lineage_id is None or not isinstance(bindings, Mapping):
+        return None
+    return _optional_text(bindings.get(lineage_id))
 
 
 def build_compact_wake_context(

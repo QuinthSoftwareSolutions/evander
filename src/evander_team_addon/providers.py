@@ -126,6 +126,7 @@ from .mcp import (
     TEAM_GET_MY_IDENTITY_TOOL,
     TEAM_GET_TASK_TOOL,
     TEAM_LIST_OUTCOME_KINDS_TOOL,
+    TEAM_LIST_CONVERSATION_MESSAGES_TOOL,
     TEAM_IMPORT_ARTIFACT_TOOL,
     TEAM_MARK_INBOX_HANDLED_TOOL,
     TEAM_MARK_GOVERNANCE_AGENDA_HANDLED_TOOL,
@@ -337,6 +338,7 @@ from .services.memory_service import (
 from .services.wake_prompt_context import (
     build_compact_wake_context,
     wake_uses_fresh_context,
+    work_lineage_resume_thread_id,
 )
 from .services.wake_singleflight import TEAM_WAKE_SINGLE_FLIGHT
 from .services.runtime_service import (
@@ -2887,6 +2889,7 @@ class TeamWakeDueAgentsEffectProvider(EffectProviderBase):
                     target=agent["session_id"],
                     prompt=prompt,
                     resume_mode=effective_resume_mode,
+                    resume_thread_id=work_lineage_resume_thread_id(lease),
                     dispatch_id=lease["dispatch_id"],
                 )
                 result_payload = _coerce_mapping(result)
@@ -3150,6 +3153,7 @@ def _dispatch_queued_team_chat_messages(
             else:
                 chat_tool_names.extend(
                     [
+                        TEAM_LIST_CONVERSATION_MESSAGES_TOOL,
                         TEAM_SEND_OPERATOR_CHAT_MESSAGE_TOOL,
                         TEAM_ACKNOWLEDGE_OPERATOR_CHAT_MESSAGES_TOOL,
                     ]
@@ -3205,6 +3209,7 @@ def _dispatch_queued_team_chat_messages(
                 target=agent.session_id,
                 prompt=prompt,
                 resume_mode=effective_resume_mode,
+                resume_thread_id=work_lineage_resume_thread_id(chat_lease),
                 dispatch_id=dispatch_id,
             )
             result_payload = _coerce_mapping(result)
@@ -7826,6 +7831,14 @@ def _build_prompt(
         and (runtime.get("context_rotation_pending") or effective_resume_mode == "new_context")
         else ""
     )
+    lineage_chat_sources = lease.get("work_lineage_chat_sources")
+    lineage_chat_section = (
+        "Chat history anchors for this work lineage (use "
+        f"{TEAM_LIST_CONVERSATION_MESSAGES_TOOL} to page backward):\n"
+        f"{json.dumps(lineage_chat_sources, sort_keys=True)}\n\n"
+        if isinstance(lineage_chat_sources, list) and lineage_chat_sources
+        else ""
+    )
     review_artifact_section = (
         "Review artifact access for this wake:\n"
         "- review_artifact_imports lists published deliverable archives already "
@@ -7951,6 +7964,7 @@ def _build_prompt(
         f"{_deliverable_mechanics_guidance(lease)}"
         f"{_project_repos_prompt_guidance(project_repos)}"
         f"{rotation_section}"
+        f"{lineage_chat_section}"
         f"{handoff_section}"
         f"{agent_handoff_section}"
         f"{review_artifact_section}"
@@ -12598,6 +12612,7 @@ def _active_team_mcp_tools_for_other_dispatches(
             continue
         if _optional_text(getattr(runtime, "wake_reason", None)) == "team_chat":
             tool_names.append(TEAM_REPLY_TO_CHAT_TOOL)
+            tool_names.append(TEAM_LIST_CONVERSATION_MESSAGES_TOOL)
             tool_names.extend(
                 [
                     TEAM_SEND_OPERATOR_CHAT_MESSAGE_TOOL,

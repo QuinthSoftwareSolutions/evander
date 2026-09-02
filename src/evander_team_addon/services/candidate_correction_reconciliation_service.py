@@ -59,6 +59,7 @@ from .domain.task_assessment import (
     require_task_resolved,
 )
 from .domain.work_due import _mark_agent_work_due
+from .domain.work_lineage import ensure_task_work_lineage
 
 
 _MAX_RECONCILIATION_ATTEMPTS = 3
@@ -1051,6 +1052,7 @@ def _open_reconciliation_blocker(
                 updated_at=now,
             )
             state.tasks[recovery_task.id] = recovery_task
+            ensure_task_work_lineage(state, recovery_task)
             blocker.affected_task_ids = sorted(set(blocker.affected_task_ids) | {recovery_task.id})
             blocker.updated_at = now
             _mark_agent_work_due(state, agent_id=lead.id, now=now)
@@ -1422,6 +1424,7 @@ def recover_candidate_correction_successor(
                 updated_at=effective_now,
             )
             state.tasks[recovery_task.id] = recovery_task
+            ensure_task_work_lineage(state, recovery_task)
             _mark_agent_work_due(state, agent_id=owner.id, now=effective_now)
             blocker.last_progress_at = effective_now
             blocker.updated_at = effective_now

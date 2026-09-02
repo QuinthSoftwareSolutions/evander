@@ -5658,7 +5658,7 @@ def _add_context_reset_usage(
             getattr(runtime.context_clearing_policy, "value", runtime.context_clearing_policy)
             or "off"
         )
-        if policy == "every_wake":
+        if policy in {"every_wake", "work_lineage"}:
             continue
 
         input_tokens_since_reset: int | None = None

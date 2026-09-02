@@ -47,6 +47,7 @@ from .task_assessment import require_task_resolved
 from .wake import _append_agent_wake_requested_event
 from .work_due import _mark_agent_work_due
 from .case_events import append_case_closed_event
+from .work_lineage import ensure_task_work_lineage
 
 
 HUMAN_REVIEW_REQUESTED_EVENT_TYPE = "team.release.human_review_requested"
@@ -1413,6 +1414,7 @@ def _ensure_system_task(
         state_entered_at=now,
     )
     state.tasks[task.id] = task
+    ensure_task_work_lineage(state, task)
     if task.id not in case.task_ids:
         case.task_ids.append(task.id)
         case.updated_at = now

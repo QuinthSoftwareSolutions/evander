@@ -31,7 +31,7 @@ from .models import (
 
 ADDON_ID = "team-addon"
 STATE_DB_FILE = "state.db"
-SQLITE_SCHEMA_VERSION = 69
+SQLITE_SCHEMA_VERSION = 70
 _SQLITE_WAL_ENABLE_TIMEOUT_SECONDS = 5.0
 
 T = TypeVar("T")
@@ -1428,6 +1428,12 @@ class TeamStateSqliteStore:
                     column_name="last_delivered_role_description_fingerprint",
                     definition="TEXT",
                 )
+                _ensure_column(
+                    connection,
+                    table_name="team_agent_runtimes",
+                    column_name="work_lineage_thread_ids_json",
+                    definition="TEXT NOT NULL DEFAULT '{}'",
+                )
                 connection.execute(
                     """
                     UPDATE team_agent_runtimes
@@ -1536,6 +1542,12 @@ class TeamStateSqliteStore:
                     table_name="team_tasks",
                     column_name="source_evidence_snapshot_ids_json",
                     definition="TEXT NOT NULL DEFAULT '[]'",
+                )
+                _ensure_column(
+                    connection,
+                    table_name="team_tasks",
+                    column_name="work_lineage_id",
+                    definition="TEXT",
                 )
                 _ensure_column(
                     connection,
@@ -1724,6 +1736,18 @@ class TeamStateSqliteStore:
                     connection,
                     table_name="team_release_packages",
                     column_name="summary",
+                    definition="TEXT",
+                )
+                _ensure_column(
+                    connection,
+                    table_name="team_release_packages",
+                    column_name="work_lineage_id",
+                    definition="TEXT",
+                )
+                _ensure_column(
+                    connection,
+                    table_name="team_dispatches",
+                    column_name="work_lineage_id",
                     definition="TEXT",
                 )
                 _ensure_column(
@@ -2064,6 +2088,7 @@ class TeamStateSqliteStore:
             "agents": {},
             "project_assignments": {},
             "agent_runtimes": {},
+            "work_lineages": {},
             "external_source_evidence_snapshots": {},
             "cases": {},
             "tasks": {},
@@ -2106,6 +2131,7 @@ class TeamStateSqliteStore:
         self._read_project_assignments(connection, payload)
         self._read_stand_downs(connection, payload)
         self._read_agent_runtimes(connection, payload)
+        self._read_work_lineages(connection, payload)
         self._read_external_source_evidence_snapshots(connection, payload)
         self._read_cases(connection, payload)
         self._read_tasks(connection, payload)
@@ -2153,6 +2179,7 @@ class TeamStateSqliteStore:
         self._write_project_assignments(connection, payload["project_assignments"])
         self._write_stand_downs(connection, payload["stand_downs"])
         self._write_agent_runtimes(connection, payload["agent_runtimes"])
+        self._write_work_lineages(connection, payload["work_lineages"])
         self._write_external_source_evidence_snapshots(
             connection,
             payload["external_source_evidence_snapshots"],
@@ -2890,6 +2917,9 @@ class TeamStateSqliteStore:
                 "last_agent_handoff_at": row["last_agent_handoff_at"],
                 "last_context_rotated_at": row["last_context_rotated_at"],
                 "last_thread_id": row["last_thread_id"],
+                "work_lineage_thread_ids": _json_loads(
+                    row["work_lineage_thread_ids_json"] or "{}"
+                ),
                 "last_delivered_role_description_fingerprint": row[
                     "last_delivered_role_description_fingerprint"
                 ],
@@ -2914,9 +2944,10 @@ class TeamStateSqliteStore:
                     last_handoff_summary, context_handoff_preparation_pending,
                     context_handoff_preparation_status, last_agent_handoff_summary,
                     last_agent_handoff_at, last_context_rotated_at, last_thread_id,
-                    last_delivered_role_description_fingerprint, updated_at
+                    last_delivered_role_description_fingerprint,
+                    work_lineage_thread_ids_json, updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     runtime["agent_id"],
@@ -2948,8 +2979,22 @@ class TeamStateSqliteStore:
                     runtime.get("last_context_rotated_at"),
                     runtime.get("last_thread_id"),
                     runtime.get("last_delivered_role_description_fingerprint"),
+                    _json_dumps(runtime.get("work_lineage_thread_ids", {})),
                     runtime["updated_at"],
                 ),
+            )
+
+    @staticmethod
+    def _read_work_lineages(connection: sqlite3.Connection, payload: dict[str, Any]) -> None:
+        for row in connection.execute("SELECT id, payload_json FROM team_work_lineages ORDER BY id"):
+            payload["work_lineages"][row["id"]] = _json_loads(row["payload_json"])
+
+    @staticmethod
+    def _write_work_lineages(connection: sqlite3.Connection, lineages: dict[str, Any]) -> None:
+        for lineage in lineages.values():
+            connection.execute(
+                "INSERT INTO team_work_lineages(id, payload_json) VALUES (?, ?)",
+                (lineage["id"], _json_dumps(lineage)),
             )
 
     @staticmethod
@@ -3099,6 +3144,7 @@ class TeamStateSqliteStore:
                 "parent_task_id": row["parent_task_id"],
                 "originating_task_id": row["originating_task_id"],
                 "release_base_package_id": row["release_base_package_id"],
+                "work_lineage_id": row["work_lineage_id"],
                 "git_base_branch": row["git_base_branch"],
                 "git_base_commit_sha": row["git_base_commit_sha"],
                 "mutation_policy": (
@@ -3129,13 +3175,14 @@ class TeamStateSqliteStore:
                     id, owner_agent_id, project_id, case_id, priority, state, title, description,
                     state_entered_at, created_by_agent_id, created_by_actor, parent_task_id,
                     originating_task_id, release_base_package_id,
+                    work_lineage_id,
                     git_base_branch, git_base_commit_sha,
                     mutation_policy_json, cancellation_json, task_kind,
                     outcome_contract_json, integration_boundary,
                     deliverable_contract_json, completion_json, created_at, updated_at,
                     source_evidence_snapshot_ids_json
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     task["id"],
@@ -3152,6 +3199,7 @@ class TeamStateSqliteStore:
                     task.get("parent_task_id"),
                     task.get("originating_task_id"),
                     task.get("release_base_package_id"),
+                    task.get("work_lineage_id"),
                     task.get("git_base_branch"),
                     task.get("git_base_commit_sha"),
                     (
@@ -4388,6 +4436,7 @@ class TeamStateSqliteStore:
                 "id": row["id"],
                 "project_id": row["project_id"],
                 "owner_agent_id": row["owner_agent_id"],
+                "work_lineage_id": row["work_lineage_id"],
                 "summary": row["summary"],
                 "supersedes_release_package_id": row["supersedes_release_package_id"],
                 "lineage_root_release_package_id": row["lineage_root_release_package_id"],
@@ -4436,7 +4485,7 @@ class TeamStateSqliteStore:
             connection.execute(
                 """
                 INSERT INTO team_release_packages(
-                    id, project_id, owner_agent_id, summary, supersedes_release_package_id,
+                    id, project_id, owner_agent_id, work_lineage_id, summary, supersedes_release_package_id,
                     lineage_root_release_package_id, lineage_sequence,
                     release_branch, canonical_branch, git_base_branch,
                     published_commit_sha,
@@ -4449,12 +4498,13 @@ class TeamStateSqliteStore:
                     state, published_at, error, policy_version,
                     verification_waivers_json, scope_validation_json, created_at, updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     package["id"],
                     package["project_id"],
                     package.get("owner_agent_id"),
+                    package.get("work_lineage_id"),
                     package.get("summary"),
                     package.get("supersedes_release_package_id"),
                     package.get("lineage_root_release_package_id"),
@@ -4810,6 +4860,7 @@ class TeamStateSqliteStore:
                 "session_id": row["session_id"],
                 "cause_kind": row["cause_kind"],
                 "cause_id": row["cause_id"],
+                "work_lineage_id": row["work_lineage_id"],
                 "task_ids": scope_values["task_ids"].get(dispatch_id, []),
                 "blocker_ids": scope_values["blocker_ids"].get(dispatch_id, []),
                 "review_request_ids": scope_values["review_request_ids"].get(dispatch_id, []),
@@ -4858,7 +4909,7 @@ class TeamStateSqliteStore:
             connection.execute(
                 """
                 INSERT INTO team_dispatches(
-                    id, agent_id, session_id, cause_kind, cause_id,
+                    id, agent_id, session_id, cause_kind, cause_id, work_lineage_id,
                     chat_message_ids_json,
                     review_routing_authorities_json,
                     initial_release_decision_deliverable_ids_json,
@@ -4872,7 +4923,7 @@ class TeamStateSqliteStore:
                     source_evidence_snapshot_ids_json,
                     prepared_at, leased_at, lease_expires_at,
                     completed_at, error
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     dispatch["id"],
@@ -4880,6 +4931,7 @@ class TeamStateSqliteStore:
                     dispatch["session_id"],
                     dispatch["cause_kind"],
                     dispatch.get("cause_id"),
+                    dispatch.get("work_lineage_id"),
                     _json_dumps(dispatch.get("chat_message_ids", [])),
                     _json_dumps(dispatch.get("review_routing_authorities", [])),
                     _json_dumps(dispatch.get("initial_release_decision_deliverable_ids", [])),
@@ -7753,6 +7805,7 @@ _STATE_TABLES = (
     "team_deliverables",
     "team_cases",
     "team_tasks",
+    "team_work_lineages",
     "team_agent_stand_downs",
     "team_agent_runtimes",
     "team_agents",
@@ -7814,6 +7867,11 @@ _PERSISTENCE_GROUPS = (
         ("agent_runtimes",),
         (("team_agent_runtimes", "agent_id", "agent_runtimes"),),
         "_write_agent_runtimes",
+    ),
+    (
+        ("work_lineages",),
+        (("team_work_lineages", "id", "work_lineages"),),
+        "_write_work_lineages",
     ),
     (
         ("external_source_evidence_snapshots",),
@@ -8256,10 +8314,16 @@ CREATE TABLE IF NOT EXISTS team_agent_runtimes (
     last_context_rotated_at TEXT,
     last_thread_id TEXT,
     last_delivered_role_description_fingerprint TEXT,
+    work_lineage_thread_ids_json TEXT NOT NULL DEFAULT '{}',
     updated_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_team_agent_runtimes_wake
     ON team_agent_runtimes(wake_leased_until, next_wake_at, active_dispatch_id);
+
+CREATE TABLE IF NOT EXISTS team_work_lineages (
+    id TEXT PRIMARY KEY,
+    payload_json TEXT NOT NULL
+);
 
 CREATE TABLE IF NOT EXISTS team_external_source_evidence_snapshots (
     id TEXT PRIMARY KEY,
@@ -8327,6 +8391,7 @@ CREATE TABLE IF NOT EXISTS team_tasks (
     parent_task_id TEXT,
     originating_task_id TEXT,
     release_base_package_id TEXT,
+    work_lineage_id TEXT,
     git_base_branch TEXT,
     git_base_commit_sha TEXT,
     mutation_policy_json TEXT,
@@ -8803,6 +8868,7 @@ CREATE TABLE IF NOT EXISTS team_release_packages (
     id TEXT PRIMARY KEY,
     project_id TEXT NOT NULL,
     owner_agent_id TEXT,
+    work_lineage_id TEXT,
     summary TEXT,
     supersedes_release_package_id TEXT,
     lineage_root_release_package_id TEXT,
@@ -8984,6 +9050,7 @@ CREATE TABLE IF NOT EXISTS team_dispatches (
     session_id TEXT NOT NULL,
     cause_kind TEXT NOT NULL,
     cause_id TEXT,
+    work_lineage_id TEXT,
     chat_message_ids_json TEXT NOT NULL DEFAULT '[]',
     review_routing_authorities_json TEXT NOT NULL DEFAULT '[]',
     initial_release_decision_deliverable_ids_json TEXT NOT NULL DEFAULT '[]',

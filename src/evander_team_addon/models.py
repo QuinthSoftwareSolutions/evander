@@ -26,7 +26,7 @@ from evander_team_addon.git_naming import (
     validate_branch_name,
 )
 
-SCHEMA_VERSION = 20
+SCHEMA_VERSION = 21
 DEFAULT_TEAM_COST_WARNING_RATIO = Decimal("0.8")
 WORKTREE_CLEANUP_INVENTORY_SAMPLE_LIMIT = 200
 TEAM_CHAT_ATTACHMENT_DEFAULT_MIME_TYPES = (
@@ -230,6 +230,7 @@ class AgentContextClearingPolicy(str, Enum):
     OFF = "off"
     IDLE = "idle"
     EVERY_WAKE = "every_wake"
+    WORK_LINEAGE = "work_lineage"
 
 
 class AgentProjectAssignmentKind(str, Enum):
@@ -1107,6 +1108,7 @@ class AgentRuntime(TeamModel):
     last_agent_handoff_at: datetime | None = None
     last_context_rotated_at: datetime | None = None
     last_thread_id: str | None = None
+    work_lineage_thread_ids: dict[str, str] = Field(default_factory=dict)
     last_delivered_role_description_fingerprint: str | None = None
     updated_at: datetime = Field(default_factory=utc_now)
 
@@ -1129,6 +1131,20 @@ class AgentRuntime(TeamModel):
     @classmethod
     def _optional_text(cls, value: object) -> str | None:
         return _optional_text(value)
+
+    @field_validator("work_lineage_thread_ids", mode="before")
+    @classmethod
+    def _work_lineage_thread_ids(cls, value: object) -> dict[str, str]:
+        if value is None:
+            return {}
+        if not isinstance(value, Mapping):
+            raise ValueError("work_lineage_thread_ids must be an object")
+        return {
+            _required_text(lineage_id, "work lineage id"): _required_text(
+                thread_id, "work lineage thread id"
+            )
+            for lineage_id, thread_id in value.items()
+        }
 
     @model_validator(mode="before")
     @classmethod
@@ -1719,6 +1735,7 @@ class AgentTask(TeamModel):
     parent_task_id: str | None = None
     originating_task_id: str | None = None
     release_base_package_id: str | None = None
+    work_lineage_id: str | None = None
     git_base_branch: str | None = None
     git_base_commit_sha: str | None = None
     mutation_policy: TaskMutationPolicy | None = None
@@ -1756,6 +1773,7 @@ class AgentTask(TeamModel):
         "parent_task_id",
         "originating_task_id",
         "release_base_package_id",
+        "work_lineage_id",
         "git_base_commit_sha",
         mode="before",
     )
@@ -3300,6 +3318,7 @@ class TeamDispatch(TeamModel):
     session_id: str
     cause_kind: str
     cause_id: str | None = None
+    work_lineage_id: str | None = None
     task_ids: list[str] = Field(default_factory=list)
     blocker_ids: list[str] = Field(default_factory=list)
     review_request_ids: list[str] = Field(default_factory=list)
@@ -3337,6 +3356,7 @@ class TeamDispatch(TeamModel):
 
     @field_validator(
         "cause_id",
+        "work_lineage_id",
         "error",
         "role_description_fingerprint",
         "wake_work_fingerprint",
@@ -3739,6 +3759,46 @@ class TeamConversation(TeamModel):
     @classmethod
     def _optional_text(cls, value: object) -> str | None:
         return _optional_text(value)
+
+
+class WorkLineageChatSourceRef(TeamModel):
+    conversation_id: str
+    message_ids: list[str] = Field(default_factory=list)
+
+    @field_validator("conversation_id", mode="before")
+    @classmethod
+    def _conversation_id(cls, value: object) -> str:
+        return _required_text(value, "conversation_id")
+
+    @field_validator("message_ids", mode="before")
+    @classmethod
+    def _message_ids(cls, value: object) -> list[str]:
+        return _unique_text_list(value or [], "message_ids")
+
+    @model_validator(mode="after")
+    def _require_messages(self) -> "WorkLineageChatSourceRef":
+        if not self.message_ids:
+            raise ValueError("work lineage Chat source reference requires message_ids")
+        return self
+
+
+class TeamWorkLineage(TeamModel):
+    id: str
+    chat_source_refs: list[WorkLineageChatSourceRef] = Field(default_factory=list)
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
+
+    @field_validator("id", mode="before")
+    @classmethod
+    def _id(cls, value: object) -> str:
+        return _required_text(value, "id")
+
+    @model_validator(mode="after")
+    def _unique_conversations(self) -> "TeamWorkLineage":
+        conversation_ids = [ref.conversation_id for ref in self.chat_source_refs]
+        if len(conversation_ids) != len(set(conversation_ids)):
+            raise ValueError("work lineage Chat source conversations must be unique")
+        return self
 
 
 class TeamChatMutationAuthorization(TeamModel):
@@ -4635,6 +4695,7 @@ class ReleasePackage(TeamModel):
     id: str
     project_id: str
     owner_agent_id: str | None = None
+    work_lineage_id: str | None = None
     summary: str | None = None
     supersedes_release_package_id: str | None = None
     lineage_root_release_package_id: str | None = None
@@ -4702,6 +4763,7 @@ class ReleasePackage(TeamModel):
         return _unique_text_list(value, info.field_name)
 
     @field_validator(
+        "work_lineage_id",
         "release_branch",
         "canonical_branch",
         "owner_agent_id",
@@ -4934,6 +4996,7 @@ class TeamState(TeamModel):
     agents: dict[str, PersistentAgent] = Field(default_factory=dict)
     project_assignments: dict[str, AgentProjectAssignment] = Field(default_factory=dict)
     agent_runtimes: dict[str, AgentRuntime] = Field(default_factory=dict)
+    work_lineages: dict[str, "TeamWorkLineage"] = Field(default_factory=dict)
     cases: dict[str, TeamCase] = Field(default_factory=dict)
     tasks: dict[str, AgentTask] = Field(default_factory=dict)
     external_source_evidence_snapshots: dict[str, ExternalSourceEvidenceSnapshot] = Field(
@@ -5143,6 +5206,7 @@ class TeamState(TeamModel):
         self._validate_agents(errors)
         self._validate_project_assignments(errors)
         self._validate_agent_runtimes(errors)
+        self._validate_work_lineages(errors)
         self._validate_external_source_evidence_snapshots(errors)
         self._validate_cases(errors)
         self._validate_tasks(errors)
@@ -5186,6 +5250,7 @@ class TeamState(TeamModel):
             "agents",
             "project_assignments",
             "agent_runtimes",
+            "work_lineages",
             "cases",
             "tasks",
             "external_source_evidence_snapshots",
@@ -5228,6 +5293,46 @@ class TeamState(TeamModel):
                 if key != record_id:
                     errors.append(
                         f"{collection_name}.{key} key does not match record id {record_id}"
+                    )
+
+    def _validate_work_lineages(self, errors: list[str]) -> None:
+        for lineage in self.work_lineages.values():
+            for ref in lineage.chat_source_refs:
+                conversation = self.conversations.get(ref.conversation_id)
+                if conversation is None:
+                    errors.append(
+                        f"work lineage {lineage.id} references missing conversation "
+                        f"{ref.conversation_id}"
+                    )
+                for message_id in ref.message_ids:
+                    message = self.conversation_messages.get(message_id)
+                    if message is None:
+                        errors.append(
+                            f"work lineage {lineage.id} references missing Chat message "
+                            f"{message_id}"
+                        )
+                    elif message.conversation_id != ref.conversation_id:
+                        errors.append(
+                            f"work lineage {lineage.id} Chat message {message_id} belongs to "
+                            f"conversation {message.conversation_id}, not {ref.conversation_id}"
+                        )
+        for runtime in self.agent_runtimes.values():
+            for lineage_id in runtime.work_lineage_thread_ids:
+                if lineage_id not in self.work_lineages:
+                    errors.append(
+                        f"agent runtime {runtime.agent_id} references missing work lineage "
+                        f"{lineage_id}"
+                    )
+        for record_kind, records in (
+            ("task", self.tasks.values()),
+            ("release package", self.release_packages.values()),
+            ("dispatch", self.dispatches.values()),
+        ):
+            for record in records:
+                lineage_id = record.work_lineage_id
+                if lineage_id is not None and lineage_id not in self.work_lineages:
+                    errors.append(
+                        f"{record_kind} {record.id} references missing work lineage {lineage_id}"
                     )
 
     def _ensure_project_assignment_defaults(self) -> None:

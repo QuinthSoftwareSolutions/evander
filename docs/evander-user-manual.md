@@ -5776,21 +5776,31 @@ separate starvation concern, not permission to fabricate a task blocker.
 
 ## Context rotation
 
-Each persistent agent has one of three policies:
+Each persistent agent has one of four policies:
 
 | Policy | Behavior |
 |---|---|
 | <code>off</code> | No automatic context rotation. Manual rotation remains possible. |
 | <code>idle</code> | After substantive activity, when the agent becomes truly idle, wait for its configured continuous idle grace, then prepare a durable handoff and rotate before later work. |
 | <code>every_wake</code> | Mark an otherwise-eligible wake to start with a fresh context. It does not make an idle agent eligible by itself. |
+| <code>work_lineage</code> | Keep one resumable context thread per task family. Dispatch one lineage at a time and resume its prior thread when that family returns. |
 
 “Truly idle” means no active lease, active tasks, pending wakeable work, reviews, or ephemeral acceptance needing that agent. The per-agent <code>context_clearing_idle_grace_seconds</code> value can be from 0 through 604800 seconds. Zero preserves immediate idle clearing. A positive value records the idle start and next expiry. Work arriving before the expiry cancels the idle window and retains the current context. Work arriving at or after the expiry waits behind the normal bounded handoff and fresh-context reset. A delayed wake requests reconciliation at the precise expiry, while the 15-minute Team runtime tick remains a fallback. Existing agents migrate to zero; the editor suggests 60 minutes when an operator switches a zero-grace agent from another policy to idle.
+
+With <code>work_lineage</code>, a new root task starts a lineage. Child and
+successor tasks inherit it, including correction tasks created from a rejected
+release or deliverable. A release inherits its single input lineage; a mixed or
+partly unbound release starts a release-specific lineage, and its successors
+inherit that lineage. Existing unbound records are not backfilled. If an agent
+has unrelated ready work, only one lineage is included in a dispatch and the
+other work remains queued. A wake without bound work starts fresh and does not
+create a retained lineage thread.
 
 The prompt labels the context lifecycle explicitly:
 
 | Context mode | When it is used | What it carries |
 |---|---|---|
-| <code>fresh_full</code> | First successful wake, manual or idle rotation, <code>every_wake</code>, or an explicit <code>new_context</code> resume. | A compact complete working set for the immutable dispatch. |
+| <code>fresh_full</code> | First successful wake, manual or idle rotation, <code>every_wake</code>, the first wake for a work lineage, an unbound <code>work_lineage</code> wake, or an explicit <code>new_context</code> resume. | A compact complete working set for the immutable dispatch. |
 | <code>retained_delta</code> | Successful retained same-session wake. | The current immutable dispatch delta; stable identity and organization detail already in the conversation are omitted. |
 | <code>context_handoff</code> | The bounded preparation dispatch before manual or idle reset. | One advisory continuity summary only; this is a dispatch cause, not an ordinary work context mode. |
 
@@ -5824,14 +5834,21 @@ mutations, and messages are unavailable. The fresh reset proceeds after
 success, completion without a summary, failure, or timeout, while the outcome
 remains observable.
 
-A pending rotation is cleared only after the new dispatch starts successfully. If session startup fails, it remains pending. Manual rotation can queue a change even when the automatic policy is <code>off</code>.
+A pending rotation is cleared only after the new dispatch starts successfully. If session startup fails, it remains pending. Manual rotation can queue a change when the policy is <code>off</code> or <code>idle</code>; it is unavailable for <code>every_wake</code> and <code>work_lineage</code>, whose context choice is already determined per wake.
 
 Chat follows the same reset and <code>every_wake</code> semantics. Its current
 operator message is exact and singular, while historical transcript bodies are
 bounded. Only a successful mutation-enabled Chat dispatch seeds ordinary Team
 context; a reply-only Chat dispatch leaves a pending ordinary reset intact.
+When Chat creates root tasks, the system captures only the current dispatch's
+message IDs and messages mechanically marked seen by that dispatch. Several
+unrelated roots created from one exchange receive different lineages but share
+the same exact source anchors. On a later lineage wake, only that conversation's
+assigned agent can page the anchored transcript with
+<code>team_list_conversation_messages</code>; delegated agents rely on the task
+description and cannot read another agent's conversation.
 
-For Northstar, Imani might use <code>idle</code> with a 60-minute grace: related telemetry reviews stay in one context across short gaps, then rotate after a genuine break. Rowan might use <code>every_wake</code> for strongly isolated review passes. That does not make Rowan poll constantly; Rowan still needs a review or other wake reason.
+For Northstar, Imani might use <code>idle</code> with a 60-minute grace: related telemetry reviews stay in one context across short gaps, then rotate after a genuine break. Rowan might use <code>every_wake</code> for strongly isolated review passes. Trudy might use <code>work_lineage</code> so each intake task family resumes its own context after unrelated work intervenes. None of these policies makes an agent poll constantly; the agent still needs a task, review, message, or other wake reason.
 
 ## Stand-down
 

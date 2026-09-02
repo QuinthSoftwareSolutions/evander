@@ -61,6 +61,7 @@ from .release_packages import (
     _repair_release_review_manifests_from_promotion_evidence,
 )
 from .stand_down import _active_stand_downs_for_agent
+from .work_lineage import ensure_task_work_lineage
 
 
 def _apply_git_review_promotion(
@@ -1351,6 +1352,7 @@ def _materialize_merge_recovery_task(
             updated_at=now,
         )
         state.tasks[task.id] = task
+        ensure_task_work_lineage(state, task)
         result.setdefault("created_task_ids", []).append(task.id)
     else:
         if task.state == TeamTaskState.CANCELLED:

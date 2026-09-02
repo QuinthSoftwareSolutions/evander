@@ -49,6 +49,7 @@ from evander_team_addon.mcp import (
     TEAM_DECIDE_DELIVERABLE_TOOL,
     TEAM_DECIDE_REVIEW_TOOL,
     TEAM_MARK_GOVERNANCE_AGENDA_HANDLED_TOOL,
+    TEAM_LIST_CONVERSATION_MESSAGES_TOOL,
     TEAM_REPLY_TO_CHAT_TOOL,
     TEAM_SEND_OPERATOR_CHAT_MESSAGE_TOOL,
     TEAM_STAGE_CHAT_ATTACHMENT_TOOL,
@@ -190,6 +191,7 @@ from evander_team_addon.services.domain.wake import (
 from evander_team_addon.services.domain.preparation_failures import (
     task_git_work_context_generation,
 )
+from evander_team_addon.services.domain.work_lineage import ensure_release_work_lineage
 from evander_team_addon.services.agent_action_service import TeamAgentActionService
 from evander_team_addon.services.admin_service import TeamAdminService
 from evander_team_addon.services.commands.outbox import (
@@ -227,6 +229,7 @@ from evander_team_addon.services.domain.manager_fallback import (
 from evander_team_addon.services.wake_prompt_context import (
     build_compact_wake_context,
     wake_uses_fresh_context,
+    work_lineage_resume_thread_id,
 )
 from evander_team_addon.workflow_packs import team_runtime_v1, team_runtime_v1_layout
 
@@ -845,6 +848,178 @@ def _seed_team(runtime_dir: Path, *, max_ephemeral: int = 0) -> TeamStateReposit
         expected_revision=4,
     )
     return repo
+
+
+def test_work_lineage_policy_assigns_related_tasks_and_dispatches_one_lineage(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_team(tmp_path)
+    admin = _team_admin_service(repo)
+    state = admin.update_agent(
+        agent_id="backend",
+        context_clearing_policy=AgentContextClearingPolicy.WORK_LINEAGE,
+        set_context_clearing_policy=True,
+        expected_revision=repo.read().revision,
+    )
+    state = admin.create_or_reprioritize_task(
+        task_id="task-child",
+        owner_agent_id="backend",
+        project_id="project",
+        priority=2,
+        title="Continue backend",
+        description="Continue the same chain.",
+        created_by_agent_id="lead",
+        parent_task_id="task",
+        expected_revision=state.revision,
+    )
+    state = admin.create_or_reprioritize_task(
+        task_id="task-unrelated",
+        owner_agent_id="backend",
+        project_id="project",
+        priority=3,
+        title="Unrelated backend",
+        description="Start another chain.",
+        created_by_agent_id="lead",
+        expected_revision=state.revision,
+    )
+
+    assert state.tasks["task"].work_lineage_id is not None
+    assert state.tasks["task-child"].work_lineage_id == state.tasks["task"].work_lineage_id
+    assert state.tasks["task-unrelated"].work_lineage_id != state.tasks["task"].work_lineage_id
+
+    _state, leases = _team_runtime_service(repo).lease_due_agents(
+        now=datetime(2026, 1, 1, tzinfo=UTC),
+        respect_wake_interval=False,
+        agent_id="backend",
+    )
+    assert len(leases) == 1
+    dispatch = leases[0]["dispatch"]
+    assert dispatch["work_lineage_id"] == state.tasks["task"].work_lineage_id
+    assert dispatch["task_ids"] == ["task-child"]
+    assert "task-unrelated" not in dispatch["task_ids"]
+
+
+def test_work_lineage_thread_binding_resumes_explicit_thread_and_disables_manual_clear(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_team(tmp_path)
+    admin = _team_admin_service(repo)
+    admin.update_agent(
+        agent_id="backend",
+        context_clearing_policy=AgentContextClearingPolicy.WORK_LINEAGE,
+        set_context_clearing_policy=True,
+        expected_revision=repo.read().revision,
+    )
+    runtime_service = _team_runtime_service(repo)
+    now = datetime(2026, 1, 1, tzinfo=UTC)
+    _state, leases = runtime_service.lease_due_agents(
+        now=now,
+        respect_wake_interval=False,
+        agent_id="backend",
+        defer_activation=True,
+    )
+    first = leases[0]
+    assert wake_uses_fresh_context(first, effective_resume_mode="same_context")
+    assert work_lineage_resume_thread_id(first) is None
+    runtime_service.activate_delivered_agent_dispatch(
+        dispatch_id=first["dispatch_id"],
+        thread_id="thread-lineage-a",
+        now=now,
+    )
+
+    def _complete_first(state: TeamState) -> TeamState:
+        dispatch = state.dispatches[first["dispatch_id"]]
+        dispatch.status = TeamDispatchStatus.COMPLETED
+        dispatch.completed_at = now
+        runtime = state.agent_runtimes["backend"]
+        runtime.active_dispatch_id = None
+        runtime.wake_leased_until = None
+        runtime.next_wake_at = None
+        return state
+
+    repo.update(_complete_first)
+    _state, second_leases = runtime_service.lease_due_agents(
+        now=now + timedelta(minutes=1),
+        respect_wake_interval=False,
+        agent_id="backend",
+    )
+    second = second_leases[0]
+    assert not wake_uses_fresh_context(second, effective_resume_mode="same_context")
+    assert work_lineage_resume_thread_id(second) == "thread-lineage-a"
+    with pytest.raises(ValueError, match="manual context clearing is unavailable"):
+        runtime_service.request_agent_context_rotation(agent_id="backend")
+    transitioned = admin.update_agent(
+        agent_id="backend",
+        context_clearing_policy=AgentContextClearingPolicy.OFF,
+        set_context_clearing_policy=True,
+        expected_revision=repo.read().revision,
+    )
+    assert transitioned.agent_runtimes["backend"].work_lineage_thread_ids == {}
+
+
+def test_release_work_lineage_inherits_single_input_and_forks_mixed_inputs(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_team(tmp_path)
+    admin = _team_admin_service(repo)
+    state = admin.create_or_reprioritize_task(
+        task_id="task-other-lineage",
+        owner_agent_id="backend",
+        project_id="project",
+        priority=2,
+        title="Other chain",
+        description="Independent work.",
+        created_by_agent_id="lead",
+        expected_revision=repo.read().revision,
+    )
+
+    def _add_releases(current: TeamState) -> TeamState:
+        current.deliverables["deliverable-a"] = Deliverable(
+            id="deliverable-a",
+            task_id="task",
+            producer_agent_id="backend",
+            summary="A",
+        )
+        current.deliverables["deliverable-b"] = Deliverable(
+            id="deliverable-b",
+            task_id="task-other-lineage",
+            producer_agent_id="backend",
+            summary="B",
+        )
+        single = ReleasePackage(
+            id="release-single",
+            project_id="project",
+            deliverable_ids=["deliverable-a"],
+        )
+        current.release_packages[single.id] = single
+        ensure_release_work_lineage(current, single)
+        mixed = ReleasePackage(
+            id="release-mixed",
+            project_id="project",
+            deliverable_ids=["deliverable-a", "deliverable-b"],
+        )
+        current.release_packages[mixed.id] = mixed
+        ensure_release_work_lineage(current, mixed)
+        successor = ReleasePackage(
+            id="release-mixed-successor",
+            project_id="project",
+            supersedes_release_package_id=mixed.id,
+            deliverable_ids=["deliverable-a"],
+        )
+        current.release_packages[successor.id] = successor
+        ensure_release_work_lineage(current, successor)
+        return current
+
+    stored = repo.update(_add_releases)
+    assert stored.release_packages["release-single"].work_lineage_id == (
+        state.tasks["task"].work_lineage_id
+    )
+    mixed_lineage = stored.release_packages["release-mixed"].work_lineage_id
+    assert mixed_lineage not in {
+        state.tasks["task"].work_lineage_id,
+        state.tasks["task-other-lineage"].work_lineage_id,
+    }
+    assert stored.release_packages["release-mixed-successor"].work_lineage_id == mixed_lineage
 
 
 def test_operator_stand_down_revocation_immediately_wakes_newly_eligible_agents(
@@ -2167,6 +2342,45 @@ def test_due_team_member_is_leased_before_manager_fallback(tmp_path: Path) -> No
     assert all(lease["reason"] != "manager_fallback" for lease in leases)
     manager_runtime = state.agent_runtimes.get("manager")
     assert manager_runtime is None or manager_runtime.active_dispatch_id is None
+
+
+def test_work_lineage_policy_filters_manager_fallback_to_one_task_family(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_team(tmp_path)
+    admin = _team_admin_service(repo)
+    now = datetime(2026, 1, 1, tzinfo=UTC)
+    state = admin.update_agent(
+        agent_id="manager",
+        context_clearing_policy=AgentContextClearingPolicy.WORK_LINEAGE,
+        set_context_clearing_policy=True,
+        expected_revision=repo.read().revision,
+    )
+    state = admin.create_or_reprioritize_task(
+        task_id="other-root",
+        owner_agent_id="backend",
+        project_id="project",
+        priority=2,
+        title="Other root",
+        description="A separate task family.",
+        created_by_agent_id="lead",
+        expected_revision=state.revision,
+    )
+
+    def _defer_backend(current: TeamState) -> TeamState:
+        current.agent_runtimes["backend"].next_wake_at = now + timedelta(hours=1)
+        return current
+
+    repo.update(_defer_backend, expected_revision=state.revision)
+    _state, leases = _team_runtime_service(repo).lease_due_agents(
+        now=now,
+        defer_activation=True,
+    )
+
+    assert [lease["agent"]["id"] for lease in leases] == ["manager"]
+    dispatch = leases[0]["dispatch"]
+    assert dispatch["work_lineage_id"] == repo.read().tasks["task"].work_lineage_id
+    assert dispatch["task_ids"] == ["task"]
 
 
 def test_manager_fallback_scopes_unattended_support_task_for_supervision(
@@ -4747,14 +4961,22 @@ def test_wake_due_agents_provider_grants_reply_only_chat_tool_when_mutation_disa
         TEAM_SEND_OPERATOR_CHAT_MESSAGE_TOOL,
         TEAM_ACKNOWLEDGE_OPERATOR_CHAT_MESSAGES_TOOL,
     ]
-    assert chat_tools["requested_tools"] == [TEAM_REPLY_TO_CHAT_TOOL, *completion_tools]
+    assert chat_tools["requested_tools"] == [
+        TEAM_REPLY_TO_CHAT_TOOL,
+        TEAM_LIST_CONVERSATION_MESSAGES_TOOL,
+        *completion_tools,
+    ]
     assert chat_tools["already_allowed_tools"] == completion_tools
-    assert chat_tools["granted_tools"] == [TEAM_REPLY_TO_CHAT_TOOL]
+    assert chat_tools["granted_tools"] == [
+        TEAM_REPLY_TO_CHAT_TOOL,
+        TEAM_LIST_CONVERSATION_MESSAGES_TOOL,
+    ]
     assert chat_tools["removed_tools"] == [
         tool for tool in ORDINARY_TEAM_MCP_TOOL_NAMES if tool not in completion_tools
     ]
     assert session_store.sessions["session-backend"].allowed_tools == [
         TEAM_REPLY_TO_CHAT_TOOL,
+        TEAM_LIST_CONVERSATION_MESSAGES_TOOL,
         *completion_tools,
     ]
     prompt = str(resumer.calls[0]["prompt"])

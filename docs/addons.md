@@ -1297,8 +1297,8 @@ set:
   even if the session transport resumes with `new_context`; it neither receives
   nor seeds ordinary Team context and leaves any pending ordinary reset
   pending. An unsuccessful mutation-enabled resume likewise seeds nothing.
-  Each persistent agent can set `context_clearing_policy` to `off`, `idle`, or
-  `every_wake`. `idle` rotates after real work has completed and the agent
+  Each persistent agent can set `context_clearing_policy` to `off`, `idle`,
+  `every_wake`, or `work_lineage`. `idle` rotates after real work has completed and the agent
   becomes truly idle. Its per-agent `context_clearing_idle_grace_seconds`
   setting accepts `0` through `604800` seconds. `0` preserves the original
   immediate behavior; a positive value starts a continuous idle window and
@@ -1319,7 +1319,18 @@ set:
   allows the fresh reset to proceed, with the failure state retained for
   observability. `every_wake` skips advisory preparation and starts each
   otherwise-eligible Team wake directly with a fresh context; it does not
-  bypass low-priority batching or wake an idle agent by itself.
+  bypass low-priority batching or wake an idle agent by itself. `work_lineage`
+  assigns each new root task a durable lineage and retains a separate model
+  thread for each lineage. Successor tasks and release corrections inherit the
+  lineage; a release with one input lineage inherits it, while mixed or partly
+  unbound inputs receive a release-specific lineage. A wake dispatches one
+  lineage and leaves unrelated work queued. Taskless wakes use a fresh,
+  unbound context and are not retained. Team Chat task creation records only
+  exact dispatch and seen-message IDs as source anchors; the assigned agent can
+  later page those messages through `team_list_conversation_messages`, while
+  other agents cannot read that conversation. Manual context clearing is not
+  available for `every_wake` or `work_lineage` because those policies determine
+  the context at each eligible wake.
   `low_priority_wake_after_cycles` defaults to `4`; low-priority inbox items
   count Team wake evaluations and are batched until the threshold is reached
   unless another wake reason delivers them earlier.

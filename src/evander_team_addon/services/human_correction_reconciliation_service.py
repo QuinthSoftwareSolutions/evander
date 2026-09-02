@@ -45,6 +45,7 @@ from .domain.task_assessment import (
     require_task_resolved,
 )
 from .domain.work_due import _mark_agent_work_due
+from .domain.work_lineage import ensure_task_work_lineage
 
 
 HUMAN_CORRECTION_AGGREGATION_TASK_METADATA_KEY = HUMAN_CORRECTION_AGGREGATION_TASK_ID_KEY
@@ -555,6 +556,7 @@ def _open_aggregation_blocker(
                 updated_at=now,
             )
             state.tasks[recovery_task.id] = recovery_task
+            ensure_task_work_lineage(state, recovery_task)
             if recovery_task.id not in case.task_ids:
                 case.task_ids.append(recovery_task.id)
                 case.updated_at = now

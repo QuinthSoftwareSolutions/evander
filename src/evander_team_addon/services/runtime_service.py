@@ -166,6 +166,7 @@ from .domain.work_due import (
     _clear_low_priority_batch,
     _mark_agent_work_due,
 )
+from .domain.work_lineage import work_lineage_id_for_record
 from .commands.outbox import _team_event_outbox_records
 
 
@@ -230,6 +231,14 @@ class TeamRuntimeService:
                 agent.id,
                 AgentRuntime(agent_id=agent.id),
             )
+            if runtime.context_clearing_policy in {
+                AgentContextClearingPolicy.EVERY_WAKE,
+                AgentContextClearingPolicy.WORK_LINEAGE,
+            }:
+                raise ValueError(
+                    "manual context clearing is unavailable for every_wake and "
+                    "work_lineage policies"
+                )
             _mark_context_rotation_pending(
                 state,
                 agent=agent,
@@ -872,6 +881,51 @@ class TeamRuntimeService:
                 ):
                     continue
 
+                dispatch_work_lineage_id: str | None = None
+                if (
+                    runtime.context_clearing_policy
+                    == AgentContextClearingPolicy.WORK_LINEAGE
+                    and not runtime.context_rotation_pending
+                ):
+                    primary_record = (
+                        preparation_recovery_blockers[0]
+                        if preparation_recovery_blockers
+                        else immediate_inbox[0]
+                        if immediate_inbox
+                        else due_blockers[0]
+                        if due_blockers
+                        else pending_reviews[0]
+                        if pending_reviews
+                        else low_priority_inbox[0]
+                        if low_priority_wake_ready and low_priority_inbox
+                        else action_feedback[0]
+                        if action_feedback
+                        else active_tasks[0]
+                        if active_tasks
+                        else None
+                    )
+                    dispatch_work_lineage_id = (
+                        work_lineage_id_for_record(state_model, primary_record)
+                        if primary_record is not None
+                        else None
+                    )
+
+                    def _same_lineage(record: object) -> bool:
+                        return (
+                            work_lineage_id_for_record(state_model, record)
+                            == dispatch_work_lineage_id
+                        )
+
+                    active_tasks = [row for row in active_tasks if _same_lineage(row)]
+                    pending_inbox = [row for row in pending_inbox if _same_lineage(row)]
+                    wake_inbox = [row for row in wake_inbox if _same_lineage(row)]
+                    immediate_inbox = [row for row in immediate_inbox if _same_lineage(row)]
+                    low_priority_inbox = [row for row in low_priority_inbox if _same_lineage(row)]
+                    pending_reviews = [row for row in pending_reviews if _same_lineage(row)]
+                    due_blockers = [row for row in due_blockers if _same_lineage(row)]
+                    assigned_blockers = [row for row in assigned_blockers if _same_lineage(row)]
+                    action_feedback = [row for row in action_feedback if _same_lineage(row)]
+
                 context_handoff_preparation = (
                     runtime.context_rotation_pending and runtime.context_handoff_preparation_pending
                 )
@@ -945,6 +999,7 @@ class TeamRuntimeService:
                     session_id=agent.session_id,
                     cause_kind=reason,
                     cause_id=cause_id,
+                    work_lineage_id=dispatch_work_lineage_id,
                     status=TeamDispatchStatus.PREPARING,
                     created_at=effective_now,
                     preparation_expires_at=(
@@ -1110,6 +1165,27 @@ class TeamRuntimeService:
                             agent,
                         ),
                         "recent_action_feedback": action_feedback,
+                        "work_lineage_chat_sources": (
+                            [
+                                ref.model_dump(mode="json")
+                                for ref in lineage.chat_source_refs
+                                if (
+                                    (conversation := state_model.conversations.get(
+                                        ref.conversation_id
+                                    ))
+                                    is not None
+                                    and conversation.agent_id == agent.id
+                                )
+                            ]
+                            if durable_dispatch.work_lineage_id is not None
+                            and (
+                                lineage := state_model.work_lineages.get(
+                                    durable_dispatch.work_lineage_id
+                                )
+                            )
+                            is not None
+                            else []
+                        ),
                         "operator_chat_participants": _operator_chat_participant_payloads(
                             state_model,
                             agent_id=agent.id,
@@ -1198,6 +1274,10 @@ class TeamRuntimeService:
                     agent_id=manager.id,
                     now=effective_now,
                 )
+                manager_scope_blockers = blockers_assigned_to_agent(
+                    state_model,
+                    agent_id=manager.id,
+                )
                 manager_fallback_summary = _manager_fallback_summary_payload(
                     state_model,
                     team=team,
@@ -1207,6 +1287,86 @@ class TeamRuntimeService:
                 )
                 if not _manager_fallback_summary_has_actionable_work(manager_fallback_summary):
                     continue
+                manager_dispatch_work_lineage_id: str | None = None
+                manager_lineage_excluded_task_ids: set[str] = set()
+                manager_lineage_excluded_review_ids: set[str] = set()
+                manager_lineage_excluded_inbox_ids: set[str] = set()
+                manager_lineage_excluded_action_ids: set[str] = set()
+                if (
+                    manager_runtime.context_clearing_policy
+                    == AgentContextClearingPolicy.WORK_LINEAGE
+                ):
+                    manager_dispatch_work_lineage_id = _manager_fallback_primary_lineage_id(
+                        state_model,
+                        manager_fallback_summary,
+                    )
+                    manager_lineage_excluded_task_ids = {
+                        task.id
+                        for task in state_model.tasks.values()
+                        if work_lineage_id_for_record(state_model, task)
+                        != manager_dispatch_work_lineage_id
+                    }
+                    manager_lineage_excluded_review_ids = {
+                        review.id
+                        for review in state_model.review_requests.values()
+                        if work_lineage_id_for_record(state_model, review)
+                        != manager_dispatch_work_lineage_id
+                    }
+                    manager_lineage_excluded_inbox_ids = {
+                        item.id
+                        for item in state_model.inbox.values()
+                        if work_lineage_id_for_record(state_model, item)
+                        != manager_dispatch_work_lineage_id
+                    }
+                    manager_lineage_excluded_action_ids = {
+                        record.id
+                        for record in state_model.action_records.values()
+                        if work_lineage_id_for_record(state_model, record)
+                        != manager_dispatch_work_lineage_id
+                    }
+                    manager_tasks = [
+                        row
+                        for row in manager_tasks
+                        if work_lineage_id_for_record(state_model, row)
+                        == manager_dispatch_work_lineage_id
+                    ]
+                    manager_inbox = [
+                        row
+                        for row in manager_inbox
+                        if work_lineage_id_for_record(state_model, row)
+                        == manager_dispatch_work_lineage_id
+                    ]
+                    manager_reviews = [
+                        row
+                        for row in manager_reviews
+                        if work_lineage_id_for_record(state_model, row)
+                        == manager_dispatch_work_lineage_id
+                    ]
+                    manager_blockers = [
+                        row
+                        for row in manager_blockers
+                        if work_lineage_id_for_record(state_model, row)
+                        == manager_dispatch_work_lineage_id
+                    ]
+                    manager_scope_blockers = [
+                        row
+                        for row in manager_scope_blockers
+                        if work_lineage_id_for_record(state_model, row)
+                        == manager_dispatch_work_lineage_id
+                    ]
+                    manager_fallback_summary = _manager_fallback_summary_payload(
+                        state_model,
+                        team=team,
+                        manager=manager,
+                        now=effective_now,
+                        excluded_review_request_ids=(
+                            set(manager_blocked_review_ids)
+                            | manager_lineage_excluded_review_ids
+                        ),
+                        excluded_inbox_item_ids=manager_lineage_excluded_inbox_ids,
+                        excluded_task_ids=manager_lineage_excluded_task_ids,
+                        excluded_action_record_ids=manager_lineage_excluded_action_ids,
+                    )
                 manager_fallback_trigger_summary = _manager_fallback_summary_payload(
                     state_model,
                     team=team,
@@ -1214,15 +1374,23 @@ class TeamRuntimeService:
                     now=effective_now,
                     limit_rows=False,
                     excluded_review_request_ids=(
-                        set(manager_blocked_review_ids) | {review.id for review in manager_reviews}
+                        set(manager_blocked_review_ids)
+                        | manager_lineage_excluded_review_ids
+                        | {review.id for review in manager_reviews}
                     ),
-                    excluded_inbox_item_ids={item.id for item in manager_inbox},
-                    excluded_task_ids=manager_active_task_ids,
+                    excluded_inbox_item_ids=(
+                        manager_lineage_excluded_inbox_ids
+                        | {item.id for item in manager_inbox}
+                    ),
+                    excluded_task_ids=(
+                        manager_lineage_excluded_task_ids | manager_active_task_ids
+                    ),
                     excluded_action_record_ids={
                         record.id
                         for record in state_model.action_records.values()
                         if record.agent_id == manager.id
-                    },
+                    }
+                    | manager_lineage_excluded_action_ids,
                 )
                 if not _manager_fallback_summary_has_actionable_work(
                     manager_fallback_trigger_summary
@@ -1240,6 +1408,11 @@ class TeamRuntimeService:
                     state_model,
                     agent_id=manager.id,
                     cause_kind="manager_fallback",
+                    work_lineage_id=manager_dispatch_work_lineage_id,
+                    filter_work_lineage=(
+                        manager_runtime.context_clearing_policy
+                        == AgentContextClearingPolicy.WORK_LINEAGE
+                    ),
                 )
                 if (
                     max_no_progress_count >= 0
@@ -1289,10 +1462,7 @@ class TeamRuntimeService:
                     state_model,
                     agent=manager,
                     tasks=manager_tasks,
-                    blockers=blockers_assigned_to_agent(
-                        state_model,
-                        agent_id=manager.id,
-                    ),
+                    blockers=manager_scope_blockers,
                     reviews=manager_reviews,
                     inbox_items=manager_inbox,
                 )
@@ -1341,6 +1511,7 @@ class TeamRuntimeService:
                     agent_id=manager.id,
                     session_id=manager.session_id,
                     cause_kind="manager_fallback",
+                    work_lineage_id=manager_dispatch_work_lineage_id,
                     status=TeamDispatchStatus.PREPARING,
                     review_routing_authorities=manager_fallback_routing_authorities,
                     initial_release_decision_deliverable_ids=(initial_release_decision_ids),
@@ -1450,6 +1621,27 @@ class TeamRuntimeService:
                         "recent_action_feedback": _latest_action_feedback_for_agent(
                             state_model,
                             manager.id,
+                        ),
+                        "work_lineage_chat_sources": (
+                            [
+                                ref.model_dump(mode="json")
+                                for ref in lineage.chat_source_refs
+                                if (
+                                    (conversation := state_model.conversations.get(
+                                        ref.conversation_id
+                                    ))
+                                    is not None
+                                    and conversation.agent_id == manager.id
+                                )
+                            ]
+                            if durable_dispatch.work_lineage_id is not None
+                            and (
+                                lineage := state_model.work_lineages.get(
+                                    durable_dispatch.work_lineage_id
+                                )
+                            )
+                            is not None
+                            else []
                         ),
                         "manager_fallback_summary": manager_fallback_summary,
                         "operator_chat_participants": _operator_chat_participant_payloads(
@@ -1725,6 +1917,14 @@ class TeamRuntimeService:
                     "rotated": True,
                     "reason": context_rotation_reason,
                 }
+
+            if (
+                runtime.context_clearing_policy == AgentContextClearingPolicy.WORK_LINEAGE
+                and dispatch.work_lineage_id is not None
+                and normalized_thread_id is not None
+            ):
+                runtime.work_lineage_thread_ids[dispatch.work_lineage_id] = normalized_thread_id
+                runtime.last_thread_id = normalized_thread_id
 
             dispatch.activation_completed_at = effective_now
             runtime.updated_at = effective_now
@@ -2859,6 +3059,38 @@ def _action_feedback_cause_id(
     return _optional_text(action_feedback[0].get("action_record_id"))
 
 
+def _manager_fallback_primary_lineage_id(
+    state: TeamState,
+    summary: Mapping[str, Any],
+) -> str | None:
+    for key, collection in (
+        ("open_work", state.tasks),
+        ("pending_inbox", state.inbox),
+        ("review_requests", state.review_requests),
+        ("latest_failed_actions", state.action_records),
+    ):
+        rows = summary.get(key)
+        if not isinstance(rows, list):
+            continue
+        for row in rows:
+            if not isinstance(row, Mapping):
+                continue
+            record = collection.get(_optional_text(row.get("id")) or "")
+            if record is not None:
+                return work_lineage_id_for_record(state, record)
+    release_rows = summary.get("pending_initial_release_decisions")
+    if isinstance(release_rows, list):
+        for row in release_rows:
+            if not isinstance(row, Mapping):
+                continue
+            deliverable = state.deliverables.get(
+                _optional_text(row.get("deliverable_id")) or ""
+            )
+            if deliverable is not None:
+                return work_lineage_id_for_record(state, deliverable)
+    return None
+
+
 def _manager_fallback_supervision_task_ids(
     state: TeamState,
     *,
@@ -2989,12 +3221,15 @@ def _latest_delivered_wake_work_attempt_for_agent(
     *,
     agent_id: str,
     cause_kind: str | None = None,
+    work_lineage_id: str | None = None,
+    filter_work_lineage: bool = False,
 ) -> TeamDispatch | None:
     attempts = [
         dispatch
         for dispatch in state.dispatches.values()
         if dispatch.agent_id == agent_id
         and (cause_kind is None or dispatch.cause_kind == cause_kind)
+        and (not filter_work_lineage or dispatch.work_lineage_id == work_lineage_id)
         and dispatch.completed_at is not None
         and dispatch.status
         in {
