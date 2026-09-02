@@ -2230,13 +2230,15 @@ class WorkerDaemon:
             ("worktree_name", request.worktree_name),
             ("target_dir", request.expected_target_dir),
             ("branch", request.branch),
-            ("commit_sha", request.expected_commit_sha),
         )
         for field_name, expected in expected_values:
             if receipt.get(field_name) != expected:
                 raise ValueError(
                     f"task worktree preparation receipt {field_name} does not match cleanup"
                 )
+        prepared_commit = str(receipt.get("commit_sha") or "").strip().casefold()
+        if re.fullmatch(r"(?:[0-9a-f]{40}|[0-9a-f]{64})", prepared_commit) is None:
+            raise ValueError("task worktree preparation receipt commit_sha is invalid")
         receipt_path = self._task_worktree_preparation_receipt_path(paths, attempt_id)
         try:
             receipt_path.unlink()

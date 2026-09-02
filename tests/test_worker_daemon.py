@@ -3416,6 +3416,8 @@ def test_worker_cleanup_removes_safe_task_worktree_and_inventory_ignored_files(
         paths.root / "task-worktree-preparation-receipts" / f"{preparation_attempt_id}.json"
     )
     assert receipt_path.is_file()
+    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    assert receipt["commit_sha"] == prepared.commit_sha
     target = (
         tmp_path
         / "worker-root"
@@ -3426,6 +3428,23 @@ def test_worker_cleanup_removes_safe_task_worktree_and_inventory_ignored_files(
         / "repo"
         / worktree_name
     )
+    (target / "TASK.md").write_text("completed\n", encoding="utf-8")
+    subprocess.run(["git", "config", "user.email", "test@example.invalid"], cwd=target, check=True)
+    subprocess.run(["git", "config", "user.name", "Worker Test"], cwd=target, check=True)
+    subprocess.run(["git", "add", "TASK.md"], cwd=target, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "complete task"], cwd=target, check=True)
+    completed_commit = (
+        subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=target,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        .stdout.strip()
+        .casefold()
+    )
+    assert completed_commit != prepared.commit_sha
     cache = target / "cache"
     cache.mkdir()
     generated = cache / "generated.bin"
@@ -3435,7 +3454,7 @@ def test_worker_cleanup_removes_safe_task_worktree_and_inventory_ignored_files(
         worktree_name=worktree_name,
         preparation_attempt_id=preparation_attempt_id,
         branch=branch,
-        expected_commit_sha=prepared.commit_sha,
+        expected_commit_sha=completed_commit,
         expected_target_dir=prepared.target_dir,
     )
 
@@ -3475,7 +3494,7 @@ def test_worker_cleanup_removes_safe_task_worktree_and_inventory_ignored_files(
     assert reprepared.preparation_receipt_reused is False
     assert receipt_path.is_file()
     assert clone.commit_sha == prepared.commit_sha
-    assert reprepared.commit_sha == prepared.commit_sha
+    assert reprepared.commit_sha == completed_commit
 
 
 def test_worker_cleanup_record_allows_final_non_force_git_validation() -> None:
