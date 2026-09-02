@@ -5908,11 +5908,18 @@ def test_agent_create_named_subscription_profiles_are_persisted_and_write_once(
         )
     )
     backend = _FakeContainerBackend()
-    backend.client = SimpleNamespace(
-        codex_auth_profile_status=lambda profile_id: {
+    profile_enabled = {"team-a": True, "team-b": True}
+    profile_status_calls: list[str] = []
+
+    def profile_status(profile_id: str) -> dict[str, object]:
+        profile_status_calls.append(profile_id)
+        return {
             "profile_id": profile_id,
-            "enabled": True,
+            "enabled": profile_enabled[profile_id],
         }
+
+    backend.client = SimpleNamespace(
+        codex_auth_profile_status=profile_status,
     )
     monkeypatch.setattr(
         "evander.effects.providers.agent_create.container_backend",
@@ -5967,6 +5974,38 @@ def test_agent_create_named_subscription_profiles_are_persisted_and_write_once(
         )
     ).execute()
     assert session_repository.get_session("workflow-a").subscription_profile_id == "team-a"
+
+    factory.build(
+        AgentCreateEffectDefinition(
+            id="agent-create-upsert-private-route",
+            display_name="Preserve through private route",
+            type="effect:agent:create",
+            execution_backend="container_worker_vm",
+            session_id="workflow-a",
+            existing_agent_behavior="upsert",
+            model_provider_mode="local_openai",
+        )
+    ).execute()
+    private_routed_session = session_repository.get_session("workflow-a")
+    assert private_routed_session is not None
+    assert private_routed_session.codex_auth_mode is CodexAuthMode.CHATGPT_SUBSCRIPTION
+    assert private_routed_session.subscription_profile_id == "team-a"
+    assert private_routed_session.metadata["model_provider_mode"] == "local_openai"
+
+    profile_enabled["team-a"] = False
+    status_calls_before_same_profile_upsert = len(profile_status_calls)
+    factory.build(
+        AgentCreateEffectDefinition(
+            id="agent-create-upsert-same-profile-private-route",
+            display_name="Preserve explicit binding through private route",
+            type="effect:agent:create",
+            execution_backend="container_worker_vm",
+            session_id="workflow-a",
+            existing_agent_behavior="upsert",
+            subscription_profile_id="team-a",
+        )
+    ).execute()
+    assert len(profile_status_calls) == status_calls_before_same_profile_upsert
 
     with pytest.raises(ValueError, match="write-once"):
         factory.build(

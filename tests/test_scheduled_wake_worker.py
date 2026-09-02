@@ -992,6 +992,183 @@ def test_scheduled_wake_worker_backs_off_unconfirmed_one_time_dispatch_before_re
     assert queue_store.get("scheduled-wake:wake-unconfirmed") is None
 
 
+def test_scheduled_wake_worker_does_not_expire_subscription_capacity_queue(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    worker = _build_worker(
+        tmp_path,
+        config_payload={
+            "completion_confirmation_retry_max_attempts": 1,
+            "completion_confirmation_retry_window_seconds": 1.0,
+            "completion_confirmation_retry_base_backoff_seconds": 1.0,
+            "completion_confirmation_retry_max_backoff_seconds": 1.0,
+        },
+    )
+    _register_container_session(worker, session_id="session-container")
+    due_at = datetime.now(UTC) - timedelta(minutes=1)
+    _schedule_one_time_request(
+        worker,
+        request_id="wake-capacity",
+        session_id="session-container",
+        due_at=due_at,
+    )
+    queue_store = AgentPromptQueueStore(tmp_path / "runtime" / "queued-agent-prompts.json")
+
+    def resume_container_binding(session, **kwargs):
+        dispatch_id = "dispatch-capacity"
+        queue_store.put(
+            QueuedAgentPromptRecord(
+                queue_key="scheduled-wake:wake-capacity",
+                target=session.session_id,
+                vm_name="truman",
+                session_id=session.session_id,
+                prompt=kwargs["prompt"],
+                effect_id="scheduled-wake:wake-capacity",
+                dispatch_id=dispatch_id,
+                queue_reason="subscription_rate_limited",
+                subscription_profile_id="team-a",
+                metadata={
+                    "request_id": "wake-capacity",
+                    "wake_dispatch_id": dispatch_id,
+                    "capacity_deferral": "true",
+                },
+            ),
+            count_retry=False,
+        )
+        dispatch = WakeDispatchRecord(
+            dispatch_id=dispatch_id,
+            request_id=kwargs["request_id"],
+            session_id=session.session_id,
+            status="queued",
+            resume_prompt=WakeResumePromptPayload(prompt=kwargs["prompt"]),
+            resume_mode=kwargs["resume_mode"],
+            scheduled_for=kwargs["scheduled_for"],
+            dispatched_at=datetime.now(UTC),
+            source=kwargs["dispatch_source"],
+            metadata={
+                "capacity_deferral": "true",
+                "queue_reason": "subscription_rate_limited",
+                "subscription_profile_id": "team-a",
+            },
+        )
+        worker.runtime.wake_store.record_dispatch(dispatch)
+        return dispatch
+
+    monkeypatch.setattr(
+        worker.dispatcher,
+        "resume_container_binding",
+        resume_container_binding,
+    )
+
+    first_cycle = worker.run_once()
+
+    assert first_cycle.requests_due == 1
+    assert first_cycle.wakes_dispatched == 1
+    queued_request = worker.runtime.wake_store.get_request("wake-capacity")
+    assert queued_request is not None
+    assert queued_request.status == "queued"
+    assert queued_request.enabled is True
+    assert queued_request.auto_dispatch_attempts == 0
+    assert queued_request.auto_retry_started_at is None
+
+    far_after_confirmation_window = datetime.now(UTC) + timedelta(days=30)
+    refreshed = worker.runtime.wake_store.refresh_one_time_retry_state(
+        now_utc=far_after_confirmation_window,
+        retry_max_attempts=1,
+        retry_window_seconds=1.0,
+        retry_base_backoff_seconds=1.0,
+        retry_max_backoff_seconds=1.0,
+    )
+
+    assert refreshed == []
+    retained_request = worker.runtime.wake_store.get_request("wake-capacity")
+    assert retained_request is not None
+    assert retained_request.status == "queued"
+    assert retained_request.enabled is True
+    assert retained_request.auto_retry_exhausted_at is None
+    assert worker.runtime.wake_store.find_due_requests(now_utc=far_after_confirmation_window) == []
+    assert queue_store.get("scheduled-wake:wake-capacity") is not None
+
+
+def test_scheduled_wake_worker_capacity_replay_does_not_block_next_cron_occurrence(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    worker = _build_worker(tmp_path)
+    _register_container_session(worker, session_id="session-container")
+    due_at = datetime.now(UTC) - timedelta(minutes=2)
+    _schedule_cron_request(
+        worker,
+        request_id="wake-capacity-cron",
+        session_id="session-container",
+        due_at=due_at,
+    )
+    dispatch_calls: list[str] = []
+
+    def resume_container_binding(session, **kwargs):
+        dispatch_calls.append(session.session_id)
+        first_occurrence = len(dispatch_calls) == 1
+        dispatch = WakeDispatchRecord(
+            dispatch_id=f"dispatch-capacity-cron-{len(dispatch_calls)}",
+            request_id=kwargs["request_id"],
+            session_id=session.session_id,
+            status="queued" if first_occurrence else "dispatched",
+            resume_prompt=WakeResumePromptPayload(prompt=kwargs["prompt"]),
+            resume_mode=kwargs["resume_mode"],
+            scheduled_for=kwargs["scheduled_for"],
+            dispatched_at=datetime.now(UTC),
+            source=kwargs["dispatch_source"],
+            metadata=(
+                {
+                    "capacity_deferral": "true",
+                    "queue_reason": "subscription_rate_limited",
+                    "subscription_profile_id": "team-a",
+                }
+                if first_occurrence
+                else {}
+            ),
+        )
+        worker.runtime.wake_store.record_dispatch(dispatch)
+        return dispatch
+
+    monkeypatch.setattr(
+        worker.dispatcher,
+        "resume_container_binding",
+        resume_container_binding,
+    )
+    monkeypatch.setattr(
+        "evander.messaging.scheduled_wake.is_session_in_cooldown",
+        lambda **kwargs: False,
+    )
+
+    first_cycle = worker.run_once()
+
+    assert first_cycle.requests_due == 1
+    assert first_cycle.wakes_dispatched == 1
+    first_request = worker.runtime.wake_store.get_request("wake-capacity-cron")
+    assert first_request is not None
+    assert first_request.status == "queued"
+    assert first_request.next_run_at is not None
+    assert first_request.next_run_at > due_at
+    completed = worker.runtime.wake_store.mark_completed_by_dispatch_id(
+        "dispatch-capacity-cron-1",
+        completed_at=datetime.now(UTC),
+        evidence={"replayed": True},
+    )
+    assert completed is not None
+    assert completed.enabled is True
+
+    second_cycle = worker.run_once()
+
+    assert second_cycle.requests_due == 1
+    assert second_cycle.wakes_dispatched == 1
+    assert dispatch_calls == ["session-container", "session-container"]
+    latest = worker.runtime.wake_store.latest_dispatch_by_request_id()["wake-capacity-cron"]
+    assert latest.dispatch_id == "dispatch-capacity-cron-2"
+    assert latest.status == "dispatched"
+
+
 def test_scheduled_wake_worker_dispatches_due_container_request_without_vm_binding(
     tmp_path: Path,
     monkeypatch,

@@ -137,6 +137,83 @@ def test_operator_steering_store_creates_delivered_note(tmp_path: Path) -> None:
     assert listed == [delivered]
 
 
+@pytest.mark.parametrize("cancel_before_start", [False, True])
+def test_operator_steering_store_marks_queued_replacement_started(
+    tmp_path: Path,
+    *,
+    cancel_before_start: bool,
+) -> None:
+    store = OperatorSteeringNoteStore(tmp_path / "operator-steering.db")
+    note = store.create_note(
+        session_id="session-1",
+        dispatch_id="dispatch-1",
+        worker_execution_id="worker-old",
+        message="Replace the interrupted turn.",
+        now=datetime(2026, 6, 8, 12, 0, tzinfo=UTC),
+    )
+    if cancel_before_start:
+        cancelled = store.cancel_note(
+            note.note_id,
+            now=datetime(2026, 6, 8, 12, 1, tzinfo=UTC),
+        )
+        assert cancelled is not None
+        assert cancelled.status == "cancelled"
+
+    started = store.mark_queued_replacement_started(
+        note.note_id,
+        provider="container_worker_vm",
+        provider_endpoint="queued-replay-start",
+        worker_execution_id="worker-replacement",
+        now=datetime(2026, 6, 8, 12, 2, tzinfo=UTC),
+    )
+
+    assert started is not None
+    assert started.status == "delivered"
+    assert started.worker_execution_id == "worker-replacement"
+    assert started.provider == "container_worker_vm"
+    assert started.provider_endpoint == "queued-replay-start"
+    assert started.delivery_attempts == 1
+    assert started.delivered_at == datetime(2026, 6, 8, 12, 2, tzinfo=UTC)
+    assert started.cancelled_at is None
+
+
+def test_operator_steering_store_returns_started_replacement_to_pending(
+    tmp_path: Path,
+) -> None:
+    store = OperatorSteeringNoteStore(tmp_path / "operator-steering.db")
+    note = store.create_note(
+        session_id="session-1",
+        dispatch_id="dispatch-1",
+        message="Retry this replacement after capacity returns.",
+        now=datetime(2026, 6, 8, 12, 0, tzinfo=UTC),
+    )
+    started = store.mark_queued_replacement_started(
+        note.note_id,
+        provider="container_worker_vm",
+        provider_endpoint="queued-replay-start",
+        worker_execution_id="worker-replacement",
+        now=datetime(2026, 6, 8, 12, 1, tzinfo=UTC),
+    )
+    assert started is not None
+
+    deferred = store.mark_queued_replacement_deferred(
+        note.note_id,
+        now=datetime(2026, 6, 8, 12, 2, tzinfo=UTC),
+    )
+
+    assert deferred is not None
+    assert deferred.status == "pending"
+    assert deferred.worker_execution_id == "worker-replacement"
+    assert deferred.delivery_attempts == 1
+    assert deferred.delivered_at == datetime(2026, 6, 8, 12, 1, tzinfo=UTC)
+    cancelled = store.cancel_note(
+        note.note_id,
+        now=datetime(2026, 6, 8, 12, 3, tzinfo=UTC),
+    )
+    assert cancelled is not None
+    assert cancelled.status == "cancelled"
+
+
 def test_operator_steering_store_reclaims_stale_injecting_notes(tmp_path: Path) -> None:
     store = OperatorSteeringNoteStore(tmp_path / "operator-steering.db")
     note = store.create_note(

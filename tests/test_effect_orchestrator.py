@@ -22,6 +22,10 @@ from types import SimpleNamespace
 import pytest
 import yaml
 
+from evander.admin.services.operator_steering_service import (
+    OperatorSteeringAdminDependencies,
+    OperatorSteeringAdminService,
+)
 from evander.config import GatewayConfig, TriggerOrchestratorWorkerGlobalConfig
 from evander.execution import ExecutionStatusKind
 from evander.effects.providers.agent_enqueue_prompt import AgentEnqueuePromptEffectProvider
@@ -67,6 +71,7 @@ from evander.local_inference_capacity import (
 )
 from evander.model_usage.runtime import model_usage_store
 from evander.orchestration.host_polling import HostFileLockManager, wake_socket_path_for_lock
+from evander.operator_steering import OperatorSteeringNoteStore, operator_steering_note_store
 from evander.events.models import TriggerEvent
 from evander.messaging.wake_store import WakeRequestStore
 from evander.models import (
@@ -492,7 +497,11 @@ def _queued_prompt_execution_record(
 ) -> EffectExecutionRecord:
     now = datetime.now(timezone.utc)
     dispatch_id = str(record.dispatch_id or "")
-    event_id = f"queued-agent-prompt:{record.queue_key}:{dispatch_id}"
+    event_id = AgentEnqueuePromptQueueDispatchHook._queued_prompt_execution_event_id(
+        queue_key=record.queue_key,
+        dispatch_id=dispatch_id,
+        record=record,
+    )
     return EffectExecutionRecord(
         execution_id=f"exec-{dispatch_id}",
         idempotency_key=f"{event_id}::{record.effect_id}",
@@ -6250,10 +6259,322 @@ def test_agent_enqueue_prompt_replay_discards_container_row_after_terminal_recor
     assert queue_store.get(queued.queue_key) is None
 
 
+def test_agent_enqueue_prompt_replay_attempt_is_not_deduplicated_by_prior_deferral(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = GatewayConfig(
+        runtime_dir=tmp_path,
+        execution_backend="container_worker_vm",
+        container_worker_base_url="http://worker.test",
+    )
+    session_repository = JsonSessionManifestRepository(config.session_store_path)
+    session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-1",
+            vm_id=None,
+            allowed_tools=[ToolName.LIST_PENDING_AGENT_PROMPTS],
+            expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
+            vm_provider="container_worker_vm",
+            vm_provider_id="worker-agent",
+            metadata={"execution_backend": "container_worker_vm"},
+        )
+    )
+    queue_key = "container-redeferral:replay:dispatch-container-redeferral"
+    prior_attempt = QueuedAgentPromptRecord(
+        queue_key=queue_key,
+        target="session-1",
+        vm_name="worker-agent",
+        session_id="session-1",
+        prompt="continue",
+        dispatch_id="dispatch-container-redeferral",
+        effect_id="effect-container-redeferral",
+        subscription_profile_id="team-a",
+    )
+    execution_store = SqliteExecutionStore(tmp_path / "orchestration.db")
+    prior_execution = _queued_prompt_execution_record(prior_attempt, status="succeeded")
+    execution_store.put(prior_execution)
+    replay_attempt = prior_attempt.model_copy(
+        update={"metadata": {"subscription_replay_attempt": "1"}}
+    )
+    queue_store = AgentPromptQueueStore(tmp_path / "queued-agent-prompts.json")
+    queue_store.put(replay_attempt, count_retry=False, coalesce=False)
+    backend = _ContainerDispatchBackendStub()
+    monkeypatch.setattr(
+        "evander.effects.providers.lifecycle_hooks.build_execution_backend",
+        lambda config, admin_service: backend,
+    )
+    worker = SimpleNamespace(
+        config=config,
+        queued_agent_prompt_store=queue_store,
+        execution_store=execution_store,
+        agent_prompt_dispatch_port=object(),
+        provider_config_resolver=SimpleNamespace(resolve_for_session_id=lambda _id: config),
+        provider_factory=SimpleNamespace(
+            admin_service=SimpleNamespace(
+                runtime=SimpleNamespace(session_repository=session_repository)
+            )
+        ),
+        _publish_completion_event_from_record=lambda record, outputs, branch_port=None: (
+            "started-event"
+        ),
+    )
+
+    dispatched = AgentEnqueuePromptQueueDispatchHook().on_post_completion_dispatch(worker=worker)
+
+    assert dispatched == 1
+    assert queue_store.read_all() == {}
+    assert len(backend.started_specs) == 1
+    executions = list(execution_store.read_all().values())
+    assert len(executions) == 2
+    [new_execution] = [record for record in executions if record.status == "waiting"]
+    assert new_execution.idempotency_key != prior_execution.idempotency_key
+    assert new_execution.event_id.endswith(":subscription-replay-1")
+    assert new_execution.outputs["queue_key"] == queue_key
+    assert new_execution.outputs["dispatch_id"] == "dispatch-container-redeferral"
+
+
+def test_agent_enqueue_prompt_second_subscription_deferral_gets_fresh_replay_identity(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = GatewayConfig(
+        runtime_dir=tmp_path,
+        execution_backend="container_worker_vm",
+        container_worker_base_url="http://worker.test",
+    )
+    session_repository = JsonSessionManifestRepository(config.session_store_path)
+    session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-1",
+            vm_id=None,
+            allowed_tools=[ToolName.LIST_PENDING_AGENT_PROMPTS],
+            expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
+            vm_provider="container_worker_vm",
+            vm_provider_id="worker-agent",
+            metadata={"execution_backend": "container_worker_vm"},
+        )
+    )
+    dispatch_id = "dispatch-second-deferral"
+    queue_key = f"session-1:replay:{dispatch_id}"
+    queue_store = AgentPromptQueueStore(tmp_path / "queued-agent-prompts.json")
+    queue_store.put(
+        QueuedAgentPromptRecord(
+            queue_key=queue_key,
+            target="session-1",
+            vm_name="worker-agent",
+            session_id="session-1",
+            prompt="continue after capacity returns",
+            model="gpt-5.4",
+            dispatch_id=dispatch_id,
+            effect_id="effect-second-deferral",
+            queue_reason="subscription_rate_limited",
+            subscription_profile_id="team-a",
+            capacity_deferral_count=1,
+            metadata={"subscription_replay_attempt": "1"},
+        ),
+        count_retry=False,
+        coalesce=False,
+    )
+    backend = _ContainerDispatchBackendStub()
+    monkeypatch.setattr(
+        "evander.effects.providers.lifecycle_hooks.build_execution_backend",
+        lambda config, admin_service: backend,
+    )
+    monkeypatch.setattr(
+        "evander.effects.providers.agent_prompt.build_execution_backend",
+        lambda config, admin_service: backend,
+    )
+    execution_store = SqliteExecutionStore(tmp_path / "orchestration.db")
+    worker = SimpleNamespace(
+        config=config,
+        queued_agent_prompt_store=queue_store,
+        execution_store=execution_store,
+        agent_prompt_dispatch_port=object(),
+        provider_config_resolver=SimpleNamespace(resolve_for_session_id=lambda _id: config),
+        provider_factory=SimpleNamespace(
+            admin_service=SimpleNamespace(
+                runtime=SimpleNamespace(session_repository=session_repository)
+            )
+        ),
+        _publish_completion_event_from_record=lambda record, outputs, branch_port=None: (
+            "started-event"
+        ),
+        _update_event_delivery_state=lambda event_id: None,
+    )
+    hook = AgentEnqueuePromptQueueDispatchHook()
+
+    assert hook.on_post_completion_dispatch(worker=worker) == 1
+    [first_execution] = execution_store.read_all().values()
+    assert first_execution.status == "waiting"
+    assert first_execution.event_id.endswith(":subscription-replay-1")
+
+    backend.status = SimpleNamespace(
+        status=ExecutionStatusKind.FAILED,
+        message="subscription capacity exhausted",
+        metadata={
+            "codex_subscription_deferral": {
+                "profile_id": "team-a",
+                "reason": "rate_limited",
+            }
+        },
+    )
+
+    assert AgentEnqueuePromptEffectProvider.reconcile_waiting(worker=worker) == 1
+    deferred = queue_store.get(queue_key)
+    assert deferred is not None
+    assert deferred.metadata["subscription_replay_attempt"] == "2"
+    assert deferred.capacity_deferral_count == 1
+    assert queue_store.make_subscription_profile_ready("team-a") == 1
+
+    assert hook.on_post_completion_dispatch(worker=worker) == 1
+
+    executions = list(execution_store.read_all().values())
+    assert len(executions) == 2
+    succeeded = [record for record in executions if record.status == "succeeded"]
+    waiting = [record for record in executions if record.status == "waiting"]
+    assert len(succeeded) == 1
+    assert len(waiting) == 1
+    assert succeeded[0].event_id.endswith(":subscription-replay-1")
+    assert waiting[0].event_id.endswith(":subscription-replay-2")
+    assert waiting[0].idempotency_key != succeeded[0].idempotency_key
+    assert waiting[0].outputs["queue_key"] == queue_key
+    assert waiting[0].outputs["dispatch_id"] == dispatch_id
+
+
+def test_queued_steering_note_returns_to_pending_after_subscription_redeferral(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = GatewayConfig(
+        runtime_dir=tmp_path,
+        execution_backend="container_worker_vm",
+        container_worker_base_url="http://worker.test",
+    )
+    session_repository = JsonSessionManifestRepository(config.session_store_path)
+    session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-1",
+            vm_id=None,
+            allowed_tools=[ToolName.LIST_PENDING_AGENT_PROMPTS],
+            expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
+            vm_provider="container_worker_vm",
+            vm_provider_id="worker-agent",
+            metadata={"execution_backend": "container_worker_vm"},
+        )
+    )
+    dispatch_id = "dispatch-steering-redeferral"
+    queue_key = f"operator-steering:session-1:{dispatch_id}"
+    steering_store = operator_steering_note_store(tmp_path)
+    steering_note = steering_store.create_note(
+        session_id="session-1",
+        dispatch_id=dispatch_id,
+        message="Continue with the replacement approach.",
+    )
+    queue_store = AgentPromptQueueStore(tmp_path / "queued-agent-prompts.json")
+    queue_store.put(
+        QueuedAgentPromptRecord(
+            queue_key=queue_key,
+            target="session-1",
+            vm_name="worker-agent",
+            session_id="session-1",
+            prompt="Continue with the replacement approach.",
+            model="gpt-5.4",
+            dispatch_id=dispatch_id,
+            effect_id="effect-steering-redeferral",
+            queue_reason="subscription_rate_limited",
+            subscription_profile_id="team-a",
+            capacity_deferral_count=1,
+            metadata={
+                "operator_steering": "interrupt_and_queue",
+                "operator_steering_note_id": steering_note.note_id,
+                "subscription_replay_attempt": "1",
+            },
+        ),
+        count_retry=False,
+        coalesce=False,
+    )
+    backend = _ContainerDispatchBackendStub()
+    monkeypatch.setattr(
+        "evander.effects.providers.lifecycle_hooks.build_execution_backend",
+        lambda config, admin_service: backend,
+    )
+    monkeypatch.setattr(
+        "evander.effects.providers.agent_prompt.build_execution_backend",
+        lambda config, admin_service: backend,
+    )
+    execution_store = SqliteExecutionStore(tmp_path / "orchestration.db")
+    worker = SimpleNamespace(
+        config=config,
+        queued_agent_prompt_store=queue_store,
+        execution_store=execution_store,
+        agent_prompt_dispatch_port=object(),
+        provider_config_resolver=SimpleNamespace(resolve_for_session_id=lambda _id: config),
+        provider_factory=SimpleNamespace(
+            admin_service=SimpleNamespace(
+                runtime=SimpleNamespace(session_repository=session_repository)
+            )
+        ),
+        _publish_completion_event_from_record=lambda record, outputs, branch_port=None: (
+            "started-event"
+        ),
+        _update_event_delivery_state=lambda event_id: None,
+    )
+    hook = AgentEnqueuePromptQueueDispatchHook()
+
+    assert hook.on_post_completion_dispatch(worker=worker) == 1
+    started_note = steering_store.get_note(steering_note.note_id)
+    assert started_note is not None
+    assert started_note.status == "delivered"
+    assert started_note.delivery_attempts == 1
+
+    backend.status = SimpleNamespace(
+        status=ExecutionStatusKind.FAILED,
+        message="subscription capacity exhausted",
+        metadata={
+            "codex_subscription_deferral": {
+                "profile_id": "team-a",
+                "reason": "rate_limited",
+            }
+        },
+    )
+    assert AgentEnqueuePromptEffectProvider.reconcile_waiting(worker=worker) == 1
+
+    deferred = queue_store.get(queue_key)
+    assert deferred is not None
+    deferred_note = steering_store.get_note(steering_note.note_id)
+    assert deferred_note is not None
+    assert deferred_note.status == "pending"
+    assert deferred_note.delivery_attempts == 1
+    assert deferred_note.delivered_at == started_note.delivered_at
+
+    steering_service = OperatorSteeringAdminService(
+        OperatorSteeringAdminDependencies(
+            runtime_dir=tmp_path,
+            normalize_agent_record_directory_path=lambda _path: "root",
+            workflow_run_store_paths=lambda: {},
+            container_execution_records_for_session=lambda _session_id: [],
+            container_worker_backend=lambda **_kwargs: backend,
+            container_worker_url_for_target=lambda **_kwargs: None,
+        )
+    )
+    cancelled_note = steering_service.cancel_operator_steering_note(steering_note.note_id)
+
+    assert cancelled_note.status == "cancelled"
+    assert queue_store.get(queue_key) is None
+
+
 def test_agent_enqueue_prompt_replay_retries_terminal_started_event_before_deleting_row(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     queue_store = AgentPromptQueueStore(tmp_path / "queued-agent-prompts.json")
+    steering_store = operator_steering_note_store(tmp_path)
+    steering_note = steering_store.create_note(
+        session_id="session-1",
+        dispatch_id="dispatch-terminal-retry",
+        message="Keep the replacement instruction.",
+    )
     queued = QueuedAgentPromptRecord(
         queue_key="terminal-started-retry",
         target="vm-1",
@@ -6261,12 +6582,27 @@ def test_agent_enqueue_prompt_replay_retries_terminal_started_event_before_delet
         prompt="continue",
         dispatch_id="dispatch-terminal-retry",
         effect_id="effect-terminal-retry",
+        metadata={"operator_steering_note_id": steering_note.note_id},
     )
     queue_store.put(queued)
     execution_store = SqliteExecutionStore(tmp_path / "orchestration.db")
     terminal = _queued_prompt_execution_record(queued, status="succeeded")
     execution_store.put(terminal)
     publish_attempts: list[str] = []
+    note_transition_attempts: list[str] = []
+    original_mark_started = OperatorSteeringNoteStore.mark_queued_replacement_started
+
+    def flaky_mark_started(self, note_id, **kwargs):
+        note_transition_attempts.append(str(note_id))
+        if len(note_transition_attempts) == 1:
+            raise OSError("steering database unavailable")
+        return original_mark_started(self, note_id, **kwargs)
+
+    monkeypatch.setattr(
+        OperatorSteeringNoteStore,
+        "mark_queued_replacement_started",
+        flaky_mark_started,
+    )
 
     def publish_started_event(*, record, outputs, branch_port=None):
         publish_attempts.append(str(branch_port or ""))
@@ -6275,6 +6611,7 @@ def test_agent_enqueue_prompt_replay_retries_terminal_started_event_before_delet
         return "started-event"
 
     worker = SimpleNamespace(
+        config=SimpleNamespace(runtime_dir=tmp_path),
         queued_agent_prompt_store=queue_store,
         execution_store=execution_store,
         agent_run_status_port=_AgentRunStatusPortStub([]),
@@ -6291,7 +6628,15 @@ def test_agent_enqueue_prompt_replay_retries_terminal_started_event_before_delet
 
     assert hook.on_post_completion_dispatch(worker=worker) == 0
     assert publish_attempts == ["started", "started"]
+    assert note_transition_attempts == [steering_note.note_id]
+    assert queue_store.get(queued.queue_key) is not None
+    assert steering_store.get_note(steering_note.note_id).status == "pending"
+
+    assert hook.on_post_completion_dispatch(worker=worker) == 0
+    assert publish_attempts == ["started", "started", "started"]
+    assert note_transition_attempts == [steering_note.note_id, steering_note.note_id]
     assert queue_store.get(queued.queue_key) is None
+    assert steering_store.get_note(steering_note.note_id).status == "delivered"
 
 
 def test_agent_enqueue_prompt_reconcile_publishes_queued_started_before_terminal(
@@ -7072,8 +7417,12 @@ def test_agent_enqueue_prompt_dispatch_skips_expired_libvirt_queued_prompt(
     assert "expires_at=" in caplog.text
 
 
+@pytest.mark.parametrize("subscription_profile_id", [None, "team-a"])
 def test_agent_enqueue_prompt_dispatch_skips_expired_container_queued_prompt(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    subscription_profile_id: str | None,
 ) -> None:
     runtime_dir = tmp_path / "runtime"
     config = GatewayConfig(
@@ -7103,6 +7452,7 @@ def test_agent_enqueue_prompt_dispatch_skips_expired_container_queued_prompt(
             session_id="session-1",
             prompt="hello",
             model=None,
+            subscription_profile_id=subscription_profile_id,
             vm_user="agent",
             resume_thread_id=None,
             effect_id="effect-1",
@@ -7140,6 +7490,79 @@ def test_agent_enqueue_prompt_dispatch_skips_expired_container_queued_prompt(
     assert "queue_key=session-1" in caplog.text
     assert "session_id=session-1" in caplog.text
     assert "expires_at=" in caplog.text
+
+
+def test_agent_enqueue_prompt_dispatch_retains_expired_subscription_capacity_prompt(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    config = GatewayConfig(
+        runtime_dir=runtime_dir,
+        execution_backend="container_worker_vm",
+        container_worker_base_url="http://worker.test",
+    )
+    session_repository = JsonSessionManifestRepository(config.session_store_path)
+    session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-1",
+            vm_id=None,
+            allowed_tools=[ToolName.LIST_PENDING_AGENT_PROMPTS],
+            expires_at=datetime.now(timezone.utc) - timedelta(minutes=5),
+            vm_provider="container_worker_vm",
+            vm_provider_id="truman",
+            model="gpt-5.4-mini",
+            metadata={"execution_backend": "container_worker_vm", "target_name": "truman"},
+        )
+    )
+    queue_store = AgentPromptQueueStore(runtime_dir / "queued-agent-prompts.json")
+    queued = QueuedAgentPromptRecord(
+        queue_key="session-1",
+        target="session-1",
+        vm_name="truman",
+        session_id="session-1",
+        prompt="hello after renewal",
+        model=None,
+        queue_reason="subscription_rate_limited",
+        subscription_profile_id="team-a",
+        capacity_deferral_count=1,
+        vm_user="agent",
+        resume_thread_id=None,
+        effect_id="effect-1",
+    )
+    queue_store.put(queued, count_retry=False)
+    monkeypatch.setattr(
+        "evander.effects.providers.lifecycle_hooks.build_execution_backend",
+        lambda config, admin_service: (_ for _ in ()).throw(
+            AssertionError("expired subscription prompt must not reach the backend")
+        ),
+    )
+    worker = SimpleNamespace(
+        queued_agent_prompt_store=queue_store,
+        agent_prompt_dispatch_port=object(),
+        execution_store=SqliteExecutionStore(runtime_dir / "orchestration.db"),
+        provider_factory=SimpleNamespace(
+            admin_service=SimpleNamespace(
+                runtime=SimpleNamespace(session_repository=session_repository)
+            )
+        ),
+        provider_config_resolver=SimpleNamespace(
+            resolve_for_session_id=lambda session_id: config,
+            resolve_for_directory=lambda directory_path: config,
+        ),
+    )
+
+    caplog.set_level(logging.WARNING, logger="evander.effects.providers.lifecycle_hooks")
+
+    dispatched = AgentEnqueuePromptQueueDispatchHook().on_post_completion_dispatch(worker=worker)
+
+    assert dispatched == 0
+    retained = queue_store.get("session-1")
+    assert retained is not None
+    assert retained.dispatch_id == queued.dispatch_id
+    assert retained.subscription_profile_id == "team-a"
+    assert "retained expired queued prompt" in caplog.text
 
 
 def test_agent_enqueue_prompt_dispatch_preserves_mcp_lease_for_queued_libvirt_prompt(
@@ -8136,6 +8559,13 @@ def test_agent_enqueue_prompt_dispatch_hook_uses_queued_container_resume_mode(
         )
     )
     queue_store = AgentPromptQueueStore(tmp_path / "queued-agent-prompts.json")
+    steering_note_store = operator_steering_note_store(tmp_path)
+    steering_note = steering_note_store.create_note(
+        session_id="session-1",
+        dispatch_id="dispatch-queued-steering",
+        worker_execution_id="agent-interrupted",
+        message="resume scheduled work",
+    )
     queue_store.put(
         QueuedAgentPromptRecord(
             queue_key="scheduled-wake:wake-1",
@@ -8144,6 +8574,7 @@ def test_agent_enqueue_prompt_dispatch_hook_uses_queued_container_resume_mode(
             session_id="session-1",
             prompt="resume scheduled work",
             model=None,
+            dispatch_id="dispatch-queued-steering",
             vm_user="agent",
             resume_thread_id=None,
             resume_mode="same_context",
@@ -8151,6 +8582,12 @@ def test_agent_enqueue_prompt_dispatch_hook_uses_queued_container_resume_mode(
             metadata={
                 "workflow_run_id": "run-1",
                 "mcp_tool_approval_lease_id": "lease-1",
+                "operator_steering_note_id": steering_note.note_id,
+                "operator_steering": "true",
+                "wake_dispatch_id": "wake-dispatch-1",
+                "request_id": "wake-1",
+                "source": "scheduled_once",
+                "subscription_replay_attempt": "3",
                 "reduced_context_prompt": "continue from the compact handoff",
                 "agent_context_retry_enabled": "false",
                 "agent_context_retry_max_attempts": "0",
@@ -8201,6 +8638,23 @@ def test_agent_enqueue_prompt_dispatch_hook_uses_queued_container_resume_mode(
     assert waiting_records[0].input_payload["mcp_tool_approval_lease_id"] == "lease-1"
     assert waiting_records[0].outputs["workflow_run_id"] == "run-1"
     assert waiting_records[0].outputs["mcp_tool_approval_lease_id"] == "lease-1"
+    for key, value in {
+        "operator_steering_note_id": steering_note.note_id,
+        "operator_steering": "true",
+        "wake_dispatch_id": "wake-dispatch-1",
+        "request_id": "wake-1",
+        "source": "scheduled_once",
+        "subscription_replay_attempt": "3",
+    }.items():
+        assert waiting_records[0].resolved_config[key] == value
+        assert waiting_records[0].input_payload[key] == value
+        assert waiting_records[0].outputs[key] == value
+    consumed_steering_note = steering_note_store.get_note(steering_note.note_id)
+    assert consumed_steering_note is not None
+    assert consumed_steering_note.status == "delivered"
+    assert consumed_steering_note.worker_execution_id == backend.started_specs[0].target_name
+    assert consumed_steering_note.provider == "container_worker_vm"
+    assert consumed_steering_note.provider_endpoint == "queued-replay-start"
     assert (
         waiting_records[0].resolved_config["reduced_context_prompt"]
         == "continue from the compact handoff"

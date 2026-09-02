@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 
 from evander.effects.providers.lifecycle_hooks import AgentEnqueuePromptQueueDispatchHook
 from evander.messaging.agent_prompt_queue import AgentPromptQueueStore, QueuedAgentPromptRecord
@@ -83,7 +84,36 @@ def test_capacity_deferral_ignores_stale_reported_reset_and_recovery_can_wake_pr
     assert store.get("session-a").retry_not_before is None
 
 
-def test_subscription_queue_is_fifo_per_profile_but_not_cross_profile() -> None:
+def _fifo_worker(*, sessions: dict[str, object], worker_urls: dict[str, str]) -> object:
+    return SimpleNamespace(
+        provider_config_resolver=SimpleNamespace(
+            resolve_for_session_id=lambda session_id: SimpleNamespace(
+                container_worker_base_url=worker_urls[session_id]
+            )
+        ),
+        provider_factory=SimpleNamespace(
+            admin_service=SimpleNamespace(
+                runtime=SimpleNamespace(
+                    session_repository=SimpleNamespace(
+                        get_session=lambda session_id: sessions.get(session_id)
+                    )
+                )
+            )
+        ),
+    )
+
+
+def _fifo_session(session_id: str, *, expired: bool = False) -> object:
+    return SimpleNamespace(
+        session_id=session_id,
+        directory_path="root",
+        vm_provider="container_worker_vm",
+        metadata={},
+        expires_at=datetime.now(UTC) + (timedelta(minutes=-5) if expired else timedelta(hours=1)),
+    )
+
+
+def test_subscription_queue_is_fifo_per_profile_and_effective_worker() -> None:
     now = datetime.now(UTC)
     records = {
         "older-a": _record(
@@ -92,14 +122,61 @@ def test_subscription_queue_is_fifo_per_profile_but_not_cross_profile() -> None:
         "newer-a": _record(queue_key="newer-a", profile_id="team-a", created_at=now),
         "newer-b": _record(queue_key="newer-b", profile_id="team-b", created_at=now),
     }
+    worker = _fifo_worker(
+        sessions={key: _fifo_session(key) for key in records},
+        worker_urls={key: "http://worker-a.test" for key in records},
+    )
 
-    assert AgentEnqueuePromptQueueDispatchHook._has_earlier_subscription_profile_record(
+    hook = AgentEnqueuePromptQueueDispatchHook()
+    assert hook._has_earlier_subscription_profile_record(
+        worker=worker,
         records=records,
         queue_key="newer-a",
     )
-    assert not AgentEnqueuePromptQueueDispatchHook._has_earlier_subscription_profile_record(
+    assert not hook._has_earlier_subscription_profile_record(
+        worker=worker,
         records=records,
         queue_key="newer-b",
+    )
+
+
+def test_subscription_queue_fifo_ignores_other_workers_and_unrunnable_sessions() -> None:
+    now = datetime.now(UTC)
+    records = {
+        "other-worker": _record(
+            queue_key="other-worker",
+            profile_id="default",
+            created_at=now - timedelta(seconds=3),
+        ),
+        "missing-session": _record(
+            queue_key="missing-session",
+            profile_id="default",
+            created_at=now - timedelta(seconds=2),
+        ),
+        "expired-session": _record(
+            queue_key="expired-session",
+            profile_id="default",
+            created_at=now - timedelta(seconds=1),
+        ),
+        "ready": _record(queue_key="ready", profile_id="default", created_at=now),
+    }
+    worker = _fifo_worker(
+        sessions={
+            "other-worker": _fifo_session("other-worker"),
+            "expired-session": _fifo_session("expired-session", expired=True),
+            "ready": _fifo_session("ready"),
+        },
+        worker_urls={
+            "other-worker": "http://worker-b.test",
+            "expired-session": "http://worker-a.test",
+            "ready": "http://worker-a.test",
+        },
+    )
+
+    assert not AgentEnqueuePromptQueueDispatchHook()._has_earlier_subscription_profile_record(
+        worker=worker,
+        records=records,
+        queue_key="ready",
     )
 
 

@@ -949,6 +949,7 @@ def test_monitor_requeues_original_wake_prompt_after_mid_turn_subscription_exhau
     assert queued.retry_not_before == reset_at
     latest = wake_store.latest_dispatch_by_request_id()["wake-container"]
     assert latest.status == "queued"
+    assert latest.metadata["capacity_deferral"] == "true"
     assert latest.metadata["subscription_profile_id"] == "team-a"
     assert wake_store.get_request("wake-container").completed_at is None
     assert destroy_calls == ["execution-1"]

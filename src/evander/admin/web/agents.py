@@ -480,7 +480,43 @@ def agent_routes(
             ):
                 return json_error("Queued prompt does not belong to this agent.", status_code=404)
             dispatch_id = queued_agent_prompt_dispatch_id(record)
-            if not store.delete_if_dispatch_id(queue_key, dispatch_id):
+            steering_note_id = str(record.metadata.get("operator_steering_note_id") or "").strip()
+            if queue_key.startswith("scheduled-wake:"):
+                request_id = queue_key.removeprefix("scheduled-wake:").strip()
+                caller_session_id = str(record.session_id or agent.session_id or agent_id).strip()
+                cancellation = await run_in_threadpool(
+                    service.runtime.wake_store.cancel_request,
+                    request_id,
+                    caller_session_id=caller_session_id,
+                    reason="Queued prompt cancelled by an operator.",
+                    metadata={
+                        "source": "admin_agent_queue",
+                        "agent_id": agent_id,
+                        "queue_key": queue_key,
+                        "dispatch_id": dispatch_id,
+                    },
+                )
+                if cancellation.status == "permission_denied":
+                    return json_error(
+                        "Scheduled wake does not belong to this agent.", status_code=404
+                    )
+                if cancellation.status not in {
+                    "cancelled",
+                    "already_cancelled",
+                    "already_completed",
+                    "not_found",
+                }:
+                    return json_error(
+                        "Scheduled wake could not be cancelled; refresh and retry.",
+                        status_code=409,
+                    )
+            if steering_note_id:
+                await run_in_threadpool(
+                    service.operator_steering_admin.cancel_operator_steering_note,
+                    steering_note_id,
+                )
+            current = store.get(queue_key)
+            if current is not None and not store.delete_if_dispatch_id(queue_key, dispatch_id):
                 return json_error("Queued prompt changed; refresh and retry.", status_code=409)
         except ValueError as exc:
             return json_error(str(exc), status_code=400)

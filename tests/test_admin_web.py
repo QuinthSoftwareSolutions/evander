@@ -112,6 +112,7 @@ from evander.model_usage.pricing import (
     seed_default_model_pricing_catalog,
 )
 from evander.model_usage.runtime import register_model_usage_correlation_context
+from evander.operator_steering import operator_steering_note_store
 from evander.models import (
     ApprovalRequest,
     ApprovalStatus,
@@ -16122,6 +16123,121 @@ def test_admin_web_owner_can_cancel_indefinitely_queued_subscription_prompt(
         "cancelled": True,
     }
     assert queue_store.get(queued.queue_key) is None
+
+
+def test_admin_web_queued_prompt_cancellation_cancels_linked_steering_note(
+    tmp_path: Path,
+) -> None:
+    service = build_admin_runtime(write_config(tmp_path))
+    service.runtime.session_repository.upsert_session(
+        SessionManifest(
+            session_id="subscription-session",
+            vm_provider="container_worker_vm",
+            vm_provider_id="subscription-target",
+            codex_auth_mode=CodexAuthMode.CHATGPT_SUBSCRIPTION,
+            subscription_profile_id="team-a",
+            allowed_tools=[],
+            expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
+            metadata={"execution_backend": "container_worker_vm"},
+        )
+    )
+    note_store = operator_steering_note_store(service.config.runtime_dir)
+    note = note_store.create_note(
+        session_id="subscription-session",
+        dispatch_id="dispatch-steering-1",
+        message="Use the replacement approach.",
+    )
+    queue_store = AgentPromptQueueStore(service.config.runtime_dir / "queued-agent-prompts.json")
+    queued = queue_store.defer_capacity(
+        QueuedAgentPromptRecord(
+            queue_key="operator-steering:subscription-session:dispatch-steering-1",
+            target="subscription-session",
+            vm_name="subscription-target",
+            session_id="subscription-session",
+            prompt="Use the replacement approach.",
+            effect_id="effect-subscription",
+            subscription_profile_id="team-a",
+            dispatch_id="dispatch-steering-1",
+            metadata={"operator_steering_note_id": note.note_id},
+        ),
+        queue_reason="subscription_rate_limited",
+        retry_at=None,
+    )
+    client = TestClient(create_app(service))
+    _unlock_privileged_operations(client)
+
+    cancelled = client.delete(
+        "/api/admin/agents/subscription-session/queued-prompts/"
+        f"{queued.queue_key}?backend=container_worker_vm"
+    )
+
+    assert cancelled.status_code == 200
+    assert queue_store.get(queued.queue_key) is None
+    cancelled_note = note_store.get_note(note.note_id)
+    assert cancelled_note is not None
+    assert cancelled_note.status == "cancelled"
+
+
+def test_admin_web_queued_scheduled_wake_cancellation_cancels_owning_request(
+    tmp_path: Path,
+) -> None:
+    service = build_admin_runtime(write_config(tmp_path))
+    service.runtime.session_repository.upsert_session(
+        SessionManifest(
+            session_id="subscription-session",
+            vm_provider="container_worker_vm",
+            vm_provider_id="subscription-target",
+            codex_auth_mode=CodexAuthMode.CHATGPT_SUBSCRIPTION,
+            subscription_profile_id="team-a",
+            allowed_tools=[],
+            expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
+            metadata={"execution_backend": "container_worker_vm"},
+        )
+    )
+    scheduled = service.operations_admin.create_wake_schedule(
+        session_id="subscription-session",
+        prompt="Resume after capacity returns",
+        resume_at=datetime.now(timezone.utc) + timedelta(minutes=5),
+        source="test",
+    )
+    scheduled.status = "queued"
+    service.runtime.wake_store.upsert_request(scheduled)
+    queue_store = AgentPromptQueueStore(service.config.runtime_dir / "queued-agent-prompts.json")
+    queued = queue_store.defer_capacity(
+        QueuedAgentPromptRecord(
+            queue_key=f"scheduled-wake:{scheduled.request_id}",
+            target="subscription-session",
+            vm_name="subscription-target",
+            session_id="subscription-session",
+            prompt="Resume after capacity returns",
+            effect_id=f"scheduled-wake:{scheduled.request_id}",
+            subscription_profile_id="team-a",
+            dispatch_id="dispatch-subscription-wake",
+        ),
+        queue_reason="subscription_rate_limited",
+        retry_at=None,
+    )
+    client = TestClient(create_app(service))
+    _unlock_privileged_operations(client)
+
+    cancelled = client.delete(
+        "/api/admin/agents/subscription-session/queued-prompts/"
+        f"{queued.queue_key}?backend=container_worker_vm"
+    )
+
+    assert cancelled.status_code == 200
+    assert queue_store.get(queued.queue_key) is None
+    cancelled_wake = service.runtime.wake_store.get_request(scheduled.request_id)
+    assert cancelled_wake is not None
+    assert cancelled_wake.status == "cancelled"
+    assert cancelled_wake.enabled is False
+    assert cancelled_wake.cancel_reason == "Queued prompt cancelled by an operator."
+    assert cancelled_wake.cancel_metadata == {
+        "source": "admin_agent_queue",
+        "agent_id": "subscription-session",
+        "queue_key": queued.queue_key,
+        "dispatch_id": "dispatch-subscription-wake",
+    }
 
 
 def test_admin_web_agents_delete_ambiguous_vm_session_link_fails(

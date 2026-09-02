@@ -187,6 +187,79 @@ def test_preflight_returns_structured_disabled_signed_out_and_rate_limit_deferra
         registry.close()
 
 
+def test_preflight_uses_reset_from_the_exhausted_rate_limit_window(tmp_path: Path) -> None:
+    registry, _ = _registry(tmp_path)
+    primary_reset = datetime.now(UTC) + timedelta(minutes=2)
+    secondary_reset = datetime.now(UTC) + timedelta(minutes=30)
+    try:
+        registry.create_profile({"profile_id": "capacity", "display_name": "Capacity"})
+        broker = registry.broker("capacity")
+        broker.status_payload.update(
+            available=True,
+            signed_in=True,
+            account_id="account-1",
+            rate_limits={
+                "default": {
+                    "rate_limit_reached_type": "rate_limit_reached",
+                    "primary": {
+                        "used_percent": 25,
+                        "resets_at": primary_reset.isoformat(),
+                    },
+                    "secondary": {
+                        "used_percent": 100,
+                        "resets_at": secondary_reset.isoformat(),
+                    },
+                },
+                "by_limit_id": {},
+            },
+        )
+
+        with pytest.raises(CodexSubscriptionDeferredError) as exhausted:
+            registry.preflight("capacity")
+
+        assert exhausted.value.deferral.reason == "rate_limited"
+        assert exhausted.value.deferral.retry_at == secondary_reset
+    finally:
+        registry.close()
+
+
+def test_preflight_uses_latest_reset_when_multiple_windows_are_exhausted(
+    tmp_path: Path,
+) -> None:
+    registry, _ = _registry(tmp_path)
+    primary_reset = datetime.now(UTC) + timedelta(minutes=10)
+    secondary_reset = datetime.now(UTC) + timedelta(minutes=30)
+    try:
+        registry.create_profile({"profile_id": "capacity", "display_name": "Capacity"})
+        broker = registry.broker("capacity")
+        broker.status_payload.update(
+            available=True,
+            signed_in=True,
+            account_id="account-1",
+            rate_limits={
+                "default": {
+                    "rate_limit_reached_type": "rate_limit_reached",
+                    "primary": {
+                        "used_percent": 100,
+                        "resets_at": primary_reset.isoformat(),
+                    },
+                    "secondary": {
+                        "used_percent": 100,
+                        "resets_at": secondary_reset.isoformat(),
+                    },
+                },
+                "by_limit_id": {},
+            },
+        )
+
+        with pytest.raises(CodexSubscriptionDeferredError) as exhausted:
+            registry.preflight("capacity")
+
+        assert exhausted.value.deferral.retry_at == secondary_reset
+    finally:
+        registry.close()
+
+
 def test_preflight_returns_structured_unavailable_deferral_for_missing_profile(
     tmp_path: Path,
 ) -> None:

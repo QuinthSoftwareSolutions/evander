@@ -21,6 +21,7 @@ from evander.admin.services.vm_agent.common import (
 from evander.codex_auth import (
     DEFAULT_SUBSCRIPTION_PROFILE_ID,
     CodexAuthMode,
+    effective_codex_auth_mode,
     normalize_codex_auth_mode,
     normalize_subscription_profile_id,
 )
@@ -236,6 +237,7 @@ class VmAgentMutationMixin:
             else:
                 metadata.pop("labels", None)
             update["metadata"] = metadata
+        current_effective_auth_mode = session.codex_auth_mode
         if "codex_auth_mode" in body:
             if selected_backend != "container_worker_vm":
                 raise ValueError("codex_auth_mode is supported only for container worker agents")
@@ -245,15 +247,20 @@ class VmAgentMutationMixin:
             )
             if codex_auth_mode is CodexAuthMode.CHATGPT_SUBSCRIPTION and agent_provider != "codex":
                 raise ValueError("chatgpt_subscription is supported only for Codex agents")
+            backend_config = self.container_worker_backend(
+                directory_path=session.directory_path
+            ).config
+            current_effective_auth_mode = effective_codex_auth_mode(
+                session=session,
+                config=backend_config,
+            )
             model_provider_mode = str(
                 session.metadata.get("model_provider_mode")
-                or getattr(
-                    self.container_worker_backend(directory_path=session.directory_path).config,
-                    "model_provider_mode",
-                    "",
-                )
+                or getattr(backend_config, "model_provider_mode", "")
                 or ""
             ).strip()
+            if model_provider_mode != "openai_public":
+                current_effective_auth_mode = CodexAuthMode.METERED_API
             if (
                 codex_auth_mode is CodexAuthMode.CHATGPT_SUBSCRIPTION
                 and model_provider_mode != "openai_public"
@@ -301,6 +308,16 @@ class VmAgentMutationMixin:
         effective_profile_id = update.get(
             "subscription_profile_id", session.subscription_profile_id
         )
+        if (
+            "codex_auth_mode" in body
+            and effective_auth_mode is CodexAuthMode.CHATGPT_SUBSCRIPTION
+            and current_effective_auth_mode is not CodexAuthMode.CHATGPT_SUBSCRIPTION
+            and "subscription_profile_id" not in body
+        ):
+            raise ValueError(
+                "subscription_profile_id is required when switching codex_auth_mode to "
+                "chatgpt_subscription"
+            )
         effective_binding = effective_profile_id
         if (
             effective_binding is None

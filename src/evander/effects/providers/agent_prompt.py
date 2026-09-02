@@ -42,6 +42,10 @@ from evander.messaging.agent_prompt_enqueue import (
     workflow_context_from_sources,
     workflow_for_execution_ids_from_sources,
 )
+from evander.messaging.agent_prompt_queue import (
+    AgentPromptQueueStore,
+    queued_agent_prompt_dispatch_id,
+)
 from evander.model_usage.runtime import (
     clear_model_usage_correlation_context,
     register_model_usage_correlation_context,
@@ -99,6 +103,27 @@ _CONTAINER_CODEX_NO_FINAL_MESSAGE = "Codex ended without a final agent message."
 _CONTAINER_COMPLETED_WITHOUT_AGENT_RESPONSE = (
     "container worker job completed without an agent response"
 )
+_QUEUED_PROMPT_CONTEXT_METADATA_KEYS = (
+    "reduced_context_prompt",
+    "context_retry_prompt",
+    "agent_context_retry_enabled",
+    "agent_context_retry_max_attempts",
+    "agent_context_retry_target_chars",
+)
+_QUEUED_PROMPT_METADATA_KEYS = (
+    "workflow_run_id",
+    "mcp_tool_approval_lease_id",
+    *_QUEUED_PROMPT_CONTEXT_METADATA_KEYS,
+)
+_SUBSCRIPTION_DEFERRAL_METADATA_KEYS = (
+    *_QUEUED_PROMPT_METADATA_KEYS,
+    "operator_steering",
+    "operator_steering_note_id",
+    "wake_dispatch_id",
+    "request_id",
+    "source",
+)
+_SUBSCRIPTION_REPLAY_ATTEMPT_METADATA_KEY = "subscription_replay_attempt"
 
 
 def _prompt_error_outputs(
@@ -1022,6 +1047,7 @@ class AgentPromptEffectProvider(EffectProviderBase):
             input_payload=input_payload,
             context_key=_FOR_EXECUTION_IDS_PAYLOAD_KEY,
         )
+        deferral_metadata = cls._subscription_deferral_metadata(record)
         queued = enqueue_agent_prompt(
             runtime_dir=runtime_dir,
             target=target,
@@ -1044,12 +1070,39 @@ class AgentPromptEffectProvider(EffectProviderBase):
             ),
             effect_id=str(record.effect_id),
             queue_key=queue_key,
-            metadata={
-                "workflow_run_id": str(getattr(record, "trace_id", "") or ""),
-            },
+            metadata=deferral_metadata,
             workflow_context=workflow_context,
             workflow_for_execution_ids=workflow_for_execution_ids,
         )
+        note_id = str(deferral_metadata.get("operator_steering_note_id") or "").strip()
+        if note_id:
+            try:
+                from evander.operator_steering import operator_steering_note_store
+
+                note = operator_steering_note_store(runtime_dir).mark_queued_replacement_deferred(
+                    note_id
+                )
+            except Exception:
+                AgentPromptQueueStore(
+                    runtime_dir / "queued-agent-prompts.json"
+                ).delete_if_dispatch_id(
+                    queued.queue_key,
+                    queued_agent_prompt_dispatch_id(queued),
+                )
+                raise
+            if note is not None and note.status != "pending":
+                AgentPromptQueueStore(
+                    runtime_dir / "queued-agent-prompts.json"
+                ).delete_if_dispatch_id(
+                    queued.queue_key,
+                    queued_agent_prompt_dispatch_id(queued),
+                )
+                if note.status == "cancelled":
+                    return False
+                raise RuntimeError(
+                    "Queued operator steering note could not return to pending after "
+                    f"subscription deferral: {note.note_id} status={note.status}"
+                )
         if status.status != ExecutionStatusKind.DESTROYED:
             try:
                 backend.destroy(execution_id)
@@ -1078,6 +1131,25 @@ class AgentPromptEffectProvider(EffectProviderBase):
         cls._release_enqueue_prompt_lock(worker=worker, record=record, outputs=record.outputs)
         cls._release_local_inference_capacity(worker=worker, record=record, outputs=record.outputs)
         return True
+
+    @classmethod
+    def _subscription_deferral_metadata(cls, record: Any) -> dict[str, str]:
+        metadata: dict[str, str] = {}
+        for key in _SUBSCRIPTION_DEFERRAL_METADATA_KEYS:
+            value = cls._record_text_value(record, key)
+            if value:
+                metadata[key] = value
+        if "workflow_run_id" not in metadata:
+            trace_id = str(getattr(record, "trace_id", "") or "").strip()
+            if trace_id:
+                metadata["workflow_run_id"] = trace_id
+        raw_attempt = cls._record_raw_value(record, _SUBSCRIPTION_REPLAY_ATTEMPT_METADATA_KEY)
+        try:
+            attempt = max(0, int(raw_attempt or 0)) + 1
+        except (TypeError, ValueError):
+            attempt = 1
+        metadata[_SUBSCRIPTION_REPLAY_ATTEMPT_METADATA_KEY] = str(attempt)
+        return metadata
 
     @classmethod
     def _interrupt_stalled_container_active_tool_if_expired(
@@ -2325,13 +2397,7 @@ class AgentPromptEffectProvider(EffectProviderBase):
             }.items()
             if value
         }
-        for key in (
-            "reduced_context_prompt",
-            "context_retry_prompt",
-            "agent_context_retry_enabled",
-            "agent_context_retry_max_attempts",
-            "agent_context_retry_target_chars",
-        ):
+        for key in _QUEUED_PROMPT_CONTEXT_METADATA_KEYS:
             value = cls._normalize_optional_string(payload.get(key))
             if value is not None:
                 metadata[key] = value

@@ -4120,9 +4120,14 @@ def test_submit_operator_steering_interrupts_container_waiting_record(
     )
 
 
+@pytest.mark.parametrize("queue_write_fails", [False, True])
 def test_submit_operator_steering_queues_replacement_on_subscription_deferral(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    queue_write_fails: bool,
 ) -> None:
+    from evander.operator_steering import operator_steering_note_store
+
     service = build_admin_runtime(write_config(tmp_path))
     service.runtime.session_repository.upsert_session(
         SessionManifest(
@@ -4237,6 +4242,37 @@ def test_submit_operator_steering_queues_replacement_on_subscription_deferral(
         MethodType(lambda self, **kwargs: backend, service.vm_agent_admin),
     )
 
+    if queue_write_fails:
+
+        def fail_enqueue_agent_prompt(**kwargs: object) -> None:
+            raise OSError("queue persistence failed")
+
+        monkeypatch.setattr(
+            "evander.messaging.agent_prompt_enqueue.enqueue_agent_prompt",
+            fail_enqueue_agent_prompt,
+        )
+        with pytest.raises(OSError, match="queue persistence failed"):
+            service.model_usage_admin.submit_operator_steering_note(
+                session_id="container-session",
+                dispatch_id="dispatch-steer",
+                worker_execution_id="agent-old-1",
+                message="Switch to implementation now.",
+                created_by="operator@example.com",
+            )
+        notes = operator_steering_note_store(service.config.runtime_dir).list_notes(
+            session_id="container-session",
+            dispatch_id="dispatch-steer",
+        )
+        assert len(notes) == 1
+        assert notes[0].status == "cancelled"
+        assert (
+            AgentPromptQueueStore(
+                service.config.runtime_dir / "queued-agent-prompts.json"
+            ).read_all()
+            == {}
+        )
+        return
+
     result = service.model_usage_admin.submit_operator_steering_note(
         session_id="container-session",
         dispatch_id="dispatch-steer",
@@ -4258,6 +4294,7 @@ def test_submit_operator_steering_queues_replacement_on_subscription_deferral(
     assert queued.queue_reason == "subscription_rate_limited"
     assert queued.retry_not_before == retry_at
     assert queued.retry_count == 0
+    assert queued.metadata["operator_steering_note_id"] == result["note"].note_id
     assert refreshed is not None
     assert refreshed.status == "succeeded"
     assert refreshed.outputs["queued"] is True
@@ -4265,6 +4302,18 @@ def test_submit_operator_steering_queues_replacement_on_subscription_deferral(
     assert backend.stopped == ["agent-old-1"]
     assert backend.annotated_records[0].metadata["interrupted_by_operator"] is True
     assert "interrupt_replaced_by_execution_id" not in backend.annotated_records[0].metadata
+
+    cancelled = service.operator_steering_admin.cancel_operator_steering_note(
+        result["note"].note_id
+    )
+
+    assert cancelled.status == "cancelled"
+    assert (
+        AgentPromptQueueStore(service.config.runtime_dir / "queued-agent-prompts.json").get(
+            "operator-steering:container-session:dispatch-steer"
+        )
+        is None
+    )
 
 
 def test_submit_operator_steering_failure_after_stop_fails_waiting_record(
@@ -14365,7 +14414,10 @@ def test_update_container_agent_assigns_first_profile_and_preserves_write_once_b
 ) -> None:
     service = build_admin_runtime(write_config(tmp_path))
     backend = SimpleNamespace(
-        config=SimpleNamespace(model_provider_mode="openai_public"),
+        config=SimpleNamespace(
+            model_provider_mode="openai_public",
+            container_worker_codex_auth_mode="chatgpt_subscription",
+        ),
         client=SimpleNamespace(
             codex_auth_profile_status=lambda profile_id: {
                 "profile_id": profile_id,
@@ -14393,6 +14445,17 @@ def test_update_container_agent_assigns_first_profile_and_preserves_write_once_b
             },
         )
     )
+
+    with pytest.raises(ValueError, match="subscription_profile_id is required"):
+        service.vm_agent_admin.update_admin_agent(
+            "metered-session",
+            backend="container_worker_vm",
+            payload={"codex_auth_mode": "chatgpt_subscription"},
+        )
+    still_metered = service.runtime.session_repository.get_session("metered-session")
+    assert still_metered is not None
+    assert still_metered.codex_auth_mode is CodexAuthMode.METERED_API
+    assert still_metered.subscription_profile_id is None
 
     service.vm_agent_admin.update_admin_agent(
         "metered-session",
@@ -14450,6 +14513,55 @@ def test_update_container_agent_assigns_first_profile_and_preserves_write_once_b
             backend="container_worker_vm",
             payload={"codex_auth_mode": "metered_api"},
         )
+
+    backend.config.container_worker_codex_auth_mode = "metered_api"
+    service.runtime.session_repository.upsert_session(
+        SessionManifest(
+            session_id="inherited-metered",
+            vm_provider="container_worker_vm",
+            vm_provider_id="inherited-metered-target",
+            codex_auth_mode=None,
+            allowed_tools=[],
+            expires_at=datetime.now(UTC) + timedelta(hours=2),
+            metadata={
+                "execution_backend": "container_worker_vm",
+                "agent_provider": "codex",
+                "model_provider_mode": "openai_public",
+            },
+        )
+    )
+    with pytest.raises(ValueError, match="subscription_profile_id is required"):
+        service.vm_agent_admin.update_admin_agent(
+            "inherited-metered",
+            backend="container_worker_vm",
+            payload={"codex_auth_mode": "chatgpt_subscription"},
+        )
+
+    backend.config.container_worker_codex_auth_mode = "chatgpt_subscription"
+    service.runtime.session_repository.upsert_session(
+        SessionManifest(
+            session_id="inherited-subscription",
+            vm_provider="container_worker_vm",
+            vm_provider_id="inherited-target",
+            codex_auth_mode=None,
+            allowed_tools=[],
+            expires_at=datetime.now(UTC) + timedelta(hours=2),
+            metadata={
+                "execution_backend": "container_worker_vm",
+                "agent_provider": "codex",
+                "model_provider_mode": "openai_public",
+            },
+        )
+    )
+    service.vm_agent_admin.update_admin_agent(
+        "inherited-subscription",
+        backend="container_worker_vm",
+        payload={"codex_auth_mode": "chatgpt_subscription"},
+    )
+    inherited = service.runtime.session_repository.get_session("inherited-subscription")
+    assert inherited is not None
+    assert inherited.codex_auth_mode is CodexAuthMode.CHATGPT_SUBSCRIPTION
+    assert inherited.subscription_profile_id is None
 
 
 def test_effective_tool_policy_payload_combines_directory_and_session_rules(

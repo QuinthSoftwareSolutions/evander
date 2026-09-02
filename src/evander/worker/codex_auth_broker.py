@@ -122,13 +122,19 @@ class CodexAuthBroker:
                             "account/rateLimits/read", {}, timeout_seconds=30.0
                         )
                     )
-                    usage = _safe_usage_payload(
-                        self._ensure_client().request(
-                            "account/usage/read", {}, timeout_seconds=30.0
-                        )
-                    )
                 except (CodexAppServerError, CodexAuthBrokerError) as exc:
                     error = str(exc)
+                if error is None:
+                    try:
+                        usage = _safe_usage_payload(
+                            self._ensure_client().request(
+                                "account/usage/read", {}, timeout_seconds=30.0
+                            )
+                        )
+                    except (CodexAppServerError, CodexAuthBrokerError):
+                        # Usage is display-only telemetry. An unsupported or transiently
+                        # unavailable usage RPC must not prevent authenticated turns.
+                        usage = None
             return {
                 "available": error is None,
                 "signed_in": signed_in,

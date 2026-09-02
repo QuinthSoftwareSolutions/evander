@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import logging
-import json
 import os
 import shutil
 import stat
@@ -193,18 +192,20 @@ class CodexSubscriptionTurnRunner:
             # Persist the structured outcome before releasing the container's
             # completion wait. Otherwise a fast status poll can observe the
             # terminal exit without the deferral needed for durable replay.
-            self._publish_metadata(exit_code=exit_code)
             try:
-                write_completion_marker_no_follow(self.finished_marker, exit_code)
-            except OSError as exc:
-                self._append_log(
-                    "codex error: could not write the protected completion marker "
-                    f"({exc.__class__.__name__})\n"
-                )
-                logger.error(
-                    "codex_subscription_completion_marker_failed exception_class=%s",
-                    exc.__class__.__name__,
-                )
+                self._publish_metadata(exit_code=exit_code)
+            finally:
+                try:
+                    write_completion_marker_no_follow(self.finished_marker, exit_code)
+                except OSError as exc:
+                    self._append_log(
+                        "codex error: could not write the protected completion marker "
+                        f"({exc.__class__.__name__})\n"
+                    )
+                    logger.error(
+                        "codex_subscription_completion_marker_failed exception_class=%s",
+                        exc.__class__.__name__,
+                    )
 
     def _open_thread(self, process: CodexAppServerProcess) -> str:
         thread_id = self.turn.resume_thread_id
@@ -341,16 +342,7 @@ def _turn_capacity_deferral(
 ) -> CodexSubscriptionDeferral | None:
     """Recognize App Server subscription exhaustion without relying on one error shape."""
 
-    flattened = json.dumps(error, sort_keys=True, default=str).casefold()
-    indicators = (
-        "rate_limit",
-        "rate limit",
-        "usage limit",
-        "quota",
-        "rate-limit-reached",
-        "insufficient_quota",
-    )
-    if not any(indicator in flattened for indicator in indicators):
+    if not _is_subscription_capacity_error(error):
         return None
     retry_at = _find_reset_timestamp(error)
     return CodexSubscriptionDeferral(
@@ -358,6 +350,66 @@ def _turn_capacity_deferral(
         reason="rate_limited",
         retry_at=retry_at,
     )
+
+
+_SUBSCRIPTION_CAPACITY_CODES = {
+    "insufficientquota",
+    "ratelimit",
+    "ratelimitexceeded",
+    "ratelimitreached",
+    "usagelimit",
+    "usagelimitexceeded",
+    "usagelimitreached",
+    "workspaceownercreditsdepleted",
+    "workspacemembercreditsdepleted",
+    "workspaceownerusagelimitreached",
+    "workspacememberusagelimitreached",
+}
+_SUBSCRIPTION_CAPACITY_CODE_KEYS = {
+    "code",
+    "codexerrorinfo",
+    "errorcode",
+    "errortype",
+    "ratelimitreachedtype",
+    "reason",
+    "type",
+}
+_SUBSCRIPTION_CAPACITY_MESSAGE_MARKERS = (
+    "rate limit reached",
+    "usage limit reached",
+    "usage rate limit",
+    "hit your usage limit",
+    "chatgpt rate limit",
+    "chatgpt quota",
+    "subscription rate limit",
+    "subscription quota",
+)
+
+
+def _is_subscription_capacity_error(value: object) -> bool:
+    if isinstance(value, dict):
+        for key, candidate in value.items():
+            normalized_key = _normalized_error_code(key)
+            if normalized_key in _SUBSCRIPTION_CAPACITY_CODE_KEYS:
+                if _normalized_error_code(candidate) in _SUBSCRIPTION_CAPACITY_CODES:
+                    return True
+            if normalized_key in {"message", "additionaldetails"} and _capacity_message(candidate):
+                return True
+            if isinstance(candidate, dict | list) and _is_subscription_capacity_error(candidate):
+                return True
+        return False
+    if isinstance(value, list):
+        return any(_is_subscription_capacity_error(candidate) for candidate in value)
+    return _capacity_message(value)
+
+
+def _normalized_error_code(value: object) -> str:
+    return "".join(character for character in str(value).casefold() if character.isalnum())
+
+
+def _capacity_message(value: object) -> bool:
+    message = str(value or "").strip().casefold()
+    return any(marker in message for marker in _SUBSCRIPTION_CAPACITY_MESSAGE_MARKERS)
 
 
 def _find_reset_timestamp(value: object) -> object | None:

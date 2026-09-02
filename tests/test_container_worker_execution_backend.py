@@ -395,6 +395,39 @@ def test_worker_failure_cause_is_propagated_to_execution_metadata(tmp_path: Path
     assert metadata["worker_failure_cause"] == "pids_limit_exhausted"
 
 
+def test_subscription_deferral_is_propagated_to_execution_metadata() -> None:
+    metadata = ContainerWorkerVmExecutionBackend._metadata_from_worker_record(  # noqa: SLF001
+        {},
+        WorkerJobRecord(
+            job_id="job-1",
+            session_id="session-1",
+            image="runner:latest",
+            command=["false"],
+            container_name="agent-worker-job-1",
+            status="exited",
+            agent_home_path="/worker/session-1/agent_home",
+            repo_root_path="/worker/session-1/agent_home/repos",
+            artifacts_path="/worker/session-1/artifacts",
+            logs_path="/worker/session-1/logs",
+            metadata={
+                "codex_subscription_deferral": {
+                    "profile_id": "team-a",
+                    "reason": "rate_limited",
+                    "retry_at": "2026-08-01T12:30:00Z",
+                },
+                "worker_private_value": "not-forwarded",
+            },
+        ),
+    )
+
+    assert metadata["codex_subscription_deferral"] == {
+        "profile_id": "team-a",
+        "reason": "rate_limited",
+        "retry_at": "2026-08-01T12:30:00Z",
+    }
+    assert "worker_private_value" not in metadata
+
+
 def test_inspect_prefers_failed_codex_outcome_over_worker_lifecycle_status(
     tmp_path: Path,
 ) -> None:

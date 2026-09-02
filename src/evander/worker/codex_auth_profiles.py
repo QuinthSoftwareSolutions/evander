@@ -427,17 +427,19 @@ def _rate_limit_state(value: object) -> tuple[bool, datetime | None]:
     reset_times: list[datetime] = []
     reached = False
     for bucket in buckets:
-        if bucket.get("rate_limit_reached_type"):
-            reached = True
+        bucket_reached = bool(bucket.get("rate_limit_reached_type"))
+        reached = reached or bucket_reached
         for window_name in ("primary", "secondary"):
             window = bucket.get(window_name)
             if not isinstance(window, dict):
                 continue
             try:
-                if float(window.get("used_percent")) >= 100:
-                    reached = True
+                window_reached = float(window.get("used_percent")) >= 100
             except (TypeError, ValueError):
-                pass
+                window_reached = False
+            if not window_reached:
+                continue
+            reached = True
             reset_text = str(window.get("resets_at") or "").strip()
             if not reset_text:
                 continue
@@ -451,4 +453,7 @@ def _rate_limit_state(value: object) -> tuple[bool, datetime | None]:
     if not reached:
         return False, None
     future = [value for value in reset_times if value > _now_utc()]
-    return True, min(future) if future else None
+    # Capacity is unavailable while any exhausted window remains closed.  If
+    # more than one window is exhausted, waking at the earliest reset only
+    # produces another guaranteed deferral.
+    return True, max(future) if future else None

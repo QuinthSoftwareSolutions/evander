@@ -473,7 +473,8 @@ class AgentCreateEffectProvider(EffectProviderBase):
             or normalize_optional_string(getattr(config, "model_provider_mode", None))
         )
         if (
-            subscription_profile_id is not None
+            requested_profile_id is not None
+            and existing_binding is None
             and codex_auth_mode is CodexAuthMode.CHATGPT_SUBSCRIPTION
             and effective_model_provider_mode != "openai_public"
         ):
@@ -486,7 +487,7 @@ class AgentCreateEffectProvider(EffectProviderBase):
         else:
             resolved_allowed_tools = allowed_tools_for_profile(capability_profile)
         backend = container_backend(context, config)
-        if requested_profile_id is not None:
+        if requested_profile_id is not None and existing_binding is None:
             status_reader = getattr(backend.client, "codex_auth_profile_status", None)
             if not callable(status_reader):
                 raise RuntimeError(

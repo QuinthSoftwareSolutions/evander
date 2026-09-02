@@ -267,6 +267,10 @@ class OperatorSteeringAdminService:
                     workflow_for_execution_ids_from_sources,
                 )
                 from evander.messaging.agent_prompt_lock import AgentPromptLockStore
+                from evander.messaging.agent_prompt_queue import (
+                    AgentPromptQueueStore,
+                    queued_agent_prompt_dispatch_id,
+                )
                 from evander.model_usage.runtime import clear_model_usage_correlation_context
                 from evander.workflow.contracts import FOR_EXECUTION_IDS_CONTEXT_KEY
 
@@ -277,94 +281,119 @@ class OperatorSteeringAdminService:
                     str(original_outputs.get("queue_key") or "").strip()
                     or f"operator-steering:{session_id}:{dispatch_id}"
                 )
-                queued = enqueue_agent_prompt(
-                    runtime_dir=self._deps.runtime_dir,
-                    target=session_id,
-                    vm_name=str(getattr(session, "vm_provider_id", None) or session_id),
+                note_store = operator_steering_note_store(self._deps.runtime_dir)
+                note = note_store.create_note(
                     session_id=session_id,
-                    prompt=replacement_prompt,
-                    model=resolved_model,
-                    model_provider_mode=effective_config.model_provider_mode,
-                    queue_reason=exc.deferral.queue_reason,
-                    subscription_profile_id=exc.deferral.profile_id,
-                    retry_not_before=exc.deferral.retry_at,
-                    capacity_deferral=True,
-                    vm_user="agent",
                     dispatch_id=dispatch_id,
-                    resume_thread_id=resume_thread_id,
-                    effect_id=str(record.effect_id),
-                    resume_mode="same_context",
-                    queue_key=queue_key,
-                    metadata={
-                        "workflow_run_id": str(context.workflow_run_id or ""),
-                        "operator_steering": "interrupt_and_queue",
-                    },
-                    workflow_context=workflow_context_from_sources(
-                        execution_context=input_payload,
-                        input_payload=input_payload,
-                        context_key=NODE_OUTPUTS_CONTEXT_KEY,
-                    ),
-                    workflow_for_execution_ids=workflow_for_execution_ids_from_sources(
-                        execution_context=input_payload,
-                        input_payload=input_payload,
-                        context_key=FOR_EXECUTION_IDS_CONTEXT_KEY,
-                    ),
+                    message=message,
+                    created_by=created_by,
                 )
-                lock_key = str(original_outputs.get("prompt_lock_key") or "").strip()
-                lock_owner_id = str(original_outputs.get("prompt_lock_owner_id") or "").strip()
-                if lock_key and lock_owner_id:
-                    AgentPromptLockStore(
-                        self._deps.runtime_dir / "agent-prompt-locks.json"
-                    ).release(lock_key=lock_key, owner_id=lock_owner_id)
-                capacity_slot_id = str(
-                    original_outputs.get("local_inference_slot_id") or ""
-                ).strip()
-                if capacity_slot_id:
-                    local_inference_capacity_store(self._deps.runtime_dir).release(capacity_slot_id)
-                clear_model_usage_correlation_context(
-                    runtime_dir=self._deps.runtime_dir,
-                    dispatch_id=dispatch_id,
-                )
-                queued_outputs = dict(in_progress_outputs)
-                queued_outputs.pop(CONTAINER_INTERRUPT_IN_PROGRESS_OUTPUT_KEY, None)
-                queued_outputs.update(
-                    {
-                        "success": True,
-                        "queued": True,
-                        "execution_backend": "container_worker_vm",
-                        "agent_state": "queued",
-                        "operator_steering_status": "interrupted_and_queued",
-                        "queue_key": queued.queue_key,
-                        "queue_reason": queued.queue_reason,
-                        "subscription_profile_id": queued.subscription_profile_id,
-                        "retry_not_before": queued.retry_not_before,
-                        "message": (
-                            "Interrupted the active container run; the replacement prompt "
-                            "is queued for subscription capacity."
+                try:
+                    queued = enqueue_agent_prompt(
+                        runtime_dir=self._deps.runtime_dir,
+                        target=session_id,
+                        vm_name=str(getattr(session, "vm_provider_id", None) or session_id),
+                        session_id=session_id,
+                        prompt=replacement_prompt,
+                        model=resolved_model,
+                        model_provider_mode=effective_config.model_provider_mode,
+                        queue_reason=exc.deferral.queue_reason,
+                        subscription_profile_id=exc.deferral.profile_id,
+                        retry_not_before=exc.deferral.retry_at,
+                        capacity_deferral=True,
+                        vm_user="agent",
+                        dispatch_id=dispatch_id,
+                        resume_thread_id=resume_thread_id,
+                        effect_id=str(record.effect_id),
+                        resume_mode="same_context",
+                        queue_key=queue_key,
+                        metadata={
+                            "workflow_run_id": str(context.workflow_run_id or ""),
+                            "operator_steering": "interrupt_and_queue",
+                            "operator_steering_note_id": note.note_id,
+                        },
+                        workflow_context=workflow_context_from_sources(
+                            execution_context=input_payload,
+                            input_payload=input_payload,
+                            context_key=NODE_OUTPUTS_CONTEXT_KEY,
                         ),
-                    }
-                )
-                execution_store.put(
-                    in_progress_record.model_copy(
-                        update={
-                            "status": "succeeded",
-                            "outputs": queued_outputs,
-                            "finished_at": datetime.now(UTC),
-                            "error": None,
+                        workflow_for_execution_ids=workflow_for_execution_ids_from_sources(
+                            execution_context=input_payload,
+                            input_payload=input_payload,
+                            context_key=FOR_EXECUTION_IDS_CONTEXT_KEY,
+                        ),
+                    )
+                    lock_key = str(original_outputs.get("prompt_lock_key") or "").strip()
+                    lock_owner_id = str(original_outputs.get("prompt_lock_owner_id") or "").strip()
+                    if lock_key and lock_owner_id:
+                        AgentPromptLockStore(
+                            self._deps.runtime_dir / "agent-prompt-locks.json"
+                        ).release(lock_key=lock_key, owner_id=lock_owner_id)
+                    capacity_slot_id = str(
+                        original_outputs.get("local_inference_slot_id") or ""
+                    ).strip()
+                    if capacity_slot_id:
+                        local_inference_capacity_store(self._deps.runtime_dir).release(
+                            capacity_slot_id
+                        )
+                    clear_model_usage_correlation_context(
+                        runtime_dir=self._deps.runtime_dir,
+                        dispatch_id=dispatch_id,
+                    )
+                    queued_outputs = dict(in_progress_outputs)
+                    queued_outputs.pop(CONTAINER_INTERRUPT_IN_PROGRESS_OUTPUT_KEY, None)
+                    queued_outputs.update(
+                        {
+                            "success": True,
+                            "queued": True,
+                            "execution_backend": "container_worker_vm",
+                            "agent_state": "queued",
+                            "operator_steering_status": "interrupted_and_queued",
+                            "queue_key": queued.queue_key,
+                            "operator_steering_note_id": note.note_id,
+                            "queue_reason": queued.queue_reason,
+                            "subscription_profile_id": queued.subscription_profile_id,
+                            "retry_not_before": queued.retry_not_before,
+                            "message": (
+                                "Interrupted the active container run; the replacement prompt "
+                                "is queued for subscription capacity."
+                            ),
                         }
                     )
-                )
+                    execution_store.put(
+                        in_progress_record.model_copy(
+                            update={
+                                "status": "succeeded",
+                                "outputs": queued_outputs,
+                                "finished_at": datetime.now(UTC),
+                                "error": None,
+                            }
+                        )
+                    )
+                except Exception:
+                    try:
+                        queue_store = AgentPromptQueueStore(
+                            self._deps.runtime_dir / "queued-agent-prompts.json"
+                        )
+                        queued_record = queue_store.get(queue_key)
+                        if (
+                            queued_record is not None
+                            and queued_record.metadata.get("operator_steering_note_id")
+                            == note.note_id
+                        ):
+                            queue_store.delete_if_dispatch_id(
+                                queue_key, queued_agent_prompt_dispatch_id(queued_record)
+                            )
+                    except Exception:
+                        pass
+                    finally:
+                        note_store.cancel_note(note.note_id)
+                    raise
                 self._annotate_interrupted_container_execution(
                     backend=backend,
                     execution_id=current_execution_id,
                     replacement_execution_id=None,
                     interrupted_at=now_text,
-                    created_by=created_by,
-                )
-                note = operator_steering_note_store(self._deps.runtime_dir).create_note(
-                    session_id=session_id,
-                    dispatch_id=dispatch_id,
-                    message=message,
                     created_by=created_by,
                 )
                 return {
@@ -530,7 +559,33 @@ class OperatorSteeringAdminService:
         return note
 
     def cancel_operator_steering_note(self, note_id: str) -> OperatorSteeringNote:
-        note = operator_steering_note_store(self._deps.runtime_dir).cancel_note(note_id)
+        note_store = operator_steering_note_store(self._deps.runtime_dir)
+        existing = note_store.get_note(note_id)
+        if existing is None:
+            raise ValueError(f"Operator steering note not found: {note_id}")
+        if existing.status != "pending":
+            raise ValueError(
+                f"Operator steering note cannot be cancelled from status: {existing.status}"
+            )
+
+        from evander.messaging.agent_prompt_queue import (
+            AgentPromptQueueStore,
+            queued_agent_prompt_dispatch_id,
+        )
+
+        queue_store = AgentPromptQueueStore(self._deps.runtime_dir / "queued-agent-prompts.json")
+        linked_records = [
+            record
+            for record in queue_store.read_all().values()
+            if str(record.metadata.get("operator_steering_note_id") or "").strip()
+            == existing.note_id
+        ]
+        for record in linked_records:
+            dispatch_id = queued_agent_prompt_dispatch_id(record)
+            if not queue_store.delete_if_dispatch_id(record.queue_key, dispatch_id):
+                raise ValueError("Queued operator steering prompt changed; refresh and retry")
+
+        note = note_store.cancel_note(note_id)
         if note is None:
             raise ValueError(f"Operator steering note not found: {note_id}")
         if note.status != "cancelled":

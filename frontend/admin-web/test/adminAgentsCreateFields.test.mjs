@@ -129,6 +129,9 @@ test("container Codex usage can switch per agent without transporting credential
     "function isActiveStatus(status: string): boolean {",
   );
   assert.match(editPayloadSource, /codex_auth_mode:/);
+  assert.match(editPayloadSource, /formTransitionsToSubscription\(form\)/);
+  assert.match(editPayloadSource, /payload\.subscription_profile_id = form\.subscriptionProfileId\.trim\(\)/);
+  assert.match(agentsPage, /subscriptionProfileId: policy\?\.subscription_profile_id \?\? ""/);
   assert.doesNotMatch(editPayloadSource, /allowed_tools|model:|ttl_hours|labels:|web_search_enabled|grants|http_targets/);
   assert.doesNotMatch(subscriptionsPage, /accessToken|refreshToken|OPENAI_API_KEY/);
   assert.match(subscriptionsPage, /\/api\/admin\/codex-subscriptions/);

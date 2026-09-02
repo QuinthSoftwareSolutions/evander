@@ -126,7 +126,8 @@ class RateLimitedTurnProcess(FakeTurnProcess):
                     "id": "turn-rate-limited",
                     "status": "failed",
                     "error": {
-                        "message": "usage rate limit reached",
+                        "message": "The turn could not continue",
+                        "codexErrorInfo": "usageLimitExceeded",
                         "resetsAt": "2026-08-01T12:30:00Z",
                     },
                 },
@@ -147,6 +148,20 @@ class RateLimitedRequestProcess(FakeTurnProcess):
             return super().request(method, params, timeout_seconds=timeout_seconds)
         self.requests.append((method, dict(params or {})))
         raise CodexAppServerError("Codex app-server request failed: usage rate limit reached")
+
+
+class DiskQuotaTurnProcess(FakeTurnProcess):
+    def request(
+        self,
+        method: str,
+        params: dict[str, Any] | None = None,
+        *,
+        timeout_seconds: float | None = None,
+    ) -> dict[str, Any]:
+        if method != "turn/start":
+            return super().request(method, params, timeout_seconds=timeout_seconds)
+        self.requests.append((method, dict(params or {})))
+        raise CodexAppServerError("Codex app-server request failed: Disk quota exceeded")
 
 
 def test_subscription_runner_resumes_thread_and_keeps_tokens_out_of_logs(tmp_path: Path) -> None:
@@ -353,6 +368,66 @@ def test_subscription_runner_classifies_rate_limit_request_error_for_durable_rep
         "profile_id": "team-a",
         "reason": "rate_limited",
     }
+
+
+def test_subscription_runner_does_not_classify_unrelated_quota_failure_as_capacity(
+    tmp_path: Path,
+) -> None:
+    metadata: list[dict[str, Any]] = []
+    runner = CodexSubscriptionTurnRunner(
+        command=("codex", "app-server", "--stdio"),
+        turn=CodexTurnSpec(
+            auth_mode=CodexAuthMode.CHATGPT_SUBSCRIPTION,
+            subscription_profile_id="team-a",
+            prompt="Continue the task",
+            model="gpt-5.4",
+        ),
+        cwd="/home/agent",
+        broker=FakeBroker(),  # type: ignore[arg-type]
+        initial_tokens=CodexExternalAuthTokens("access-secret", "account-1", "plus"),
+        log_path=tmp_path / "turn.log",
+        finished_marker=tmp_path / "turn.exit",
+        metadata_callback=metadata.append,
+        process_factory=DiskQuotaTurnProcess,  # type: ignore[arg-type]
+    )
+
+    runner.run()
+
+    assert (tmp_path / "turn.exit").read_text(encoding="utf-8") == "1"
+    assert "codex_subscription_deferral" not in metadata[-1]
+
+
+def test_subscription_runner_writes_marker_when_terminal_metadata_persistence_fails(
+    tmp_path: Path,
+) -> None:
+    metadata: list[dict[str, Any]] = []
+
+    def persist_metadata(update: dict[str, Any]) -> None:
+        metadata.append(update)
+        if "codex_subscription_exit_code" in update:
+            raise OSError("metadata persistence failed")
+
+    runner = CodexSubscriptionTurnRunner(
+        command=("codex", "app-server", "--stdio"),
+        turn=CodexTurnSpec(
+            auth_mode=CodexAuthMode.CHATGPT_SUBSCRIPTION,
+            prompt="Continue the task",
+            model="gpt-5.4",
+        ),
+        cwd="/home/agent",
+        broker=FakeBroker(),  # type: ignore[arg-type]
+        initial_tokens=CodexExternalAuthTokens("access-secret", "account-1", "plus"),
+        log_path=tmp_path / "turn.log",
+        finished_marker=tmp_path / "turn.exit",
+        metadata_callback=persist_metadata,
+        process_factory=FakeTurnProcess,  # type: ignore[arg-type]
+    )
+
+    with pytest.raises(OSError, match="metadata persistence failed"):
+        runner.run()
+
+    assert metadata[-1]["codex_subscription_exit_code"] == 0
+    assert (tmp_path / "turn.exit").read_text(encoding="utf-8") == "0"
 
 
 def test_subscription_runner_does_not_start_process_after_early_cancellation(

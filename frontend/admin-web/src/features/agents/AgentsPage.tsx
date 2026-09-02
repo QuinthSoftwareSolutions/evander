@@ -21,6 +21,7 @@ import { AgentCreateDialog } from "./AgentCreateDialog";
 import {
   createOperationIsActive,
   createOperationMessage,
+  loadAgentCreateOptions,
   loadAgentCreateOperations,
   submitAgentCreateOperation,
   type AgentCreateSubmitMeta,
@@ -30,6 +31,7 @@ import type {
   AgentActionResponse,
   AgentBackend,
   AgentCreateOperation,
+  CodexSubscriptionProfile,
   AgentCreateRequest,
   AgentExecutionHistoryResponse,
   AgentExecutionRecord,
@@ -124,6 +126,8 @@ type StatusFilter = "active" | "inactive" | "all";
 
 type AgentPolicyFormState = {
   codexAuthMode: string;
+  subscriptionProfileId: string;
+  initialEffectiveCodexAuthMode: "metered_api" | "chatgpt_subscription";
 };
 
 type AgentSkillInstallFormState = {
@@ -193,6 +197,8 @@ function emptyLogState(text = "Loading..."): AgentLogViewState {
 function emptyPolicyForm(): AgentPolicyFormState {
   return {
     codexAuthMode: "",
+    subscriptionProfileId: "",
+    initialEffectiveCodexAuthMode: "metered_api",
   };
 }
 
@@ -818,16 +824,27 @@ function policyFormFromAgent(agent: AgentRecord): AgentPolicyFormState {
   const policy = sessionPolicyForAgent(agent);
   return {
     codexAuthMode: policy?.codex_auth_mode ?? "",
+    subscriptionProfileId: policy?.subscription_profile_id ?? "",
+    initialEffectiveCodexAuthMode: policy?.effective_codex_auth_mode ?? "metered_api",
   };
 }
 
+function formTransitionsToSubscription(form: AgentPolicyFormState): boolean {
+  return form.codexAuthMode === "chatgpt_subscription"
+    && form.initialEffectiveCodexAuthMode !== "chatgpt_subscription";
+}
+
 function buildCodexUsagePayload(form: AgentPolicyFormState): AgentPolicyUpdateRequest {
-  return {
+  const payload: AgentPolicyUpdateRequest = {
     codex_auth_mode:
       form.codexAuthMode === "metered_api" || form.codexAuthMode === "chatgpt_subscription"
         ? form.codexAuthMode
         : null,
   };
+  if (formTransitionsToSubscription(form) && form.subscriptionProfileId.trim()) {
+    payload.subscription_profile_id = form.subscriptionProfileId.trim();
+  }
+  return payload;
 }
 
 function isActiveStatus(status: string): boolean {
@@ -922,6 +939,8 @@ export function AgentsPage() {
   const [skillOptions, setSkillOptions] = useState<SkillLibraryItem[]>([]);
   const [showEditForm, setShowEditForm] = useState(false);
   const [editForm, setEditForm] = useState<AgentPolicyFormState>(() => emptyPolicyForm());
+  const [editSubscriptionProfiles, setEditSubscriptionProfiles] = useState<CodexSubscriptionProfile[]>([]);
+  const [editSubscriptionProfilesLoading, setEditSubscriptionProfilesLoading] = useState(false);
   const [showSkillInstallForm, setShowSkillInstallForm] = useState(false);
   const [skillInstallForm, setSkillInstallForm] = useState<AgentSkillInstallFormState>(() =>
     emptySkillInstallForm(),
@@ -1731,10 +1750,22 @@ export function AgentsPage() {
       return;
     }
     setEditForm(policyFormFromAgent(selectedAgent));
+    setEditSubscriptionProfiles([]);
+    setEditSubscriptionProfilesLoading(true);
     setShowEditForm(true);
     setShowPromptForm(false);
     setShowSkillInstallForm(false);
     setInlineValidation("");
+    void loadAgentCreateOptions(selectedAgent.directory_path)
+      .then((options) => {
+        setEditSubscriptionProfiles(options.container_worker.subscription_profiles ?? []);
+      })
+      .catch((reason: unknown) => {
+        setInlineValidation(
+          reason instanceof Error ? reason.message : "Could not load subscription profiles.",
+        );
+      })
+      .finally(() => setEditSubscriptionProfilesLoading(false));
   }
 
   function openSkillInstallForm() {
@@ -1798,6 +1829,13 @@ export function AgentsPage() {
 
   async function handleEditAgent() {
     if (!selectedAgent || !selectedAgentCodexUsage) return;
+    if (
+      formTransitionsToSubscription(editForm)
+      && !editForm.subscriptionProfileId.trim()
+    ) {
+      setInlineValidation("Select a ChatGPT subscription profile.");
+      return;
+    }
     setBusyAction("edit-agent");
     setInlineValidation("");
     try {
@@ -2410,6 +2448,34 @@ export function AgentsPage() {
                         : "Applies on the next turn. Existing Codex thread history is preserved."}
                     </span>
                   </label>
+                  {formTransitionsToSubscription(editForm) ? (
+                    <label className="field-stack">
+                      <span>Subscription profile</span>
+                      <select
+                        value={editForm.subscriptionProfileId}
+                        onChange={(event) =>
+                          setEditForm((current) => ({
+                            ...current,
+                            subscriptionProfileId: event.target.value,
+                          }))
+                        }
+                      >
+                        <option value="">Select a profile</option>
+                        {editSubscriptionProfiles.map((profile) => (
+                          <option key={profile.profile_id} value={profile.profile_id}>
+                            {profile.display_name} ({profile.profile_id})
+                          </option>
+                        ))}
+                      </select>
+                      <span className="field-description">
+                        {editSubscriptionProfilesLoading
+                          ? "Loading profiles..."
+                          : editSubscriptionProfiles.length === 0
+                            ? "No enabled profiles are available on this worker. Create or enable one on Subscriptions."
+                            : "This profile binding is fixed for the lifetime of the agent session."}
+                      </span>
+                    </label>
+                  ) : null}
                 </div>
                 <div className="inline-actions compact-actions">
                   <button className="admin-action-button primary compact" type="button" disabled={!privilegedUnlocked || busyAction === "edit-agent"} onClick={() => void handleEditAgent()}>

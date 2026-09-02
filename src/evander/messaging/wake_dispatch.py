@@ -1059,6 +1059,7 @@ class HostWakeDispatcher:
                     "target_name": target_name,
                     "wake_dispatch_id": dispatch_id,
                     "directory_path": directory_path,
+                    "capacity_deferral": "true",
                 }
                 if request_id:
                     queue_metadata["request_id"] = request_id
@@ -1363,6 +1364,7 @@ class HostWakeDispatcher:
                         "target_name": effective_target_name,
                         "wake_dispatch_id": dispatch_id,
                         "directory_path": directory_path,
+                        "capacity_deferral": "true",
                     }
                     if request_id:
                         queue_metadata["request_id"] = request_id
