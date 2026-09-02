@@ -23,6 +23,7 @@ MAX_INBOX = 10
 MAX_BLOCKERS = 8
 MAX_REVIEWS = 8
 MAX_CASES = 8
+MAX_CASE_INDEX = 12
 MAX_EXTERNAL_SOURCE_EVIDENCE_SNAPSHOTS = 8
 MAX_RELEASE_PACKAGES = 8
 MAX_RUNTIME_ATTENTION = 10
@@ -56,12 +57,30 @@ def wake_uses_fresh_context(
         policy = _optional_text(runtime.get("context_clearing_policy"))
         if policy == "every_wake":
             return True
+        if policy == "work_lineage":
+            return work_lineage_resume_thread_id(lease) is None
     if lease.get("has_prior_successful_wake") is False:
         return True
     normalized_resume_mode = _optional_text(effective_resume_mode)
     if normalized_resume_mode is not None:
         return normalized_resume_mode == "new_context"
     return not runtime_behavior_available
+
+
+def work_lineage_resume_thread_id(lease: Mapping[str, Any]) -> str | None:
+    runtime = lease.get("runtime")
+    dispatch = lease.get("dispatch")
+    if not isinstance(runtime, Mapping) or not isinstance(dispatch, Mapping):
+        return None
+    if _optional_text(runtime.get("context_clearing_policy")) != "work_lineage":
+        return None
+    if bool(runtime.get("context_rotation_pending")):
+        return None
+    lineage_id = _optional_text(dispatch.get("work_lineage_id"))
+    bindings = runtime.get("work_lineage_thread_ids")
+    if lineage_id is None or not isinstance(bindings, Mapping):
+        return None
+    return _optional_text(bindings.get(lineage_id))
 
 
 def build_compact_wake_context(
@@ -233,6 +252,20 @@ def build_compact_wake_context(
             omitted_counts,
             "cases",
         )
+    unrelated_case_count = _positive_int(lease.get("unrelated_case_count"))
+    _add_omitted(omitted_counts, "cases_outside_dispatch", unrelated_case_count)
+    if fresh_context:
+        case_index = sorted(
+            (_compact_case_index(row) for row in _mapping_rows(lease.get("case_index"))),
+            key=_case_sort_key,
+        )
+        if case_index:
+            context["case_index"] = _limited_rows(
+                case_index,
+                MAX_CASE_INDEX,
+                omitted_counts,
+                "case_index",
+            )
 
     all_source_evidence_snapshots = sorted(
         (
@@ -310,12 +343,20 @@ def build_compact_wake_context(
             "runtime_attention",
         )
 
+    all_session_health = _mapping_rows(lease.get("session_health"))
+    attention_session_health = [
+        row for row in all_session_health if _session_health_requires_attention(row)
+    ]
+    if "session_health" in lease:
+        context["session_health_summary"] = {
+            "checked_count": len(all_session_health),
+            "attention_required_count": len(attention_session_health),
+            "non_actionable_omitted_count": (
+                len(all_session_health) - len(attention_session_health)
+            ),
+        }
     session_health = sorted(
-        (
-            _compact_session_health(row)
-            for row in _mapping_rows(lease.get("session_health"))
-            if fresh_context or _session_health_requires_attention(row)
-        ),
+        (_compact_session_health(row) for row in attention_session_health),
         key=_session_health_sort_key,
     )
     if session_health:
@@ -792,6 +833,20 @@ def _compact_case(case: Mapping[str, Any]) -> dict[str, Any]:
         row["tags"] = tags[:ID_LIST_LIMIT]
         if len(tags) > ID_LIST_LIMIT:
             row["tags_omitted_count"] = len(tags) - ID_LIST_LIMIT
+    return row
+
+
+def _compact_case_index(case: Mapping[str, Any]) -> dict[str, Any]:
+    row = _compact_fields(
+        case,
+        (
+            "id",
+            "project_id",
+            "status",
+            "priority",
+        ),
+    )
+    row["title"] = _trim_text(case.get("title"), TITLE_LIMIT)
     return row
 
 

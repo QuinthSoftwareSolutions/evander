@@ -177,9 +177,10 @@ object is the complete per-job override. Include `pids_limit` when changing CPU 
 Playwright agent, or the worker's `512` default will apply instead of the Playwright allowance.
 
 Team release-verification jobs use a separate project-wide control:
-`release_policy.resource_limits` in the Team project editor. Their built-in defaults are `8` CPUs
-and `2048` processes/threads, and configured fields override those defaults individually. Changing
-that release policy does not change the ordinary prompt or test jobs of a persistent Team agent.
+`release_policy.resource_limits` in the Team project editor. They have no built-in CPU or memory
+quota and use a `2048` process/thread default; configured fields override the worker or verifier
+defaults individually. Changing that release policy does not change the ordinary prompt or test
+jobs of a persistent Team agent.
 
 ### Codex metered API and ChatGPT subscription usage
 

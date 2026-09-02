@@ -43,6 +43,32 @@
       - key: trigger_orchestrator
         unit: evander-trigger-orchestrator.service
 
+- name: Wait for automatic apt maintenance before reconciling services
+  ansible.builtin.command:
+    argv:
+      - systemctl
+      - is-active
+      - apt-daily.service
+      - apt-daily-upgrade.service
+  register: evander_apt_maintenance_state
+  changed_when: false
+  failed_when: false
+  until:
+    - "'active' not in evander_apt_maintenance_state.stdout_lines"
+    - "'activating' not in evander_apt_maintenance_state.stdout_lines"
+    - "'deactivating' not in evander_apt_maintenance_state.stdout_lines"
+    - "'reloading' not in evander_apt_maintenance_state.stdout_lines"
+  retries: 180
+  delay: 5
+
+- name: Reload systemd manager configuration
+  ansible.builtin.systemd:
+    daemon_reload: true
+  register: evander_systemd_daemon_reload
+  until: evander_systemd_daemon_reload is succeeded
+  retries: 3
+  delay: 2
+
 - name: Reconcile systemd service enablement and runtime state
   ansible.builtin.systemd:
     name: "{{ item.unit }}"
@@ -57,5 +83,8 @@
           )
         else ('started' if evander_services.get(item.key, false) | bool else 'stopped')
       }}
-    daemon_reload: true
+  register: evander_systemd_service_reconcile
+  until: evander_systemd_service_reconcile is succeeded
+  retries: 3
+  delay: 2
   loop: "{{ evander_systemd_units }}"

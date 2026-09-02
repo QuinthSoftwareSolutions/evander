@@ -1,10 +1,45 @@
 # Changelog
 
+## 2026-09-02 - Team Work-Lineage Context Routing
+
+- Added a per-agent `work_lineage` context policy that gives each independent task family its own
+  resumable model thread, carries the lineage through successor and release-correction work, and
+  dispatches only one lineage at a time while leaving unrelated work queued.
+- Captured exact Team Chat source-message anchors when Chat creates root tasks, added an
+  agent-owned paginated conversation-history tool for later recall, and kept taskless wakes fresh.
+- Updated Admin Web context controls and observability so lineage-routed agents do not show a
+  misleading global reset age or token count, and disabled manual clearing for policies that
+  already determine context per wake.
+- Preserved single-lineage routing through pending manual resets and recovered recreated agents
+  from stale lineage thread bindings by retrying the affected wake with a fresh context.
+
+## 2026-09-02 - Deployment Service Reconciliation Reliability
+
+- Deferred systemd service changes until automatic apt maintenance is idle, consolidated the
+  manager reload, and retried transient service-manager calls so a concurrent package-triggered
+  systemd re-exec cannot falsely fail an otherwise successful control-plane deployment.
+- Updated the Azure CLI repository template to use namespaced Ansible facts for compatibility with
+  newer ansible-core releases.
+
+## 2026-09-02 - Portable Team Release-verifier CPU Limits
+
+- Stopped applying a fixed eight-CPU quota when a Team release policy omits `cpus`, allowing
+  disposable verification jobs to use the worker's available CPU capacity while retaining the
+  elevated 2,048 process/thread safeguard. Explicit project CPU, memory, and PID limits continue
+  to override the defaults for new verification sessions and infrastructure retries.
+
 ## 2026-09-02 - Agent Pull Request Metadata Updates
 
 - Added the policy-controlled `update_pull_request` MCP tool for Azure DevOps title, description,
   status, and tag updates using directory-scoped host credentials, optional current-status guards,
   normalized provider aliases, audited results, and approval-policy support.
+
+## 2026-09-02 - Dispatch-Scoped Team Wake Context
+
+- Limited full case detail in Team wake prompts to cases structurally linked to the immutable
+  dispatch while retaining a bounded five-field case index for fresh management and Chat wakes.
+- Replaced non-actionable per-agent session rows with a compact health summary while preserving
+  explicit missing, expired, unhealthy, failed, stalled, stopped, and exited rows.
 
 ## 2026-08-31 - Durable Team Preparation Recovery
 

@@ -39,6 +39,7 @@ from evander_team_addon.mcp import (
     TEAM_ESCALATE_OPERATOR_TOOL,
     TEAM_LINK_DELIVERABLE_REPLACEMENT_TOOL,
     TEAM_LIST_TASKS_TOOL,
+    TEAM_LIST_CONVERSATION_MESSAGES_TOOL,
     TEAM_MARK_GOVERNANCE_AGENDA_HANDLED_TOOL,
     TEAM_PUBLISH_REVIEW_BRANCH_TOOL,
     TEAM_PROPOSE_HUMAN_FINDING_RESOLUTION_TOOL,
@@ -113,6 +114,9 @@ from evander_team_addon.services.chat_service import (
     project_scoped_team_chat_authorization,
 )
 from evander_team_addon.services.commands.chat_commands import TeamChatCommandService
+from evander_team_addon.services.commands.task_creation_commands import (
+    TeamTaskCreationCommandService,
+)
 from evander_team_addon.services.git_release_service import TeamGitReleaseService
 
 
@@ -755,6 +759,123 @@ def test_teamless_governance_agent_can_reply_to_active_team_chat(
     reply = stored.conversation_messages[result["chat_message_id"]]
     assert reply.sender == "agent"
     assert reply.body == "Understood."
+
+
+def test_list_conversation_messages_pages_backward_and_enforces_conversation_owner(
+    tmp_path: Path,
+) -> None:
+    context = _runtime(tmp_path, allowed_tools=[])
+    repo = _seed_planning_state(context.config.runtime_dir)
+    _upsert_session(
+        context,
+        session_id="session-backend",
+        allowed_tools=[TEAM_LIST_CONVERSATION_MESSAGES_TOOL],
+    )
+    _upsert_session(
+        context,
+        session_id="session-lead",
+        allowed_tools=[TEAM_LIST_CONVERSATION_MESSAGES_TOOL],
+    )
+    chat = TeamChatService(repo)
+    state, conversation, _created = chat.create_or_get_conversation(
+        agent_id="backend",
+        operator_user_id="operator@example.com",
+        operator_display_name="Operator",
+        expected_revision=repo.read().revision,
+    )
+    state, first = chat.record_operator_chat_message(
+        conversation_id=conversation.id,
+        body="First intake turn.",
+        created_by="operator:operator@example.com",
+        expected_revision=state.revision,
+    )
+    _state, second = chat.record_operator_chat_message(
+        conversation_id=conversation.id,
+        body="Second intake turn.",
+        created_by="operator:operator@example.com",
+        expected_revision=repo.read().revision,
+    )
+    server = create_server(context)
+
+    latest = _call_tool(
+        server,
+        TEAM_LIST_CONVERSATION_MESSAGES_TOOL,
+        {"session_id": "session-backend", "conversation_id": conversation.id, "limit": 1},
+    )
+    assert [row["id"] for row in latest["messages"]] == [second.id]
+    assert latest["has_older"] is True
+    older = _call_tool(
+        server,
+        TEAM_LIST_CONVERSATION_MESSAGES_TOOL,
+        {
+            "session_id": "session-backend",
+            "conversation_id": conversation.id,
+            "before_message_id": second.id,
+            "limit": 1,
+        },
+    )
+    assert [row["id"] for row in older["messages"]] == [first.id]
+    with pytest.raises(ToolError, match="not assigned to the caller"):
+        _call_tool(
+            server,
+            TEAM_LIST_CONVERSATION_MESSAGES_TOOL,
+            {"session_id": "session-lead", "conversation_id": conversation.id},
+        )
+
+
+def test_chat_task_creation_records_mechanical_anchors_on_distinct_root_lineages(
+    tmp_path: Path,
+) -> None:
+    context = _runtime(tmp_path, allowed_tools=[])
+    repo = _seed_planning_state(context.config.runtime_dir)
+    chat = TeamChatService(repo)
+    state, conversation, _created = chat.create_or_get_conversation(
+        agent_id="manager",
+        operator_user_id="operator@example.com",
+        operator_display_name="Operator",
+        expected_revision=repo.read().revision,
+    )
+    state, message = chat.record_operator_chat_message(
+        conversation_id=conversation.id,
+        body="Create two unrelated tasks.",
+        created_by="operator:operator@example.com",
+        mutation_authorization=_authorized_chat_mutation(repo, "manager"),
+        expected_revision=state.revision,
+    )
+    chat.begin_chat_message_dispatch(
+        message_id=message.id,
+        dispatch_id=f"team-chat:{message.id}",
+    )
+    _state, result = TeamTaskCreationCommandService(repo).create_tasks_command(
+        session_id="session-manager",
+        request_id="chat-two-roots",
+        tasks=[
+            {
+                "task_id": "chat-root-a",
+                "owner_agent_id": "lead",
+                "project_id": "project",
+                "priority": 1,
+                "title": "Root A",
+                "description": "First unrelated task.",
+            },
+            {
+                "task_id": "chat-root-b",
+                "owner_agent_id": "lead",
+                "project_id": "project",
+                "priority": 1,
+                "title": "Root B",
+                "description": "Second unrelated task.",
+            },
+        ],
+    )
+    assert result["success"] is True, result.get("errors")
+    stored = repo.read()
+    lineage_a = stored.work_lineages[stored.tasks["chat-root-a"].work_lineage_id]
+    lineage_b = stored.work_lineages[stored.tasks["chat-root-b"].work_lineage_id]
+    assert lineage_a.id != lineage_b.id
+    assert lineage_a.chat_source_refs == lineage_b.chat_source_refs
+    assert lineage_a.chat_source_refs[0].conversation_id == conversation.id
+    assert lineage_a.chat_source_refs[0].message_ids == [message.id]
 
 
 def test_active_team_mcp_result_repeats_plain_operator_attention_without_consuming_it(

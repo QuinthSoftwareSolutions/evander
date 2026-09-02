@@ -678,8 +678,9 @@ For an ordinary session, a non-empty `container_worker_resource_limits` object i
 per-job override. Therefore a Playwright session whose object contains only `cpus` no longer gets
 the Playwright-specific `1024` value and falls back to the strict worker PID default of `512`;
 include `pids_limit` when changing another limit. Team release-verification sessions instead merge
-their `8` CPU and `2048` PID defaults with any explicit session fields. Their project-wide
-operator control is the separate Team project `release_policy.resource_limits` setting.
+their `2048` PID default with any explicit session fields and do not impose a CPU quota unless the
+project configures one. Their project-wide operator control is the separate Team project
+`release_policy.resource_limits` setting.
 
 Repository-local Playwright packages keep resolving normally; the worker does not replace or
 shadow them. Because Playwright's ordinary `chromium.launch()` does not consume

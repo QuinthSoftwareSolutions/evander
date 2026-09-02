@@ -804,9 +804,19 @@ def test_selected_agent_runtime_shows_reset_bounded_input_usage() -> None:
 
     assert "Latest context reset: no completed context reset yet" in detail_source
     assert "Input tokens since latest reset" in detail_source
-    assert 'runtime.contextClearingPolicy !== "every_wake"' in detail_source
+    assert '["every_wake", "work_lineage"].includes(runtime.contextClearingPolicy)' in detail_source
     assert "runtime.context_reset_usage?.input_tokens_since_reset" in runtime_source
-    assert 'contextClearingPolicy !== "every_wake"' in runtime_source
+    assert '["every_wake", "work_lineage"].includes(contextClearingPolicy)' in runtime_source
+
+
+def test_work_lineage_context_controls_avoid_misleading_global_reset_metrics() -> None:
+    source = (ROOT / "src" / "evander_team_addon" / "ui_static" / "team-ui.js").read_text(
+        encoding="utf-8"
+    )
+
+    assert '["work_lineage", "Work lineage"' in source
+    assert '"Context routing: Work lineage"' in source
+    assert '["every_wake", "work_lineage"].includes(contextPolicy)' in source
 
 
 def test_rejected_review_exception_action_is_hidden_after_successor_exists() -> None:

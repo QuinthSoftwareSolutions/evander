@@ -34,6 +34,7 @@ from .case_task import (
 from .common import _NON_TERMINAL_TASK_STATES, _set_task_state
 from .task_assessment import assess_task
 from .work_due import _mark_agent_work_due
+from .work_lineage import ensure_task_work_lineage
 
 
 SUBMITTED_INTEGRATION_RECOVERY_AUDIT_KIND = (
@@ -413,6 +414,7 @@ def apply_submitted_integration_boundary_recovery(
         created_at=now,
         updated_at=now,
     )
+    ensure_task_work_lineage(state, replacement)
     state.tasks[replacement.id] = replacement
     if replacement.case_id is not None:
         _link_task_to_case(

@@ -30,6 +30,7 @@ from .common import _optional_text, _required_text
 from .preparation_failures import task_preparation_generation
 from .review_handoff import queue_actionable_inbox_item
 from .work_due import _mark_agent_work_due
+from .work_lineage import ensure_task_work_lineage
 
 
 DEPENDENCY_COMPOSITION_CONFLICT_REASON_CODE = "dependency_git_composition_conflict"
@@ -349,6 +350,7 @@ def start_dependency_composition_recovery(
         state_entered_at=now,
     )
     state.tasks[task.id] = task
+    ensure_task_work_lineage(state, task)
     recovery.recovery_task_id = task.id
     recovery.state = DependencyCompositionRecoveryState.IN_PROGRESS
     recovery.updated_at = now

@@ -6275,10 +6275,10 @@ agent, or the worker&#39;s <code>512</code> default will apply instead of
 the Playwright allowance.</p>
 <p>Team release-verification jobs use a separate project-wide control:
 <code>release_policy.resource_limits</code> in the Team project editor.
-Their built-in defaults are <code>8</code> CPUs and <code>2048</code>
-processes/threads, and configured fields override those defaults
-individually. Changing that release policy does not change the ordinary
-prompt or test jobs of a persistent Team agent.</p>
+They have no built-in CPU or memory quota and use a <code>2048</code>
+process/thread default; configured fields override the worker or
+verifier defaults individually. Changing that release policy does not
+change the ordinary prompt or test jobs of a persistent Team agent.</p>
 <h3 id="codex-metered-api-and-chatgpt-subscription-usage">Codex metered
 API and ChatGPT subscription usage</h3>
 <p>Container-worker Codex sessions can choose between
@@ -11854,7 +11854,7 @@ can reset the agent-wide counter. Neglecting one task while progressing
 another is a separate starvation concern, not permission to fabricate a
 task blocker.</p>
 <h2 id="context-rotation">Context rotation</h2>
-<p>Each persistent agent has one of three policies:</p>
+<p>Each persistent agent has one of four policies:</p>
 <table>
 <thead>
 <tr class="header">
@@ -11879,6 +11879,12 @@ and rotate before later work.</td>
 <td>Mark an otherwise-eligible wake to start with a fresh context. It
 does not make an idle agent eligible by itself.</td>
 </tr>
+<tr class="even">
+<td><code>work_lineage</code></td>
+<td>Keep one resumable context thread per task family. Dispatch one
+lineage at a time and resume its prior thread when that family
+returns.</td>
+</tr>
 </tbody>
 </table>
 <p>“Truly idle” means no active lease, active tasks, pending wakeable
@@ -11893,6 +11899,15 @@ reconciliation at the precise expiry, while the 15-minute Team runtime
 tick remains a fallback. Existing agents migrate to zero; the editor
 suggests 60 minutes when an operator switches a zero-grace agent from
 another policy to idle.</p>
+<p>With <code>work_lineage</code>, a new root task starts a lineage.
+Child and successor tasks inherit it, including correction tasks created
+from a rejected release or deliverable. A release inherits its single
+input lineage; a mixed or partly unbound release starts a
+release-specific lineage, and its successors inherit that lineage.
+Existing unbound records are not backfilled. If an agent has unrelated
+ready work, only one lineage is included in a dispatch and the other
+work remains queued. A wake without bound work starts fresh and does not
+create a retained lineage thread.</p>
 <p>The prompt labels the context lifecycle explicitly:</p>
 <table>
 <thead>
@@ -11906,7 +11921,8 @@ another policy to idle.</p>
 <tr class="odd">
 <td><code>fresh_full</code></td>
 <td>First successful wake, manual or idle rotation,
-<code>every_wake</code>, or an explicit <code>new_context</code>
+<code>every_wake</code>, the first wake for a work lineage, an unbound
+<code>work_lineage</code> wake, or an explicit <code>new_context</code>
 resume.</td>
 <td>A compact complete working set for the immutable dispatch.</td>
 </tr>
@@ -11929,6 +11945,17 @@ names, model names, and provider names do not. During a retained delta,
 <code>team_get_current_dispatch_context</code> hydrates the active
 immutable scope and its task, inbox, blocker, review, project, and Git
 records without widening membership.</p>
+<p>Case and session context remain intentionally selective even in
+<code>fresh_full</code>. Full compact case rows are included only when a
+structured task, blocker, review, release decision, or inbox reference
+links the case to the immutable dispatch. Fresh Team Chat and management
+wakes add a bounded <code>case_index</code> for other visible active
+cases containing only ID, title, status, priority, and project. Session
+health includes a count summary on every ordinary context and emits
+individual rows only for missing, expired, unhealthy, failed, stalled,
+stopped, or exited sessions or executions. Use the existing case read
+tools or runtime-operations views when complete catalog detail is
+needed.</p>
 <p>Manual and expired-idle rotations also make one bounded 120-second
 attempt to resume the prior context and record a single advisory
 self-handoff. The summary is limited to 1,200 characters, is clearly
@@ -11943,19 +11970,30 @@ after success, completion without a summary, failure, or timeout, while
 the outcome remains observable.</p>
 <p>A pending rotation is cleared only after the new dispatch starts
 successfully. If session startup fails, it remains pending. Manual
-rotation can queue a change even when the automatic policy is
-<code>off</code>.</p>
+rotation can queue a change when the policy is <code>off</code> or
+<code>idle</code>; it is unavailable for <code>every_wake</code> and
+<code>work_lineage</code>, whose context choice is already determined
+per wake.</p>
 <p>Chat follows the same reset and <code>every_wake</code> semantics.
 Its current operator message is exact and singular, while historical
 transcript bodies are bounded. Only a successful mutation-enabled Chat
 dispatch seeds ordinary Team context; a reply-only Chat dispatch leaves
-a pending ordinary reset intact.</p>
+a pending ordinary reset intact. When Chat creates root tasks, the
+system captures only the current dispatch&#39;s message IDs and messages
+mechanically marked seen by that dispatch. Several unrelated roots
+created from one exchange receive different lineages but share the same
+exact source anchors. On a later lineage wake, only that conversation&#39;s
+assigned agent can page the anchored transcript with
+<code>team_list_conversation_messages</code>; delegated agents rely on
+the task description and cannot read another agent&#39;s conversation.</p>
 <p>For Northstar, Imani might use <code>idle</code> with a 60-minute
 grace: related telemetry reviews stay in one context across short gaps,
 then rotate after a genuine break. Rowan might use
-<code>every_wake</code> for strongly isolated review passes. That does
-not make Rowan poll constantly; Rowan still needs a review or other wake
-reason.</p>
+<code>every_wake</code> for strongly isolated review passes. Trudy might
+use <code>work_lineage</code> so each intake task family resumes its own
+context after unrelated work intervenes. None of these policies makes an
+agent poll constantly; the agent still needs a task, review, message, or
+other wake reason.</p>
 <h2 id="stand-down">Stand-down</h2>
 <p>Stand-down is a durable operational hold, not deletion and not a
 prompt suggestion.</p>
@@ -14159,12 +14197,12 @@ retry replaces the same frozen slot against the same candidate. Review
 rows created before cohort support are not backfilled and retain their
 legacy eager-rejection behavior.</p>
 <p>If <code>resource_limits</code> is omitted, a Team release verifier
-defaults to 8 CPUs and 2,048 processes/threads; memory uses the
-worker/host default. A configured field overrides its corresponding
-default. These limits are read from the live project policy for each
-disposable verifier session, including a retry; unlike candidate
-commands and review requirements, they are not frozen candidate
-evidence.</p>
+uses the worker/host CPU and memory defaults plus a 2,048 process/thread
+limit. A configured field overrides its corresponding default, and only
+an explicitly configured CPU value creates a Docker CPU quota. These
+limits are read from the live project policy for each disposable
+verifier session, including a retry; unlike candidate commands and
+review requirements, they are not frozen candidate evidence.</p>
 <p>Worker inspection reports <code>pids_limit_exhausted</code> from
 cgroup <code>pids.events</code> and <code>memory_limit_exhausted</code>
 from Docker&#39;s OOM-killed state. Those structured causes are

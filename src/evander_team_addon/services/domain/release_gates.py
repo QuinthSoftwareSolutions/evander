@@ -53,6 +53,7 @@ from .human_reviews import (
 from .git_work_contexts import finalize_active_git_work_contexts_for_task
 from .release_packages import allowed_release_parent_task_ids, release_lineage_gate_error
 from .task_assessment import deliverable_source_lineage, require_release_scope
+from .work_lineage import ensure_task_work_lineage
 
 
 RELEASE_VERIFICATION_REQUESTED_EVENT_TYPE = "team.release.verification_requested"
@@ -686,6 +687,7 @@ def _materialize_candidate_verification_correction(
             state_entered_at=now,
         )
         state.tasks[task.id] = task
+        ensure_task_work_lineage(state, task)
         result.setdefault("created_task_ids", []).append(task.id)
     elif (
         task.project_id != release.project_id
@@ -1063,6 +1065,7 @@ def materialize_release_review_rejection_correction(
             state_entered_at=now,
         )
         state.tasks[task.id] = task
+        ensure_task_work_lineage(state, task)
         result.setdefault("created_task_ids", []).append(task.id)
     elif (
         task.project_id != release.project_id

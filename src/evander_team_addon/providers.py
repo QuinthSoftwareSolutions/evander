@@ -64,6 +64,7 @@ from evander.git_identity import (
 from evander.models import tool_name_value
 from evander.runtime_generation import require_current_runtime_generation
 from evander.model_usage.runtime import register_model_usage_correlation_context
+from evander.messaging.agent_prompt_queue import AgentPromptQueueStore
 from evander.messaging.targets import load_communication_targets_config
 from evander.messaging.discord_inbox_store import DiscordInboxStore
 from evander.repositories.mcp_transport_bindings import JsonMcpTransportBindingRepository
@@ -126,6 +127,7 @@ from .mcp import (
     TEAM_GET_MY_IDENTITY_TOOL,
     TEAM_GET_TASK_TOOL,
     TEAM_LIST_OUTCOME_KINDS_TOOL,
+    TEAM_LIST_CONVERSATION_MESSAGES_TOOL,
     TEAM_IMPORT_ARTIFACT_TOOL,
     TEAM_MARK_INBOX_HANDLED_TOOL,
     TEAM_MARK_GOVERNANCE_AGENDA_HANDLED_TOOL,
@@ -176,6 +178,8 @@ from .models import (
     WorktreeCleanupCandidate,
     agent_project_ids,
     external_source_evidence_snapshot_payload,
+    filter_work_lineage_payloads,
+    filter_work_lineage_references,
     team_session_health_payload,
     team_state_payload,
 )
@@ -301,8 +305,9 @@ from .services.domain.project_status import (
 )
 from .services.domain.wake import (
     AGENT_WAKE_REQUESTED_EVENT_TYPE,
-    _case_payloads_for_agent,
     _append_agent_wake_requested_event,
+    _case_payloads_for_agent,
+    _dispatch_case_payloads,
     _release_package_payloads_for_agent,
     _runtime_attention_payloads_for_agent,
 )
@@ -336,6 +341,7 @@ from .services.memory_service import (
 from .services.wake_prompt_context import (
     build_compact_wake_context,
     wake_uses_fresh_context,
+    work_lineage_resume_thread_id,
 )
 from .services.wake_singleflight import TEAM_WAKE_SINGLE_FLIGHT
 from .services.runtime_service import (
@@ -2881,14 +2887,61 @@ class TeamWakeDueAgentsEffectProvider(EffectProviderBase):
                     dispatch_id=lease["dispatch_id"],
                     effect_id=_optional_text(getattr(self.effect_definition, "id", None)),
                 )
-                result = _enqueue_team_agent_prompt(
-                    resumer,
-                    target=agent["session_id"],
-                    prompt=prompt,
-                    resume_mode=effective_resume_mode,
-                    dispatch_id=lease["dispatch_id"],
-                )
-                result_payload = _coerce_mapping(result)
+                resume_thread_id = work_lineage_resume_thread_id(lease)
+                try:
+                    result = _enqueue_team_agent_prompt(
+                        resumer,
+                        target=agent["session_id"],
+                        prompt=prompt,
+                        resume_mode=effective_resume_mode,
+                        resume_thread_id=resume_thread_id,
+                        dispatch_id=lease["dispatch_id"],
+                    )
+                except Exception as exc:
+                    result_payload = {"success": False, "error": str(exc)}
+                    if not _resume_failure_reports_missing_thread(
+                        result_payload,
+                        resume_thread_id=resume_thread_id,
+                    ):
+                        raise
+                else:
+                    result_payload = _coerce_mapping(result)
+                if _resume_failure_reports_missing_thread(
+                    result_payload,
+                    resume_thread_id=resume_thread_id,
+                ):
+                    state, invalidated = TeamRuntimeService(
+                        repo
+                    ).invalidate_agent_work_lineage_thread_binding(
+                        agent_id=agent["id"],
+                        dispatch_id=lease["dispatch_id"],
+                        resume_thread_id=resume_thread_id or "",
+                    )
+                    retry_allowed = _discard_failed_team_prompt_queue_record(
+                        repo,
+                        result=result_payload,
+                        dispatch_id=lease["dispatch_id"],
+                    )
+                    if invalidated and retry_allowed:
+                        lease = {
+                            **lease,
+                            "runtime": state.agent_runtimes[agent["id"]].model_dump(mode="json"),
+                        }
+                        leases[lease_index] = lease
+                        effective_resume_mode = "new_context"
+                        prompt = _build_prompt(
+                            lease,
+                            effective_resume_mode=effective_resume_mode,
+                        )
+                        result = _enqueue_team_agent_prompt(
+                            resumer,
+                            target=agent["session_id"],
+                            prompt=prompt,
+                            resume_mode=effective_resume_mode,
+                            resume_thread_id=None,
+                            dispatch_id=lease["dispatch_id"],
+                        )
+                        result_payload = _coerce_mapping(result)
                 if _result_reports_failure(result_payload):
                     error = _resume_failure_message(result_payload)
                     state = _record_wake_failure(repo, lease=lease, error=error)
@@ -3149,6 +3202,7 @@ def _dispatch_queued_team_chat_messages(
             else:
                 chat_tool_names.extend(
                     [
+                        TEAM_LIST_CONVERSATION_MESSAGES_TOOL,
                         TEAM_SEND_OPERATOR_CHAT_MESSAGE_TOOL,
                         TEAM_ACKNOWLEDGE_OPERATOR_CHAT_MESSAGES_TOOL,
                     ]
@@ -3204,6 +3258,7 @@ def _dispatch_queued_team_chat_messages(
                 target=agent.session_id,
                 prompt=prompt,
                 resume_mode=effective_resume_mode,
+                resume_thread_id=work_lineage_resume_thread_id(chat_lease),
                 dispatch_id=dispatch_id,
             )
             result_payload = _coerce_mapping(result)
@@ -3339,7 +3394,11 @@ def _team_chat_wake_lease(
                 project_id=project.id,
             )
         ],
-        "cases": _case_payloads_for_agent(state, agent.id),
+        **_dispatch_case_payloads(
+            state,
+            agent=agent,
+            dispatch=dispatch,
+        ),
         "external_source_evidence_snapshots": [
             external_source_evidence_snapshot_payload(
                 state.external_source_evidence_snapshots[snapshot_id]
@@ -7821,6 +7880,14 @@ def _build_prompt(
         and (runtime.get("context_rotation_pending") or effective_resume_mode == "new_context")
         else ""
     )
+    lineage_chat_sources = lease.get("work_lineage_chat_sources")
+    lineage_chat_section = (
+        "Chat history anchors for this work lineage (use "
+        f"{TEAM_LIST_CONVERSATION_MESSAGES_TOOL} to page backward):\n"
+        f"{json.dumps(lineage_chat_sources, sort_keys=True)}\n\n"
+        if isinstance(lineage_chat_sources, list) and lineage_chat_sources
+        else ""
+    )
     review_artifact_section = (
         "Review artifact access for this wake:\n"
         "- review_artifact_imports lists published deliverable archives already "
@@ -7946,6 +8013,7 @@ def _build_prompt(
         f"{_deliverable_mechanics_guidance(lease)}"
         f"{_project_repos_prompt_guidance(project_repos)}"
         f"{rotation_section}"
+        f"{lineage_chat_section}"
         f"{handoff_section}"
         f"{agent_handoff_section}"
         f"{review_artifact_section}"
@@ -12593,6 +12661,7 @@ def _active_team_mcp_tools_for_other_dispatches(
             continue
         if _optional_text(getattr(runtime, "wake_reason", None)) == "team_chat":
             tool_names.append(TEAM_REPLY_TO_CHAT_TOOL)
+            tool_names.append(TEAM_LIST_CONVERSATION_MESSAGES_TOOL)
             tool_names.extend(
                 [
                     TEAM_SEND_OPERATOR_CHAT_MESSAGE_TOOL,
@@ -14300,6 +14369,100 @@ def _resume_failure_message(result: Mapping[str, Any]) -> str:
     )
 
 
+def _resume_failure_reports_missing_thread(
+    result: Mapping[str, Any],
+    *,
+    resume_thread_id: str | None,
+) -> bool:
+    normalized_thread_id = _optional_text(resume_thread_id)
+    if normalized_thread_id is None:
+        return False
+
+    mappings = [result]
+    for key in ("provider_details", "details", "result"):
+        nested = result.get(key)
+        if isinstance(nested, Mapping):
+            mappings.append(nested)
+    if not _result_reports_failure(result) and not any(
+        _optional_text(payload.get("dispatch_error")) is not None for payload in mappings
+    ):
+        return False
+    missing_codes = {
+        "conversation_not_found",
+        "missing_resume_thread",
+        "resume_thread_missing",
+        "resume_thread_not_found",
+        "rollout_not_found",
+        "thread_missing",
+        "thread_not_found",
+    }
+    for payload in mappings:
+        for key in ("code", "error_code", "reason_code"):
+            code = _optional_text(payload.get(key))
+            if code is not None and code.lower().replace("-", "_") in missing_codes:
+                return True
+
+    thread_id_text = normalized_thread_id.lower()
+    for payload in mappings:
+        for key in (
+            "message",
+            "error",
+            "detail",
+            "diagnostic",
+            "stderr",
+            "dispatch_error",
+        ):
+            message = _optional_text(payload.get(key))
+            if message is None:
+                continue
+            normalized = " ".join(message.lower().split())
+            missing = any(
+                marker in normalized
+                for marker in (
+                    "not found",
+                    "does not exist",
+                    "no such",
+                    "unknown",
+                    "missing",
+                    "no rollout found",
+                    "no thread found",
+                    "no conversation found",
+                    "could not find",
+                    "failed to find",
+                )
+            )
+            if not missing:
+                continue
+            if any(subject in normalized for subject in ("thread", "conversation", "rollout")):
+                return True
+            if "session" in normalized and thread_id_text in normalized:
+                return True
+    return False
+
+
+def _discard_failed_team_prompt_queue_record(
+    repo: TeamStateRepository,
+    *,
+    result: Mapping[str, Any],
+    dispatch_id: object,
+) -> bool:
+    if not bool(result.get("queued")):
+        return True
+    normalized_dispatch_id = _optional_text(dispatch_id)
+    queue_key = _optional_text(result.get("queue_key"))
+    if queue_key is None:
+        provider_details = result.get("provider_details")
+        if isinstance(provider_details, Mapping):
+            queue_key = _optional_text(provider_details.get("queue_key"))
+    if normalized_dispatch_id is None or queue_key is None:
+        return False
+    queue_store = AgentPromptQueueStore(repo.runtime_dir / "queued-agent-prompts.json")
+    queued = queue_store.get(queue_key)
+    if queued is None:
+        return True
+    return queue_store.delete_if_dispatch_id(queue_key, normalized_dispatch_id)
+
+
 def _filtered_team_state_payload(
     state: Any,
     *,
@@ -14561,6 +14724,7 @@ def _filtered_team_state_payload(
         for key, value in filtered.get("conversation_messages", {}).items()
         if value.get("conversation_id") in visible_conversation_ids
     }
+    visible_conversation_message_ids = set(filtered["conversation_messages"])
     filtered["release_packages"] = {
         key: {
             **value,
@@ -14574,6 +14738,83 @@ def _filtered_team_state_payload(
         )
     }
     visible_release_ids = set(filtered["release_packages"])
+    visible_managed_repo_ids = {
+        managed_repo_id
+        for value in filtered["projects"].values()
+        if isinstance(git := value.get("git"), Mapping)
+        if (managed_repo_id := _optional_text(git.get("managed_repo_id"))) is not None
+    }
+    scoped_dispatch_payloads = {
+        key: value
+        for key, value in filtered.get("dispatches", {}).items()
+        if value.get("agent_id") in visible_agent_ids
+        and (
+            project_id is None
+            or bool(set(_string_items(value.get("project_ids"))).intersection(visible_project_ids))
+        )
+        and (
+            team_id is None
+            or not value.get("project_ids")
+            or bool(set(_string_items(value.get("project_ids"))).intersection(visible_project_ids))
+        )
+        and (
+            agent_id is None
+            or not value.get("project_ids")
+            or bool(set(_string_items(value.get("project_ids"))).intersection(visible_project_ids))
+        )
+    }
+    filtered["dispatches"] = {
+        key: {
+            **value,
+            "task_ids": _filter_ids(value.get("task_ids"), visible_task_ids),
+            "review_request_ids": _filter_ids(
+                value.get("review_request_ids"),
+                visible_review_ids,
+            ),
+            "inbox_item_ids": _filter_ids(value.get("inbox_item_ids"), set(filtered["inbox"])),
+            "project_ids": _filter_ids(value.get("project_ids"), visible_project_ids),
+            "managed_repo_ids": _filter_ids(
+                value.get("managed_repo_ids"),
+                visible_managed_repo_ids,
+            ),
+            "source_evidence_snapshot_ids": _filter_ids(
+                value.get("source_evidence_snapshot_ids"),
+                set(filtered["external_source_evidence_snapshots"]),
+            ),
+            "chat_message_ids": _filter_ids(
+                value.get("chat_message_ids"),
+                visible_conversation_message_ids,
+            ),
+            "initial_release_decision_deliverable_ids": _filter_ids(
+                value.get("initial_release_decision_deliverable_ids"),
+                visible_deliverable_ids,
+            ),
+            "review_routing_authorities": [
+                {
+                    **authority,
+                    "consumed_at": (
+                        authority.get("consumed_at")
+                        if authority.get("consumed_by_review_request_id")
+                        in visible_review_ids
+                        else None
+                    ),
+                    "consumed_by_review_request_id": (
+                        authority.get("consumed_by_review_request_id")
+                        if authority.get("consumed_by_review_request_id")
+                        in visible_review_ids
+                        else None
+                    ),
+                }
+                for authority in _mapping_items(value.get("review_routing_authorities"))
+                if authority.get("reviewer_agent_id") in visible_agent_ids
+                and authority.get("project_id") in visible_project_ids
+                and authority.get("task_id") in visible_task_ids
+                and authority.get("deliverable_id") in visible_deliverable_ids
+            ],
+        }
+        for key, value in scoped_dispatch_payloads.items()
+    }
+    visible_dispatch_ids = set(filtered["dispatches"])
     visible_human_review_ids = {
         request.id
         for request in state.human_review_requests.values()
@@ -14584,6 +14825,7 @@ def _filtered_team_state_payload(
             value,
             visible_task_ids=visible_task_ids,
             visible_agent_ids=visible_agent_ids,
+            visible_dispatch_ids=visible_dispatch_ids,
         )
         for key, value in filtered.get("blockers", {}).items()
         if _blocker_payload_is_visible(
@@ -14599,10 +14841,76 @@ def _filtered_team_state_payload(
         )
     }
     visible_blocker_ids = set(filtered["blockers"])
+    visible_dispatch_cause_ids = {
+        "task": visible_task_ids,
+        "blocker": visible_blocker_ids,
+        "review": visible_review_ids,
+        "inbox": set(filtered["inbox"]),
+        "low_priority_inbox": set(filtered["inbox"]),
+        "team_chat": visible_conversation_message_ids,
+        "action_feedback": set(filtered["action_records"]),
+    }
+    visible_wake_work_record_ids = {
+        "inbox": set(filtered["inbox"]),
+        "review": visible_review_ids,
+        "open_work": visible_task_ids,
+        "deliverables": visible_deliverable_ids,
+        "review_requests": visible_review_ids,
+        "pending_inbox": set(filtered["inbox"]),
+        "latest_failed_actions": set(filtered["action_records"]),
+        "pending_initial_release_decisions": visible_deliverable_ids,
+    }
+    filtered["dispatches"] = {
+        key: {
+            **value,
+            "blocker_ids": _filter_ids(value.get("blocker_ids"), visible_blocker_ids),
+            "action_feedback_dispatch_ids": _filter_ids(
+                value.get("action_feedback_dispatch_ids"),
+                visible_dispatch_ids,
+            ),
+            "wake_work_record_fingerprints": _filter_wake_work_record_fingerprints(
+                value.get("wake_work_record_fingerprints"),
+                visible_ids_by_kind=visible_wake_work_record_ids,
+            ),
+            "cause_id": (
+                value.get("cause_id")
+                if value.get("cause_id") is None
+                or (
+                    value.get("cause_kind") in visible_dispatch_cause_ids
+                    and value.get("cause_id")
+                    in visible_dispatch_cause_ids[str(value.get("cause_kind"))]
+                )
+                else None
+            ),
+        }
+        for key, value in filtered["dispatches"].items()
+    }
+    visible_lineage_ids = {
+        lineage_id
+        for collection_name in ("tasks", "release_packages")
+        for value in filtered[collection_name].values()
+        if (lineage_id := _optional_text(value.get("work_lineage_id"))) is not None
+    }
+    if project_id is None:
+        visible_lineage_ids.update(
+            lineage_id
+            for dispatch_id, raw_dispatch in scoped_dispatch_payloads.items()
+            if (
+                scoped_dispatch := filtered["dispatches"].get(dispatch_id)
+            ) is not None
+            and _dispatch_work_scope_survives(raw_dispatch, scoped_dispatch)
+            if (lineage_id := _optional_text(raw_dispatch.get("work_lineage_id"))) is not None
+        )
+    filtered["work_lineages"] = filter_work_lineage_payloads(
+        filtered.get("work_lineages"),
+        visible_conversation_ids=visible_conversation_ids,
+        visible_lineage_ids=visible_lineage_ids,
+    )
     filtered["blocker_events"] = {
         key: _scoped_blocker_event_payload(
             value,
             visible_agent_ids=visible_agent_ids,
+            visible_dispatch_ids=visible_dispatch_ids,
         )
         for key, value in filtered.get("blocker_events", {}).items()
         if value.get("blocker_id") in visible_blocker_ids
@@ -14676,22 +14984,14 @@ def _filtered_team_state_payload(
         visible_release_ids=visible_release_ids,
         visible_git_promotion_ids=visible_git_promotion_ids,
         visible_assignment_ids=set(filtered["ephemeral_assignments"]),
+        visible_dispatch_ids=visible_dispatch_ids,
     )
     visible_session_ids = {
         session_id
         for value in filtered["agents"].values()
         if (session_id := _optional_text(value.get("session_id"))) is not None
     }
-    visible_dispatch_ids = {
-        dispatch_id
-        for value in filtered.get("agent_runtimes", {}).values()
-        if (dispatch_id := _optional_text(value.get("active_dispatch_id"))) is not None
-    }
-    visible_dispatch_ids.update(
-        dispatch_id
-        for value in _mapping_items(filtered["runtime_operations"].get("agents"))
-        if (dispatch_id := _optional_text(value.get("active_dispatch_id"))) is not None
-    )
+    visible_dispatch_ids = set(filtered["dispatches"])
     visible_stand_down_ids = {
         stand_down_id
         for value in filtered["agents"].values()
@@ -14720,6 +15020,24 @@ def _filtered_team_state_payload(
         )
         for key, value in filtered["agents"].items()
     }
+    filtered["agent_runtimes"] = {
+        key: {
+            **value,
+            "active_dispatch_id": (
+                value.get("active_dispatch_id")
+                if value.get("active_dispatch_id") in visible_dispatch_ids
+                else None
+            ),
+        }
+        for key, value in filtered["agent_runtimes"].items()
+    }
+    # Several collections above are rebuilt from the full state after their
+    # initial scope pass. Enforce lineage referential closure only after those
+    # projections and the final dispatch update are complete.
+    filter_work_lineage_references(
+        filtered,
+        visible_lineage_ids=set(filtered["work_lineages"]),
+    )
     return filtered
 
 
@@ -14805,11 +15123,19 @@ def _filter_runtime_operations(
     visible_release_ids: set[str],
     visible_git_promotion_ids: set[str],
     visible_assignment_ids: set[str],
+    visible_dispatch_ids: set[str],
 ) -> dict[str, Any]:
     if not isinstance(value, dict):
         return {"generated_at": None, "agents": [], "attention": []}
     agents = [
-        row
+        {
+            **row,
+            "active_dispatch_id": (
+                row.get("active_dispatch_id")
+                if row.get("active_dispatch_id") in visible_dispatch_ids
+                else None
+            ),
+        }
         for row in _mapping_items(value.get("agents"))
         if _optional_text(row.get("id")) in visible_agent_ids
     ]
@@ -14817,6 +15143,7 @@ def _filter_runtime_operations(
         _scoped_runtime_attention_row(
             row,
             visible_task_ids=visible_task_ids,
+            visible_dispatch_ids=visible_dispatch_ids,
         )
         for row in _mapping_items(value.get("attention"))
         if _runtime_row_is_visible(
@@ -14849,8 +15176,14 @@ def _scoped_runtime_attention_row(
     row: dict[str, Any],
     *,
     visible_task_ids: set[str],
+    visible_dispatch_ids: set[str],
 ) -> dict[str, Any]:
     payload = dict(row)
+    if (
+        payload.get("dispatch_id") is not None
+        and payload.get("dispatch_id") not in visible_dispatch_ids
+    ):
+        payload["dispatch_id"] = None
     if payload.get("kind") not in {
         "blocked_task",
         "waiting_dependency_task",
@@ -14915,6 +15248,71 @@ def _filter_ids(value: object, allowed: set[str]) -> list[str]:
     return [item for item in _string_items(value) if item in allowed]
 
 
+def _filter_wake_work_record_fingerprints(
+    value: object,
+    *,
+    visible_ids_by_kind: Mapping[str, set[str]],
+) -> dict[str, str]:
+    if not isinstance(value, Mapping):
+        return {}
+    filtered: dict[str, str] = {}
+    for raw_key, raw_fingerprint in value.items():
+        key = _optional_text(raw_key)
+        fingerprint = _optional_text(raw_fingerprint)
+        if key is None or fingerprint is None:
+            continue
+        kind, separator, record_id = key.partition(":")
+        if not separator:
+            continue
+        allowed_ids = visible_ids_by_kind.get(kind)
+        if kind == "routing_gaps":
+            # Routing-gap identities are opaque digests, not durable record IDs.
+            filtered[key] = fingerprint
+            continue
+        if allowed_ids is None or record_id not in allowed_ids:
+            continue
+        filtered[key] = fingerprint
+    return filtered
+
+
+def _dispatch_work_scope_survives(
+    raw_dispatch: Mapping[str, Any],
+    scoped_dispatch: Mapping[str, Any],
+) -> bool:
+    durable_id_fields = (
+        "task_ids",
+        "blocker_ids",
+        "review_request_ids",
+        "inbox_item_ids",
+        "project_ids",
+        "managed_repo_ids",
+        "source_evidence_snapshot_ids",
+        "chat_message_ids",
+        "action_feedback_dispatch_ids",
+        "initial_release_decision_deliverable_ids",
+    )
+    if any(
+        _string_items(raw_dispatch.get(field_name))
+        != _string_items(scoped_dispatch.get(field_name))
+        for field_name in durable_id_fields
+    ):
+        return False
+    if _mapping_items(raw_dispatch.get("review_routing_authorities")) != _mapping_items(
+        scoped_dispatch.get("review_routing_authorities")
+    ):
+        return False
+    raw_fingerprints = raw_dispatch.get("wake_work_record_fingerprints")
+    scoped_fingerprints = scoped_dispatch.get("wake_work_record_fingerprints")
+    if (
+        dict(raw_fingerprints) if isinstance(raw_fingerprints, Mapping) else {}
+    ) != (
+        dict(scoped_fingerprints) if isinstance(scoped_fingerprints, Mapping) else {}
+    ):
+        return False
+    raw_cause_id = _optional_text(raw_dispatch.get("cause_id"))
+    return raw_cause_id is None or raw_cause_id == _optional_text(scoped_dispatch.get("cause_id"))
+
+
 def _blocker_payload_is_visible(
     value: object,
     *,
@@ -14974,6 +15372,7 @@ def _scoped_blocker_payload(
     *,
     visible_task_ids: set[str],
     visible_agent_ids: set[str],
+    visible_dispatch_ids: set[str],
 ) -> dict[str, Any]:
     return {
         **value,
@@ -14997,6 +15396,11 @@ def _scoped_blocker_payload(
             if value.get("delegate_agent_id") in visible_agent_ids
             else None
         ),
+        "active_dispatch_id": (
+            value.get("active_dispatch_id")
+            if value.get("active_dispatch_id") in visible_dispatch_ids
+            else None
+        ),
     }
 
 
@@ -15004,6 +15408,7 @@ def _scoped_blocker_event_payload(
     value: dict[str, Any],
     *,
     visible_agent_ids: set[str],
+    visible_dispatch_ids: set[str],
 ) -> dict[str, Any]:
     return {
         **value,
@@ -15017,6 +15422,11 @@ def _scoped_blocker_event_payload(
         ),
         "to_agent_id": (
             value.get("to_agent_id") if value.get("to_agent_id") in visible_agent_ids else None
+        ),
+        "dispatch_id": (
+            value.get("dispatch_id")
+            if value.get("dispatch_id") in visible_dispatch_ids
+            else None
         ),
     }
 

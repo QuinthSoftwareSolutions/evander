@@ -49,6 +49,10 @@ from ..domain.role_task_allocation import (
     select_role_task_owner,
 )
 from ..domain.wake import _append_agent_wake_requested_event
+from ..domain.work_lineage import (
+    chat_source_refs_for_dispatch,
+    ensure_task_work_lineages,
+)
 
 
 def _creation_with_outcome_definition_snapshots(
@@ -168,7 +172,12 @@ class TeamTaskCreationCommandService(TeamCommandExecutor):
                         dependency_task_ids=plan.dependency_task_ids,
                     ),
                 )
-            created_id = _apply_task_creation_plan(state, plan=plan, actor=agent)
+            created_id = _apply_task_creation_plan(
+                state,
+                plan=plan,
+                actor=agent,
+                chat_source_refs=chat_source_refs_for_dispatch(state, resolved.dispatch_id),
+            )
             _recalculate_project_status(state, plan.project_id)
             response_payload = {
                 "task_id": created_id,
@@ -333,7 +342,14 @@ class TeamTaskCreationCommandService(TeamCommandExecutor):
                         dependency_task_ids=plan.dependency_task_ids,
                     ),
                 )
-            created_id = _apply_task_creation_plan(state_model, plan=plan, actor=agent)
+            created_id = _apply_task_creation_plan(
+                state_model,
+                plan=plan,
+                actor=agent,
+                chat_source_refs=chat_source_refs_for_dispatch(
+                    state_model, resolved.dispatch_id
+                ),
+            )
             _recalculate_project_status(state_model, plan.project_id)
             response_payload = {
                 "task_id": created_id,
@@ -443,10 +459,21 @@ class TeamTaskCreationCommandService(TeamCommandExecutor):
                 )
             created_ids: list[str] = []
             recalc_project_ids: set[str] = set()
+            chat_source_refs = chat_source_refs_for_dispatch(state, resolved.dispatch_id)
             for plan in plans:
-                created_id = _apply_task_creation_plan(state, plan=plan, actor=agent)
+                created_id = _apply_task_creation_plan(
+                    state,
+                    plan=plan,
+                    actor=agent,
+                    assign_work_lineage=False,
+                )
                 created_ids.append(created_id)
                 recalc_project_ids.add(plan.project_id)
+            ensure_task_work_lineages(
+                state,
+                (state.tasks[task_id] for task_id in created_ids),
+                chat_source_refs=chat_source_refs,
+            )
             for recalc_id in sorted(recalc_project_ids):
                 _recalculate_project_status(state, recalc_id)
             response_payload = {

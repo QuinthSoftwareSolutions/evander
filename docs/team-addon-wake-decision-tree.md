@@ -142,7 +142,12 @@ flowchart TD
     prepare -->|No| prep_failed["Fail complete dispatch before inference;<br/>release reservation and record targeted incident"]
     prepare -->|Yes| leased["Mark dispatch leased"]
 
-    leased --> context_mode{"Fresh lifecycle context?<br/>rotation/every_wake, first successful<br/>ordinary-context wake, or explicit new_context"}
+    leased --> lineage{"work_lineage policy?"}
+    lineage -->|Yes; bound| bound_thread{"Thread already bound<br/>to this lineage?"}
+    bound_thread -->|Yes| retained_delta
+    bound_thread -->|No| fresh_full
+    lineage -->|Yes; unbound| fresh_full
+    lineage -->|No| context_mode{"Fresh lifecycle context?<br/>rotation/every_wake, first successful<br/>ordinary-context wake, or explicit new_context"}
     context_mode -->|Yes| fresh_full["Resume new context<br/>context_mode: fresh_full"]
     context_mode -->|No| retained_delta["Resume retained context<br/>context_mode: retained_delta"]
 
@@ -154,7 +159,7 @@ flowchart TD
     classDef process fill:#f5f8ff,stroke:#3867d6,color:#102044;
     class lease_handoff,fresh_due,leased,fresh_full,retained_delta,prompt wake;
     class skip_limit,skip_inactive,skip_stood_down,skip_filter,skip_cost,skip_busy,skip_lease,clear_low,skip_throttle,skip_not_due,skip_low,prep_failed skip;
-    class gather,isolate,advance_low,reserve,handoff_terminal process;
+    class gather,isolate,advance_low,reserve,handoff_terminal,lineage,bound_thread process;
 ```
 
 The dispatch scope is immutable membership, not a stale copy of every record.
@@ -240,6 +245,7 @@ flowchart LR
         manual["Manual request<br/>handoff preparation first"]
         idle["idle policy after real work and truly idle<br/>start configured continuous grace"]
         every_wake["every_wake policy<br/>direct fresh context on otherwise eligible wake"]
+        work_lineage["work_lineage policy<br/>select one task family and resume its bound thread"]
     end
 
     TaskWork --> normal_due["Normal-agent due evaluation"]
@@ -251,7 +257,7 @@ flowchart LR
 
     classDef source fill:#f5f8ff,stroke:#3867d6,color:#102044;
     classDef sink fill:#e8fff0,stroke:#208a42,color:#102a16;
-    class new_task,deps,children,rework,question,status_request,operator_directive,review_request,review_rejected,low_notice,status_report,review_pending,blocker_due,prep_recovery,invalid_action,manual,idle,every_wake source;
+    class new_task,deps,children,rework,question,status_request,operator_directive,review_request,review_rejected,low_notice,status_report,review_pending,blocker_due,prep_recovery,invalid_action,manual,idle,every_wake,work_lineage source;
     class normal_due sink;
 ```
 
@@ -278,12 +284,17 @@ flowchart LR
     every["every_wake policy"] --> eligible["Otherwise eligible work wake"]
     eligible --> fresh
 
+    lineage["work_lineage policy"] --> bound{"Wake has one selected lineage?"}
+    bound -->|No| fresh
+    bound -->|Yes; first wake| fresh
+    bound -->|Yes; known binding| resume["Resume that lineage's thread"]
+
     classDef wake fill:#e8fff0,stroke:#208a42,color:#102a16;
     classDef skip fill:#fff1f0,stroke:#b42318,color:#3a0b07;
     classDef process fill:#f5f8ff,stroke:#3867d6,color:#102044;
-    class fresh,recorded,retain wake;
+    class fresh,recorded,retain,resume wake;
     class failed skip;
-    class idle_start,before,request,pending,handoff,sole,due,every,eligible process;
+    class idle_start,before,request,pending,handoff,sole,due,every,eligible,lineage,bound process;
 ```
 
 An invalid or oversized handoff call does not release the active preparation

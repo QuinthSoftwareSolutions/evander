@@ -26,6 +26,7 @@ from evander.execution import ExecutionStatusKind
 from evander.gate_runtime import filter_when_matches
 from evander.review_snapshots import team_deliverable_snapshot_ref
 from evander.model_usage.store import ModelUsageStore
+from evander.messaging.agent_prompt_queue import AgentPromptQueueStore, QueuedAgentPromptRecord
 from evander.messaging.targets import (
     SqliteCommunicationTargetsRepository,
     communication_targets_db_path,
@@ -49,6 +50,7 @@ from evander_team_addon.mcp import (
     TEAM_DECIDE_DELIVERABLE_TOOL,
     TEAM_DECIDE_REVIEW_TOOL,
     TEAM_MARK_GOVERNANCE_AGENDA_HANDLED_TOOL,
+    TEAM_LIST_CONVERSATION_MESSAGES_TOOL,
     TEAM_REPLY_TO_CHAT_TOOL,
     TEAM_SEND_OPERATOR_CHAT_MESSAGE_TOOL,
     TEAM_STAGE_CHAT_ATTACHMENT_TOOL,
@@ -185,10 +187,12 @@ from evander_team_addon.services.domain.wake import (
     AGENT_WAKE_REQUESTED_EVENT_TYPE,
     _case_payloads_for_agent,
     _case_payloads_for_team,
+    _dispatch_case_payloads,
 )
 from evander_team_addon.services.domain.preparation_failures import (
     task_git_work_context_generation,
 )
+from evander_team_addon.services.domain.work_lineage import ensure_release_work_lineage
 from evander_team_addon.services.agent_action_service import TeamAgentActionService
 from evander_team_addon.services.admin_service import TeamAdminService
 from evander_team_addon.services.commands.outbox import (
@@ -226,6 +230,7 @@ from evander_team_addon.services.domain.manager_fallback import (
 from evander_team_addon.services.wake_prompt_context import (
     build_compact_wake_context,
     wake_uses_fresh_context,
+    work_lineage_resume_thread_id,
 )
 from evander_team_addon.workflow_packs import team_runtime_v1, team_runtime_v1_layout
 
@@ -844,6 +849,277 @@ def _seed_team(runtime_dir: Path, *, max_ephemeral: int = 0) -> TeamStateReposit
         expected_revision=4,
     )
     return repo
+
+
+def test_work_lineage_policy_assigns_related_tasks_and_dispatches_one_lineage(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_team(tmp_path)
+    admin = _team_admin_service(repo)
+    state = admin.update_agent(
+        agent_id="backend",
+        context_clearing_policy=AgentContextClearingPolicy.WORK_LINEAGE,
+        set_context_clearing_policy=True,
+        expected_revision=repo.read().revision,
+    )
+    state = admin.create_or_reprioritize_task(
+        task_id="task-child",
+        owner_agent_id="backend",
+        project_id="project",
+        priority=2,
+        title="Continue backend",
+        description="Continue the same chain.",
+        created_by_agent_id="lead",
+        parent_task_id="task",
+        expected_revision=state.revision,
+    )
+    state = admin.create_or_reprioritize_task(
+        task_id="task-unrelated",
+        owner_agent_id="backend",
+        project_id="project",
+        priority=3,
+        title="Unrelated backend",
+        description="Start another chain.",
+        created_by_agent_id="lead",
+        expected_revision=state.revision,
+    )
+
+    assert state.tasks["task"].work_lineage_id is not None
+    assert state.tasks["task-child"].work_lineage_id == state.tasks["task"].work_lineage_id
+    assert state.tasks["task-unrelated"].work_lineage_id != state.tasks["task"].work_lineage_id
+
+    _state, leases = _team_runtime_service(repo).lease_due_agents(
+        now=datetime(2026, 1, 1, tzinfo=UTC),
+        respect_wake_interval=False,
+        agent_id="backend",
+    )
+    assert len(leases) == 1
+    dispatch = leases[0]["dispatch"]
+    assert dispatch["work_lineage_id"] == state.tasks["task"].work_lineage_id
+    assert dispatch["task_ids"] == ["task-child"]
+    assert "task-unrelated" not in dispatch["task_ids"]
+
+
+def test_work_lineage_thread_binding_resumes_explicit_thread_and_disables_manual_clear(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_team(tmp_path)
+    admin = _team_admin_service(repo)
+    admin.update_agent(
+        agent_id="backend",
+        context_clearing_policy=AgentContextClearingPolicy.WORK_LINEAGE,
+        set_context_clearing_policy=True,
+        expected_revision=repo.read().revision,
+    )
+    runtime_service = _team_runtime_service(repo)
+    now = datetime(2026, 1, 1, tzinfo=UTC)
+    _state, leases = runtime_service.lease_due_agents(
+        now=now,
+        respect_wake_interval=False,
+        agent_id="backend",
+        defer_activation=True,
+    )
+    first = leases[0]
+    assert wake_uses_fresh_context(first, effective_resume_mode="same_context")
+    assert work_lineage_resume_thread_id(first) is None
+    runtime_service.activate_delivered_agent_dispatch(
+        dispatch_id=first["dispatch_id"],
+        thread_id="thread-lineage-a",
+        now=now,
+    )
+
+    def _complete_first(state: TeamState) -> TeamState:
+        dispatch = state.dispatches[first["dispatch_id"]]
+        dispatch.status = TeamDispatchStatus.COMPLETED
+        dispatch.completed_at = now
+        runtime = state.agent_runtimes["backend"]
+        runtime.active_dispatch_id = None
+        runtime.wake_leased_until = None
+        runtime.next_wake_at = None
+        return state
+
+    repo.update(_complete_first)
+    _state, second_leases = runtime_service.lease_due_agents(
+        now=now + timedelta(minutes=1),
+        respect_wake_interval=False,
+        agent_id="backend",
+    )
+    second = second_leases[0]
+    assert not wake_uses_fresh_context(second, effective_resume_mode="same_context")
+    assert work_lineage_resume_thread_id(second) == "thread-lineage-a"
+    with pytest.raises(ValueError, match="manual context clearing is unavailable"):
+        runtime_service.request_agent_context_rotation(agent_id="backend")
+    transitioned = admin.update_agent(
+        agent_id="backend",
+        context_clearing_policy=AgentContextClearingPolicy.OFF,
+        set_context_clearing_policy=True,
+        expected_revision=repo.read().revision,
+    )
+    assert transitioned.agent_runtimes["backend"].work_lineage_thread_ids == {}
+
+
+@pytest.mark.parametrize("failure_mode", ["result", "exception", "queued"])
+def test_work_lineage_missing_thread_retries_once_with_fresh_context(
+    tmp_path: Path,
+    failure_mode: str,
+) -> None:
+    repo = _seed_team(tmp_path)
+    _team_admin_service(repo).update_agent(
+        agent_id="backend",
+        context_clearing_policy=AgentContextClearingPolicy.WORK_LINEAGE,
+        set_context_clearing_policy=True,
+        expected_revision=repo.read().revision,
+    )
+    lineage_id = str(repo.read().tasks["task"].work_lineage_id)
+
+    def _bind_stale_thread(state: TeamState) -> TeamState:
+        state.agent_runtimes["backend"].work_lineage_thread_ids[lineage_id] = "thread-stale"
+        return state
+
+    repo.update(_bind_stale_thread)
+
+    class MissingThenFreshResumer:
+        def __init__(self) -> None:
+            self.calls: list[dict[str, object]] = []
+
+        def enqueue_agent_prompt(self, **kwargs: object) -> dict[str, object]:
+            self.calls.append(dict(kwargs))
+            if len(self.calls) == 1:
+                if failure_mode == "exception":
+                    raise RuntimeError("No rollout found for session ID thread-stale")
+                if failure_mode == "queued":
+                    queue_key = "team-stale-thread-retry"
+                    AgentPromptQueueStore(tmp_path / "queued-agent-prompts.json").put(
+                        QueuedAgentPromptRecord(
+                            queue_key=queue_key,
+                            target="session-backend",
+                            vm_name="vm-backend",
+                            session_id="session-backend",
+                            prompt=str(kwargs["prompt"]),
+                            dispatch_id=str(kwargs["dispatch_id"]),
+                            resume_thread_id="thread-stale",
+                            resume_mode="same_context",
+                            effect_id="admin-agent-prompt:libvirt_vm:session-backend",
+                        )
+                    )
+                    return {
+                        "success": True,
+                        "queued": True,
+                        "queue_key": queue_key,
+                        "provider_details": {
+                            "dispatch_error": (
+                                "resume_agent failed; No rollout found for session ID thread-stale"
+                            ),
+                            "queue_key": queue_key,
+                        },
+                    }
+                return {
+                    "success": False,
+                    "message": "No rollout found for session ID thread-stale",
+                }
+            return {"success": True, "thread_id": "thread-fresh"}
+
+        resume_agent = enqueue_agent_prompt
+
+    resumer = MissingThenFreshResumer()
+    provider = TeamWakeDueAgentsEffectProvider()
+    provider.initialize(
+        TeamWakeDueAgentsEffectDefinition(
+            id="wake",
+            display_name="Wake",
+            type="effect:team:wake-due-agents",
+            limit=1,
+        ),
+        EffectRuntimeContext(
+            resolved_config={"runtime_dir": str(tmp_path)},
+            agent_resumer=resumer,
+            vm_file_copier=FakeFileCopier(),
+            session_lookup=FakeSessionStore(),
+        ),
+    )
+
+    result = provider.execute()
+
+    assert result["success"] is True
+    assert len(resumer.calls) == 2
+    assert resumer.calls[0]["resume_thread_id"] == "thread-stale"
+    assert resumer.calls[0]["resume_mode"] == "same_context"
+    assert resumer.calls[1]["resume_thread_id"] is None
+    assert resumer.calls[1]["resume_mode"] == "new_context"
+    assert '"context_mode": "fresh_full"' in str(resumer.calls[1]["prompt"])
+    runtime = repo.read().agent_runtimes["backend"]
+    assert runtime.work_lineage_thread_ids == {lineage_id: "thread-fresh"}
+    assert (
+        AgentPromptQueueStore(tmp_path / "queued-agent-prompts.json").get(
+            "team-stale-thread-retry"
+        )
+        is None
+    )
+
+
+def test_release_work_lineage_inherits_single_input_and_forks_mixed_inputs(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_team(tmp_path)
+    admin = _team_admin_service(repo)
+    state = admin.create_or_reprioritize_task(
+        task_id="task-other-lineage",
+        owner_agent_id="backend",
+        project_id="project",
+        priority=2,
+        title="Other chain",
+        description="Independent work.",
+        created_by_agent_id="lead",
+        expected_revision=repo.read().revision,
+    )
+
+    def _add_releases(current: TeamState) -> TeamState:
+        current.deliverables["deliverable-a"] = Deliverable(
+            id="deliverable-a",
+            task_id="task",
+            producer_agent_id="backend",
+            summary="A",
+        )
+        current.deliverables["deliverable-b"] = Deliverable(
+            id="deliverable-b",
+            task_id="task-other-lineage",
+            producer_agent_id="backend",
+            summary="B",
+        )
+        single = ReleasePackage(
+            id="release-single",
+            project_id="project",
+            deliverable_ids=["deliverable-a"],
+        )
+        current.release_packages[single.id] = single
+        ensure_release_work_lineage(current, single)
+        mixed = ReleasePackage(
+            id="release-mixed",
+            project_id="project",
+            deliverable_ids=["deliverable-a", "deliverable-b"],
+        )
+        current.release_packages[mixed.id] = mixed
+        ensure_release_work_lineage(current, mixed)
+        successor = ReleasePackage(
+            id="release-mixed-successor",
+            project_id="project",
+            supersedes_release_package_id=mixed.id,
+            deliverable_ids=["deliverable-a"],
+        )
+        current.release_packages[successor.id] = successor
+        ensure_release_work_lineage(current, successor)
+        return current
+
+    stored = repo.update(_add_releases)
+    assert stored.release_packages["release-single"].work_lineage_id == (
+        state.tasks["task"].work_lineage_id
+    )
+    mixed_lineage = stored.release_packages["release-mixed"].work_lineage_id
+    assert mixed_lineage not in {
+        state.tasks["task"].work_lineage_id,
+        state.tasks["task-other-lineage"].work_lineage_id,
+    }
+    assert stored.release_packages["release-mixed-successor"].work_lineage_id == mixed_lineage
 
 
 def test_operator_stand_down_revocation_immediately_wakes_newly_eligible_agents(
@@ -2168,6 +2444,45 @@ def test_due_team_member_is_leased_before_manager_fallback(tmp_path: Path) -> No
     assert manager_runtime is None or manager_runtime.active_dispatch_id is None
 
 
+def test_work_lineage_policy_filters_manager_fallback_to_one_task_family(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_team(tmp_path)
+    admin = _team_admin_service(repo)
+    now = datetime(2026, 1, 1, tzinfo=UTC)
+    state = admin.update_agent(
+        agent_id="manager",
+        context_clearing_policy=AgentContextClearingPolicy.WORK_LINEAGE,
+        set_context_clearing_policy=True,
+        expected_revision=repo.read().revision,
+    )
+    state = admin.create_or_reprioritize_task(
+        task_id="other-root",
+        owner_agent_id="backend",
+        project_id="project",
+        priority=2,
+        title="Other root",
+        description="A separate task family.",
+        created_by_agent_id="lead",
+        expected_revision=state.revision,
+    )
+
+    def _defer_backend(current: TeamState) -> TeamState:
+        current.agent_runtimes["backend"].next_wake_at = now + timedelta(hours=1)
+        return current
+
+    repo.update(_defer_backend, expected_revision=state.revision)
+    _state, leases = _team_runtime_service(repo).lease_due_agents(
+        now=now,
+        defer_activation=True,
+    )
+
+    assert [lease["agent"]["id"] for lease in leases] == ["manager"]
+    dispatch = leases[0]["dispatch"]
+    assert dispatch["work_lineage_id"] == repo.read().tasks["task"].work_lineage_id
+    assert dispatch["task_ids"] == ["task"]
+
+
 def test_manager_fallback_scopes_unattended_support_task_for_supervision(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -2485,6 +2800,193 @@ def test_wake_case_payloads_include_only_active_case_statuses(tmp_path: Path) ->
     assert {case["id"] for case in _case_payloads_for_team(state, "team")} == expected_case_ids
 
 
+def test_dispatch_case_payloads_keep_structurally_related_cases_and_hide_unrelated_detail(
+    tmp_path: Path,
+) -> None:
+    state = _seed_team(tmp_path).read()
+    state.tasks["task"].case_id = "case-task"
+    state.cases["case-task"] = TeamCase(
+        id="case-task",
+        team_id="team",
+        project_id="project",
+        title="Task case",
+        task_ids=["task"],
+    )
+    state.tasks["review-task"] = AgentTask(
+        id="review-task",
+        owner_agent_id="lead",
+        project_id="project",
+        case_id="case-review",
+        priority=1,
+        title="Review task",
+        description="Produce a review candidate.",
+        created_by_agent_id="manager",
+    )
+    state.cases["case-review"] = TeamCase(
+        id="case-review",
+        team_id="team",
+        project_id="project",
+        title="Review case",
+        task_ids=["review-task"],
+    )
+    state.deliverables["deliverable-review"] = Deliverable(
+        id="deliverable-review",
+        task_id="review-task",
+        producer_agent_id="lead",
+        summary="Review candidate.",
+    )
+    state.review_requests["review"] = ReviewRequest(
+        id="review",
+        deliverable_id="deliverable-review",
+        reviewer_agent_id="backend",
+    )
+    state.cases["case-inbox"] = TeamCase(
+        id="case-inbox",
+        team_id="team",
+        project_id="project",
+        title="Inbox case",
+    )
+    state.inbox["inbox-case"] = AgentInboxItem(
+        id="inbox-case",
+        recipient_agent_id="backend",
+        item_type=TeamInboxItemType.OPERATOR_DIRECTIVE,
+        payload={"case_id": "case-inbox"},
+    )
+    state.tasks["blocker-task"] = AgentTask(
+        id="blocker-task",
+        owner_agent_id="lead",
+        project_id="project",
+        case_id="case-blocker",
+        priority=1,
+        title="Blocked task",
+        description="Recover blocked work.",
+        created_by_agent_id="manager",
+    )
+    state.cases["case-blocker"] = TeamCase(
+        id="case-blocker",
+        team_id="team",
+        project_id="project",
+        title="Blocker case",
+        task_ids=["blocker-task"],
+    )
+    state.blockers["blocker"] = TeamBlocker(
+        id="blocker",
+        team_id="team",
+        project_id="project",
+        source_kind=TeamBlockerSourceKind.TASK,
+        source_id="blocker-task",
+        owner_agent_id="backend",
+        summary="Task is blocked.",
+    )
+    state.cases["case-unrelated"] = TeamCase(
+        id="case-unrelated",
+        team_id="team",
+        project_id="project",
+        title="Unrelated owned case",
+        owner_agent_id="backend",
+    )
+    dispatch = TeamDispatch(
+        id="dispatch-cases",
+        agent_id="backend",
+        session_id="session-backend",
+        cause_kind="review",
+        task_ids=["task"],
+        blocker_ids=["blocker"],
+        review_request_ids=["review"],
+        inbox_item_ids=["inbox-case"],
+        project_ids=["project"],
+    )
+
+    payload = _dispatch_case_payloads(
+        state,
+        agent=state.agents["backend"],
+        dispatch=dispatch,
+    )
+
+    assert {case["id"] for case in payload["cases"]} == {
+        "case-inbox",
+        "case-blocker",
+        "case-review",
+        "case-task",
+    }
+    assert payload["case_index"] == []
+    assert payload["unrelated_case_count"] == 1
+
+
+def test_dispatch_case_payloads_give_chat_a_project_case_index(tmp_path: Path) -> None:
+    state = _seed_team(tmp_path).read()
+    state.cases["case-chat"] = TeamCase(
+        id="case-chat",
+        team_id="team",
+        project_id="project",
+        title="Case named in Chat",
+    )
+    dispatch = TeamDispatch(
+        id="dispatch-chat-cases",
+        agent_id="backend",
+        session_id="session-backend",
+        cause_kind="team_chat",
+        project_ids=["project"],
+    )
+
+    payload = _dispatch_case_payloads(
+        state,
+        agent=state.agents["backend"],
+        dispatch=dispatch,
+    )
+
+    assert payload["cases"] == []
+    assert [case["id"] for case in payload["case_index"]] == ["case-chat"]
+    assert payload["unrelated_case_count"] == 1
+
+
+def test_dispatch_case_payloads_give_manager_minimal_unrelated_case_index(
+    tmp_path: Path,
+) -> None:
+    state = _seed_team(tmp_path).read()
+    state.cases["case-linked"] = TeamCase(
+        id="case-linked",
+        team_id="team",
+        project_id="project",
+        title="Linked case",
+        task_ids=["task"],
+    )
+    state.tasks["task"].case_id = "case-linked"
+    state.cases["case-unrelated"] = TeamCase(
+        id="case-unrelated",
+        team_id="team",
+        project_id="project",
+        title="Unrelated case",
+        description="This detail must not enter the index.",
+    )
+    dispatch = TeamDispatch(
+        id="dispatch-manager-cases",
+        agent_id="manager",
+        session_id="session-manager",
+        cause_kind="manager_fallback",
+        task_ids=["task"],
+        project_ids=["project"],
+    )
+
+    payload = _dispatch_case_payloads(
+        state,
+        agent=state.agents["manager"],
+        dispatch=dispatch,
+    )
+
+    assert [case["id"] for case in payload["cases"]] == ["case-linked"]
+    assert payload["case_index"] == [
+        {
+            "id": "case-unrelated",
+            "title": "Unrelated case",
+            "status": "open",
+            "priority": "normal",
+            "project_id": "project",
+        }
+    ]
+    assert payload["unrelated_case_count"] == 1
+
+
 def test_compact_wake_context_omits_resolved_and_closed_cases() -> None:
     context = build_compact_wake_context(
         {
@@ -2507,6 +3009,63 @@ def test_compact_wake_context_omits_resolved_and_closed_cases() -> None:
         "case-waiting",
     }
     assert context["omitted_counts"]["cases_non_current"] == 2
+
+
+def test_compact_wake_context_limits_case_index_and_filters_nonactionable_sessions() -> None:
+    context = build_compact_wake_context(
+        {
+            "agent": {"id": "manager"},
+            "cases": [{"id": "linked", "status": "open", "title": "Linked"}],
+            "case_index": [
+                {
+                    "id": f"case-{index:02d}",
+                    "project_id": "project",
+                    "status": "open",
+                    "priority": "normal",
+                    "title": f"Case {index:02d}",
+                    "description": "must not be projected",
+                }
+                for index in range(14)
+            ],
+            "unrelated_case_count": 14,
+            "session_health": [
+                {"agent_id": "active", "session_present": True, "status": "active"},
+                {"agent_id": "unknown", "session_present": True, "status": "unknown"},
+                {"agent_id": "missing", "session_present": False, "status": "missing"},
+                {"agent_id": "failed", "agent_execution_status": "failed"},
+                {"agent_id": "stopped", "container_lifecycle_state": "stopped"},
+            ],
+        },
+        fresh_context=True,
+    )
+
+    assert len(context["case_index"]) == 12
+    assert all("description" not in case for case in context["case_index"])
+    assert context["omitted_counts"] == {
+        "case_index": 2,
+        "cases_outside_dispatch": 14,
+    }
+    assert context["session_health_summary"] == {
+        "checked_count": 5,
+        "attention_required_count": 3,
+        "non_actionable_omitted_count": 2,
+    }
+    assert {row["agent"] for row in context["session_health"]} == {
+        "failed",
+        "missing",
+        "stopped",
+    }
+    retained = build_compact_wake_context(
+        {
+            "agent": {"id": "manager"},
+            "case_index": context["case_index"],
+            "unrelated_case_count": 14,
+            "session_health": [],
+        },
+        fresh_context=False,
+    )
+    assert "case_index" not in retained
+    assert retained["omitted_counts"]["cases_outside_dispatch"] == 14
 
 
 def test_compact_wake_context_keeps_only_references_to_terminal_releases() -> None:
@@ -4502,14 +5061,22 @@ def test_wake_due_agents_provider_grants_reply_only_chat_tool_when_mutation_disa
         TEAM_SEND_OPERATOR_CHAT_MESSAGE_TOOL,
         TEAM_ACKNOWLEDGE_OPERATOR_CHAT_MESSAGES_TOOL,
     ]
-    assert chat_tools["requested_tools"] == [TEAM_REPLY_TO_CHAT_TOOL, *completion_tools]
+    assert chat_tools["requested_tools"] == [
+        TEAM_REPLY_TO_CHAT_TOOL,
+        TEAM_LIST_CONVERSATION_MESSAGES_TOOL,
+        *completion_tools,
+    ]
     assert chat_tools["already_allowed_tools"] == completion_tools
-    assert chat_tools["granted_tools"] == [TEAM_REPLY_TO_CHAT_TOOL]
+    assert chat_tools["granted_tools"] == [
+        TEAM_REPLY_TO_CHAT_TOOL,
+        TEAM_LIST_CONVERSATION_MESSAGES_TOOL,
+    ]
     assert chat_tools["removed_tools"] == [
         tool for tool in ORDINARY_TEAM_MCP_TOOL_NAMES if tool not in completion_tools
     ]
     assert session_store.sessions["session-backend"].allowed_tools == [
         TEAM_REPLY_TO_CHAT_TOOL,
+        TEAM_LIST_CONVERSATION_MESSAGES_TOOL,
         *completion_tools,
     ]
     prompt = str(resumer.calls[0]["prompt"])
@@ -6854,19 +7421,12 @@ def test_wake_due_agents_provider_includes_expired_session_health_in_prompt(
             "is_expired": True,
             "status": "expired",
         },
-        {
-            "agent": "lead",
-            "team_id": "team",
-            "project_ids": ["project"],
-            "lead_project_ids": ["project"],
-            "role_id": "project__project-lead",
-            "session_id": "session-lead",
-            "session_present": True,
-            "expires_at": None,
-            "is_expired": False,
-            "status": "unknown",
-        },
     ]
+    assert context["session_health_summary"] == {
+        "checked_count": 2,
+        "attention_required_count": 1,
+        "non_actionable_omitted_count": 1,
+    }
 
 
 def test_wake_due_agents_provider_delivers_latest_action_feedback(

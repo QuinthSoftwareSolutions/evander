@@ -61,6 +61,7 @@ from .release_packages import (
     _repair_release_review_manifests_from_promotion_evidence,
 )
 from .stand_down import _active_stand_downs_for_agent
+from .work_lineage import ensure_release_work_lineage, ensure_task_work_lineage
 
 
 def _apply_git_review_promotion(
@@ -1314,6 +1315,8 @@ def _materialize_merge_recovery_task(
     result: dict[str, Any],
 ) -> None:
     now = utc_now()
+    if release.work_lineage_id is None:
+        ensure_release_work_lineage(state, release)
     boundary_kind = (
         failed_promotions[0].promotion_kind
         if len({promotion.promotion_kind for promotion in failed_promotions}) == 1
@@ -1347,6 +1350,7 @@ def _materialize_merge_recovery_task(
             title=f"Resolve {boundary_label} conflicts for {release.id}",
             description=description,
             created_by_actor="system:git-merge-recovery",
+            release_base_package_id=release.id,
             created_at=now,
             updated_at=now,
         )
@@ -1366,6 +1370,9 @@ def _materialize_merge_recovery_task(
             task.description = description
         task.updated_at = now
         result.setdefault("updated_task_ids", []).append(task.id)
+
+    task.release_base_package_id = release.id
+    ensure_task_work_lineage(state, task)
 
     blocker.affected_task_ids = _append_unique(blocker.affected_task_ids, task.id)
     blocker.updated_at = now

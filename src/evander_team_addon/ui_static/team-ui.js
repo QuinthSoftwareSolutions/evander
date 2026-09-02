@@ -82,6 +82,7 @@ const contextClearingPolicies = [
   ["off", "Off", "Never automatically clear context; manual clear still works."],
   ["idle", "When idle", "Clear after the agent becomes idle following work."],
   ["every_wake", "Every wake", "Start each Team wake with a fresh context."],
+  ["work_lineage", "Work lineage", "Resume a separate context for each related task lineage."],
 ];
 const contextClearingPolicyLabels = Object.fromEntries(
   contextClearingPolicies.map(([value, label]) => [value, label]),
@@ -7384,13 +7385,13 @@ function renderRuntimeAgentRow(agent) {
           <span class="state-pill ${escapeHtml(status)}">${escapeHtml(status)}</span>
           ${sessionStatus.isExpired ? `<span class="state-pill critical">session expired</span>` : ""}
           ${renderAgentStandDownControls(agent.id, agent)}
-          <button class="record-action" type="button" data-context-rotation-agent-id="${escapeAttr(agent.id)}">Clear context</button>
+          ${["every_wake", "work_lineage"].includes(contextPolicy) ? "" : `<button class="record-action" type="button" data-context-rotation-agent-id="${escapeAttr(agent.id)}">Clear context</button>`}
         </div>
       </div>
       <div class="meta-line">${escapeHtml(agentRoleLabel(agent))} - ${escapeHtml(sessionSummary)}${agentProjectSummary(agent) ? ` - projects ${escapeHtml(agentProjectSummary(agent))}` : ""}</div>
       <div class="meta-line">Last wake ${escapeHtml(lastWake)} - Next wake ${escapeHtml(nextWake)} - Wake lease ${escapeHtml(wakeLease)}</div>
       <div class="meta-line">Wake reason ${escapeHtml(wakeReason)} - No progress ${escapeHtml(agent.no_progress_count ?? 0)} - Active dispatch ${escapeHtml(dispatchId)}</div>
-      <div class="meta-line">Context clearing ${escapeHtml(contextClearingPolicyLabel(contextPolicy))} - ${escapeHtml(handoffPreparing ? "preparing handoff" : contextPending ? "queued" : idleRotationDue ? `idle grace until ${idleRotationDue}` : "not pending")} - Last rotated ${escapeHtml(lastRotated)}${handoffPreparationStatus ? ` - Handoff ${escapeHtml(handoffPreparationStatus)}` : ""}</div>
+      <div class="meta-line">${contextPolicy === "work_lineage" ? "Context routing Work lineage" : `Context clearing ${escapeHtml(contextClearingPolicyLabel(contextPolicy))} - ${escapeHtml(handoffPreparing ? "preparing handoff" : contextPending ? "queued" : idleRotationDue ? `idle grace until ${idleRotationDue}` : "not pending")}${contextPolicy === "every_wake" ? "" : ` - Last rotated ${escapeHtml(lastRotated)}`}${handoffPreparationStatus ? ` - Handoff ${escapeHtml(handoffPreparationStatus)}` : ""}`}</div>
       ${
         handoffSummary
           ? `<details class="runtime-handoff" ${teamDisclosureAttributes(teamDisclosureKey(activeTeamView, "runtime-agent", agent.id, "handoff"))}><summary>Handoff summary</summary><pre>${escapeHtml(handoffSummary)}</pre></details>`
@@ -7440,11 +7441,11 @@ function renderCompactRuntimeAgentRow(agent) {
         <div class="compact-record-body">
           <div class="record-actions">
             ${renderAgentStandDownControls(agent.id, agent)}
-            <button class="record-action" type="button" data-context-rotation-agent-id="${escapeAttr(agent.id)}">Clear context</button>
+            ${["every_wake", "work_lineage"].includes(contextPolicy) ? "" : `<button class="record-action" type="button" data-context-rotation-agent-id="${escapeAttr(agent.id)}">Clear context</button>`}
           </div>
           <div class="meta-line">Last wake ${escapeHtml(lastWake)} - Next wake ${escapeHtml(nextWake)} - Wake lease ${escapeHtml(wakeLease)}</div>
           <div class="meta-line">Wake reason ${escapeHtml(wakeReason)} - No progress ${escapeHtml(agent.no_progress_count ?? 0)} - Active dispatch ${escapeHtml(dispatchId)}</div>
-          <div class="meta-line">Context clearing ${escapeHtml(contextClearingPolicyLabel(contextPolicy))} - ${escapeHtml(contextPending ? "pending" : idleRotationDue ? `idle grace until ${idleRotationDue}` : "not pending")} - Last rotated ${escapeHtml(lastRotated)}</div>
+          <div class="meta-line">${contextPolicy === "work_lineage" ? "Context routing Work lineage" : `Context clearing ${escapeHtml(contextClearingPolicyLabel(contextPolicy))} - ${escapeHtml(contextPending ? "pending" : idleRotationDue ? `idle grace until ${idleRotationDue}` : "not pending")}${contextPolicy === "every_wake" ? "" : ` - Last rotated ${escapeHtml(lastRotated)}`}`}</div>
           ${
             handoffSummary
               ? `<details class="runtime-handoff" ${teamDisclosureAttributes(teamDisclosureKey("operations", "agent", agent.id, "handoff"))}><summary>Handoff summary</summary><pre>${escapeHtml(handoffSummary)}</pre></details>`
@@ -8419,7 +8420,7 @@ function renderAgents() {
                       ${renderAgentRosterStatusPill(details)}
                       ${renderAgentStandDownControls(details.id, details)}
                       ${renderOpenAgentSessionButton(details.sessionId)}
-                      <button class="record-action" type="button" data-context-rotation-agent-id="${escapeAttr(details.id)}">Clear context</button>
+                      ${["every_wake", "work_lineage"].includes(details.runtime.contextClearingPolicy) ? "" : `<button class="record-action" type="button" data-context-rotation-agent-id="${escapeAttr(details.id)}">Clear context</button>`}
                       ${editButton("agent", details.id)}
                     </div>
                   </div>
@@ -10474,7 +10475,7 @@ function renderPeopleAgentDetail(agent, emptyMessage = "No agent selected.") {
       <div class="record-actions agent-detail-actions">
         ${renderAgentStandDownControls(details.id, details)}
         ${renderOpenAgentSessionButton(details.sessionId)}
-        <button class="record-action" type="button" data-context-rotation-agent-id="${escapeAttr(details.id)}">Clear context</button>
+        ${["every_wake", "work_lineage"].includes(details.runtime.contextClearingPolicy) ? "" : `<button class="record-action" type="button" data-context-rotation-agent-id="${escapeAttr(details.id)}">Clear context</button>`}
         ${editButton("agent", details.id)}
       </div>
       ${renderAgentVoiceCallPanel(details)}
@@ -10645,13 +10646,14 @@ function agentRuntimeDetailRows(details) {
     rows.push(`Last handoff ${runtime.lastHandoffSummary}`);
   }
   if (runtime.contextClearingPolicy !== "off" || runtime.contextRotationPending) {
-    rows.push(
-      `Context clearing ${contextClearingPolicyLabel(runtime.contextClearingPolicy)}${
+    rows.push(runtime.contextClearingPolicy === "work_lineage"
+      ? "Context routing: Work lineage"
+      : `Context clearing ${contextClearingPolicyLabel(runtime.contextClearingPolicy)}${
         runtime.contextRotationPending ? " - pending" : ""
       }${runtime.contextIdleRotationDueAt ? ` - idle grace until ${runtime.contextIdleRotationDueAt}` : ""}`,
     );
   }
-  if (runtime.contextClearingPolicy !== "every_wake") {
+  if (!["every_wake", "work_lineage"].includes(runtime.contextClearingPolicy)) {
     if (!runtime.lastContextRotatedAt) {
       rows.push("Latest context reset: no completed context reset yet");
     } else {
@@ -11063,7 +11065,7 @@ function runtimeSummary(agentId) {
   } else if (contextIdleRotationDueAt) {
     parts.push(`idle context grace until ${contextIdleRotationDueAt}`);
   }
-  if (lastContextRotatedAt && contextClearingPolicy !== "every_wake") {
+  if (lastContextRotatedAt && !["every_wake", "work_lineage"].includes(contextClearingPolicy)) {
     parts.push(`last context reset ${lastContextRotatedAt}`);
   }
   return {

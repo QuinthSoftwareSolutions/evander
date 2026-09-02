@@ -8001,7 +8001,17 @@ def test_team_addon_state_rebases_reset_usage_when_agent_session_changes(
     assert runtime["context_reset_usage"] == {"input_tokens_since_reset": 7}
 
 
-def test_team_addon_state_omits_reset_usage_for_every_wake_agents(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    "policy",
+    [
+        AgentContextClearingPolicy.EVERY_WAKE,
+        AgentContextClearingPolicy.WORK_LINEAGE,
+    ],
+)
+def test_team_addon_state_omits_reset_usage_for_non_aggregate_context_policies(
+    tmp_path: Path,
+    policy: AgentContextClearingPolicy,
+) -> None:
     runtime_dir = tmp_path / "runtime"
     repo = _seed_runtime_operations_state(runtime_dir)
     reset_at = datetime(2026, 6, 16, 12, 0, tzinfo=UTC)
@@ -8013,7 +8023,7 @@ def test_team_addon_state_omits_reset_usage_for_every_wake_agents(tmp_path: Path
     repo.update(_set_reset_boundary)
     _team_admin_service(repo).update_agent(
         agent_id="backend",
-        context_clearing_policy=AgentContextClearingPolicy.EVERY_WAKE,
+        context_clearing_policy=policy,
         set_context_clearing_policy=True,
     )
     ModelUsageStore(runtime_dir / "model-usage.db").upsert_event(
