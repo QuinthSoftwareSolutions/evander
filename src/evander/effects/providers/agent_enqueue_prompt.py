@@ -830,7 +830,11 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
                     resume_thread_metadata_key=resume_thread_metadata_key,
                     resume_thread_metadata_collection=resume_thread_metadata_collection,
                     effect_id=effect_id,
-                    queue_key=queue_key or session_id,
+                    queue_key=self._subscription_capacity_queue_key(
+                        queue_key=queue_key,
+                        fallback=session_id,
+                        dispatch_id=dispatch_id,
+                    ),
                     workflow_context=workflow_context,
                     workflow_for_execution_ids=workflow_for_execution_ids,
                     workflow_run_id=workflow_run_id,
@@ -1629,6 +1633,16 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
     ) -> str:
         base = str(queue_key or fallback).strip() or fallback
         return f"{base}:local-inference:{dispatch_id}"
+
+    @staticmethod
+    def _subscription_capacity_queue_key(
+        *,
+        queue_key: str | None,
+        fallback: str,
+        dispatch_id: str,
+    ) -> str:
+        base = str(queue_key or fallback).strip() or fallback
+        return f"{base}:subscription:{dispatch_id}"
 
     def _release_local_inference_capacity(self, admission: LocalInferenceCapacityAdmission) -> None:
         if admission.slot_id is None:

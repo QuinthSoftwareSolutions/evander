@@ -101,14 +101,24 @@ def _service(
     *,
     wake_reconciliation=None,  # noqa: ANN001
     runtime_dir: Path | None = None,
+    worker_url: str = "http://worker.test",
+    session_worker_urls: dict[str, str] | None = None,
 ) -> SimpleNamespace:
     audit_events: list[object] = []
-    provider_config = SimpleNamespace(
-        resolve_for_directory=lambda directory_path: SimpleNamespace(
-            container_worker_base_url="http://worker.test",
+    session_urls = dict(session_worker_urls or {})
+
+    def resolved_config(url: str) -> SimpleNamespace:
+        return SimpleNamespace(
+            container_worker_base_url=url,
             container_worker_token_env="WORKER_TOKEN",
             container_worker_request_timeout_seconds=30.0,
         )
+
+    provider_config = SimpleNamespace(
+        resolve_for_directory=lambda _directory_path: resolved_config(worker_url),
+        resolve_for_session_id=lambda session_id: resolved_config(
+            session_urls.get(session_id, worker_url)
+        ),
     )
     runtime = SimpleNamespace(
         provider_config=provider_config,
@@ -256,6 +266,55 @@ def test_subscription_profile_refresh_makes_recovered_capacity_immediately_eligi
 
     assert queue_store.get("session-a").retry_not_before is None
     assert wakes == ["wake"]
+
+
+def test_subscription_profile_queue_recovery_is_scoped_to_selected_worker(
+    tmp_path: Path,
+) -> None:
+    class ReadyWorker(FakeWorkerClient):
+        def list_codex_auth_profiles(self) -> dict[str, object]:
+            return {
+                "profiles": [
+                    {
+                        "profile_id": "default",
+                        "display_name": "Default",
+                        "enabled": True,
+                        "available": True,
+                        "signed_in": True,
+                    }
+                ]
+            }
+
+    queue_store = AgentPromptQueueStore(tmp_path / "queued-agent-prompts.json")
+    for session_id in ("worker-a-session", "worker-b-session"):
+        queue_store.defer_capacity(
+            QueuedAgentPromptRecord(
+                queue_key=session_id,
+                target=session_id,
+                vm_name=session_id,
+                session_id=session_id,
+                prompt="Continue",
+                effect_id=f"effect-{session_id}",
+                subscription_profile_id="default",
+            ),
+            queue_reason="subscription_rate_limited",
+            retry_at=datetime.now(UTC) + timedelta(minutes=10),
+        )
+    service = _service(
+        ReadyWorker(),
+        runtime_dir=tmp_path,
+        worker_url="http://worker-a.test/",
+        session_worker_urls={
+            "worker-a-session": "http://worker-a.test",
+            "worker-b-session": "http://worker-b.test",
+        },
+    ).codex_auth_admin
+
+    listed = service.list_profiles("root")
+
+    assert listed["profiles"][0]["queued_prompt_count"] == 1
+    assert queue_store.get("worker-a-session").retry_not_before is None
+    assert queue_store.get("worker-b-session").retry_not_before is not None
 
 
 def test_admin_subscription_profile_routes_proxy_worker_operations_at_root_owner_scope() -> None:

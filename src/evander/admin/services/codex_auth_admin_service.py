@@ -16,6 +16,8 @@ from evander.models import AuditEvent
 class CodexAuthProviderConfigPort(Protocol):
     def resolve_for_directory(self, directory_path: str) -> GatewayConfig: ...
 
+    def resolve_for_session_id(self, session_id: str) -> GatewayConfig: ...
+
 
 class CodexAuthAuditPort(Protocol):
     def log(self, event: AuditEvent) -> None: ...
@@ -43,8 +45,10 @@ class CodexAuthAdminService:
         }
 
     def list_profiles(self, directory_path: str) -> dict[str, Any]:
-        payload = self._client(directory_path).list_codex_auth_profiles()
-        queue_counts = self._queued_counts_by_profile()
+        config = self._deps.provider_config.resolve_for_directory(directory_path)
+        worker_url = str(config.container_worker_base_url or "").strip()
+        payload = self._client_for_config(config).list_codex_auth_profiles()
+        queue_counts = self._queued_counts_by_profile(worker_url=worker_url)
         profiles = []
         for raw in payload.get("profiles", []):
             if not isinstance(raw, dict):
@@ -54,11 +58,10 @@ class CodexAuthAdminService:
             profile["queued_prompt_count"] = queue_counts.get(profile_id, 0)
             profiles.append(profile)
             if self._profile_is_ready(profile):
-                self._make_subscription_profile_ready(profile_id)
-        config = self._deps.provider_config.resolve_for_directory(directory_path)
+                self._make_subscription_profile_ready(profile_id, worker_url=worker_url)
         result = {
             "directory_path": directory_path,
-            "worker_url": config.container_worker_base_url,
+            "worker_url": worker_url,
             "profiles": profiles,
         }
         # A manual refresh is also the operator-controlled wake for capacity that
@@ -67,10 +70,14 @@ class CodexAuthAdminService:
         return result
 
     def profile_status(self, directory_path: str, profile_id: str) -> dict[str, Any]:
-        payload = self._client(directory_path).codex_auth_profile_status(profile_id)
-        payload["queued_prompt_count"] = self._queued_counts_by_profile().get(profile_id, 0)
+        config = self._deps.provider_config.resolve_for_directory(directory_path)
+        worker_url = str(config.container_worker_base_url or "").strip()
+        payload = self._client_for_config(config).codex_auth_profile_status(profile_id)
+        payload["queued_prompt_count"] = self._queued_counts_by_profile(
+            worker_url=worker_url
+        ).get(profile_id, 0)
         if self._profile_is_ready(payload):
-            self._make_subscription_profile_ready(profile_id)
+            self._make_subscription_profile_ready(profile_id, worker_url=worker_url)
         self._wake()
         return payload
 
@@ -81,14 +88,18 @@ class CodexAuthAdminService:
         *,
         actor_user_id: str | None,
     ) -> dict[str, Any]:
+        config = self._deps.provider_config.resolve_for_directory(directory_path)
         result = self._mutate(
             "codex_subscription_profile_create",
             directory_path,
             actor_user_id,
-            lambda: self._client(directory_path).create_codex_auth_profile(payload),
+            lambda: self._client_for_config(config).create_codex_auth_profile(payload),
         )
         if bool(result.get("enabled")):
-            self._make_subscription_profile_ready(str(result.get("profile_id") or ""))
+            self._make_subscription_profile_ready(
+                str(result.get("profile_id") or ""),
+                worker_url=str(config.container_worker_base_url or "").strip(),
+            )
             self._wake()
         return result
 
@@ -100,14 +111,20 @@ class CodexAuthAdminService:
         *,
         actor_user_id: str | None,
     ) -> dict[str, Any]:
+        config = self._deps.provider_config.resolve_for_directory(directory_path)
         result = self._mutate(
             "codex_subscription_profile_update",
             directory_path,
             actor_user_id,
-            lambda: self._client(directory_path).patch_codex_auth_profile(profile_id, payload),
+            lambda: self._client_for_config(config).patch_codex_auth_profile(
+                profile_id, payload
+            ),
         )
         if payload.get("enabled") is True:
-            self._make_subscription_profile_ready(profile_id)
+            self._make_subscription_profile_ready(
+                profile_id,
+                worker_url=str(config.container_worker_base_url or "").strip(),
+            )
             self._wake()
         return result
 
@@ -128,11 +145,15 @@ class CodexAuthAdminService:
     def profile_device_login_status(
         self, directory_path: str, profile_id: str, login_id: str
     ) -> dict[str, Any]:
-        result = self._client(directory_path).codex_profile_device_login_status(
+        config = self._deps.provider_config.resolve_for_directory(directory_path)
+        result = self._client_for_config(config).codex_profile_device_login_status(
             profile_id, login_id
         )
         if result.get("status") == "completed":
-            self._make_subscription_profile_ready(profile_id)
+            self._make_subscription_profile_ready(
+                profile_id,
+                worker_url=str(config.container_worker_base_url or "").strip(),
+            )
             self._wake()
         return result
 
@@ -207,6 +228,9 @@ class CodexAuthAdminService:
 
     def _client(self, directory_path: str) -> ContainerWorkerClient:
         config = self._deps.provider_config.resolve_for_directory(directory_path)
+        return self._client_for_config(config)
+
+    def _client_for_config(self, config: GatewayConfig) -> ContainerWorkerClient:
         if not config.container_worker_base_url:
             raise ValueError(
                 "container_worker_base_url is required to manage worker Codex authentication"
@@ -249,9 +273,10 @@ class CodexAuthAdminService:
         self._audit(event_type, directory_path, actor_user_id, "allowed")
         return payload
 
-    def _queued_counts_by_profile(self) -> dict[str, int]:
+    def _queued_counts_by_profile(self, *, worker_url: str) -> dict[str, int]:
         runtime_dir = self._deps.runtime_dir
-        if runtime_dir is None:
+        normalized_worker_url = self._normalize_worker_url(worker_url)
+        if runtime_dir is None or not normalized_worker_url:
             return {}
         try:
             from evander.messaging.agent_prompt_queue import AgentPromptQueueStore
@@ -263,24 +288,46 @@ class CodexAuthAdminService:
             return {}
         counts: dict[str, int] = {}
         for record in records.values():
+            if self._worker_url_for_record(record) != normalized_worker_url:
+                continue
             profile_id = str(getattr(record, "subscription_profile_id", "") or "").strip()
             if profile_id:
                 counts[profile_id] = counts.get(profile_id, 0) + 1
         return counts
 
-    def _make_subscription_profile_ready(self, profile_id: str) -> None:
+    def _make_subscription_profile_ready(self, profile_id: str, *, worker_url: str) -> None:
         runtime_dir = self._deps.runtime_dir
         normalized = str(profile_id or "").strip()
-        if runtime_dir is None or not normalized:
+        normalized_worker_url = self._normalize_worker_url(worker_url)
+        if runtime_dir is None or not normalized or not normalized_worker_url:
             return
         try:
             from evander.messaging.agent_prompt_queue import AgentPromptQueueStore
 
             AgentPromptQueueStore(
                 Path(runtime_dir) / "queued-agent-prompts.json"
-            ).make_subscription_profile_ready(normalized)
+            ).make_subscription_profile_ready(
+                normalized,
+                record_filter=lambda record: (
+                    self._worker_url_for_record(record) == normalized_worker_url
+                ),
+            )
         except Exception:
             pass
+
+    def _worker_url_for_record(self, record: Any) -> str:
+        session_id = str(getattr(record, "session_id", "") or "").strip()
+        if not session_id:
+            return ""
+        try:
+            config = self._deps.provider_config.resolve_for_session_id(session_id)
+        except Exception:
+            return ""
+        return self._normalize_worker_url(config.container_worker_base_url)
+
+    @staticmethod
+    def _normalize_worker_url(value: object) -> str:
+        return str(value or "").strip().rstrip("/")
 
     @staticmethod
     def _profile_is_ready(profile: dict[str, Any]) -> bool:

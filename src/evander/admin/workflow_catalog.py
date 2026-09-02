@@ -131,7 +131,9 @@ def _workflow_agent_create_diagnostics(
         }
         for field_name, expected in restrictions.items():
             actual = str(values.get(field_name) or "").strip()
-            if actual and actual != expected:
+            if (field_name == "codex_auth_mode" and actual != expected) or (
+                field_name != "codex_auth_mode" and actual and actual != expected
+            ):
                 diagnostics.append(
                     WorkflowValidationDiagnostic(
                         code="subscription_profile_incompatible_agent_create",

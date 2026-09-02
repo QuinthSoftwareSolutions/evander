@@ -12,11 +12,14 @@ from types import SimpleNamespace
 
 import pytest
 
-from evander.codex_auth import CodexAuthMode
+from evander.codex_auth import CodexAuthMode, CodexSubscriptionDeferral
 from evander.config import GatewayConfig
 from evander.directories import DirectoryStore
 from evander.execution import ExecutionStatusKind
-from evander.execution.container_worker_client import ContainerWorkerClientError
+from evander.execution.container_worker_client import (
+    CodexSubscriptionDeferredClientError,
+    ContainerWorkerClientError,
+)
 from evander.execution.container_worker_repository import ContainerWorkerExecutionRecord
 from evander.effects.providers.agent_clone_repo import (
     AgentCloneRepoEffectProvider,
@@ -4773,6 +4776,83 @@ def test_agent_enqueue_prompt_provider_keeps_same_target_capacity_waits_distinct
     assert {record.prompt for record in queued.values()} == {"first prompt", "second prompt"}
     assert all(record.coalesced_count == 1 for record in queued.values())
     assert backend.started_specs == []
+
+
+def test_agent_enqueue_prompt_provider_keeps_subscription_deferrals_distinct(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = GatewayConfig(
+        runtime_dir=tmp_path,
+        execution_backend="container_worker_vm",
+        container_worker_base_url="http://worker.test",
+        model_provider_mode="openai_public",
+    )
+    session_repository = JsonSessionManifestRepository(config.session_store_path)
+    session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-1",
+            vm_id=None,
+            allowed_tools=[ToolName.LIST_PENDING_AGENT_PROMPTS],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+            vm_provider="container_worker_vm",
+            vm_provider_id="truman",
+            model="gpt-5.4-mini",
+            codex_auth_mode=CodexAuthMode.CHATGPT_SUBSCRIPTION,
+            subscription_profile_id="team-a",
+            metadata={"execution_backend": "container_worker_vm", "target_name": "truman"},
+        )
+    )
+    resolver = _ContainerResolverStub(config)
+    admin_service = SimpleNamespace(
+        runtime=SimpleNamespace(
+            session_repository=session_repository,
+            provider_config=resolver,
+        ),
+        list_vms=lambda **_kwargs: [],
+    )
+    backend = _FakeContainerBackend()
+    backend.start_error = CodexSubscriptionDeferredClientError(
+        "subscription capacity unavailable",
+        deferral=CodexSubscriptionDeferral(
+            profile_id="team-a",
+            reason="rate_limited",
+        ),
+    )
+    monkeypatch.setattr(
+        "evander.effects.providers.agent_enqueue_prompt.container_backend",
+        lambda _context, _config: backend,
+    )
+    factory = EffectProviderFactory(
+        provider_config_resolver=resolver,
+        admin_service=admin_service,
+    )
+
+    outputs = [
+        factory.build(
+            AgentEnqueuePromptEffectDefinition(
+                id="agent-enqueue",
+                display_name="Enqueue",
+                type="effect:agent:enqueue-prompt",
+                target="session-1",
+                prompt=prompt,
+                dispatch_id=dispatch_id,
+            )
+        ).execute()
+        for prompt, dispatch_id in (
+            ("first prompt", "caller-dispatch-1"),
+            ("second prompt", "caller-dispatch-2"),
+        )
+    ]
+
+    assert [output["queue_key"] for output in outputs] == [
+        "session-1:subscription:caller-dispatch-1",
+        "session-1:subscription:caller-dispatch-2",
+    ]
+    queued = AgentPromptQueueStore(tmp_path / "queued-agent-prompts.json").read_all()
+    assert len(queued) == 2
+    assert {record.prompt for record in queued.values()} == {"first prompt", "second prompt"}
+    assert all(record.subscription_profile_id == "team-a" for record in queued.values())
 
 
 def test_agent_enqueue_prompt_provider_caps_recreated_busy_container_prompt(

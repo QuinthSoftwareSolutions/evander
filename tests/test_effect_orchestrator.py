@@ -22,12 +22,14 @@ from types import SimpleNamespace
 import pytest
 import yaml
 
+from evander.codex_auth import CodexAuthMode, CodexSubscriptionDeferral
 from evander.admin.services.operator_steering_service import (
     OperatorSteeringAdminDependencies,
     OperatorSteeringAdminService,
 )
 from evander.config import GatewayConfig, TriggerOrchestratorWorkerGlobalConfig
 from evander.execution import ExecutionStatusKind
+from evander.execution.container_worker_client import CodexSubscriptionDeferredClientError
 from evander.effects.providers.agent_enqueue_prompt import AgentEnqueuePromptEffectProvider
 from evander.effects.providers.agent_prompt import AgentPromptEffectProvider
 from evander.effects.providers.lifecycle_hooks import AgentEnqueuePromptQueueDispatchHook
@@ -6210,6 +6212,8 @@ def test_agent_enqueue_prompt_replay_discards_container_row_after_terminal_recor
             expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
             vm_provider="container_worker_vm",
             vm_provider_id="worker-agent",
+            codex_auth_mode=CodexAuthMode.CHATGPT_SUBSCRIPTION,
+            subscription_profile_id="team-a",
             metadata={"execution_backend": "container_worker_vm"},
         )
     )
@@ -6440,6 +6444,82 @@ def test_agent_enqueue_prompt_second_subscription_deferral_gets_fresh_replay_ide
     assert waiting[0].idempotency_key != succeeded[0].idempotency_key
     assert waiting[0].outputs["queue_key"] == queue_key
     assert waiting[0].outputs["dispatch_id"] == dispatch_id
+
+
+def test_agent_enqueue_prompt_replay_persists_profile_from_capacity_deferral(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = GatewayConfig(
+        runtime_dir=tmp_path,
+        execution_backend="container_worker_vm",
+        container_worker_base_url="http://worker.test",
+    )
+    session_repository = JsonSessionManifestRepository(config.session_store_path)
+    session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-1",
+            vm_id=None,
+            allowed_tools=[ToolName.LIST_PENDING_AGENT_PROMPTS],
+            expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
+            vm_provider="container_worker_vm",
+            vm_provider_id="worker-agent",
+            metadata={"execution_backend": "container_worker_vm"},
+        )
+    )
+    dispatch_id = "dispatch-capacity-deferral"
+    queue_store = AgentPromptQueueStore(tmp_path / "queued-agent-prompts.json")
+    queued = queue_store.put(
+        QueuedAgentPromptRecord(
+            queue_key="session-1",
+            target="session-1",
+            vm_name="worker-agent",
+            session_id="session-1",
+            prompt="continue after the worker becomes idle",
+            dispatch_id=dispatch_id,
+            effect_id="effect-capacity-deferral",
+        ),
+        count_retry=False,
+    )
+    backend = _ContainerDispatchBackendStub()
+
+    def defer_start(_spec):  # noqa: ANN001
+        raise CodexSubscriptionDeferredClientError(
+            "subscription capacity unavailable",
+            deferral=CodexSubscriptionDeferral(
+                profile_id="team-a",
+                reason="rate_limited",
+            ),
+        )
+
+    backend.start = defer_start
+    monkeypatch.setattr(
+        "evander.effects.providers.lifecycle_hooks.build_execution_backend",
+        lambda config, admin_service: backend,
+    )
+    worker = SimpleNamespace(
+        config=config,
+        queued_agent_prompt_store=queue_store,
+        execution_store=SqliteExecutionStore(tmp_path / "orchestration.db"),
+        agent_prompt_dispatch_port=object(),
+        provider_config_resolver=SimpleNamespace(resolve_for_session_id=lambda _id: config),
+        provider_factory=SimpleNamespace(
+            admin_service=SimpleNamespace(
+                runtime=SimpleNamespace(session_repository=session_repository)
+            )
+        ),
+    )
+
+    assert AgentEnqueuePromptQueueDispatchHook().on_post_completion_dispatch(worker=worker) == 0
+
+    replay_key = agent_prompt_replay_queue_key(queued)
+    deferred = queue_store.get(replay_key)
+    assert deferred is not None
+    assert queue_store.get("session-1") is None
+    assert deferred.subscription_profile_id == "team-a"
+    assert deferred.queue_reason == "subscription_rate_limited"
+    assert deferred.capacity_deferral_count == 1
+    assert deferred.retry_not_before is not None
 
 
 def test_queued_steering_note_returns_to_pending_after_subscription_redeferral(

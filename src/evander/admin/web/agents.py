@@ -481,6 +481,7 @@ def agent_routes(
                 return json_error("Queued prompt does not belong to this agent.", status_code=404)
             dispatch_id = queued_agent_prompt_dispatch_id(record)
             steering_note_id = str(record.metadata.get("operator_steering_note_id") or "").strip()
+            linked_cancellation_deleted_queue = False
             if queue_key.startswith("scheduled-wake:"):
                 request_id = queue_key.removeprefix("scheduled-wake:").strip()
                 caller_session_id = str(record.session_id or agent.session_id or agent_id).strip()
@@ -510,14 +511,17 @@ def agent_routes(
                         "Scheduled wake could not be cancelled; refresh and retry.",
                         status_code=409,
                     )
+                linked_cancellation_deleted_queue = cancellation.status == "cancelled"
+            if (
+                not linked_cancellation_deleted_queue
+                and not store.delete_if_dispatch_id(queue_key, dispatch_id)
+            ):
+                return json_error("Queued prompt changed; refresh and retry.", status_code=409)
             if steering_note_id:
                 await run_in_threadpool(
                     service.operator_steering_admin.cancel_operator_steering_note,
                     steering_note_id,
                 )
-            current = store.get(queue_key)
-            if current is not None and not store.delete_if_dispatch_id(queue_key, dispatch_id):
-                return json_error("Queued prompt changed; refresh and retry.", status_code=409)
         except ValueError as exc:
             return json_error(str(exc), status_code=400)
         return JSONResponse(

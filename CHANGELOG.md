@@ -10,6 +10,8 @@
 - Added subscription-capacity preflight and mid-turn deferral handling with durable, reset-aware,
   per-profile FIFO prompt replay, cross-profile concurrency, visible queue reasons, manual
   cancellation, and no metered API fallback.
+- Hardened deferred prompt identity, worker-local profile recovery, replay cancellation conflicts,
+  and workflow validation for named subscription selections.
 
 ## 2026-09-02 - Archived Team Agent Session Restoration
 

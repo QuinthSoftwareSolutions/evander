@@ -5591,6 +5591,49 @@ def test_admin_web_validate_reports_agent_create_missing_execution_backend(
     } in response.json()["validation_diagnostics"]
 
 
+def test_admin_web_validate_rejects_subscription_profile_without_auth_mode(
+    tmp_path: Path,
+) -> None:
+    client = TestClient(create_app(build_admin_runtime(write_config(tmp_path))))
+    payload = {
+        "config": canonical_workflow_payload(
+            {
+                "runtime_dir": str(tmp_path / "runtime"),
+                "triggers": [],
+                "gates": [],
+                "effects": [
+                    {
+                        "id": "agent-create",
+                        "display_name": "Create subscribed agent",
+                        "type": "effect:agent:create",
+                        "execution_backend": "container_worker_vm",
+                        "agent_provider": "codex",
+                        "model_provider_mode": "openai_public",
+                        "subscription_profile_id": "team-a",
+                    }
+                ],
+                "queries": [],
+                "edges": [],
+            }
+        ),
+        "layout": {"nodes": {"agent-create": {"x": 100, "y": 50}}},
+    }
+
+    response = client.post("/api/workflow-editor/validate", json=payload)
+
+    assert response.status_code == 200
+    assert {
+        "code": "subscription_profile_incompatible_agent_create",
+        "severity": "error",
+        "node_id": "agent-create",
+        "node_type": "effect:agent:create",
+        "field_path": "codex_auth_mode",
+        "message": (
+            "subscription_profile_id requires codex_auth_mode='chatgpt_subscription'."
+        ),
+    } in response.json()["validation_diagnostics"]
+
+
 def test_admin_web_validate_preserves_domain_diagnostics_for_for_gate(
     tmp_path: Path,
 ) -> None:
@@ -16123,6 +16166,69 @@ def test_admin_web_owner_can_cancel_indefinitely_queued_subscription_prompt(
         "cancelled": True,
     }
     assert queue_store.get(queued.queue_key) is None
+
+
+def test_admin_web_queued_prompt_cancellation_conflicts_after_replay_claim(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = build_admin_runtime(write_config(tmp_path))
+    service.runtime.session_repository.upsert_session(
+        SessionManifest(
+            session_id="subscription-session",
+            vm_provider="container_worker_vm",
+            vm_provider_id="subscription-target",
+            codex_auth_mode=CodexAuthMode.CHATGPT_SUBSCRIPTION,
+            subscription_profile_id="team-a",
+            allowed_tools=[],
+            expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
+            metadata={"execution_backend": "container_worker_vm"},
+        )
+    )
+    queue_store = AgentPromptQueueStore(service.config.runtime_dir / "queued-agent-prompts.json")
+    queued = queue_store.defer_capacity(
+        QueuedAgentPromptRecord(
+            queue_key="subscription-queue-race",
+            target="subscription-session",
+            vm_name="subscription-target",
+            session_id="subscription-session",
+            prompt="Resume after capacity returns",
+            effect_id="effect-subscription",
+            subscription_profile_id="team-a",
+            dispatch_id="dispatch-subscription-race",
+        ),
+        queue_reason="subscription_rate_limited",
+        retry_at=None,
+    )
+    original_delete = AgentPromptQueueStore.delete_if_dispatch_id
+    claimed_key = f"{queued.queue_key}:replay:{queued.dispatch_id}"
+
+    def claim_before_delete(self, queue_key: str, dispatch_id: str) -> bool:  # noqa: ANN001
+        claimed = self.claim_for_replay(
+            queue_key,
+            dispatch_id,
+            claimed_queue_key=claimed_key,
+        )
+        assert claimed is not None
+        return original_delete(self, queue_key, dispatch_id)
+
+    monkeypatch.setattr(
+        AgentPromptQueueStore,
+        "delete_if_dispatch_id",
+        claim_before_delete,
+    )
+    client = TestClient(create_app(service))
+    _unlock_privileged_operations(client)
+
+    response = client.delete(
+        "/api/admin/agents/subscription-session/queued-prompts/"
+        "subscription-queue-race?backend=container_worker_vm"
+    )
+
+    assert response.status_code == 409
+    assert response.json() == {"error": "Queued prompt changed; refresh and retry."}
+    assert queue_store.get(queued.queue_key) is None
+    assert queue_store.get(claimed_key) is not None
 
 
 def test_admin_web_queued_prompt_cancellation_cancels_linked_steering_note(

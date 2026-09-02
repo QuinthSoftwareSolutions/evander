@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -341,7 +341,12 @@ class AgentPromptQueueStore:
         record.updated_at = now
         return self.put(record, count_retry=False, coalesce=False)
 
-    def make_subscription_profile_ready(self, profile_id: str) -> int:
+    def make_subscription_profile_ready(
+        self,
+        profile_id: str,
+        *,
+        record_filter: Callable[[QueuedAgentPromptRecord], bool] | None = None,
+    ) -> int:
         """Make deferred work eligible after an operator-observed capacity change."""
 
         normalized = str(profile_id or "").strip()
@@ -353,6 +358,8 @@ class AgentPromptQueueStore:
             changed = 0
             for record in records.values():
                 if record.subscription_profile_id != normalized:
+                    continue
+                if record_filter is not None and not record_filter(record):
                     continue
                 if record.retry_not_before is None:
                     continue

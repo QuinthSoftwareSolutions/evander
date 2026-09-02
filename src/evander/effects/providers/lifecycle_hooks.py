@@ -1155,6 +1155,7 @@ class AgentEnqueuePromptQueueDispatchHook(EffectLifecycleHookBase):
             self._release_enqueue_prompt_claim(worker=worker, claim=prompt_lock_claim)
             if isinstance(exc, CodexSubscriptionDeferredClientError):
                 try:
+                    record.subscription_profile_id = exc.deferral.profile_id
                     queue_store.defer_capacity(
                         record,
                         queue_reason=exc.deferral.queue_reason,
