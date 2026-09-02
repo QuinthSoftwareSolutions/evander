@@ -161,15 +161,16 @@ class FakeContainerWorkerClient:
         request: WorkerTaskWorktreeCleanupRequest,
     ) -> WorkerTaskWorktreeCleanupRecord:
         self.cleaned_worktrees.append((session_id, request))
+        resolved_expected_commit = request.expected_commit_sha or "a" * 40
         return WorkerTaskWorktreeCleanupRecord(
             session_id=session_id,
             repo_name=request.repo_name,
             worktree_name=request.worktree_name,
             target_dir=request.expected_target_dir,
             branch=request.branch,
-            expected_commit_sha=request.expected_commit_sha,
+            expected_commit_sha=resolved_expected_commit,
             actual_branch=request.branch,
-            actual_commit_sha=request.expected_commit_sha,
+            actual_commit_sha=resolved_expected_commit,
             state="dry_run" if request.dry_run else "removed",
             safe_to_remove=True,
             removed=not request.dry_run,
@@ -591,6 +592,28 @@ def test_task_worktree_cleanup_delegates_structured_expectations(
             ),
         )
     ]
+
+    backend.cleanup_task_worktree(
+        session_id="session-1",
+        repo_name="repo",
+        worktree_name="task-pending-1234",
+        preparation_attempt_id="gitprep-task-pending-1234",
+        branch="agents/session-1/tasks/task-pending-1234",
+        expected_commit_sha=None,
+        expected_target_dir="/home/agent/worktrees/repo/task-pending-1234",
+    )
+
+    assert client.cleaned_worktrees[1] == (
+        "session-1",
+        WorkerTaskWorktreeCleanupRequest(
+            repo_name="repo",
+            worktree_name="task-pending-1234",
+            preparation_attempt_id="gitprep-task-pending-1234",
+            branch="agents/session-1/tasks/task-pending-1234",
+            expected_commit_sha=None,
+            expected_target_dir="/home/agent/worktrees/repo/task-pending-1234",
+        ),
+    )
 
 
 def test_delete_session_delegates_to_worker_client(tmp_path: Path) -> None:

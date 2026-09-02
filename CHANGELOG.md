@@ -7,12 +7,14 @@
   configuration; invalidated, resolved-task, and reassigned attempts now enter audited worktree
   cleanup. Successful physical removal retires receipts and attempts across the cleaned worktree
   lineage without equating the prepared and terminal HEADs, operator retries restore invalidated
-  cleanup eligibility, and cleanup remains compatible with workers deployed before receipt IDs
-  were supported.
+  cleanup eligibility, interrupted pending attempts can clean against their worker-owned receipt,
+  reused deterministic IDs reactivate prior terminal candidates, and cleanup remains compatible
+  with workers deployed before receipt IDs were supported.
 - Made operator resolution of an explicit preparation blocker enqueue the affected actionable task
   owner through the existing durable wake outbox while suppressing wakes when another gate remains.
-- Detect coherent-but-stale Team service registrations and fail systemd wake dispatch before
-  leasing work until the grouped runtime restart loads the current checkout.
+- Detect coherent-but-stale Team service registrations and fail every systemd Team wake, including
+  governance-manager wakes, before state access or leasing until the grouped runtime restart loads
+  the current checkout.
 
 ## 2026-08-31 - Session-Gated Image Generation
 

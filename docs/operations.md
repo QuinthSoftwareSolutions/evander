@@ -3404,6 +3404,11 @@ container cleanup retires the matching worker receipt and every committed attemp
 covered by the terminal physical-worktree lineage, including attempts bound to an
 older dispatch context. The receipt records the prepared HEAD for replay identity;
 cleanup independently validates the terminal HEAD, which may contain later task commits.
+If the effect process stops after a container worker writes its receipt but before Team
+records the prepared HEAD, cleanup resolves that still-pristine HEAD from the matching
+worker-owned receipt. Reusing a deterministic attempt ID after successful cleanup resets
+its prior terminal candidate as a fresh cleanup lifecycle rather than stranding the new
+checkout behind old success evidence.
 Retrying an operator-action-required invalidated preparation restores its cleanup-pending
 state before safety checks run. During rolling upgrades, cleanup omits a known legacy
 receipt ID and retries strict older workers without the new field, so pre-receipt
@@ -3417,8 +3422,9 @@ consistent `state.db` backup, then deploy and restart the target plus its four T
 control-plane services in one `systemctl restart` transaction. Naming the services
 explicitly also covers the first installation, when the target was not already active.
 `evander-cli status --runtime-dir runtime` treats absent, incomplete, split,
-stale, or previous-boot generation registrations as degraded. Do not run old and new Team
-readers concurrently during a schema migration.
+stale, or previous-boot generation registrations as degraded. Systemd invocations of both
+ordinary due-agent and governance-manager Team wakes refuse state access until that generation
+is current. Do not run old and new Team readers concurrently during a schema migration.
 
 Issue, session, and Team deletion removes bindings and SSH authorization, not the shared
 repository. Unpublished refs and repositories are retained until an operator explicitly deletes

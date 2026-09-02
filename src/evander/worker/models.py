@@ -598,7 +598,7 @@ class WorkerTaskWorktreeCleanupRequest(BaseModel):
     worktree_name: str
     preparation_attempt_id: str | None = None
     branch: str
-    expected_commit_sha: str
+    expected_commit_sha: str | None = None
     expected_target_dir: str
     dry_run: bool = False
 
@@ -626,7 +626,9 @@ class WorkerTaskWorktreeCleanupRequest(BaseModel):
 
     @field_validator("expected_commit_sha", mode="before")
     @classmethod
-    def normalize_expected_commit_sha(cls, value: object) -> str:
+    def normalize_expected_commit_sha(cls, value: object) -> str | None:
+        if value is None:
+            return None
         text = str(value or "").strip().casefold()
         if not re.fullmatch(r"(?:[0-9a-f]{40}|[0-9a-f]{64})", text):
             raise ValueError("expected_commit_sha must be a full Git object ID")
@@ -647,6 +649,10 @@ class WorkerTaskWorktreeCleanupRequest(BaseModel):
         if self.expected_target_dir != expected:
             raise ValueError(
                 "expected_target_dir does not match the deterministic task worktree path"
+            )
+        if self.expected_commit_sha is None and self.preparation_attempt_id is None:
+            raise ValueError(
+                "cleanup requires expected_commit_sha or a preparation_attempt_id receipt"
             )
         return self
 

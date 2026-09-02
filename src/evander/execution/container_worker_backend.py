@@ -412,7 +412,7 @@ class ContainerWorkerVmExecutionBackend:
         worktree_name: str,
         preparation_attempt_id: str | None = None,
         branch: str,
-        expected_commit_sha: str,
+        expected_commit_sha: str | None,
         expected_target_dir: str,
         dry_run: bool = False,
     ) -> WorkerTaskWorktreeCleanupRecord:

@@ -3590,6 +3590,8 @@ class TeamWakeGovernanceManagersEffectProvider(EffectProviderBase):
 
     def execute(self, *, resolved_config: Mapping[str, Any] | None = None) -> dict[str, Any]:
         runtime_dir = _runtime_dir(self.runtime_context)
+        if os.environ.get("INVOCATION_ID"):
+            require_current_runtime_generation(runtime_dir)
         state_db_path = addon_storage_path(runtime_dir, ADDON_ID, STATE_DB_FILE)
         repo = TeamStateRepository(runtime_dir)
         effective_resolved_config = dict(resolved_config) if resolved_config is not None else None

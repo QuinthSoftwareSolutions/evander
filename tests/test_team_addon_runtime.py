@@ -2781,6 +2781,39 @@ def test_systemd_team_wake_fails_before_leasing_when_runtime_generation_is_stale
     assert not (tmp_path / "addons" / "team-addon" / "state.db").exists()
 
 
+def test_systemd_governance_wake_fails_before_state_access_when_generation_is_stale(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("INVOCATION_ID", "systemd-invocation")
+    monkeypatch.setattr(
+        "evander_team_addon.providers.require_current_runtime_generation",
+        lambda _runtime_dir: (_ for _ in ()).throw(
+            RuntimeError("Team runtime generation is not current")
+        ),
+    )
+    resumer = FakeResumer()
+    provider = TeamWakeGovernanceManagersEffectProvider()
+    provider.initialize(
+        TeamWakeGovernanceManagersEffectDefinition(
+            id="wake-governance-stale-runtime",
+            display_name="Wake governance",
+            type="effect:team:wake-governance-managers",
+        ),
+        EffectRuntimeContext(
+            resolved_config={"runtime_dir": str(tmp_path)},
+            agent_resumer=resumer,
+            session_lookup=FakeSessionStore(),
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="not current"):
+        provider.execute()
+
+    assert resumer.calls == []
+    assert not (tmp_path / "addons" / "team-addon" / "state.db").exists()
+
+
 @pytest.mark.parametrize(
     ("configured_dry_run", "expected_dry_run"),
     [

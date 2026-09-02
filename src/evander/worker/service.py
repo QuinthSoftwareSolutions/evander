@@ -2213,17 +2213,17 @@ class WorkerDaemon:
             label="task worktree preparation receipt",
         )
 
-    def _delete_task_worktree_preparation_receipt(
+    def _validated_task_worktree_preparation_receipt(
         self,
         paths: WorkerSessionPaths,
         request: WorkerTaskWorktreeCleanupRequest,
-    ) -> None:
+    ) -> dict[str, Any] | None:
         attempt_id = request.preparation_attempt_id
         if attempt_id is None:
-            return
+            return None
         receipt = self._read_task_worktree_preparation_receipt(paths, attempt_id)
         if receipt is None:
-            return
+            return None
         expected_values = (
             ("preparation_attempt_id", attempt_id),
             ("repo_name", request.repo_name),
@@ -2239,6 +2239,19 @@ class WorkerDaemon:
         prepared_commit = str(receipt.get("commit_sha") or "").strip().casefold()
         if re.fullmatch(r"(?:[0-9a-f]{40}|[0-9a-f]{64})", prepared_commit) is None:
             raise ValueError("task worktree preparation receipt commit_sha is invalid")
+        return receipt
+
+    def _delete_task_worktree_preparation_receipt(
+        self,
+        paths: WorkerSessionPaths,
+        request: WorkerTaskWorktreeCleanupRequest,
+    ) -> None:
+        attempt_id = request.preparation_attempt_id
+        if attempt_id is None:
+            return
+        receipt = self._validated_task_worktree_preparation_receipt(paths, request)
+        if receipt is None:
+            return
         receipt_path = self._task_worktree_preparation_receipt_path(paths, attempt_id)
         try:
             receipt_path.unlink()
@@ -3127,6 +3140,15 @@ class WorkerDaemon:
             raise ValueError(
                 "expected_target_dir does not match the deterministic task worktree path"
             )
+        expected_commit_sha = request.expected_commit_sha
+        if expected_commit_sha is None:
+            receipt = self._validated_task_worktree_preparation_receipt(paths, request)
+            if receipt is None:
+                raise ValueError(
+                    "task worktree cleanup requires its preparation receipt when "
+                    "expected_commit_sha is omitted"
+                )
+            expected_commit_sha = str(receipt["commit_sha"]).strip().casefold()
         lock_path = self._task_worktree_lock_path(paths, request.repo_name)
         outcome = cleanup_task_worktree_checkout(
             trusted_root=paths.agent_home,
@@ -3134,7 +3156,7 @@ class WorkerDaemon:
             worktrees_root=worktrees_root,
             target_dir=target_dir,
             branch=request.branch,
-            expected_commit_sha=request.expected_commit_sha,
+            expected_commit_sha=expected_commit_sha,
             lock_path=lock_path,
             dry_run=request.dry_run,
         )
@@ -3155,7 +3177,7 @@ class WorkerDaemon:
             worktree_name=request.worktree_name,
             target_dir=expected_target_dir,
             branch=request.branch,
-            expected_commit_sha=request.expected_commit_sha,
+            expected_commit_sha=expected_commit_sha,
             actual_branch=outcome.actual_branch,
             actual_commit_sha=outcome.actual_commit_sha,
             state=outcome.state,

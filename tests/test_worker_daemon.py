@@ -3495,6 +3495,13 @@ def test_worker_cleanup_removes_safe_task_worktree_and_inventory_ignored_files(
     assert receipt_path.is_file()
     assert clone.commit_sha == prepared.commit_sha
     assert reprepared.commit_sha == completed_commit
+    receipt_authoritative = daemon.cleanup_task_worktree(
+        "session-1",
+        request.model_copy(update={"expected_commit_sha": None}),
+    )
+    assert receipt_authoritative.state == "removed"
+    assert receipt_authoritative.expected_commit_sha == completed_commit
+    assert not receipt_path.exists()
 
 
 def test_worker_cleanup_record_allows_final_non_force_git_validation() -> None:
@@ -3520,6 +3527,20 @@ def test_worker_cleanup_record_allows_final_non_force_git_validation() -> None:
 
     assert record.validation_count == 3
     assert record.tracked_paths == ["README.md"]
+
+
+def test_worker_cleanup_request_requires_expected_head_or_preparation_receipt() -> None:
+    with pytest.raises(
+        ValidationError,
+        match="expected_commit_sha or a preparation_attempt_id receipt",
+    ):
+        WorkerTaskWorktreeCleanupRequest(
+            repo_name="repo",
+            worktree_name="task-a-1234",
+            branch="agents/session-1/tasks/task-a-1234",
+            expected_commit_sha=None,
+            expected_target_dir="/home/agent/worktrees/repo/task-a-1234",
+        )
 
 
 def test_worker_cleanup_endpoint_offloads_blocking_git_work(

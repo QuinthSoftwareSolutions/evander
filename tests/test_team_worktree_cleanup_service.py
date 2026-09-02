@@ -416,7 +416,7 @@ def test_reconciler_keeps_current_uncommitted_preparation_for_active_owner(tmp_p
         return state
 
     repository.update(_seed_current_attempt)
-    backend = FakeCleanupBackend([])
+    backend = FakeCleanupBackend([_removed_outcome()])
 
     state, counts = TeamWorktreeCleanupService(repository, backend).enqueue_candidates(
         now=now,
@@ -428,6 +428,150 @@ def test_reconciler_keeps_current_uncommitted_preparation_for_active_owner(tmp_p
         TeamGitPreparationAttemptState.PREPARED
     )
     assert state.worktree_cleanup_candidates == {}
+
+
+@pytest.mark.parametrize(
+    ("task_state", "reassign", "expected_reason"),
+    [
+        (TeamTaskState.FINISHED, False, "task_resolved"),
+        (TeamTaskState.IN_PROGRESS, True, "task_reassigned"),
+    ],
+)
+def test_reconciler_cleans_interrupted_pending_preparation_from_worker_receipt(
+    tmp_path,
+    task_state: TeamTaskState,
+    reassign: bool,
+    expected_reason: str,
+) -> None:
+    repository = _seed_cleanup_state(tmp_path, task_state=task_state)
+    now = datetime(2026, 8, 24, 12, tzinfo=UTC)
+    attempt_id = f"gitprep-pending-{expected_reason}"
+
+    def _seed_pending_attempt(state: TeamState) -> TeamState:
+        state.git_work_contexts.clear()
+        if reassign:
+            state.tasks["task"].owner_agent_id = "lead"
+        state.git_preparation_attempts[attempt_id] = TeamGitPreparationAttempt(
+            id=attempt_id,
+            agent_id="backend",
+            session_id="session-backend",
+            task_id="task",
+            project_id="project",
+            latest_dispatch_id="dispatch-interrupted",
+            managed_repo_id=_MANAGED_REPO_ID,
+            directory_path="root",
+            execution_backend="container_worker_vm",
+            worktree_path=f"/home/agent/worktrees/project/pending-{expected_reason}",
+            branch=f"agents/session-backend/tasks/pending-{expected_reason}",
+            base_ref="main",
+            preparation_generation="a" * 20,
+            state=TeamGitPreparationAttemptState.PENDING,
+            created_at=now,
+            updated_at=now,
+        )
+        return state
+
+    repository.update(_seed_pending_attempt)
+    backend = FakeCleanupBackend([_removed_outcome()])
+
+    result = TeamWorktreeCleanupService(repository, backend).reconcile(
+        now=now,
+        grace_seconds=0,
+        dry_run=False,
+    )
+
+    assert result.enqueued_count == 1
+    assert result.attempted_count == 1
+    assert result.succeeded_count == 1
+    assert len(backend.calls) == 1
+    assert backend.calls[0][0].expected_head is None
+    state = repository.read()
+    candidate = state.worktree_cleanup_candidates[f"cleanup-{attempt_id}"]
+    assert candidate.reason == expected_reason
+    assert candidate.last_safety_check == "passed"
+    assert candidate.state == WorktreeCleanupState.SUCCEEDED
+    assert attempt_id not in state.git_preparation_attempts
+
+
+def test_reconciler_reactivates_terminal_candidate_for_reused_attempt_id(tmp_path) -> None:
+    repository = _seed_cleanup_state(tmp_path, task_state=TeamTaskState.IN_PROGRESS)
+    completed_at = datetime(2026, 8, 24, 12, tzinfo=UTC)
+    attempt_id = "gitprep-reused-after-cleanup"
+    candidate_id = f"cleanup-{attempt_id}"
+    worktree_path = "/home/agent/worktrees/project/reused-after-cleanup"
+    branch = "agents/session-backend/tasks/reused-after-cleanup"
+    new_head = "2" * 40
+
+    def _seed_reused_attempt(state: TeamState) -> TeamState:
+        state.git_work_contexts.clear()
+        state.worktree_cleanup_candidates[candidate_id] = WorktreeCleanupCandidate(
+            id=candidate_id,
+            agent_id="backend",
+            session_id="session-backend",
+            task_id="task",
+            project_id="project",
+            git_work_context_id=f"preparation:{attempt_id}",
+            managed_repo_id=_MANAGED_REPO_ID,
+            directory_path="root",
+            execution_backend="container_worker_vm",
+            worktree_path=worktree_path,
+            branch=branch,
+            base_ref="main",
+            expected_head=_BASE_COMMIT,
+            state=WorktreeCleanupState.SUCCEEDED,
+            reason="task_reassigned",
+            attempt_count=3,
+            created_at=completed_at - timedelta(hours=1),
+            updated_at=completed_at,
+            completed_at=completed_at,
+        )
+        state.git_preparation_attempts[attempt_id] = TeamGitPreparationAttempt(
+            id=attempt_id,
+            agent_id="backend",
+            session_id="session-backend",
+            task_id="task",
+            project_id="project",
+            latest_dispatch_id="dispatch-reused",
+            managed_repo_id=_MANAGED_REPO_ID,
+            directory_path="root",
+            execution_backend="container_worker_vm",
+            worktree_path=worktree_path,
+            branch=branch,
+            base_ref="main",
+            preparation_generation="a" * 20,
+            state=TeamGitPreparationAttemptState.CLEANUP_PENDING,
+            worker_request_fingerprint="f" * 64,
+            base_commit_sha=_BASE_COMMIT,
+            head_commit_sha=new_head,
+            prepared_at=completed_at,
+            created_at=completed_at,
+            updated_at=completed_at,
+        )
+        return state
+
+    repository.update(_seed_reused_attempt)
+    backend = FakeCleanupBackend([_removed_outcome()])
+    service = TeamWorktreeCleanupService(repository, backend)
+    retry_at = completed_at + timedelta(seconds=2)
+
+    state, counts = service.enqueue_candidates(now=retry_at, grace_seconds=0)
+
+    assert counts == {"enqueued": 0, "recovered": 0, "refreshed": 1}
+    candidate = state.worktree_cleanup_candidates[candidate_id]
+    assert candidate.state == WorktreeCleanupState.PENDING
+    assert candidate.expected_head == new_head
+    assert candidate.completed_at is None
+    assert candidate.attempt_count == 0
+
+    result = service.reconcile(now=retry_at, grace_seconds=0, dry_run=False)
+
+    assert result.succeeded_count == 1
+    assert len(backend.calls) == 1
+    final_state = repository.read()
+    assert final_state.worktree_cleanup_candidates[candidate_id].state == (
+        WorktreeCleanupState.SUCCEEDED
+    )
+    assert attempt_id not in final_state.git_preparation_attempts
 
 
 def test_reconciler_enqueues_removes_audits_and_only_then_prunes_context(
@@ -2336,7 +2480,7 @@ def test_effect_backend_delegates_container_cleanup_with_exact_expectations(
     }
 
 
-def test_effect_backend_omits_receipt_id_for_legacy_worker_attempt(
+def test_effect_backend_handles_legacy_and_pending_receipt_cleanup(
     tmp_path,
     monkeypatch,
 ) -> None:
@@ -2430,6 +2574,34 @@ def test_effect_backend_omits_receipt_id_for_legacy_worker_attempt(
             "dry_run": False,
         }
     ]
+
+    def _make_attempt_pending(state: TeamState) -> TeamState:
+        attempt = state.git_preparation_attempts[attempt_id]
+        attempt.state = TeamGitPreparationAttemptState.PENDING
+        attempt.worker_request_fingerprint = None
+        attempt.base_commit_sha = None
+        attempt.head_commit_sha = None
+        attempt.prepared_at = None
+        return state
+
+    repository.update(_make_attempt_pending)
+    pending_candidate = candidate.model_copy(update={"expected_head": None}, deep=True)
+
+    EffectTaskWorktreeCleanupBackend(
+        SimpleNamespace(metadata={"directory_path": "root"}),
+        repository=repository,
+    ).cleanup(pending_candidate, dry_run=False)
+
+    assert calls[1] == {
+        "session_id": "session-backend",
+        "repo_name": "project",
+        "worktree_name": "task-legacy-worker",
+        "preparation_attempt_id": attempt_id,
+        "branch": "agents/session-backend/tasks/task-legacy-worker",
+        "expected_commit_sha": None,
+        "expected_target_dir": worktree_path,
+        "dry_run": False,
+    }
 
 
 def test_libvirt_preparation_uses_cleanup_lock_and_records_base_commit(tmp_path) -> None:
