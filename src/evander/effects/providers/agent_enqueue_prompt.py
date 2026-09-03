@@ -7,6 +7,9 @@ from uuid import uuid4
 
 from evander.events.provider_models import AgentEnqueuePromptEffectDefinition
 from evander.execution import ExecutionBackendKind, ExecutionSpec, ExecutionStatusKind
+from evander.execution.container_worker_client import (
+    CodexSubscriptionDeferredClientError,
+)
 from evander.local_inference_capacity import (
     LOCAL_INFERENCE_QUEUE_REASON,
     LocalInferenceCapacityAdmission,
@@ -795,6 +798,16 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
                                     if codex_turn is not None
                                     else {}
                                 ),
+                                **(
+                                    {
+                                        "subscription_profile_id": (
+                                            codex_turn.subscription_profile_id
+                                        )
+                                    }
+                                    if codex_turn is not None
+                                    and codex_turn.subscription_profile_id is not None
+                                    else {}
+                                ),
                             },
                         )
                     )
@@ -802,6 +815,49 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
         except Exception as exc:
             self._release_local_inference_capacity(capacity_admission)
             self._release_enqueue_prompt(prompt_lock_claim)
+            if isinstance(exc, CodexSubscriptionDeferredClientError):
+                deferral = exc.deferral
+                record = self._queue_prompt(
+                    target=target,
+                    vm_name=target_name,
+                    session_id=session_id,
+                    prompt=prompt,
+                    model=resolved_model,
+                    vm_user=vm_user,
+                    dispatch_id=dispatch_id,
+                    resume_thread_id=resume_thread_id,
+                    resume_mode=resume_mode,
+                    resume_thread_metadata_key=resume_thread_metadata_key,
+                    resume_thread_metadata_collection=resume_thread_metadata_collection,
+                    effect_id=effect_id,
+                    queue_key=self._subscription_capacity_queue_key(
+                        queue_key=queue_key,
+                        fallback=session_id,
+                        dispatch_id=dispatch_id,
+                    ),
+                    workflow_context=workflow_context,
+                    workflow_for_execution_ids=workflow_for_execution_ids,
+                    workflow_run_id=workflow_run_id,
+                    mcp_tool_approval_lease_id=mcp_tool_approval_lease_id,
+                    context_retry_metadata=payload,
+                    model_provider_mode=effective_config.model_provider_mode,
+                    queue_reason=deferral.queue_reason,
+                    subscription_profile_id=deferral.profile_id,
+                    retry_not_before=deferral.retry_at,
+                    capacity_deferral=True,
+                )
+                return {
+                    "success": True,
+                    "queued": True,
+                    "queue_key": record.queue_key,
+                    "queue_reason": record.queue_reason,
+                    "retry_not_before": record.retry_not_before,
+                    "subscription_profile_id": record.subscription_profile_id,
+                    "vm_name": target_name,
+                    "session_id": session_id,
+                    "dispatch_id": dispatch_id,
+                    "execution_backend": ExecutionBackendKind.CONTAINER_WORKER_VM.value,
+                }
             record = self._queue_prompt(
                 target=target,
                 vm_name=target_name,
@@ -1416,6 +1472,9 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
         resume_thread_metadata_collection: str | None = None,
         model_provider_mode: str | None = None,
         queue_reason: str | None = None,
+        subscription_profile_id: str | None = None,
+        retry_not_before: Any | None = None,
+        capacity_deferral: bool = False,
     ) -> QueuedAgentPromptRecord:
         context = self._context()
         metadata = {
@@ -1446,6 +1505,9 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
                     )
                 ),
                 queue_reason=queue_reason,
+                subscription_profile_id=subscription_profile_id,
+                retry_not_before=retry_not_before,
+                capacity_deferral=capacity_deferral,
                 vm_user=vm_user,
                 dispatch_id=dispatch_id,
                 resume_thread_id=resume_thread_id,
@@ -1571,6 +1633,16 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
     ) -> str:
         base = str(queue_key or fallback).strip() or fallback
         return f"{base}:local-inference:{dispatch_id}"
+
+    @staticmethod
+    def _subscription_capacity_queue_key(
+        *,
+        queue_key: str | None,
+        fallback: str,
+        dispatch_id: str,
+    ) -> str:
+        base = str(queue_key or fallback).strip() or fallback
+        return f"{base}:subscription:{dispatch_id}"
 
     def _release_local_inference_capacity(self, admission: LocalInferenceCapacityAdmission) -> None:
         if admission.slot_id is None:

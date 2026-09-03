@@ -1068,18 +1068,22 @@ deadlines, cancellation, one-time result tokens, and the hidden system workflow 
 use and guarantee cleanup. The feature is generic MCP/workflow infrastructure and has no Team
 Add-on dependency.
 
-Container-worker Codex agents whose effective `model_provider_mode` is `openai_public` can
-independently select metered API usage or a worker-owned ChatGPT subscription account. The choice
-can be changed for an existing agent and takes effect on its next turn without replacing the
-session. When `local_openai` or `azure_openai` is effective, the turn stays on that configured
-private/API-key route even if the stored Codex preference is `chatgpt_subscription`; Evander keeps
-the preference so it can apply again on a later public OpenAI turn. Non-Codex agents do not inherit
-the Codex auth default, and an explicit subscription override is invalid for them. Subscription
-mode uses one broker-owned `auth.json` per worker, never mounts it into job containers, coalesces
-refreshes across concurrent agents, and fails closed rather than falling back to metered usage
-when a public subscription turn has missing or expired credentials. Because the account is
-worker-global, viewing its status and starting, polling, cancelling, or logging out a device login
-requires both unlocked privileged operations and `admin.owner` permission at `root`. See
+Container-worker Codex agents whose effective `model_provider_mode` is `openai_public` can select
+metered API usage or an explicitly named, worker-owned ChatGPT subscription profile. A profile is
+fixed when the session is created; it may be assigned once while explicitly switching an unbound
+metered session to subscription mode, but a bound session must be replaced to use another profile.
+Directory configuration still selects the effective worker and inherited auth mode, but it does
+not choose, grant, or restrict profiles. The reserved `default` profile keeps legacy profile-less
+sessions and the existing `<worker-root>/codex-auth/auth.json` login compatible.
+
+Each named profile has an independent auth broker and credential home. Disposable jobs receive
+only an in-memory external-token snapshot and never mount `auth.json` or persist token metadata.
+Signed-out, disabled, unavailable, and rate-limited profiles defer prompts into durable,
+per-profile FIFO queues without consuming the ordinary retry ledger or falling back to metered
+API. Other profiles may continue dispatching concurrently, and queued work resumes through its
+original profile after login, re-enable, or capacity recovery. Root owners manage profiles and
+inspect safe account, plan, rate-limit, usage, active-job, and queue status from Admin Web
+**Subscriptions**. See
 [`docs/container-worker-backend.md`](docs/container-worker-backend.md#codex-chatgpt-subscription-authentication)
 for deployment, device-login, and egress requirements.
 

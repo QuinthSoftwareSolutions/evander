@@ -105,18 +105,45 @@ def _workflow_agent_create_diagnostics(
         if not execution_backend_value and isinstance(effect_config, dict):
             execution_backend_value = effect_config.get("execution_backend")
         execution_backend = str(execution_backend_value or "").strip()
-        if execution_backend:
-            continue
-        diagnostics.append(
-            WorkflowValidationDiagnostic(
-                code="agent_create_missing_execution_backend",
-                severity="error",
-                node_id=str(effect.get("id") or "") or None,
-                node_type="effect:agent:create",
-                field_path="execution_backend",
-                message="effect:agent:create requires an execution backend.",
+        if not execution_backend:
+            diagnostics.append(
+                WorkflowValidationDiagnostic(
+                    code="agent_create_missing_execution_backend",
+                    severity="error",
+                    node_id=str(effect.get("id") or "") or None,
+                    node_type="effect:agent:create",
+                    field_path="execution_backend",
+                    message="effect:agent:create requires an execution backend.",
+                )
             )
-        )
+        profile_id = effect.get("subscription_profile_id")
+        if profile_id is None and isinstance(effect_config, dict):
+            profile_id = effect_config.get("subscription_profile_id")
+        if not str(profile_id or "").strip():
+            continue
+        values = dict(effect_config) if isinstance(effect_config, dict) else {}
+        values.update(effect)
+        restrictions = {
+            "execution_backend": "container_worker_vm",
+            "agent_provider": "codex",
+            "model_provider_mode": "openai_public",
+            "codex_auth_mode": "chatgpt_subscription",
+        }
+        for field_name, expected in restrictions.items():
+            actual = str(values.get(field_name) or "").strip()
+            if (field_name == "codex_auth_mode" and actual != expected) or (
+                field_name != "codex_auth_mode" and actual and actual != expected
+            ):
+                diagnostics.append(
+                    WorkflowValidationDiagnostic(
+                        code="subscription_profile_incompatible_agent_create",
+                        severity="error",
+                        node_id=str(effect.get("id") or "") or None,
+                        node_type="effect:agent:create",
+                        field_path=field_name,
+                        message=(f"subscription_profile_id requires {field_name}={expected!r}."),
+                    )
+                )
     return diagnostics
 
 
@@ -2263,6 +2290,24 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
                 metadata={
                     "execution_backends": ["container_worker_vm"],
                     "agent_providers": ["codex"],
+                },
+            ),
+            _field(
+                "subscription_profile_id",
+                "Subscription profile",
+                "enum",
+                bindable=False,
+                description=(
+                    "Immutable worker-owned ChatGPT subscription profile. Create a new "
+                    "agent session to change this selection."
+                ),
+                options=[],
+                metadata={
+                    "execution_backends": ["container_worker_vm"],
+                    "agent_providers": ["codex"],
+                    "model_provider_modes": ["openai_public"],
+                    "codex_auth_modes": ["chatgpt_subscription"],
+                    "immutable": True,
                 },
             ),
             _field(

@@ -13,6 +13,7 @@ from uuid import uuid4
 from evander.cron import next_cron_time
 from evander.messaging.scheduled_wake_queue import (
     discard_scheduled_wake_queue_record,
+    scheduled_wake_dispatch_is_capacity_deferred,
     scheduled_wake_queue_should_be_discarded,
 )
 from evander.models import (
@@ -643,9 +644,12 @@ class WakeRequestStore:
                     continue
                 if request.completed_at is not None or request.status == "cancelled":
                     continue
+                latest_dispatch = latest_dispatches.get(request.request_id)
+                if scheduled_wake_dispatch_is_capacity_deferred(latest_dispatch):
+                    continue
                 updated_request = self._apply_one_time_retry_state(
                     request,
-                    latest_dispatch=latest_dispatches.get(request.request_id),
+                    latest_dispatch=latest_dispatch,
                     now_utc=now_utc,
                     retry_max_attempts=retry_max_attempts,
                     retry_window_seconds=retry_window_seconds,
@@ -917,6 +921,7 @@ class WakeRequestStore:
 
     def find_due_requests(self, *, now_utc: datetime) -> list[WakeScheduledRequest]:
         now_storage = self._datetime_to_storage(now_utc)
+        latest_dispatches = self.latest_dispatch_by_request_id()
         due_requests: list[WakeScheduledRequest] = []
         with self._lock, self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
@@ -937,6 +942,12 @@ class WakeRequestStore:
                     continue
                 request = self._normalize_cancelled_request(request)
                 if request.status == "cancelled" or not request.enabled:
+                    continue
+                if request.schedule.resume_at is not None and (
+                    scheduled_wake_dispatch_is_capacity_deferred(
+                        latest_dispatches.get(request.request_id)
+                    )
+                ):
                     continue
                 next_run_at = request.next_run_at
                 if next_run_at is None:

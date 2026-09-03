@@ -71,6 +71,7 @@ from evander.capacity_health import (
     TelemetryError,
     TelemetryStatus,
 )
+from evander.codex_auth import CodexAuthMode
 from evander.config import GatewayConfig
 from evander.daemons.effect_orchestrator import (
     EffectExecutionRecord,
@@ -101,12 +102,17 @@ from evander.messaging.targets import (
     SqliteCommunicationTargetsRepository,
     communication_targets_db_path,
 )
+from evander.messaging.agent_prompt_queue import (
+    AgentPromptQueueStore,
+    QueuedAgentPromptRecord,
+)
 from evander.model_usage.pricing import (
     clear_model_pricing_catalog_cache,
     default_model_pricing_catalog,
     seed_default_model_pricing_catalog,
 )
 from evander.model_usage.runtime import register_model_usage_correlation_context
+from evander.operator_steering import operator_steering_note_store
 from evander.models import (
     ApprovalRequest,
     ApprovalStatus,
@@ -1781,6 +1787,7 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
         "model",
         "model_provider_mode",
         "codex_auth_mode",
+        "subscription_profile_id",
         "vm_user",
         "vm_image",
         "ttl_hours",
@@ -1871,8 +1878,9 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
     assert "web_search" in agent_create_fields["web_search_enabled"]["description"]
     assert agent_create_fields["image_generation_enabled"]["kind"] == "boolean"
     assert agent_create_fields["image_generation_enabled"]["bindable"] is True
-    assert "generate and edit images" in (
-        agent_create_fields["image_generation_enabled"]["description"]
+    assert (
+        "generate and edit images"
+        in (agent_create_fields["image_generation_enabled"]["description"])
     )
     assert agent_create_fields["allowed_tools"]["options"]
     assert {
@@ -5581,6 +5589,47 @@ def test_admin_web_validate_reports_agent_create_missing_execution_backend(
         "node_type": "effect:agent:create",
         "field_path": "execution_backend",
         "message": "effect:agent:create requires an execution backend.",
+    } in response.json()["validation_diagnostics"]
+
+
+def test_admin_web_validate_rejects_subscription_profile_without_auth_mode(
+    tmp_path: Path,
+) -> None:
+    client = TestClient(create_app(build_admin_runtime(write_config(tmp_path))))
+    payload = {
+        "config": canonical_workflow_payload(
+            {
+                "runtime_dir": str(tmp_path / "runtime"),
+                "triggers": [],
+                "gates": [],
+                "effects": [
+                    {
+                        "id": "agent-create",
+                        "display_name": "Create subscribed agent",
+                        "type": "effect:agent:create",
+                        "execution_backend": "container_worker_vm",
+                        "agent_provider": "codex",
+                        "model_provider_mode": "openai_public",
+                        "subscription_profile_id": "team-a",
+                    }
+                ],
+                "queries": [],
+                "edges": [],
+            }
+        ),
+        "layout": {"nodes": {"agent-create": {"x": 100, "y": 50}}},
+    }
+
+    response = client.post("/api/workflow-editor/validate", json=payload)
+
+    assert response.status_code == 200
+    assert {
+        "code": "subscription_profile_incompatible_agent_create",
+        "severity": "error",
+        "node_id": "agent-create",
+        "node_type": "effect:agent:create",
+        "field_path": "codex_auth_mode",
+        "message": ("subscription_profile_id requires codex_auth_mode='chatgpt_subscription'."),
     } in response.json()["validation_diagnostics"]
 
 
@@ -15288,6 +15337,55 @@ def test_admin_web_agents_create_options_returns_default_catalogs(tmp_path: Path
     ]
 
 
+def test_admin_web_agents_create_options_exposes_only_profile_selector_fields(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = build_admin_runtime(write_config(tmp_path))
+
+    class ProfileClient:
+        def list_codex_auth_profiles(self) -> dict[str, object]:
+            return {
+                "profiles": [
+                    {
+                        "profile_id": "team-a",
+                        "display_name": "Team A",
+                        "enabled": True,
+                        "pinned_account_id": "pinned-secret",
+                        "account_id": "account-secret",
+                        "email": "secret@example.com",
+                        "plan_type": "business",
+                        "usage": {"remaining": 1},
+                        "rate_limits": {"default": {"used_percent": 99}},
+                        "error": "broker-secret",
+                        "active_job_count": 4,
+                    },
+                    {
+                        "profile_id": "disabled",
+                        "display_name": "Disabled",
+                        "enabled": False,
+                    },
+                ]
+            }
+
+    monkeypatch.setattr(
+        service.vm_agent_admin,
+        "container_worker_backend",
+        MethodType(
+            lambda self, **kwargs: SimpleNamespace(client=ProfileClient()),
+            service.vm_agent_admin,
+        ),
+    )
+    client = TestClient(create_app(service))
+
+    response = client.get("/api/admin/agents/create-options")
+
+    assert response.status_code == 200
+    assert response.json()["container_worker"]["subscription_profiles"] == [
+        {"profile_id": "team-a", "display_name": "Team A", "enabled": True}
+    ]
+
+
 def test_admin_web_agents_create_options_reflects_directory_overrides(tmp_path: Path) -> None:
     service = build_admin_runtime(write_config(tmp_path, enable_directory_scoped_config=True))
     created = service.directory_admin.create_child(parent="root", name="team")
@@ -16059,6 +16157,329 @@ def test_admin_web_agents_delete_container_session_uses_persisted_worker_url(
     assert fake_backend.deleted_sessions == ["container-session"]
     assert service.runtime.session_repository.get_session("container-session") is None
     assert repository.read_all() == {}
+
+
+def test_admin_web_owner_can_cancel_indefinitely_queued_subscription_prompt(
+    tmp_path: Path,
+) -> None:
+    service = build_admin_runtime(write_config(tmp_path))
+    service.runtime.session_repository.upsert_session(
+        SessionManifest(
+            session_id="subscription-session",
+            vm_provider="container_worker_vm",
+            vm_provider_id="subscription-target",
+            codex_auth_mode=CodexAuthMode.CHATGPT_SUBSCRIPTION,
+            subscription_profile_id="team-a",
+            allowed_tools=[],
+            expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
+            metadata={"execution_backend": "container_worker_vm"},
+        )
+    )
+    queue_store = AgentPromptQueueStore(service.config.runtime_dir / "queued-agent-prompts.json")
+    queued = queue_store.defer_capacity(
+        QueuedAgentPromptRecord(
+            queue_key="subscription-queue-1",
+            target="subscription-session",
+            vm_name="subscription-target",
+            session_id="subscription-session",
+            prompt="Resume after capacity returns",
+            effect_id="effect-subscription",
+            subscription_profile_id="team-a",
+            dispatch_id="dispatch-subscription-1",
+        ),
+        queue_reason="subscription_rate_limited",
+        retry_at=None,
+    )
+    client = TestClient(create_app(service))
+
+    locked = client.delete(
+        "/api/admin/agents/subscription-session/queued-prompts/"
+        "subscription-queue-1?backend=container_worker_vm"
+    )
+    assert locked.status_code == 403
+    assert queue_store.get(queued.queue_key) is not None
+
+    _unlock_privileged_operations(client)
+    cancelled = client.delete(
+        "/api/admin/agents/subscription-session/queued-prompts/"
+        "subscription-queue-1?backend=container_worker_vm"
+    )
+
+    assert cancelled.status_code == 200
+    assert cancelled.json() == {
+        "success": True,
+        "agent_id": "subscription-session",
+        "queue_key": "subscription-queue-1",
+        "dispatch_id": "dispatch-subscription-1",
+        "cancelled": True,
+    }
+    assert queue_store.get(queued.queue_key) is None
+
+
+def test_admin_web_queued_prompt_cancellation_authorizes_persisted_session_directory(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("EVANDER_ADMIN_WEB_AUTH_MODE", "local_password")
+    monkeypatch.setenv("EVANDER_ADMIN_WEB_USERNAME", "admin")
+    monkeypatch.setenv("EVANDER_ADMIN_WEB_PASSWORD", "admin-pass")
+    monkeypatch.setenv("EVANDER_ADMIN_WEB_SESSION_SECRET", "test-secret")
+    service = build_admin_runtime(write_config(tmp_path, enable_directory_scoped_config=True))
+    ops = service.directory_admin.create_child(parent="root", name="ops")
+    finance = service.directory_admin.create_child(parent="root", name="finance")
+    assert ops.ok is True and ops.data is not None
+    assert finance.ok is True and finance.data is not None
+    ops_path = ops.data.details.directory.path
+    finance_path = finance.data.details.directory.path
+    service.runtime.session_repository.upsert_session(
+        SessionManifest(
+            session_id="ops-session",
+            directory_path=ops_path,
+            vm_provider="container_worker_vm",
+            vm_provider_id="finance-session",
+            allowed_tools=[],
+            expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
+            metadata={"execution_backend": "container_worker_vm"},
+        )
+    )
+    service.runtime.session_repository.upsert_session(
+        SessionManifest(
+            session_id="finance-session",
+            directory_path=finance_path,
+            vm_provider="container_worker_vm",
+            vm_provider_id="finance-target",
+            allowed_tools=[],
+            expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
+            metadata={"execution_backend": "container_worker_vm"},
+        )
+    )
+    queue_store = AgentPromptQueueStore(service.config.runtime_dir / "queued-agent-prompts.json")
+    queued = queue_store.put(
+        QueuedAgentPromptRecord(
+            queue_key="victim-queue",
+            target="finance-session",
+            vm_name="finance-target",
+            session_id="finance-session",
+            prompt="Finance-only prompt",
+            effect_id="finance-effect",
+            dispatch_id="finance-dispatch",
+        )
+    )
+    app = create_app(service)
+    store = app.state.admin_user_store
+    store.upsert_user(login="ops-owner@example.com", display_name="Ops Owner")
+    store.remove_user_group_assignment(
+        login="ops-owner@example.com", group_id="operator", directory_path="root"
+    )
+    store.assign_user_group(
+        login="ops-owner@example.com", group_id=OWNER_GROUP_ID, directory_path=ops_path
+    )
+    store.set_local_password(login="ops-owner@example.com", password="ops-pass")
+    client = TestClient(app)
+    assert (
+        client.post(
+            "/api/auth/login",
+            json={"username": "ops-owner@example.com", "password": "ops-pass"},
+        ).status_code
+        == 200
+    )
+    _unlock_privileged_operations(client)
+
+    response = client.delete(
+        "/api/admin/agents/ops-session/queued-prompts/victim-queue?backend=container_worker_vm"
+    )
+
+    assert response.status_code == 403
+    assert queue_store.get(queued.queue_key) is not None
+    own_agent = service.vm_agent_admin.get_agent(
+        "ops-session",
+        backend="container_worker_vm",
+        directory_path=ops_path,
+    )
+    own_queue = service.vm_agent_admin._agent_prompt_queue_summary(
+        own_agent,
+        queue_store.read_all(),
+        read_error=None,
+    )
+    assert own_queue.record_count == 0
+
+
+def test_admin_web_queued_prompt_cancellation_conflicts_after_replay_claim(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = build_admin_runtime(write_config(tmp_path))
+    service.runtime.session_repository.upsert_session(
+        SessionManifest(
+            session_id="subscription-session",
+            vm_provider="container_worker_vm",
+            vm_provider_id="subscription-target",
+            codex_auth_mode=CodexAuthMode.CHATGPT_SUBSCRIPTION,
+            subscription_profile_id="team-a",
+            allowed_tools=[],
+            expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
+            metadata={"execution_backend": "container_worker_vm"},
+        )
+    )
+    queue_store = AgentPromptQueueStore(service.config.runtime_dir / "queued-agent-prompts.json")
+    queued = queue_store.defer_capacity(
+        QueuedAgentPromptRecord(
+            queue_key="subscription-queue-race",
+            target="subscription-session",
+            vm_name="subscription-target",
+            session_id="subscription-session",
+            prompt="Resume after capacity returns",
+            effect_id="effect-subscription",
+            subscription_profile_id="team-a",
+            dispatch_id="dispatch-subscription-race",
+        ),
+        queue_reason="subscription_rate_limited",
+        retry_at=None,
+    )
+    original_delete = AgentPromptQueueStore.delete_if_dispatch_id
+    claimed_key = f"{queued.queue_key}:replay:{queued.dispatch_id}"
+
+    def claim_before_delete(self, queue_key: str, dispatch_id: str) -> bool:  # noqa: ANN001
+        claimed = self.claim_for_replay(
+            queue_key,
+            dispatch_id,
+            claimed_queue_key=claimed_key,
+        )
+        assert claimed is not None
+        return original_delete(self, queue_key, dispatch_id)
+
+    monkeypatch.setattr(
+        AgentPromptQueueStore,
+        "delete_if_dispatch_id",
+        claim_before_delete,
+    )
+    client = TestClient(create_app(service))
+    _unlock_privileged_operations(client)
+
+    response = client.delete(
+        "/api/admin/agents/subscription-session/queued-prompts/"
+        "subscription-queue-race?backend=container_worker_vm"
+    )
+
+    assert response.status_code == 409
+    assert response.json() == {"error": "Queued prompt changed; refresh and retry."}
+    assert queue_store.get(queued.queue_key) is None
+    assert queue_store.get(claimed_key) is not None
+
+
+def test_admin_web_queued_prompt_cancellation_cancels_linked_steering_note(
+    tmp_path: Path,
+) -> None:
+    service = build_admin_runtime(write_config(tmp_path))
+    service.runtime.session_repository.upsert_session(
+        SessionManifest(
+            session_id="subscription-session",
+            vm_provider="container_worker_vm",
+            vm_provider_id="subscription-target",
+            codex_auth_mode=CodexAuthMode.CHATGPT_SUBSCRIPTION,
+            subscription_profile_id="team-a",
+            allowed_tools=[],
+            expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
+            metadata={"execution_backend": "container_worker_vm"},
+        )
+    )
+    note_store = operator_steering_note_store(service.config.runtime_dir)
+    note = note_store.create_note(
+        session_id="subscription-session",
+        dispatch_id="dispatch-steering-1",
+        message="Use the replacement approach.",
+    )
+    queue_store = AgentPromptQueueStore(service.config.runtime_dir / "queued-agent-prompts.json")
+    queued = queue_store.defer_capacity(
+        QueuedAgentPromptRecord(
+            queue_key="operator-steering:subscription-session:dispatch-steering-1",
+            target="subscription-session",
+            vm_name="subscription-target",
+            session_id="subscription-session",
+            prompt="Use the replacement approach.",
+            effect_id="effect-subscription",
+            subscription_profile_id="team-a",
+            dispatch_id="dispatch-steering-1",
+            metadata={"operator_steering_note_id": note.note_id},
+        ),
+        queue_reason="subscription_rate_limited",
+        retry_at=None,
+    )
+    client = TestClient(create_app(service))
+    _unlock_privileged_operations(client)
+
+    cancelled = client.delete(
+        "/api/admin/agents/subscription-session/queued-prompts/"
+        f"{queued.queue_key}?backend=container_worker_vm"
+    )
+
+    assert cancelled.status_code == 200
+    assert queue_store.get(queued.queue_key) is None
+    cancelled_note = note_store.get_note(note.note_id)
+    assert cancelled_note is not None
+    assert cancelled_note.status == "cancelled"
+
+
+def test_admin_web_queued_scheduled_wake_cancellation_cancels_owning_request(
+    tmp_path: Path,
+) -> None:
+    service = build_admin_runtime(write_config(tmp_path))
+    service.runtime.session_repository.upsert_session(
+        SessionManifest(
+            session_id="subscription-session",
+            vm_provider="container_worker_vm",
+            vm_provider_id="subscription-target",
+            codex_auth_mode=CodexAuthMode.CHATGPT_SUBSCRIPTION,
+            subscription_profile_id="team-a",
+            allowed_tools=[],
+            expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
+            metadata={"execution_backend": "container_worker_vm"},
+        )
+    )
+    scheduled = service.operations_admin.create_wake_schedule(
+        session_id="subscription-session",
+        prompt="Resume after capacity returns",
+        resume_at=datetime.now(timezone.utc) + timedelta(minutes=5),
+        source="test",
+    )
+    scheduled.status = "queued"
+    service.runtime.wake_store.upsert_request(scheduled)
+    queue_store = AgentPromptQueueStore(service.config.runtime_dir / "queued-agent-prompts.json")
+    queued = queue_store.defer_capacity(
+        QueuedAgentPromptRecord(
+            queue_key=f"scheduled-wake:{scheduled.request_id}",
+            target="subscription-session",
+            vm_name="subscription-target",
+            session_id="subscription-session",
+            prompt="Resume after capacity returns",
+            effect_id=f"scheduled-wake:{scheduled.request_id}",
+            subscription_profile_id="team-a",
+            dispatch_id="dispatch-subscription-wake",
+        ),
+        queue_reason="subscription_rate_limited",
+        retry_at=None,
+    )
+    client = TestClient(create_app(service))
+    _unlock_privileged_operations(client)
+
+    cancelled = client.delete(
+        "/api/admin/agents/subscription-session/queued-prompts/"
+        f"{queued.queue_key}?backend=container_worker_vm"
+    )
+
+    assert cancelled.status_code == 200
+    assert queue_store.get(queued.queue_key) is None
+    cancelled_wake = service.runtime.wake_store.get_request(scheduled.request_id)
+    assert cancelled_wake is not None
+    assert cancelled_wake.status == "cancelled"
+    assert cancelled_wake.enabled is False
+    assert cancelled_wake.cancel_reason == "Queued prompt cancelled by an operator."
+    assert cancelled_wake.cancel_metadata == {
+        "source": "admin_agent_queue",
+        "agent_id": "subscription-session",
+        "queue_key": queued.queue_key,
+        "dispatch_id": "dispatch-subscription-wake",
+    }
 
 
 def test_admin_web_agents_delete_ambiguous_vm_session_link_fails(

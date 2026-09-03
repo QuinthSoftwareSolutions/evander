@@ -29,6 +29,7 @@ test("known admin hashes resolve to their matching tabs", () => {
   assert.equal(tabFromHash("#workflow"), "workflow");
   assert.equal(tabFromHash("#workflow?trace_id=trace-1"), "workflow");
   assert.equal(tabFromHash("#sessions"), "sessions");
+  assert.equal(tabFromHash("#subscriptions"), "subscriptions");
   assert.equal(tabFromHash("#sessions?session_id=session-1"), "sessions");
   assert.equal(tabFromHash("#tool-calls"), "tool-calls");
   assert.equal(tabFromHash("#configuration"), "configuration");
@@ -155,7 +156,7 @@ test("built-in tabs belong to one ordered navigation group", () => {
       operations: ["agents", "sessions", "issues", "approvals", "artifacts"],
       automation: ["workflow", "skills"],
       extensions: ["addons", "connectors", "host-directories"],
-      infrastructure: ["git-repositories", "vms", "workers"],
+      infrastructure: ["subscriptions", "git-repositories", "vms", "workers"],
       governance: ["tool-visibility", "mcp-tools", "tool-calls", "configuration", "users"],
     },
   );

@@ -88,6 +88,7 @@ from evander.bootstrap import (
     load_runtime_gateway_config,
 )
 from evander.communication_artifacts import CommunicationArtifactStore
+from evander.orchestration.host_polling import notify_wake_socket_for_lock
 from evander.connectors.service import ConnectorService, connector_registry_from_catalog
 from evander.directory_config import DirectoryConfigResolver, DirectoryConfigStore
 from evander.directories import DirectoryService, DirectoryStore
@@ -656,8 +657,13 @@ def _build_admin_runtime_components(
         CodexAuthAdminDependencies(
             provider_config=runtime.provider_config,
             audit=runtime.audit,
+            runtime_dir=config.runtime_dir,
+            wake_reconciliation=lambda: notify_wake_socket_for_lock(
+                config.runtime_dir / "effect-orchestrator.lock"
+            ),
         )
     )
+    workflow_config_admin.set_codex_auth_admin(codex_auth_admin)
     workflow_generation_admin = WorkflowGenerationAdminService(
         WorkflowGenerationAdminDependencies(
             config=config,

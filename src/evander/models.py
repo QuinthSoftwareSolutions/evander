@@ -24,7 +24,11 @@ from evander.ado_query_mode import AdoQueryMode, normalize_ado_query_mode, valid
 from evander.approval_notification_targets import (
     normalize_approval_notification_target_ids,
 )
-from evander.codex_auth import CodexAuthMode, normalize_codex_auth_mode
+from evander.codex_auth import (
+    CodexAuthMode,
+    normalize_codex_auth_mode,
+    normalize_subscription_profile_id,
+)
 
 _HTTP_URL_ADAPTER = TypeAdapter(AnyHttpUrl)
 ADO_DAILY_STATUS_REPORT_DEFAULT_MAX_ITEMS = 1000
@@ -585,6 +589,7 @@ class SessionManifest(BaseModel):
     vm_provider_id: str | None = None
     model: str | None = None
     codex_auth_mode: CodexAuthMode | None = None
+    subscription_profile_id: str | None = None
     directory_path: str = "root"
     allowed_tools: list[McpToolName]
     connector_grants: dict[str, list[str]] = Field(default_factory=dict)
@@ -630,6 +635,22 @@ class SessionManifest(BaseModel):
     @classmethod
     def normalize_codex_auth_mode_field(cls, value: object) -> CodexAuthMode | None:
         return normalize_codex_auth_mode(value)
+
+    @field_validator("subscription_profile_id", mode="before")
+    @classmethod
+    def normalize_subscription_profile_id_field(cls, value: object) -> str | None:
+        return normalize_subscription_profile_id(value)
+
+    @model_validator(mode="after")
+    def validate_subscription_profile_mode(self) -> "SessionManifest":
+        if (
+            self.subscription_profile_id is not None
+            and self.codex_auth_mode is not CodexAuthMode.CHATGPT_SUBSCRIPTION
+        ):
+            raise ValueError(
+                "subscription_profile_id requires codex_auth_mode='chatgpt_subscription'"
+            )
+        return self
 
     @field_validator("allowed_script_names", mode="before")
     @classmethod
@@ -1089,6 +1110,7 @@ class VmActionResult(BaseModel):
 class AgentPromptQueueRecord(BaseModel):
     queue_key: str
     effect_id: str
+    dispatch_id: str | None = None
     target: str
     vm_name: str
     session_id: str | None = None
@@ -1097,6 +1119,9 @@ class AgentPromptQueueRecord(BaseModel):
     coalesced_count: int = 1
     retry_count: int = 1
     max_retries: int | None = None
+    subscription_profile_id: str | None = None
+    queue_reason: str | None = None
+    retry_not_before: datetime | None = None
     prompt_preview: str | None = None
     prompt_length: int = 0
     metadata: dict[str, str] = Field(default_factory=dict)
@@ -1118,6 +1143,7 @@ class AgentRecord(BaseModel):
     target_name: str
     session_id: str | None = None
     directory_path: str = "root"
+    subscription_profile_id: str | None = None
     status: str = "unknown"
     started_at: datetime | None = None
     finished_at: datetime | None = None

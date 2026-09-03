@@ -25,6 +25,7 @@ export type AgentCreateFormState = {
   agentProvider: string;
   modelProviderMode: string;
   codexAuthMode: string;
+  subscriptionProfileId: string;
   vmImage: string;
   containerImage: string;
   dotnet: boolean;
@@ -65,6 +66,7 @@ export function emptyCreateForm(): AgentCreateFormState {
     agentProvider: "",
     modelProviderMode: "",
     codexAuthMode: "",
+    subscriptionProfileId: "",
     vmImage: "",
     containerImage: "",
     dotnet: false,
@@ -166,6 +168,9 @@ export function buildCreatePayload(form: AgentCreateFormState, directoryPath: st
   const codexAuthMode = optionalText(form.codexAuthMode);
   if (codexAuthMode === "metered_api" || codexAuthMode === "chatgpt_subscription") {
     payload.codex_auth_mode = codexAuthMode;
+  }
+  if (codexAuthMode === "chatgpt_subscription") {
+    payload.subscription_profile_id = optionalText(form.subscriptionProfileId);
   }
   payload.dotnet = form.dotnet;
   payload.nuget = form.nuget;

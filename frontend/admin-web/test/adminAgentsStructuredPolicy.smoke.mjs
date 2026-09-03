@@ -50,7 +50,7 @@ test("agents edit dialog only round-trips agent-specific Codex usage", async (t)
       state: "running",
       codex_usage: {
         agent_provider: "codex",
-        effective_codex_auth_mode: "chatgpt_subscription",
+        effective_codex_auth_mode: "metered_api",
         codex_auth_mode_source: "session_override",
       },
       labels: {
@@ -59,8 +59,8 @@ test("agents edit dialog only round-trips agent-specific Codex usage", async (t)
       session_policy: {
         session_id: "session-1",
         model: "gpt-5.4",
-        codex_auth_mode: "chatgpt_subscription",
-        effective_codex_auth_mode: "chatgpt_subscription",
+        codex_auth_mode: "metered_api",
+        effective_codex_auth_mode: "metered_api",
         codex_auth_mode_source: "session_override",
         expires_at: "2026-05-18T12:00:00Z",
         allowed_tools: ["prompt_agent"],
@@ -228,6 +228,14 @@ test("agents edit dialog only round-trips agent-specific Codex usage", async (t)
           container_worker: {
             default_image: null,
             images: [],
+            codex_auth_mode: "metered_api",
+            model_provider_mode: "openai_public",
+            subscription_profiles: [
+              {
+                profile_id: "team-a",
+                display_name: "Team A",
+              },
+            ],
           },
         }),
       );
@@ -249,11 +257,23 @@ test("agents edit dialog only round-trips agent-specific Codex usage", async (t)
       if (route.request().method() === "PATCH") {
         const body = JSON.parse(route.request().postData() ?? "{}");
         patchBodies.push(body);
-        assert.deepEqual(body, { codex_auth_mode: "metered_api" });
+        if (patchBodies.length === 1) {
+          assert.deepEqual(body, {
+            codex_auth_mode: "chatgpt_subscription",
+            subscription_profile_id: "team-a",
+          });
+          agentRecord.host.codex_usage.effective_codex_auth_mode = "chatgpt_subscription";
+          agentRecord.host.session_policy.codex_auth_mode = "chatgpt_subscription";
+          agentRecord.host.session_policy.effective_codex_auth_mode = "chatgpt_subscription";
+          agentRecord.host.session_policy.subscription_profile_id = null;
+          agentRecord.host.session_policy.effective_subscription_profile_id = "default";
+        } else {
+          assert.deepEqual(body, { codex_auth_mode: "chatgpt_subscription" });
+        }
         await route.fulfill(jsonResponse({ message: "Updated Codex usage.", target_name: "Dispatch agent" }));
         return;
       }
-      await route.continue();
+      await route.fulfill(jsonResponse(agentRecord));
       return;
     }
 
@@ -295,9 +315,21 @@ test("agents edit dialog only round-trips agent-specific Codex usage", async (t)
   }
 
   const usageSelect = editDialog.getByRole("combobox", { name: "Codex usage" });
-  assert.equal(await usageSelect.inputValue(), "chatgpt_subscription");
-  await usageSelect.selectOption("metered_api");
+  assert.equal(await usageSelect.inputValue(), "metered_api");
+  await usageSelect.selectOption("chatgpt_subscription");
+  const profileSelect = editDialog.getByRole("combobox", { name: "Subscription profile" });
+  await profileSelect.selectOption("team-a");
   await editDialog.getByRole("button", { name: "Save" }).click();
   await page.locator(".modal-card[aria-label='Edit Codex usage']").waitFor({ state: "hidden" });
-  assert.equal(patchBodies.length, 1);
+  await page.getByText("Codex usage: ChatGPT subscription", { exact: true }).waitFor({ state: "visible" });
+
+  await editButton.click();
+  await editDialog.waitFor({ state: "visible" });
+  assert.equal(
+    await editDialog.getByRole("combobox", { name: "Subscription profile" }).count(),
+    0,
+  );
+  await editDialog.getByRole("button", { name: "Save" }).click();
+  await editDialog.waitFor({ state: "hidden" });
+  assert.equal(patchBodies.length, 2);
 });

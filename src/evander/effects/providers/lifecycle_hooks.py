@@ -27,6 +27,9 @@ from evander.effects.providers.resume_thread_metadata import (
     resume_thread_metadata_key as normalize_resume_thread_metadata_key,
 )
 from evander.execution import ExecutionBackendKind, ExecutionSpec, build_execution_backend
+from evander.execution.container_worker_client import (
+    CodexSubscriptionDeferredClientError,
+)
 from evander.local_inference_capacity import (
     LOCAL_INFERENCE_QUEUE_REASON,
     LocalInferenceCapacityAdmission,
@@ -71,6 +74,7 @@ logger = logging.getLogger(__name__)
 
 _ADMIN_AGENT_PROMPT_EFFECT_ID_PREFIX = "admin-agent-prompt:"
 _AGENT_ENQUEUE_PROMPT_EFFECT_TYPE = "effect:agent:enqueue-prompt"
+_SUBSCRIPTION_REPLAY_ATTEMPT_METADATA_KEY = "subscription_replay_attempt"
 _ACTIVE_ENQUEUE_PROMPT_STATUSES = {"running", "waiting"}
 _RECONCILED_QUEUE_EXECUTION_STATUSES = {
     "waiting",
@@ -83,11 +87,23 @@ _RECONCILED_QUEUE_EXECUTION_STATUSES = {
 _QUEUED_PROMPT_RESTORED_METADATA_KEYS = (
     "workflow_run_id",
     "mcp_tool_approval_lease_id",
+    "operator_steering_note_id",
+    "operator_steering",
+    "wake_dispatch_id",
+    "request_id",
+    "source",
+    _SUBSCRIPTION_REPLAY_ATTEMPT_METADATA_KEY,
     "reduced_context_prompt",
     "context_retry_prompt",
     "agent_context_retry_enabled",
     "agent_context_retry_max_attempts",
     "agent_context_retry_target_chars",
+    "context_retry_mode",
+    "context_retry_attempt",
+    "context_retry_max_attempts",
+    "context_retry_of_execution_id",
+    "context_retry_reason",
+    "context_retry_target_chars",
 )
 
 
@@ -272,6 +288,14 @@ class AgentEnqueuePromptQueueDispatchHook(EffectLifecycleHookBase):
             current_records = queue_store.read_all()
             record = current_records.get(queue_key)
             if record is None:
+                continue
+            if not self._retry_not_before_ready(record):
+                continue
+            if self._has_earlier_subscription_profile_record(
+                worker=worker,
+                records=current_records,
+                queue_key=queue_key,
+            ):
                 continue
             if self._has_earlier_local_capacity_record(
                 records=current_records,
@@ -490,11 +514,18 @@ class AgentEnqueuePromptQueueDispatchHook(EffectLifecycleHookBase):
                 )
                 if not recorded:
                     continue
-                self._delete_queue_record_if_current(
-                    queue_store=queue_store,
-                    queue_key=queue_key,
-                    dispatch_id=dispatch_id,
+                steering_note_consumed = self._mark_queued_operator_steering_delivered(
+                    worker=worker,
+                    record=record,
+                    worker_execution_id=str(record.vm_name or record.target).strip(),
+                    execution_backend=ExecutionBackendKind.LIBVIRT_VM.value,
                 )
+                if steering_note_consumed:
+                    self._delete_queue_record_if_current(
+                        queue_store=queue_store,
+                        queue_key=queue_key,
+                        dispatch_id=dispatch_id,
+                    )
                 dispatched += 1
             else:
                 self._release_local_inference_capacity(
@@ -539,6 +570,98 @@ class AgentEnqueuePromptQueueDispatchHook(EffectLifecycleHookBase):
             and getattr(records[key], "queue_reason", None) == LOCAL_INFERENCE_QUEUE_REASON
             for key in ordered[: ordered.index(queue_key)]
         )
+
+    def _has_earlier_subscription_profile_record(
+        self,
+        *,
+        worker: Any,
+        records: dict[str, Any],
+        queue_key: str,
+    ) -> bool:
+        current = records.get(queue_key)
+        current_context = self._runnable_subscription_profile_context(
+            worker=worker,
+            record=current,
+        )
+        if current_context is None:
+            return False
+        profile_id, worker_url = current_context
+        ordered = self._fifo_queue_keys(records)
+        try:
+            current_index = ordered.index(queue_key)
+        except ValueError:
+            return False
+        for key in ordered[:current_index]:
+            earlier_context = self._runnable_subscription_profile_context(
+                worker=worker,
+                record=records[key],
+            )
+            if earlier_context == (profile_id, worker_url):
+                return True
+        return False
+
+    def _runnable_subscription_profile_context(
+        self,
+        *,
+        worker: Any,
+        record: Any,
+    ) -> tuple[str, str] | None:
+        context = self._container_record_session_context(worker=worker, record=record)
+        if context is None:
+            return None
+        _session_id, session, config = context
+        try:
+            ensure_session_not_expired(session)
+        except SessionExpiredError:
+            return None
+        from evander.effects.providers.agent_prompt import AgentPromptEffectProvider
+
+        agent_harness = AgentPromptEffectProvider._agent_harness_from_session(
+            session,
+            config=config,
+        )
+        model = str(
+            getattr(record, "model", None)
+            or getattr(session, "model", None)
+            or default_agent_model_for_provider(agent_harness, config)
+        ).strip()
+        try:
+            codex_turn = container_codex_turn_spec(
+                prompt=str(getattr(record, "prompt", None) or "queued prompt"),
+                model=model,
+                resume_thread_id=None,
+                session=session,
+                config=config,
+                agent_provider=agent_harness,
+                resume_mode=getattr(record, "resume_mode", None),
+            )
+        except ValueError:
+            return None
+        profile_id = str(getattr(codex_turn, "subscription_profile_id", None) or "").strip()
+        if not profile_id:
+            return None
+        persisted_profile_id = str(getattr(record, "subscription_profile_id", "") or "").strip()
+        if persisted_profile_id and persisted_profile_id != profile_id:
+            logger.warning(
+                "Queued prompt subscription profile no longer matches its session "
+                "queue_key=%s persisted_profile_id=%s effective_profile_id=%s",
+                getattr(record, "queue_key", None),
+                persisted_profile_id,
+                profile_id,
+            )
+        worker_url = str(getattr(config, "container_worker_base_url", "") or "").strip()
+        if not worker_url:
+            return None
+        return profile_id, worker_url.rstrip("/")
+
+    @staticmethod
+    def _retry_not_before_ready(record: Any) -> bool:
+        retry_at = getattr(record, "retry_not_before", None)
+        if not isinstance(retry_at, datetime):
+            return True
+        if retry_at.tzinfo is None:
+            retry_at = retry_at.replace(tzinfo=UTC)
+        return retry_at.astimezone(UTC) <= datetime.now(UTC)
 
     @classmethod
     def _has_earlier_claimed_replay_record(
@@ -891,12 +1014,18 @@ class AgentEnqueuePromptQueueDispatchHook(EffectLifecycleHookBase):
             return False
         session_id, session, config = context
 
-        if self._queued_prompt_session_is_expired(queue_key=queue_key, session=session):
-            self._delete_queue_record_if_current(
-                queue_store=queue_store,
-                queue_key=queue_key,
-                dispatch_id=self._dispatch_id_for_queue_record(record),
-            )
+        retain_for_subscription_capacity = self._is_subscription_capacity_deferral(record)
+        if self._queued_prompt_session_is_expired(
+            queue_key=queue_key,
+            session=session,
+            retain=retain_for_subscription_capacity,
+        ):
+            if not retain_for_subscription_capacity:
+                self._delete_queue_record_if_current(
+                    queue_store=queue_store,
+                    queue_key=queue_key,
+                    dispatch_id=self._dispatch_id_for_queue_record(record),
+                )
             return False
 
         dispatch_id = self._dispatch_id_for_queue_record(record)
@@ -1040,18 +1169,42 @@ class AgentEnqueuePromptQueueDispatchHook(EffectLifecycleHookBase):
                                     if codex_turn is not None
                                     else {}
                                 ),
+                                **(
+                                    {
+                                        "subscription_profile_id": (
+                                            codex_turn.subscription_profile_id
+                                        )
+                                    }
+                                    if codex_turn is not None
+                                    and codex_turn.subscription_profile_id is not None
+                                    else {}
+                                ),
                                 "resume_thread_id": effective_resume_thread_id,
                                 "queued": True,
                             },
                         )
                     )
                 )
-        except Exception:
+        except Exception as exc:
             self._release_local_inference_capacity(
                 worker=worker,
                 admission=capacity_admission,
             )
             self._release_enqueue_prompt_claim(worker=worker, claim=prompt_lock_claim)
+            if isinstance(exc, CodexSubscriptionDeferredClientError):
+                try:
+                    record.subscription_profile_id = exc.deferral.profile_id
+                    queue_store.defer_capacity(
+                        record,
+                        queue_reason=exc.deferral.queue_reason,
+                        retry_at=exc.deferral.retry_at,
+                    )
+                except Exception:
+                    logger.warning(
+                        "Could not persist subscription capacity deferral queue_key=%s",
+                        queue_key,
+                        exc_info=True,
+                    )
             return False
         self._mark_local_inference_running(
             worker=worker,
@@ -1086,11 +1239,18 @@ class AgentEnqueuePromptQueueDispatchHook(EffectLifecycleHookBase):
                 )
                 self._release_enqueue_prompt_claim(worker=worker, claim=prompt_lock_claim)
             return False
-        self._delete_queue_record_if_current(
-            queue_store=queue_store,
-            queue_key=queue_key,
-            dispatch_id=dispatch_id,
+        steering_note_consumed = self._mark_queued_operator_steering_delivered(
+            worker=worker,
+            record=record,
+            worker_execution_id=handle.execution_id,
+            execution_backend=ExecutionBackendKind.CONTAINER_WORKER_VM.value,
         )
+        if steering_note_consumed:
+            self._delete_queue_record_if_current(
+                queue_store=queue_store,
+                queue_key=queue_key,
+                dispatch_id=dispatch_id,
+            )
         return True
 
     def _scheduled_wake_queue_record_is_current(
@@ -1150,6 +1310,43 @@ class AgentEnqueuePromptQueueDispatchHook(EffectLifecycleHookBase):
     @staticmethod
     def _dispatch_id_for_queue_record(record: Any) -> str:
         return queued_agent_prompt_dispatch_id(record)
+
+    @staticmethod
+    def _subscription_replay_attempt(record: Any) -> int:
+        metadata = getattr(record, "metadata", {})
+        raw_attempt = (
+            metadata.get(_SUBSCRIPTION_REPLAY_ATTEMPT_METADATA_KEY)
+            if isinstance(metadata, dict)
+            else None
+        )
+        try:
+            return max(0, int(raw_attempt or 0))
+        except (TypeError, ValueError):
+            return 0
+
+    @staticmethod
+    def _is_subscription_capacity_deferral(record: Any) -> bool:
+        profile_id = str(getattr(record, "subscription_profile_id", "") or "").strip()
+        queue_reason = str(getattr(record, "queue_reason", "") or "").strip()
+        try:
+            deferral_count = int(getattr(record, "capacity_deferral_count", 0) or 0)
+        except (TypeError, ValueError):
+            deferral_count = 0
+        return bool(profile_id and deferral_count > 0 and queue_reason.startswith("subscription_"))
+
+    @classmethod
+    def _queued_prompt_execution_event_id(
+        cls,
+        *,
+        queue_key: str,
+        dispatch_id: str,
+        record: Any,
+    ) -> str:
+        event_id = f"queued-agent-prompt:{queue_key}:{dispatch_id}"
+        replay_attempt = cls._subscription_replay_attempt(record)
+        if replay_attempt:
+            return f"{event_id}:subscription-replay-{replay_attempt}"
+        return event_id
 
     @staticmethod
     def _claim_queue_record_for_replay(
@@ -1242,7 +1439,11 @@ class AgentEnqueuePromptQueueDispatchHook(EffectLifecycleHookBase):
 
         from evander.daemons.effect_orchestrator import EffectExecutionRecord
 
-        event_id = f"queued-agent-prompt:{queue_key}:{dispatch_id}"
+        event_id = self._queued_prompt_execution_event_id(
+            queue_key=queue_key,
+            dispatch_id=dispatch_id,
+            record=record,
+        )
         idempotency_key = f"{event_id}::{record.effect_id}"
         find_by_idempotency_key = getattr(
             execution_store,
@@ -1397,7 +1598,11 @@ class AgentEnqueuePromptQueueDispatchHook(EffectLifecycleHookBase):
 
         from evander.daemons.effect_orchestrator import EffectExecutionRecord
 
-        event_id = f"queued-agent-prompt:{queue_key}:{dispatch_id}"
+        event_id = self._queued_prompt_execution_event_id(
+            queue_key=queue_key,
+            dispatch_id=dispatch_id,
+            record=record,
+        )
         idempotency_key = f"{event_id}::{record.effect_id}"
         find_by_idempotency_key = getattr(
             execution_store,
@@ -1601,7 +1806,11 @@ class AgentEnqueuePromptQueueDispatchHook(EffectLifecycleHookBase):
         find_execution = getattr(execution_store, "find_execution_by_idempotency_key", None)
         if not callable(find_execution):
             return False
-        event_id = f"queued-agent-prompt:{queue_key}:{dispatch_id}"
+        event_id = self._queued_prompt_execution_event_id(
+            queue_key=queue_key,
+            dispatch_id=dispatch_id,
+            record=record,
+        )
         existing = find_execution(f"{event_id}::{effect_id}")
         if existing is None:
             return False
@@ -1625,11 +1834,18 @@ class AgentEnqueuePromptQueueDispatchHook(EffectLifecycleHookBase):
             execution_record=existing,
         ):
             return True
-        self._delete_queue_record_if_current(
-            queue_store=queue_store,
-            queue_key=queue_key,
-            dispatch_id=dispatch_id,
+        steering_note_consumed = self._mark_queued_operator_steering_delivered(
+            worker=worker,
+            record=record,
+            worker_execution_id=str(outputs.get("execution_id") or "").strip() or None,
+            execution_backend=str(outputs.get("execution_backend") or "").strip() or None,
         )
+        if steering_note_consumed:
+            self._delete_queue_record_if_current(
+                queue_store=queue_store,
+                queue_key=queue_key,
+                dispatch_id=dispatch_id,
+            )
         logger.info(
             "AgentEnqueuePromptQueueDispatchHook reconciled exact queued execution "
             "queue_key=%s dispatch_id=%s status=%s",
@@ -1638,6 +1854,45 @@ class AgentEnqueuePromptQueueDispatchHook(EffectLifecycleHookBase):
             status,
         )
         return True
+
+    @staticmethod
+    def _mark_queued_operator_steering_delivered(
+        *,
+        worker: Any,
+        record: Any,
+        worker_execution_id: str | None,
+        execution_backend: str | None,
+    ) -> bool:
+        metadata = getattr(record, "metadata", {})
+        note_id = (
+            str(metadata.get("operator_steering_note_id") or "").strip()
+            if isinstance(metadata, dict)
+            else ""
+        )
+        if not note_id:
+            return True
+        runtime_dir = resolve_runtime_dir(worker)
+        if runtime_dir is None:
+            return True
+        try:
+            from evander.operator_steering import operator_steering_note_store
+
+            note = operator_steering_note_store(runtime_dir).mark_queued_replacement_started(
+                note_id,
+                provider=execution_backend or "queued_agent_prompt",
+                provider_endpoint="queued-replay-start",
+                worker_execution_id=worker_execution_id,
+            )
+            return note is None or note.status == "delivered"
+        except Exception:
+            logger.warning(
+                "Could not consume queued operator steering note after replay started "
+                "note_id=%s worker_execution_id=%s",
+                note_id,
+                worker_execution_id,
+                exc_info=True,
+            )
+            return False
 
     @staticmethod
     def _publish_started_event_for_reconciled_execution(
@@ -1837,13 +2092,18 @@ class AgentEnqueuePromptQueueDispatchHook(EffectLifecycleHookBase):
         return session_id, session, config
 
     @staticmethod
-    def _queued_prompt_session_is_expired(*, queue_key: str, session: Any) -> bool:
+    def _queued_prompt_session_is_expired(
+        *,
+        queue_key: str,
+        session: Any,
+        retain: bool = False,
+    ) -> bool:
         try:
             ensure_session_not_expired(session)
         except SessionExpiredError:
             logger.warning(
-                "AgentEnqueuePromptQueueDispatchHook discarded expired queued prompt "
-                "queue_key=%s %s",
+                "AgentEnqueuePromptQueueDispatchHook %s expired queued prompt queue_key=%s %s",
+                "retained" if retain else "discarded",
                 queue_key,
                 session_expired_message(session),
             )

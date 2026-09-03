@@ -18,10 +18,10 @@ import {
 import { Tooltip } from "../admin/Tooltip";
 import { readAdminHashQuery } from "../admin/hash";
 import { AgentCreateDialog } from "./AgentCreateDialog";
-import { CodexAuthPanel } from "./CodexAuthPanel";
 import {
   createOperationIsActive,
   createOperationMessage,
+  loadAgentCreateOptions,
   loadAgentCreateOperations,
   submitAgentCreateOperation,
   type AgentCreateSubmitMeta,
@@ -31,6 +31,7 @@ import type {
   AgentActionResponse,
   AgentBackend,
   AgentCreateOperation,
+  CodexSubscriptionProfile,
   AgentCreateRequest,
   AgentExecutionHistoryResponse,
   AgentExecutionRecord,
@@ -125,6 +126,8 @@ type StatusFilter = "active" | "inactive" | "all";
 
 type AgentPolicyFormState = {
   codexAuthMode: string;
+  subscriptionProfileId: string;
+  initialEffectiveCodexAuthMode: "metered_api" | "chatgpt_subscription";
 };
 
 type AgentSkillInstallFormState = {
@@ -194,6 +197,8 @@ function emptyLogState(text = "Loading..."): AgentLogViewState {
 function emptyPolicyForm(): AgentPolicyFormState {
   return {
     codexAuthMode: "",
+    subscriptionProfileId: "",
+    initialEffectiveCodexAuthMode: "metered_api",
   };
 }
 
@@ -735,6 +740,11 @@ function sessionPolicyForAgent(agent: AgentRecord | null): AgentSessionPolicy | 
       rawPolicy.codex_auth_mode === "chatgpt_subscription"
         ? rawPolicy.codex_auth_mode
         : null,
+    subscription_profile_id: hostString(rawPolicy, "subscription_profile_id"),
+    effective_subscription_profile_id: hostString(
+      rawPolicy,
+      "effective_subscription_profile_id",
+    ),
     effective_codex_auth_mode:
       rawPolicy.effective_codex_auth_mode === "chatgpt_subscription"
         ? "chatgpt_subscription"
@@ -814,16 +824,27 @@ function policyFormFromAgent(agent: AgentRecord): AgentPolicyFormState {
   const policy = sessionPolicyForAgent(agent);
   return {
     codexAuthMode: policy?.codex_auth_mode ?? "",
+    subscriptionProfileId: policy?.subscription_profile_id ?? "",
+    initialEffectiveCodexAuthMode: policy?.effective_codex_auth_mode ?? "metered_api",
   };
 }
 
+function formTransitionsToSubscription(form: AgentPolicyFormState): boolean {
+  return form.codexAuthMode === "chatgpt_subscription"
+    && form.initialEffectiveCodexAuthMode !== "chatgpt_subscription";
+}
+
 function buildCodexUsagePayload(form: AgentPolicyFormState): AgentPolicyUpdateRequest {
-  return {
+  const payload: AgentPolicyUpdateRequest = {
     codex_auth_mode:
       form.codexAuthMode === "metered_api" || form.codexAuthMode === "chatgpt_subscription"
         ? form.codexAuthMode
         : null,
   };
+  if (formTransitionsToSubscription(form) && form.subscriptionProfileId.trim()) {
+    payload.subscription_profile_id = form.subscriptionProfileId.trim();
+  }
+  return payload;
 }
 
 function isActiveStatus(status: string): boolean {
@@ -918,6 +939,8 @@ export function AgentsPage() {
   const [skillOptions, setSkillOptions] = useState<SkillLibraryItem[]>([]);
   const [showEditForm, setShowEditForm] = useState(false);
   const [editForm, setEditForm] = useState<AgentPolicyFormState>(() => emptyPolicyForm());
+  const [editSubscriptionProfiles, setEditSubscriptionProfiles] = useState<CodexSubscriptionProfile[]>([]);
+  const [editSubscriptionProfilesLoading, setEditSubscriptionProfilesLoading] = useState(false);
   const [showSkillInstallForm, setShowSkillInstallForm] = useState(false);
   const [skillInstallForm, setSkillInstallForm] = useState<AgentSkillInstallFormState>(() =>
     emptySkillInstallForm(),
@@ -1727,10 +1750,22 @@ export function AgentsPage() {
       return;
     }
     setEditForm(policyFormFromAgent(selectedAgent));
+    setEditSubscriptionProfiles([]);
+    setEditSubscriptionProfilesLoading(true);
     setShowEditForm(true);
     setShowPromptForm(false);
     setShowSkillInstallForm(false);
     setInlineValidation("");
+    void loadAgentCreateOptions(selectedAgent.directory_path)
+      .then((options) => {
+        setEditSubscriptionProfiles(options.container_worker.subscription_profiles ?? []);
+      })
+      .catch((reason: unknown) => {
+        setInlineValidation(
+          reason instanceof Error ? reason.message : "Could not load subscription profiles.",
+        );
+      })
+      .finally(() => setEditSubscriptionProfilesLoading(false));
   }
 
   function openSkillInstallForm() {
@@ -1794,6 +1829,13 @@ export function AgentsPage() {
 
   async function handleEditAgent() {
     if (!selectedAgent || !selectedAgentCodexUsage) return;
+    if (
+      formTransitionsToSubscription(editForm)
+      && !editForm.subscriptionProfileId.trim()
+    ) {
+      setInlineValidation("Select a ChatGPT subscription profile.");
+      return;
+    }
     setBusyAction("edit-agent");
     setInlineValidation("");
     try {
@@ -1843,6 +1885,28 @@ export function AgentsPage() {
       setError(message);
       setStatus(null);
       setActionLog((current) => [{ at: new Date().toISOString(), message: `${selectedAgent.target_name}: ${message}`, tone: "error" as const }, ...current].slice(0, 30));
+    } finally {
+      setBusyAction(null);
+    }
+  }
+
+  async function handleCancelQueuedPrompt(record: AgentPromptQueueRecord) {
+    if (!selectedAgent) return;
+    const actionKey = `cancel-queue:${record.queue_key}`;
+    setBusyAction(actionKey);
+    try {
+      const query = new URLSearchParams({ backend: selectedAgent.backend });
+      await fetchJson(
+        `/api/admin/agents/${encodeURIComponent(selectedAgent.agent_id)}/queued-prompts/${encodeURIComponent(record.queue_key)}?${query.toString()}`,
+        { method: "DELETE" },
+      );
+      setStatus(`Cancelled queued prompt ${record.queue_key}.`);
+      setError(null);
+      await refreshAgents();
+      setAgentDetailReloadNonce((current) => current + 1);
+    } catch (reason: unknown) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+      setStatus(null);
     } finally {
       setBusyAction(null);
     }
@@ -2026,28 +2090,6 @@ export function AgentsPage() {
 
   return (
     <div className="agents-page-shell">
-      <section className="agents-global-controls" aria-label="Shared worker account">
-        <div className="agents-global-controls-heading">
-          <div>
-            <div className="eyebrow">Page-wide worker configuration</div>
-            <h2>Shared worker account</h2>
-          </div>
-          <p className="muted-text">Applies across container agents in this directory.</p>
-        </div>
-        <CodexAuthPanel
-          directoryPath={selectedDirectoryPath}
-          privilegedUnlocked={privilegedUnlocked}
-          selectedAgentUsage={
-            selectedAgent && selectedAgentCodexUsage
-              ? {
-                  agentLabel: selectedAgent.target_name || selectedAgent.agent_id,
-                  mode: selectedAgentCodexUsage.mode,
-                }
-              : null
-          }
-        />
-      </section>
-
       <div className="feature-page agents-page">
       <section className="feature-sidebar">
         <div className="feature-sidebar-header">
@@ -2388,6 +2430,7 @@ export function AgentsPage() {
                     <span>Codex usage</span>
                     <select
                       value={editForm.codexAuthMode}
+                      disabled={Boolean(selectedAgentPolicy?.effective_subscription_profile_id)}
                       onChange={(event) =>
                         setEditForm((current) => ({
                           ...current,
@@ -2400,9 +2443,39 @@ export function AgentsPage() {
                       <option value="chatgpt_subscription">ChatGPT subscription</option>
                     </select>
                     <span className="field-description">
-                      Applies on the next turn. Existing Codex thread history is preserved.
+                      {selectedAgentPolicy?.effective_subscription_profile_id
+                        ? `Profile ${selectedAgentPolicy.effective_subscription_profile_id} is immutable. Create a new agent to change it.`
+                        : "Applies on the next turn. Existing Codex thread history is preserved."}
                     </span>
                   </label>
+                  {formTransitionsToSubscription(editForm) ? (
+                    <label className="field-stack">
+                      <span>Subscription profile</span>
+                      <select
+                        value={editForm.subscriptionProfileId}
+                        onChange={(event) =>
+                          setEditForm((current) => ({
+                            ...current,
+                            subscriptionProfileId: event.target.value,
+                          }))
+                        }
+                      >
+                        <option value="">Select a profile</option>
+                        {editSubscriptionProfiles.map((profile) => (
+                          <option key={profile.profile_id} value={profile.profile_id}>
+                            {profile.display_name} ({profile.profile_id})
+                          </option>
+                        ))}
+                      </select>
+                      <span className="field-description">
+                        {editSubscriptionProfilesLoading
+                          ? "Loading profiles..."
+                          : editSubscriptionProfiles.length === 0
+                            ? "No enabled profiles are available on this worker. Create or enable one on Subscriptions."
+                            : "This profile binding is fixed for the lifetime of the agent session."}
+                      </span>
+                    </label>
+                  ) : null}
                 </div>
                 <div className="inline-actions compact-actions">
                   <button className="admin-action-button primary compact" type="button" disabled={!privilegedUnlocked || busyAction === "edit-agent"} onClick={() => void handleEditAgent()}>
@@ -2634,6 +2707,10 @@ export function AgentsPage() {
                         <dt>Latest status</dt>
                         <dd>{hostString(selectedAgent.host, "last_status") ?? selectedAgent.status}</dd>
                       </div>
+                      <div>
+                        <dt>Subscription profile</dt>
+                        <dd>{selectedAgent.subscription_profile_id ?? selectedAgentPolicy?.effective_subscription_profile_id ?? "None"}</dd>
+                      </div>
                     </>
                   ) : (
                     <>
@@ -2735,9 +2812,22 @@ export function AgentsPage() {
                             <span>
                               {record.coalesced_count} prompt{record.coalesced_count === 1 ? "" : "s"}
                             </span>
+                            {record.subscription_profile_id ? <span>Profile: {record.subscription_profile_id}</span> : null}
+                            {record.queue_reason ? <span>Reason: {record.queue_reason}</span> : null}
+                            {record.retry_not_before ? <span>Retry after: {formatTimestamp(record.retry_not_before)}</span> : null}
                           </div>
                           {record.prompt_preview ? (
                             <p className="agent-prompt-queue-preview">{record.prompt_preview}</p>
+                          ) : null}
+                          {record.subscription_profile_id ? (
+                            <button
+                              className="admin-action-button compact danger"
+                              type="button"
+                              disabled={!privilegedUnlocked || busyAction !== null}
+                              onClick={() => void handleCancelQueuedPrompt(record)}
+                            >
+                              {busyAction === `cancel-queue:${record.queue_key}` ? "Cancelling..." : "Cancel queued prompt"}
+                            </button>
                           ) : null}
                         </div>
                       ))}

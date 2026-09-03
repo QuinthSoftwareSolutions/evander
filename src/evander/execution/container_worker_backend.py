@@ -689,6 +689,7 @@ class ContainerWorkerVmExecutionBackend:
             "codex_subscription_thread_id",
             "codex_subscription_turn_id",
             "codex_subscription_exit_code",
+            "codex_subscription_deferral",
             "exit_code",
             "worker_terminal_kind",
             "active_tool",

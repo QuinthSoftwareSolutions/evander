@@ -15,7 +15,7 @@ import subprocess
 import threading
 import time
 import uuid
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -33,7 +33,7 @@ from evander.capacity_health import (
     collect_disk_usage,
     top_session_storage,
 )
-from evander.codex_auth import CodexAuthMode
+from evander.codex_auth import DEFAULT_SUBSCRIPTION_PROFILE_ID, CodexAuthMode
 from evander.managed_sections import merge_managed_section
 from evander.session_artifacts import (
     open_relative_regular_file_no_follow,
@@ -52,6 +52,7 @@ from evander.execution.task_worktree_cleanup import (
 
 from .docker_runtime import DockerContainerRuntime
 from .codex_auth_broker import CodexAuthBroker
+from .codex_auth_profiles import CodexAuthBrokerRegistry
 from .codex_subscription import (
     CODEX_COMPLETION_MARKER_CONTAINER_DIR,
     CODEX_COMPLETION_MARKER_HOST_DIRNAME,
@@ -275,7 +276,9 @@ class WorkerDaemon:
         mssql_provisioner: WorkerMssqlProvisioner | None = None,
         storage_telemetry_ttl_seconds: float = _SESSION_STORAGE_TELEMETRY_TTL_SECONDS,
         codex_auth_broker: CodexAuthBroker | None = None,
+        codex_auth_registry: CodexAuthBrokerRegistry | None = None,
         codex_auth_command: Sequence[str] | None = None,
+        codex_auth_command_factory: Callable[[str, Path], Sequence[str]] | None = None,
         codex_egress_proxy_url: str | None = None,
         codex_egress_proxy: RestrictedCodexEgressProxy | None = None,
         codex_egress_proxy_bind_host: str | None = None,
@@ -297,7 +300,9 @@ class WorkerDaemon:
         )
         self.token = token if token is not None else os.environ.get("EVANDER_WORKER_TOKEN")
         self._codex_auth_broker = codex_auth_broker
+        self._codex_auth_registry = codex_auth_registry
         self._codex_auth_command = tuple(codex_auth_command or ("codex", "app-server", "--stdio"))
+        self._codex_auth_command_factory = codex_auth_command_factory
         self._codex_auth_env = dict(os.environ)
         if codex_egress_proxy_url:
             self._codex_auth_env.update(
@@ -402,49 +407,116 @@ class WorkerDaemon:
         for runner in runners:
             if not runner.join(timeout_seconds=40.0):
                 logger.error("codex_subscription_runner_shutdown_timed_out")
-        if self._codex_auth_broker is not None:
+        if self._codex_auth_registry is not None:
+            self._codex_auth_registry.close()
+        elif self._codex_auth_broker is not None:
             self._codex_auth_broker.close()
         if self._codex_egress_proxy is not None:
             self._codex_egress_proxy.close()
 
     @property
     def codex_auth(self) -> CodexAuthBroker:
-        broker = self._codex_auth_broker
-        if broker is not None:
-            return broker
+        return self.codex_auth_profiles.broker(DEFAULT_SUBSCRIPTION_PROFILE_ID)
+
+    @property
+    def codex_auth_profiles(self) -> CodexAuthBrokerRegistry:
+        registry = self._codex_auth_registry
+        if registry is not None:
+            return registry
         with self._codex_auth_init_lock:
-            broker = self._codex_auth_broker
-            if broker is None:
-                broker = CodexAuthBroker(
-                    auth_home=self.worker_root / "codex-auth",
+            registry = self._codex_auth_registry
+            if registry is None:
+                registry = CodexAuthBrokerRegistry(
+                    worker_root=self.worker_root,
                     app_server_command=self._codex_auth_command,
                     app_server_env=self._codex_auth_env,
+                    command_factory=self._codex_auth_command_factory,
+                    initial_brokers=(
+                        {DEFAULT_SUBSCRIPTION_PROFILE_ID: self._codex_auth_broker}
+                        if self._codex_auth_broker is not None
+                        else None
+                    ),
                 )
-                self._codex_auth_broker = broker
-            return broker
+                self._codex_auth_registry = registry
+            return registry
 
     def codex_auth_status(self) -> dict[str, Any]:
-        return self.codex_auth.status()
+        return self.codex_auth_profile_status(DEFAULT_SUBSCRIPTION_PROFILE_ID)
 
     def start_codex_device_login(self) -> dict[str, Any]:
-        return self.codex_auth.start_device_login()
+        return self.start_codex_profile_device_login(DEFAULT_SUBSCRIPTION_PROFILE_ID)
 
     def codex_device_login_status(self, login_id: str) -> dict[str, Any]:
-        return self.codex_auth.device_login_status(login_id)
+        return self.codex_profile_device_login_status(DEFAULT_SUBSCRIPTION_PROFILE_ID, login_id)
 
     def cancel_codex_device_login(self, login_id: str) -> dict[str, Any]:
-        return self.codex_auth.cancel_device_login(login_id)
+        return self.cancel_codex_profile_device_login(DEFAULT_SUBSCRIPTION_PROFILE_ID, login_id)
 
     def logout_codex_auth(self) -> dict[str, Any]:
-        return self.codex_auth.logout()
+        return self.logout_codex_profile(DEFAULT_SUBSCRIPTION_PROFILE_ID)
+
+    def list_codex_auth_profiles(self) -> dict[str, Any]:
+        payload = self.codex_auth_profiles.list_profiles()
+        for profile in payload["profiles"]:
+            profile["active_job_count"] = self._active_subscription_jobs_for_profile(
+                str(profile.get("profile_id") or "")
+            )
+        return payload
+
+    def create_codex_auth_profile(self, payload: dict[str, Any]) -> dict[str, Any]:
+        profile = self.codex_auth_profiles.create_profile(payload)
+        profile["active_job_count"] = 0
+        return profile
+
+    def codex_auth_profile_status(self, profile_id: str) -> dict[str, Any]:
+        profile = self.codex_auth_profiles.profile_status(profile_id)
+        profile["active_job_count"] = self._active_subscription_jobs_for_profile(
+            str(profile.get("profile_id") or "")
+        )
+        return profile
+
+    def patch_codex_auth_profile(self, profile_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        profile = self.codex_auth_profiles.patch_profile(profile_id, payload)
+        profile["active_job_count"] = self._active_subscription_jobs_for_profile(profile_id)
+        return profile
+
+    def start_codex_profile_device_login(self, profile_id: str) -> dict[str, Any]:
+        return self.codex_auth_profiles.start_device_login(profile_id)
+
+    def codex_profile_device_login_status(self, profile_id: str, login_id: str) -> dict[str, Any]:
+        return self.codex_auth_profiles.device_login_status(profile_id, login_id)
+
+    def cancel_codex_profile_device_login(self, profile_id: str, login_id: str) -> dict[str, Any]:
+        return self.codex_auth_profiles.cancel_device_login(profile_id, login_id)
+
+    def logout_codex_profile(self, profile_id: str) -> dict[str, Any]:
+        profile = self.codex_auth_profiles.logout(profile_id)
+        profile["active_job_count"] = self._active_subscription_jobs_for_profile(profile_id)
+        return profile
+
+    def _active_subscription_jobs_for_profile(self, profile_id: str) -> int:
+        return sum(
+            1
+            for record in self.store.list_all_ordered()
+            if record.status in {"created", "preparing", "starting", "running"}
+            and _worker_job_uses_codex_subscription(record)
+            and str(record.metadata.get("subscription_profile_id") or "default") == profile_id
+        )
 
     def start_job(self, request: WorkerJobRequest) -> WorkerJobRecord:
         paths = WorkerSessionPaths.resolve(self.worker_root, request.session_id)
         subscription_tokens = None
         subscription_marker: Path | None = None
         runtime_request = request
+        subscription_profile_id: str | None = None
+        subscription_broker: CodexAuthBroker | None = None
         if _worker_request_uses_codex_subscription(request):
-            subscription_tokens = self.codex_auth.external_tokens()
+            assert request.codex_turn is not None
+            subscription_profile_id = (
+                request.codex_turn.subscription_profile_id or DEFAULT_SUBSCRIPTION_PROFILE_ID
+            )
+            subscription_tokens = self.codex_auth_profiles.preflight(subscription_profile_id)
+            subscription_broker = self.codex_auth_profiles.broker(subscription_profile_id)
         if request.repo_source:
             self._ensure_allowed_git_source(request.repo_source)
         self._sync_git_ssh_into_agent_home(
@@ -471,6 +543,11 @@ class WorkerDaemon:
                 | (
                     {"codex_auth_mode": CodexAuthMode.CHATGPT_SUBSCRIPTION.value}
                     if subscription_tokens is not None
+                    else {}
+                )
+                | (
+                    {"subscription_profile_id": subscription_profile_id}
+                    if subscription_profile_id is not None
                     else {}
                 )
             ),
@@ -527,11 +604,15 @@ class WorkerDaemon:
                 command=command_builder(record, request.codex_turn),
                 turn=request.codex_turn,
                 cwd=request.working_directory or "/home/agent",
-                broker=self.codex_auth,
+                broker=subscription_broker or self.codex_auth,
                 initial_tokens=subscription_tokens,
                 log_path=self._log_path(record),
                 finished_marker=subscription_marker,
                 metadata_callback=lambda update: self._merge_job_metadata(job_id, update),
+                token_refresher=lambda **kwargs: self.codex_auth_profiles.refresh_tokens(
+                    subscription_profile_id,
+                    **kwargs,
+                ),
             )
             with self._codex_subscription_runners_lock:
                 self._codex_subscription_runners[job_id] = runner

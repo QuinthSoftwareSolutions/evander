@@ -427,10 +427,16 @@ inspect for operational attribution without exposing prompt content.
 ## Switching Container Codex Usage Source
 
 Container-worker Codex sessions can use either `metered_api` or
-`chatgpt_subscription`. Set the inherited default with
-`container_worker_codex_auth_mode` in directory provider configuration, then override individual
-agents from the Admin Web create or policy editor. An override applies to the next turn and keeps
-the existing session and thread.
+`chatgpt_subscription`. `container_worker_codex_auth_mode` remains an inherited compatibility
+default in directory provider configuration, but directory configuration never selects, grants,
+or restricts subscription profiles. The directory's `container_worker_base_url` determines which
+worker supplies the profile catalog.
+
+New subscription agents created in Admin Web must select an enabled named profile. The selection
+is persisted on the session and is write-once: an unbound metered session may receive its first
+profile only while explicitly switching to subscription mode, while a bound session must be
+replaced to use another profile. Existing profile-less subscription sessions resolve to the
+reserved `default` profile, whose credentials remain at the legacy worker auth home.
 
 The subscription selection is effective only for container Codex turns whose effective
 `model_provider_mode` is `openai_public`. If `local_openai` or `azure_openai` is effective, the
@@ -439,13 +445,31 @@ unchanged. Returning the session to `openai_public` makes the preference effecti
 Non-Codex agents do not inherit the Codex default; an explicit `chatgpt_subscription` override on
 one is invalid.
 
-Subscription mode on the public route requires a signed-in worker account. Account status,
-device-login start/status/cancellation, and logout are worker-global operations, so the Admin must
-have `admin.owner` at `root` and must unlock privileged operations on the Agents page. A child
-directory owner is not sufficient. Missing or expired credentials then fail the public
-subscription turn and never fall back to metered usage; using the configured local or Azure route
-described above is route selection, not an authentication fallback. The deployment and
-single-`auth.json` ownership requirements are in
+Subscription mode on the public route requires an enabled, signed-in profile. Open Admin Web
+**Subscriptions** to create or rename profiles, enable or disable them, perform device login,
+inspect the pinned account ID and safe plan/rate-limit/usage state, or log out. Creating or changing
+a profile and starting or ending login require unlocked privileged operations and `admin.owner` at
+`root`; a child-directory owner is insufficient because profiles belong to the effective worker,
+not to a directory. Profile IDs are immutable lowercase slugs, display names are editable, and
+the first successful login permanently pins the OpenAI account ID. Use a new profile for a
+different account.
+
+Before a subscription job starts, the worker checks the selected profile. A signed-out, disabled,
+unavailable, or exhausted profile returns a structured capacity deferral and the control plane
+durably queues the original prompt. A rate limit reached during a turn follows the same replay
+path. These deferrals do not consume the ordinary prompt retry ledger, have no automatic expiry,
+preserve FIFO order within one profile, and do not block other profiles. The reported reset time is
+used when present; otherwise reconciliation uses exponential backoff capped at 15 minutes. Login,
+re-enable, and a profile refresh wake reconciliation, with normal orchestrator polling as fallback.
+Operators can inspect the queue reason on workflow and agent views and cancel an indefinitely
+queued prompt from the agent detail. Evander never falls back to metered API.
+
+Version 1 supports ChatGPT device login only. Business and Enterprise access tokens remain future
+work even though OpenAI supports them for trusted automation; see the
+[OpenAI access-token documentation](https://learn.chatgpt.com/docs/enterprise/access-tokens).
+The worker integration relies on the
+[OpenAI App Server account APIs](https://learn.chatgpt.com/docs/app-server). Deployment and
+per-profile auth-home ownership requirements are in
 [`container-worker-backend.md`](container-worker-backend.md#codex-chatgpt-subscription-authentication).
 
 ## Operator Steering

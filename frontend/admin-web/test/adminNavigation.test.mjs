@@ -478,6 +478,17 @@ async function createAdminPage(t, options = {}) {
       return;
     }
 
+    if (pathname === "/api/admin/codex-subscriptions") {
+      await route.fulfill(
+        jsonResponse({
+          directory_path: "root",
+          worker_url: "http://worker.test:11888",
+          profiles: options.subscriptionProfiles ?? [],
+        }),
+      );
+      return;
+    }
+
     if (pathname === "/api/admin/approvals") {
       await route.fulfill(
         jsonResponse({
@@ -564,10 +575,51 @@ test("admin shell shows full section navigation on fresh load", async (t) => {
   );
   await assert.doesNotReject(() => page.getByRole("button", { name: "Collapse sections" }).waitFor({ state: "visible" }));
 
-  for (const label of ["Dashboard", "Agents", "Workflow"]) {
+  for (const label of ["Dashboard", "Agents", "Subscriptions", "Workflow"]) {
     await assert.doesNotReject(() => page.getByRole("button", { name: new RegExp(`^${label}\\b`) }).waitFor({ state: "visible" }));
   }
   assert.equal(await page.evaluate((storageKey) => window.localStorage.getItem(storageKey), WORKFLOW_SIDEBAR_STORAGE_KEY), "false");
+});
+
+test("subscriptions page shows worker profile identity and capacity", async (t) => {
+  const { address, page } = await createAdminPage(t, {
+    subscriptionProfiles: [
+      {
+        profile_id: "team-a",
+        display_name: "Team A",
+        enabled: true,
+        pinned_account_id: "account-a",
+        available: true,
+        signed_in: true,
+        account_id: "account-a",
+        account_type: "chatgpt",
+        email: "team-a@example.test",
+        plan_type: "plus",
+        last_refresh: "2026-09-02T10:00:00Z",
+        access_token_expires_at: null,
+        rate_limits: { default: { primary: { used_percent: 25 } } },
+        usage: { summary: { lifetime_tokens: 1234 } },
+        active_job_count: 2,
+        queued_prompt_count: 3,
+        error: null,
+        created_at: "2026-09-01T10:00:00Z",
+        updated_at: "2026-09-02T10:00:00Z",
+      },
+    ],
+  });
+
+  await page.goto(`http://127.0.0.1:${address.port}/#subscriptions`, {
+    waitUntil: "domcontentloaded",
+  });
+
+  await page.getByRole("heading", { name: "Subscriptions" }).waitFor({ state: "visible" });
+  await page.getByRole("heading", { name: "Team A" }).waitFor({ state: "visible" });
+  const pageText = await page.locator(".feature-page").innerText();
+  assert.match(pageText, /http:\/\/worker\.test:11888/);
+  assert.match(pageText, /team-a@example\.test/);
+  assert.match(pageText, /Active jobs\s*2/i);
+  assert.match(pageText, /Queued prompts\s*3/i);
+  assert.match(pageText, /Pinned account id\s*account-a/i);
 });
 
 test("admin shell groups every destination and exposes descriptions as tooltips", async (t) => {
@@ -582,7 +634,7 @@ test("admin shell groups every destination and exposes descriptions as tooltips"
     await page.locator(".admin-shell-nav-group-label").allTextContents(),
     ["Overview", "Operations", "Automation", "Extensions", "Infrastructure", "Governance"],
   );
-  assert.equal(await page.locator('nav[aria-label="Admin sections"] .admin-shell-tab').count(), 20);
+  assert.equal(await page.locator('nav[aria-label="Admin sections"] .admin-shell-tab').count(), 21);
   assert.equal(await page.locator('nav[aria-label="Admin sections"] .admin-shell-tab small').count(), 0);
 
   await page.getByRole("button", { name: "Agents", exact: true }).hover();

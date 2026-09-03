@@ -24,6 +24,7 @@ import evander.admin.services.workflow_reports_service as workflow_reports_servi
 import pytest
 from evander.admin import operations_helpers, privileged_helper
 from evander.capacity_health import HealthState, TelemetryStatus
+from evander.codex_auth import CodexAuthMode, CodexSubscriptionDeferral
 from evander.admin.composition import (
     AdminRuntimeComponents,
     build_admin_runtime as _build_admin_runtime,
@@ -41,8 +42,11 @@ from evander.execution.container_worker_repository import (
     ContainerWorkerExecutionRecord,
     ContainerWorkerExecutionRepository,
 )
-from evander.execution.container_worker_client import ContainerWorkerClient
-from evander.execution.container_worker_client import ContainerWorkerClientError
+from evander.execution.container_worker_client import (
+    CodexSubscriptionDeferredClientError,
+    ContainerWorkerClient,
+    ContainerWorkerClientError,
+)
 from evander.communication_artifacts import CommunicationArtifactStore
 from evander.messaging.targets import (
     SqliteCommunicationTargetsRepository,
@@ -4113,6 +4117,202 @@ def test_submit_operator_steering_interrupts_container_waiting_record(
     assert (
         backend.annotated_records[0].metadata["interrupt_replaced_by_execution_id"]
         == started_spec.target_name
+    )
+
+
+@pytest.mark.parametrize("queue_write_fails", [False, True])
+def test_submit_operator_steering_queues_replacement_on_subscription_deferral(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    queue_write_fails: bool,
+) -> None:
+    from evander.operator_steering import operator_steering_note_store
+
+    service = build_admin_runtime(write_config(tmp_path))
+    service.runtime.session_repository.upsert_session(
+        SessionManifest(
+            session_id="container-session",
+            vm_provider="container_worker_vm",
+            vm_provider_id="container-target",
+            codex_auth_mode=CodexAuthMode.CHATGPT_SUBSCRIPTION,
+            subscription_profile_id="team-a",
+            allowed_tools=[],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+            metadata={
+                "execution_backend": "container_worker_vm",
+                "target_name": "container-target",
+                "container_worker": {"image": "runner:steer-image"},
+            },
+        )
+    )
+    register_model_usage_correlation_context(
+        runtime_dir=service.config.runtime_dir,
+        session_id="container-session",
+        dispatch_id="dispatch-steer",
+        workflow_run_id="workflow-steer",
+        effect_id="effect-steer",
+        directory_path="root",
+        model="gpt-5.2-codex",
+        execution_backend="container_worker_vm",
+    )
+    execution_store = service.operator_steering_admin._operator_steering_execution_store()
+    now = datetime.now(UTC)
+    execution_store.record_execution(
+        EffectExecutionRecord(
+            execution_id="workflow-exec-steer",
+            idempotency_key="event-steer::effect-steer",
+            event_id="event-steer",
+            trace_id="workflow-steer",
+            source_node_id="effect-steer",
+            source_trigger_type="manual",
+            effect_id="effect-steer",
+            effect_type="effect:agent:prompt",
+            status="waiting",
+            started_at=now,
+            finished_at=now,
+            resolved_config_hash="hash-steer",
+            resolved_config={
+                "target": "container-session",
+                "session_id": "container-session",
+                "prompt": "Original workflow prompt",
+                "model": "gpt-5.2-codex",
+                "directory_path": "root",
+                "execution_backend": "container_worker_vm",
+            },
+            input_payload={"prompt": "Original workflow prompt"},
+            outputs={
+                "dispatch_id": "dispatch-steer",
+                "thread_id": "thread-existing",
+                "success": True,
+                "queued": False,
+                "output_mode": "on_completion",
+                "execution_backend": "container_worker_vm",
+                "execution_id": "agent-old-1",
+                "session_id": "container-session",
+            },
+        )
+    )
+    retry_at = datetime.now(UTC) + timedelta(minutes=5)
+
+    class DeferredReplacementBackend:
+        def __init__(self) -> None:
+            self.config = service.runtime.provider_config.resolve_for_directory("root")
+            self.stopped: list[str] = []
+            old_record = ContainerWorkerExecutionRecord(
+                execution_id="agent-old-1",
+                session_id="container-session",
+                worker_job_id="worker-job-old",
+                worker_url="http://worker.invalid",
+                target_name="agent-old-1",
+                directory_path="root",
+                last_status="running",
+            )
+            self.annotated_records: list[ContainerWorkerExecutionRecord] = []
+            self.repository = SimpleNamespace(
+                get=lambda execution_id: old_record if execution_id == "agent-old-1" else None,
+                put=self.annotated_records.append,
+            )
+
+        def get_log_snapshot(self, execution_id: str, *, lines: int = 120) -> str:
+            return "session id: thread-existing\n"
+
+        def stop(self, execution_id: str):
+            self.stopped.append(execution_id)
+            return SimpleNamespace(execution_id=execution_id)
+
+        def prepare(self, spec):
+            return spec
+
+        def start(self, spec):
+            assert spec.codex_turn.subscription_profile_id == "team-a"
+            raise CodexSubscriptionDeferredClientError(
+                "capacity unavailable",
+                deferral=CodexSubscriptionDeferral(
+                    profile_id="team-a",
+                    reason="rate_limited",
+                    retry_at=retry_at,
+                ),
+                status_code=429,
+            )
+
+    backend = DeferredReplacementBackend()
+    monkeypatch.setattr(
+        service.vm_agent_admin,
+        "container_worker_backend",
+        MethodType(lambda self, **kwargs: backend, service.vm_agent_admin),
+    )
+
+    if queue_write_fails:
+
+        def fail_enqueue_agent_prompt(**kwargs: object) -> None:
+            raise OSError("queue persistence failed")
+
+        monkeypatch.setattr(
+            "evander.messaging.agent_prompt_enqueue.enqueue_agent_prompt",
+            fail_enqueue_agent_prompt,
+        )
+        with pytest.raises(OSError, match="queue persistence failed"):
+            service.model_usage_admin.submit_operator_steering_note(
+                session_id="container-session",
+                dispatch_id="dispatch-steer",
+                worker_execution_id="agent-old-1",
+                message="Switch to implementation now.",
+                created_by="operator@example.com",
+            )
+        notes = operator_steering_note_store(service.config.runtime_dir).list_notes(
+            session_id="container-session",
+            dispatch_id="dispatch-steer",
+        )
+        assert len(notes) == 1
+        assert notes[0].status == "cancelled"
+        assert (
+            AgentPromptQueueStore(
+                service.config.runtime_dir / "queued-agent-prompts.json"
+            ).read_all()
+            == {}
+        )
+        return
+
+    result = service.model_usage_admin.submit_operator_steering_note(
+        session_id="container-session",
+        dispatch_id="dispatch-steer",
+        worker_execution_id="agent-old-1",
+        message="Switch to implementation now.",
+        created_by="operator@example.com",
+    )
+
+    queued = AgentPromptQueueStore(service.config.runtime_dir / "queued-agent-prompts.json").get(
+        "operator-steering:container-session:dispatch-steer"
+    )
+    refreshed = execution_store.get_execution("workflow-exec-steer")
+    assert result["mode"] == "queued"
+    assert result["note"].status == "pending"
+    assert result["interrupt"]["subscription_profile_id"] == "team-a"
+    assert queued is not None
+    assert "Switch to implementation now." in queued.prompt
+    assert queued.subscription_profile_id == "team-a"
+    assert queued.queue_reason == "subscription_rate_limited"
+    assert queued.retry_not_before == retry_at
+    assert queued.retry_count == 0
+    assert queued.metadata["operator_steering_note_id"] == result["note"].note_id
+    assert refreshed is not None
+    assert refreshed.status == "succeeded"
+    assert refreshed.outputs["queued"] is True
+    assert refreshed.outputs["subscription_profile_id"] == "team-a"
+    assert backend.stopped == ["agent-old-1"]
+    assert backend.annotated_records[0].metadata["interrupted_by_operator"] is True
+    assert "interrupt_replaced_by_execution_id" not in backend.annotated_records[0].metadata
+
+    cancelled = service.operator_steering_admin.cancel_operator_steering_note(
+        result["note"].note_id
+    )
+
+    assert cancelled.status == "cancelled"
+    assert (
+        AgentPromptQueueStore(service.config.runtime_dir / "queued-agent-prompts.json").get(
+            "operator-steering:container-session:dispatch-steer"
+        )
+        is None
     )
 
 
@@ -14206,6 +14406,162 @@ def test_update_session_policy_and_agent_validate_approval_notification_targets(
                 "approval_notification_target_ids": ["ops-read"],
             },
         )
+
+
+def test_update_container_agent_assigns_first_profile_and_preserves_write_once_binding(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = build_admin_runtime(write_config(tmp_path))
+    backend = SimpleNamespace(
+        config=SimpleNamespace(
+            model_provider_mode="openai_public",
+            container_worker_codex_auth_mode="chatgpt_subscription",
+        ),
+        client=SimpleNamespace(
+            codex_auth_profile_status=lambda profile_id: {
+                "profile_id": profile_id,
+                "enabled": True,
+            }
+        ),
+    )
+    monkeypatch.setattr(
+        service.vm_agent_admin,
+        "container_worker_backend",
+        MethodType(lambda self, **kwargs: backend, service.vm_agent_admin),
+    )
+    service.runtime.session_repository.upsert_session(
+        SessionManifest(
+            session_id="metered-session",
+            vm_provider="container_worker_vm",
+            vm_provider_id="metered-target",
+            codex_auth_mode=CodexAuthMode.METERED_API,
+            allowed_tools=[],
+            expires_at=datetime.now(UTC) + timedelta(hours=2),
+            metadata={
+                "execution_backend": "container_worker_vm",
+                "agent_provider": "codex",
+                "model_provider_mode": "openai_public",
+            },
+        )
+    )
+
+    with pytest.raises(ValueError, match="subscription_profile_id is required"):
+        service.vm_agent_admin.update_admin_agent(
+            "metered-session",
+            backend="container_worker_vm",
+            payload={"codex_auth_mode": "chatgpt_subscription"},
+        )
+    still_metered = service.runtime.session_repository.get_session("metered-session")
+    assert still_metered is not None
+    assert still_metered.codex_auth_mode is CodexAuthMode.METERED_API
+    assert still_metered.subscription_profile_id is None
+
+    service.vm_agent_admin.update_admin_agent(
+        "metered-session",
+        backend="container_worker_vm",
+        payload={
+            "codex_auth_mode": "chatgpt_subscription",
+            "subscription_profile_id": "team-a",
+        },
+    )
+    assigned = service.runtime.session_repository.get_session("metered-session")
+    assert assigned is not None
+    assert assigned.codex_auth_mode is CodexAuthMode.CHATGPT_SUBSCRIPTION
+    assert assigned.subscription_profile_id == "team-a"
+
+    service.vm_agent_admin.update_admin_agent(
+        "metered-session",
+        backend="container_worker_vm",
+        payload={"model": "gpt-5.4"},
+    )
+    preserved = service.runtime.session_repository.get_session("metered-session")
+    assert preserved is not None
+    assert preserved.subscription_profile_id == "team-a"
+
+    with pytest.raises(ValueError, match="write-once"):
+        service.vm_agent_admin.update_admin_agent(
+            "metered-session",
+            backend="container_worker_vm",
+            payload={"subscription_profile_id": "team-b"},
+        )
+    with pytest.raises(ValueError, match="cannot switch away"):
+        service.vm_agent_admin.update_admin_agent(
+            "metered-session",
+            backend="container_worker_vm",
+            payload={"codex_auth_mode": "metered_api"},
+        )
+
+    service.runtime.session_repository.upsert_session(
+        SessionManifest(
+            session_id="legacy-default",
+            vm_provider="container_worker_vm",
+            vm_provider_id="legacy-target",
+            codex_auth_mode=CodexAuthMode.CHATGPT_SUBSCRIPTION,
+            allowed_tools=[],
+            expires_at=datetime.now(UTC) + timedelta(hours=2),
+            metadata={
+                "execution_backend": "container_worker_vm",
+                "agent_provider": "codex",
+                "model_provider_mode": "openai_public",
+            },
+        )
+    )
+    with pytest.raises(ValueError, match="cannot switch away"):
+        service.vm_agent_admin.update_admin_agent(
+            "legacy-default",
+            backend="container_worker_vm",
+            payload={"codex_auth_mode": "metered_api"},
+        )
+
+    backend.config.container_worker_codex_auth_mode = "metered_api"
+    service.runtime.session_repository.upsert_session(
+        SessionManifest(
+            session_id="inherited-metered",
+            vm_provider="container_worker_vm",
+            vm_provider_id="inherited-metered-target",
+            codex_auth_mode=None,
+            allowed_tools=[],
+            expires_at=datetime.now(UTC) + timedelta(hours=2),
+            metadata={
+                "execution_backend": "container_worker_vm",
+                "agent_provider": "codex",
+                "model_provider_mode": "openai_public",
+            },
+        )
+    )
+    with pytest.raises(ValueError, match="subscription_profile_id is required"):
+        service.vm_agent_admin.update_admin_agent(
+            "inherited-metered",
+            backend="container_worker_vm",
+            payload={"codex_auth_mode": "chatgpt_subscription"},
+        )
+
+    backend.config.container_worker_codex_auth_mode = "chatgpt_subscription"
+    service.runtime.session_repository.upsert_session(
+        SessionManifest(
+            session_id="inherited-subscription",
+            vm_provider="container_worker_vm",
+            vm_provider_id="inherited-target",
+            codex_auth_mode=None,
+            allowed_tools=[],
+            expires_at=datetime.now(UTC) + timedelta(hours=2),
+            metadata={
+                "execution_backend": "container_worker_vm",
+                "agent_provider": "codex",
+                "model_provider_mode": "openai_public",
+            },
+        )
+    )
+    service.vm_agent_admin.update_admin_agent(
+        "inherited-subscription",
+        backend="container_worker_vm",
+        payload={"codex_auth_mode": "chatgpt_subscription"},
+    )
+    inherited = service.runtime.session_repository.get_session("inherited-subscription")
+    assert inherited is not None
+    assert inherited.codex_auth_mode is CodexAuthMode.CHATGPT_SUBSCRIPTION
+    assert inherited.subscription_profile_id is None
 
 
 def test_effective_tool_policy_payload_combines_directory_and_session_rules(

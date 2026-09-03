@@ -1455,11 +1455,12 @@ permission is the union of matching group assignments and matching direct workfl
 inheritance is downward only: an assignment on `mission-control` does not authorize its parent or
 sibling.
 
-Some resources are worker-global rather than directory-owned. In particular, the one ChatGPT
-subscription account shared by a container worker can be inspected, signed in, cancelled during
-login, or signed out only by an authenticated operator with privileged operations unlocked and
-effective `admin.owner` permission at `root`. Ownership of only a child directory is insufficient,
-because changing that account affects subscription-mode agents from every directory on the worker.
+Some resources are worker-global rather than directory-owned. In particular, named ChatGPT
+subscription profiles on a container worker can be created, enabled or disabled, signed in,
+cancelled during login, or signed out only by an authenticated operator with privileged operations
+unlocked and effective `admin.owner` permission at `root`. Ownership of only a child directory is
+insufficient because directories select infrastructure, not profile access. Each session's profile
+binding is immutable, and the first successful login pins that profile's OpenAI account ID.
 
 ### Privileged-operation lock implementation
 
@@ -1612,8 +1613,8 @@ human's group does not automatically revoke an already issued agent session.
   scope, and privileged lock.
 - `src/evander/admin/web/users.py` and `tests/test_admin_web_user_store.py` — user/group
   administration, bootstrap, migration, and owner protection.
-- `src/evander/admin/web/codex_auth.py` — privileged root-owner authorization for the worker-global
-  ChatGPT subscription account.
+- `src/evander/admin/web/codex_auth.py` — privileged root-owner authorization for worker-owned
+  ChatGPT subscription profiles.
 - `src/evander/admin/services/session_helpers.py` and
   `frontend/admin-web/src/features/sessions/SessionsScreen.tsx` — canonical session-policy
   updates and explicit legacy communication conversion.
@@ -2487,7 +2488,7 @@ An operator can use the first column to describe the symptom. The remaining colu
 | Wrong image or toolchain | The session recorded a different image alias/ref, or the worker cache is incomplete. | Inspect session metadata and the worker image catalog; do not change the catalog and assume an existing session changed. |
 | `cleanup_failed` | Worker deletion did not complete. | Preserve the record, inspect its cleanup error, retry after fixing reachability or worker state. |
 | Model unavailable | The provider rejected the configured model before useful work. | Inspect sanitized wake/job failure metadata and the directory/session model override. |
-| ChatGPT subscription turn says the account is not signed in | The session selected the worker's subscription account, but the broker has no usable login. | Ask a root owner to inspect the worker account; do not switch silently to a metered credential. |
+| ChatGPT subscription work is queued | The session's named worker profile is signed out, disabled, unavailable, or rate-limited. | Ask a root owner to inspect **Subscriptions**; preserve the queued prompt and do not switch silently to metered API. |
 | VM starts but guest tools are stale | Optional bootstrap state no longer matches the host. | Re-run the relevant idempotent bootstrap script. |
 
 ## Troubleshooting: what to hand to an administrator
@@ -2561,9 +2562,9 @@ Container sessions are configured by mounting their durable agent home, not by r
 
 The default security posture is no general container network. A non-`none` Docker network mode is valid only when the worker deployment explicitly enables its egress policy and supplies an allowlist. The current backend does not provide worker scheduling, autoscaling, Kubernetes, general secret transport, or a general internet path. The worker bearer token stays on the control plane. Provider keys stay behind host relays.
 
-An optional ChatGPT subscription account follows the same host-ownership principle but uses a
-worker-local broker and restricted HTTPS proxy instead of putting the account or a provider key in
-the container. It does not turn the container network into a general public route.
+Optional named ChatGPT subscription profiles follow the same host-ownership principle but use
+worker-local brokers and a restricted HTTPS proxy instead of putting accounts or provider keys in
+containers. They do not turn the container network into a general public route.
 
 SQL Server is also intentionally separate. `effect:agent:create` rejects the VM-style `mssql=true` and `mssql_init_root` options for container sessions. Container agents use the worker-host SQL Server through the scoped MCP provisioning operations `mssql_provision_database`, `mssql_list_databases`, and `mssql_drop_database`.
 
@@ -2599,11 +2600,12 @@ jobs of a persistent Team agent.
 ### Codex metered API and ChatGPT subscription usage
 
 Container-worker Codex sessions can choose between `metered_api` and `chatgpt_subscription`.
-`container_worker_codex_auth_mode` supplies the directory-resolved default, while a session's
-nullable `codex_auth_mode` is an explicit override. The setting applies only to Codex on
-`container_worker_vm`; it is not a Claude default and subscription mode is rejected as an explicit
-Claude override. Changing an existing session's selection takes effect on its next turn and keeps
-the existing Codex thread history.
+`container_worker_codex_auth_mode` supplies a directory-resolved compatibility default, while a
+session's nullable `codex_auth_mode` is an explicit override. Directory configuration chooses the
+effective worker but never chooses, grants, or restricts its profiles. New UI-created subscription
+agents select an enabled named profile. That binding is fixed for the session; replace the agent to
+change it. A metered session may receive its first profile only while explicitly switching to
+subscription mode. Existing profile-less subscription sessions use reserved profile `default`.
 
 The subscription selection is effective only for a turn whose model provider mode is
 `openai_public`. A local OpenAI-compatible or Azure OpenAI turn keeps using its configured private
@@ -2611,20 +2613,19 @@ endpoint and API-key route even when the stored session preference says `chatgpt
 Evander does not rewrite that preference, so a later public-OpenAI turn can use it. Chapter 10
 describes the network-routing distinction.
 
-There is one signed-in ChatGPT account per worker, shared by every subscription-mode agent on that
-worker. The worker auth broker is the sole durable writer of its `auth.json`, holds an exclusive
-ownership lock, and serializes login, logout, account reads, and token refresh. Concurrent refresh
-requests are coalesced. Each disposable job authenticates its own Codex app-server from an
-in-memory external-token snapshot; it receives no account-file mount, token environment variable,
-command-line token, or persisted account metadata. Public HTTPS goes only through the worker's
-allowlisted CONNECT proxy, while the ordinary container egress policy remains default-deny.
+Each named profile has an independent auth home, broker, file lock, and managed App Server process.
+Profile refreshes can run concurrently, but operations within one profile remain serialized. The
+first successful device login pins the OpenAI account ID. Every disposable job authenticates its
+own App Server from an in-memory external-token snapshot; it receives no account-file mount, token
+environment variable, command-line token, or persisted token metadata. All profiles share the
+worker's allowlisted CONNECT proxy while ordinary container egress remains default-deny.
 
-This path fails closed. If the worker account is absent, logged out, cannot refresh, or the broker
-cannot prove exclusive ownership, a subscription turn fails instead of falling back to metered API
-use. Login start, cancellation, and logout are audited. Because the account is worker-global,
-Admin Web account controls require an authenticated operator, an unlocked privileged-operations
-session, and effective `admin.owner` permission at `root`; ownership of one child directory is not
-enough.
+This path queues and fails closed. Preflight or mid-turn capacity exhaustion persists the original
+prompt indefinitely with profile, reason, and reset-aware retry time; per-profile FIFO does not
+block other profiles and does not consume the ordinary retry ledger. It never falls back to
+metered API. Profile management is audited and requires an authenticated operator, unlocked
+privileged operations, and effective `admin.owner` at `root`; child-directory ownership is not
+enough. V1 supports ChatGPT device login, not Business or Enterprise access-token profiles.
 
 ## Administrator reference: persistence and cleanup
 
@@ -2670,8 +2671,8 @@ evander-cli execution logs <execution-or-session-id>
 
 `execution start-container-job` and `smoke-container-worker` explicitly construct the container backend. The generic `status`, `logs`, `stop`, and `destroy` commands infer it only when the target is present in the container execution mapping, unless `--backend container_worker_vm` is supplied. These commands never change the configured default backend.
 
-For subscription-mode Codex, a root owner should also open **Agents → Worker ChatGPT
-subscription**, verify the worker account status, and complete device login when required. Verify
+For subscription-mode Codex, a root owner should also open **Subscriptions**, verify the selected
+profile status and pinned account, and complete device login when required. Verify
 that worker egress policy allows only the configured subscription proxy and that the proxy's
 OpenAI/ChatGPT hostname allowlist is current. Do not copy the broker's account file into a job for
 diagnosis; a missing login is meant to fail closed.
@@ -2716,7 +2717,7 @@ An isolated workspace does not normally browse the internet or receive the host'
 | What the agent needs | Controlled route | Plain-language boundary |
 |---|---|---|
 | Evander tools | MCP gateway | Show and run only the tools allowed for this active session. |
-| A model | Model relay, or the worker's brokered subscription route | Keep provider keys or the shared ChatGPT account outside the agent workspace and constrain the upstream destination. |
+| A model | Model relay, or the worker's brokered subscription route | Keep provider keys and named ChatGPT profiles outside the agent workspace and constrain the upstream destination. |
 | Packages | Package relay, facade, or prepared cache | Reach configured package sources without opening a general download route. |
 | A named test or application environment | HTTP target relay | Reach only a target alias recorded for this session; use the application's own guest-held login. |
 | Source code | Restricted managed Git over SSH | Read or write only the repository scope and refs granted to this session. |
@@ -2762,7 +2763,7 @@ An operator can use the first column to describe the failure. The remaining colu
 | Expired or bad session token | Session relay request is rejected (`401`/`403` or WebSocket policy close). | Repair session/bootstrap state; do not bypass session routing. |
 | Hosted web search requested but disabled | Relay returns a policy error and logs the denial. | Enable only on the session that genuinely needs it. |
 | Unsupported provider path | Relay returns `501`, validation error, or WebSocket policy close. | Use a supported API; the relay is not a generic reverse proxy. |
-| Subscription mode selected but worker account unavailable | The Codex turn fails without a metered fallback. | Have a root owner inspect broker/account status; do not copy account credentials into the job. |
+| Subscription profile has no capacity | The original Codex prompt remains durably queued without a metered fallback. | Have a root owner inspect **Subscriptions**; do not copy profile credentials into the job. |
 | Azure NuGet PAT missing | Public NuGet may work; Azure feed returns `503`. | Set the configured PAT environment variable for the NuGet unit. |
 | HTTP target alias missing | Relay returns `404`. | Add the alias through the session/workflow metadata contract. |
 | HTTP target redirect changes origin | Relay returns `502` rather than following it. | Correct the target base URL or application redirect behavior. |
@@ -2832,18 +2833,19 @@ Hosted OpenAI web search is denied unless the session manifest explicitly sets `
 ChatGPT subscription authentication is an optional container-worker Codex route, not a new
 credential accepted by every provider. A `chatgpt_subscription` preference becomes effective only
 when the turn's model provider mode is `openai_public`. The disposable job gets an in-memory token
-snapshot from the worker auth broker and reaches only allowlisted OpenAI/ChatGPT HTTPS hosts through
+snapshot from the selected worker profile broker and reaches only allowlisted OpenAI/ChatGPT HTTPS hosts through
 the worker's CONNECT proxy; it receives neither the broker's `auth.json` nor direct public egress.
 
 For `local_openai` and `azure_openai`, Evander deliberately computes the turn as `metered_api` and
 keeps the configured private endpoint and API-key/relay behavior. It leaves the stored session
 preference unchanged. This distinction matters when diagnosing a session that moves between
 provider modes: seeing `chatgpt_subscription` in session policy does not mean a local Ollama or
-Azure request was sent with the worker account.
+Azure request was sent with the worker profile.
 
-Subscription authentication also fails closed. An absent login, refresh failure, broker ownership
-failure, or restricted-proxy failure does not cause a quiet retry against the host's metered OpenAI
-credential. Chapter 9 covers account ownership and lifecycle.
+Subscription authentication also fails closed. An absent login, disabled profile, refresh failure,
+rate limit, broker ownership failure, or restricted-proxy failure does not cause a quiet retry
+against the host's metered OpenAI credential. Capacity deferrals retain the original prompt in a
+per-profile FIFO queue. Chapter 9 covers profile ownership and lifecycle.
 
 ### Local-model routing is still a relay boundary
 
@@ -8770,7 +8772,7 @@ Admin Web is the supported operator GUI. Its core areas answer different questio
 The navigation keeps all areas visible in six permanently expanded groups: **Overview** contains
 Dashboard and Reports; **Operations** contains Agents, Sessions, Issues, Approvals, and Artifacts;
 **Automation** contains Workflow and Skills; **Extensions** contains Add-ons, Connectors, Host Directories, and
-add-on-contributed areas; **Infrastructure** contains VMs and Workers; and **Governance** contains
+add-on-contributed areas; **Infrastructure** contains Subscriptions, Git Repositories, VMs, and Workers; and **Governance** contains
 Tool Visibility, MCP Tools, Tool Calls, Configuration, and Users & Groups. Use **Find page** or
 `Ctrl+K` / `Command+K` to search the currently visible built-in and add-on areas without changing
 their hash routes or directory scope.
@@ -8793,6 +8795,7 @@ unknown field is ignored.
 |---|---|
 | Dashboard | Is the control plane broadly healthy, and what needs attention? |
 | Agents | Which active and historical execution targets represent agent work? |
+| Subscriptions | Which named worker ChatGPT profiles are signed in, enabled, rate-limited, running jobs, or holding queued prompts? |
 | Approvals | Which gated tool calls require an operator decision? |
 | Artifacts | Which durable agent archives can be resolved or downloaded? |
 | Add-ons | Which runtime extensions are available, enabled, or awaiting refresh/restart? |

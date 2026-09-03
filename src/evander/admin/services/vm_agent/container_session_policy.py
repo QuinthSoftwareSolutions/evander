@@ -1,6 +1,10 @@
 from __future__ import annotations
 
-from evander.codex_auth import CodexAuthMode, effective_codex_auth_mode
+from evander.codex_auth import (
+    CodexAuthMode,
+    effective_codex_auth_mode,
+    effective_subscription_profile_id,
+)
 from evander.admin.services.vm_agent.common import (
     Any,
     SessionManifest,
@@ -123,6 +127,8 @@ class VmAgentContainerSessionPolicyMixin:
             "codex_auth_mode": (
                 session.codex_auth_mode.value if session.codex_auth_mode is not None else None
             ),
+            "subscription_profile_id": session.subscription_profile_id,
+            "effective_subscription_profile_id": effective_subscription_profile_id(session=session),
             "metadata": dict(session.metadata),
             "labels": labels,
         }

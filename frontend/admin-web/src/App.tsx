@@ -9724,9 +9724,15 @@ export default function App() {
           normalizedAgentCreateExecutionBackend(inspectorKnownValues),
         )
         : field.options;
+      const literalEnumValue = typeof value === "string" ? value : "";
+      const unavailableSubscriptionProfile = field.key === "subscription_profile_id"
+        && Boolean(literalEnumValue)
+        && !enumOptions.some((option) => option.value === literalEnumValue);
       const enumValue = field.key === "query_mode" && isAdoQueryModeNodeType(selectedNodeType)
         ? effectiveAdoQueryMode(inspectorKnownValues)
-        : enumOptionValue(field, value);
+        : unavailableSubscriptionProfile
+          ? literalEnumValue
+          : enumOptionValue(field, value);
       return (
         <div key={field.key} className="inspector-field">
           <div className="field-toolbar">
@@ -9753,6 +9759,11 @@ export default function App() {
                 disabled={isDisabled}
               >
                 <option value="">Select</option>
+                {unavailableSubscriptionProfile ? (
+                  <option value={literalEnumValue}>
+                    {literalEnumValue} (disabled or unavailable)
+                  </option>
+                ) : null}
                 {enumOptions.map((option) => (
                   <option key={option.value} value={option.value}>
                     {option.label}
@@ -9760,6 +9771,12 @@ export default function App() {
                 ))}
               </select>
             )}
+          {unavailableSubscriptionProfile ? (
+            <p className="field-description field-warning" role="alert">
+              This saved subscription profile is disabled or unavailable on the effective worker.
+              It remains selected so the workflow is not silently changed.
+            </p>
+          ) : null}
         </div>
       );
     }

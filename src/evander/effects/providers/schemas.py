@@ -6,6 +6,7 @@ from typing import Literal
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from evander.events.models import ConfigValue, EffectDefinition
+from evander.codex_auth import normalize_subscription_profile_id
 from evander.events.internal import validate_internal_event_type
 from evander.effects.providers.agent_session import (
     normalize_optional_http_url,
@@ -246,6 +247,8 @@ class AgentCreateEffectDefinition(EffectDefinition):
     model: ConfigValue | None = None
     model_provider_mode: ConfigValue | None = None
     codex_auth_mode: ConfigValue | None = None
+    # Profile assignment is an immutable editor selector, never a runtime binding.
+    subscription_profile_id: str | None = None
     vm_user: ConfigValue | None = None
     vm_image: ConfigValue | None = None
     ttl_hours: ConfigValue | None = None
@@ -287,6 +290,11 @@ class AgentCreateEffectDefinition(EffectDefinition):
         if value is not None and not isinstance(value, (Mapping, str)):
             raise ValueError("effect:agent:create metadata must be a JSON object")
         return value
+
+    @field_validator("subscription_profile_id", mode="before")
+    @classmethod
+    def normalize_subscription_profile_id_field(cls, value: object) -> str | None:
+        return normalize_subscription_profile_id(value)
 
     @field_validator("npm_registry_url", mode="before")
     @classmethod

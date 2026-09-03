@@ -113,9 +113,36 @@ class CodexAuthBroker:
             account_value = account.get("account") if isinstance(account, dict) else None
             account_dict = account_value if isinstance(account_value, dict) else {}
             signed_in = bool(token_payload.get("refresh_token") and token_payload.get("account_id"))
+            rate_limits: dict[str, Any] | None = None
+            usage: dict[str, Any] | None = None
+            if signed_in and error is None:
+                try:
+                    rate_limits = _safe_rate_limits_payload(
+                        self._ensure_client().request(
+                            "account/rateLimits/read", {}, timeout_seconds=30.0
+                        )
+                    )
+                except (CodexAppServerError, CodexAuthBrokerError) as exc:
+                    error = str(exc)
+                if error is None:
+                    try:
+                        usage = _safe_usage_payload(
+                            self._ensure_client().request(
+                                "account/usage/read", {}, timeout_seconds=30.0
+                            )
+                        )
+                    except (CodexAppServerError, CodexAuthBrokerError):
+                        # Usage is display-only telemetry. An unsupported or transiently
+                        # unavailable usage RPC must not prevent authenticated turns.
+                        usage = None
             return {
                 "available": error is None,
                 "signed_in": signed_in,
+                "account_id": (
+                    str(token_payload.get("account_id") or "").strip() or None
+                    if signed_in
+                    else None
+                ),
                 "account_type": account_dict.get("type") if signed_in else None,
                 "email": account_dict.get("email") if signed_in else None,
                 "plan_type": account_dict.get("planType") if signed_in else None,
@@ -125,6 +152,8 @@ class CodexAuthBroker:
                     if expires_at is not None
                     else None
                 ),
+                "rate_limits": rate_limits,
+                "usage": usage,
                 "error": error,
             }
 
@@ -339,3 +368,101 @@ def _jwt_plan_type(token: str) -> str | None:
             return str(value)
     value = payload.get("chatgpt_plan_type")
     return str(value) if value else None
+
+
+def _safe_rate_limit_window(value: object) -> dict[str, Any] | None:
+    if not isinstance(value, dict):
+        return None
+    resets_at = value.get("resetsAt")
+    try:
+        resets_epoch = int(resets_at) if resets_at is not None else None
+    except (TypeError, ValueError):
+        resets_epoch = None
+    return {
+        "used_percent": value.get("usedPercent"),
+        "window_duration_minutes": value.get("windowDurationMins"),
+        "resets_at": (
+            datetime.fromtimestamp(resets_epoch, tz=UTC).isoformat()
+            if resets_epoch is not None
+            else None
+        ),
+    }
+
+
+def _safe_rate_limit_bucket(value: object) -> dict[str, Any] | None:
+    if not isinstance(value, dict):
+        return None
+    return {
+        "limit_id": value.get("limitId"),
+        "limit_name": value.get("limitName"),
+        "plan_type": value.get("planType"),
+        "primary": _safe_rate_limit_window(value.get("primary")),
+        "secondary": _safe_rate_limit_window(value.get("secondary")),
+        "rate_limit_reached_type": value.get("rateLimitReachedType"),
+    }
+
+
+def _safe_rate_limits_payload(value: object) -> dict[str, Any]:
+    payload = value if isinstance(value, dict) else {}
+    by_id = payload.get("rateLimitsByLimitId")
+    safe_by_id: dict[str, Any] = {}
+    if isinstance(by_id, dict):
+        for raw_id, raw_bucket in by_id.items():
+            limit_id = str(raw_id or "").strip()
+            bucket = _safe_rate_limit_bucket(raw_bucket)
+            if limit_id and bucket is not None:
+                safe_by_id[limit_id] = bucket
+    reset_credits = payload.get("rateLimitResetCredits")
+    safe_reset_credits: dict[str, Any] | None = None
+    if isinstance(reset_credits, dict):
+        safe_credits: list[dict[str, Any]] = []
+        credits = reset_credits.get("credits")
+        if isinstance(credits, list):
+            for credit in credits:
+                if not isinstance(credit, dict):
+                    continue
+                safe_credits.append(
+                    {
+                        key: credit.get(key)
+                        for key in (
+                            "id",
+                            "resetType",
+                            "status",
+                            "grantedAt",
+                            "expiresAt",
+                            "title",
+                            "description",
+                        )
+                    }
+                )
+        safe_reset_credits = {
+            "available_count": reset_credits.get("availableCount"),
+            "credits": safe_credits if isinstance(credits, list) else None,
+        }
+    return {
+        "default": _safe_rate_limit_bucket(payload.get("rateLimits")),
+        "by_limit_id": safe_by_id,
+        "reset_credits": safe_reset_credits,
+    }
+
+
+def _safe_usage_payload(value: object) -> dict[str, Any]:
+    payload = value if isinstance(value, dict) else {}
+    raw_summary = payload.get("summary")
+    summary = raw_summary if isinstance(raw_summary, dict) else {}
+    safe_summary = {
+        "lifetime_tokens": summary.get("lifetimeTokens"),
+        "peak_daily_tokens": summary.get("peakDailyTokens"),
+        "longest_running_turn_seconds": summary.get("longestRunningTurnSec"),
+        "current_streak_days": summary.get("currentStreakDays"),
+        "longest_streak_days": summary.get("longestStreakDays"),
+    }
+    raw_buckets = payload.get("dailyUsageBuckets")
+    buckets: list[dict[str, Any]] | None = None
+    if isinstance(raw_buckets, list):
+        buckets = [
+            {"start_date": bucket.get("startDate"), "tokens": bucket.get("tokens")}
+            for bucket in raw_buckets
+            if isinstance(bucket, dict)
+        ]
+    return {"summary": safe_summary, "daily_usage_buckets": buckets}

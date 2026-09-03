@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 from evander.admin.composition import build_admin_runtime
 from evander.messaging.targets import (
@@ -188,9 +189,7 @@ def test_workflow_editor_catalog_includes_team_addon_nodes_when_enabled(
     assert create_task_fields["git_base_branch"]["kind"] == "string"
     assert create_task_fields["git_base_branch"]["required"] is False
     assert create_task_fields["dependency_task_ids"]["json_value_type"] == "array"
-    set_task_work_state_fields = {
-        field["key"]: field for field in set_task_work_state["fields"]
-    }
+    set_task_work_state_fields = {field["key"]: field for field in set_task_work_state["fields"]}
     assert set_task_work_state["label"] == "Set Team task work state"
     assert set_task_work_state_fields["task_id"]["required"] is True
     assert set_task_work_state_fields["state"]["required"] is True
@@ -344,3 +343,50 @@ def test_workflow_editor_tool_selectors_include_enabled_addon_tools(tmp_path: Pa
         approval_tools["bokio_create_supplier_invoice"]
         == allowed_tools["bokio_create_supplier_invoice"]
     )
+
+
+def test_workflow_editor_agent_create_uses_fixed_enabled_worker_profile_options(
+    tmp_path: Path,
+) -> None:
+    _write_trigger_config(tmp_path, enable_team_addon=False)
+    runtime = build_admin_runtime(_prepare_runtime_config(tmp_path))
+    runtime.workflow_config_admin.set_codex_auth_admin(
+        SimpleNamespace(
+            list_profiles=lambda directory_path: {
+                "directory_path": directory_path,
+                "profiles": [
+                    {
+                        "profile_id": "team-a",
+                        "display_name": "Team A",
+                        "enabled": True,
+                        "signed_in": True,
+                        "account_id": "account-a",
+                        "email": "secret@example.com",
+                        "plan_type": "business",
+                    },
+                    {
+                        "profile_id": "team-disabled",
+                        "display_name": "Disabled",
+                        "enabled": False,
+                    },
+                ],
+            }
+        )
+    )
+
+    payload = runtime.workflow_config_admin.read_workflow_editor_catalog(
+        directory_path="root"
+    ).model_dump(mode="json")
+    agent_create = next(node for node in payload["nodes"] if node["type"] == "effect:agent:create")
+    field = next(
+        item for item in agent_create["fields"] if item["key"] == "subscription_profile_id"
+    )
+
+    assert field["bindable"] is False
+    assert field["metadata"]["immutable"] is True
+    assert field["options"] == [
+        {
+            "value": "team-a",
+            "label": "Team A",
+        }
+    ]

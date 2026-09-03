@@ -154,6 +154,20 @@ def main() -> None:
         container_user=sandbox_profile.user,
         proxy_url=args.codex_egress_proxy_url,
     )
+    codex_auth_command_factory = None
+    if args.codex_auth_image:
+
+        def codex_auth_command_factory(profile_id: str, auth_home: Path) -> tuple[str, ...]:
+            return _codex_auth_command(
+                explicit_command=args.codex_auth_command,
+                image=args.codex_auth_image,
+                worker_root=args.worker_root,
+                docker_network=sandbox_profile.network_mode,
+                container_user=sandbox_profile.user,
+                proxy_url=args.codex_egress_proxy_url,
+                profile_id=profile_id,
+                auth_home=auth_home,
+            )
 
     uvicorn.run(
         create_app(
@@ -172,6 +186,7 @@ def main() -> None:
             mssql_container_host=args.mssql_container_host,
             mssql_sqlcmd_path=args.mssql_sqlcmd_path,
             codex_auth_command=codex_auth_command,
+            codex_auth_command_factory=codex_auth_command_factory,
             codex_egress_proxy_url=args.codex_egress_proxy_url,
             codex_egress_proxy_bind_host=args.codex_egress_proxy_bind_host,
             codex_egress_proxy_port=args.codex_egress_proxy_port,
@@ -190,6 +205,8 @@ def _codex_auth_command(
     docker_network: str,
     container_user: str | None,
     proxy_url: str | None,
+    profile_id: str = "default",
+    auth_home: Path | None = None,
 ) -> tuple[str, ...]:
     if explicit_command:
         command = tuple(shlex.split(explicit_command))
@@ -197,9 +214,12 @@ def _codex_auth_command(
             raise ValueError("--codex-auth-command must not be empty")
         return command
     if image:
+        auth_home = auth_home or worker_root / "codex-auth"
         auth_container_name = (
             "evander-codex-auth-"
-            + hashlib.sha256(str(worker_root.resolve()).encode("utf-8")).hexdigest()[:12]
+            + hashlib.sha256(f"{worker_root.resolve()}\0{profile_id}".encode("utf-8")).hexdigest()[
+                :12
+            ]
         )
         command = [
             "docker",
@@ -211,7 +231,7 @@ def _codex_auth_command(
             "--network",
             docker_network,
             "-v",
-            f"{worker_root / 'codex-auth'}:/codex-auth",
+            f"{auth_home}:/codex-auth",
             "-e",
             "CODEX_HOME=/codex-auth",
             "-e",

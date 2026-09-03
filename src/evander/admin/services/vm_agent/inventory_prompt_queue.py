@@ -23,36 +23,50 @@ class VmAgentPromptQueueInventoryMixin:
             return {}, str(exc)
 
     @staticmethod
-    def _agent_prompt_queue_candidates(agent: AgentRecord) -> set[str]:
-        candidates = {
-            str(value or "").strip()
-            for value in (agent.agent_id, agent.target_name, agent.session_id)
-        }
-        host = agent.host if isinstance(agent.host, Mapping) else {}
-        for key in ("vm_name", "target_name"):
-            value = host.get(key)
-            if isinstance(value, str) and value.strip():
-                candidates.add(value.strip())
-        session_ids = host.get("session_ids")
-        if isinstance(session_ids, list):
-            for session_id in session_ids:
-                normalized = str(session_id or "").strip()
-                if normalized:
-                    candidates.add(normalized)
-        return {candidate for candidate in candidates if candidate}
+    def _agent_prompt_queue_record_belongs_to_agent(
+        record: Any,
+        *,
+        agent: AgentRecord,
+    ) -> bool:
+        """Match queue records using authoritative session identity when available."""
 
-    @staticmethod
-    def _agent_prompt_queue_record_matches(record: Any, *, candidates: set[str]) -> bool:
+        host = agent.host if isinstance(agent.host, Mapping) else {}
+        agent_session_ids = {
+            str(value or "").strip()
+            for value in (
+                agent.session_id,
+                *(host.get("session_ids") if isinstance(host.get("session_ids"), list) else []),
+            )
+            if str(value or "").strip()
+        }
+        record_session_id = str(getattr(record, "session_id", "") or "").strip()
+        if record_session_id:
+            return record_session_id in agent_session_ids
+
+        # Legacy records may predate session attribution. They cannot be safely
+        # attributed to a directory-scoped agent, so expose them only to a root
+        # agent whose concrete VM/target identity matches.
+        if str(agent.directory_path or "root").strip() != "root":
+            return False
+        agent_values = {
+            str(value or "").strip()
+            for value in (
+                agent.agent_id,
+                agent.target_name,
+                host.get("vm_name"),
+                host.get("target_name"),
+            )
+            if str(value or "").strip()
+        }
         record_values = {
             str(value or "").strip()
             for value in (
-                getattr(record, "queue_key", None),
                 getattr(record, "target", None),
                 getattr(record, "vm_name", None),
-                getattr(record, "session_id", None),
             )
+            if str(value or "").strip()
         }
-        return bool(candidates.intersection(record_values))
+        return bool(agent_values.intersection(record_values))
 
     @staticmethod
     def _agent_prompt_queue_preview(prompt: str) -> tuple[str | None, int]:
@@ -70,14 +84,18 @@ class VmAgentPromptQueueInventoryMixin:
         return AgentPromptQueueRecord(
             queue_key=str(getattr(record, "queue_key", "") or ""),
             effect_id=str(getattr(record, "effect_id", "") or ""),
+            dispatch_id=getattr(record, "dispatch_id", None),
             target=str(getattr(record, "target", "") or ""),
             vm_name=str(getattr(record, "vm_name", "") or ""),
             session_id=getattr(record, "session_id", None),
             created_at=getattr(record, "created_at"),
             updated_at=getattr(record, "updated_at"),
             coalesced_count=int(getattr(record, "coalesced_count", 1) or 1),
-            retry_count=int(getattr(record, "retry_count", 1) or 1),
+            retry_count=int(getattr(record, "retry_count", 0) or 0),
             max_retries=getattr(record, "max_retries", None),
+            subscription_profile_id=getattr(record, "subscription_profile_id", None),
+            queue_reason=getattr(record, "queue_reason", None),
+            retry_not_before=getattr(record, "retry_not_before", None),
             prompt_preview=prompt_preview,
             prompt_length=prompt_length,
             metadata=dict(getattr(record, "metadata", {}) or {}),
@@ -91,11 +109,10 @@ class VmAgentPromptQueueInventoryMixin:
         read_error: str | None,
         record_limit: int = 20,
     ) -> AgentPromptQueueSummary:
-        candidates = self._agent_prompt_queue_candidates(agent)
         matches = [
             record
             for record in queued_records.values()
-            if self._agent_prompt_queue_record_matches(record, candidates=candidates)
+            if self._agent_prompt_queue_record_belongs_to_agent(record, agent=agent)
         ]
         if not matches:
             return AgentPromptQueueSummary(read_error=read_error)
@@ -135,8 +152,7 @@ class VmAgentPromptQueueInventoryMixin:
         ]
 
     read_agent_prompt_queue_records = _read_agent_prompt_queue_records
-    agent_prompt_queue_candidates = _agent_prompt_queue_candidates
-    agent_prompt_queue_record_matches = _agent_prompt_queue_record_matches
+    agent_prompt_queue_record_belongs_to_agent = _agent_prompt_queue_record_belongs_to_agent
     agent_prompt_queue_preview = _agent_prompt_queue_preview
     agent_prompt_queue_record_payload = _agent_prompt_queue_record_payload
     agent_prompt_queue_summary = _agent_prompt_queue_summary

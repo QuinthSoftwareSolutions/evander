@@ -9,7 +9,7 @@ An isolated workspace does not normally browse the internet or receive the host'
 | What the agent needs | Controlled route | Plain-language boundary |
 |---|---|---|
 | Evander tools | MCP gateway | Show and run only the tools allowed for this active session. |
-| A model | Model relay, or the worker's brokered subscription route | Keep provider keys or the shared ChatGPT account outside the agent workspace and constrain the upstream destination. |
+| A model | Model relay, or the worker's brokered subscription route | Keep provider keys and named ChatGPT profiles outside the agent workspace and constrain the upstream destination. |
 | Packages | Package relay, facade, or prepared cache | Reach configured package sources without opening a general download route. |
 | A named test or application environment | HTTP target relay | Reach only a target alias recorded for this session; use the application's own guest-held login. |
 | Source code | Restricted managed Git over SSH | Read or write only the repository scope and refs granted to this session. |
@@ -55,7 +55,7 @@ An operator can use the first column to describe the failure. The remaining colu
 | Expired or bad session token | Session relay request is rejected (`401`/`403` or WebSocket policy close). | Repair session/bootstrap state; do not bypass session routing. |
 | Hosted web search requested but disabled | Relay returns a policy error and logs the denial. | Enable only on the session that genuinely needs it. |
 | Unsupported provider path | Relay returns `501`, validation error, or WebSocket policy close. | Use a supported API; the relay is not a generic reverse proxy. |
-| Subscription mode selected but worker account unavailable | The Codex turn fails without a metered fallback. | Have a root owner inspect broker/account status; do not copy account credentials into the job. |
+| Subscription profile has no capacity | The original Codex prompt remains durably queued without a metered fallback. | Have a root owner inspect **Subscriptions**; do not copy profile credentials into the job. |
 | Azure NuGet PAT missing | Public NuGet may work; Azure feed returns `503`. | Set the configured PAT environment variable for the NuGet unit. |
 | HTTP target alias missing | Relay returns `404`. | Add the alias through the session/workflow metadata contract. |
 | HTTP target redirect changes origin | Relay returns `502` rather than following it. | Correct the target base URL or application redirect behavior. |
@@ -125,18 +125,19 @@ Hosted OpenAI web search is denied unless the session manifest explicitly sets `
 ChatGPT subscription authentication is an optional container-worker Codex route, not a new
 credential accepted by every provider. A `chatgpt_subscription` preference becomes effective only
 when the turn's model provider mode is `openai_public`. The disposable job gets an in-memory token
-snapshot from the worker auth broker and reaches only allowlisted OpenAI/ChatGPT HTTPS hosts through
+snapshot from the selected worker profile broker and reaches only allowlisted OpenAI/ChatGPT HTTPS hosts through
 the worker's CONNECT proxy; it receives neither the broker's `auth.json` nor direct public egress.
 
 For `local_openai` and `azure_openai`, Evander deliberately computes the turn as `metered_api` and
 keeps the configured private endpoint and API-key/relay behavior. It leaves the stored session
 preference unchanged. This distinction matters when diagnosing a session that moves between
 provider modes: seeing `chatgpt_subscription` in session policy does not mean a local Ollama or
-Azure request was sent with the worker account.
+Azure request was sent with the worker profile.
 
-Subscription authentication also fails closed. An absent login, refresh failure, broker ownership
-failure, or restricted-proxy failure does not cause a quiet retry against the host's metered OpenAI
-credential. Chapter 9 covers account ownership and lifecycle.
+Subscription authentication also fails closed. An absent login, disabled profile, refresh failure,
+rate limit, broker ownership failure, or restricted-proxy failure does not cause a quiet retry
+against the host's metered OpenAI credential. Capacity deferrals retain the original prompt in a
+per-profile FIFO queue. Chapter 9 covers profile ownership and lifecycle.
 
 ### Local-model routing is still a relay boundary
 

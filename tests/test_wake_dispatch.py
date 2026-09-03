@@ -718,16 +718,25 @@ def test_resume_container_binding_dispatches_idle_session_and_records_success(
     assert latest.metadata["target_name"].startswith("agent-session-1-")
     assert latest.metadata["source"] == "scheduled_once"
     assert latest.metadata["execution_id"].startswith("execution:agent-session-1-")
-    assert monitor_calls == [
-        {
-            "backend": backend,
-            "execution_id": latest.metadata["execution_id"],
-            "dispatch_id": result.dispatch_id,
-            "session_id": "session-1",
-            "directory_path": "root/team-a",
-            "vm_user": config.wake_vm_user,
-        }
-    ]
+    assert len(monitor_calls) == 1
+    assert monitor_calls[0] == {
+        "backend": backend,
+        "execution_id": latest.metadata["execution_id"],
+        "dispatch_id": result.dispatch_id,
+        "session_id": "session-1",
+        "directory_path": "root/team-a",
+        "vm_user": config.wake_vm_user,
+        "prompt": "Resume work.",
+        "model": "gpt-5.4-mini",
+        "model_provider_mode": "openai_public",
+        "request_id": "wake-1",
+        "resume_mode": "same_context",
+        "target_name": "provider-target",
+        "dispatch_source": "scheduled_once",
+        "scheduled_for": datetime(2026, 4, 1, 10, 30, tzinfo=UTC),
+        "wake_metadata": {"schedule_cron": ""},
+        "runtime_dir": config.runtime_dir,
+    }
 
 
 def test_resume_container_binding_dispatches_idle_claude_session_and_records_success(
@@ -863,6 +872,86 @@ def test_monitor_container_execution_completion_marks_wake_request_completed(
     assert completed.completion_evidence["trigger_type"] == "trigger:agent:run:completed"
     assert completed.completion_evidence["agent_state"] == "idle"
     assert inspect_calls == ["execution-1", "execution-1"]
+    assert destroy_calls == ["execution-1"]
+
+
+def test_monitor_requeues_original_wake_prompt_after_mid_turn_subscription_exhaustion(
+    tmp_path: Path,
+) -> None:
+    dispatcher, config, _session_repository, wake_store = _build_dispatcher(tmp_path)
+    scheduled_for = datetime(2026, 4, 1, 10, 30, tzinfo=UTC)
+    reset_at = datetime.now(UTC) + timedelta(minutes=10)
+    wake_store.schedule_resume_request(
+        session_id="session-1",
+        prompt="Resume original work.",
+        schedule=WakeScheduleDefinition(resume_at=scheduled_for),
+        request_id="wake-container",
+        source="test",
+        resume_mode="same_context",
+        enabled=True,
+        metadata={},
+    )
+    wake_store.record_dispatch(
+        WakeDispatchRecord(
+            dispatch_id="wake-dispatch-rate-limit",
+            request_id="wake-container",
+            session_id="session-1",
+            status="dispatched",
+            resume_prompt=WakeResumePromptPayload(prompt="Resume original work."),
+            resume_mode="same_context",
+            scheduled_for=scheduled_for,
+            source="scheduled_once",
+            metadata={"backend": "container_worker_vm", "target_name": "provider-target"},
+        )
+    )
+    destroy_calls: list[str] = []
+    backend = SimpleNamespace(
+        inspect=lambda execution_id: SimpleNamespace(
+            status=ExecutionStatusKind.FAILED,
+            metadata={
+                "codex_subscription_deferral": {
+                    "profile_id": "team-a",
+                    "reason": "rate_limited",
+                    "retry_at": reset_at.isoformat(),
+                }
+            },
+        ),
+        destroy=lambda execution_id: destroy_calls.append(execution_id),
+    )
+
+    dispatcher._monitor_container_execution_completion(
+        backend=backend,
+        execution_id="execution-1",
+        dispatch_id="wake-dispatch-rate-limit",
+        session_id="session-1",
+        directory_path="root/team-a",
+        vm_user="agent",
+        prompt="Resume original work.",
+        model="gpt-5.4",
+        model_provider_mode="openai_public",
+        request_id="wake-container",
+        resume_mode="same_context",
+        target_name="provider-target",
+        dispatch_source="scheduled_once",
+        scheduled_for=scheduled_for,
+        runtime_dir=config.runtime_dir,
+    )
+
+    queued = AgentPromptQueueStore(config.runtime_dir / "queued-agent-prompts.json").get(
+        "scheduled-wake:wake-container"
+    )
+    assert queued is not None
+    assert queued.prompt == "Resume original work."
+    assert queued.dispatch_id == "wake-dispatch-rate-limit"
+    assert queued.subscription_profile_id == "team-a"
+    assert queued.queue_reason == "subscription_rate_limited"
+    assert queued.retry_count == 0
+    assert queued.retry_not_before == reset_at
+    latest = wake_store.latest_dispatch_by_request_id()["wake-container"]
+    assert latest.status == "queued"
+    assert latest.metadata["capacity_deferral"] == "true"
+    assert latest.metadata["subscription_profile_id"] == "team-a"
+    assert wake_store.get_request("wake-container").completed_at is None
     assert destroy_calls == ["execution-1"]
 
 

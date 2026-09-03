@@ -10,7 +10,12 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
-from evander.codex_auth import CodexTurnSpec
+from evander.codex_auth import (
+    DEFAULT_SUBSCRIPTION_PROFILE_ID,
+    CodexSubscriptionDeferral,
+    CodexSubscriptionDeferredError,
+    CodexTurnSpec,
+)
 
 from .codex_app_server import CodexAppServerError, CodexAppServerProcess
 from .codex_auth_broker import CodexAuthBroker, CodexExternalAuthTokens
@@ -35,6 +40,7 @@ class CodexSubscriptionTurnRunner:
         log_path: Path,
         finished_marker: Path,
         metadata_callback: Callable[[dict[str, Any]], None] | None = None,
+        token_refresher: Callable[..., CodexExternalAuthTokens] | None = None,
         process_factory: Callable[..., CodexAppServerProcess] = CodexAppServerProcess,
     ) -> None:
         self.command = tuple(command)
@@ -42,6 +48,8 @@ class CodexSubscriptionTurnRunner:
         self.cwd = cwd
         self.broker = broker
         self._tokens = initial_tokens
+        self._bound_account_id = initial_tokens.account_id
+        self._token_refresher = token_refresher or broker.external_tokens
         self._sensitive_values = {initial_tokens.access_token}
         self.log_path = Path(log_path)
         self.finished_marker = Path(finished_marker)
@@ -52,6 +60,7 @@ class CodexSubscriptionTurnRunner:
         self._turn_result: dict[str, Any] | None = None
         self._thread_id: str | None = None
         self._turn_id: str | None = None
+        self._deferral: CodexSubscriptionDeferral | None = None
         self._process: CodexAppServerProcess | None = None
         self._thread: threading.Thread | None = None
         self._log_lock = threading.Lock()
@@ -154,9 +163,22 @@ class CodexSubscriptionTurnRunner:
                 message = (
                     _turn_error_message(error) or f"turn ended with status {status or 'unknown'}"
                 )
+                self._deferral = _turn_capacity_deferral(
+                    error,
+                    profile_id=(
+                        self.turn.subscription_profile_id or DEFAULT_SUBSCRIPTION_PROFILE_ID
+                    ),
+                )
                 self._append_log(f"codex error: {message}\n")
         except Exception as exc:  # noqa: BLE001 - background job boundary.
             if not self._cancelled.is_set():
+                if self._deferral is None:
+                    self._deferral = _turn_capacity_deferral(
+                        str(exc),
+                        profile_id=(
+                            self.turn.subscription_profile_id or DEFAULT_SUBSCRIPTION_PROFILE_ID
+                        ),
+                    )
                 self._append_log(
                     f"codex error: {self._redact(str(exc) or exc.__class__.__name__)}\n"
                 )
@@ -171,19 +193,23 @@ class CodexSubscriptionTurnRunner:
                 if process is not None:
                     process.close()
                     self._process = None
+            # Persist the structured outcome before releasing the container's
+            # completion wait. Otherwise a fast status poll can observe the
+            # terminal exit without the deferral needed for durable replay.
             try:
-                write_completion_marker_no_follow(self.finished_marker, exit_code)
-            except OSError as exc:
-                self._append_log(
-                    "codex error: could not write the protected completion marker "
-                    f"({exc.__class__.__name__})\n"
-                )
-                logger.error(
-                    "codex_subscription_completion_marker_failed exception_class=%s",
-                    exc.__class__.__name__,
-                )
-            finally:
                 self._publish_metadata(exit_code=exit_code)
+            finally:
+                try:
+                    write_completion_marker_no_follow(self.finished_marker, exit_code)
+                except OSError as exc:
+                    self._append_log(
+                        "codex error: could not write the protected completion marker "
+                        f"({exc.__class__.__name__})\n"
+                    )
+                    logger.error(
+                        "codex_subscription_completion_marker_failed exception_class=%s",
+                        exc.__class__.__name__,
+                    )
 
     def _open_thread(self, process: CodexAppServerProcess) -> str:
         thread_id = self.turn.resume_thread_id
@@ -229,10 +255,25 @@ class CodexSubscriptionTurnRunner:
 
     def _refresh_tokens(self, params: dict[str, Any]) -> dict[str, Any]:
         previous_account_id = str(params.get("previousAccountId") or "").strip() or None
-        self._tokens = self.broker.external_tokens(
-            previous_access_token=self._tokens.access_token,
-            previous_account_id=previous_account_id,
-        )
+        try:
+            tokens = self._token_refresher(
+                previous_access_token=self._tokens.access_token,
+                previous_account_id=previous_account_id,
+            )
+            if tokens.account_id != self._bound_account_id:
+                raise CodexSubscriptionDeferredError(
+                    CodexSubscriptionDeferral(
+                        profile_id=(
+                            self.turn.subscription_profile_id or DEFAULT_SUBSCRIPTION_PROFILE_ID
+                        ),
+                        reason="unavailable",
+                    ),
+                    "Codex subscription account changed during the running turn",
+                )
+        except CodexSubscriptionDeferredError as exc:
+            self._deferral = exc.deferral
+            raise
+        self._tokens = tokens
         self._sensitive_values.add(self._tokens.access_token)
         return self._tokens.refresh_response()
 
@@ -284,7 +325,14 @@ class CodexSubscriptionTurnRunner:
             return
         metadata: dict[str, Any] = {
             "codex_auth_mode": "chatgpt_subscription",
+            "subscription_profile_id": (
+                self.turn.subscription_profile_id or DEFAULT_SUBSCRIPTION_PROFILE_ID
+            ),
         }
+        if self._deferral is not None:
+            metadata["codex_subscription_deferral"] = self._deferral.model_dump(
+                mode="json", exclude_none=True
+            )
         if self._thread_id:
             metadata["codex_subscription_thread_id"] = self._thread_id
         if self._turn_id:
@@ -304,6 +352,118 @@ def _turn_error_message(error: object) -> str | None:
         text = str(error).strip()
         return text or None
     return None
+
+
+def _turn_capacity_deferral(
+    error: object,
+    *,
+    profile_id: str,
+) -> CodexSubscriptionDeferral | None:
+    """Recognize App Server subscription exhaustion without relying on one error shape."""
+
+    if not _is_subscription_capacity_error(error):
+        return None
+    retry_at = _find_reset_timestamp(error)
+    return CodexSubscriptionDeferral(
+        profile_id=profile_id,
+        reason="rate_limited",
+        retry_at=retry_at,
+    )
+
+
+_SUBSCRIPTION_CAPACITY_CODES = {
+    "insufficientquota",
+    "ratelimit",
+    "ratelimitexceeded",
+    "ratelimitreached",
+    "usagelimit",
+    "usagelimitexceeded",
+    "usagelimitreached",
+    "workspaceownercreditsdepleted",
+    "workspacemembercreditsdepleted",
+    "workspaceownerusagelimitreached",
+    "workspacememberusagelimitreached",
+}
+_SUBSCRIPTION_CAPACITY_CODE_KEYS = {
+    "code",
+    "codexerrorinfo",
+    "errorcode",
+    "errortype",
+    "ratelimitreachedtype",
+    "reason",
+    "type",
+}
+_SUBSCRIPTION_CAPACITY_MESSAGE_MARKERS = (
+    "rate limit reached",
+    "usage limit reached",
+    "usage rate limit",
+    "hit your usage limit",
+    "chatgpt rate limit",
+    "chatgpt quota",
+    "subscription rate limit",
+    "subscription quota",
+)
+
+
+def _is_subscription_capacity_error(value: object) -> bool:
+    if isinstance(value, dict):
+        for key, candidate in value.items():
+            normalized_key = _normalized_error_code(key)
+            if normalized_key in _SUBSCRIPTION_CAPACITY_CODE_KEYS:
+                if _normalized_error_code(candidate) in _SUBSCRIPTION_CAPACITY_CODES:
+                    return True
+            if normalized_key in {"message", "additionaldetails"} and _capacity_message(candidate):
+                return True
+            if isinstance(candidate, dict | list) and _is_subscription_capacity_error(candidate):
+                return True
+        return False
+    if isinstance(value, list):
+        return any(_is_subscription_capacity_error(candidate) for candidate in value)
+    return _capacity_message(value)
+
+
+def _normalized_error_code(value: object) -> str:
+    return "".join(character for character in str(value).casefold() if character.isalnum())
+
+
+def _capacity_message(value: object) -> bool:
+    message = str(value or "").strip().casefold()
+    return any(marker in message for marker in _SUBSCRIPTION_CAPACITY_MESSAGE_MARKERS)
+
+
+def _find_reset_timestamp(value: object) -> object | None:
+    if isinstance(value, dict):
+        for key, candidate in value.items():
+            normalized = str(key).replace("_", "").casefold()
+            if normalized in {"resetsat", "retryat", "resetat"}:
+                parsed = _parse_reset_timestamp(candidate)
+                if parsed is not None:
+                    return parsed
+        for candidate in value.values():
+            parsed = _find_reset_timestamp(candidate)
+            if parsed is not None:
+                return parsed
+    elif isinstance(value, list):
+        for candidate in value:
+            parsed = _find_reset_timestamp(candidate)
+            if parsed is not None:
+                return parsed
+    return None
+
+
+def _parse_reset_timestamp(value: object) -> object | None:
+    from datetime import UTC, datetime
+
+    if isinstance(value, (int, float)):
+        return datetime.fromtimestamp(float(value), tz=UTC)
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return parsed.replace(tzinfo=UTC) if parsed.tzinfo is None else parsed.astimezone(UTC)
 
 
 def write_completion_marker_no_follow(path: Path, exit_code: int) -> None:

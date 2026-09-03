@@ -129,6 +129,7 @@ def _compact_agent_record_payload(
             "target_name",
             "session_id",
             "directory_path",
+            "subscription_profile_id",
             "status",
             "started_at",
             "finished_at",
@@ -445,6 +446,110 @@ def agent_routes(
             }
         )
 
+    async def cancel_queued_prompt(request: Request) -> JSONResponse:
+        agent_id = request.path_params["agent_id"]
+        queue_key = request.path_params["queue_key"]
+        try:
+            directory_path = await run_in_threadpool(
+                agent_directory_path,
+                agent_id,
+                backend=_string_query(request, "backend"),
+            )
+            if error_response := require_owner_privileged(request, directory_path=directory_path):
+                return error_response
+            from evander.messaging.agent_prompt_queue import (
+                AgentPromptQueueStore,
+                queued_agent_prompt_dispatch_id,
+            )
+
+            store = AgentPromptQueueStore(service.runtime_dir / "queued-agent-prompts.json")
+            record = store.get(queue_key)
+            if record is None:
+                return json_error("Queued prompt not found.", status_code=404)
+            record_session_id = str(record.session_id or "").strip()
+            record_session = (
+                service.runtime.session_repository.get_session(record_session_id)
+                if record_session_id
+                else None
+            )
+            if record_session_id and record_session is None:
+                return json_error("Queued prompt session not found.", status_code=404)
+            if record_session is not None:
+                queued_directory_path = (
+                    str(record_session.directory_path or "root").strip() or "root"
+                )
+                if error_response := require_owner_privileged(
+                    request,
+                    directory_path=queued_directory_path,
+                ):
+                    return error_response
+            agent = await run_in_threadpool(
+                service.vm_agent_admin.get_agent,
+                agent_id,
+                backend=_string_query(request, "backend"),
+                directory_path=directory_path,
+                reconcile_containers=False,
+                omit_vm_state=True,
+            )
+            if not service.vm_agent_admin._agent_prompt_queue_record_belongs_to_agent(
+                record,
+                agent=agent,
+            ):
+                return json_error("Queued prompt does not belong to this agent.", status_code=404)
+            dispatch_id = queued_agent_prompt_dispatch_id(record)
+            steering_note_id = str(record.metadata.get("operator_steering_note_id") or "").strip()
+            linked_cancellation_deleted_queue = False
+            if queue_key.startswith("scheduled-wake:"):
+                request_id = queue_key.removeprefix("scheduled-wake:").strip()
+                caller_session_id = str(record.session_id or agent.session_id or agent_id).strip()
+                cancellation = await run_in_threadpool(
+                    service.runtime.wake_store.cancel_request,
+                    request_id,
+                    caller_session_id=caller_session_id,
+                    reason="Queued prompt cancelled by an operator.",
+                    metadata={
+                        "source": "admin_agent_queue",
+                        "agent_id": agent_id,
+                        "queue_key": queue_key,
+                        "dispatch_id": dispatch_id,
+                    },
+                )
+                if cancellation.status == "permission_denied":
+                    return json_error(
+                        "Scheduled wake does not belong to this agent.", status_code=404
+                    )
+                if cancellation.status not in {
+                    "cancelled",
+                    "already_cancelled",
+                    "already_completed",
+                    "not_found",
+                }:
+                    return json_error(
+                        "Scheduled wake could not be cancelled; refresh and retry.",
+                        status_code=409,
+                    )
+                linked_cancellation_deleted_queue = cancellation.status == "cancelled"
+            if not linked_cancellation_deleted_queue and not store.delete_if_dispatch_id(
+                queue_key, dispatch_id
+            ):
+                return json_error("Queued prompt changed; refresh and retry.", status_code=409)
+            if steering_note_id:
+                await run_in_threadpool(
+                    service.operator_steering_admin.cancel_operator_steering_note,
+                    steering_note_id,
+                )
+        except ValueError as exc:
+            return json_error(str(exc), status_code=400)
+        return JSONResponse(
+            {
+                "success": True,
+                "agent_id": agent_id,
+                "queue_key": queue_key,
+                "dispatch_id": dispatch_id,
+                "cancelled": True,
+            }
+        )
+
     async def get_agent_log(request: Request) -> JSONResponse:
         agent_id = request.path_params["agent_id"]
         backend = _string_query(request, "backend")
@@ -690,6 +795,11 @@ def agent_routes(
             "/api/admin/agents/{agent_id:str}/executions",
             get_agent_executions,
             methods=["GET"],
+        ),
+        Route(
+            "/api/admin/agents/{agent_id:str}/queued-prompts/{queue_key:path}",
+            cancel_queued_prompt,
+            methods=["DELETE"],
         ),
         Route("/api/admin/agents/{agent_id:str}", get_agent, methods=["GET"]),
         Route("/api/admin/agents/{agent_id:str}", patch_agent, methods=["PATCH"]),

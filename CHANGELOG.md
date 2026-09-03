@@ -1,5 +1,20 @@
 # Changelog
 
+## 2026-09-02 - Named Codex Subscription Profiles
+
+- Added worker-owned named ChatGPT subscription profiles with independent device-login homes,
+  immutable account pinning, safe account/rate-limit/usage status, compatibility aliases for the
+  legacy `default` profile, and root-owner Admin management.
+- Added immutable profile selection to container Codex agent creation and workflow nodes while
+  preserving existing profile-less subscription sessions as `default`.
+- Added subscription-capacity preflight and mid-turn deferral handling with durable, reset-aware,
+  per-profile FIFO prompt replay, cross-profile concurrency, visible queue reasons, manual
+  cancellation, and no metered API fallback.
+- Hardened deferred prompt identity, worker-local profile recovery, replay cancellation conflicts,
+  queued-session cancellation authorization, refresh-time account pinning, selector telemetry,
+  context-retry deferral, preflight queue FIFO, and workflow validation for named subscription
+  selections.
+
 ## 2026-09-02 - Archived Team Agent Session Restoration
 
 - Added a workflow-only `effect:team:restore-agent` primitive that atomically restores a fully

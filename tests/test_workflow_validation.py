@@ -1284,12 +1284,30 @@ def test_agent_prompt_outputs_include_error_bindings() -> None:
                 "display_name": "Enqueue agent",
                 "type": "effect:agent:enqueue-prompt",
                 "session_id": "session-1",
-                "prompt": "Inspect",
+                "prompt": (
+                    "Inspect after ${{prompt-agent.retry_not_before}} using "
+                    "${{prompt-agent.subscription_profile_id}}"
+                ),
+            },
+            {
+                "id": "report-agent",
+                "display_name": "Report queued deferral",
+                "type": "effect:agent:prompt",
+                "session_id": "session-1",
+                "prompt": (
+                    "Queued until ${{enqueue-agent.retry_not_before}} using "
+                    "${{enqueue-agent.subscription_profile_id}}"
+                ),
             },
         ],
         "edges": [
             {"source_id": "trigger-cron-1", "target_id": "prompt-agent"},
             {"source_id": "prompt-agent", "target_id": "enqueue-agent", "source_port": "started"},
+            {
+                "source_id": "enqueue-agent",
+                "target_id": "report-agent",
+                "source_port": "started",
+            },
         ],
     }
 
@@ -1299,6 +1317,8 @@ def test_agent_prompt_outputs_include_error_bindings() -> None:
     assert output_schemas["prompt-agent"]["dispatch_id"] == {"type": "string"}
     assert output_schemas["prompt-agent"]["thread_id"] == {"type": "string"}
     assert output_schemas["prompt-agent"]["success"] == {"type": "boolean"}
+    assert output_schemas["prompt-agent"]["retry_not_before"] == {"type": ["string", "null"]}
+    assert output_schemas["prompt-agent"]["subscription_profile_id"] == {"type": ["string", "null"]}
     assert output_schemas["prompt-agent"]["error_message"] == {"type": "string"}
     assert output_schemas["prompt-agent"]["error_class"] == {"type": "string"}
     assert output_schemas["prompt-agent"]["failed_phase"] == {"type": "string"}
@@ -1312,6 +1332,10 @@ def test_agent_prompt_outputs_include_error_bindings() -> None:
     assert output_schemas["enqueue-agent"]["failed_phase"] == {"type": "string"}
     assert output_schemas["enqueue-agent"]["queued"] == {"type": "boolean"}
     assert output_schemas["enqueue-agent"]["queue_key"] == {"type": "string"}
+    assert output_schemas["enqueue-agent"]["retry_not_before"] == {"type": ["string", "null"]}
+    assert output_schemas["enqueue-agent"]["subscription_profile_id"] == {
+        "type": ["string", "null"]
+    }
     assert output_schemas["enqueue-agent"]["session_id"] == {"type": "string"}
     assert output_schemas["enqueue-agent"]["vm_name"] == {"type": "string"}
     assert output_schemas["enqueue-agent"]["coalesced_count"] == {"type": "integer"}

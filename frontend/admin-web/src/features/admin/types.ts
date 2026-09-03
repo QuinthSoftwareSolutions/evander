@@ -165,12 +165,18 @@ export type AgentCapabilities = {
 export type AgentPromptQueueRecord = {
   queue_key: string;
   effect_id: string;
+  dispatch_id: string | null;
   target: string;
   vm_name: string;
   session_id: string | null;
   created_at: string;
   updated_at: string;
   coalesced_count: number;
+  retry_count: number;
+  max_retries: number | null;
+  subscription_profile_id: string | null;
+  queue_reason: string | null;
+  retry_not_before: string | null;
   prompt_preview: string | null;
   prompt_length: number;
   metadata: Record<string, string>;
@@ -194,6 +200,7 @@ export type AgentRecord = {
   target_name: string;
   session_id: string | null;
   directory_path: string;
+  subscription_profile_id?: string | null;
   status: string;
   started_at: string | null;
   finished_at: string | null;
@@ -261,6 +268,7 @@ export type AgentCreateRequest = {
   agent_provider?: string | null;
   model_provider_mode?: string | null;
   codex_auth_mode?: "metered_api" | "chatgpt_subscription" | null;
+  subscription_profile_id?: string | null;
   vm_image?: string | null;
 };
 
@@ -370,6 +378,9 @@ export type AgentCreateOptionsResponse = {
   container_worker: {
     default_image: string | null;
     images: AgentCreateImageOption[];
+    codex_auth_mode: "metered_api" | "chatgpt_subscription";
+    model_provider_mode: string;
+    subscription_profiles: CodexSubscriptionProfile[];
   };
 };
 
@@ -387,6 +398,7 @@ export type AgentPolicyUpdateRequest = {
   email_mailbox_grants?: EmailMailboxGrant[] | null;
   http_targets?: HttpTargetsPayload;
   codex_auth_mode?: "metered_api" | "chatgpt_subscription" | null;
+  subscription_profile_id?: string | null;
   allowed_script_names?: string[];
   discord_channels?: string[];
   discord_channel_allowlist?: string[];
@@ -434,8 +446,38 @@ export type AgentSessionPolicy = {
   labels: Record<string, string>;
   web_search_enabled: boolean;
   codex_auth_mode: "metered_api" | "chatgpt_subscription" | null;
+  subscription_profile_id: string | null;
+  effective_subscription_profile_id: string | null;
   effective_codex_auth_mode: "metered_api" | "chatgpt_subscription";
   codex_auth_mode_source: "session_override" | "directory_default" | "provider_route";
+};
+
+export type CodexSubscriptionProfile = {
+  profile_id: string;
+  display_name: string;
+  enabled: boolean;
+  pinned_account_id: string | null;
+  available: boolean;
+  signed_in: boolean;
+  account_id: string | null;
+  account_type: string | null;
+  email: string | null;
+  plan_type: string | null;
+  last_refresh: string | null;
+  access_token_expires_at: string | null;
+  rate_limits: Record<string, unknown> | null;
+  usage: Record<string, unknown> | null;
+  active_job_count: number;
+  queued_prompt_count: number;
+  error: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type CodexSubscriptionProfilesResponse = {
+  directory_path: string;
+  worker_url: string | null;
+  profiles: CodexSubscriptionProfile[];
 };
 
 export type AgentListResponse = {

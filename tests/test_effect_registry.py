@@ -12,11 +12,14 @@ from types import SimpleNamespace
 
 import pytest
 
-from evander.codex_auth import CodexAuthMode
+from evander.codex_auth import CodexAuthMode, CodexSubscriptionDeferral
 from evander.config import GatewayConfig
 from evander.directories import DirectoryStore
 from evander.execution import ExecutionStatusKind
-from evander.execution.container_worker_client import ContainerWorkerClientError
+from evander.execution.container_worker_client import (
+    CodexSubscriptionDeferredClientError,
+    ContainerWorkerClientError,
+)
 from evander.execution.container_worker_repository import ContainerWorkerExecutionRecord
 from evander.effects.providers.agent_clone_repo import (
     AgentCloneRepoEffectProvider,
@@ -4509,6 +4512,143 @@ def test_context_exhausted_container_completion_starts_reduced_context_retry(
     assert record.outputs["context_retry_of_execution_id"] == "agent-old-1"
 
 
+def test_context_exhausted_subscription_retry_is_durably_queued_on_preflight_deferral(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    retry_at = datetime.now(UTC) + timedelta(minutes=12)
+    config = GatewayConfig(
+        runtime_dir=tmp_path,
+        execution_backend="container_worker_vm",
+        container_worker_base_url="http://worker.test",
+        model_provider_mode="openai_public",
+    )
+    session_repository = JsonSessionManifestRepository(config.session_store_path)
+    session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-1",
+            vm_id=None,
+            allowed_tools=[ToolName.LIST_PENDING_AGENT_PROMPTS],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+            vm_provider="container_worker_vm",
+            vm_provider_id="target-1",
+            model="gpt-5.4-mini",
+            codex_auth_mode=CodexAuthMode.CHATGPT_SUBSCRIPTION,
+            subscription_profile_id="team-a",
+            metadata={"execution_backend": "container_worker_vm", "agent_provider": "codex"},
+        )
+    )
+    backend = _FakeContainerBackend()
+    backend.config = config
+    backend.start_error = CodexSubscriptionDeferredClientError(
+        "subscription capacity unavailable",
+        deferral=CodexSubscriptionDeferral(
+            profile_id="team-a",
+            reason="rate_limited",
+            retry_at=retry_at,
+        ),
+    )
+    monkeypatch.setattr(
+        AgentPromptEffectProvider,
+        "_container_backend_for_worker",
+        classmethod(lambda cls, worker, session_id: backend),
+    )
+
+    class Store:
+        def __init__(self) -> None:
+            self.record = None
+
+        def put(self, record) -> None:
+            self.record = record
+
+    published: list[dict[str, object]] = []
+    store = Store()
+    worker = SimpleNamespace(
+        config=config,
+        execution_store=store,
+        provider_factory=SimpleNamespace(
+            admin_service=SimpleNamespace(
+                runtime=SimpleNamespace(session_repository=session_repository)
+            )
+        ),
+        _update_event_delivery_state=lambda event_id: None,
+        _publish_completion_event_from_record=lambda **kwargs: (
+            published.append(kwargs) or "published-1"
+        ),
+    )
+    record = SimpleNamespace(
+        execution_id="effect-exec-1",
+        event_id="event-1",
+        trace_id="trace-1",
+        effect_id="agent-enqueue",
+        effect_type="effect:agent:enqueue-prompt",
+        status="waiting",
+        error="old failure",
+        started_at=datetime.now(UTC),
+        finished_at=datetime.now(UTC),
+        resolved_config={
+            "target": "session-1",
+            "vm_name": "target-1",
+            "prompt": "Important task instructions\n" + ("history\n" * 800) + "Final action",
+            "model": "gpt-5.4-mini",
+            "directory_path": "root",
+        },
+        input_payload={
+            "__node_outputs": {"source": {"value": "kept"}},
+            "__for_execution_ids": {"gate": "source-execution"},
+        },
+        outputs={
+            "dispatch_id": "dispatch-1",
+            "execution_backend": "container_worker_vm",
+            "execution_id": "agent-old-1",
+            "session_id": "session-1",
+        },
+    )
+    queue_record = TriggerQueueRecord(
+        event_id="complete-1",
+        trigger_id="__await-agent-completion__",
+        trigger_type="trigger:agent:run:completed",
+        trace_id="trace-1",
+        occurred_at=datetime.now(UTC),
+        payload={
+            "dispatch_id": "dispatch-1",
+            "session_id": "session-1",
+            "execution_backend": "container_worker_vm",
+            "worker_execution_id": "agent-old-1",
+            "success": False,
+            "message": "Codex ended without a final agent message.",
+            "failure_kind": "context_exhausted",
+            "failure_reason": "codex_context_limit_suspected",
+        },
+    )
+
+    AgentPromptEffectProvider._finalize_waiting_record(
+        worker=worker,
+        record=record,
+        queue_record=queue_record,
+    )
+
+    queued_records = AgentPromptQueueStore(tmp_path / "queued-agent-prompts.json").read_all()
+    assert len(queued_records) == 1
+    queued = next(iter(queued_records.values()))
+    assert queued.subscription_profile_id == "team-a"
+    assert queued.queue_reason == "subscription_rate_limited"
+    assert queued.retry_not_before == retry_at
+    assert queued.capacity_deferral_count == 1
+    assert queued.resume_mode == "new_context"
+    assert "Previous agent run hit the model context limit" in queued.prompt
+    assert queued.metadata["context_retry_attempt"] == "1"
+    assert queued.metadata["context_retry_of_execution_id"] == "agent-old-1"
+    assert queued.workflow_context == {"source": {"value": "kept"}}
+    assert queued.workflow_for_execution_ids == {"gate": "source-execution"}
+    assert published == []
+    assert store.record is record
+    assert record.status == "succeeded"
+    assert record.error is None
+    assert record.outputs["queued"] is True
+    assert record.outputs["context_retry_in_progress"] is True
+
+
 def test_context_exhausted_container_completion_does_not_retry_after_limit(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -4773,6 +4913,83 @@ def test_agent_enqueue_prompt_provider_keeps_same_target_capacity_waits_distinct
     assert {record.prompt for record in queued.values()} == {"first prompt", "second prompt"}
     assert all(record.coalesced_count == 1 for record in queued.values())
     assert backend.started_specs == []
+
+
+def test_agent_enqueue_prompt_provider_keeps_subscription_deferrals_distinct(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = GatewayConfig(
+        runtime_dir=tmp_path,
+        execution_backend="container_worker_vm",
+        container_worker_base_url="http://worker.test",
+        model_provider_mode="openai_public",
+    )
+    session_repository = JsonSessionManifestRepository(config.session_store_path)
+    session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-1",
+            vm_id=None,
+            allowed_tools=[ToolName.LIST_PENDING_AGENT_PROMPTS],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+            vm_provider="container_worker_vm",
+            vm_provider_id="truman",
+            model="gpt-5.4-mini",
+            codex_auth_mode=CodexAuthMode.CHATGPT_SUBSCRIPTION,
+            subscription_profile_id="team-a",
+            metadata={"execution_backend": "container_worker_vm", "target_name": "truman"},
+        )
+    )
+    resolver = _ContainerResolverStub(config)
+    admin_service = SimpleNamespace(
+        runtime=SimpleNamespace(
+            session_repository=session_repository,
+            provider_config=resolver,
+        ),
+        list_vms=lambda **_kwargs: [],
+    )
+    backend = _FakeContainerBackend()
+    backend.start_error = CodexSubscriptionDeferredClientError(
+        "subscription capacity unavailable",
+        deferral=CodexSubscriptionDeferral(
+            profile_id="team-a",
+            reason="rate_limited",
+        ),
+    )
+    monkeypatch.setattr(
+        "evander.effects.providers.agent_enqueue_prompt.container_backend",
+        lambda _context, _config: backend,
+    )
+    factory = EffectProviderFactory(
+        provider_config_resolver=resolver,
+        admin_service=admin_service,
+    )
+
+    outputs = [
+        factory.build(
+            AgentEnqueuePromptEffectDefinition(
+                id="agent-enqueue",
+                display_name="Enqueue",
+                type="effect:agent:enqueue-prompt",
+                target="session-1",
+                prompt=prompt,
+                dispatch_id=dispatch_id,
+            )
+        ).execute()
+        for prompt, dispatch_id in (
+            ("first prompt", "caller-dispatch-1"),
+            ("second prompt", "caller-dispatch-2"),
+        )
+    ]
+
+    assert [output["queue_key"] for output in outputs] == [
+        "session-1:subscription:caller-dispatch-1",
+        "session-1:subscription:caller-dispatch-2",
+    ]
+    queued = AgentPromptQueueStore(tmp_path / "queued-agent-prompts.json").read_all()
+    assert len(queued) == 2
+    assert {record.prompt for record in queued.values()} == {"first prompt", "second prompt"}
+    assert all(record.subscription_profile_id == "team-a" for record in queued.values())
 
 
 def test_agent_enqueue_prompt_provider_caps_recreated_busy_container_prompt(
@@ -5888,6 +6105,200 @@ def test_agent_create_preserves_subscription_preference_for_local_openai_fallbac
     )
     assert turn is not None
     assert turn.auth_mode is CodexAuthMode.METERED_API
+
+
+def test_agent_create_named_subscription_profiles_are_persisted_and_write_once(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = GatewayConfig(
+        runtime_dir=tmp_path,
+        execution_backend="container_worker_vm",
+        container_worker_base_url="http://worker.test",
+        model_provider_mode="openai_public",
+    )
+    session_repository = JsonSessionManifestRepository(config.session_store_path)
+    admin_service = SimpleNamespace(
+        runtime=SimpleNamespace(
+            session_repository=session_repository,
+            provider_config=_ContainerResolverStub(config),
+        )
+    )
+    backend = _FakeContainerBackend()
+    profile_enabled = {"team-a": True, "team-b": True}
+    profile_status_calls: list[str] = []
+
+    def profile_status(profile_id: str) -> dict[str, object]:
+        profile_status_calls.append(profile_id)
+        return {
+            "profile_id": profile_id,
+            "enabled": profile_enabled[profile_id],
+        }
+
+    backend.client = SimpleNamespace(
+        codex_auth_profile_status=profile_status,
+    )
+    monkeypatch.setattr(
+        "evander.effects.providers.agent_create.container_backend",
+        lambda context, config: backend,
+    )
+    factory = EffectProviderFactory(
+        provider_config_resolver=_ContainerResolverStub(config),
+        admin_service=admin_service,
+    )
+
+    for session_id, profile_id in (
+        ("workflow-a", "team-a"),
+        ("workflow-b", "team-b"),
+        ("workflow-c", "team-a"),
+    ):
+        output = factory.build(
+            AgentCreateEffectDefinition(
+                id=f"agent-create-{session_id}",
+                display_name="Create",
+                type="effect:agent:create",
+                execution_backend="container_worker_vm",
+                session_id=session_id,
+                codex_auth_mode=CodexAuthMode.CHATGPT_SUBSCRIPTION,
+                subscription_profile_id=profile_id,
+            )
+        ).execute()
+        assert output["subscription_profile_id"] == profile_id
+
+    assert session_repository.get_session("workflow-a").subscription_profile_id == "team-a"
+    assert session_repository.get_session("workflow-b").subscription_profile_id == "team-b"
+    assert session_repository.get_session("workflow-c").subscription_profile_id == "team-a"
+    turn = container_codex_turn_spec(
+        prompt="Continue",
+        model="gpt-5.4",
+        resume_thread_id=None,
+        session=session_repository.get_session("workflow-a"),
+        config=config,
+        agent_provider="codex",
+    )
+    assert turn is not None
+    assert turn.auth_mode is CodexAuthMode.CHATGPT_SUBSCRIPTION
+    assert turn.subscription_profile_id == "team-a"
+
+    factory.build(
+        AgentCreateEffectDefinition(
+            id="agent-create-upsert-preserve",
+            display_name="Preserve",
+            type="effect:agent:create",
+            execution_backend="container_worker_vm",
+            session_id="workflow-a",
+            existing_agent_behavior="upsert",
+        )
+    ).execute()
+    assert session_repository.get_session("workflow-a").subscription_profile_id == "team-a"
+
+    factory.build(
+        AgentCreateEffectDefinition(
+            id="agent-create-upsert-private-route",
+            display_name="Preserve through private route",
+            type="effect:agent:create",
+            execution_backend="container_worker_vm",
+            session_id="workflow-a",
+            existing_agent_behavior="upsert",
+            model_provider_mode="local_openai",
+        )
+    ).execute()
+    private_routed_session = session_repository.get_session("workflow-a")
+    assert private_routed_session is not None
+    assert private_routed_session.codex_auth_mode is CodexAuthMode.CHATGPT_SUBSCRIPTION
+    assert private_routed_session.subscription_profile_id == "team-a"
+    assert private_routed_session.metadata["model_provider_mode"] == "local_openai"
+
+    profile_enabled["team-a"] = False
+    status_calls_before_same_profile_upsert = len(profile_status_calls)
+    factory.build(
+        AgentCreateEffectDefinition(
+            id="agent-create-upsert-same-profile-private-route",
+            display_name="Preserve explicit binding through private route",
+            type="effect:agent:create",
+            execution_backend="container_worker_vm",
+            session_id="workflow-a",
+            existing_agent_behavior="upsert",
+            subscription_profile_id="team-a",
+        )
+    ).execute()
+    assert len(profile_status_calls) == status_calls_before_same_profile_upsert
+
+    with pytest.raises(ValueError, match="write-once"):
+        factory.build(
+            AgentCreateEffectDefinition(
+                id="agent-create-upsert-reassign",
+                display_name="Reassign",
+                type="effect:agent:create",
+                execution_backend="container_worker_vm",
+                session_id="workflow-a",
+                existing_agent_behavior="upsert",
+                codex_auth_mode=CodexAuthMode.CHATGPT_SUBSCRIPTION,
+                subscription_profile_id="team-b",
+            )
+        ).execute()
+
+    factory.build(
+        AgentCreateEffectDefinition(
+            id="agent-create-metered",
+            display_name="Create metered",
+            type="effect:agent:create",
+            execution_backend="container_worker_vm",
+            session_id="metered-session",
+            codex_auth_mode=CodexAuthMode.METERED_API,
+        )
+    ).execute()
+    factory.build(
+        AgentCreateEffectDefinition(
+            id="agent-create-metered-subscription",
+            display_name="Bind metered session",
+            type="effect:agent:create",
+            execution_backend="container_worker_vm",
+            session_id="metered-session",
+            existing_agent_behavior="upsert",
+            codex_auth_mode=CodexAuthMode.CHATGPT_SUBSCRIPTION,
+            subscription_profile_id="team-b",
+        )
+    ).execute()
+    metered_session = session_repository.get_session("metered-session")
+    assert metered_session.codex_auth_mode is CodexAuthMode.CHATGPT_SUBSCRIPTION
+    assert metered_session.subscription_profile_id == "team-b"
+
+    factory.build(
+        AgentCreateEffectDefinition(
+            id="agent-create-legacy-default",
+            display_name="Create legacy default",
+            type="effect:agent:create",
+            execution_backend="container_worker_vm",
+            session_id="legacy-default",
+            codex_auth_mode=CodexAuthMode.CHATGPT_SUBSCRIPTION,
+        )
+    ).execute()
+    with pytest.raises(ValueError, match="profile-bound"):
+        factory.build(
+            AgentCreateEffectDefinition(
+                id="agent-create-legacy-switch",
+                display_name="Switch legacy binding",
+                type="effect:agent:create",
+                execution_backend="container_worker_vm",
+                session_id="legacy-default",
+                existing_agent_behavior="upsert",
+                codex_auth_mode=CodexAuthMode.METERED_API,
+            )
+        ).execute()
+
+
+def test_agent_create_subscription_profile_selector_is_not_bindable() -> None:
+    with pytest.raises(ValidationError, match="lowercase slug"):
+        AgentCreateEffectDefinition(
+            id="agent-create",
+            display_name="Create",
+            type="effect:agent:create",
+            execution_backend="container_worker_vm",
+            session_id="session-1",
+            codex_auth_mode=CodexAuthMode.CHATGPT_SUBSCRIPTION,
+            subscription_profile_id="${{trigger.profile_id}}",
+        )
 
 
 def test_agent_create_container_can_select_configured_image_alias(

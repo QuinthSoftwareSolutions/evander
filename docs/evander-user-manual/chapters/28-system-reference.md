@@ -146,7 +146,7 @@ Admin Web is the supported operator GUI. Its core areas answer different questio
 The navigation keeps all areas visible in six permanently expanded groups: **Overview** contains
 Dashboard and Reports; **Operations** contains Agents, Sessions, Issues, Approvals, and Artifacts;
 **Automation** contains Workflow and Skills; **Extensions** contains Add-ons, Connectors, Host Directories, and
-add-on-contributed areas; **Infrastructure** contains VMs and Workers; and **Governance** contains
+add-on-contributed areas; **Infrastructure** contains Subscriptions, Git Repositories, VMs, and Workers; and **Governance** contains
 Tool Visibility, MCP Tools, Tool Calls, Configuration, and Users & Groups. Use **Find page** or
 `Ctrl+K` / `Command+K` to search the currently visible built-in and add-on areas without changing
 their hash routes or directory scope.
@@ -169,6 +169,7 @@ unknown field is ignored.
 |---|---|
 | Dashboard | Is the control plane broadly healthy, and what needs attention? |
 | Agents | Which active and historical execution targets represent agent work? |
+| Subscriptions | Which named worker ChatGPT profiles are signed in, enabled, rate-limited, running jobs, or holding queued prompts? |
 | Approvals | Which gated tool calls require an operator decision? |
 | Artifacts | Which durable agent archives can be resolved or downloaded? |
 | Add-ons | Which runtime extensions are available, enabled, or awaiting refresh/restart? |

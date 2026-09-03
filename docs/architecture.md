@@ -13,6 +13,9 @@ Guest and worker-container networking is default-deny. Reachability is limited t
   list/import/delete grants, descriptor-relative traversal, artifact-backed imports, and
   recoverable quarantine deletes. Agent and trigger payloads never expose configured roots.
 - OpenAI relay: a separate host service that exposes an OpenAI-compatible `/v1` endpoint to guests while keeping the real API key on the host.
+- Container-worker subscription registry: worker-owned named ChatGPT profiles, per-profile Codex
+  App Server brokers, durable auth homes, and safe account/capacity status. Control-plane
+  directories select a worker but never own its profiles or credentials.
 - NuGet relay: a separate host service that exposes guest-reachable feed endpoints for nuget.org and private Azure Artifacts while keeping private feed credentials on the host.
 - Managed Git service: directory-scoped bare repositories, capability-limited guest intake, pinned ref transactions, publication, and ephemeral worktree ownership.
 - Disposable guests: run agent code and call the MCP gateway over the isolated libvirt network.
@@ -27,6 +30,30 @@ Guest and worker-container networking is default-deny. Reachability is limited t
 - Git handles code transport; MCP remains the control and policy path.
 - Session manifests are the smallest useful policy primitive for v1.
 - Approval records let you keep autonomy for drafts and read operations while gating sends.
+
+## Named Subscription Profile Boundary
+
+A subscription profile is worker infrastructure identified by an immutable validated slug. Its
+editable registry record contains only display name, enabled state, pinned OpenAI account ID, and
+timestamps. The reserved `default` record points at the legacy `codex-auth/auth.json`; named
+profiles use `codex-auth/profiles/<profile-id>/`. Each profile lazily owns an independent broker,
+file lock, and managed App Server process, so refreshes may run concurrently across profiles while
+remaining serialized within one profile. All broker processes share the same restricted OpenAI
+egress proxy.
+
+The profile identifier, never its credentials, flows from `effect:agent:create` into the session,
+Codex turn, worker job metadata, agent summaries, and durable prompt queue. Assignment is
+write-once because changing accounts underneath a resumable session would mix identity and usage
+history. The first successful login pins the upstream account ID; a later login as another account
+is logged out and rejected.
+
+Before launching a public-OpenAI subscription turn, the worker checks enabled state, login,
+broker availability, and rate limits. A capacity failure returns a structured deferral rather than
+an API credential. The control plane keeps the original prompt in an indefinite, reset-aware FIFO
+queue scoped to that profile. Mid-turn exhaustion enters the same replay path. Profiles can make
+progress independently, and there is no metered fallback. Disposable jobs receive only the
+in-memory external tokens required by App Server; they receive no auth-file mount, token-bearing
+environment variable, command argument, or persisted token metadata.
 
 ## Connector Boundary
 

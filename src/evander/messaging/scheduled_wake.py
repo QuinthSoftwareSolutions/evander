@@ -27,6 +27,9 @@ from evander.messaging.wake_dispatch import (
     probe_agent_dispatch_state,
     set_session_cooldown,
 )
+from evander.messaging.scheduled_wake_queue import (
+    scheduled_wake_dispatch_is_capacity_deferred,
+)
 from evander.session_backends import session_is_container_worker_vm
 
 logger = logging.getLogger(__name__)
@@ -350,7 +353,7 @@ class ScheduledWakeWorker:
                 mark_consumed=False,
                 was_handled=True,
             )
-        elif dispatch_handled:
+        elif dispatch_handled and not scheduled_wake_dispatch_is_capacity_deferred(dispatch):
             _defer_one_time_wake_confirmation(
                 wake_store=wake_store,
                 request=request,

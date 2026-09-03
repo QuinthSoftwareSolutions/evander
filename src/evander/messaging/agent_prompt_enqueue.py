@@ -7,6 +7,7 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
+from datetime import datetime
 
 from evander.messaging.agent_prompt_queue import (
     AgentPromptQueueStore,
@@ -103,6 +104,9 @@ def enqueue_agent_prompt(
     effect_id: str,
     model_provider_mode: str | None = None,
     queue_reason: str | None = None,
+    subscription_profile_id: str | None = None,
+    retry_not_before: datetime | None = None,
+    capacity_deferral: bool = False,
     resume_mode: str | None = None,
     resume_thread_metadata_key: str | None = None,
     resume_thread_metadata_collection: str | None = None,
@@ -116,28 +120,37 @@ def enqueue_agent_prompt(
     persisted_dispatch_id = str(dispatch_id or "").strip() or f"dispatch-queued-{uuid4().hex}"
     queue_store = AgentPromptQueueStore(runtime_dir / "queued-agent-prompts.json")
     try:
-        record = queue_store.put(
-            QueuedAgentPromptRecord(
-                queue_key=queue_key or vm_name,
-                target=target,
-                vm_name=vm_name,
-                session_id=session_id,
-                prompt=prompt,
-                model=model,
-                model_provider_mode=model_provider_mode,
-                queue_reason=queue_reason,
-                vm_user=vm_user,
-                dispatch_id=persisted_dispatch_id,
-                resume_thread_id=resume_thread_id,
-                resume_mode=resume_mode,
-                resume_thread_metadata_key=resume_thread_metadata_key,
-                resume_thread_metadata_collection=resume_thread_metadata_collection,
-                effect_id=effect_id,
-                metadata=dict(metadata or {}),
-                workflow_context=workflow_context,
-                workflow_for_execution_ids=workflow_for_execution_ids,
-            ),
-            max_retries=max_retries,
+        pending_record = QueuedAgentPromptRecord(
+            queue_key=queue_key or vm_name,
+            target=target,
+            vm_name=vm_name,
+            session_id=session_id,
+            prompt=prompt,
+            model=model,
+            model_provider_mode=model_provider_mode,
+            queue_reason=queue_reason,
+            subscription_profile_id=subscription_profile_id,
+            retry_not_before=retry_not_before,
+            capacity_deferral_count=0,
+            vm_user=vm_user,
+            dispatch_id=persisted_dispatch_id,
+            resume_thread_id=resume_thread_id,
+            resume_mode=resume_mode,
+            resume_thread_metadata_key=resume_thread_metadata_key,
+            resume_thread_metadata_collection=resume_thread_metadata_collection,
+            effect_id=effect_id,
+            metadata=dict(metadata or {}),
+            workflow_context=workflow_context,
+            workflow_for_execution_ids=workflow_for_execution_ids,
+        )
+        record = (
+            queue_store.defer_capacity(
+                pending_record,
+                queue_reason=queue_reason or "subscription_unavailable",
+                retry_at=retry_not_before,
+            )
+            if capacity_deferral
+            else queue_store.put(pending_record, max_retries=max_retries)
         )
         latency_ms = int((time.monotonic() - start) * 1000)
         logger.info(

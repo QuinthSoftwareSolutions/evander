@@ -5,7 +5,12 @@ from collections.abc import Mapping
 from typing import Any
 
 from evander.container_worker_images import resolve_container_worker_image_selector
-from evander.codex_auth import CodexAuthMode, normalize_codex_auth_mode
+from evander.codex_auth import (
+    DEFAULT_SUBSCRIPTION_PROFILE_ID,
+    CodexAuthMode,
+    normalize_codex_auth_mode,
+    normalize_subscription_profile_id,
+)
 from evander.connectors.grants import resolve_and_validate_connector_grants
 from evander.contact_allowlists import validate_allowed_contact_ids_for_directory
 from evander.directories import DirectoryStore
@@ -56,6 +61,7 @@ class AgentCreateEffectProvider(EffectProviderBase):
         effect_fields_set = getattr(effect, "model_fields_set", set())
         allowed_contact_ids_provided = "allowed_contact_ids" in effect_fields_set
         codex_auth_mode_provided = "codex_auth_mode" in effect_fields_set
+        subscription_profile_id_provided = "subscription_profile_id" in effect_fields_set
         payload = {
             "provider": effect.provider,
             "agent_provider": effect.agent_provider,
@@ -66,6 +72,7 @@ class AgentCreateEffectProvider(EffectProviderBase):
             "labels": effect.labels,
             "model": effect.model,
             "model_provider_mode": effect.model_provider_mode,
+            "subscription_profile_id": effect.subscription_profile_id,
             "vm_user": effect.vm_user,
             "vm_image": effect.vm_image,
             "ttl_hours": effect.ttl_hours,
@@ -105,15 +112,20 @@ class AgentCreateEffectProvider(EffectProviderBase):
         }
         if codex_auth_mode_provided:
             payload["codex_auth_mode"] = effect.codex_auth_mode
+        if subscription_profile_id_provided:
+            payload["subscription_profile_id"] = effect.subscription_profile_id
         if resolved_config:
             resolved_payload = dict(resolved_config)
             if "allowed_contact_ids" in resolved_payload:
                 allowed_contact_ids_provided = True
             if "codex_auth_mode" in resolved_payload:
                 codex_auth_mode_provided = True
+            if "subscription_profile_id" in resolved_payload:
+                subscription_profile_id_provided = True
             payload.update(resolved_payload)
         payload["_allowed_contact_ids_provided"] = allowed_contact_ids_provided
         payload["_codex_auth_mode_provided"] = codex_auth_mode_provided
+        payload["_subscription_profile_id_provided"] = subscription_profile_id_provided
 
         directory_path = normalize_optional_string(payload.get("directory_path")) or str(
             context.metadata.get("directory_path") or "root"
@@ -121,6 +133,14 @@ class AgentCreateEffectProvider(EffectProviderBase):
         execution_backend, config = selected_execution_backend(
             context, payload, directory_path=directory_path
         )
+        if (
+            normalize_subscription_profile_id(payload.get("subscription_profile_id")) is not None
+            and execution_backend != "container_worker_vm"
+        ):
+            raise ValueError(
+                "subscription_profile_id is supported only with "
+                "execution_backend='container_worker_vm'"
+            )
         logger.info(
             "metric_agent_create_backend_path backend=%s session_id=%s vm_name=%s directory_path=%s",
             execution_backend,
@@ -381,8 +401,48 @@ class AgentCreateEffectProvider(EffectProviderBase):
             if payload.get("_codex_auth_mode_provided")
             else getattr(existing_session, "codex_auth_mode", None)
         )
+        existing_profile_id = normalize_subscription_profile_id(
+            getattr(existing_session, "subscription_profile_id", None)
+        )
+        existing_auth_mode = normalize_codex_auth_mode(
+            getattr(existing_session, "codex_auth_mode", None)
+        )
+        existing_binding = existing_profile_id
+        if (
+            existing_binding is None
+            and existing_session is not None
+            and existing_auth_mode is CodexAuthMode.CHATGPT_SUBSCRIPTION
+        ):
+            existing_binding = DEFAULT_SUBSCRIPTION_PROFILE_ID
+        requested_profile_id = (
+            normalize_subscription_profile_id(payload.get("subscription_profile_id"))
+            if payload.get("_subscription_profile_id_provided")
+            else None
+        )
+        if (
+            existing_binding is not None
+            and requested_profile_id is not None
+            and requested_profile_id != existing_binding
+        ):
+            raise ValueError(
+                "subscription_profile_id is write-once for an agent session; create a new "
+                "agent to use a different profile"
+            )
+        subscription_profile_id = existing_profile_id or requested_profile_id
+        if (
+            existing_binding is not None
+            and codex_auth_mode is not CodexAuthMode.CHATGPT_SUBSCRIPTION
+        ):
+            raise ValueError("A profile-bound agent cannot switch away from subscription mode")
         if codex_auth_mode is CodexAuthMode.CHATGPT_SUBSCRIPTION and agent_provider != "codex":
             raise ValueError("chatgpt_subscription is supported only for Codex agents")
+        if (
+            subscription_profile_id is not None
+            and codex_auth_mode is not CodexAuthMode.CHATGPT_SUBSCRIPTION
+        ):
+            raise ValueError(
+                "subscription_profile_id requires codex_auth_mode='chatgpt_subscription'"
+            )
         container_image_selection = _container_image_selection_for_create(
             selector=normalize_optional_string(payload.get("container_image")),
             config=config,
@@ -407,12 +467,35 @@ class AgentCreateEffectProvider(EffectProviderBase):
         )
         if model_provider_mode:
             metadata[MODEL_PROVIDER_MODE_METADATA_KEY] = model_provider_mode
+        effective_model_provider_mode = (
+            model_provider_mode
+            or normalize_optional_string(metadata.get(MODEL_PROVIDER_MODE_METADATA_KEY))
+            or normalize_optional_string(getattr(config, "model_provider_mode", None))
+        )
+        if (
+            requested_profile_id is not None
+            and existing_binding is None
+            and codex_auth_mode is CodexAuthMode.CHATGPT_SUBSCRIPTION
+            and effective_model_provider_mode != "openai_public"
+        ):
+            raise ValueError(
+                "chatgpt_subscription is supported only with model_provider_mode='openai_public'"
+            )
         requested_tools = as_string_list(payload.get("allowed_tools"))
         if requested_tools:
             resolved_allowed_tools = requested_tools
         else:
             resolved_allowed_tools = allowed_tools_for_profile(capability_profile)
         backend = container_backend(context, config)
+        if requested_profile_id is not None and existing_binding is None:
+            status_reader = getattr(backend.client, "codex_auth_profile_status", None)
+            if not callable(status_reader):
+                raise RuntimeError(
+                    "container worker does not support named Codex subscription profiles"
+                )
+            profile_status = status_reader(requested_profile_id)
+            if not bool(profile_status.get("enabled")):
+                raise ValueError(f"Codex subscription profile {requested_profile_id!r} is disabled")
         worker_url = normalize_optional_string(
             getattr(getattr(backend, "client", None), "base_url", None)
         ) or normalize_optional_string(
@@ -484,6 +567,7 @@ class AgentCreateEffectProvider(EffectProviderBase):
             directory_path=directory_path,
             model=model,
             codex_auth_mode=codex_auth_mode,
+            subscription_profile_id=subscription_profile_id,
             ttl_hours=as_int_or_none(payload.get("ttl_hours")),
             allowed_tools=resolved_allowed_tools,
             connector_grants=connector_grants,
@@ -560,6 +644,7 @@ class AgentCreateEffectProvider(EffectProviderBase):
             "repo_root": session_record.repo_root_container_path,
             "container_image": container_image_selection["image"],
             "container_image_alias": container_image_selection["image_alias"],
+            "subscription_profile_id": subscription_profile_id,
             "skipped": False,
         }
 

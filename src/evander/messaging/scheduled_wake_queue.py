@@ -41,6 +41,19 @@ def scheduled_wake_queue_should_be_discarded(request: Any) -> bool:
     return False
 
 
+def scheduled_wake_dispatch_is_capacity_deferred(dispatch: Any | None) -> bool:
+    if str(getattr(dispatch, "status", "") or "").strip().casefold() != "queued":
+        return False
+    metadata = getattr(dispatch, "metadata", {})
+    if not isinstance(metadata, dict):
+        return False
+    if str(metadata.get("capacity_deferral") or "").strip().casefold() == "true":
+        return True
+    profile_id = str(metadata.get("subscription_profile_id") or "").strip()
+    queue_reason = str(metadata.get("queue_reason") or "").strip()
+    return bool(profile_id and queue_reason.startswith("subscription_"))
+
+
 def discard_scheduled_wake_queue_record(runtime_dir: Path, request_id: str) -> None:
     normalized_request_id = str(request_id or "").strip()
     if not normalized_request_id:

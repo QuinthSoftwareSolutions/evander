@@ -70,6 +70,9 @@ const AddonsPage = lazy(() =>
 const AgentsPage = lazy(() =>
   import("./features/agents/AgentsPage").then(({ AgentsPage }) => ({ default: AgentsPage })),
 );
+const SubscriptionsPage = lazy(() =>
+  import("./features/subscriptions/SubscriptionsPage").then(({ SubscriptionsPage }) => ({ default: SubscriptionsPage })),
+);
 const ApprovalsScreen = lazy(() =>
   import("./features/approvals/ApprovalsScreen").then(({ ApprovalsScreen }) => ({ default: ApprovalsScreen })),
 );
@@ -2261,6 +2264,8 @@ export default function AdminRoot() {
                 <VmsPage />
               ) : renderedTab === "agents" ? (
                 <AgentsPage />
+              ) : renderedTab === "subscriptions" ? (
+                <SubscriptionsPage />
               ) : renderedTab === "skills" ? (
                 <SkillsPage />
               ) : renderedTab === "issues" ? (

@@ -605,6 +605,95 @@ class OperatorSteeringNoteStore:
             ).fetchone()
         return self._note_from_row(row) if row is not None else None
 
+    def mark_queued_replacement_started(
+        self,
+        note_id: object,
+        *,
+        provider: str,
+        provider_endpoint: str,
+        worker_execution_id: str | None = None,
+        now: datetime | None = None,
+    ) -> OperatorSteeringNote | None:
+        """Consume a queued steering note once its replacement execution has started.
+
+        A concurrent operator cancellation can win the queue-row deletion race after the
+        dispatcher has already started the replacement.  In that case the actual execution
+        start is authoritative, so the cancelled note is promoted to delivered as well.
+        """
+
+        normalized_note_id = _optional_text(note_id)
+        if normalized_note_id is None:
+            return None
+        timestamp = now or utc_now()
+        timestamp_text = _storage_datetime(timestamp)
+        with self._lock, self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            connection.execute(
+                """
+                UPDATE operator_steering_notes
+                SET status = 'delivered',
+                    worker_execution_id = COALESCE(?, worker_execution_id),
+                    delivered_at = ?,
+                    cancelled_at = NULL,
+                    updated_at = ?,
+                    provider = ?,
+                    provider_endpoint = ?,
+                    error = NULL,
+                    delivery_attempts = delivery_attempts + 1
+                WHERE note_id = ?
+                  AND status IN ('pending', 'cancelled')
+                """,
+                (
+                    _optional_text(worker_execution_id),
+                    timestamp_text,
+                    timestamp_text,
+                    _required_text(provider, field_name="provider"),
+                    _required_text(provider_endpoint, field_name="provider_endpoint"),
+                    normalized_note_id,
+                ),
+            )
+            row = connection.execute(
+                "SELECT * FROM operator_steering_notes WHERE note_id = ?",
+                (normalized_note_id,),
+            ).fetchone()
+        return self._note_from_row(row) if row is not None else None
+
+    def mark_queued_replacement_deferred(
+        self,
+        note_id: object,
+        *,
+        now: datetime | None = None,
+    ) -> OperatorSteeringNote | None:
+        """Make a previously started replacement cancellable after it is re-deferred.
+
+        Delivery timestamps and attempt counts remain as history for the attempt that
+        started; pending status represents the durable replacement that still remains.
+        """
+
+        normalized_note_id = _optional_text(note_id)
+        if normalized_note_id is None:
+            return None
+        timestamp = now or utc_now()
+        timestamp_text = _storage_datetime(timestamp)
+        with self._lock, self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            connection.execute(
+                """
+                UPDATE operator_steering_notes
+                SET status = 'pending',
+                    updated_at = ?,
+                    error = NULL
+                WHERE note_id = ?
+                  AND status = 'delivered'
+                """,
+                (timestamp_text, normalized_note_id),
+            )
+            row = connection.execute(
+                "SELECT * FROM operator_steering_notes WHERE note_id = ?",
+                (normalized_note_id,),
+            ).fetchone()
+        return self._note_from_row(row) if row is not None else None
+
     def release_claim(
         self,
         note_id: object,

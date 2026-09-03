@@ -20,6 +20,7 @@ from evander.admin.services.issue_setup_helpers import (
     resolve_effective_issue_setup_config,
 )
 from evander.agent_control import AgentControlStore
+from evander.codex_auth import CodexSubscriptionDeferral
 from evander.config import GatewayConfig
 from evander.effects.providers.agent_session import (
     container_codex_turn_spec,
@@ -38,6 +39,9 @@ from evander.execution import (
     ExecutionSpec,
     ExecutionStatusKind,
     build_execution_backend,
+)
+from evander.execution.container_worker_client import (
+    CodexSubscriptionDeferredClientError,
 )
 from evander.local_inference_capacity import (
     LOCAL_INFERENCE_QUEUE_REASON,
@@ -1027,12 +1031,85 @@ class HostWakeDispatcher:
                                     if codex_turn is not None
                                     else {}
                                 ),
+                                **(
+                                    {
+                                        "subscription_profile_id": (
+                                            codex_turn.subscription_profile_id
+                                        )
+                                    }
+                                    if codex_turn is not None
+                                    and codex_turn.subscription_profile_id is not None
+                                    else {}
+                                ),
                             },
                         )
                     )
                 )
         except Exception as exc:
             self._release_local_inference_capacity(base_config, capacity_admission)
+            if isinstance(exc, CodexSubscriptionDeferredClientError):
+                queue_key = self._wake_prompt_queue_key(
+                    request_id=request_id,
+                    dispatch_id=dispatch_id,
+                )
+                queue_metadata = {
+                    "source": dispatch_source,
+                    "resume_mode": effective_resume_mode,
+                    "backend": ExecutionBackendKind.CONTAINER_WORKER_VM.value,
+                    "target_name": target_name,
+                    "wake_dispatch_id": dispatch_id,
+                    "directory_path": directory_path,
+                    "capacity_deferral": "true",
+                }
+                if request_id:
+                    queue_metadata["request_id"] = request_id
+                queued_record = enqueue_agent_prompt(
+                    runtime_dir=base_config.runtime_dir,
+                    target=session_id,
+                    vm_name=target_name,
+                    session_id=session_id,
+                    prompt=prompt,
+                    model=resolved_model,
+                    model_provider_mode=base_config.model_provider_mode,
+                    queue_reason=exc.deferral.queue_reason,
+                    subscription_profile_id=exc.deferral.profile_id,
+                    retry_not_before=exc.deferral.retry_at,
+                    capacity_deferral=True,
+                    vm_user=base_config.wake_vm_user,
+                    dispatch_id=dispatch_id,
+                    resume_thread_id=None,
+                    effect_id=queue_key,
+                    resume_mode=effective_resume_mode,
+                    queue_key=queue_key,
+                    metadata=queue_metadata,
+                )
+                dispatch_record = self._build_dispatch_record(
+                    dispatch_id=dispatch_id,
+                    session_id=session_id,
+                    request_id=request_id,
+                    prompt=prompt,
+                    resume_mode=effective_resume_mode,
+                    scheduled_for=scheduled_for,
+                    dispatch_source=dispatch_source,
+                    wake_metadata={
+                        **(wake_metadata or {}),
+                        **queue_metadata,
+                        "queue_key": queued_record.queue_key,
+                        "queue_reason": queued_record.queue_reason,
+                        "subscription_profile_id": queued_record.subscription_profile_id,
+                        "retry_not_before": (
+                            queued_record.retry_not_before.isoformat()
+                            if queued_record.retry_not_before is not None
+                            else None
+                        ),
+                    },
+                    status="queued",
+                    backend=ExecutionBackendKind.CONTAINER_WORKER_VM.value,
+                    target_name=target_name,
+                )
+                if wake_store is not None:
+                    wake_store.record_dispatch(dispatch_record)
+                return dispatch_record
             error, failure_metadata = _build_dispatch_failure_details(
                 backend=ExecutionBackendKind.CONTAINER_WORKER_VM.value,
                 session_id=session_id,
@@ -1093,6 +1170,16 @@ class HostWakeDispatcher:
             "session_id": session_id,
             "directory_path": directory_path,
             "vm_user": base_config.wake_vm_user,
+            "prompt": prompt,
+            "model": resolved_model,
+            "model_provider_mode": base_config.model_provider_mode,
+            "request_id": request_id,
+            "resume_mode": effective_resume_mode,
+            "target_name": target_name,
+            "dispatch_source": dispatch_source,
+            "scheduled_for": scheduled_for,
+            "wake_metadata": wake_metadata,
+            "runtime_dir": base_config.runtime_dir,
         }
         if capacity_admission.slot_id is not None:
             monitor_kwargs["local_inference_slot_id"] = capacity_admission.slot_id
@@ -1165,6 +1252,16 @@ class HostWakeDispatcher:
         session_id: str,
         directory_path: str,
         vm_user: str,
+        prompt: str = "",
+        model: str | None = None,
+        model_provider_mode: str | None = None,
+        request_id: str | None = None,
+        resume_mode: str = "same_context",
+        target_name: str | None = None,
+        dispatch_source: str = "wake",
+        scheduled_for: datetime | None = None,
+        wake_metadata: dict[str, Any] | None = None,
+        runtime_dir: Path | None = None,
         local_inference_slot_id: str | None = None,
     ) -> None:
         thread = threading.Thread(
@@ -1176,6 +1273,16 @@ class HostWakeDispatcher:
                 "session_id": session_id,
                 "directory_path": directory_path,
                 "vm_user": vm_user,
+                "prompt": prompt,
+                "model": model,
+                "model_provider_mode": model_provider_mode,
+                "request_id": request_id,
+                "resume_mode": resume_mode,
+                "target_name": target_name,
+                "dispatch_source": dispatch_source,
+                "scheduled_for": scheduled_for,
+                "wake_metadata": wake_metadata,
+                "runtime_dir": runtime_dir,
                 "local_inference_slot_id": local_inference_slot_id,
             },
             daemon=True,
@@ -1192,8 +1299,20 @@ class HostWakeDispatcher:
         session_id: str,
         directory_path: str,
         vm_user: str,
+        prompt: str = "",
+        model: str | None = None,
+        model_provider_mode: str | None = None,
+        request_id: str | None = None,
+        resume_mode: str = "same_context",
+        target_name: str | None = None,
+        dispatch_source: str = "wake",
+        scheduled_for: datetime | None = None,
+        wake_metadata: dict[str, Any] | None = None,
+        runtime_dir: Path | None = None,
         local_inference_slot_id: str | None = None,
     ) -> None:
+        effective_runtime_dir = runtime_dir or self.config.runtime_dir
+        effective_target_name = target_name or execution_id
         wake_store = getattr(self.runtime, "wake_store", None)
         mark_completed = getattr(wake_store, "mark_completed_by_dispatch_id", None)
         timeout_seconds = float(
@@ -1217,6 +1336,92 @@ class HostWakeDispatcher:
                 ExecutionStatusKind.DESTROYED.value,
             }:
                 return
+            metadata = getattr(status, "metadata", None)
+            raw_deferral = (
+                metadata.get("codex_subscription_deferral")
+                if isinstance(metadata, Mapping)
+                else None
+            )
+            if isinstance(raw_deferral, Mapping) and prompt:
+                try:
+                    deferral = CodexSubscriptionDeferral.model_validate(raw_deferral)
+                except ValueError:
+                    deferral = None
+                if deferral is not None:
+                    if normalized_status != ExecutionStatusKind.DESTROYED.value:
+                        try:
+                            backend.destroy(execution_id)
+                        except Exception:
+                            pass
+                    queue_key = self._wake_prompt_queue_key(
+                        request_id=request_id,
+                        dispatch_id=dispatch_id,
+                    )
+                    queue_metadata = {
+                        "source": dispatch_source,
+                        "resume_mode": resume_mode,
+                        "backend": ExecutionBackendKind.CONTAINER_WORKER_VM.value,
+                        "target_name": effective_target_name,
+                        "wake_dispatch_id": dispatch_id,
+                        "directory_path": directory_path,
+                        "capacity_deferral": "true",
+                    }
+                    if request_id:
+                        queue_metadata["request_id"] = request_id
+                    queued_record = enqueue_agent_prompt(
+                        runtime_dir=effective_runtime_dir,
+                        target=session_id,
+                        vm_name=effective_target_name,
+                        session_id=session_id,
+                        prompt=prompt,
+                        model=model,
+                        model_provider_mode=(
+                            model_provider_mode or self.config.model_provider_mode
+                        ),
+                        queue_reason=deferral.queue_reason,
+                        subscription_profile_id=deferral.profile_id,
+                        retry_not_before=deferral.retry_at,
+                        capacity_deferral=True,
+                        vm_user=vm_user,
+                        dispatch_id=dispatch_id,
+                        resume_thread_id=None,
+                        effect_id=queue_key,
+                        resume_mode=resume_mode,
+                        queue_key=queue_key,
+                        metadata=queue_metadata,
+                    )
+                    queued_dispatch = self._build_dispatch_record(
+                        dispatch_id=dispatch_id,
+                        session_id=session_id,
+                        request_id=request_id,
+                        prompt=prompt,
+                        resume_mode=resume_mode,
+                        scheduled_for=scheduled_for,
+                        dispatch_source=dispatch_source,
+                        wake_metadata={
+                            **(wake_metadata or {}),
+                            **queue_metadata,
+                            "queue_key": queued_record.queue_key,
+                            "queue_reason": queued_record.queue_reason,
+                            "subscription_profile_id": (queued_record.subscription_profile_id),
+                            "retry_not_before": (
+                                queued_record.retry_not_before.isoformat()
+                                if queued_record.retry_not_before is not None
+                                else None
+                            ),
+                        },
+                        status="queued",
+                        backend=ExecutionBackendKind.CONTAINER_WORKER_VM.value,
+                        target_name=effective_target_name,
+                    )
+                    record_dispatch = getattr(wake_store, "record_dispatch", None)
+                    if callable(record_dispatch):
+                        record_dispatch(queued_dispatch)
+                    if local_inference_slot_id:
+                        local_inference_capacity_store(effective_runtime_dir).release(
+                            local_inference_slot_id
+                        )
+                    return
             if normalized_status != ExecutionStatusKind.DESTROYED.value:
                 try:
                     backend.destroy(execution_id)
@@ -1248,7 +1453,7 @@ class HostWakeDispatcher:
                         exc_info=True,
                     )
             if local_inference_slot_id:
-                local_inference_capacity_store(self.config.runtime_dir).release(
+                local_inference_capacity_store(effective_runtime_dir).release(
                     local_inference_slot_id
                 )
             return

@@ -208,6 +208,14 @@ def test_worker_cli_accepts_codex_subscription_broker_and_proxy_flags(
         "auth.openai.com",
         "*.chatgpt.com",
     ]
+    command_factory = captured["create_app"]["codex_auth_command_factory"]
+    named_home = worker_root / "codex-auth" / "profiles" / "team-a"
+    named_command = command_factory("team-a", named_home)
+    assert (
+        named_command[named_command.index("--name") + 1] != (command[command.index("--name") + 1])
+    )
+    assert f"{named_home}:/codex-auth" in named_command
+    assert "http://172.18.0.1:11889" in " ".join(named_command)
 
 
 def test_worker_cli_reads_codex_auth_image_from_environment(monkeypatch, tmp_path: Path) -> None:
