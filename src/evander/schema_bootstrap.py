@@ -1153,6 +1153,18 @@ _EFFECT_OUTPUT_SCHEMAS = {
         "added_tags": {"type": "array"},
         "removed_tags": {"type": "array"},
     },
+    "effect:pull-request:reply": {
+        "success": {"type": "boolean"},
+        "status": {"type": "string"},
+        "provider": {"type": "string"},
+        "repo": {"type": "string"},
+        "pr_id": {"type": "string"},
+        "thread_id": {"type": ["string", "null"]},
+        "comment_id": {"type": ["string", "null"]},
+        "reply_id": {"type": ["string", "null"]},
+        "reply_url": {"type": ["string", "null"]},
+        "idempotency_key": {"type": ["string", "null"]},
+    },
     "effect:pull-request:add-tag": {
         "success": {"type": "boolean"},
         "updated": {"type": "boolean"},

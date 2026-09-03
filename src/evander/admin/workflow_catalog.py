@@ -807,6 +807,9 @@ _WORKFLOW_EDITOR_NODE_DESCRIPTIONS: dict[str, str] = {
     "effect:pull-request:update": (
         "Update pull request metadata or tags with an optional status guard."
     ),
+    "effect:pull-request:reply": (
+        "Post a host-owned reply to one pull-request feedback comment without waking an agent."
+    ),
     "effect:pull-request:add-tag": "Add a tag to a pull request when it is not already present.",
     "effect:pull-request:remove-tag": "Remove a tag from a pull request when it is present.",
     "effect:event:emit": "Emit an internal workflow event for other graphs.",
@@ -4058,6 +4061,44 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
             _field("add_tags", "Add tags", "string_list", bindable=True),
             _field("remove_tags", "Remove tags", "string_list", bindable=True),
             _field("expected_statuses", "Expected statuses", "string_list", bindable=True),
+        ],
+    ),
+    WorkflowEditorNodeCatalogEntry(
+        kind="effect",
+        type="effect:pull-request:reply",
+        label="Pull request reply",
+        fields=[
+            _field(
+                "provider",
+                "Provider",
+                "enum",
+                required=True,
+                bindable=True,
+                options=[
+                    _field_option("azure_devops", "Azure DevOps"),
+                    _field_option("github", "GitHub"),
+                ],
+            ),
+            _field("repo", "Repo", "string", required=True, bindable=True),
+            _field("pr_id", "PR ID", "string", required=True, bindable=True),
+            _field(
+                "thread_id",
+                "Thread ID",
+                "string",
+                bindable=True,
+                description="Required by Azure DevOps; accepted by GitHub when available.",
+            ),
+            _field("comment_id", "Comment ID", "string", required=True, bindable=True),
+            _field("body_text", "Reply", "string", required=True, bindable=True, multiline=True),
+            _field(
+                "idempotency_key",
+                "Idempotency key",
+                "string",
+                required=True,
+                bindable=True,
+                description="Use a stable feedback-specific key to prevent duplicate replies.",
+            ),
+            _field("directory_path", "Directory path", "string", bindable=True),
         ],
     ),
     WorkflowEditorNodeCatalogEntry(

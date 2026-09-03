@@ -1125,7 +1125,7 @@ mutation if the current provider status is no longer expected. The normal `allow
 `approval_required_tools`, `mcp_tool_policies`, and tool-argument policy controls apply.
 
 `query:pull-request:get`, `query:pull-request:work-items`, `query:pull-request:list`, `query:pull-request:feedback`,
-`effect:pull-request:update`, `effect:pull-request:add-tag`, and
+`effect:pull-request:update`, `effect:pull-request:add-tag`,
 `effect:pull-request:remove-tag` accept Azure DevOps `provider` as
 `azure_devops`, `azure-devops`, or `ado`. `query:pull-request:get` also accepts
 GitHub `provider` as `github`. It returns normalized pull request metadata and
@@ -1146,6 +1146,14 @@ assignee identity when one is assigned. It does not persist cursor or workflow s
 `query:pull-request:feedback` fetches normalized feedback for one
 provider/repo/PR stream and returns `feedback` plus `next_cursor`; workflows own
 where that cursor is stored.
+
+`effect:pull-request:reply` posts one host-owned reply in an existing PR feedback
+thread. It requires `provider`, `repo`, `pr_id`, `comment_id`, `body_text`, and a
+stable `idempotency_key`; `thread_id` is additionally required for Azure DevOps.
+It supports Azure DevOps (`azure_devops`, `azure-devops`, or `ado`) and GitHub
+(`github`) through the directory-scoped host credentials. The effect persists its
+idempotency record and never resumes or otherwise invokes the bound agent, so it
+does not use agent MCP tool permissions or approval policy.
 
 Azure DevOps comment tools with `mentions` also use the configured ADO PAT to
 call the identities API; that PAT must be allowed to read identities, equivalent

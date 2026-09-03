@@ -2251,6 +2251,12 @@ Set `include_commits=true` to fetch commit details and `include_reviewers=true`
 to fetch review API data; `include_reviewers=false` returns an empty reviewer
 list.
 
+Use `effect:pull-request:reply` to post a deterministic host-owned reply in the
+same PR feedback thread. Bind its provider, repository, PR, thread/comment IDs,
+and an event-derived idempotency key from the feedback trigger. The effect uses
+directory-scoped GitHub or Azure DevOps credentials and is intentionally separate
+from agent wake and MCP approval flows.
+
 Use `query:pull-request:work-items` when an Azure DevOps workflow needs the
 work items linked to one PR. It returns the linked work items in provider order
 with a normalized assignee identity (`display_name`, `unique_name`, and `email`

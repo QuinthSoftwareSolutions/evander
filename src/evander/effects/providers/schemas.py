@@ -1081,6 +1081,23 @@ class PullRequestRemoveTagEffectDefinition(EffectDefinition):
         return _normalize_static_pull_request_provider(value)
 
 
+class PullRequestReplyEffectDefinition(EffectDefinition):
+    type: Literal["effect:pull-request:reply"]
+    provider: ConfigValue
+    repo: ConfigValue
+    pr_id: ConfigValue
+    comment_id: ConfigValue
+    body_text: ConfigValue
+    idempotency_key: ConfigValue
+    thread_id: ConfigValue | None = None
+    directory_path: ConfigValue | None = None
+
+    @field_validator("provider")
+    @classmethod
+    def normalize_static_provider(cls, value: ConfigValue) -> ConfigValue:
+        return _normalize_static_pull_request_provider(value)
+
+
 class PullRequestUpdateEffectDefinition(EffectDefinition):
     type: Literal["effect:pull-request:update"]
     provider: ConfigValue

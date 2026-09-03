@@ -850,6 +850,21 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
         "remove_tags",
         "expected_statuses",
     ]
+    pr_reply = next(
+        node for node in catalog_payload["nodes"] if node["type"] == "effect:pull-request:reply"
+    )
+    assert [field["key"] for field in pr_reply["fields"]] == [
+        "provider",
+        "repo",
+        "pr_id",
+        "thread_id",
+        "comment_id",
+        "body_text",
+        "idempotency_key",
+        "directory_path",
+    ]
+    assert pr_reply["fields"][5]["multiline"] is True
+    assert pr_reply["fields"][6]["required"] is True
     pr_add_tag = next(
         node for node in catalog_payload["nodes"] if node["type"] == "effect:pull-request:add-tag"
     )

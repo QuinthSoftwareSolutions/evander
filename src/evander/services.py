@@ -6172,10 +6172,7 @@ def normalize_pr_automation_provider(provider: str) -> str:
 
 
 def normalize_pr_feedback_provider(provider: str) -> str:
-    normalized = provider.strip()
-    if normalized in {"azure_devops", "azure-devops"}:
-        return "azure_devops"
-    return normalized
+    return normalize_pr_automation_provider(provider)
 
 
 class PrQueryService:

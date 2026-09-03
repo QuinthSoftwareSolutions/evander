@@ -54,6 +54,7 @@ from evander.effects.providers.pull_request_update import (
     PullRequestAddTagEffectProvider,
     PullRequestRemoveTagEffectProvider,
 )
+from evander.effects.providers.pull_request_reply import PullRequestReplyEffectProvider
 from evander.effects.providers.runtime_diagnostics_snapshot import (
     RuntimeDiagnosticsSnapshotEffectProvider,
 )
@@ -91,6 +92,7 @@ from evander.events.provider_models import (
     ChatAssistantEnsureSessionEffectDefinition,
     EventScheduleEffectDefinition,
     PullRequestAddTagEffectDefinition,
+    PullRequestReplyEffectDefinition,
     PullRequestRemoveTagEffectDefinition,
     PullRequestUpdateEffectDefinition,
     VmBootstrapFrontendEffectDefinition,
@@ -108,6 +110,7 @@ from evander.messaging.targets import (
 )
 from evander.models import (
     SessionManifest,
+    PostPrFeedbackReplyResponse,
     ToolName,
     UpdatePullRequestResponse,
     VmActionResult,
@@ -592,6 +595,7 @@ def test_default_registry_includes_all_known_effect_types() -> None:
         "effect:git:push-branch",
         "effect:pr:create",
         "effect:pull-request:add-tag",
+        "effect:pull-request:reply",
         "effect:pull-request:remove-tag",
         "effect:pull-request:update",
     }
@@ -618,6 +622,10 @@ def test_default_registry_includes_all_known_effect_types() -> None:
     assert (
         DEFAULT_EFFECT_PROVIDER_REGISTRY["effect:pull-request:add-tag"]
         is PullRequestAddTagEffectProvider
+    )
+    assert (
+        DEFAULT_EFFECT_PROVIDER_REGISTRY["effect:pull-request:reply"]
+        is PullRequestReplyEffectProvider
     )
     assert (
         DEFAULT_EFFECT_PROVIDER_REGISTRY["effect:pull-request:remove-tag"]
@@ -1399,6 +1407,129 @@ def test_pull_request_update_effect_provider_resolves_ado_config_and_tags(
     }
     assert output["updated"] is True
     assert output["added_tags"] == ["reviewed"]
+
+
+@pytest.mark.parametrize(
+    ("configured_provider", "resolved_provider", "secret_env", "canonical_provider"),
+    [
+        ("azure_devops", "ado", "AZURE_DEVOPS_PR_PAT", "azure_devops"),
+        ("github", "github", "GITHUB_TOKEN", "github"),
+    ],
+)
+def test_pull_request_reply_effect_posts_host_owned_idempotent_reply_without_agent_wake(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    configured_provider: str,
+    resolved_provider: str,
+    secret_env: str,
+    canonical_provider: str,
+) -> None:
+    effect = PullRequestReplyEffectDefinition(
+        id="effect-pr-reply",
+        display_name="Reply to PR feedback",
+        type="effect:pull-request:reply",
+        provider=configured_provider,
+        repo="org/repo",
+        pr_id="17",
+        thread_id="thread-42",
+        comment_id="comment-7",
+        body_text="  Debug status  ",
+        idempotency_key="feedback:17:thread-42:comment-7:debug",
+    )
+    captured: dict[str, list[dict[str, object]]] = {"init": [], "request": []}
+
+    class StubReplyProvider:
+        def __init__(self, **kwargs: object) -> None:
+            captured["init"].append(dict(kwargs))
+
+        def post_reply(self, **kwargs: object) -> PostPrFeedbackReplyResponse:
+            captured["request"].append(dict(kwargs))
+            return PostPrFeedbackReplyResponse(
+                status="posted",
+                provider=canonical_provider,
+                repo="org/repo",
+                pr_id="17",
+                thread_id="thread-42",
+                comment_id="comment-7",
+                reply_id="reply-9",
+                reply_url="https://example.test/pr/17#reply-9",
+            )
+
+    target = (
+        "evander.pull_request_automation.AzureDevOpsPrReplyProvider"
+        if canonical_provider == "azure_devops"
+        else "evander.pull_request_automation.GitHubPrReplyProvider"
+    )
+    monkeypatch.setattr(target, StubReplyProvider)
+
+    class ReplyResolver:
+        def resolve_for_directory(self, directory_path: str | None) -> GatewayConfig:
+            assert directory_path == "root/team-a"
+            return GatewayConfig(
+                runtime_dir=tmp_path / "runtime",
+                ado_organization="directory-org",
+                azure_devops_project="Directory Project",
+            )
+
+    factory = EffectProviderFactory(
+        provider_config_resolver=ReplyResolver(),
+        env={secret_env: "secret"},
+    )
+    provider = factory.build(effect, directory_path="root/team-a")
+
+    assert provider.runtime_context is not None
+    assert provider.runtime_context.agent_resumer is None
+
+    first = provider.execute(resolved_config={"provider": resolved_provider})
+    second = provider.execute(resolved_config={"provider": resolved_provider})
+
+    if canonical_provider == "azure_devops":
+        assert captured["init"] == [
+            {
+                "organization_url": "https://dev.azure.com/directory-org",
+                "project": "Directory Project",
+                "pat": "secret",
+                "timeout_seconds": 30.0,
+            },
+            {
+                "organization_url": "https://dev.azure.com/directory-org",
+                "project": "Directory Project",
+                "pat": "secret",
+                "timeout_seconds": 30.0,
+            },
+        ]
+    else:
+        assert captured["init"] == [
+            {"token": "secret", "timeout_seconds": 30.0},
+            {"token": "secret", "timeout_seconds": 30.0},
+        ]
+    assert captured["request"] == [
+        {
+            "repo": "org/repo",
+            "pr_id": "17",
+            "thread_id": "thread-42",
+            "comment_id": "comment-7",
+            "body_text": "Debug status",
+            "attachments": None,
+        }
+    ]
+    assert first == {
+        "success": True,
+        "status": "posted",
+        "provider": canonical_provider,
+        "repo": "org/repo",
+        "pr_id": "17",
+        "thread_id": "thread-42",
+        "comment_id": "comment-7",
+        "reply_id": "reply-9",
+        "reply_url": "https://example.test/pr/17#reply-9",
+        "uploaded_attachments": [],
+        "resolved_mentions": [],
+        "idempotency_key": "feedback:17:thread-42:comment-7:debug",
+    }
+    assert second["success"] is True
+    assert second["status"] == "deduplicated"
+    assert captured["request"]
 
 
 @pytest.mark.parametrize(

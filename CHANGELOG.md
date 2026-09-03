@@ -1,5 +1,10 @@
 # Changelog
 
+## 2026-09-03 - Workflow Pull-Request Feedback Replies
+
+- Added a generic workflow effect that posts a host-owned, idempotent reply to a GitHub or Azure
+  DevOps pull-request feedback comment without waking an agent or using agent MCP permissions.
+
 ## 2026-09-03 - Team Release and Directive Reliability
 
 - Added an Agent Mail composer for authenticated operators to create durable, manager-routed Team
