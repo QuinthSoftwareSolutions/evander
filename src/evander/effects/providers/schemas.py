@@ -1087,10 +1087,18 @@ class PullRequestReplyEffectDefinition(EffectDefinition):
     repo: ConfigValue
     pr_id: ConfigValue
     comment_id: ConfigValue
+    feedback_kind: ConfigValue | None = None
     body_text: ConfigValue
     idempotency_key: ConfigValue
     thread_id: ConfigValue | None = None
     directory_path: ConfigValue | None = None
+    ado_organization: ConfigValue | None = None
+    project: ConfigValue | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def migrate_legacy_organization_url(cls, data: object) -> object:
+        return _migrate_legacy_pull_request_organization(data)
 
     @field_validator("provider")
     @classmethod

@@ -24,16 +24,21 @@ class PullRequestReplyEffectProvider(EffectProviderBase):
             self._normalize_optional_string(payload.get("directory_path"))
             or self._context_directory_path(),
         )
+        provider_name = self._require_string(payload.get("provider"), field_name="provider")
         response = build_pull_request_reply_service_for_context(
             context=context,
             directory_path=directory_path,
             node_type=self.NODE_TYPE,
+            provider=provider_name,
+            ado_organization=self._normalize_optional_string(payload.get("ado_organization")),
+            project=self._normalize_optional_string(payload.get("project")),
         ).post_reply(
-            provider=self._require_string(payload.get("provider"), field_name="provider"),
+            provider=provider_name,
             repo=self._require_string(payload.get("repo"), field_name="repo"),
             pr_id=self._require_string(payload.get("pr_id"), field_name="pr_id"),
             thread_id=self._normalize_optional_string(payload.get("thread_id")),
             comment_id=self._require_string(payload.get("comment_id"), field_name="comment_id"),
+            feedback_kind=self._normalize_optional_string(payload.get("feedback_kind")),
             body_text=self._require_string(payload.get("body_text"), field_name="body_text"),
             idempotency_key=self._require_string(
                 payload.get("idempotency_key"), field_name="idempotency_key"
@@ -48,11 +53,14 @@ class PullRequestReplyEffectProvider(EffectProviderBase):
             "provider",
             "repo",
             "pr_id",
+            "feedback_kind",
             "thread_id",
             "comment_id",
             "body_text",
             "idempotency_key",
             "directory_path",
+            "ado_organization",
+            "project",
         ):
             if effect is not None and hasattr(effect, field_name):
                 payload[field_name] = getattr(effect, field_name)

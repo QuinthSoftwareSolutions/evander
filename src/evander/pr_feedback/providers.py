@@ -516,6 +516,7 @@ def pr_feedback_item_payload(raw_feedback: dict[str, Any] | FeedbackEnvelope) ->
     )
     provider = str(payload.get("provider") or "").strip()
     feedback_id = str(payload.get("feedback_id") or "").strip()
+    payload["feedback_kind"] = _feedback_kind_from_id(feedback_id)
     comment_id = str(payload.get("comment_id") or "").strip() or None
     payload["inline_media"] = [
         ref.model_dump(mode="json")
@@ -528,6 +529,13 @@ def pr_feedback_item_payload(raw_feedback: dict[str, Any] | FeedbackEnvelope) ->
         )
     ]
     return payload
+
+
+def _feedback_kind_from_id(feedback_id: str) -> str | None:
+    parts = feedback_id.split(":", 2)
+    if len(parts) < 3:
+        return None
+    return parts[1].strip() or None
 
 
 def _download_url_with_optional_headers(

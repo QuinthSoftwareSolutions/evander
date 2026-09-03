@@ -4082,6 +4082,18 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
             _field("repo", "Repo", "string", required=True, bindable=True),
             _field("pr_id", "PR ID", "string", required=True, bindable=True),
             _field(
+                "feedback_kind",
+                "Feedback kind",
+                "enum",
+                bindable=True,
+                options=[
+                    _field_option("review_comment", "GitHub review comment"),
+                    _field_option("issue_comment", "GitHub issue comment"),
+                    _field_option("review", "GitHub review"),
+                ],
+                description="Bind feedback.feedback_kind so GitHub uses the matching reply surface.",
+            ),
+            _field(
                 "thread_id",
                 "Thread ID",
                 "string",
@@ -4099,6 +4111,8 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
                 description="Use a stable feedback-specific key to prevent duplicate replies.",
             ),
             _field("directory_path", "Directory path", "string", bindable=True),
+            _field("ado_organization", "ADO organization", "string", bindable=True),
+            _field("project", "Project", "string", bindable=True),
         ],
     ),
     WorkflowEditorNodeCatalogEntry(

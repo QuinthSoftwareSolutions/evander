@@ -267,10 +267,16 @@ class RuntimeContext:
     def pr_reply_service_for_session(self, session_id: str) -> PrReplyService:
         if not isinstance(self.pr_reply_service, PrReplyService):
             return self.pr_reply_service
+        session = self.session_repository.get_session(session_id)
+        if session is None:
+            raise ValueError(f"unknown session: {session_id}")
         resolved_config = self.resolve_provider_config_for_session(session_id)
-        if resolved_config == self.config:
+        if resolved_config == self.config and session.directory_path == "root":
             return self.pr_reply_service
-        return _build_pr_reply_service(resolved_config)
+        return _build_pr_reply_service(
+            resolved_config,
+            directory_path=session.directory_path,
+        )
 
     def pr_publish_service_for_session(self, session_id: str) -> PrPublishService:
         if not isinstance(self.pr_publish_service, PrPublishService):
@@ -812,10 +818,15 @@ def _build_delegated_teams_token_provider(config: GatewayConfig) -> TeamsDeviceC
     return TeamsDeviceCodeTokenProvider(auth_config, credential_store)
 
 
-def _build_pr_reply_service(config: GatewayConfig) -> PrReplyService:
+def _build_pr_reply_service(
+    config: GatewayConfig,
+    *,
+    directory_path: str = "root",
+) -> PrReplyService:
     return build_pr_reply_service(
         config=config,
         resolve_secret=lambda env_name: os.environ.get(env_name),
+        directory_path=directory_path,
     )
 
 

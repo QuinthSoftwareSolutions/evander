@@ -1751,6 +1751,7 @@ class AuditEvent(BaseModel):
 
 class PrFeedbackItem(BaseModel):
     feedback_id: str
+    feedback_kind: str | None = None
     provider: str
     repo: str
     pr_id: str
@@ -1815,6 +1816,7 @@ class PostPrFeedbackReplyRequest(BaseModel):
     body_text: str = Field(min_length=1)
     thread_id: str | None = None
     comment_id: str | None = None
+    feedback_kind: str | None = None
     mentions: list[str] = Field(default_factory=list)
     artifact_ids: list[str] = Field(default_factory=list)
     idempotency_key: str | None = None
@@ -1842,6 +1844,7 @@ class PostPrFeedbackReplyResponse(BaseModel):
     pr_id: str
     thread_id: str | None = None
     comment_id: str | None = None
+    feedback_kind: str | None = None
     reply_id: str | None = None
     reply_url: str | None = None
     uploaded_attachments: list[dict[str, Any]] = Field(default_factory=list)

@@ -1147,12 +1147,17 @@ assignee identity when one is assigned. It does not persist cursor or workflow s
 provider/repo/PR stream and returns `feedback` plus `next_cursor`; workflows own
 where that cursor is stored.
 
-`effect:pull-request:reply` posts one host-owned reply in an existing PR feedback
-thread. It requires `provider`, `repo`, `pr_id`, `comment_id`, `body_text`, and a
-stable `idempotency_key`; `thread_id` is additionally required for Azure DevOps.
+`effect:pull-request:reply` posts one host-owned reply to existing PR feedback.
+It requires `provider`, `repo`, `pr_id`, `comment_id`, `body_text`, and a stable
+`idempotency_key`; `thread_id` is additionally required for Azure DevOps. Bind
+`feedback_kind` from a PR-feedback trigger so GitHub review comments use the
+threaded reply endpoint while issue comments and whole-review feedback use the PR
+conversation endpoint. Azure DevOps nodes accept the trigger's `ado_organization`
+and `project` values, overriding the directory defaults.
 It supports Azure DevOps (`azure_devops`, `azure-devops`, or `ado`) and GitHub
 (`github`) through the directory-scoped host credentials. The effect persists its
-idempotency record and never resumes or otherwise invokes the bound agent, so it
+process-safe, target-scoped idempotency record and suppresses its own reply from
+subsequent feedback trigger polls. It never resumes or otherwise invokes the bound agent, so it
 does not use agent MCP tool permissions or approval policy.
 
 Azure DevOps comment tools with `mentions` also use the configured ADO PAT to

@@ -1480,8 +1480,11 @@ def test_pull_request_reply_effect_posts_host_owned_idempotent_reply_without_age
     assert provider.runtime_context is not None
     assert provider.runtime_context.agent_resumer is None
 
-    first = provider.execute(resolved_config={"provider": resolved_provider})
-    second = provider.execute(resolved_config={"provider": resolved_provider})
+    resolved_payload = {"provider": resolved_provider}
+    if canonical_provider == "github":
+        resolved_payload["feedback_kind"] = "issue_comment"
+    first = provider.execute(resolved_config=resolved_payload)
+    second = provider.execute(resolved_config=resolved_payload)
 
     if canonical_provider == "azure_devops":
         assert captured["init"] == [
@@ -1503,16 +1506,17 @@ def test_pull_request_reply_effect_posts_host_owned_idempotent_reply_without_age
             {"token": "secret", "timeout_seconds": 30.0},
             {"token": "secret", "timeout_seconds": 30.0},
         ]
-    assert captured["request"] == [
-        {
-            "repo": "org/repo",
-            "pr_id": "17",
-            "thread_id": "thread-42",
-            "comment_id": "comment-7",
-            "body_text": "Debug status",
-            "attachments": None,
-        }
-    ]
+    expected_request = {
+        "repo": "org/repo",
+        "pr_id": "17",
+        "thread_id": "thread-42",
+        "comment_id": "comment-7",
+        "body_text": "Debug status",
+        "attachments": None,
+    }
+    if canonical_provider == "github":
+        expected_request["feedback_kind"] = "issue_comment"
+    assert captured["request"] == [expected_request]
     assert first == {
         "success": True,
         "status": "posted",
@@ -1521,6 +1525,7 @@ def test_pull_request_reply_effect_posts_host_owned_idempotent_reply_without_age
         "pr_id": "17",
         "thread_id": "thread-42",
         "comment_id": "comment-7",
+        "feedback_kind": None,
         "reply_id": "reply-9",
         "reply_url": "https://example.test/pr/17#reply-9",
         "uploaded_attachments": [],
@@ -1530,6 +1535,80 @@ def test_pull_request_reply_effect_posts_host_owned_idempotent_reply_without_age
     assert second["success"] is True
     assert second["status"] == "deduplicated"
     assert captured["request"]
+
+
+def test_pull_request_reply_effect_preserves_ado_target_overrides(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    effect = PullRequestReplyEffectDefinition(
+        id="effect-pr-reply-target",
+        display_name="Reply to PR feedback",
+        type="effect:pull-request:reply",
+        provider="azure_devops",
+        repo="repo-1",
+        pr_id="17",
+        thread_id="44",
+        comment_id="10",
+        feedback_kind="thread_comment",
+        ado_organization="trigger-org",
+        project="Trigger Project",
+        body_text="Done",
+        idempotency_key="feedback-10",
+    )
+    captured: dict[str, object] = {}
+
+    class StubReplyProvider:
+        def __init__(self, **kwargs: object) -> None:
+            captured["init"] = kwargs
+
+        def post_reply(self, **kwargs: object) -> PostPrFeedbackReplyResponse:
+            captured["request"] = kwargs
+            return PostPrFeedbackReplyResponse(
+                status="posted",
+                provider="azure_devops",
+                repo="repo-1",
+                pr_id="17",
+                thread_id="44",
+                comment_id="10",
+                reply_id="301",
+            )
+
+    monkeypatch.setattr(
+        "evander.pull_request_automation.AzureDevOpsPrReplyProvider",
+        StubReplyProvider,
+    )
+
+    class ReplyResolver:
+        def resolve_for_directory(self, _directory_path: str | None) -> GatewayConfig:
+            return GatewayConfig(
+                runtime_dir=tmp_path / "runtime",
+                ado_organization="directory-org",
+                azure_devops_project="Directory Project",
+            )
+
+    factory = EffectProviderFactory(
+        provider_config_resolver=ReplyResolver(),
+        env={"AZURE_DEVOPS_PR_PAT": "secret"},
+    )
+
+    output = factory.build(effect, directory_path="root/team-a").execute()
+
+    assert captured["init"] == {
+        "organization_url": "https://dev.azure.com/trigger-org",
+        "project": "Trigger Project",
+        "pat": "secret",
+        "timeout_seconds": 30.0,
+    }
+    assert captured["request"] == {
+        "repo": "repo-1",
+        "pr_id": "17",
+        "thread_id": "44",
+        "comment_id": "10",
+        "body_text": "Done",
+        "attachments": None,
+    }
+    assert output["status"] == "posted"
 
 
 @pytest.mark.parametrize(

@@ -709,6 +709,7 @@ def register_pr_tools(
         body_text: str,
         thread_id: str | None = None,
         comment_id: str | None = None,
+        feedback_kind: str | None = None,
         mentions: AdoMentionRefsArgument = None,
         artifact_ids: list[str] | None = None,
         idempotency_key: str | None = None,
@@ -724,6 +725,9 @@ def register_pr_tools(
             body_text=body_text.strip(),
             thread_id=normalized_thread_id,
             comment_id=normalized_comment_id,
+            feedback_kind=(
+                feedback_kind.strip() if isinstance(feedback_kind, str) else None
+            ),
             mentions=mentions,
             artifact_ids=artifact_ids or [],
             idempotency_key=idempotency_key.strip() if isinstance(idempotency_key, str) else None,
@@ -761,6 +765,8 @@ def register_pr_tools(
                 "attachments": artifacts,
                 "idempotency_key": request.idempotency_key,
             }
+            if request.feedback_kind:
+                reply_kwargs["feedback_kind"] = request.feedback_kind
             if request.mentions:
                 reply_kwargs["mentions"] = request.mentions
             result = (

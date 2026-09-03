@@ -14,7 +14,10 @@ import httpx
 
 from evander.bootstrap import load_runtime_gateway_config
 from evander.audit import AuditEventType, AuditLogger
-from evander.azure_devops import resolve_azure_devops_organization_url
+from evander.azure_devops import (
+    ado_organization_from_legacy_url,
+    resolve_azure_devops_organization_url,
+)
 from evander.config import (
     AdoWorkerGlobalConfig,
     GatewayConfig,
@@ -47,7 +50,14 @@ from evander.pr_feedback.store import FeedbackEnvelope, PrFeedbackStore, _stream
 from evander.provider_config import ProviderConfigResolver
 from evander.repositories.session_manifests import JsonSessionManifestRepository
 from evander.orchestration.host_polling import notify_wake_socket_for_lock
-from evander.services import AzureDevOpsPrQueryProvider, _normalize_ignored_feedback_payload
+from evander.services import (
+    AzureDevOpsPrQueryProvider,
+    _normalize_ignored_feedback_payload,
+    ignored_feedback_ids_for_scope,
+    pr_feedback_scope_key,
+    pr_reply_state_namespace,
+    read_ignored_feedback_payload,
+)
 from evander.triggers.providers._cursor_state import TriggerCursorStore
 from evander.triggers.providers.pull_request_new_feedback import _parse_dt
 from evander.triggers.queue import SqliteTriggerEventQueue
@@ -528,9 +538,6 @@ def _publish_directory_pr_feedback_events(
     effect_wake_lock_path = _effect_lock_path_for_worker_config(config, trigger_worker_config)
     feedback_store = PrFeedbackStore(config.runtime_dir / "pr-feedback-store.json")
     audit_logger = AuditLogger(runtime_gateway_config.audit_log_path)
-    ignored_feedback_ids = _read_ignored_feedback_ids(
-        config.runtime_dir / "ignored-feedback-ids.json"
-    )
     published_count = 0
 
     for trigger in triggers:
@@ -580,7 +587,7 @@ def _publish_directory_pr_feedback_events(
             state_cursors = {}
         previous_cursors = dict(state_cursors)
         next_cursors = dict(state_cursors)
-        discovered: list[tuple[dict[str, str], dict[str, str], PrFeedbackItem]] = []
+        discovered: list[tuple[dict[str, str], dict[str, str], PrFeedbackItem, str]] = []
 
         for stream, binding, organization_url, project in streams:
             repo = stream["repo"]
@@ -592,6 +599,18 @@ def _publish_directory_pr_feedback_events(
                 pat_env_name=pat_env_name,
             )
             stream_key = _stream_key("azure_devops", repo, pr_id)
+            state_namespace = pr_reply_state_namespace(
+                provider="azure_devops",
+                directory_path=directory_path,
+                ado_organization_url=organization_url,
+                project=project,
+            )
+            ignored_scope_key = pr_feedback_scope_key(
+                state_namespace=state_namespace,
+                provider="azure_devops",
+                repo=repo,
+                pr_id=pr_id,
+            )
             try:
                 result = adapter.poll(
                     client=client,
@@ -627,9 +646,14 @@ def _publish_directory_pr_feedback_events(
                             "provider": feedback_item.provider,
                             "repo": feedback_item.repo,
                             "pr_id": feedback_item.pr_id,
+                            "ado_organization": (
+                                ado_organization_from_legacy_url(organization_url) or ""
+                            ),
+                            "project": project,
                         },
                         binding,
                         feedback_item,
+                        ignored_scope_key,
                     )
                 )
             next_cursors[stream_key] = _latest_cursor_value(
@@ -637,7 +661,7 @@ def _publish_directory_pr_feedback_events(
             )
 
         discovered.sort(key=lambda item: item[2].created_at)
-        for stream, binding, feedback in discovered:
+        for stream, binding, feedback, ignored_scope_key in discovered:
             stream_key = _stream_key(stream["provider"], stream["repo"], stream["pr_id"])
             previous = _parse_dt(previous_cursors.get(stream_key))
             if previous is not None and feedback.created_at <= previous:
@@ -651,6 +675,12 @@ def _publish_directory_pr_feedback_events(
                 feedback.created_at.astimezone(UTC).isoformat().replace("+00:00", "Z"),
             )
             feedback_store.set_cursor(stream_key, next_cursors[stream_key])
+            ignored_feedback_ids = ignored_feedback_ids_for_scope(
+                read_ignored_feedback_payload(
+                    config.runtime_dir / "ignored-feedback-ids.json"
+                ),
+                scope_key=ignored_scope_key,
+            )
             if feedback.feedback_id in ignored_feedback_ids:
                 continue
             if trigger.suppress_agent_authored_feedback and bool(
@@ -891,17 +921,8 @@ def _pr_completion_occurred_at(entry: dict[str, Any]) -> datetime:
 
 
 def _read_ignored_feedback_ids(path: Path) -> set[str]:
-    if not path.exists():
-        return set()
-    payload = json.loads(path.read_text(encoding="utf-8"))
-    normalized_payload, feedback_ids, changed = _normalize_ignored_feedback_payload(payload)
-    if changed:
-        temp_path = path.with_suffix(f"{path.suffix}.tmp")
-        temp_path.write_text(
-            json.dumps(normalized_payload, indent=2, sort_keys=True),
-            encoding="utf-8",
-        )
-        temp_path.replace(path)
+    payload = read_ignored_feedback_payload(path)
+    _, feedback_ids, _ = _normalize_ignored_feedback_payload(payload)
     return feedback_ids
 
 

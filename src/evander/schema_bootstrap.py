@@ -445,12 +445,15 @@ _TRIGGER_OUTPUT_SCHEMAS = {
                 "provider": {"type": "string"},
                 "repo": {"type": "string"},
                 "pr_id": {"type": "string"},
+                "ado_organization": {"type": "string"},
+                "project": {"type": "string"},
             },
         },
         "feedback": {
             "type": "object",
             "properties": {
                 "feedback_id": {"type": "string"},
+                "feedback_kind": {"type": ["string", "null"]},
                 "provider": {"type": "string"},
                 "repo": {"type": "string"},
                 "pr_id": {"type": "string"},
@@ -1161,6 +1164,7 @@ _EFFECT_OUTPUT_SCHEMAS = {
         "pr_id": {"type": "string"},
         "thread_id": {"type": ["string", "null"]},
         "comment_id": {"type": ["string", "null"]},
+        "feedback_kind": {"type": ["string", "null"]},
         "reply_id": {"type": ["string", "null"]},
         "reply_url": {"type": ["string", "null"]},
         "idempotency_key": {"type": ["string", "null"]},
