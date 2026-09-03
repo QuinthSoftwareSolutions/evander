@@ -539,9 +539,17 @@ class VmAgentCreateRequestMixin:
                 directory_path=normalized_directory
             ).client.list_codex_auth_profiles()
             subscription_profiles = [
-                dict(profile)
+                {
+                    "profile_id": str(profile.get("profile_id") or "").strip(),
+                    "display_name": (
+                        str(profile.get("display_name") or profile.get("profile_id") or "").strip()
+                    ),
+                    "enabled": True,
+                }
                 for profile in profile_payload.get("profiles", [])
-                if isinstance(profile, Mapping) and bool(profile.get("enabled"))
+                if isinstance(profile, Mapping)
+                and bool(profile.get("enabled"))
+                and str(profile.get("profile_id") or "").strip()
             ]
         except Exception:
             subscription_profiles = []

@@ -13,6 +13,7 @@ from uuid import uuid4
 from evander.codex_auth import (
     DEFAULT_SUBSCRIPTION_PROFILE_ID,
     CodexSubscriptionDeferral,
+    CodexSubscriptionDeferredError,
     CodexTurnSpec,
 )
 
@@ -39,6 +40,7 @@ class CodexSubscriptionTurnRunner:
         log_path: Path,
         finished_marker: Path,
         metadata_callback: Callable[[dict[str, Any]], None] | None = None,
+        token_refresher: Callable[..., CodexExternalAuthTokens] | None = None,
         process_factory: Callable[..., CodexAppServerProcess] = CodexAppServerProcess,
     ) -> None:
         self.command = tuple(command)
@@ -46,6 +48,8 @@ class CodexSubscriptionTurnRunner:
         self.cwd = cwd
         self.broker = broker
         self._tokens = initial_tokens
+        self._bound_account_id = initial_tokens.account_id
+        self._token_refresher = token_refresher or broker.external_tokens
         self._sensitive_values = {initial_tokens.access_token}
         self.log_path = Path(log_path)
         self.finished_marker = Path(finished_marker)
@@ -251,10 +255,25 @@ class CodexSubscriptionTurnRunner:
 
     def _refresh_tokens(self, params: dict[str, Any]) -> dict[str, Any]:
         previous_account_id = str(params.get("previousAccountId") or "").strip() or None
-        self._tokens = self.broker.external_tokens(
-            previous_access_token=self._tokens.access_token,
-            previous_account_id=previous_account_id,
-        )
+        try:
+            tokens = self._token_refresher(
+                previous_access_token=self._tokens.access_token,
+                previous_account_id=previous_account_id,
+            )
+            if tokens.account_id != self._bound_account_id:
+                raise CodexSubscriptionDeferredError(
+                    CodexSubscriptionDeferral(
+                        profile_id=(
+                            self.turn.subscription_profile_id or DEFAULT_SUBSCRIPTION_PROFILE_ID
+                        ),
+                        reason="unavailable",
+                    ),
+                    "Codex subscription account changed during the running turn",
+                )
+        except CodexSubscriptionDeferredError as exc:
+            self._deferral = exc.deferral
+            raise
+        self._tokens = tokens
         self._sensitive_values.add(self._tokens.access_token)
         return self._tokens.refresh_response()
 

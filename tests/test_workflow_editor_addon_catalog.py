@@ -189,9 +189,7 @@ def test_workflow_editor_catalog_includes_team_addon_nodes_when_enabled(
     assert create_task_fields["git_base_branch"]["kind"] == "string"
     assert create_task_fields["git_base_branch"]["required"] is False
     assert create_task_fields["dependency_task_ids"]["json_value_type"] == "array"
-    set_task_work_state_fields = {
-        field["key"]: field for field in set_task_work_state["fields"]
-    }
+    set_task_work_state_fields = {field["key"]: field for field in set_task_work_state["fields"]}
     assert set_task_work_state["label"] == "Set Team task work state"
     assert set_task_work_state_fields["task_id"]["required"] is True
     assert set_task_work_state_fields["state"]["required"] is True
@@ -363,6 +361,8 @@ def test_workflow_editor_agent_create_uses_fixed_enabled_worker_profile_options(
                         "enabled": True,
                         "signed_in": True,
                         "account_id": "account-a",
+                        "email": "secret@example.com",
+                        "plan_type": "business",
                     },
                     {
                         "profile_id": "team-disabled",
@@ -388,6 +388,5 @@ def test_workflow_editor_agent_create_uses_fixed_enabled_worker_profile_options(
         {
             "value": "team-a",
             "label": "Team A",
-            "metadata": {"signed_in": True, "account_id": "account-a"},
         }
     ]

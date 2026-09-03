@@ -2295,15 +2295,6 @@ class WorkflowConfigAdminService:
                 _field_option(
                     profile_id,
                     str(profile.get("display_name") or profile_id),
-                    description=(
-                        str(profile.get("email") or "").strip()
-                        or str(profile.get("plan_type") or "").strip()
-                        or None
-                    ),
-                    metadata={
-                        "signed_in": bool(profile.get("signed_in")),
-                        "account_id": profile.get("account_id"),
-                    },
                 )
             )
         return options

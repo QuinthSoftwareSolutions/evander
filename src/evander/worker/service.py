@@ -609,6 +609,10 @@ class WorkerDaemon:
                 log_path=self._log_path(record),
                 finished_marker=subscription_marker,
                 metadata_callback=lambda update: self._merge_job_metadata(job_id, update),
+                token_refresher=lambda **kwargs: self.codex_auth_profiles.refresh_tokens(
+                    subscription_profile_id,
+                    **kwargs,
+                ),
             )
             with self._codex_subscription_runners_lock:
                 self._codex_subscription_runners[job_id] = runner

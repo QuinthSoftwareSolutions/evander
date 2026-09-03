@@ -4512,6 +4512,143 @@ def test_context_exhausted_container_completion_starts_reduced_context_retry(
     assert record.outputs["context_retry_of_execution_id"] == "agent-old-1"
 
 
+def test_context_exhausted_subscription_retry_is_durably_queued_on_preflight_deferral(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    retry_at = datetime.now(UTC) + timedelta(minutes=12)
+    config = GatewayConfig(
+        runtime_dir=tmp_path,
+        execution_backend="container_worker_vm",
+        container_worker_base_url="http://worker.test",
+        model_provider_mode="openai_public",
+    )
+    session_repository = JsonSessionManifestRepository(config.session_store_path)
+    session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-1",
+            vm_id=None,
+            allowed_tools=[ToolName.LIST_PENDING_AGENT_PROMPTS],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+            vm_provider="container_worker_vm",
+            vm_provider_id="target-1",
+            model="gpt-5.4-mini",
+            codex_auth_mode=CodexAuthMode.CHATGPT_SUBSCRIPTION,
+            subscription_profile_id="team-a",
+            metadata={"execution_backend": "container_worker_vm", "agent_provider": "codex"},
+        )
+    )
+    backend = _FakeContainerBackend()
+    backend.config = config
+    backend.start_error = CodexSubscriptionDeferredClientError(
+        "subscription capacity unavailable",
+        deferral=CodexSubscriptionDeferral(
+            profile_id="team-a",
+            reason="rate_limited",
+            retry_at=retry_at,
+        ),
+    )
+    monkeypatch.setattr(
+        AgentPromptEffectProvider,
+        "_container_backend_for_worker",
+        classmethod(lambda cls, worker, session_id: backend),
+    )
+
+    class Store:
+        def __init__(self) -> None:
+            self.record = None
+
+        def put(self, record) -> None:
+            self.record = record
+
+    published: list[dict[str, object]] = []
+    store = Store()
+    worker = SimpleNamespace(
+        config=config,
+        execution_store=store,
+        provider_factory=SimpleNamespace(
+            admin_service=SimpleNamespace(
+                runtime=SimpleNamespace(session_repository=session_repository)
+            )
+        ),
+        _update_event_delivery_state=lambda event_id: None,
+        _publish_completion_event_from_record=lambda **kwargs: (
+            published.append(kwargs) or "published-1"
+        ),
+    )
+    record = SimpleNamespace(
+        execution_id="effect-exec-1",
+        event_id="event-1",
+        trace_id="trace-1",
+        effect_id="agent-enqueue",
+        effect_type="effect:agent:enqueue-prompt",
+        status="waiting",
+        error="old failure",
+        started_at=datetime.now(UTC),
+        finished_at=datetime.now(UTC),
+        resolved_config={
+            "target": "session-1",
+            "vm_name": "target-1",
+            "prompt": "Important task instructions\n" + ("history\n" * 800) + "Final action",
+            "model": "gpt-5.4-mini",
+            "directory_path": "root",
+        },
+        input_payload={
+            "__node_outputs": {"source": {"value": "kept"}},
+            "__for_execution_ids": {"gate": "source-execution"},
+        },
+        outputs={
+            "dispatch_id": "dispatch-1",
+            "execution_backend": "container_worker_vm",
+            "execution_id": "agent-old-1",
+            "session_id": "session-1",
+        },
+    )
+    queue_record = TriggerQueueRecord(
+        event_id="complete-1",
+        trigger_id="__await-agent-completion__",
+        trigger_type="trigger:agent:run:completed",
+        trace_id="trace-1",
+        occurred_at=datetime.now(UTC),
+        payload={
+            "dispatch_id": "dispatch-1",
+            "session_id": "session-1",
+            "execution_backend": "container_worker_vm",
+            "worker_execution_id": "agent-old-1",
+            "success": False,
+            "message": "Codex ended without a final agent message.",
+            "failure_kind": "context_exhausted",
+            "failure_reason": "codex_context_limit_suspected",
+        },
+    )
+
+    AgentPromptEffectProvider._finalize_waiting_record(
+        worker=worker,
+        record=record,
+        queue_record=queue_record,
+    )
+
+    queued_records = AgentPromptQueueStore(tmp_path / "queued-agent-prompts.json").read_all()
+    assert len(queued_records) == 1
+    queued = next(iter(queued_records.values()))
+    assert queued.subscription_profile_id == "team-a"
+    assert queued.queue_reason == "subscription_rate_limited"
+    assert queued.retry_not_before == retry_at
+    assert queued.capacity_deferral_count == 1
+    assert queued.resume_mode == "new_context"
+    assert "Previous agent run hit the model context limit" in queued.prompt
+    assert queued.metadata["context_retry_attempt"] == "1"
+    assert queued.metadata["context_retry_of_execution_id"] == "agent-old-1"
+    assert queued.workflow_context == {"source": {"value": "kept"}}
+    assert queued.workflow_for_execution_ids == {"gate": "source-execution"}
+    assert published == []
+    assert store.record is record
+    assert record.status == "succeeded"
+    assert record.error is None
+    assert record.outputs["queued"] is True
+    assert record.outputs["context_retry_in_progress"] is True
+
+
 def test_context_exhausted_container_completion_does_not_retry_after_limit(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

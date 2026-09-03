@@ -5384,6 +5384,7 @@ def test_subscription_job_uses_worker_owned_read_only_completion_signal(
     class Runner:
         def __init__(self, **kwargs):
             self.finished_marker = kwargs["finished_marker"]
+            self.token_refresher = kwargs["token_refresher"]
             runners.append(self)
 
         def start(self) -> None:
@@ -5427,6 +5428,11 @@ def test_subscription_job_uses_worker_owned_read_only_completion_signal(
         assert runners
         assert runners[0].finished_marker == paths.logs / "codex-turns" / "job-1.exit"
         assert paths.agent_home not in runners[0].finished_marker.parents
+        refreshed = runners[0].token_refresher(
+            previous_access_token="access-secret",
+            previous_account_id="account-1",
+        )
+        assert refreshed.account_id == "account-1"
     finally:
         daemon.close()
 

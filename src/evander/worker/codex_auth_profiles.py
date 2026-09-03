@@ -360,6 +360,46 @@ class CodexAuthBrokerRegistry:
                 str(exc),
             ) from exc
 
+    def refresh_tokens(
+        self,
+        profile_id: object,
+        *,
+        previous_access_token: str | None = None,
+        previous_account_id: str | None = None,
+    ) -> CodexExternalAuthTokens:
+        """Refresh a running turn without bypassing the profile account pin."""
+
+        normalized = str(normalize_subscription_profile_id(profile_id, allow_none=False))
+        try:
+            record = self._require_enabled(normalized)
+        except CodexSubscriptionDeferredError:
+            raise
+        except CodexAuthBrokerError as exc:
+            raise CodexSubscriptionDeferredError(
+                CodexSubscriptionDeferral(profile_id=normalized, reason="unavailable"),
+                str(exc),
+            ) from exc
+        broker = self.broker(record.profile_id)
+        try:
+            tokens = broker.external_tokens(
+                previous_access_token=previous_access_token,
+                previous_account_id=previous_account_id,
+            )
+            self.profiles.pin_account(record.profile_id, tokens.account_id)
+        except CodexAuthBrokerError as exc:
+            # A concurrent login may have replaced the worker-owned auth state.
+            # Fail closed and remove that mismatched identity before it can reach
+            # the already-bound turn.
+            try:
+                broker.logout()
+            except CodexAuthBrokerError:
+                pass
+            raise CodexSubscriptionDeferredError(
+                CodexSubscriptionDeferral(profile_id=record.profile_id, reason="unavailable"),
+                str(exc),
+            ) from exc
+        return tokens
+
     def close(self) -> None:
         with self._lock:
             brokers = list(self._brokers.values())

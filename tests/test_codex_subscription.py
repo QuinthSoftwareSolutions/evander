@@ -212,6 +212,43 @@ def test_subscription_runner_resumes_thread_and_keeps_tokens_out_of_logs(tmp_pat
     assert all("access" not in str(entry).casefold() for entry in metadata)
 
 
+def test_subscription_runner_never_accepts_refresh_tokens_for_another_account(
+    tmp_path: Path,
+) -> None:
+    FakeTurnProcess.instances.clear()
+    metadata: list[dict[str, Any]] = []
+    runner = CodexSubscriptionTurnRunner(
+        command=("codex", "app-server", "--stdio"),
+        turn=CodexTurnSpec(
+            auth_mode=CodexAuthMode.CHATGPT_SUBSCRIPTION,
+            subscription_profile_id="team-a",
+            prompt="Continue the task",
+            model="gpt-5.4",
+        ),
+        cwd="/home/agent",
+        broker=FakeBroker(),  # type: ignore[arg-type]
+        initial_tokens=CodexExternalAuthTokens("access-a", "account-a", "plus"),
+        token_refresher=lambda **_kwargs: CodexExternalAuthTokens(
+            "access-b", "account-b", "business"
+        ),
+        log_path=tmp_path / "turn.log",
+        finished_marker=tmp_path / "turn.exit",
+        metadata_callback=metadata.append,
+        process_factory=FakeTurnProcess,  # type: ignore[arg-type]
+    )
+
+    runner.run()
+
+    process = FakeTurnProcess.instances[0]
+    assert process.refresh_response is None
+    assert (tmp_path / "turn.exit").read_text(encoding="utf-8") == "1"
+    assert metadata[-1]["codex_subscription_deferral"] == {
+        "profile_id": "team-a",
+        "reason": "unavailable",
+    }
+    assert "access-b" not in (tmp_path / "turn.log").read_text(encoding="utf-8")
+
+
 def test_restricted_proxy_rejects_unlisted_connect_destination() -> None:
     proxy = RestrictedCodexEgressProxy(host="127.0.0.1", port=0, allowed_hosts=["api.openai.com"])
     proxy.start()

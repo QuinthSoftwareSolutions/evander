@@ -11,7 +11,9 @@
   per-profile FIFO prompt replay, cross-profile concurrency, visible queue reasons, manual
   cancellation, and no metered API fallback.
 - Hardened deferred prompt identity, worker-local profile recovery, replay cancellation conflicts,
-  and workflow validation for named subscription selections.
+  queued-session cancellation authorization, refresh-time account pinning, selector telemetry,
+  context-retry deferral, preflight queue FIFO, and workflow validation for named subscription
+  selections.
 
 ## 2026-09-02 - Archived Team Agent Session Restoration
 

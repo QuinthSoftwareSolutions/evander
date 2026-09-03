@@ -1984,6 +1984,32 @@ class AgentPromptEffectProvider(EffectProviderBase):
                     )
                 )
             )
+        except CodexSubscriptionDeferredClientError as exc:
+            try:
+                return cls._queue_deferred_context_retry(
+                    worker=worker,
+                    record=record,
+                    session=session,
+                    session_id=session_id,
+                    dispatch_id=dispatch_id,
+                    directory_path=directory_path,
+                    prompt=retry_prompt,
+                    model=model,
+                    model_provider_mode=str(
+                        getattr(config, "model_provider_mode", None) or ""
+                    ).strip()
+                    or None,
+                    deferral=exc.deferral,
+                    attempt=attempt + 1,
+                    max_attempts=max_attempts,
+                    previous_execution_id=previous_execution_id,
+                    reason=reason,
+                    target_chars=target_chars,
+                )
+            except Exception as queue_exc:  # noqa: BLE001
+                merged_outputs["context_retry_skipped_reason"] = "retry_dispatch_failed"
+                merged_outputs["context_retry_dispatch_error"] = sanitize_text(str(queue_exc))
+                return False
         except Exception as exc:  # noqa: BLE001
             merged_outputs["context_retry_skipped_reason"] = "retry_dispatch_failed"
             merged_outputs["context_retry_dispatch_error"] = sanitize_text(str(exc))
@@ -2041,6 +2067,138 @@ class AgentPromptEffectProvider(EffectProviderBase):
             model=model,
             agent_harness=agent_harness,
         )
+        return True
+
+    @classmethod
+    def _queue_deferred_context_retry(
+        cls,
+        *,
+        worker: Any,
+        record: Any,
+        session: Any,
+        session_id: str,
+        dispatch_id: str,
+        directory_path: str,
+        prompt: str,
+        model: str,
+        model_provider_mode: str | None,
+        deferral: CodexSubscriptionDeferral,
+        attempt: int,
+        max_attempts: int,
+        previous_execution_id: str,
+        reason: str,
+        target_chars: int,
+    ) -> bool:
+        runtime_dir = resolve_runtime_dir(worker)
+        if runtime_dir is None:
+            raise RuntimeError("runtime directory is unavailable for context retry deferral")
+        target = cls._record_text_value(record, "target") or session_id
+        vm_name = (
+            cls._record_text_value(record, "vm_name")
+            or str(getattr(session, "vm_provider_id", None) or "").strip()
+            or session_id
+        )
+        queue_key = (
+            f"{record.effect_id}:{dispatch_id or previous_execution_id}:"
+            f"context-retry-{attempt}:subscription"
+        )
+        input_payload = getattr(record, "input_payload", None)
+        workflow_context = workflow_context_from_sources(
+            execution_context=input_payload,
+            input_payload=input_payload,
+            context_key=NODE_OUTPUTS_CONTEXT_KEY,
+        )
+        workflow_for_execution_ids = workflow_for_execution_ids_from_sources(
+            execution_context=input_payload,
+            input_payload=input_payload,
+            context_key=_FOR_EXECUTION_IDS_PAYLOAD_KEY,
+        )
+        metadata = cls._subscription_deferral_metadata(record)
+        metadata.update(
+            {
+                "context_retry_mode": CONTEXT_RETRY_MODE_REDUCED,
+                "context_retry_attempt": str(attempt),
+                "context_retry_max_attempts": str(max_attempts),
+                "context_retry_of_execution_id": previous_execution_id,
+                "context_retry_reason": reason,
+                "context_retry_target_chars": str(target_chars),
+            }
+        )
+        queued = enqueue_agent_prompt(
+            runtime_dir=runtime_dir,
+            target=target,
+            vm_name=vm_name,
+            session_id=session_id,
+            prompt=prompt,
+            model=model,
+            model_provider_mode=model_provider_mode,
+            queue_reason=deferral.queue_reason,
+            subscription_profile_id=deferral.profile_id,
+            retry_not_before=deferral.retry_at,
+            capacity_deferral=True,
+            vm_user=cls._record_text_value(record, "vm_user") or "agent",
+            dispatch_id=dispatch_id or None,
+            resume_thread_id=None,
+            resume_mode="new_context",
+            resume_thread_metadata_key=cls._record_text_value(record, "resume_thread_metadata_key"),
+            resume_thread_metadata_collection=cls._record_text_value(
+                record, "resume_thread_metadata_collection"
+            ),
+            effect_id=str(record.effect_id),
+            queue_key=queue_key,
+            metadata=metadata,
+            workflow_context=workflow_context,
+            workflow_for_execution_ids=workflow_for_execution_ids,
+        )
+        now = datetime.now(UTC)
+        retry_history = cls._context_retry_history(record)
+        retry_history.append(
+            {
+                "attempt": attempt,
+                "mode": CONTEXT_RETRY_MODE_REDUCED,
+                "reason": reason,
+                "previous_execution_id": previous_execution_id,
+                "queue_key": queued.queue_key,
+                "queued_at": now.isoformat().replace("+00:00", "Z"),
+            }
+        )
+        record.status = "succeeded"
+        record.outputs = {
+            **record.outputs,
+            "success": True,
+            "queued": True,
+            "queue_key": queued.queue_key,
+            "queue_reason": queued.queue_reason,
+            "subscription_profile_id": queued.subscription_profile_id,
+            "retry_not_before": queued.retry_not_before,
+            "context_retry_enqueued": True,
+            "context_retry_in_progress": True,
+            "context_retry_attempt": attempt,
+            "context_retry_max_attempts": max_attempts,
+            "context_retry_mode": CONTEXT_RETRY_MODE_REDUCED,
+            "context_retry_reason": reason,
+            "context_retry_of_execution_id": previous_execution_id,
+            "context_retry_target_chars": target_chars,
+            "context_retry_history": retry_history[-10:],
+            "message": (
+                "Context exhausted; queued reduced-context retry "
+                f"{attempt}/{max_attempts} for subscription profile "
+                f"{deferral.profile_id!r}."
+            ),
+        }
+        record.error = None
+        record.finished_at = now
+        cls._put_execution_record(worker=worker, record=record)
+        update_event_delivery_state = getattr(worker, "_update_event_delivery_state", None)
+        if callable(update_event_delivery_state):
+            update_event_delivery_state(record.event_id)
+        if dispatch_id:
+            clear_model_usage_correlation_context(
+                runtime_dir=runtime_dir,
+                dispatch_id=dispatch_id,
+            )
+        cls._release_enqueue_prompt_lock(worker=worker, record=record, outputs=record.outputs)
+        cls._release_local_inference_capacity(worker=worker, record=record, outputs=record.outputs)
         return True
 
     @staticmethod

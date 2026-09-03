@@ -98,6 +98,12 @@ _QUEUED_PROMPT_RESTORED_METADATA_KEYS = (
     "agent_context_retry_enabled",
     "agent_context_retry_max_attempts",
     "agent_context_retry_target_chars",
+    "context_retry_mode",
+    "context_retry_attempt",
+    "context_retry_max_attempts",
+    "context_retry_of_execution_id",
+    "context_retry_reason",
+    "context_retry_target_chars",
 )
 
 
@@ -600,9 +606,6 @@ class AgentEnqueuePromptQueueDispatchHook(EffectLifecycleHookBase):
         worker: Any,
         record: Any,
     ) -> tuple[str, str] | None:
-        profile_id = str(getattr(record, "subscription_profile_id", "") or "").strip()
-        if not profile_id:
-            return None
         context = self._container_record_session_context(worker=worker, record=record)
         if context is None:
             return None
@@ -611,6 +614,41 @@ class AgentEnqueuePromptQueueDispatchHook(EffectLifecycleHookBase):
             ensure_session_not_expired(session)
         except SessionExpiredError:
             return None
+        from evander.effects.providers.agent_prompt import AgentPromptEffectProvider
+
+        agent_harness = AgentPromptEffectProvider._agent_harness_from_session(
+            session,
+            config=config,
+        )
+        model = str(
+            getattr(record, "model", None)
+            or getattr(session, "model", None)
+            or default_agent_model_for_provider(agent_harness, config)
+        ).strip()
+        try:
+            codex_turn = container_codex_turn_spec(
+                prompt=str(getattr(record, "prompt", None) or "queued prompt"),
+                model=model,
+                resume_thread_id=None,
+                session=session,
+                config=config,
+                agent_provider=agent_harness,
+                resume_mode=getattr(record, "resume_mode", None),
+            )
+        except ValueError:
+            return None
+        profile_id = str(getattr(codex_turn, "subscription_profile_id", None) or "").strip()
+        if not profile_id:
+            return None
+        persisted_profile_id = str(getattr(record, "subscription_profile_id", "") or "").strip()
+        if persisted_profile_id and persisted_profile_id != profile_id:
+            logger.warning(
+                "Queued prompt subscription profile no longer matches its session "
+                "queue_key=%s persisted_profile_id=%s effective_profile_id=%s",
+                getattr(record, "queue_key", None),
+                persisted_profile_id,
+                profile_id,
+            )
         worker_url = str(getattr(config, "container_worker_base_url", "") or "").strip()
         if not worker_url:
             return None

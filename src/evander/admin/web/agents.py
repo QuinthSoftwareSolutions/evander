@@ -466,6 +466,23 @@ def agent_routes(
             record = store.get(queue_key)
             if record is None:
                 return json_error("Queued prompt not found.", status_code=404)
+            record_session_id = str(record.session_id or "").strip()
+            record_session = (
+                service.runtime.session_repository.get_session(record_session_id)
+                if record_session_id
+                else None
+            )
+            if record_session_id and record_session is None:
+                return json_error("Queued prompt session not found.", status_code=404)
+            if record_session is not None:
+                queued_directory_path = (
+                    str(record_session.directory_path or "root").strip() or "root"
+                )
+                if error_response := require_owner_privileged(
+                    request,
+                    directory_path=queued_directory_path,
+                ):
+                    return error_response
             agent = await run_in_threadpool(
                 service.vm_agent_admin.get_agent,
                 agent_id,
@@ -474,9 +491,9 @@ def agent_routes(
                 reconcile_containers=False,
                 omit_vm_state=True,
             )
-            candidates = service.vm_agent_admin._agent_prompt_queue_candidates(agent)
-            if not service.vm_agent_admin._agent_prompt_queue_record_matches(
-                record, candidates=candidates
+            if not service.vm_agent_admin._agent_prompt_queue_record_belongs_to_agent(
+                record,
+                agent=agent,
             ):
                 return json_error("Queued prompt does not belong to this agent.", status_code=404)
             dispatch_id = queued_agent_prompt_dispatch_id(record)
@@ -512,9 +529,8 @@ def agent_routes(
                         status_code=409,
                     )
                 linked_cancellation_deleted_queue = cancellation.status == "cancelled"
-            if (
-                not linked_cancellation_deleted_queue
-                and not store.delete_if_dispatch_id(queue_key, dispatch_id)
+            if not linked_cancellation_deleted_queue and not store.delete_if_dispatch_id(
+                queue_key, dispatch_id
             ):
                 return json_error("Queued prompt changed; refresh and retry.", status_code=409)
             if steering_note_id:

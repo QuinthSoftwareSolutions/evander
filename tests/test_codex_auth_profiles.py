@@ -39,7 +39,7 @@ class FakeProfileBroker:
             self.barrier.wait(timeout=2)
         return dict(self.status_payload)
 
-    def external_tokens(self) -> CodexExternalAuthTokens:
+    def external_tokens(self, **_kwargs: Any) -> CodexExternalAuthTokens:
         return self.tokens
 
     def start_device_login(self) -> dict[str, Any]:
@@ -138,6 +138,38 @@ def test_account_identity_is_pinned_and_mismatched_login_is_logged_out(tmp_path:
         assert mismatch["pinned_account_id"] == "account-a"
         assert "different OpenAI account" in mismatch["error"]
         assert broker.logged_out is True
+    finally:
+        registry.close()
+
+
+def test_refresh_tokens_rejects_and_logs_out_a_different_pinned_account(
+    tmp_path: Path,
+) -> None:
+    registry, _ = _registry(tmp_path)
+    try:
+        registry.create_profile({"profile_id": "team-a", "display_name": "Team A"})
+        broker = registry.broker("team-a")
+        broker.status_payload.update(
+            available=True,
+            signed_in=True,
+            account_id="account-a",
+            rate_limits=None,
+        )
+        broker.tokens = CodexExternalAuthTokens("access-a", "account-a", "plus")
+        assert registry.preflight("team-a").account_id == "account-a"
+
+        broker.tokens = CodexExternalAuthTokens("access-b", "account-b", "business")
+        with pytest.raises(CodexSubscriptionDeferredError) as mismatch:
+            registry.refresh_tokens(
+                "team-a",
+                previous_access_token="access-a",
+                previous_account_id="account-a",
+            )
+
+        assert mismatch.value.deferral.profile_id == "team-a"
+        assert mismatch.value.deferral.reason == "unavailable"
+        assert broker.logged_out is True
+        assert registry.profiles.require("team-a").pinned_account_id == "account-a"
     finally:
         registry.close()
 

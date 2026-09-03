@@ -5,6 +5,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 
+from evander.codex_auth import CodexAuthMode
 from evander.effects.providers.lifecycle_hooks import AgentEnqueuePromptQueueDispatchHook
 from evander.messaging.agent_prompt_queue import AgentPromptQueueStore, QueuedAgentPromptRecord
 
@@ -12,7 +13,7 @@ from evander.messaging.agent_prompt_queue import AgentPromptQueueStore, QueuedAg
 def _record(
     *,
     queue_key: str,
-    profile_id: str,
+    profile_id: str | None,
     created_at: datetime,
 ) -> QueuedAgentPromptRecord:
     return QueuedAgentPromptRecord(
@@ -84,11 +85,19 @@ def test_capacity_deferral_ignores_stale_reported_reset_and_recovery_can_wake_pr
     assert store.get("session-a").retry_not_before is None
 
 
-def _fifo_worker(*, sessions: dict[str, object], worker_urls: dict[str, str]) -> object:
+def _fifo_worker(
+    *,
+    sessions: dict[str, object],
+    worker_urls: dict[str, str],
+    model_provider_modes: dict[str, str] | None = None,
+) -> object:
+    provider_modes = model_provider_modes or {}
     return SimpleNamespace(
         provider_config_resolver=SimpleNamespace(
             resolve_for_session_id=lambda session_id: SimpleNamespace(
-                container_worker_base_url=worker_urls[session_id]
+                container_worker_base_url=worker_urls[session_id],
+                container_worker_codex_auth_mode="metered_api",
+                model_provider_mode=provider_modes.get(session_id, "openai_public"),
             )
         ),
         provider_factory=SimpleNamespace(
@@ -103,12 +112,24 @@ def _fifo_worker(*, sessions: dict[str, object], worker_urls: dict[str, str]) ->
     )
 
 
-def _fifo_session(session_id: str, *, expired: bool = False) -> object:
+def _fifo_session(
+    session_id: str,
+    *,
+    expired: bool = False,
+    profile_id: str | None = None,
+    subscription: bool = False,
+    agent_provider: str = "codex",
+) -> object:
     return SimpleNamespace(
         session_id=session_id,
         directory_path="root",
         vm_provider="container_worker_vm",
-        metadata={},
+        model="gpt-5.4",
+        codex_auth_mode=(
+            CodexAuthMode.CHATGPT_SUBSCRIPTION if subscription else CodexAuthMode.METERED_API
+        ),
+        subscription_profile_id=profile_id,
+        metadata={"agent_provider": agent_provider},
         expires_at=datetime.now(UTC) + (timedelta(minutes=-5) if expired else timedelta(hours=1)),
     )
 
@@ -123,7 +144,14 @@ def test_subscription_queue_is_fifo_per_profile_and_effective_worker() -> None:
         "newer-b": _record(queue_key="newer-b", profile_id="team-b", created_at=now),
     }
     worker = _fifo_worker(
-        sessions={key: _fifo_session(key) for key in records},
+        sessions={
+            key: _fifo_session(
+                key,
+                profile_id=records[key].subscription_profile_id,
+                subscription=True,
+            )
+            for key in records
+        },
         worker_urls={key: "http://worker-a.test" for key in records},
     )
 
@@ -137,6 +165,110 @@ def test_subscription_queue_is_fifo_per_profile_and_effective_worker() -> None:
         worker=worker,
         records=records,
         queue_key="newer-b",
+    )
+
+
+def test_subscription_queue_derives_profile_for_prompts_queued_before_worker_preflight() -> None:
+    now = datetime.now(UTC)
+    records = {
+        "older": _record(queue_key="older", profile_id=None, created_at=now),
+        "newer": _record(
+            queue_key="newer",
+            profile_id="team-a",
+            created_at=now + timedelta(seconds=1),
+        ),
+    }
+    worker = _fifo_worker(
+        sessions={
+            "older": _fifo_session(
+                "older",
+                profile_id="team-a",
+                subscription=True,
+            ),
+            "newer": _fifo_session("newer", profile_id="team-a", subscription=True),
+        },
+        worker_urls={key: "http://worker-a.test" for key in records},
+    )
+
+    hook = AgentEnqueuePromptQueueDispatchHook()
+    assert hook._runnable_subscription_profile_context(
+        worker=worker,
+        record=records["older"],
+    ) == ("team-a", "http://worker-a.test")
+    assert hook._has_earlier_subscription_profile_record(
+        worker=worker,
+        records=records,
+        queue_key="newer",
+    )
+
+
+def test_subscription_queue_derives_legacy_default_but_excludes_private_routes() -> None:
+    now = datetime.now(UTC)
+    records = {
+        "legacy": _record(queue_key="legacy", profile_id=None, created_at=now),
+        "local": _record(
+            queue_key="local",
+            profile_id="team-a",
+            created_at=now + timedelta(seconds=1),
+        ),
+        "azure": _record(
+            queue_key="azure",
+            profile_id="team-a",
+            created_at=now + timedelta(seconds=1),
+        ),
+        "claude": _record(
+            queue_key="claude",
+            profile_id="team-a",
+            created_at=now + timedelta(seconds=1),
+        ),
+        "newer": _record(
+            queue_key="newer",
+            profile_id="default",
+            created_at=now + timedelta(seconds=2),
+        ),
+    }
+    worker = _fifo_worker(
+        sessions={
+            "legacy": _fifo_session("legacy", subscription=True),
+            "local": _fifo_session("local", profile_id="team-a", subscription=True),
+            "azure": _fifo_session("azure", profile_id="team-a", subscription=True),
+            "claude": _fifo_session("claude", agent_provider="claude"),
+            "newer": _fifo_session("newer", subscription=True),
+        },
+        worker_urls={key: "http://worker-a.test" for key in records},
+        model_provider_modes={"local": "local_openai", "azure": "azure_openai"},
+    )
+    hook = AgentEnqueuePromptQueueDispatchHook()
+
+    assert hook._runnable_subscription_profile_context(
+        worker=worker,
+        record=records["legacy"],
+    ) == ("default", "http://worker-a.test")
+    assert (
+        hook._runnable_subscription_profile_context(
+            worker=worker,
+            record=records["local"],
+        )
+        is None
+    )
+    assert (
+        hook._runnable_subscription_profile_context(
+            worker=worker,
+            record=records["azure"],
+        )
+        is None
+    )
+    assert (
+        hook._runnable_subscription_profile_context(
+            worker=worker,
+            record=records["claude"],
+        )
+        is None
+    )
+    assert hook._has_earlier_subscription_profile_record(
+        worker=worker,
+        records=records,
+        queue_key="newer",
     )
 
 
@@ -162,9 +294,9 @@ def test_subscription_queue_fifo_ignores_other_workers_and_unrunnable_sessions()
     }
     worker = _fifo_worker(
         sessions={
-            "other-worker": _fifo_session("other-worker"),
-            "expired-session": _fifo_session("expired-session", expired=True),
-            "ready": _fifo_session("ready"),
+            "other-worker": _fifo_session("other-worker", subscription=True),
+            "expired-session": _fifo_session("expired-session", expired=True, subscription=True),
+            "ready": _fifo_session("ready", subscription=True),
         },
         worker_urls={
             "other-worker": "http://worker-b.test",
