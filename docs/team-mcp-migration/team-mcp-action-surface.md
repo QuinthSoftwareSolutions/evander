@@ -771,7 +771,7 @@ Arguments:
 | `project_id` | string | yes | Project id. |
 | `deliverable_ids` | string[] | yes | Accepted deliverables to release. |
 | `release_branch` | string or null | no | Release branch override. |
-| `canonical_branch` | string or null | no | Canonical branch override. |
+| `canonical_branch` | string or null | no | Deprecated compatibility input; any non-empty agent override is rejected. |
 | `summary` | string or null | no | Release summary. |
 | `handled_inbox_item_ids` | string[] | no | Inbox items to mark handled atomically. |
 | `request_id` | string | no | Idempotency key. |
@@ -781,6 +781,9 @@ Semantics:
 - Replaces `git_release_requests`.
 - Only the project lead, team manager, or a same-project role with
   `request_release` may request a release.
+- The canonical destination is derived from project Git policy. No agent,
+  including a project lead or team manager, may override it. Authenticated
+  operators retain a separate manual override path for exceptional releases.
 - Every deliverable must belong to the project and be accepted.
 - Failed verification is never waivable. Other incomplete verification states
   require an audited waiver from authorized leadership (or an authenticated

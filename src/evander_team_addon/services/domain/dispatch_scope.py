@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 import re
 from collections.abc import Mapping
-from typing import Iterable
+from typing import Any, Iterable
 
 from ...models import (
     ACTIVE_TEAM_CASE_STATUS_VALUES,
@@ -24,9 +24,12 @@ from ...models import (
     TeamTaskState,
 )
 from .agent_access import _visible_project_ids_for_agent
+from .common import _NON_TERMINAL_TASK_STATES, _ensure_utc
 from .preparation_failures import (
     EXECUTION_PREPARATION_BLOCKER_REASON_CODES,
+    INBOX_EXECUTION_PREPARATION_BLOCKER_REASON_CODE,
     TASK_EXECUTION_PREPARATION_BLOCKER_REASON_CODES,
+    inbox_preparation_blocker_targets_item,
     task_has_current_preparation_blocker,
 )
 from .task_assessment import TaskAssessmentService
@@ -269,7 +272,11 @@ def _owned_task_scoped_operator_directive_tasks(
         if item.item_type != TeamInboxItemType.OPERATOR_DIRECTIVE or item.task_id is None:
             continue
         task = state.tasks.get(item.task_id)
-        if task is not None and task.owner_agent_id == agent.id:
+        if (
+            task is not None
+            and task.owner_agent_id == agent.id
+            and task.state in _NON_TERMINAL_TASK_STATES
+        ):
             tasks.append(task)
     return tasks
 
@@ -631,6 +638,13 @@ def _inbox_project_ids(state: TeamState, item: AgentInboxItem) -> set[str]:
         "review_preparation_failed",
     }:
         return set()
+    if item.item_type == TeamInboxItemType.OPERATOR_DIRECTIVE and item.task_id is not None:
+        task = state.tasks.get(item.task_id)
+        if task is None or task.state not in _NON_TERMINAL_TASK_STATES:
+            # Keep a redundant terminal-task directive deliverable as inbox-only
+            # work. It must not reopen task or repository authority merely
+            # because the directive retained its original project metadata.
+            return set()
     project_ids = {
         project_id
         for project_id in (
@@ -650,6 +664,59 @@ def _inbox_project_ids(state: TeamState, item: AgentInboxItem) -> set[str]:
     return project_ids
 
 
+def reconcile_stale_inbox_preparation_blockers(
+    state: TeamState,
+    *,
+    result: dict[str, Any],
+    now: datetime | None = None,
+) -> list[str]:
+    """Resolve setup blockers after a directive no longer needs project scope."""
+
+    from .blockers import resolve_blocker
+    from .work_due import _mark_agent_work_due
+
+    effective_now = _ensure_utc(now or datetime.now(UTC))
+    resolved_ids: list[str] = []
+    for item in sorted(state.inbox.values(), key=lambda row: row.id):
+        if (
+            item.item_type != TeamInboxItemType.OPERATOR_DIRECTIVE
+            or item.task_id is None
+            or _inbox_project_ids(state, item)
+        ):
+            continue
+        item_resolved_ids: list[str] = []
+        for blocker in sorted(state.blockers.values(), key=lambda row: row.id):
+            if (
+                blocker.state != TeamBlockerState.OPEN
+                or blocker.reason_code != INBOX_EXECUTION_PREPARATION_BLOCKER_REASON_CODE
+                or not inbox_preparation_blocker_targets_item(blocker, item=item)
+            ):
+                continue
+            resolve_blocker(
+                state,
+                blocker=blocker,
+                actor_agent_id=None,
+                dispatch_id=None,
+                note=(
+                    "The operator directive no longer requires project preparation because "
+                    "its referenced task is terminal or unavailable."
+                ),
+                reference_ids=[item.id, item.task_id],
+                now=effective_now,
+            )
+            resolved_ids.append(blocker.id)
+            item_resolved_ids.append(blocker.id)
+        if item_resolved_ids and item.state == TeamInboxItemState.PENDING:
+            _mark_agent_work_due(
+                state,
+                agent_id=item.recipient_agent_id,
+                now=effective_now,
+            )
+    if resolved_ids:
+        result.setdefault("resolved_blocker_ids", []).extend(resolved_ids)
+    return resolved_ids
+
+
 __all__ = [
     "AgentDispatchScope",
     "actionable_dispatch_reviews",
@@ -658,4 +725,5 @@ __all__ = [
     "build_preparation_recovery_dispatch_scope",
     "inbox_references_review_ids",
     "mcp_capability_blocked_review_ids",
+    "reconcile_stale_inbox_preparation_blockers",
 ]

@@ -34,34 +34,53 @@ export function createTeamMailController({
   inboxItemLabels,
   disclosureAttributes,
   captureDisclosures,
+  canMutate,
+  mutationLocked,
+  lockedMessage,
+  setStatus,
+  mutationBody,
+  applyMutationResult,
+  reloadActiveView,
   pageSize = 50,
 }) {
   let mailState = emptyMailState();
   let requestId = 0;
   let selectedItemId = null;
   let selectedState = "";
+  let composerOpen = false;
+  let composerSubmitting = false;
+  let composerStatus = { message: "", level: "" };
 
   function bind() {
     documentRoot.addEventListener("change", (event) => {
       const filter = event.target?.closest?.("[data-mail-filter]");
-      if (!filter) {
+      if (filter) {
+        if (filter.dataset.mailFilter === "team_id") {
+          const selectedTeamId = text(filter.value);
+          const selectedAgent = getState().agents[text(elements.mailAgentFilter?.value)];
+          if (selectedAgent && text(selectedAgent.team_id) !== selectedTeamId) {
+            elements.mailAgentFilter.value = "";
+          }
+        }
+        if (filter.dataset.mailFilter === "agent_id" && !text(filter.value)) {
+          elements.mailDirectionFilter.value = "";
+        }
+        selectedItemId = null;
+        void load({ offset: 0 });
         return;
       }
-      if (filter.dataset.mailFilter === "team_id") {
-        const selectedTeamId = text(filter.value);
-        const selectedAgent = getState().agents[text(elements.mailAgentFilter?.value)];
-        if (selectedAgent && text(selectedAgent.team_id) !== selectedTeamId) {
-          elements.mailAgentFilter.value = "";
-        }
+      if (event.target?.closest?.("[data-mail-directive-team]")) {
+        renderComposer();
       }
-      if (filter.dataset.mailFilter === "agent_id" && !text(filter.value)) {
-        elements.mailDirectionFilter.value = "";
-      }
-      selectedItemId = null;
-      void load({ offset: 0 });
     });
 
     documentRoot.addEventListener("submit", (event) => {
+      const directiveForm = event.target?.closest?.("[data-mail-directive-form]");
+      if (directiveForm) {
+        event.preventDefault();
+        void submitDirective(directiveForm);
+        return;
+      }
       const form = event.target?.closest?.("[data-mail-search-form]");
       if (!form) {
         return;
@@ -72,6 +91,18 @@ export function createTeamMailController({
     });
 
     documentRoot.addEventListener("click", (event) => {
+      const openComposer = event.target?.closest?.("[data-mail-directive-open]");
+      if (openComposer) {
+        event.preventDefault();
+        openDirectiveComposer();
+        return;
+      }
+      const cancelComposer = event.target?.closest?.("[data-mail-directive-cancel]");
+      if (cancelComposer) {
+        event.preventDefault();
+        closeDirectiveComposer({ reset: true });
+        return;
+      }
       const refresh = event.target?.closest?.("[data-mail-refresh]");
       if (refresh) {
         event.preventDefault();
@@ -179,12 +210,248 @@ export function createTeamMailController({
 
   function render() {
     captureDisclosures?.();
+    renderComposerMutationControls();
+    renderComposer();
     renderFilterOptions();
     renderFolders();
     renderStatus();
     renderList();
     renderPagination();
     renderReader();
+  }
+
+  function renderComposerMutationControls() {
+    const locked = Boolean(mutationLocked?.());
+    const message = lockedMessage?.("create operator directives") || "";
+    if (elements.mailDirectiveOpen) {
+      elements.mailDirectiveOpen.disabled = locked;
+      elements.mailDirectiveOpen.setAttribute("aria-disabled", String(locked));
+      elements.mailDirectiveOpen.title = locked ? message : "";
+    }
+    if (elements.mailDirectiveSubmit) {
+      elements.mailDirectiveSubmit.disabled = locked || composerSubmitting;
+      elements.mailDirectiveSubmit.setAttribute("aria-disabled", String(locked || composerSubmitting));
+    }
+  }
+
+  function renderComposer() {
+    const form = elements.mailDirectiveForm;
+    if (!form) {
+      return;
+    }
+    form.hidden = !composerOpen;
+    if (!composerOpen) {
+      return;
+    }
+
+    const state = getState();
+    const selectedTeamId = text(elements.mailDirectiveTeam?.value);
+    const teams = values(state.teams)
+      .filter((team) => !team.archived)
+      .sort((left, right) => teamLabel(left).localeCompare(teamLabel(right)) || byId(left, right));
+    const activeTeamIds = new Set(teams.map((team) => text(team.id)));
+    const resolvedTeamId = activeTeamIds.has(selectedTeamId) ? selectedTeamId : "";
+    if (elements.mailDirectiveTeam) {
+      elements.mailDirectiveTeam.innerHTML = renderSelectOptions(
+        teams.map((team) => [team.id, `${teamLabel(team)} (${team.id})`]),
+        { selectedValue: resolvedTeamId, placeholder: "Select a Team" },
+      );
+    }
+
+    const selectedProjectId = text(elements.mailDirectiveProject?.value);
+    const projects = values(state.projects)
+      .filter((project) => text(project.team_id) === resolvedTeamId)
+      .sort((left, right) => projectLabel(left).localeCompare(projectLabel(right)) || byId(left, right));
+    const activeProjectIds = new Set(projects.map((project) => text(project.id)));
+    const resolvedProjectId = activeProjectIds.has(selectedProjectId) ? selectedProjectId : "";
+    if (elements.mailDirectiveProject) {
+      elements.mailDirectiveProject.innerHTML = renderSelectOptions(
+        projects.map((project) => [project.id, `${projectLabel(project)} (${project.id})`]),
+        { selectedValue: resolvedProjectId, placeholder: "No project context" },
+      );
+      elements.mailDirectiveProject.disabled = !resolvedTeamId;
+    }
+
+    renderComposerRecipient(state, resolvedTeamId);
+    if (elements.mailDirectiveSubmit) {
+      const disabled = Boolean(mutationLocked?.()) || composerSubmitting || !resolvedTeamId;
+      elements.mailDirectiveSubmit.disabled = disabled;
+      elements.mailDirectiveSubmit.setAttribute("aria-disabled", String(disabled));
+    }
+    if (elements.mailDirectiveStatus) {
+      elements.mailDirectiveStatus.className = `mail-directive-form-status${
+        composerStatus.level ? ` ${composerStatus.level}` : ""
+      }`;
+      elements.mailDirectiveStatus.textContent = composerStatus.message;
+    }
+  }
+
+  function renderComposerRecipient(state, teamId) {
+    if (!elements.mailDirectiveRecipient) {
+      return;
+    }
+    const team = state.teams[teamId];
+    const manager = team ? state.agents[text(team.manager_agent_id)] : null;
+    if (!team) {
+      elements.mailDirectiveRecipient.textContent = "Choose a Team to see its manager recipient.";
+      return;
+    }
+    if (!manager) {
+      elements.mailDirectiveRecipient.textContent = "This Team has no available manager recipient.";
+      return;
+    }
+    elements.mailDirectiveRecipient.textContent = `Will be delivered to ${agentLabel(manager)} (${manager.id}), this Team’s manager.`;
+  }
+
+  function openDirectiveComposer() {
+    if (!canMutate?.("create operator directives")) {
+      return;
+    }
+    composerOpen = true;
+    composerSubmitting = false;
+    composerStatus = { message: "", level: "" };
+    const currentlySelectedTeam = text(elements.mailDirectiveTeam?.value);
+    const filteredTeam = text(elements.mailTeamFilter?.value);
+    renderComposer();
+    if (!currentlySelectedTeam && filteredTeam && elements.mailDirectiveTeam) {
+      elements.mailDirectiveTeam.value = filteredTeam;
+      renderComposer();
+    }
+    elements.mailDirectiveTeam?.focus();
+  }
+
+  function closeDirectiveComposer({ reset = false } = {}) {
+    if (composerSubmitting) {
+      return;
+    }
+    composerOpen = false;
+    composerStatus = { message: "", level: "" };
+    if (reset) {
+      resetDirectiveComposerForm();
+    }
+    renderComposer();
+  }
+
+  function resetDirectiveComposerForm() {
+    elements.mailDirectiveForm?.reset();
+    const state = getState();
+    if (elements.mailDirectiveTeam) {
+      const teams = values(state.teams)
+        .filter((team) => !team.archived)
+        .sort((left, right) => teamLabel(left).localeCompare(teamLabel(right)) || byId(left, right));
+      elements.mailDirectiveTeam.innerHTML = renderSelectOptions(
+        teams.map((team) => [team.id, `${teamLabel(team)} (${team.id})`]),
+        { selectedValue: "", placeholder: "Select a Team" },
+      );
+      elements.mailDirectiveTeam.value = "";
+    }
+    if (elements.mailDirectiveProject) {
+      elements.mailDirectiveProject.innerHTML = renderSelectOptions([], {
+        selectedValue: "",
+        placeholder: "No project context",
+      });
+      elements.mailDirectiveProject.value = "";
+      elements.mailDirectiveProject.disabled = true;
+    }
+  }
+
+  async function submitDirective(form) {
+    if (composerSubmitting || !canMutate?.("create operator directives")) {
+      return;
+    }
+    if (!form.reportValidity()) {
+      return;
+    }
+    const teamId = text(elements.mailDirectiveTeam?.value);
+    const projectId = text(elements.mailDirectiveProject?.value);
+    const title = text(elements.mailDirectiveTitle?.value);
+    const message = text(elements.mailDirectiveMessage?.value);
+    const state = getState();
+    const team = state.teams[teamId];
+    const manager = team ? state.agents[text(team.manager_agent_id)] : null;
+    if (!team || team.archived || !manager || text(manager.status) !== "active") {
+      composerStatus = {
+        message: "Select an active Team with an active manager recipient.",
+        level: "error",
+      };
+      renderComposer();
+      return;
+    }
+    if (projectId && text(state.projects[projectId]?.team_id) !== teamId) {
+      composerStatus = { message: "The selected project is not in this Team.", level: "error" };
+      renderComposer();
+      return;
+    }
+
+    composerSubmitting = true;
+    composerStatus = { message: "Creating directive…", level: "loading" };
+    renderComposer();
+    const payload = mutationBody?.({
+      team_id: teamId,
+      project_id: projectId || null,
+      title: title || null,
+      message,
+      source: "admin_ui_operator_directive",
+    }) || {
+      team_id: teamId,
+      project_id: projectId || null,
+      title: title || null,
+      message,
+      source: "admin_ui_operator_directive",
+    };
+    try {
+      const response = await teamFetch(`${apiBase}/operator-directives`, {
+        method: "POST",
+        headers: {
+          Accept: "application/json",
+          "Content-Type": "application/json",
+          "X-Team-Addon-Response-Scope": "view",
+        },
+        body: JSON.stringify(payload),
+      });
+      if (response.status === 409) {
+        await reloadActiveView?.({ preserveForms: true });
+        composerStatus = {
+          message: "The Team state changed. Review the manager and submit the directive again.",
+          level: "error",
+        };
+        return;
+      }
+      if (!response.ok) {
+        throw new Error(await responseText(response));
+      }
+      const result = await response.json();
+      const directiveId = text(result.operator_directive?.id);
+      await applyMutationResult?.(result);
+      elements.mailTeamFilter.value = teamId;
+      elements.mailAgentFilter.value = "";
+      elements.mailDirectionFilter.value = "";
+      elements.mailTypeFilter.value = "operator_directive";
+      elements.mailSearchInput.value = "";
+      selectedState = "pending";
+      selectedItemId = directiveId || null;
+      composerOpen = false;
+      resetDirectiveComposerForm();
+      composerStatus = { message: "", level: "" };
+      await load({ offset: 0 });
+      setStatus?.(`Created an operator directive for ${agentLabel(manager)}.`, "ok");
+    } catch (error) {
+      composerStatus = {
+        message: error instanceof Error ? error.message : "The directive could not be created.",
+        level: "error",
+      };
+    } finally {
+      composerSubmitting = false;
+      renderComposer();
+    }
+  }
+
+  function teamLabel(team) {
+    return text(team?.name) || text(team?.id);
+  }
+
+  function projectLabel(project) {
+    return text(project?.name) || text(project?.id);
   }
 
   function renderFilterOptions() {

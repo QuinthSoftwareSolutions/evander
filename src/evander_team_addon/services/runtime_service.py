@@ -86,6 +86,7 @@ from .domain.blockers import (
     reconcile_unavailable_blocker_assignments,
 )
 from .domain.common import (
+    _NON_TERMINAL_TASK_STATES,
     _ensure_utc,
     _optional_text,
     _require_present,
@@ -97,6 +98,9 @@ from .domain.context_rotation import (
 )
 from .domain.dispatch_scope import (
     _assigned_blocker_recovery_tasks,
+    _blocker_project_ids,
+    _inbox_project_ids,
+    _review_project_ids,
     actionable_dispatch_reviews,
     actionable_dispatch_tasks,
     build_agent_dispatch_scope,
@@ -104,6 +108,7 @@ from .domain.dispatch_scope import (
     external_source_evidence_snapshot_ids_for_dispatch,
     inbox_references_review_ids,
     mcp_capability_blocked_review_ids,
+    reconcile_stale_inbox_preparation_blockers,
 )
 from .domain.dispatch_progress import (
     _dispatch_activity_counts_as_progress,
@@ -552,6 +557,11 @@ class TeamRuntimeService:
                 "errors": [],
             }
             reconcile_stale_task_preparation_blockers(
+                state_model,
+                result=stale_preparation_result,
+                now=effective_now,
+            )
+            reconcile_stale_inbox_preparation_blockers(
                 state_model,
                 result=stale_preparation_result,
                 now=effective_now,
@@ -3964,6 +3974,8 @@ def _dispatch_staleness_errors(
         and item.item_type == TeamInboxItemType.OPERATOR_DIRECTIVE
         and item.recipient_agent_id == dispatch.agent_id
         and item.task_id is not None
+        and (task := state.tasks.get(item.task_id)) is not None
+        and task.state in _NON_TERMINAL_TASK_STATES
     }
     manager_fallback_supervision_task_ids = manager_fallback_dispatch_supervision_task_ids(
         state,
@@ -4041,6 +4053,14 @@ def _dispatch_staleness_errors(
         )
         if authority_error is not None:
             errors.append(authority_error)
+    if dispatch_agent is not None:
+        current_project_ids = _current_dispatch_project_ids(
+            state,
+            dispatch=dispatch,
+            dispatch_agent=dispatch_agent,
+        )
+        if current_project_ids != set(dispatch.project_ids):
+            errors.append("project scope changed during dispatch preparation")
     current_managed_repo_ids = {
         state.projects[project_id].git.managed_repo_id
         for project_id in dispatch.project_ids
@@ -4049,3 +4069,47 @@ def _dispatch_staleness_errors(
     if current_managed_repo_ids != set(dispatch.managed_repo_ids):
         errors.append("managed repository scope changed during dispatch preparation")
     return errors
+
+
+def _current_dispatch_project_ids(
+    state: TeamState,
+    *,
+    dispatch: TeamDispatch,
+    dispatch_agent: PersistentAgent,
+) -> set[str]:
+    """Recompute only project authority actually represented by a dispatch."""
+
+    fallback_supervision_task_ids = manager_fallback_dispatch_supervision_task_ids(
+        state,
+        dispatch=dispatch,
+    )
+    project_ids = {
+        task.project_id
+        for task_id in dispatch.task_ids
+        if task_id not in fallback_supervision_task_ids
+        if (task := state.tasks.get(task_id)) is not None
+    }
+    for blocker_id in dispatch.blocker_ids:
+        blocker = state.blockers.get(blocker_id)
+        if blocker is not None:
+            project_ids.update(_blocker_project_ids(state, blocker))
+    for review_id in dispatch.review_request_ids:
+        review = state.review_requests.get(review_id)
+        if review is not None:
+            project_ids.update(_review_project_ids(state, review))
+    for inbox_id in dispatch.inbox_item_ids:
+        item = state.inbox.get(inbox_id)
+        if item is not None:
+            project_ids.update(_inbox_project_ids(state, item))
+    project_ids.update(
+        task.project_id
+        for deliverable_id in dispatch.initial_release_decision_deliverable_ids
+        if (deliverable := state.deliverables.get(deliverable_id)) is not None
+        if (task := state.tasks.get(deliverable.task_id)) is not None
+    )
+    return {
+        project_id
+        for project_id in project_ids
+        if (project := state.projects.get(project_id)) is not None
+        and project.team_id == dispatch_agent.team_id
+    }

@@ -536,10 +536,52 @@
             <div>
               <p class="section-label">Internal correspondence</p>
               <h2 id="team-mail-heading">Agent Mail</h2>
-              <p>Read the messages your agents send each other, including filed historical mail.</p>
+              <p>Review correspondence and create durable work for a Team manager.</p>
             </div>
-            <button type="button" class="record-action" data-mail-refresh>Refresh</button>
+            <div class="mail-header-actions">
+              <button type="button" class="record-action" data-mail-directive-open>Create directive</button>
+              <button type="button" class="record-action" data-mail-refresh>Refresh</button>
+            </div>
           </header>
+
+          <form class="mail-directive-composer" data-mail-directive-form hidden>
+            <div class="mail-directive-composer-heading">
+              <div>
+                <p class="section-label">Operator instruction</p>
+                <h3>Create operator directive</h3>
+              </div>
+              <button type="button" class="icon-button" data-mail-directive-cancel aria-label="Close directive composer">×</button>
+            </div>
+            <p class="mail-directive-description">Creates durable Team work for the selected Team’s manager. Use Chat when you want a conversation with an individual agent.</p>
+            <p class="mail-directive-recipient" data-mail-directive-recipient aria-live="polite"></p>
+            <div class="mail-directive-fields">
+              <label>
+                Team
+                <select data-mail-directive-team name="team_id" required>
+                  <option value="">Select a Team</option>
+                </select>
+              </label>
+              <label>
+                Project context <span class="field-optional">Optional</span>
+                <select data-mail-directive-project name="project_id">
+                  <option value="">No project context</option>
+                </select>
+              </label>
+              <label>
+                Title <span class="field-optional">Optional</span>
+                <input data-mail-directive-title name="title" maxlength="240" placeholder="What should the Team do?" />
+              </label>
+              <label class="mail-directive-message-field">
+                Directive
+                <textarea data-mail-directive-message name="message" rows="5" required placeholder="Describe the outcome, constraints, and any useful context."></textarea>
+              </label>
+            </div>
+            <div class="mail-directive-actions">
+              <span class="mail-directive-form-status" data-mail-directive-status role="status" aria-live="polite"></span>
+              <button type="button" class="secondary" data-mail-directive-cancel>Cancel</button>
+              <button type="submit" data-mail-directive-submit>Create directive</button>
+            </div>
+          </form>
 
           <div class="mail-toolbar" aria-label="Mail filters">
             <label>

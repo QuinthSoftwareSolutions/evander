@@ -301,6 +301,7 @@ def authoritative_deliverable_git_base(
     state: TeamState,
     *,
     deliverable: Deliverable,
+    use_dependency_composition_root: bool = True,
 ) -> tuple[str | None, str | None]:
     """Return the persisted branch/commit snapshot that owns a Git deliverable."""
 
@@ -326,6 +327,48 @@ def authoritative_deliverable_git_base(
                 f"deliverable {deliverable.id} Git work context base "
                 f"{context.base_branch!r} does not match task snapshot "
                 f"{task.git_base_branch!r}"
+            )
+        composition_manifest = deliverable.dependency_composition_manifest
+        if composition_manifest is not None and use_dependency_composition_root:
+            if composition_manifest.target_task_id != task.id:
+                raise ValueError(
+                    f"deliverable {deliverable.id} dependency composition belongs to "
+                    f"task {composition_manifest.target_task_id}"
+                )
+            if composition_manifest.base_branch != context.base_branch:
+                raise ValueError(
+                    f"deliverable {deliverable.id} dependency composition base "
+                    f"{composition_manifest.base_branch!r} does not match Git work "
+                    f"context base {context.base_branch!r}"
+                )
+            context_manifest = context.dependency_composition_manifest
+            expected_context_manifest = composition_manifest.model_copy(
+                update={"verified_candidate_commit_sha": None}
+            )
+            if (
+                context_manifest != composition_manifest
+                and context_manifest != expected_context_manifest
+            ):
+                raise ValueError(
+                    f"deliverable {deliverable.id} dependency composition does not "
+                    "match its authoritative Git work context"
+                )
+            submitted_commit_sha = (
+                deliverable.git_refs.submitted_commit_sha
+                or deliverable.git_refs.commit_sha
+            )
+            if (
+                submitted_commit_sha is None
+                or composition_manifest.verified_candidate_commit_sha
+                != submitted_commit_sha.casefold()
+            ):
+                raise ValueError(
+                    f"deliverable {deliverable.id} dependency composition is not "
+                    "verified for its submitted candidate"
+                )
+            return (
+                composition_manifest.base_branch,
+                composition_manifest.base_commit_sha,
             )
         return context.base_branch or task.git_base_branch, context.base_commit
 

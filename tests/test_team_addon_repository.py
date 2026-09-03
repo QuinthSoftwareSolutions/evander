@@ -125,6 +125,9 @@ from evander_team_addon.services.domain.task_assessment import (
     require_release_scope,
 )
 from evander_team_addon.services.domain.preparation_failures import (
+    inbox_has_current_preparation_blocker,
+    record_inbox_preparation_failure,
+    record_task_preparation_failure,
     task_git_work_context_generation,
 )
 from evander_team_addon.services.domain.work_due import _mark_agent_work_due
@@ -144,7 +147,10 @@ from evander_team_addon.services.release_gate_service import TeamReleaseGateServ
 from evander_team_addon.services.domain.acceptance_verification import (
     DELIVERABLE_ACCEPTANCE_VERIFICATION_REQUESTED_EVENT_TYPE,
 )
-from evander_team_addon.services.runtime_service import TeamRuntimeService
+from evander_team_addon.services.runtime_service import (
+    TeamRuntimeService,
+    _dispatch_staleness_errors,
+)
 from evander_team_addon.services.commands import (
     TeamAgentControlCommandService,
     TeamAgentMessageCommandService,
@@ -4396,7 +4402,7 @@ def test_formal_submission_does_not_create_acceptance_verification_run(
     assert state.deliverables["deliverable-resumed-verifier"].verification is None
 
 
-def test_composed_submission_persists_server_verified_candidate_ancestry(
+def test_composed_submission_release_uses_server_verified_composition_root(
     tmp_path: Path,
 ) -> None:
     repo = _seed_hierarchy(tmp_path)
@@ -4502,6 +4508,45 @@ def test_composed_submission_persists_server_verified_candidate_ancestry(
             "required_ancestor_shas": [composed_commit, source_commit],
         }
     ]
+
+    def _accept_composed_deliverable(current: TeamState) -> TeamState:
+        deliverable = current.deliverables["composed-deliverable"]
+        deliverable.state = TeamRecordState.ACCEPTED
+        deliverable.verification = DeliverableVerification(status="passed")
+        deliverable.review_manifest = DeliverableReviewManifest(
+            base_commit_sha="d" * 40,
+            reviewed_commit_sha=candidate_commit,
+            tree_hash="1" * 40,
+            commit_shas=[source_commit, candidate_commit],
+            changed_paths=["M\tsrc/composed.py"],
+        )
+        review = current.review_requests["review-composed"]
+        review.state = TeamRecordState.ACCEPTED
+        review.reviewed_commit_sha = candidate_commit
+        current.tasks["task"].state = TeamTaskState.FINISHED
+        return current
+
+    repo.update(_accept_composed_deliverable)
+    state, requested = _team_agent_action_service(repo).apply_agent_action(
+        action={
+            "agent_id": "lead",
+            "git_release_requests": [
+                {
+                    "id": "release-composed",
+                    "project_id": "project",
+                    "deliverable_ids": ["composed-deliverable"],
+                }
+            ],
+        },
+    )
+
+    assert requested["success"] is True, requested["errors"]
+    release = state.release_packages["release-composed"]
+    assert release.base_commit_sha == "d" * 40
+    assert release.canonical_base_commit_sha == "d" * 40
+    feature_promotion = state.git_promotions[release.git_promotion_record_ids[0]]
+    assert feature_promotion.promotion_kind == "feature"
+    assert feature_promotion.base_commit_sha == "d" * 40
 
 
 def test_formal_integration_submission_rejects_missing_composition_manifest(
@@ -16060,6 +16105,142 @@ def test_task_scoped_operator_directive_authorizes_owned_non_actionable_task(
     assert leases[0]["dispatch"]["project_ids"] == ["project"]
 
 
+@pytest.mark.parametrize(
+    "terminal_state",
+    [
+        TeamTaskState.FINISHED,
+        TeamTaskState.ACCEPTED,
+        TeamTaskState.REJECTED,
+        TeamTaskState.CANCELLED,
+    ],
+)
+def test_task_scoped_operator_directive_keeps_terminal_task_and_project_out_of_scope(
+    tmp_path: Path,
+    terminal_state: TeamTaskState,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _team_admin_service(repo).create_or_reprioritize_task(
+        task_id="terminal-directive-task",
+        owner_agent_id="manager",
+        project_id="project",
+        priority=1,
+        title="Already completed directive target",
+        description="A late directive must remain inbox-only.",
+        created_by_agent_id="manager",
+    )
+
+    def _mark_terminal(state: TeamState) -> TeamState:
+        task = state.tasks["terminal-directive-task"]
+        task.state = terminal_state
+        if terminal_state == TeamTaskState.CANCELLED:
+            task.cancellation = TaskCancellation(
+                reason_code="redundant",
+                reason="The directive arrived after the task was cancelled.",
+                actor_kind="operator",
+                actor_id="operator:test",
+            )
+        return state
+
+    repo.update(_mark_terminal)
+    _state, item = _team_admin_service(repo).create_operator_directive(
+        team_id="team",
+        message="Inspect the already completed task without reopening it.",
+        project_id="project",
+        task_id="terminal-directive-task",
+    )
+
+    state, leases = _team_runtime_service(repo).lease_due_agents(
+        agent_id="manager",
+        respect_wake_interval=False,
+        defer_activation=True,
+    )
+
+    assert len(leases) == 1
+    dispatch = state.dispatches[leases[0]["dispatch_id"]]
+    assert dispatch.inbox_item_ids == [item.id]
+    assert dispatch.task_ids == []
+    assert dispatch.project_ids == []
+    assert dispatch.managed_repo_ids == []
+    stale_in_flight_dispatch = dispatch.model_copy(
+        update={
+            "task_ids": ["terminal-directive-task"],
+            "project_ids": ["project"],
+        }
+    )
+    assert any(
+        error.startswith("task terminal-directive-task is ") and error.endswith(", not actionable")
+        for error in _dispatch_staleness_errors(
+            state,
+            dispatch=stale_in_flight_dispatch,
+        )
+    )
+
+
+@pytest.mark.parametrize(
+    "terminal_state",
+    [
+        TeamTaskState.FINISHED,
+        TeamTaskState.ACCEPTED,
+        TeamTaskState.REJECTED,
+        TeamTaskState.CANCELLED,
+    ],
+)
+def test_terminal_task_cannot_acquire_or_retain_preparation_blocker(
+    tmp_path: Path,
+    terminal_state: TeamTaskState,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _team_admin_service(repo).create_or_reprioritize_task(
+        task_id="preparation-task",
+        owner_agent_id="manager",
+        project_id="project",
+        priority=1,
+        title="Prepare task",
+        description="Exercise terminal preparation suppression.",
+        created_by_agent_id="manager",
+    )
+
+    def _record_then_finish(state: TeamState) -> TeamState:
+        blocker = record_task_preparation_failure(
+            state,
+            task_id="preparation-task",
+            reporter_agent_id="manager",
+            error="worktree preparation failed",
+            result={"events": []},
+        )
+        assert blocker is not None
+        task = state.tasks["preparation-task"]
+        task.state = terminal_state
+        if terminal_state == TeamTaskState.CANCELLED:
+            task.cancellation = TaskCancellation(
+                reason_code="redundant",
+                reason="The failed preparation is no longer actionable.",
+                actor_kind="operator",
+                actor_id="operator:test",
+            )
+        return state
+
+    repo.update(_record_then_finish)
+    state, leases = _team_runtime_service(repo).lease_due_agents(
+        agent_id="manager",
+        respect_wake_interval=False,
+    )
+
+    assert leases == []
+    [blocker] = list(state.blockers.values())
+    assert blocker.state == TeamBlockerState.RESOLVED
+    assert (
+        record_task_preparation_failure(
+            state,
+            task_id="preparation-task",
+            reporter_agent_id="manager",
+            error="late preparation failure",
+            result={"events": []},
+        )
+        is None
+    )
+
+
 def test_task_scoped_operator_directive_does_not_authorize_another_owner_task(
     tmp_path: Path,
 ) -> None:
@@ -16088,6 +16269,245 @@ def test_task_scoped_operator_directive_does_not_authorize_another_owner_task(
     assert len(leases) == 1
     assert leases[0]["dispatch"]["inbox_item_ids"] == [item.id]
     assert leases[0]["dispatch"]["task_ids"] == []
+
+
+def test_other_owner_directive_rejects_stale_project_scope_before_activation(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+
+    def _configure_git(state: TeamState) -> TeamState:
+        state.projects["project"].git = ProjectGitConfig(
+            managed_repo_id=MANAGED_REPO_ID,
+            base_branch="main",
+        )
+        return state
+
+    repo.update(_configure_git)
+    _team_admin_service(repo).create_or_reprioritize_task(
+        task_id="lead-only-task",
+        owner_agent_id="lead",
+        project_id="project",
+        priority=1,
+        title="Lead-only task",
+        description="Grant the manager only the directive's project context.",
+        created_by_agent_id="manager",
+    )
+    _state, item = _team_admin_service(repo).create_operator_directive(
+        team_id="team",
+        message="Review the selected task status.",
+        project_id="project",
+        task_id="lead-only-task",
+    )
+    runtime = _team_runtime_service(repo)
+    state, leases = runtime.lease_due_agents(
+        agent_id="manager",
+        respect_wake_interval=False,
+        defer_activation=True,
+    )
+
+    assert len(leases) == 1
+    dispatch_id = leases[0]["dispatch_id"]
+    dispatch = state.dispatches[dispatch_id]
+    assert dispatch.inbox_item_ids == [item.id]
+    assert dispatch.task_ids == []
+    assert dispatch.project_ids == ["project"]
+    assert dispatch.managed_repo_ids == [MANAGED_REPO_ID]
+
+    def _finish_referenced_task(current: TeamState) -> TeamState:
+        current.tasks["lead-only-task"].state = TeamTaskState.FINISHED
+        return current
+
+    repo.update(_finish_referenced_task)
+
+    with pytest.raises(
+        RuntimeError,
+        match="project scope changed during dispatch preparation",
+    ):
+        runtime.activate_delivered_agent_dispatch(dispatch_id=dispatch_id)
+
+    rejected = repo.read()
+    assert rejected.dispatches[dispatch_id].status == TeamDispatchStatus.FAILED
+    assert rejected.agent_runtimes["manager"].active_dispatch_id is None
+
+
+def test_reopened_other_owner_directive_rejects_new_project_scope_before_activation(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+
+    def _configure_git(state: TeamState) -> TeamState:
+        state.projects["project"].git = ProjectGitConfig(
+            managed_repo_id=MANAGED_REPO_ID,
+            base_branch="main",
+        )
+        return state
+
+    repo.update(_configure_git)
+    _team_admin_service(repo).create_or_reprioritize_task(
+        task_id="lead-only-task",
+        owner_agent_id="lead",
+        project_id="project",
+        priority=1,
+        title="Lead-only task",
+        description="Starts terminal and is reopened while the directive is preparing.",
+        created_by_agent_id="manager",
+    )
+
+    def _finish_referenced_task(state: TeamState) -> TeamState:
+        state.tasks["lead-only-task"].state = TeamTaskState.FINISHED
+        return state
+
+    repo.update(_finish_referenced_task)
+    _state, item = _team_admin_service(repo).create_operator_directive(
+        team_id="team",
+        message="Review the selected task status.",
+        project_id="project",
+        task_id="lead-only-task",
+    )
+    runtime = _team_runtime_service(repo)
+    state, leases = runtime.lease_due_agents(
+        agent_id="manager",
+        respect_wake_interval=False,
+        defer_activation=True,
+    )
+
+    assert len(leases) == 1
+    dispatch_id = leases[0]["dispatch_id"]
+    dispatch = state.dispatches[dispatch_id]
+    assert dispatch.inbox_item_ids == [item.id]
+    assert dispatch.task_ids == []
+    assert dispatch.project_ids == []
+    assert dispatch.managed_repo_ids == []
+
+    def _reopen_referenced_task(current: TeamState) -> TeamState:
+        current.tasks["lead-only-task"].state = TeamTaskState.PENDING
+        return current
+
+    repo.update(_reopen_referenced_task)
+
+    with pytest.raises(
+        RuntimeError,
+        match="project scope changed during dispatch preparation",
+    ):
+        runtime.activate_delivered_agent_dispatch(dispatch_id=dispatch_id)
+
+    rejected = repo.read()
+    assert rejected.dispatches[dispatch_id].status == TeamDispatchStatus.FAILED
+    assert rejected.agent_runtimes["manager"].active_dispatch_id is None
+
+
+def test_terminal_other_owner_directive_clears_obsolete_inbox_preparation_blocker(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _team_admin_service(repo).create_or_reprioritize_task(
+        task_id="lead-only-task",
+        owner_agent_id="lead",
+        project_id="project",
+        priority=1,
+        title="Lead-only task",
+        description="Require project preparation only while the task is active.",
+        created_by_agent_id="manager",
+    )
+    _state, item = _team_admin_service(repo).create_operator_directive(
+        team_id="team",
+        message="Review the selected task status.",
+        project_id="project",
+        task_id="lead-only-task",
+    )
+
+    def _record_failure(state: TeamState) -> TeamState:
+        record_inbox_preparation_failure(
+            state,
+            inbox_item_id=item.id,
+            reporter_agent_id="manager",
+            project_id="project",
+            error="managed repository preparation failed",
+            result={"events": []},
+        )
+        return state
+
+    failed = repo.update(_record_failure)
+    [open_blocker] = list(failed.blockers.values())
+    assert open_blocker.state == TeamBlockerState.OPEN
+    assert inbox_has_current_preparation_blocker(failed, item=failed.inbox[item.id])
+
+    def _finish_referenced_task(state: TeamState) -> TeamState:
+        state.tasks["lead-only-task"].state = TeamTaskState.FINISHED
+        return state
+
+    repo.update(_finish_referenced_task)
+
+    state, leases = _team_runtime_service(repo).lease_due_agents(
+        agent_id="manager",
+        defer_activation=True,
+    )
+
+    assert len(leases) == 1
+    [blocker] = list(state.blockers.values())
+    assert blocker.state == TeamBlockerState.RESOLVED
+    assert blocker.terminal_reference_ids == [item.id, "lead-only-task"]
+    dispatch = state.dispatches[leases[0]["dispatch_id"]]
+    assert dispatch.inbox_item_ids == [item.id]
+    assert dispatch.task_ids == []
+    assert dispatch.project_ids == []
+    assert dispatch.managed_repo_ids == []
+
+
+def test_terminal_other_owner_directive_keeps_independently_required_project_scope(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    admin = _team_admin_service(repo)
+    admin.create_or_reprioritize_task(
+        task_id="manager-task",
+        owner_agent_id="manager",
+        project_id="project",
+        priority=1,
+        title="Manager task",
+        description="Independently requires the project repository.",
+        created_by_agent_id="manager",
+    )
+    admin.create_or_reprioritize_task(
+        task_id="lead-only-task",
+        owner_agent_id="lead",
+        project_id="project",
+        priority=1,
+        title="Lead-only task",
+        description="Supplies no authority to the manager after becoming terminal.",
+        created_by_agent_id="manager",
+    )
+    _state, item = admin.create_operator_directive(
+        team_id="team",
+        message="Review the selected task status while completing your own work.",
+        project_id="project",
+        task_id="lead-only-task",
+    )
+    runtime = _team_runtime_service(repo)
+    state, leases = runtime.lease_due_agents(
+        agent_id="manager",
+        respect_wake_interval=False,
+        defer_activation=True,
+    )
+    assert len(leases) == 1
+    dispatch_id = leases[0]["dispatch_id"]
+    dispatch = state.dispatches[dispatch_id]
+    assert dispatch.inbox_item_ids == [item.id]
+    assert dispatch.task_ids == ["manager-task"]
+    assert dispatch.project_ids == ["project"]
+
+    def _finish_referenced_task(current: TeamState) -> TeamState:
+        current.tasks["lead-only-task"].state = TeamTaskState.FINISHED
+        return current
+
+    repo.update(_finish_referenced_task)
+
+    activated, _activation = runtime.activate_delivered_agent_dispatch(
+        dispatch_id=dispatch_id,
+    )
+
+    assert activated.dispatches[dispatch_id].status == TeamDispatchStatus.LEASED
 
 
 def test_create_operator_directive_rejects_non_manager_session(tmp_path: Path) -> None:
@@ -22353,17 +22773,8 @@ def test_release_rejects_mixed_task_bases_before_mutation(
     assert integrated_release.base_commit_sha == "base-integration"
 
 
-@pytest.mark.parametrize(
-    ("canonical_branch", "expected_destination"),
-    [
-        (None, "releases/project/release-feature"),
-        ("feature/foo", "feature/foo"),
-    ],
-)
-def test_feature_based_release_keeps_publication_destination_explicit(
+def test_feature_based_release_uses_project_canonical_destination(
     tmp_path: Path,
-    canonical_branch: str | None,
-    expected_destination: str,
 ) -> None:
     repo = _seed_hierarchy(tmp_path)
     _set_project_git(repo)
@@ -22376,17 +22787,16 @@ def test_feature_based_release_keeps_publication_destination_explicit(
         branch_kind="feature",
     )
 
-    release_request = {
-        "id": "release-feature",
-        "project_id": "project",
-        "deliverable_ids": ["deliverable-feature"],
-    }
-    if canonical_branch is not None:
-        release_request["canonical_branch"] = canonical_branch
     state, result = _team_agent_action_service(repo).apply_agent_action(
         action={
             "agent_id": "lead",
-            "git_release_requests": [release_request],
+            "git_release_requests": [
+                {
+                    "id": "release-feature",
+                    "project_id": "project",
+                    "deliverable_ids": ["deliverable-feature"],
+                }
+            ],
         },
     )
 
@@ -22394,10 +22804,112 @@ def test_feature_based_release_keeps_publication_destination_explicit(
     release = state.release_packages["release-feature"]
     assert release.git_base_branch == "feature/foo"
     assert release.base_commit_sha == "base-feature"
-    assert release.canonical_branch == expected_destination
+    assert release.canonical_branch == "releases/project/release-feature"
     promotion = state.git_promotions[release.git_promotion_record_ids[0]]
     assert promotion.git_base_branch == "feature/foo"
     assert promotion.base_commit_sha == "base-feature"
+
+
+def test_agent_action_cannot_override_project_canonical_destination(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _set_project_git(repo)
+    _seed_context_backed_accepted_git_deliverable(
+        repo,
+        task_id="task-feature",
+        deliverable_id="deliverable-feature",
+        git_base_branch="feature/foo",
+        base_commit_sha="base-feature",
+        branch_kind="feature",
+    )
+
+    state, result = _team_agent_action_service(repo).apply_agent_action(
+        action={
+            "agent_id": "lead",
+            "git_release_requests": [
+                {
+                    "id": "release-feature",
+                    "project_id": "project",
+                    "deliverable_ids": ["deliverable-feature"],
+                    "canonical_branch": "main",
+                }
+            ],
+        },
+    )
+
+    assert result["success"] is False
+    assert result["error_code"] == "canonical_branch_override_forbidden"
+    assert "Team derives the destination from project Git policy" in result["errors"][0]
+    assert state.release_packages == {}
+    assert state.git_promotions == {}
+
+
+def test_release_command_cannot_override_project_canonical_destination(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _set_project_git(repo)
+    _seed_context_backed_accepted_git_deliverable(
+        repo,
+        task_id="task-feature",
+        deliverable_id="deliverable-feature",
+        git_base_branch="feature/foo",
+        base_commit_sha="base-feature",
+        branch_kind="feature",
+    )
+    _lease_agent_dispatch(
+        repo,
+        agent_id="lead",
+        dispatch_id="dispatch-release-canonical-override",
+    )
+
+    state, result = _command_service(repo).request_release_command(
+        session_id="session-lead",
+        id="release-feature",
+        project_id="project",
+        deliverable_ids=["deliverable-feature"],
+        canonical_branch="main",
+        request_id="request-release-canonical-override",
+    )
+
+    assert result["success"] is False
+    assert result["errors"][0]["code"] == "canonical_branch_override_forbidden"
+    assert "Team derives the destination from project Git policy" in result["errors"][0][
+        "message"
+    ]
+    assert state.release_packages == {}
+    assert state.git_promotions == {}
+    assert repo.list_outbox_records() == []
+
+
+def test_operator_can_explicitly_override_project_canonical_destination(
+    tmp_path: Path,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    _set_project_git(repo)
+    _seed_context_backed_accepted_git_deliverable(
+        repo,
+        task_id="task-feature",
+        deliverable_id="deliverable-feature",
+        git_base_branch="feature/foo",
+        base_commit_sha="base-feature",
+        branch_kind="feature",
+    )
+
+    state, result = _team_admin_service(repo).create_release_package_with_result(
+        project_id="project",
+        deliverable_ids=["deliverable-feature"],
+        release_id="release-feature",
+        canonical_branch="operator/exceptional-release-destination",
+        operator_actor_id="release-admin",
+    )
+
+    assert result["success"] is True
+    assert (
+        state.release_packages["release-feature"].canonical_branch
+        == "operator/exceptional-release-destination"
+    )
 
 
 def test_apply_agent_action_rejects_combined_feature_update_and_release_request(

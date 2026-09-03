@@ -6114,6 +6114,117 @@ label textarea {
   color: var(--muted);
 }
 
+.mail-header-actions,
+.mail-directive-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+}
+
+.mail-directive-composer {
+  display: grid;
+  gap: 0.85rem;
+  margin: 0 1.1rem;
+  padding: 1rem;
+  border: 1px solid color-mix(in srgb, var(--accent) 35%, var(--line));
+  border-radius: 0.7rem;
+  background: color-mix(in srgb, var(--panel-alt) 72%, var(--panel));
+}
+
+.mail-directive-composer[hidden] {
+  display: none;
+}
+
+.mail-directive-composer-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.mail-directive-composer h3,
+.mail-directive-composer p {
+  margin: 0;
+}
+
+.mail-directive-composer h3 {
+  margin-top: 0.15rem;
+}
+
+.mail-directive-description,
+.mail-directive-recipient,
+.mail-directive-form-status {
+  color: var(--muted);
+  font-size: 0.84rem;
+  line-height: 1.45;
+}
+
+.mail-directive-recipient {
+  min-height: 1.25rem;
+  padding: 0.55rem 0.65rem;
+  border-radius: 0.45rem;
+  background: color-mix(in srgb, var(--panel) 70%, transparent);
+}
+
+.mail-directive-fields {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.75rem;
+}
+
+.mail-directive-fields label {
+  display: grid;
+  gap: 0.3rem;
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 700;
+}
+
+.mail-directive-fields input,
+.mail-directive-fields select,
+.mail-directive-fields textarea {
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.mail-directive-message-field {
+  grid-column: 1 / -1;
+}
+
+.mail-directive-message-field textarea {
+  min-height: 7.25rem;
+  resize: vertical;
+}
+
+.mail-directive-actions {
+  justify-content: flex-end;
+}
+
+.mail-directive-form-status {
+  flex: 1 1 auto;
+}
+
+.mail-directive-form-status.error {
+  color: var(--red);
+}
+
+.mail-directive-form-status.loading {
+  color: var(--accent-strong);
+}
+
+.field-optional {
+  font-weight: 500;
+}
+
+.mail-directive-composer .icon-button {
+  min-width: 2rem;
+  min-height: 2rem;
+  padding: 0;
+  border-radius: 999px;
+  font-size: 1.35rem;
+  line-height: 1;
+}
+
 .mail-toolbar {
   display: grid;
   grid-template-columns: repeat(4, minmax(9rem, 0.7fr)) minmax(16rem, 1.4fr);
@@ -6987,6 +7098,18 @@ label textarea {
   .mail-header {
     align-items: stretch;
     flex-direction: column;
+  }
+
+  .mail-header-actions {
+    justify-content: flex-end;
+  }
+
+  .mail-directive-fields {
+    grid-template-columns: 1fr;
+  }
+
+  .mail-directive-message-field {
+    grid-column: auto;
   }
 
   .mail-toolbar,

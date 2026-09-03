@@ -125,9 +125,11 @@ commit. Team returns <code>mixed_git_base_branches</code> before creating a
 package when they do not. To merge workstreams deliberately, create an explicit
 integration task on the chosen base and release only its accepted integrated
 deliverable. A task based on <code>feature/foo</code> does not publish there by
-implication; updating that pre-existing branch requires an explicit
-<code>canonical_branch="feature/foo"</code> and still uses exact-SHA,
-fast-forward, and destination-lease protections.
+implication. Agent release requests cannot override <code>canonical_branch</code>;
+Team derives it from the project's canonical release branch policy. An
+authenticated operator may explicitly select a different destination for an
+exceptional manual release, which still uses exact-SHA, fast-forward, and
+destination-lease protections.
 
 The first release package remains an explicit authorized request. A successor
 for post-release feedback also remains explicit and must name its feedback
