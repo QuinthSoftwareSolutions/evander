@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 import json
 from pathlib import Path
+from threading import Barrier, Lock
+import time
 
 import httpx
 import pytest
@@ -10,6 +13,9 @@ from evander.services import (
     AzureDevOpsPrReplyProvider,
     GitHubPrReplyProvider,
     PrReplyService,
+    ignored_feedback_ids_for_scope,
+    pr_feedback_scope_key,
+    pr_reply_state_namespace,
 )
 
 
@@ -242,6 +248,173 @@ def test_github_reply_provider_posts_reply(monkeypatch: pytest.MonkeyPatch) -> N
     )
     assert result.reply_id == "201"
     assert result.reply_url == "https://github.test/reply/201"
+
+
+@pytest.mark.parametrize("feedback_kind", ["issue_comment", "review"])
+def test_github_reply_provider_posts_conversation_comment_for_non_inline_feedback(
+    monkeypatch: pytest.MonkeyPatch,
+    feedback_kind: str,
+) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/repos/org/repo/issues/17/comments"
+        assert json.loads(request.content.decode("utf-8")) == {"body": "Applied."}
+        return httpx.Response(
+            201,
+            json={"id": 202, "html_url": "https://github.test/conversation/202"},
+        )
+
+    patch_httpx_client(monkeypatch, httpx.MockTransport(handler))
+    provider = GitHubPrReplyProvider(token="token-1", api_base_url="https://api.github.test")
+
+    result = provider.post_reply(
+        repo="org/repo",
+        pr_id="17",
+        thread_id="91",
+        comment_id="91",
+        feedback_kind=feedback_kind,
+        body_text="Applied.",
+    )
+
+    assert result.feedback_kind == "issue_comment"
+    assert result.reply_id == "202"
+
+
+def test_pr_reply_service_idempotency_is_process_safe_across_instances(tmp_path: Path) -> None:
+    start = Barrier(3)
+
+    class StubProvider:
+        def __init__(self) -> None:
+            self.calls = 0
+            self.lock = Lock()
+
+        def post_reply(self, **_: object):
+            from evander.models import PostPrFeedbackReplyResponse
+
+            with self.lock:
+                self.calls += 1
+            claim_payload = json.loads(store_path.read_text(encoding="utf-8"))
+            assert [entry["_state"] for entry in claim_payload.values()] == ["claimed"]
+            time.sleep(0.05)
+            return PostPrFeedbackReplyResponse(
+                status="posted",
+                provider="github",
+                repo="org/repo",
+                pr_id="17",
+                comment_id="7",
+                reply_id="reply-1",
+            )
+
+    provider = StubProvider()
+    store_path = tmp_path / "idempotency.json"
+    services = [
+        PrReplyService(providers={"github": provider}, idempotency_store_path=store_path)
+        for _ in range(2)
+    ]
+
+    def post(service: PrReplyService):
+        start.wait()
+        return service.post_reply(
+            provider="github",
+            repo="org/repo",
+            pr_id="17",
+            thread_id=None,
+            comment_id="7",
+            body_text="done",
+            idempotency_key="shared-key",
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        futures = [executor.submit(post, service) for service in services]
+        start.wait()
+        responses = [future.result(timeout=2) for future in futures]
+
+    assert provider.calls == 1
+    assert sorted(response.status for response in responses) == ["deduplicated", "posted"]
+    payload = json.loads(store_path.read_text(encoding="utf-8"))
+    assert len(payload) == 1
+
+
+def test_pr_reply_service_scopes_state_by_resolved_ado_target(tmp_path: Path) -> None:
+    class StubProvider:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def post_reply(self, **_: object):
+            from evander.models import PostPrFeedbackReplyResponse
+
+            self.calls += 1
+            return PostPrFeedbackReplyResponse(
+                status="posted",
+                provider="azure_devops",
+                repo="repo-1",
+                pr_id="17",
+                thread_id="44",
+                comment_id="10",
+                reply_id="301",
+            )
+
+    provider = StubProvider()
+    store_path = tmp_path / "idempotency.json"
+    ignored_path = tmp_path / "ignored-feedback-ids.json"
+    namespaces = [
+        pr_reply_state_namespace(
+            provider="azure_devops",
+            directory_path=f"root/team-{suffix}",
+            ado_organization_url=f"https://dev.azure.com/org-{suffix}",
+            project="Project",
+        )
+        for suffix in ("a", "b")
+    ]
+    services = [
+        PrReplyService(
+            providers={"azure_devops": provider},
+            idempotency_store_path=store_path,
+            ignored_feedback_store_path=ignored_path,
+            provider_state_namespaces={"azure_devops": namespace},
+        )
+        for namespace in namespaces
+    ]
+
+    first = services[0].post_reply(
+        provider="azure_devops",
+        repo="repo-1",
+        pr_id="17",
+        thread_id="44",
+        comment_id="10",
+        body_text="done",
+        idempotency_key="same-key",
+    )
+    second_scope_key = pr_feedback_scope_key(
+        state_namespace=namespaces[1],
+        provider="azure_devops",
+        repo="repo-1",
+        pr_id="17",
+    )
+    assert ignored_feedback_ids_for_scope(
+        json.loads(ignored_path.read_text(encoding="utf-8")),
+        scope_key=second_scope_key,
+    ) == set()
+    second = services[1].post_reply(
+        provider="azure_devops",
+        repo="repo-1",
+        pr_id="17",
+        thread_id="44",
+        comment_id="10",
+        body_text="done",
+        idempotency_key="same-key",
+    )
+
+    assert [first.status, second.status] == ["posted", "posted"]
+    assert provider.calls == 2
+    assert len(json.loads(store_path.read_text(encoding="utf-8"))) == 2
+    ignored_entries = json.loads(ignored_path.read_text(encoding="utf-8"))["feedback_ids"]
+    assert {entry["scope_key"] for entry in ignored_entries} == {
+        json.dumps(
+            [namespace, "azure_devops", "repo-1", "17"],
+            separators=(",", ":"),
+        )
+        for namespace in namespaces
+    }
 
 
 def test_azure_reply_provider_posts_reply(monkeypatch: pytest.MonkeyPatch) -> None:

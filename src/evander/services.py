@@ -1,11 +1,15 @@
 from __future__ import annotations
 
 import base64
+from contextlib import contextmanager
+import fcntl
 import html
 import json
 import logging
 import mimetypes
+import os
 import random
+import tempfile
 import time
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -4327,10 +4331,13 @@ class PrFeedbackService:
         path = self.ignored_feedback_store_path
         if path is None or not path.exists():
             return set()
-        payload = json.loads(path.read_text(encoding="utf-8"))
-        pruned_payload, feedback_ids, changed = _normalize_ignored_feedback_payload(payload)
-        if changed:
-            _write_json_atomic(path, pruned_payload)
+        with _exclusive_json_file_lock(path):
+            if not path.exists():
+                return set()
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            pruned_payload, feedback_ids, changed = _normalize_ignored_feedback_payload(payload)
+            if changed:
+                _write_json_atomic(path, pruned_payload)
         return feedback_ids
 
     def _effective_cursor(
@@ -4502,6 +4509,7 @@ class PrReplyProvider(Protocol):
         thread_id: str | None,
         comment_id: str | None,
         body_text: str,
+        feedback_kind: str | None = None,
         mentions: list[str] | None = None,
         attachments: list[dict[str, Any]] | None = None,
     ) -> PostPrFeedbackReplyResponse: ...
@@ -4568,16 +4576,28 @@ class GitHubPrReplyProvider:
         thread_id: str | None,
         comment_id: str | None,
         body_text: str,
+        feedback_kind: str | None = None,
         mentions: list[str] | None = None,
         attachments: list[dict[str, Any]] | None = None,
     ) -> PostPrFeedbackReplyResponse:
         _reject_unsupported_mentions("GitHub", mentions)
         _reject_unsupported_attachments("GitHub", attachments)
+        normalized_feedback_kind = _normalize_github_feedback_kind(feedback_kind)
         if not comment_id:
             raise ValueError("GitHub reply posting requires comment_id")
+        if normalized_feedback_kind == "review_comment":
+            url = (
+                f"{self.api_base_url}/repos/{repo}/pulls/{pr_id}/comments/"
+                f"{comment_id}/replies"
+            )
+        else:
+            # GitHub issue comments and whole-review feedback do not expose a
+            # threaded reply endpoint.  A PR conversation comment is the valid
+            # response surface for both kinds.
+            url = f"{self.api_base_url}/repos/{repo}/issues/{pr_id}/comments"
         with httpx.Client(timeout=self.timeout_seconds) as client:
             response = client.post(
-                f"{self.api_base_url}/repos/{repo}/pulls/{pr_id}/comments/{comment_id}/replies",
+                url,
                 headers={
                     "Authorization": f"Bearer {self.token}",
                     "Accept": "application/vnd.github+json",
@@ -4594,6 +4614,11 @@ class GitHubPrReplyProvider:
             pr_id=pr_id,
             thread_id=thread_id,
             comment_id=comment_id,
+            feedback_kind=(
+                "review_comment"
+                if normalized_feedback_kind == "review_comment"
+                else "issue_comment"
+            ),
             reply_id=str(payload.get("id", "")) or None,
             reply_url=payload.get("html_url") or payload.get("url"),
         )
@@ -4621,6 +4646,7 @@ class AzureDevOpsPrReplyProvider:
         thread_id: str | None,
         comment_id: str | None,
         body_text: str,
+        feedback_kind: str | None = None,
         mentions: list[str] | None = None,
         attachments: list[dict[str, Any]] | None = None,
     ) -> PostPrFeedbackReplyResponse:
@@ -4665,6 +4691,7 @@ class AzureDevOpsPrReplyProvider:
             pr_id=pr_id,
             thread_id=thread_id,
             comment_id=comment_id,
+            feedback_kind="thread_comment",
             reply_id=str(payload.get("id", "")) or None,
             reply_url=payload.get("_links", {}).get("web", {}).get("href"),
             uploaded_attachments=uploaded_attachments,
@@ -6172,10 +6199,7 @@ def normalize_pr_automation_provider(provider: str) -> str:
 
 
 def normalize_pr_feedback_provider(provider: str) -> str:
-    normalized = provider.strip()
-    if normalized in {"azure_devops", "azure-devops"}:
-        return "azure_devops"
-    return normalized
+    return normalize_pr_automation_provider(provider)
 
 
 class PrQueryService:
@@ -6437,14 +6461,17 @@ class PrReplyService:
         providers: dict[str, PrReplyProvider],
         idempotency_store_path: Path,
         ignored_feedback_store_path: Path | None = None,
+        provider_state_namespaces: Mapping[str, str] | None = None,
     ) -> None:
         self.providers = providers
         self.idempotency_store_path = idempotency_store_path
         self.ignored_feedback_store_path = ignored_feedback_store_path
+        self.provider_state_namespaces = dict(provider_state_namespaces or {})
         self._lock = Lock()
         self.idempotency_store_path.parent.mkdir(parents=True, exist_ok=True)
-        if not self.idempotency_store_path.exists():
-            self._write_raw({})
+        with self._lock, _exclusive_json_file_lock(self.idempotency_store_path):
+            if not self.idempotency_store_path.exists():
+                self._write_raw({})
 
     def post_reply(
         self,
@@ -6455,6 +6482,7 @@ class PrReplyService:
         thread_id: str | None,
         comment_id: str | None,
         body_text: str,
+        feedback_kind: str | None = None,
         mentions: list[str] | None = None,
         attachments: list[dict[str, Any]] | None = None,
         idempotency_key: str | None = None,
@@ -6465,13 +6493,15 @@ class PrReplyService:
                 f"PR feedback provider {provider_name!r} is not configured for this gateway instance"
             )
         normalized_key = idempotency_key.strip() if idempotency_key else None
-        cache_key = f"{provider_name}:{repo}:{pr_id}:{normalized_key}" if normalized_key else None
-        if cache_key:
-            with self._lock:
-                existing = self._read_raw().get(cache_key)
-            if isinstance(existing, dict):
-                cached = PostPrFeedbackReplyResponse.model_validate(existing)
-                return cached.model_copy(update={"status": "deduplicated"})
+        state_namespace = self.provider_state_namespaces.get(provider_name, "")
+        cache_key = (
+            json.dumps(
+                [state_namespace, provider_name, repo, pr_id, normalized_key],
+                separators=(",", ":"),
+            )
+            if normalized_key
+            else None
+        )
 
         normalized_mentions = normalize_ado_mention_refs(mentions)
         reply_kwargs: dict[str, Any] = {
@@ -6484,15 +6514,63 @@ class PrReplyService:
         }
         if normalized_mentions:
             reply_kwargs["mentions"] = normalized_mentions
-        response = self.providers[provider_name].post_reply(**reply_kwargs)
-        response.idempotency_key = normalized_key
-        self._record_ignored_feedback_id(response)
+        if feedback_kind is not None and provider_name == "github":
+            reply_kwargs["feedback_kind"] = feedback_kind
+
         if cache_key:
-            with self._lock:
-                payload = self._read_raw()
-                payload[cache_key] = response.model_dump(mode="json")
-                self._write_raw(payload)
+            response = self._post_idempotent_reply(
+                cache_key=cache_key,
+                provider_name=provider_name,
+                reply_kwargs=reply_kwargs,
+                idempotency_key=normalized_key,
+            )
+        else:
+            response = self.providers[provider_name].post_reply(**reply_kwargs)
+            response.idempotency_key = normalized_key
+        self._record_ignored_feedback_id(response)
         return response
+
+    def _post_idempotent_reply(
+        self,
+        *,
+        cache_key: str,
+        provider_name: str,
+        reply_kwargs: dict[str, Any],
+        idempotency_key: str | None,
+    ) -> PostPrFeedbackReplyResponse:
+        with self._lock, _exclusive_json_file_lock(self.idempotency_store_path):
+            payload = self._read_raw()
+            existing = payload.get(cache_key)
+            if isinstance(existing, dict):
+                if existing.get("_state") == "claimed":
+                    raise RuntimeError(
+                        "PR reply idempotency key has an unresolved prior claim; "
+                        "refusing to risk a duplicate external reply"
+                    )
+                cached = PostPrFeedbackReplyResponse.model_validate(existing)
+                return cached.model_copy(update={"status": "deduplicated"})
+
+            payload[cache_key] = {
+                "_state": "claimed",
+                "claimed_at": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+            }
+            self._write_raw(payload)
+            try:
+                response = self.providers[provider_name].post_reply(**reply_kwargs)
+            except Exception:
+                # A provider exception is a failed attempt and may be retried.
+                # Process termination after an ambiguous external success leaves
+                # the durable claim in place, preventing an unsafe duplicate.
+                latest_payload = self._read_raw()
+                latest_payload.pop(cache_key, None)
+                self._write_raw(latest_payload)
+                raise
+
+            response.idempotency_key = idempotency_key
+            latest_payload = self._read_raw()
+            latest_payload[cache_key] = response.model_dump(mode="json")
+            self._write_raw(latest_payload)
+            return response
 
     def _record_ignored_feedback_id(self, response: PostPrFeedbackReplyResponse) -> None:
         feedback_id = _feedback_id_for_reply_response(response)
@@ -6501,18 +6579,31 @@ class PrReplyService:
 
         path = self.ignored_feedback_store_path
         path.parent.mkdir(parents=True, exist_ok=True)
-        with self._lock:
+        with self._lock, _exclusive_json_file_lock(path):
             if path.exists():
                 payload = json.loads(path.read_text(encoding="utf-8"))
             else:
                 payload = {}
-            normalized_payload, feedback_ids, _ = _normalize_ignored_feedback_payload(payload)
-            if feedback_id in feedback_ids:
-                return
+            normalized_payload, _, _ = _normalize_ignored_feedback_payload(payload)
+            state_namespace = self.provider_state_namespaces.get(response.provider, "")
+            scope_key = pr_feedback_scope_key(
+                state_namespace=state_namespace,
+                provider=response.provider,
+                repo=response.repo,
+                pr_id=response.pr_id,
+            )
             entries = normalized_payload.get("feedback_ids", [])
+            if any(
+                isinstance(entry, dict)
+                and entry.get("feedback_id") == feedback_id
+                and entry.get("scope_key") == scope_key
+                for entry in entries
+            ):
+                return
             entries.append(
                 {
                     "feedback_id": feedback_id,
+                    "scope_key": scope_key,
                     "ignored_at": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
                 }
             )
@@ -6524,18 +6615,15 @@ class PrReplyService:
         return json.loads(self.idempotency_store_path.read_text(encoding="utf-8"))
 
     def _write_raw(self, payload: dict[str, Any]) -> None:
-        temp_path = self.idempotency_store_path.with_suffix(
-            f"{self.idempotency_store_path.suffix}.tmp"
-        )
-        temp_path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
-        temp_path.replace(self.idempotency_store_path)
+        _write_json_atomic(self.idempotency_store_path, payload)
 
 
 def _feedback_id_for_reply_response(response: PostPrFeedbackReplyResponse) -> str | None:
     if not response.reply_id:
         return None
     if response.provider == "github":
-        return f"github:review_comment:{response.reply_id}"
+        feedback_kind = response.feedback_kind or "review_comment"
+        return f"github:{feedback_kind}:{response.reply_id}"
     if response.provider == "azure_devops" and response.thread_id:
         return f"azure_devops:thread_comment:{response.thread_id}:{response.reply_id}"
     return None
@@ -6549,12 +6637,15 @@ def _normalize_ignored_feedback_payload(
     raw_entries = payload.get("feedback_ids", [])
     normalized_entries: list[dict[str, str]] = []
     feedback_ids: set[str] = set()
+    feedback_scopes: set[tuple[str, str | None]] = set()
 
     if isinstance(raw_entries, list):
         for raw_entry in raw_entries:
             if isinstance(raw_entry, str):
                 feedback_id = raw_entry.strip()
                 if not feedback_id:
+                    continue
+                if (feedback_id, None) in feedback_scopes:
                     continue
                 normalized_entries.append(
                     {
@@ -6563,6 +6654,7 @@ def _normalize_ignored_feedback_payload(
                     }
                 )
                 feedback_ids.add(feedback_id)
+                feedback_scopes.add((feedback_id, None))
                 continue
             if not isinstance(raw_entry, dict):
                 continue
@@ -6570,6 +6662,7 @@ def _normalize_ignored_feedback_payload(
             if not feedback_id:
                 continue
             ignored_at = str(raw_entry.get("ignored_at", "")).strip()
+            scope_key = str(raw_entry.get("scope_key", "")).strip() or None
             if ignored_at:
                 try:
                     ignored_at_dt = PrFeedbackService._parse_cursor(ignored_at)
@@ -6579,15 +6672,17 @@ def _normalize_ignored_feedback_payload(
                 ignored_at_dt = now
             if ignored_at_dt < cutoff:
                 continue
-            if feedback_id in feedback_ids:
+            if (feedback_id, scope_key) in feedback_scopes:
                 continue
-            normalized_entries.append(
-                {
-                    "feedback_id": feedback_id,
-                    "ignored_at": ignored_at_dt.isoformat().replace("+00:00", "Z"),
-                }
-            )
+            normalized_entry = {
+                "feedback_id": feedback_id,
+                "ignored_at": ignored_at_dt.isoformat().replace("+00:00", "Z"),
+            }
+            if scope_key is not None:
+                normalized_entry["scope_key"] = scope_key
+            normalized_entries.append(normalized_entry)
             feedback_ids.add(feedback_id)
+            feedback_scopes.add((feedback_id, scope_key))
 
     normalized_payload = {"feedback_ids": normalized_entries}
     changed = normalized_payload != payload
@@ -6595,9 +6690,97 @@ def _normalize_ignored_feedback_payload(
 
 
 def _write_json_atomic(path: Path, payload: dict[str, Any]) -> None:
-    temp_path = path.with_suffix(f"{path.suffix}.tmp")
-    temp_path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
-    temp_path.replace(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, temp_name = tempfile.mkstemp(
+        prefix=f".{path.name}.", suffix=".tmp", dir=path.parent, text=True
+    )
+    temp_path = Path(temp_name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(json.dumps(payload, indent=2, sort_keys=True))
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temp_path, path)
+    finally:
+        if temp_path.exists():
+            temp_path.unlink()
+
+
+@contextmanager
+def _exclusive_json_file_lock(path: Path) -> Iterator[None]:
+    lock_path = path.with_name(f".{path.name}.lock")
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with lock_path.open("a+", encoding="utf-8") as handle:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+
+def pr_reply_state_namespace(
+    *,
+    provider: str,
+    directory_path: str,
+    ado_organization_url: str | None = None,
+    project: str | None = None,
+) -> str:
+    provider_name = normalize_pr_feedback_provider(provider)
+    payload: dict[str, str] = {
+        "directory_path": directory_path.strip() or "root",
+        "provider": provider_name,
+    }
+    if provider_name == "azure_devops":
+        payload["ado_organization_url"] = (ado_organization_url or "").rstrip("/")
+        payload["project"] = (project or "").strip()
+    return json.dumps(payload, sort_keys=True, separators=(",", ":"))
+
+
+def pr_feedback_scope_key(
+    *, state_namespace: str, provider: str, repo: str, pr_id: str
+) -> str:
+    return json.dumps(
+        [state_namespace, normalize_pr_feedback_provider(provider), repo, pr_id],
+        separators=(",", ":"),
+    )
+
+
+def ignored_feedback_ids_for_scope(
+    payload: dict[str, Any], *, scope_key: str
+) -> set[str]:
+    normalized_payload, _, _ = _normalize_ignored_feedback_payload(payload)
+    feedback_ids: set[str] = set()
+    for entry in normalized_payload.get("feedback_ids", []):
+        if not isinstance(entry, dict):
+            continue
+        entry_scope = str(entry.get("scope_key", "")).strip() or None
+        if entry_scope is None or entry_scope == scope_key:
+            feedback_ids.add(str(entry.get("feedback_id", "")).strip())
+    feedback_ids.discard("")
+    return feedback_ids
+
+
+def read_ignored_feedback_payload(path: Path) -> dict[str, Any]:
+    with _exclusive_json_file_lock(path):
+        if not path.exists():
+            return {"feedback_ids": []}
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        normalized_payload, _, changed = _normalize_ignored_feedback_payload(payload)
+        if changed:
+            _write_json_atomic(path, normalized_payload)
+        return normalized_payload
+
+
+def _normalize_github_feedback_kind(value: str | None) -> str:
+    normalized = str(value or "review_comment").strip().lower().replace("-", "_")
+    if normalized.startswith("github:"):
+        parts = normalized.split(":", 2)
+        normalized = parts[1] if len(parts) > 1 else normalized
+    if normalized not in {"review_comment", "issue_comment", "review"}:
+        raise ValueError(
+            "GitHub reply posting feedback_kind must be review_comment, issue_comment, or review"
+        )
+    return normalized
 
 
 class PrPublishProvider(Protocol):
@@ -7557,21 +7740,23 @@ class PrPublishService:
 
         path = self.ignored_feedback_store_path
         path.parent.mkdir(parents=True, exist_ok=True)
-        with self._lock:
+        with self._lock, _exclusive_json_file_lock(path):
             if path.exists():
                 payload = json.loads(path.read_text(encoding="utf-8"))
             else:
                 payload = {}
-            normalized_payload, current_feedback_ids, _ = _normalize_ignored_feedback_payload(
-                payload
-            )
+            normalized_payload, _, _ = _normalize_ignored_feedback_payload(payload)
             entries = normalized_payload.get("feedback_ids", [])
             now = datetime.now(UTC).isoformat().replace("+00:00", "Z")
             for feedback_id in feedback_ids:
-                if feedback_id in current_feedback_ids:
+                if any(
+                    isinstance(entry, dict)
+                    and entry.get("feedback_id") == feedback_id
+                    and not entry.get("scope_key")
+                    for entry in entries
+                ):
                     continue
                 entries.append({"feedback_id": feedback_id, "ignored_at": now})
-                current_feedback_ids.add(feedback_id)
             normalized_payload["feedback_ids"] = entries
             final_payload, _, _ = _normalize_ignored_feedback_payload(normalized_payload)
             _write_json_atomic(path, final_payload)
@@ -7580,11 +7765,7 @@ class PrPublishService:
         return json.loads(self.idempotency_store_path.read_text(encoding="utf-8"))
 
     def _write_raw(self, payload: dict[str, Any]) -> None:
-        temp_path = self.idempotency_store_path.with_suffix(
-            f"{self.idempotency_store_path.suffix}.tmp"
-        )
-        temp_path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
-        temp_path.replace(self.idempotency_store_path)
+        _write_json_atomic(self.idempotency_store_path, payload)
 
 
 def _normalize_pr_review_comments(comments: Any) -> list[dict[str, Any]]:

@@ -1081,6 +1081,31 @@ class PullRequestRemoveTagEffectDefinition(EffectDefinition):
         return _normalize_static_pull_request_provider(value)
 
 
+class PullRequestReplyEffectDefinition(EffectDefinition):
+    type: Literal["effect:pull-request:reply"]
+    provider: ConfigValue
+    repo: ConfigValue
+    pr_id: ConfigValue
+    comment_id: ConfigValue
+    feedback_kind: ConfigValue | None = None
+    body_text: ConfigValue
+    idempotency_key: ConfigValue
+    thread_id: ConfigValue | None = None
+    directory_path: ConfigValue | None = None
+    ado_organization: ConfigValue | None = None
+    project: ConfigValue | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def migrate_legacy_organization_url(cls, data: object) -> object:
+        return _migrate_legacy_pull_request_organization(data)
+
+    @field_validator("provider")
+    @classmethod
+    def normalize_static_provider(cls, value: ConfigValue) -> ConfigValue:
+        return _normalize_static_pull_request_provider(value)
+
+
 class PullRequestUpdateEffectDefinition(EffectDefinition):
     type: Literal["effect:pull-request:update"]
     provider: ConfigValue

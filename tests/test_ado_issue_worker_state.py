@@ -181,6 +181,8 @@ def test_publish_directory_pr_feedback_events_enqueues_azure_feedback(
         "provider": "azure_devops",
         "repo": "org/repo",
         "pr_id": "6070",
+        "ado_organization": "example-org",
+        "project": "Example Project",
     }
     assert events[0].payload["feedback"]["metadata"]["agent_directed"] is True
     assert events[0].payload["feedback"]["metadata"]["agent_directed_reason"] == "mention"
@@ -791,6 +793,8 @@ def test_publish_directory_pr_feedback_events_uses_explicit_pr_query_candidates_
         "provider": "azure_devops",
         "repo": "org/repo",
         "pr_id": "6070",
+        "ado_organization": "example-org",
+        "project": "Example Project",
     }
     cursor_payload = json.loads(
         (worker_config.runtime_dir / "trigger-cursors-pr-feedback.json").read_text(encoding="utf-8")

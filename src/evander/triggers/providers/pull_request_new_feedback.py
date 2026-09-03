@@ -17,6 +17,12 @@ from evander.pr_feedback.providers import (
     pr_feedback_item_payload,
 )
 from evander.pr_feedback.store import PrFeedbackStore, _stream_key
+from evander.services import (
+    ignored_feedback_ids_for_scope,
+    pr_feedback_scope_key,
+    pr_reply_state_namespace,
+    read_ignored_feedback_payload,
+)
 from evander.triggers.providers._cursor_state import (
     TriggerCursorStore,
     latest_cursor_timestamp_text,
@@ -103,6 +109,23 @@ class PullRequestNewFeedbackTriggerProvider(TriggerProviderBase):
                 feedback_id=feedback.feedback_id,
                 recent_ids=recent_ids,
             ):
+                continue
+            ignored_feedback_ids = ignored_feedback_ids_for_scope(
+                read_ignored_feedback_payload(
+                    self._runtime_dir() / "ignored-feedback-ids.json"
+                ),
+                scope_key=self._feedback_scope_key(feedback),
+            )
+            if feedback.feedback_id in ignored_feedback_ids:
+                cursor_store.update(
+                    trigger.id,
+                    lambda state, stream_key=stream_key, feedback=feedback: _acknowledge_feedback(
+                        state,
+                        stream_key,
+                        feedback.feedback_id,
+                        feedback.created_at,
+                    ),
+                )
                 continue
             if trigger.suppress_agent_authored_feedback and bool(
                 (feedback.metadata or {}).get("agent_directed_author_self")
@@ -276,6 +299,31 @@ class PullRequestNewFeedbackTriggerProvider(TriggerProviderBase):
             agent_mention_ids=trigger.agent_mention_ids,
         )
 
+    def _feedback_scope_key(self, feedback: PrFeedbackItem) -> str:
+        directory_path = str(self.runtime_context.metadata.get("directory_path") or "root")
+        organization_url: str | None = None
+        project: str | None = None
+        if feedback.provider == "azure_devops":
+            organization_url = _optional_text(
+                getattr(self.runtime_context.resolved_config, "azure_devops_organization_url", None)
+            )
+            project = _optional_text(
+                self._trigger().project
+                or getattr(self.runtime_context.resolved_config, "azure_devops_project", None)
+            )
+        state_namespace = pr_reply_state_namespace(
+            provider=feedback.provider,
+            directory_path=directory_path,
+            ado_organization_url=organization_url,
+            project=project,
+        )
+        return pr_feedback_scope_key(
+            state_namespace=state_namespace,
+            provider=feedback.provider,
+            repo=feedback.repo,
+            pr_id=feedback.pr_id,
+        )
+
     @staticmethod
     def _provider_name_for_trigger(provider: str) -> str:
         if provider == "ado":
@@ -293,6 +341,13 @@ def _parse_dt(value: object) -> datetime | None:
     if parsed.tzinfo is None:
         return parsed.replace(tzinfo=UTC)
     return parsed.astimezone(UTC)
+
+
+def _optional_text(value: object) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
 
 
 def _feedback_is_behind_cursor(

@@ -66,6 +66,7 @@ from evander.effects.providers.pull_request_update import (
     PullRequestRemoveTagEffectProvider,
     PullRequestUpdateEffectProvider,
 )
+from evander.effects.providers.pull_request_reply import PullRequestReplyEffectProvider
 from evander.effects.providers.runtime_diagnostics_snapshot import (
     RuntimeDiagnosticsSnapshotEffectProvider,
 )
@@ -301,6 +302,7 @@ def register_providers() -> dict[str, dict[str, type]]:
             "effect:git:push-branch": GitPushBranchEffectProvider,
             "effect:pr:create": PrCreateEffectProvider,
             "effect:pull-request:add-tag": PullRequestAddTagEffectProvider,
+            "effect:pull-request:reply": PullRequestReplyEffectProvider,
             "effect:pull-request:remove-tag": PullRequestRemoveTagEffectProvider,
             "effect:pull-request:update": PullRequestUpdateEffectProvider,
             "effect:semantic:ensure-collection": SemanticEnsureCollectionEffectProvider,

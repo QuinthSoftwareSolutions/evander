@@ -28,6 +28,7 @@ from evander.messaging.discord_inbox_store import DiscordInboxStore
 from evander.messaging.teams_inbox_store import TeamsInboxMessage, TeamsInboxStore
 from evander.provider_config import ProviderConfigResolver
 from evander.provider_runtime.adapters import trigger_provider_config_blob
+from evander.services import pr_feedback_scope_key, pr_reply_state_namespace
 from evander.triggers.providers.base import TriggerRuntimeContext
 from evander.triggers.providers.cron import CronTriggerProvider
 from evander.triggers.providers.discord_new_message import DiscordNewMessageTriggerProvider
@@ -1178,6 +1179,108 @@ def test_conformance_pr_feedback_acknowledges_after_publish(
         "github:issue_comment:1",
         "github:issue_comment:2",
     ]
+
+
+@pytest.mark.parametrize("trigger_provider", ["github", "local"])
+def test_pr_feedback_trigger_suppresses_scoped_effect_reply(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    trigger_provider: str,
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    runtime_dir.mkdir(parents=True)
+    feedback_id = "github:review_comment:201"
+    created_at = datetime(2026, 4, 3, 12, 0, tzinfo=timezone.utc)
+    item = PrFeedbackItem(
+        feedback_id=feedback_id,
+        provider="github",
+        repo="org/repo",
+        pr_id="11",
+        comment_id="201",
+        author="automation",
+        body="Handled.",
+        created_at=created_at,
+    )
+    namespace = pr_reply_state_namespace(provider="github", directory_path="root")
+    scope_key = pr_feedback_scope_key(
+        state_namespace=namespace,
+        provider="github",
+        repo="org/repo",
+        pr_id="11",
+    )
+    (runtime_dir / "ignored-feedback-ids.json").write_text(
+        json.dumps(
+            {
+                "feedback_ids": [
+                    {
+                        "feedback_id": feedback_id,
+                        "scope_key": scope_key,
+                        "ignored_at": "2099-01-01T00:00:00Z",
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    if trigger_provider == "github":
+        (runtime_dir / "pr-map.json").write_text(
+            json.dumps(
+                {
+                    "entries": {
+                        "github:org/repo:11": {
+                            "provider": "github",
+                            "repo": "org/repo",
+                            "pr_id": "11",
+                            "directory_path": "root",
+                        }
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+    else:
+        (runtime_dir / "pr-feedback-store.json").write_text(
+            json.dumps(
+                {
+                    "cursors": {},
+                    "feedback": {feedback_id: item.model_dump(mode="json")},
+                    "session_reads": {},
+                }
+            ),
+            encoding="utf-8",
+        )
+
+    provider = PullRequestNewFeedbackTriggerProvider()
+    provider.initialize(
+        _trigger_adapter().validate_python(
+            {
+                "id": f"pr-{trigger_provider}",
+                "display_name": "PR feedback",
+                "type": "trigger:pull-request:new-feedback",
+                "provider": trigger_provider,
+            }
+        ),
+        _build_runtime_context(runtime_dir, env={"GITHUB_TOKEN": "secret"}),
+    )
+
+    class _PollResult:
+        feedback = [item]
+        next_cursor = "2026-04-03T12:00:00Z"
+
+    class _Adapter:
+        def poll(self, **_kwargs):
+            return _PollResult()
+
+    if trigger_provider == "github":
+        monkeypatch.setattr(provider, "_build_adapter", lambda _provider: _Adapter())
+
+    assert provider.poll() == []
+    cursor_payload = json.loads(
+        (runtime_dir / "trigger-cursors-pr-feedback.json").read_text(encoding="utf-8")
+    )
+    assert cursor_payload[f"pr-{trigger_provider}"]["recent_feedback_ids"][
+        "github:org/repo:11"
+    ] == [feedback_id]
 
 
 def test_pr_feedback_skips_feedback_older_than_stream_cursor(tmp_path: Path) -> None:

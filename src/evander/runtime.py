@@ -23,6 +23,7 @@ from evander.email.providers import JsonEmailProvider, MultiMailboxEmailProvider
 from evander.policy import PolicyEngine
 from evander.policy_config import PolicyConfigResolver
 from evander.provider_config import ProviderConfigResolver
+from evander.pull_request_automation import build_pr_reply_service
 from evander.messaging.targets import CommunicationTargetCapability
 from evander.host_config import HostConfig
 from evander.retell_phone import RetellPhoneCallService, RetellPhoneCallStore
@@ -56,7 +57,6 @@ from evander.repositories.script_run_requests import (
     ScriptRunRequestStore,
 )
 from evander.services import (
-    AzureDevOpsPrReplyProvider,
     AzureDevOpsPrQueryProvider,
     AzureDevOpsPrPublishProvider,
     DiscordBotApiService,
@@ -64,7 +64,6 @@ from evander.services import (
     DiscordService,
     EmailService,
     GraphTeamsService,
-    GitHubPrReplyProvider,
     GitHubPrQueryProvider,
     GitHubPrPublishProvider,
     PrFeedbackService,
@@ -268,10 +267,16 @@ class RuntimeContext:
     def pr_reply_service_for_session(self, session_id: str) -> PrReplyService:
         if not isinstance(self.pr_reply_service, PrReplyService):
             return self.pr_reply_service
+        session = self.session_repository.get_session(session_id)
+        if session is None:
+            raise ValueError(f"unknown session: {session_id}")
         resolved_config = self.resolve_provider_config_for_session(session_id)
-        if resolved_config == self.config:
+        if resolved_config == self.config and session.directory_path == "root":
             return self.pr_reply_service
-        return _build_pr_reply_service(resolved_config)
+        return _build_pr_reply_service(
+            resolved_config,
+            directory_path=session.directory_path,
+        )
 
     def pr_publish_service_for_session(self, session_id: str) -> PrPublishService:
         if not isinstance(self.pr_publish_service, PrPublishService):
@@ -813,27 +818,15 @@ def _build_delegated_teams_token_provider(config: GatewayConfig) -> TeamsDeviceC
     return TeamsDeviceCodeTokenProvider(auth_config, credential_store)
 
 
-def _build_pr_reply_service(config: GatewayConfig) -> PrReplyService:
-    github_token = os.environ.get(config.github_token_env, "").strip()
-    azure_pat = os.environ.get(config.azure_devops_pr_pat_env, "").strip()
-
-    providers = {}
-    if github_token:
-        providers["github"] = GitHubPrReplyProvider(
-            token=github_token,
-            timeout_seconds=config.email_provider_timeout_seconds,
-        )
-    if azure_pat:
-        providers["azure_devops"] = AzureDevOpsPrReplyProvider(
-            organization_url=config.azure_devops_organization_url,
-            project=config.azure_devops_project,
-            pat=azure_pat,
-            timeout_seconds=config.email_provider_timeout_seconds,
-        )
-    return PrReplyService(
-        providers=providers,
-        idempotency_store_path=config.runtime_dir / "pr-reply-idempotency.json",
-        ignored_feedback_store_path=config.runtime_dir / "ignored-feedback-ids.json",
+def _build_pr_reply_service(
+    config: GatewayConfig,
+    *,
+    directory_path: str = "root",
+) -> PrReplyService:
+    return build_pr_reply_service(
+        config=config,
+        resolve_secret=lambda env_name: os.environ.get(env_name),
+        directory_path=directory_path,
     )
 
 

@@ -2207,7 +2207,7 @@ without exposing provider credentials in the VM.
      comment/commit details; set `exhaustive=true` when exact totals across all candidate PRs are
      required.
 3. Post threaded replies (when needed):
-   - `post_pr_feedback_reply(provider, repo, pr_id, body_text, thread_id/comment_id, idempotency_key)`
+   - `post_pr_feedback_reply(provider, repo, pr_id, body_text, thread_id/comment_id, feedback_kind, idempotency_key)`
 4. Cursor advancement:
    - advance `last_read_cursor` only after local handling and any provider reply posting have completed durably.
 
@@ -2250,6 +2250,14 @@ constructed into the trusted `https://dev.azure.com/<org>` origin. For GitHub, i
 Set `include_commits=true` to fetch commit details and `include_reviewers=true`
 to fetch review API data; `include_reviewers=false` returns an empty reviewer
 list.
+
+Use `effect:pull-request:reply` to post a deterministic host-owned response to
+PR feedback. Bind its provider, repository, PR, thread/comment IDs,
+feedback kind, and an event-derived idempotency key from the feedback trigger.
+For Azure DevOps, also bind the trigger's organization and project so any trigger
+override is preserved. The effect uses directory-scoped credentials, records its
+claim transactionally across workers, and filters the resulting reply from later
+feedback polls. It is intentionally separate from agent wake and MCP approval flows.
 
 Use `query:pull-request:work-items` when an Azure DevOps workflow needs the
 work items linked to one PR. It returns the linked work items in provider order

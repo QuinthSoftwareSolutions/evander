@@ -1158,8 +1158,10 @@ Use this when you want the guest to wake only for new review feedback and post t
    description unchanged and use `expected_statuses=["active"]` to guard against stale requests.
    For full thread history, including already-consumed items and agent-authored replies suppressed
    from wake/unread checks, call `list_all_feedback`.
-   Workflow graphs can also use `query:pull-request:list` and `effect:pull-request:update`
-   for cron-driven PR polling and ADO tag/metadata updates. Azure DevOps PR tag expressions
+   Workflow graphs can also use `query:pull-request:list`, `effect:pull-request:update`, and
+   `effect:pull-request:reply`. The reply effect posts a host-owned, idempotent reply to the
+   triggering PR feedback comment using the directory's GitHub or Azure DevOps credentials; it
+   neither wakes an agent nor uses agent MCP approvals. Azure DevOps PR tag expressions
    such as `(TagA or TagB) and not TagC` are client-side after the provider list call, so bound
    polling with status, branch/time filters, `top`, `skip`, or `cursor`.
 
