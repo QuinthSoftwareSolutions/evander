@@ -1365,8 +1365,9 @@ set:
 - `effect:team:create-operator-directive` turns an operator request from
   Discord, Teams, Admin Web, or another workflow into a durable
   `operator_directive` inbox item. The item defaults to the team manager,
-  resets the manager's no-progress throttle, and is handled by the next normal
-  Team wake through ordinary Team MCP tools.
+  resets the manager's no-progress throttle, and atomically records a debounced
+  `team.agent.wake_requested` outbox event. The event is published promptly;
+  the normal Team runtime tick remains the recovery path if publication fails.
 - `effect:team:create-task` directly creates or updates an operator-authored Team
   task for a specific project owner. Agent-authored task creation remains through
   `team_create_task`, `team_create_task_for_role`, and `team_create_tasks` during
@@ -1693,8 +1694,9 @@ Team communication is directional and enforced by the repository, not by prose:
   `POST /operator-directives` Admin API, `effect:team:create-operator-directive`,
   or the `team_create_operator_directive` MCP tool for governance managers.
   These surfaces create a pending `operator_directive` inbox item for the
-  manager and mark the manager due, so an instruction like "ask the lead for
-  status on next dispatch" becomes normal Team work.
+  manager, mark the manager due, and durably request an immediate debounced
+  wake, so an instruction like "ask the lead for status" becomes normal Team
+  work without waiting for the periodic Team runtime tick.
 - **Governance agenda completion** — governance managers use the
   `team_mark_governance_agenda_handled` MCP tool to mark agenda items handled
   for groups they manage. Operators can still use the Admin API or UI handle

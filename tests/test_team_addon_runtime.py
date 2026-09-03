@@ -12805,6 +12805,19 @@ def test_create_operator_directive_effect_wakes_manager(tmp_path: Path) -> None:
     assert item.item_type == TeamInboxItemType.OPERATOR_DIRECTIVE
     assert item.payload["message"] == "Ask the lead for a status report."
     assert reread.agent_runtimes["manager"].next_wake_at is None
+    assert len(result["published_event_ids"]) == 1
+    assert len(result["outbox_record_ids"]) == 1
+    assert result["completed_outbox_record_ids"] == result["outbox_record_ids"]
+    [wake_outbox] = TeamStateRepository(tmp_path).list_outbox_records(
+        intent_type=AGENT_WAKE_REQUESTED_EVENT_TYPE
+    )
+    assert wake_outbox.id == result["outbox_record_ids"][0]
+    assert wake_outbox.status == TeamOutboxStatus.COMPLETED
+    [scheduled_wake] = ScheduledInternalEventStore(
+        default_orchestration_database_path(tmp_path)
+    ).list_due(datetime.now(UTC) + timedelta(minutes=1))
+    assert scheduled_wake.event_type == AGENT_WAKE_REQUESTED_EVENT_TYPE
+    assert scheduled_wake.payload["agent_id"] == "manager"
 
 
 def test_enqueue_operator_chat_message_effect_validates_target_and_authorization(

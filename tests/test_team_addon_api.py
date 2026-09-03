@@ -106,6 +106,7 @@ from evander_team_addon.providers import (
 )
 from evander_team_addon.services.domain.chat import CHAT_MESSAGE_QUEUED_EVENT_TYPE
 from evander_team_addon.services.domain.git_common import GIT_PROMOTION_EVENT_TYPE
+from evander_team_addon.services.domain.wake import AGENT_WAKE_REQUESTED_EVENT_TYPE
 from evander_team_addon.services.commands.outbox import (
     TEAM_OUTBOX_PUBLISH_REQUESTED_EVENT_TYPE,
 )
@@ -229,6 +230,69 @@ def test_team_outbox_publication_wake_is_durable_and_notifies_trigger_worker(
         context.runtime_dir / "trigger-orchestrator.lock",
         context.runtime_dir / "trigger-orchestrator.lock",
     ]
+
+
+def test_committed_team_wake_publish_failure_keeps_outbox_for_recovery(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        team_outbox_publication,
+        "notify_wake_socket_for_lock",
+        lambda _lock_path: True,
+    )
+    context = AddonContext(
+        addon_id="team-addon",
+        runtime_dir=tmp_path / "runtime",
+        addon_runtime_dir=tmp_path / "runtime" / "addons" / "team-addon",
+        project_dir=tmp_path,
+        config=GatewayConfig(runtime_dir=tmp_path / "runtime"),
+    )
+    repository = TeamStateRepository(context.runtime_dir)
+    now = datetime.now(UTC)
+    wake_event = {
+        "event_type": AGENT_WAKE_REQUESTED_EVENT_TYPE,
+        "correlation_key": f"{AGENT_WAKE_REQUESTED_EVENT_TYPE}:manager",
+        "idempotency_key": f"team-addon:{AGENT_WAKE_REQUESTED_EVENT_TYPE}:manager:1",
+        "payload": {
+            "team_id": "team",
+            "agent_id": "manager",
+            "session_id": "session-manager",
+            "reason": "inbox",
+        },
+        "delay_seconds": 1.0,
+    }
+    outbox = repository.enqueue_outbox_record(
+        TeamOutboxRecord(
+            id="outbox-wake-manager",
+            intent_type=AGENT_WAKE_REQUESTED_EVENT_TYPE,
+            aggregate_type="team_event",
+            aggregate_id=wake_event["correlation_key"],
+            idempotency_key=wake_event["idempotency_key"],
+            payload=wake_event,
+            created_at=now,
+            updated_at=now,
+        )
+    )
+
+    def _fail_publish(_events: object) -> list[str]:
+        raise RuntimeError("event bus unavailable")
+
+    result = team_outbox_publication.publish_team_wake_events_with_outbox_recovery(
+        context,
+        repository=repository,
+        events=[wake_event],
+        outbox_record_ids=[outbox.id],
+        publish_events=_fail_publish,
+    )
+
+    assert result["published_event_ids"] == []
+    assert result["completed_outbox_record_ids"] == []
+    assert result["event_publish_error"] == "event bus unavailable"
+    assert result["outbox_publication_wake"]["wake_notified"] is True
+    [pending] = repository.list_outbox_records(intent_type=AGENT_WAKE_REQUESTED_EVENT_TYPE)
+    assert pending.id == outbox.id
+    assert pending.status == TeamOutboxStatus.PENDING
 
 
 def _team_agent_action_service(repo: TeamStateRepository) -> TeamAgentActionService:
@@ -8814,6 +8878,8 @@ def test_team_addon_admin_api_creates_operator_directive(tmp_path: Path) -> None
     assert item["payload"]["created_by"] == "operator:admin"
     assert body["agent_runtimes"]["manager"]["next_wake_at"] is None
     assert len(body["published_event_ids"]) == 1
+    assert len(body["outbox_record_ids"]) == 1
+    assert body["completed_outbox_record_ids"] == body["outbox_record_ids"]
     scheduled = ScheduledInternalEventStore(
         default_orchestration_database_path(tmp_path / "runtime")
     ).list_due(datetime.now(UTC) + timedelta(minutes=1))
@@ -8822,6 +8888,11 @@ def test_team_addon_admin_api_creates_operator_directive(tmp_path: Path) -> None
     assert scheduled[0].event_type == "team.agent.wake_requested"
     assert scheduled[0].payload["agent_id"] == "manager"
     assert scheduled[0].payload["reason"] == "inbox"
+    [wake_outbox] = TeamStateRepository(tmp_path / "runtime").list_outbox_records(
+        intent_type=AGENT_WAKE_REQUESTED_EVENT_TYPE
+    )
+    assert wake_outbox.id == body["outbox_record_ids"][0]
+    assert wake_outbox.status == TeamOutboxStatus.COMPLETED
 
 
 def test_team_addon_admin_api_reassigns_team_manager(tmp_path: Path) -> None:

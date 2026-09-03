@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import hashlib
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -12,6 +12,8 @@ from evander.orchestration.internal_events import build_internal_event_bus
 from evander.workflow.runtime_config import load_trigger_orchestrator_worker_global_config
 
 from .services.commands.outbox import TEAM_OUTBOX_PUBLISH_REQUESTED_EVENT_TYPE
+from .repository import TeamStateRepository
+from .services.domain.wake import AGENT_WAKE_REQUESTED_EVENT_TYPE
 
 
 def request_team_outbox_publication(
@@ -88,11 +90,7 @@ def request_team_outbox_publication_for_records(
     outbox_record_ids: Sequence[str],
 ) -> dict[str, object] | None:
     normalized_ids = sorted(
-        {
-            text
-            for record_id in outbox_record_ids
-            if (text := str(record_id).strip())
-        }
+        {text for record_id in outbox_record_ids if (text := str(record_id).strip())}
     )
     if not normalized_ids:
         return None
@@ -108,7 +106,82 @@ def request_team_outbox_publication_for_records(
     }
 
 
+def publish_team_wake_events_with_outbox_recovery(
+    context: Any,
+    *,
+    repository: TeamStateRepository,
+    events: object,
+    outbox_record_ids: Sequence[str],
+    publish_events: Callable[[object], list[str]],
+) -> dict[str, object]:
+    """Publish committed wake events, acknowledge them, and prompt recovery if needed."""
+
+    normalized_ids = sorted(
+        {text for record_id in outbox_record_ids if (text := str(record_id).strip())}
+    )
+    wake_events = (
+        [
+            event
+            for event in events
+            if isinstance(event, Mapping)
+            and event.get("event_type") == AGENT_WAKE_REQUESTED_EVENT_TYPE
+        ]
+        if isinstance(events, list)
+        else []
+    )
+    result: dict[str, object] = {
+        "outbox_record_ids": normalized_ids,
+        "published_event_ids": [],
+        "completed_outbox_record_ids": [],
+    }
+
+    if wake_events:
+        try:
+            result["published_event_ids"] = publish_events(wake_events)
+        except Exception as exc:  # noqa: BLE001 - recovery must retain the committed intent
+            result["event_publish_error"] = str(exc)
+
+    published_event_ids = result["published_event_ids"]
+    if isinstance(published_event_ids, list) and published_event_ids:
+        idempotency_keys = {
+            str(event["idempotency_key"])
+            for event in wake_events
+            if event.get("idempotency_key") is not None
+        }
+        completed_ids: list[str] = []
+        try:
+            for record in repository.list_outbox_records(
+                intent_type=AGENT_WAKE_REQUESTED_EVENT_TYPE
+            ):
+                if (
+                    record.id not in normalized_ids
+                    or record.idempotency_key not in idempotency_keys
+                ):
+                    continue
+                if record.status.value != "completed":
+                    repository.complete_outbox_record(record_id=record.id)
+                completed_ids.append(record.id)
+        except Exception as exc:  # noqa: BLE001 - the pending outbox is the recovery path
+            result["outbox_ack_error"] = str(exc)
+        result["completed_outbox_record_ids"] = completed_ids
+
+    completed = {
+        str(record_id)
+        for record_id in result["completed_outbox_record_ids"]
+        if str(record_id).strip()
+    }
+    pending_ids = sorted(set(normalized_ids) - completed)
+    publication_wake = request_team_outbox_publication_for_records(
+        context,
+        outbox_record_ids=pending_ids,
+    )
+    if publication_wake is not None:
+        result["outbox_publication_wake"] = publication_wake
+    return result
+
+
 __all__ = [
     "request_team_outbox_publication",
     "request_team_outbox_publication_for_records",
+    "publish_team_wake_events_with_outbox_recovery",
 ]

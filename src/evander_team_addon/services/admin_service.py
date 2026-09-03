@@ -69,7 +69,6 @@ from ..models import (
     TeamCostBudgetRenewalMode,
     TeamCostBudgetWindow,
     TeamCostBudgetWindowKind,
-    TeamInboxItemType,
     TeamInboxPriority,
     TeamGitPreparationAttemptState,
     TeamIdempotencyRecord,
@@ -178,6 +177,7 @@ from .domain.governance import (
     _record_governance_membership_change_agenda,
 )
 from .domain.project_status import _recalculate_project_status
+from .domain.operator_directives import append_operator_directive
 from .domain.human_reviews import (
     HUMAN_REVIEW_ELIGIBILITY_RESOLVER_RESULT_KEY,
     HUMAN_REVIEW_ASSIGNMENT_UNAVAILABLE,
@@ -4869,7 +4869,7 @@ class TeamAdminService:
         created_by: str | None = None,
         requesting_session_id: str | None = None,
         expected_revision: int | None = None,
-    ) -> tuple[TeamState, AgentInboxItem]:
+    ) -> tuple[TeamState, AgentInboxItem, dict[str, Any]]:
         normalized_team_id = _required_text(team_id, "team_id")
         normalized_message = _required_text(message, "message")
         normalized_recipient_id = _optional_text(recipient_agent_id)
@@ -4881,6 +4881,7 @@ class TeamAdminService:
         normalized_created_by = _optional_text(created_by)
         normalized_requesting_session_id = _optional_text(requesting_session_id)
         created_inbox_id: str | None = None
+        wake_result: dict[str, Any] = {"events": [], "outbox_record_ids": []}
 
         def _mutate(state_model: TeamState) -> TeamState:
             nonlocal created_inbox_id
@@ -4937,43 +4938,42 @@ class TeamAdminService:
                 if project.team_id != team.id:
                     raise ValueError(f"project {project.id} is not in team {team.id}")
 
-            payload: dict[str, Any] = {
-                "title": normalized_title or "Operator directive",
-                "message": normalized_message,
-                "team_id": team.id,
-            }
-            if effective_project_id is not None:
-                payload["project_id"] = effective_project_id
-            if normalized_source is not None:
-                payload["source"] = normalized_source
-            if normalized_source_message_id is not None:
-                payload["source_message_id"] = normalized_source_message_id
-            if normalized_created_by is not None:
-                payload["created_by"] = normalized_created_by
-            if normalized_requesting_session_id is not None:
-                payload["requesting_session_id"] = normalized_requesting_session_id
-
-            inbox_id = f"inbox-{uuid4().hex}"
-            state_model.inbox[inbox_id] = AgentInboxItem(
-                id=inbox_id,
+            item = append_operator_directive(
+                state_model,
+                team_id=team.id,
                 recipient_agent_id=recipient.id,
-                sender_agent_id=None,
+                message=normalized_message,
+                result=wake_result,
+                now=now,
+                project_id=effective_project_id,
                 task_id=normalized_task_id,
-                item_type=TeamInboxItemType.OPERATOR_DIRECTIVE,
-                response_requested=True,
-                priority=TeamInboxPriority.NORMAL,
-                payload=payload,
-                created_at=now,
-                updated_at=now,
+                title=normalized_title,
+                source=normalized_source,
+                source_message_id=normalized_source_message_id,
+                created_by=normalized_created_by,
+                requesting_session_id=normalized_requesting_session_id,
             )
-            created_inbox_id = inbox_id
-            _mark_agent_work_due(state_model, agent_id=recipient.id, now=now)
+            created_inbox_id = item.id
             return state_model
 
-        state = self._repository.update(_mutate, expected_revision=expected_revision)
+        def _transaction(state_model: TeamState, tx: Any) -> TeamState:
+            if expected_revision is not None and state_model.revision != expected_revision:
+                raise TeamStateConflictError(
+                    expected_revision=expected_revision,
+                    current_revision=state_model.revision,
+                )
+            next_state = _mutate(state_model)
+            stored_records = [
+                tx.enqueue_outbox_record(record)
+                for record in _team_event_outbox_records(wake_result.get("events") or [])
+            ]
+            wake_result["outbox_record_ids"] = [record.id for record in stored_records]
+            return next_state
+
+        state = self._repository.store.update_state_with_command_transaction(_transaction)
         if created_inbox_id is None:  # pragma: no cover - defensive guard
             raise RuntimeError("operator directive was not created")
-        return state, state.inbox[created_inbox_id]
+        return state, state.inbox[created_inbox_id], wake_result
 
     def record_deliverable(
         self,

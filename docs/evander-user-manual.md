@@ -6208,7 +6208,7 @@ A directive is durable Team work addressed to a Team manager, not merely a Chat 
 - <code>effect:team:create-operator-directive</code> from Discord, Teams, Admin Web, or another workflow;
 - <code>team_create_operator_directive</code> by an authorized governance manager.
 
-It becomes a pending normal-priority, response-requested <code>operator_directive</code> in the manager's inbox and makes the manager due. A governance manager can direct only a member Team and only its manager. The manager handles it through ordinary Team work and communication.
+It becomes a pending normal-priority, response-requested <code>operator_directive</code> in the manager's inbox, makes the manager due, and atomically records a debounced <code>team.agent.wake_requested</code> event. Publication is requested immediately, while the periodic Team runtime tick remains the recovery path. A governance manager can direct only a member Team and only its manager. The manager handles it through ordinary Team work and communication.
 
 Use a directive when “please investigate telemetry retry safety” should survive a Chat failure, become schedulable work, and have explicit handled state.
 

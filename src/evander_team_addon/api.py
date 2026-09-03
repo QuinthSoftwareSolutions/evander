@@ -125,6 +125,7 @@ from .templates import get_template, template_catalog
 from .timeline import derive_team_timeline
 from .repository import TeamStateConflictError, TeamStateRepository
 from .outbox_publication import (
+    publish_team_wake_events_with_outbox_recovery,
     request_team_outbox_publication as _request_team_outbox_publication,
     request_team_outbox_publication_for_records,
 )
@@ -145,7 +146,6 @@ from .services.domain.git_common import GIT_PROMOTION_EVENT_TYPE
 from .services.domain.task_assessment import task_payload_with_assessment
 from .services.domain.wake import (
     AGENT_WAKE_REQUESTED_EVENT_TYPE,
-    _append_agent_wake_requested_event_for_inbox_item,
 )
 from .services.admin_service import TeamAdminService
 from .services.chat_service import (
@@ -2901,7 +2901,7 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
             context.auth,
             request,
         )
-        state, item = admin_service.create_operator_directive(
+        state, item, wake_result = admin_service.create_operator_directive(
             team_id=_required(payload, "team_id"),
             message=_required(payload, "message"),
             recipient_agent_id=_optional(payload, "recipient_agent_id"),
@@ -2914,21 +2914,20 @@ def admin_api_routes(context: AddonContext) -> Sequence[Route]:
             requesting_session_id=_optional(payload, "requesting_session_id"),
             expected_revision=_expected_revision(payload),
         )
-        wake_result: dict[str, Any] = {"events": []}
-        _append_agent_wake_requested_event_for_inbox_item(
-            state,
-            item=item,
-            result=wake_result,
-            now=item.created_at,
+        wake_delivery = publish_team_wake_events_with_outbox_recovery(
+            context,
+            repository=TeamStateRepository(context.runtime_dir),
+            events=wake_result.get("events"),
+            outbox_record_ids=wake_result.get("outbox_record_ids") or [],
+            publish_events=lambda events: _publish_team_events(context, events),
         )
-        published_event_ids = _publish_team_events(context, wake_result["events"])
         return _state_response(
             request,
             state,
             status_code=201,
             extra={
                 "operator_directive": item.model_dump(mode="json"),
-                "published_event_ids": published_event_ids,
+                **wake_delivery,
             },
         )
 

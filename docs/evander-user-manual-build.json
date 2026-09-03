@@ -1,15 +1,15 @@
 {
   "edition": "1.0",
-  "generated_at": "2026-09-03T04:29:34.122578+00:00",
+  "generated_at": "2026-09-03T20:58:15.787045+00:00",
   "outputs": {
-    "docs/evander-user-manual.docx": "21f360d282c76b23a30cf64375f6f514c21c3769c8241691a48c359dc00cfc56",
-    "docs/evander-user-manual.html": "1b4b993e4ecd53642387fb7af0db4c91279d8d63f2f6c3951909042381e55cb2",
-    "docs/evander-user-manual.md": "5cdee26102cf3b76c8d380dbcfc7477d98298ef07f3e4f7b1ba7a95568c3db0a",
-    "docs/evander-user-manual.pdf": "585e35ad3bf46ad226f484584e43c527a20b4619567a6afa826d557dc7cec2fc"
+    "docs/evander-user-manual.docx": "5aa08a5427811cd8f6f946fec5ec0169bcc984eccb2d35cdcfa0649403127f86",
+    "docs/evander-user-manual.html": "2e18641609a6b58accce98befa909f436f4569f72668626f343af9876408daf4",
+    "docs/evander-user-manual.md": "df1d5b4bb72ef38f99d637992d73da320809f54bd26e27d9045007559df51e3c",
+    "docs/evander-user-manual.pdf": "46af04ff64d0850ad3800662e893bee802b5cad58460aea9c8361ad18b671bef"
   },
   "project_version": "0.3.1",
   "schema_version": 1,
-  "source_fingerprint": "62a8ca810ee4c81d7ba7993ab58c6f7755c0b987f4b7fdd362454662bf24da76",
+  "source_fingerprint": "26b9578903cb6471bf11c4d474d13153ec3a3cafce1b7f5794769ac577d0744b",
   "sources": {
     "docs/assets/evander-user-manual/diagrams/01-system-context.png": "88b5f56516d2fb85a84d3489717a4d48e14aa4192a1b5e51af64e4abb4a75ed9",
     "docs/assets/evander-user-manual/diagrams/01-system-context.svg": "18d491c26e0ce3a23714ed59cbbd78c14a912c2c209dfd906eebcece38c470de",
@@ -80,7 +80,7 @@
     "docs/evander-user-manual/chapters/18-team-organization-work.md": "89e4e6e749c2c73b802fff64d1f3edede5f71f4e0dd4502745195aff7def10d0",
     "docs/evander-user-manual/chapters/19-team-command-transactions.md": "ef7cc457982bfba15789ac64a6470859563a22c2cc31dfacf24236cd502bc572",
     "docs/evander-user-manual/chapters/20-team-wakes-context.md": "054e1aa8770d36492a45b3d20571c832b74ef46e15f16e7ff56440dd5b39b8aa",
-    "docs/evander-user-manual/chapters/21-team-communication.md": "55f64e277e066e24492b5f3d6205602c69d2dbe6933ad2db3b66d02abdf5be12",
+    "docs/evander-user-manual/chapters/21-team-communication.md": "d14e06b1782289157505a63d84c198a06744cf460e92d09281baf87f2f61cd1b",
     "docs/evander-user-manual/chapters/22-team-delivery-review.md": "d0a7f8358ec05f57c6baa6dbd82b85a2decf9b3f0c9e8d4006808aa94cfff6a2",
     "docs/evander-user-manual/chapters/23-team-ephemeral-delegation.md": "33d43370b60e4367e5d9a45e666d37e13ee9a74ca70e24d403d65a8783d77202",
     "docs/evander-user-manual/chapters/24-team-git-releases.md": "ebfa6d5ecadf3ede65d9ec8c2741f4358d4014d117e6b841e61f7df57cad4006",

@@ -96,6 +96,7 @@ from evander_team_addon.models import (
     TeamDispatch,
     TeamDispatchStatus,
     TeamInboxItemState,
+    TeamOutboxStatus,
     TeamRecordState,
     TeamTaskState,
 )
@@ -1720,6 +1721,11 @@ def test_team_addon_mcp_registers_operator_directive_tool(tmp_path: Path) -> Non
 
     assert result["success"] is True
     assert result["recipient_agent_id"] == "manager"
+    assert len(result["published_event_ids"]) == 1
+    assert len(result["outbox_record_ids"]) == 1
+    assert result["completed_outbox_record_ids"] == result["outbox_record_ids"]
+    [wake_outbox] = repo.list_outbox_records(intent_type=AGENT_WAKE_REQUESTED_EVENT_TYPE)
+    assert wake_outbox.status == TeamOutboxStatus.COMPLETED
     replayed = _call_tool(
         server,
         TEAM_CREATE_OPERATOR_DIRECTIVE_TOOL,
