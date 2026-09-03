@@ -17,6 +17,7 @@ from ...models import (
     InitialReleaseDispositionState,
     PersistentAgent,
     Project,
+    ProjectGitConfig,
     ReleasePackage,
     ReleaseScopeValidation,
     RolePermission,
@@ -434,6 +435,14 @@ def _apply_git_release_request(
     if not permitted:
         result["errors"].append(
             f"agent {actor.id} is not permitted to request releases on project {project_id}"
+        )
+        return None
+    if _optional_text(request.get("canonical_branch")) is not None:
+        result["error_code"] = "canonical_branch_override_forbidden"
+        result["errors"].append(
+            "canonical_branch_override_forbidden: agents cannot override canonical_branch "
+            "for release requests; Team derives the destination from project Git policy. "
+            "Omit canonical_branch."
         )
         return None
     return _build_release_package(
@@ -855,12 +864,11 @@ def _build_release_package(
     def _release_input_git_base(
         deliverable: Deliverable,
     ) -> tuple[str | None, str | None]:
-        branch, commit = authoritative_deliverable_git_base(
-            state,
-            deliverable=deliverable,
-        )
         if predecessor is None or configuration_retry:
-            return branch, commit
+            return authoritative_deliverable_git_base(
+                state,
+                deliverable=deliverable,
+            )
         composed_correction_base = _candidate_correction_composition_base(
             state,
             predecessor=predecessor,
@@ -868,6 +876,17 @@ def _build_release_package(
         )
         if composed_correction_base is not None:
             branch, commit = composed_correction_base
+        else:
+            # Candidate-correction composition has stricter lineage evidence
+            # than an ordinary integration deliverable. When that evidence is
+            # inconsistent, retain the correction-specific rejected-candidate
+            # comparison below instead of failing first in the generic
+            # composition-root validator.
+            branch, commit = authoritative_deliverable_git_base(
+                state,
+                deliverable=deliverable,
+                use_dependency_composition_root=False,
+            )
         downstream_recovery_base = _candidate_correction_downstream_recovery_base(
             state,
             predecessor=predecessor,
@@ -2716,6 +2735,245 @@ def _release_failure_recipient(state: TeamState, release: ReleasePackage) -> str
     return team.manager_agent_id if team is not None else None
 
 
+def reconcile_dependency_composed_release_bases(
+    state: TeamState,
+    *,
+    result: dict[str, Any],
+) -> bool:
+    """Repair nonterminal releases created from the composed checkout tip.
+
+    Older package creation treated a dependency-composed worktree commit as the
+    destination base. The immutable composition manifest retains both that
+    legacy snapshot and the actual repository root and repository scope, so
+    migration can repair the package without consulting Git or guessing from
+    mutable project configuration.
+    """
+
+    changed = False
+    now = utc_now()
+    for release in sorted(
+        state.release_packages.values(),
+        key=lambda item: (item.created_at, item.id),
+    ):
+        if release.state in _TERMINAL_RELEASE_STATES or release.base_commit_sha is None:
+            continue
+        predecessor_id = release.supersedes_release_package_id
+        predecessor = (
+            state.release_packages.get(predecessor_id)
+            if predecessor_id is not None
+            else None
+        )
+        if predecessor_id is not None and (
+            predecessor is None or not _release_package_requires_recreation(predecessor)
+        ):
+            continue
+
+        authoritative_snapshots: set[tuple[str, str]] = set()
+        legacy_composition_snapshots: set[tuple[str, str]] = set()
+        immutable_repo_scopes: set[tuple[str, str]] = set()
+        has_composition_manifest = False
+        invalid_evidence = False
+        for deliverable_id in release.deliverable_ids:
+            deliverable = state.deliverables.get(deliverable_id)
+            if deliverable is None:
+                invalid_evidence = True
+                break
+            refs = deliverable.git_refs
+            has_git_evidence = any(
+                (
+                    refs.branch_context_id,
+                    refs.agent_branch,
+                    refs.review_branch,
+                    refs.feature_branch,
+                    refs.release_branch,
+                    refs.commit_sha,
+                )
+            )
+            if not has_git_evidence:
+                continue
+            try:
+                branch, commit = authoritative_deliverable_git_base(
+                    state,
+                    deliverable=deliverable,
+                )
+            except ValueError:
+                invalid_evidence = True
+                break
+            if branch is not None and commit is not None:
+                authoritative_snapshots.add((branch, commit))
+
+            manifest = deliverable.dependency_composition_manifest
+            if manifest is None:
+                continue
+            has_composition_manifest = True
+            immutable_repo_scopes.add(
+                (manifest.managed_repo_id, manifest.directory_path)
+            )
+            context = state.git_work_contexts.get(refs.branch_context_id or "")
+            task = state.tasks.get(deliverable.task_id)
+            legacy_branch = (
+                (context.base_branch if context is not None else None)
+                or (task.git_base_branch if task is not None else None)
+            )
+            legacy_commit = context.base_commit if context is not None else None
+            if legacy_branch is None or legacy_commit is None:
+                invalid_evidence = True
+                break
+            legacy_composition_snapshots.add((legacy_branch, legacy_commit))
+
+        if (
+            invalid_evidence
+            or not has_composition_manifest
+            or len(authoritative_snapshots) != 1
+            or len(legacy_composition_snapshots) != 1
+            or len(immutable_repo_scopes) != 1
+        ):
+            continue
+        authoritative_branch, authoritative_commit = next(iter(authoritative_snapshots))
+        legacy_branch, legacy_commit = next(iter(legacy_composition_snapshots))
+        managed_repo_id, directory_path = next(iter(immutable_repo_scopes))
+        try:
+            immutable_git = ProjectGitConfig(
+                managed_repo_id=managed_repo_id,
+                directory_path=directory_path,
+                base_branch=authoritative_branch,
+            )
+        except ValueError:
+            continue
+        legacy_release_base = (
+            release.git_base_branch == legacy_branch
+            and release.base_commit_sha == legacy_commit
+            and release.canonical_base_commit_sha in {None, legacy_commit}
+        )
+        reconciled_release_base = (
+            release.git_base_branch == authoritative_branch
+            and release.base_commit_sha == authoritative_commit
+            and release.canonical_base_commit_sha == authoritative_commit
+        )
+        if (
+            (authoritative_branch, authoritative_commit) == (legacy_branch, legacy_commit)
+            or (not legacy_release_base and not reconciled_release_base)
+        ):
+            continue
+
+        release_changed = False
+        if legacy_release_base:
+            release.git_base_branch = authoritative_branch
+            release.base_commit_sha = authoritative_commit
+            release.canonical_base_commit_sha = authoritative_commit
+            release.updated_at = now
+            result.setdefault("reconciled_release_package_ids", []).append(release.id)
+            release_changed = True
+
+        has_schema_71_reconciliation_history = any(
+            promotion.release_package_id == release.id
+            and promotion.promotion_kind == "canonical_push"
+            and promotion.state == "retired"
+            and promotion.git_base_branch == legacy_branch
+            and promotion.base_commit_sha == legacy_commit
+            for promotion in state.git_promotions.values()
+        )
+
+        canonical_retry_candidates: list[GitPromotionRecord] = []
+        for promotion_id in list(release.git_promotion_record_ids):
+            promotion = state.git_promotions.get(promotion_id)
+            if (
+                promotion is None or promotion.state not in {"pending", "failed"}
+            ):
+                continue
+            if promotion.promotion_kind == "canonical_push":
+                if (
+                    (
+                        promotion.git_base_branch == legacy_branch
+                        and promotion.base_commit_sha == legacy_commit
+                    )
+                    or (
+                        has_schema_71_reconciliation_history
+                        and promotion.git_base_branch == authoritative_branch
+                        and promotion.base_commit_sha == authoritative_commit
+                    )
+                ):
+                    canonical_retry_candidates.append(promotion)
+                continue
+            if promotion.base_commit_sha != legacy_commit:
+                continue
+            promotion.git_base_branch = authoritative_branch
+            promotion.base_commit_sha = authoritative_commit
+            promotion.updated_at = now
+            result.setdefault("updated_git_promotion_ids", []).append(promotion.id)
+            release_changed = True
+
+        if (
+            canonical_retry_candidates
+            and release.candidate_commit_sha is not None
+            and release.approved_commit_sha == release.candidate_commit_sha
+            and release.release_branch is not None
+        ):
+            canonical_retry_candidates.sort(key=lambda item: (item.created_at, item.id))
+            retry_source = canonical_retry_candidates[-1]
+            for promotion in canonical_retry_candidates:
+                promotion.state = "retired"
+                promotion.updated_at = now
+                result.setdefault("retired_git_promotion_ids", []).append(promotion.id)
+            retired_ids = {promotion.id for promotion in canonical_retry_candidates}
+            release.git_promotion_record_ids = [
+                promotion_id
+                for promotion_id in release.git_promotion_record_ids
+                if promotion_id not in retired_ids
+            ]
+
+            replacement_id = f"promotion-{uuid4().hex}"
+            replacement_source_branch = release.release_branch
+            replacement = GitPromotionRecord(
+                id=replacement_id,
+                project_id=release.project_id,
+                release_package_id=release.id,
+                actor_agent_id=retry_source.actor_agent_id,
+                source_branch=replacement_source_branch,
+                sources=[
+                    GitPromotionSource(
+                        source_branch=replacement_source_branch,
+                        expected_commit_sha=release.approved_commit_sha,
+                    )
+                ],
+                target_branch=retry_source.target_branch,
+                promotion_kind="canonical_push",
+                git_base_branch=authoritative_branch,
+                base_commit_sha=authoritative_commit,
+                created_at=now,
+                updated_at=now,
+            )
+            state.git_promotions[replacement.id] = replacement
+            release.git_promotion_record_ids.append(replacement.id)
+            release.state = TeamRecordState.PENDING
+            release.error = None
+            payload: dict[str, Any] = {
+                "promotion_id": replacement.id,
+                "promotion_kind": "canonical_push",
+                "project_id": release.project_id,
+                "release_package_id": release.id,
+                "managed_repo_id": immutable_git.managed_repo_id,
+                "directory_path": immutable_git.directory_path,
+                "base_branch": authoritative_branch,
+                "base_commit_sha": authoritative_commit,
+                "source_branch": replacement_source_branch,
+                "expected_commit_sha": release.approved_commit_sha,
+                "target_branch": replacement.target_branch,
+            }
+            _emit_git_promotion_event(
+                result,
+                promotion_id=replacement.id,
+                payload=payload,
+            )
+            result.setdefault("git_promotion_event_ids", []).append(replacement.id)
+            result.setdefault("replacement_canonical_promotion_ids", []).append(
+                replacement.id
+            )
+            release_changed = True
+        changed = changed or release_changed
+    return changed
+
+
 __all__ = [
     "ReleasePackageValidationError",
     "GIT_RELEASE_RECOVERY_EVENT_TYPE",
@@ -2735,4 +2993,5 @@ __all__ = [
     "_release_feature_prerequisites_ready",
     "_queue_release_promotion_if_ready",
     "_release_failure_recipient",
+    "reconcile_dependency_composed_release_bases",
 ]

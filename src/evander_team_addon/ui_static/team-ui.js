@@ -385,6 +385,15 @@ const elements = {
   mailList: document.querySelector("#mail-list"),
   mailPagination: document.querySelector("#mail-pagination"),
   mailReader: document.querySelector("#mail-reader"),
+  mailDirectiveOpen: document.querySelector("[data-mail-directive-open]"),
+  mailDirectiveForm: document.querySelector("[data-mail-directive-form]"),
+  mailDirectiveTeam: document.querySelector("[data-mail-directive-team]"),
+  mailDirectiveProject: document.querySelector("[data-mail-directive-project]"),
+  mailDirectiveTitle: document.querySelector("[data-mail-directive-title]"),
+  mailDirectiveMessage: document.querySelector("[data-mail-directive-message]"),
+  mailDirectiveRecipient: document.querySelector("[data-mail-directive-recipient]"),
+  mailDirectiveStatus: document.querySelector("[data-mail-directive-status]"),
+  mailDirectiveSubmit: document.querySelector("[data-mail-directive-submit]"),
   activityTeamFilter: document.querySelector("#activity-team-filter"),
   activityAgentFilter: document.querySelector("#activity-agent-filter"),
   activityStatusFilter: document.querySelector("#activity-status-filter"),
@@ -843,6 +852,14 @@ const mailController = createTeamMailController({
   inboxItemLabels,
   disclosureAttributes: teamDisclosureAttributes,
   captureDisclosures: rememberOpenTeamDisclosures,
+  canMutate: guardTeamMutation,
+  mutationLocked: teamMutationLocked,
+  lockedMessage: lockedMutationMessage,
+  setStatus,
+  mutationBody: (payload) =>
+    mutationBodyWithConflictMetadata("/operator-directives", "POST", payload),
+  applyMutationResult: applyMutationResultPayload,
+  reloadActiveView: reloadActiveTeamView,
 });
 
 const activityController = createTeamActivityController({

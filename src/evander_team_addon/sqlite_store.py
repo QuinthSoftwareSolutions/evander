@@ -31,7 +31,7 @@ from .models import (
 
 ADDON_ID = "team-addon"
 STATE_DB_FILE = "state.db"
-SQLITE_SCHEMA_VERSION = 70
+SQLITE_SCHEMA_VERSION = 72
 _SQLITE_WAL_ENABLE_TIMEOUT_SECONDS = 5.0
 
 T = TypeVar("T")
@@ -1987,6 +1987,26 @@ class TeamStateSqliteStore:
                     )
                 if previous_schema_version < 66:
                     _migrate_release_lineage(connection)
+                if (
+                    previous_schema_version < 72
+                    and _has_dependency_composed_release_base_candidates(connection)
+                ):
+                    from .services.domain.release_packages import (
+                        reconcile_dependency_composed_release_bases,
+                    )
+
+                    migrated_state = TeamState.model_validate(self._read_payload(connection))
+                    release_base_result: dict[str, Any] = {"events": []}
+                    if reconcile_dependency_composed_release_bases(
+                        migrated_state,
+                        result=release_base_result,
+                    ):
+                        self._write_state(connection, migrated_state)
+                        _reconcile_release_base_outbox_records(
+                            connection,
+                            state=migrated_state,
+                            result=release_base_result,
+                        )
                 if (
                     previous_schema_version < SQLITE_SCHEMA_VERSION
                     or previous_state_schema_version < SCHEMA_VERSION
@@ -7212,6 +7232,132 @@ def _migrate_release_canonical_base_snapshots(
                 AND release.canonical_base_commit_sha IS NOT NULL
           )
         """
+    )
+
+
+def _reconcile_release_base_outbox_records(
+    connection: sqlite3.Connection,
+    *,
+    state: TeamState,
+    result: Mapping[str, Any],
+) -> None:
+    """Retire stale queued intents and durably enqueue reconciled promotions."""
+
+    now = utc_now()
+    now_text = _datetime_text(now)
+    retired_ids = {
+        str(promotion_id)
+        for promotion_id in result.get("retired_git_promotion_ids", [])
+    }
+    if retired_ids:
+        placeholders = ", ".join("?" for _promotion_id in retired_ids)
+        connection.execute(
+            f"""
+            UPDATE team_outbox
+            SET status = ?,
+                completed_at = COALESCE(completed_at, ?),
+                updated_at = ?
+            WHERE aggregate_type = 'git_promotion'
+              AND aggregate_id IN ({placeholders})
+              AND (
+                    status = ?
+                    OR (
+                        status = ?
+                        AND claim_expires_at IS NOT NULL
+                        AND claim_expires_at <= ?
+                    )
+              )
+            """,
+            (
+                TeamOutboxStatus.COMPLETED.value,
+                now_text,
+                now_text,
+                *sorted(retired_ids),
+                TeamOutboxStatus.PENDING.value,
+                TeamOutboxStatus.CLAIMED.value,
+                now_text,
+            ),
+        )
+
+    for promotion_id in result.get("updated_git_promotion_ids", []):
+        promotion = state.git_promotions.get(str(promotion_id))
+        if promotion is None:
+            continue
+        rows = connection.execute(
+            """
+            SELECT id, payload_json
+            FROM team_outbox
+            WHERE aggregate_type = 'git_promotion'
+              AND aggregate_id = ?
+              AND status IN (?, ?)
+            """,
+            (
+                promotion.id,
+                TeamOutboxStatus.PENDING.value,
+                TeamOutboxStatus.CLAIMED.value,
+            ),
+        ).fetchall()
+        for row in rows:
+            outbox_payload = _json_loads(row["payload_json"])
+            if not isinstance(outbox_payload, dict):
+                continue
+            event_payload = outbox_payload.get("payload")
+            if not isinstance(event_payload, dict):
+                continue
+            event_payload["base_branch"] = promotion.git_base_branch
+            event_payload["base_commit_sha"] = promotion.base_commit_sha
+            connection.execute(
+                "UPDATE team_outbox SET payload_json = ?, updated_at = ? WHERE id = ?",
+                (_json_dumps(outbox_payload), now_text, row["id"]),
+            )
+
+    for event in result.get("events", []):
+        if not isinstance(event, Mapping):
+            continue
+        event_type = str(event.get("event_type") or "").strip()
+        event_payload = event.get("payload")
+        if not event_type or not isinstance(event_payload, Mapping):
+            continue
+        payload = dict(event_payload)
+        aggregate_id = str(payload.get("promotion_id") or "").strip() or None
+        TeamStateSqliteStore._insert_outbox_record(
+            connection,
+            TeamOutboxRecord(
+                id=f"outbox-{uuid4().hex}",
+                intent_type=event_type,
+                aggregate_type="git_promotion",
+                aggregate_id=aggregate_id,
+                idempotency_key=(str(event.get("idempotency_key") or "").strip() or None),
+                payload={
+                    "event_type": event_type,
+                    "correlation_key": event.get("correlation_key"),
+                    "payload": payload,
+                },
+                created_at=now,
+                updated_at=now,
+            ),
+        )
+
+
+def _has_dependency_composed_release_base_candidates(
+    connection: sqlite3.Connection,
+) -> bool:
+    return (
+        connection.execute(
+            """
+            SELECT 1
+            FROM team_release_packages AS release
+            JOIN team_release_deliverables AS link
+              ON link.package_id = release.id
+            JOIN team_deliverables AS deliverable
+              ON deliverable.id = link.deliverable_id
+            WHERE release.state NOT IN ('accepted', 'rejected')
+              AND release.base_commit_sha IS NOT NULL
+              AND deliverable.dependency_composition_manifest_json IS NOT NULL
+            LIMIT 1
+            """
+        ).fetchone()
+        is not None
     )
 
 

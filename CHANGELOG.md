@@ -1,5 +1,30 @@
 # Changelog
 
+## 2026-09-03 - Team Release and Directive Reliability
+
+- Added an Agent Mail composer for authenticated operators to create durable, manager-routed Team
+  directives with optional project context, reliable filter behavior, and reset-safe Team and
+  project selection.
+- Kept terminal-task directives as inbox-only work without stale preparation blockers, while
+  revalidating the complete project and managed-repository scope before prepared dispatches
+  activate, including when referenced tasks reopen.
+- Preserved targeted Team wake liveness when optimistic lease planning exhausts its state-revision
+  retries by recording success only after a durable delayed successor wake exists.
+- Derived release and promotion bases for dependency-composed deliverables from their
+  server-verified composition root instead of the already-composed worktree commit, preventing
+  valid canonical publication from being rejected as a destination-base mismatch.
+- Prevented Team agents, including managers and project leads, from overriding a release
+  package's canonical branch. Agent requests now derive it from project Git policy, while
+  authenticated operator release creation retains an explicit override for exceptional cases.
+- Reconciled nonterminal root and configuration-retry releases created with the old
+  dependency-composed checkout base from their immutable composition manifests, retiring stale
+  canonical attempts and durably queueing a repository-pinned corrected publication attempt while
+  preserving succeeded promotion history.
+- Completed expired claimed outbox intents for promotions retired by migration so obsolete
+  publications cannot be reclaimed and replayed.
+- Preserved candidate-correction-specific rejected-candidate diagnostics when validating
+  inconsistent composition evidence.
+
 ## 2026-09-02 - Named Codex Subscription Profiles
 
 - Added worker-owned named ChatGPT subscription profiles with independent device-login homes,

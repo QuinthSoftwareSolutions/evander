@@ -74,10 +74,17 @@ test("team add-on static UI exposes runtime control hooks", async () => {
   assert.match(markup, /not a compliance-grade audit log/);
   assert.match(markup, /data-team-view="mail"/);
   assert.match(markup, /id="team-mail-page"/);
+  assert.match(markup, /data-mail-directive-open/);
+  assert.match(markup, /data-mail-directive-form/);
+  assert.match(markup, /data-mail-directive-recipient/);
   assert.match(script, /createTeamMailController/);
   assert.match(mailScript, /\/inbox\?/);
+  assert.match(mailScript, /\/operator-directives/);
+  assert.match(mailScript, /openDirectiveComposer/);
+  assert.match(mailScript, /admin_ui_operator_directive/);
   assert.match(mailScript, /function renderReader/);
   assert.match(stylesheet, /\.mail-layout/);
+  assert.match(stylesheet, /\.mail-directive-composer/);
   assert.match(script, /data-planning-task-status/);
   assert.match(script, /data-task-board-team/);
   assert.match(script, /renderTaskBoard/);
@@ -1427,7 +1434,17 @@ function bootstrapPayload(state, communicationTargets = null) {
 }
 
 function viewPayload(state, view, url, template, timelinePayload) {
-  const data = { state };
+  const viewState = view === "mail"
+    ? {
+        revision: state.revision,
+        teams: state.teams,
+        projects: state.projects,
+        roles: state.roles,
+        agents: state.agents,
+        resource_tokens: state.resource_tokens,
+      }
+    : state;
+  const data = { state: viewState };
   if (view === "chat") {
     data.chat = chatCollectionPayload(state, {
       selectedConversationId: queryText(url.searchParams, "selected_conversation_id"),
@@ -2478,6 +2495,34 @@ function applyTemplateMaterialization(state, payload, template) {
 
 function applyMutation(state, pathname, payload) {
   state.revision += 1;
+  if (pathname === "/api/addons/team-addon/operator-directives") {
+    const team = state.teams[payload.team_id];
+    const managerId = team?.manager_agent_id;
+    if (!team || !managerId) {
+      return;
+    }
+    const directiveId = `operator-directive-${state.revision}`;
+    state.inbox[directiveId] = {
+      id: directiveId,
+      recipient_agent_id: managerId,
+      sender_agent_id: null,
+      task_id: null,
+      item_type: "operator_directive",
+      response_requested: true,
+      priority: "normal",
+      state: "pending",
+      payload: {
+        title: payload.title || "Operator directive",
+        message: payload.message,
+        team_id: payload.team_id,
+        ...(payload.project_id ? { project_id: payload.project_id } : {}),
+        ...(payload.source ? { source: payload.source } : {}),
+      },
+      created_at: "2026-06-09T16:10:00Z",
+      updated_at: "2026-06-09T16:10:00Z",
+    };
+    return;
+  }
   const releaseGateRetryMatch = pathname.match(
     /^\/api\/addons\/team-addon\/release-packages\/(.+)\/retry-gate$/,
   );
@@ -8790,6 +8835,109 @@ test("team add-on Mail reads historical agent correspondence", async (t) => {
     ),
     "expected Mail filters to be sent to the history endpoint",
   );
+});
+
+test("team add-on Mail creates a manager-routed operator directive", async (t) => {
+  const { port, requests, state } = await createTeamAddonServer(t, {
+    initialState: seededGitState(),
+  });
+  const page = await openBrowserPage(
+    t,
+    port,
+    {
+      storageState: {
+        cookies: [],
+        origins: [
+          {
+            origin: `http://127.0.0.1:${port}`,
+            localStorage: [{ name: teamViewStorageKey, value: "mail" }],
+          },
+        ],
+      },
+    },
+    "/addons/team-addon/?privileged_unlocked=true",
+  );
+
+  const mailPage = page.locator("#team-mail-page");
+  await mailPage.waitFor({ state: "visible" });
+  await page.locator('#team-view-mail-tab[aria-selected="true"]').waitFor({ state: "visible" });
+  await mailPage.locator("#mail-agent-filter").selectOption("alpha-lead");
+  await mailPage.locator("#mail-direction-filter").selectOption("sent");
+  await mailPage.locator("#mail-search-input").fill("unrelated historical message");
+  await mailPage.getByRole("button", { name: "Search" }).click();
+  await mailPage.getByRole("button", { name: "Create directive" }).click();
+  const form = mailPage.locator("[data-mail-directive-form]");
+  await form.waitFor({ state: "visible" });
+  await form.locator('[data-mail-directive-team]').selectOption("team-alpha");
+  await form.getByText("Will be delivered to alpha-manager (alpha-manager), this Team’s manager.").waitFor({
+    state: "visible",
+  });
+  await form.locator('[data-mail-directive-project] option[value="alpha-project"]').waitFor({
+    state: "attached",
+  });
+  await form.locator('[data-mail-directive-project]').selectOption("alpha-project");
+  await form.locator('[data-mail-directive-title]').fill("Check telemetry retry safety");
+  await form.locator('[data-mail-directive-message]').fill(
+    "Assess retry safety and report the constraints before changing production behavior.",
+  );
+  await form.getByRole("button", { name: "Create directive" }).click();
+
+  await mailPage.locator('[data-mail-item-id="operator-directive-5"]').waitFor({ state: "visible" });
+  await mailPage.getByRole("heading", { name: "Check telemetry retry safety" }).waitFor({
+    state: "visible",
+  });
+  assert.equal(state.inbox["operator-directive-5"].recipient_agent_id, "alpha-manager");
+  assert.equal(state.inbox["operator-directive-5"].payload.project_id, "alpha-project");
+  assert.equal(
+    state.inbox["operator-directive-5"].payload.message,
+    "Assess retry safety and report the constraints before changing production behavior.",
+  );
+
+  const createRequest = requests.find(
+    (request) =>
+      request.method === "POST" &&
+      request.pathname === "/api/addons/team-addon/operator-directives",
+  );
+  assert.ok(createRequest, "expected an operator directive request");
+  assert.deepEqual(createRequest.payload, {
+    team_id: "team-alpha",
+    project_id: "alpha-project",
+    title: "Check telemetry retry safety",
+    message: "Assess retry safety and report the constraints before changing production behavior.",
+    source: "admin_ui_operator_directive",
+    expected_revision: 4,
+  });
+  assert.equal("recipient_agent_id" in createRequest.payload, false);
+
+  assert.equal(await mailPage.locator("#mail-agent-filter").inputValue(), "");
+  assert.equal(await mailPage.locator("#mail-direction-filter").inputValue(), "");
+  assert.equal(await mailPage.locator("#mail-search-input").inputValue(), "");
+  const finalMailRequest = requests.filter(
+    (request) => request.method === "GET" && request.pathname === "/api/addons/team-addon/inbox",
+  ).at(-1);
+  assert.ok(finalMailRequest, "expected Mail to reload after directive creation");
+  const finalMailQuery = new URLSearchParams(finalMailRequest.search);
+  assert.equal(finalMailQuery.get("team_id"), "team-alpha");
+  assert.equal(finalMailQuery.get("item_type"), "operator_directive");
+  assert.equal(finalMailQuery.get("state"), "pending");
+  assert.equal(finalMailQuery.has("agent_id"), false);
+  assert.equal(finalMailQuery.has("direction"), false);
+  assert.equal(finalMailQuery.has("q"), false);
+
+  await mailPage.locator("#mail-team-filter").selectOption("team-beta");
+  await mailPage.locator("[data-mail-directive-open]").click();
+  await form.waitFor({ state: "visible" });
+  assert.equal(await form.locator("[data-mail-directive-team]").inputValue(), "team-beta");
+  assert.equal(await form.locator("[data-mail-directive-project]").inputValue(), "");
+  await form.locator("[data-mail-directive-project]").selectOption("beta-project");
+  await form.getByRole("button", { name: "Cancel", exact: true }).click();
+  await form.waitFor({ state: "hidden" });
+
+  await mailPage.locator("#mail-team-filter").selectOption("team-alpha");
+  await mailPage.locator("[data-mail-directive-open]").click();
+  await form.waitFor({ state: "visible" });
+  assert.equal(await form.locator("[data-mail-directive-team]").inputValue(), "team-alpha");
+  assert.equal(await form.locator("[data-mail-directive-project]").inputValue(), "");
 });
 
 test("team add-on Mail renders body, error, and generic historical payloads", async (t) => {

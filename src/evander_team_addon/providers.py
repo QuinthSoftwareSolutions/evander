@@ -347,6 +347,7 @@ from .services.wake_prompt_context import (
 from .services.wake_singleflight import TEAM_WAKE_SINGLE_FLIGHT
 from .services.runtime_service import (
     MAX_AGENT_DISPATCH_LEASE_RENEWAL_SECONDS,
+    TEAM_LEASE_PREPARED_COMMIT_MAX_ATTEMPTS,
     TeamRuntimeService,
 )
 from .services.worktree_cleanup_service import (
@@ -2500,6 +2501,7 @@ class TeamWakeDueAgentsEffectProvider(EffectProviderBase):
             execute=lambda: self._execute_once(
                 resolved_config=effective_resolved_config,
                 repository=repo,
+                invocation_key=invocation_key,
             ),
         )
 
@@ -2508,6 +2510,7 @@ class TeamWakeDueAgentsEffectProvider(EffectProviderBase):
         *,
         resolved_config: Mapping[str, Any] | None = None,
         repository: TeamStateRepository | None = None,
+        invocation_key: str | None = None,
     ) -> dict[str, Any]:
         payload = _definition_payload(
             self.effect_definition,
@@ -2667,6 +2670,8 @@ class TeamWakeDueAgentsEffectProvider(EffectProviderBase):
         resume_mode = _optional_text(payload.get("resume_mode")) or "same_context"
         lease_limit = _optional_int(payload.get("limit"), default=10)
         normalized_limit = max(0, int(lease_limit or 0))
+        transient_conflicts: list[dict[str, Any]] = []
+        retry_event_ids: list[str] = []
         if normalized_limit == 0 or (
             not run_global_maintenance
             and not _team_wake_has_chat_claim_candidate(
@@ -2712,35 +2717,81 @@ class TeamWakeDueAgentsEffectProvider(EffectProviderBase):
             regular_limit = (
                 max(0, normalized_limit - len(queued_chat_claims)) if normalized_limit else 0
             )
-            state, leases = TeamRuntimeService(repo).lease_due_agents(
-                team_id=_optional_text(payload.get("team_id")),
-                project_id=_optional_text(payload.get("project_id")),
-                agent_id=_optional_text(payload.get("agent_id")),
-                limit=regular_limit,
-                lease_seconds=agent_lease_seconds,
-                wake_interval_seconds=_optional_int(
-                    payload.get("wake_interval_seconds"),
-                    default=900,
-                ),
-                max_no_progress_count=_optional_int(
-                    payload.get("max_no_progress_count"),
-                    default=3,
-                ),
-                low_priority_wake_after_cycles=_optional_int(
-                    payload.get("low_priority_wake_after_cycles"),
-                    default=4,
-                ),
-                respect_wake_interval=_optional_bool(
-                    payload.get("respect_wake_interval"),
-                    default=True,
-                ),
-                blocked_team_ids=blocked_team_ids,
-                session_is_busy=lambda session_id: _team_session_has_active_prompt(
+            try:
+                state, leases = TeamRuntimeService(repo).lease_due_agents(
+                    team_id=_optional_text(payload.get("team_id")),
+                    project_id=_optional_text(payload.get("project_id")),
+                    agent_id=_optional_text(payload.get("agent_id")),
+                    limit=regular_limit,
+                    lease_seconds=agent_lease_seconds,
+                    wake_interval_seconds=_optional_int(
+                        payload.get("wake_interval_seconds"),
+                        default=900,
+                    ),
+                    max_no_progress_count=_optional_int(
+                        payload.get("max_no_progress_count"),
+                        default=3,
+                    ),
+                    low_priority_wake_after_cycles=_optional_int(
+                        payload.get("low_priority_wake_after_cycles"),
+                        default=4,
+                    ),
+                    respect_wake_interval=_optional_bool(
+                        payload.get("respect_wake_interval"),
+                        default=True,
+                    ),
+                    blocked_team_ids=blocked_team_ids,
+                    session_is_busy=lambda session_id: _team_session_has_active_prompt(
+                        context,
+                        session_id=session_id,
+                    ),
+                    defer_activation=True,
+                )
+            except TeamStateConflictError as exc:
+                retry_agent_id = _optional_text(payload.get("agent_id"))
+                if retry_agent_id is None:
+                    raise
+                state = repo.read()
+                retry_result: dict[str, Any] = {"events": []}
+                _append_agent_wake_requested_event(
+                    state,
+                    agent_id=retry_agent_id,
+                    result=retry_result,
+                    reason="state_conflict_retry",
+                    now=datetime.now(UTC),
+                    delay_seconds=TEAM_WAKE_STATE_CONFLICT_RETRY_DELAY_SECONDS,
+                    idempotency_suffix=(
+                        "lease-planning-state-conflict:"
+                        f"{invocation_key or f'{exc.expected_revision}:{exc.current_revision}'}"
+                    ),
+                )
+                scheduled_ids = _publish_team_events(
                     context,
-                    session_id=session_id,
-                ),
-                defer_activation=True,
-            )
+                    retry_result["events"],
+                )
+                if not scheduled_ids:
+                    raise RuntimeError(
+                        "lease planning exhausted state-conflict retries and no "
+                        "successor wake could be scheduled"
+                    ) from exc
+                retry_event_ids.extend(scheduled_ids)
+                retry_agent = state.agents.get(retry_agent_id)
+                transient_conflicts.append(
+                    {
+                        "agent_id": retry_agent_id,
+                        "session_id": retry_agent.session_id if retry_agent is not None else None,
+                        "dispatch_id": None,
+                        "phase": "lease_planning",
+                        "attempt_count": TEAM_LEASE_PREPARED_COMMIT_MAX_ATTEMPTS,
+                        "conflict_count": TEAM_LEASE_PREPARED_COMMIT_MAX_ATTEMPTS,
+                        "expected_revision": exc.expected_revision,
+                        "current_revision": exc.current_revision,
+                        "resolved": False,
+                        "retry_scheduled": True,
+                        "retry_event_ids": scheduled_ids,
+                    }
+                )
+                leases = []
         dispatches: list[dict[str, Any]] = []
         prepared_project_repos: list[dict[str, Any]] = []
         failed_project_repo_preparations: list[dict[str, Any]] = []
@@ -2748,8 +2799,6 @@ class TeamWakeDueAgentsEffectProvider(EffectProviderBase):
         review_artifact_imports: list[dict[str, Any]] = []
         review_artifact_import_errors: list[dict[str, Any]] = []
         preparation_blocker_ids: list[str] = []
-        transient_conflicts: list[dict[str, Any]] = []
-        retry_event_ids: list[str] = []
         for lease_index, lease in enumerate(leases):
             agent = lease["agent"]
             try:
@@ -12979,7 +13028,7 @@ def _record_dependency_git_preparation_blocker(
             result=result,
             now=effective_now,
         )
-        if conflict is not None:
+        if conflict is not None and blocker is not None:
             record_dependency_composition_conflict(
                 state,
                 blocker=blocker,

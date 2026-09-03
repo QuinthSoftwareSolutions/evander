@@ -466,15 +466,6 @@ class TeamGitReleaseCommandService(TeamCommandExecutor):
                         message=f"release_branch is invalid: {exc}",
                         correction_context={"release_branch": normalized_release_branch},
                     ) from None
-            if normalized_canonical_branch is not None:
-                try:
-                    validate_branch_name(normalized_canonical_branch)
-                except ValueError as exc:
-                    raise TeamCommandValidationError(
-                        code="invalid_canonical_branch",
-                        message=f"canonical_branch is invalid: {exc}",
-                        correction_context={"canonical_branch": normalized_canonical_branch},
-                    ) from None
             intent_result = _empty_git_command_result()
             projects_to_recalc: set[str] = set()
             project = state.projects.get(normalized_project_id)
@@ -511,7 +502,10 @@ class TeamGitReleaseCommandService(TeamCommandExecutor):
             if release_id is None:
                 raise _git_command_validation_error(
                     intent_result,
-                    code="git_release_request_invalid",
+                    code=(
+                        _optional_text(intent_result.get("error_code"))
+                        or "git_release_request_invalid"
+                    ),
                 )
             for recalc_id in sorted(projects_to_recalc):
                 _recalculate_project_status(state, recalc_id)

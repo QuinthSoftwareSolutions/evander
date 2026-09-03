@@ -22,7 +22,7 @@ from ...models import (
     TeamState,
     TeamTaskState,
 )
-from .common import _ensure_utc, _optional_text, _required_text
+from .common import _NON_TERMINAL_TASK_STATES, _ensure_utc, _optional_text, _required_text
 from .correction_git_source import is_rejected_candidate_correction_task
 from .work_due import _mark_agent_work_due
 
@@ -368,6 +368,9 @@ def task_preparation_blocker_is_current(
     task_id = blocker.task_id
     if task_id is None:
         return True
+    task = state.tasks.get(task_id)
+    if task is None or task.state not in _NON_TERMINAL_TASK_STATES:
+        return False
     source_prefix = f"{_TASK_PREPARATION_SOURCE_PREFIX}{task_id}:"
     if not blocker.source_id.startswith(source_prefix):
         # Historical dependency-preparation incidents had no generation. Keep
@@ -413,6 +416,19 @@ def inbox_has_current_preparation_blocker(
         and blocker.reporter_agent_id == item.recipient_agent_id
         and blocker.source_id.startswith(source_prefix)
         for blocker in state.blockers.values()
+    )
+
+
+def inbox_preparation_blocker_targets_item(
+    blocker: TeamBlocker,
+    *,
+    item: AgentInboxItem,
+) -> bool:
+    """Return whether an inbox preparation blocker belongs to one exact item."""
+
+    return (
+        blocker.reason_code == INBOX_EXECUTION_PREPARATION_BLOCKER_REASON_CODE
+        and blocker.source_id.startswith(f"{_INBOX_PREPARATION_SOURCE_PREFIX}{item.id}:")
     )
 
 
@@ -477,13 +493,15 @@ def record_task_preparation_failure(
     reason_code: str = "task_execution_preparation_failed",
     result: dict[str, Any],
     now: datetime | None = None,
-) -> TeamBlocker:
+) -> TeamBlocker | None:
     from .blockers import open_or_get_blocker
 
     task = state.tasks.get(_required_text(task_id, "task_id"))
     reporter = state.agents.get(_required_text(reporter_agent_id, "reporter_agent_id"))
     if task is None or reporter is None or reporter.team_id is None:
         raise ValueError(f"cannot record task preparation failure for task {task_id}")
+    if task.state not in _NON_TERMINAL_TASK_STATES:
+        return None
     generation = task_preparation_generation(state, task.id)
     cause = preparation_cause_fingerprint(error)
     blocker, _created = open_or_get_blocker(
@@ -827,6 +845,7 @@ __all__ = [
     "create_human_correction_preparation_recovery_inbox",
     "dispatch_project_work_ids",
     "inbox_has_current_preparation_blocker",
+    "inbox_preparation_blocker_targets_item",
     "preparation_cause_fingerprint",
     "reconcile_stale_task_preparation_blockers",
     "record_inbox_preparation_failure",

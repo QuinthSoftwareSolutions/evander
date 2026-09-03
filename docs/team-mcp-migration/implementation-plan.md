@@ -400,7 +400,10 @@ Common optional arguments:
 - Semantics: caller must be project lead, team manager, or same-project role with
   release permission. Every deliverable must belong to project and be accepted.
   The repository derives source branches from deliverable `git_refs`; agents do
-  not provide source branch, target branch, or commit arguments. The tool may
+  not provide source branch, target branch, commit arguments, or a canonical
+  destination override. A non-empty `canonical_branch` is retained only as a
+  compatibility input and is rejected; project Git policy derives the
+  destination. The tool may
   create prerequisite feature-promotion intents, but must not combine feature
   update and release in one atomic tool call. Return release package id,
   promotion event ids, and next-action hints.

@@ -2910,8 +2910,10 @@ def _register_slice8_tools(
         description=(
             "Record asynchronous Git release-package intent from accepted "
             "deliverables. Candidate verification runs afterward on the frozen "
-            "candidate and is the authoritative build/test result. Requires "
-            "project_id, deliverable_ids, and request_id."
+            "candidate and is the authoritative build/test result. The canonical "
+            "destination is derived from project Git policy; agent-supplied "
+            "canonical_branch overrides are rejected. Requires project_id, "
+            "deliverable_ids, and request_id."
         ),
     )
 

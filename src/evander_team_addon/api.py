@@ -433,7 +433,7 @@ TEAM_VIEW_COLLECTIONS["workspace"] = {
     "git_promotions",
 }
 TEAM_VIEW_COLLECTIONS["chat"] = {"agents"}
-TEAM_VIEW_COLLECTIONS["mail"] = {"teams", "roles", "agents"}
+TEAM_VIEW_COLLECTIONS["mail"] = {"teams", "projects", "roles", "agents"}
 TEAM_VIEW_COLLECTIONS["activity"] = {"teams", "roles", "agents"}
 TEAM_RESOURCE_TOKEN_COLLECTIONS = (
     "teams",

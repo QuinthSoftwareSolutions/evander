@@ -10704,6 +10704,76 @@ def test_wake_due_agents_reschedules_exhausted_state_conflict_without_agent_fail
     assert len(retries) == 1
 
 
+def test_wake_due_agents_reschedules_exhausted_lease_planning_conflict(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _seed_team(tmp_path)
+
+    def _exhaust_lease_planning(*_args: object, **_kwargs: object):
+        raise TeamStateConflictError(expected_revision=41, current_revision=42)
+
+    monkeypatch.setattr(
+        TeamRuntimeService,
+        "lease_due_agents",
+        _exhaust_lease_planning,
+    )
+    resumer = FakeResumer()
+    provider = TeamWakeDueAgentsEffectProvider()
+    provider.initialize(
+        TeamWakeDueAgentsEffectDefinition(
+            id="wake",
+            display_name="Wake",
+            type="effect:team:wake-due-agents",
+            team_id="team",
+            agent_id="backend",
+            limit=1,
+            run_global_maintenance=False,
+            respect_wake_interval=False,
+        ),
+        EffectRuntimeContext(
+            resolved_config={"runtime_dir": str(tmp_path)},
+            agent_resumer=resumer,
+            session_lookup=FakeSessionStore(),
+            session_metadata_updater=FakeSessionStore(),
+        ),
+    )
+
+    result = provider.execute()
+
+    assert result["success"] is True
+    assert result["leased_count"] == 0
+    assert result["dispatches"] == []
+    assert result["retry_scheduled_count"] == 1
+    [conflict] = result["transient_conflicts"]
+    assert conflict == {
+        "agent_id": "backend",
+        "session_id": "session-backend",
+        "dispatch_id": None,
+        "phase": "lease_planning",
+        "attempt_count": 3,
+        "conflict_count": 3,
+        "expected_revision": 41,
+        "current_revision": 42,
+        "resolved": False,
+        "retry_scheduled": True,
+        "retry_event_ids": result["retry_event_ids"],
+    }
+    assert resumer.calls == []
+    scheduled = ScheduledInternalEventStore(
+        default_orchestration_database_path(tmp_path)
+    ).list_all()
+    retries = [
+        record
+        for record in scheduled
+        if record.event_type == AGENT_WAKE_REQUESTED_EVENT_TYPE
+        and record.payload["agent_id"] == "backend"
+        and record.payload["reason"] == "state_conflict_retry"
+    ]
+    assert len(retries) == 1
+    assert retries[0].schedule_id == result["retry_event_ids"][0]
+
+
 def test_wake_due_agents_provider_passes_project_bare_repo_to_clone_effect(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

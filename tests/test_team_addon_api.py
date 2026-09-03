@@ -4582,7 +4582,12 @@ def test_team_addon_inbox_history_is_searchable_filterable_and_paginated(
 
     mail_view = client.get("/api/addons/team-addon/views/mail")
     assert mail_view.status_code == 200
-    assert set(mail_view.json()["data"]["state"]) >= {"teams", "roles", "agents"}
+    assert set(mail_view.json()["data"]["state"]) >= {
+        "teams",
+        "projects",
+        "roles",
+        "agents",
+    }
     assert "inbox" not in mail_view.json()["data"]["state"]
 
     page = client.get("/api/addons/team-addon/inbox?agent_id=backend&limit=1")

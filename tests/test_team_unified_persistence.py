@@ -20,6 +20,7 @@ from evander_team_addon.models import (
     DependencyCompositionManifest,
     DependencyCompositionRecovery,
     DependencyGitSource,
+    GitPromotionRecord,
     GitWorkContext,
     HumanReviewAssignment,
     HumanReviewChecklistItem,
@@ -33,8 +34,10 @@ from evander_team_addon.models import (
     ProjectGoal,
     ReleaseCandidateDeliverableEvidence,
     ReleaseCandidateManifest,
+    ReleaseGateFailure,
     ReleasePackage,
     ReleaseReviewRequirement,
+    ReleaseScopeValidation,
     ReviewProfile,
     ReviewRequest,
     TaskCancellation,
@@ -50,6 +53,8 @@ from evander_team_addon.models import (
     TeamDispatchStatus,
     TeamInboxItemState,
     TeamInboxItemType,
+    TeamOutboxRecord,
+    TeamOutboxStatus,
     TeamRecordState,
     TeamTaskState,
     WorktreeCleanupCandidate,
@@ -587,6 +592,309 @@ def _seed_team_repository(tmp_path: Path) -> TeamStateRepository:
         expected_revision=repository.read().revision,
     )
     return repository
+
+
+@pytest.mark.parametrize("project_git_mode", ["changed", "cleared"])
+@pytest.mark.parametrize("configuration_retry", [False, True])
+@pytest.mark.parametrize("schema_71_partial", [False, True])
+def test_sqlite_migration_reconciles_dependency_composed_release_base_and_retry(
+    tmp_path: Path,
+    project_git_mode: str,
+    configuration_retry: bool,
+    schema_71_partial: bool,
+) -> None:
+    repository = _seed_team_repository(tmp_path)
+    composition_root = "a" * 40
+    composed_checkout = "b" * 40
+    candidate_commit = "c" * 40
+    source_commit = "d" * 40
+    source = DependencyGitSource(
+        dependency_task_id="source-task",
+        deliverable_id="source-deliverable",
+        branch="agents/source/task",
+        commit_sha=source_commit,
+        relationship_kind="task_dependency",
+    )
+    manifest = DependencyCompositionManifest(
+        target_task_id="integration-task",
+        managed_repo_id=MANAGED_REPO_ID,
+        base_branch="main",
+        base_commit_sha=composition_root,
+        base_tree_hash="e" * 40,
+        dependency_git_sources=[source],
+        source_fingerprint="f" * 64,
+        frontier_commit_shas=[source_commit],
+        composed_commit_sha=composed_checkout,
+        composed_tree_hash="1" * 40,
+        verified_candidate_commit_sha=candidate_commit,
+    )
+
+    def _seed_legacy_release(state):
+        state.tasks["source-task"] = AgentTask(
+            id="source-task",
+            owner_agent_id="lead",
+            project_id="project",
+            priority=1,
+            title="Source",
+            description="Accepted dependency source.",
+            created_by_agent_id="lead",
+            state=TeamTaskState.FINISHED,
+            git_base_branch="main",
+            created_at=NOW,
+            updated_at=NOW,
+        )
+        state.deliverables["source-deliverable"] = Deliverable(
+            id="source-deliverable",
+            task_id="source-task",
+            producer_agent_id="lead",
+            summary="Accepted dependency.",
+            state=TeamRecordState.ACCEPTED,
+            git_refs=DeliverableGitRefs(
+                agent_branch=source.branch,
+                commit_sha=source_commit,
+                submitted_commit_sha=source_commit,
+            ),
+            created_at=NOW,
+        )
+        state.tasks["integration-task"] = AgentTask(
+            id="integration-task",
+            owner_agent_id="lead",
+            project_id="project",
+            priority=1,
+            title="Integrate",
+            description="Compose accepted dependency work.",
+            created_by_agent_id="lead",
+            state=TeamTaskState.FINISHED,
+            dependency_task_ids=["source-task"],
+            integration_boundary=True,
+            deliverable_contract=TaskDeliverableContract(require_git_provenance=True),
+            git_base_branch="main",
+            created_at=NOW,
+            updated_at=NOW,
+        )
+        state.git_work_contexts["integration-context"] = GitWorkContext(
+            id="integration-context",
+            agent_id="lead",
+            task_id="integration-task",
+            agent_branch="agents/lead/integration-task",
+            base_branch="main",
+            base_commit=composed_checkout,
+            commit_sha=candidate_commit,
+            dependency_git_sources=[source],
+            dependency_composition_manifest=manifest.model_copy(
+                update={"verified_candidate_commit_sha": None}
+            ),
+            state="submitted",
+            created_at=NOW,
+            updated_at=NOW,
+        )
+        state.deliverables["integration-deliverable"] = Deliverable(
+            id="integration-deliverable",
+            task_id="integration-task",
+            producer_agent_id="lead",
+            summary="Accepted composed candidate.",
+            state=TeamRecordState.ACCEPTED,
+            git_refs=DeliverableGitRefs(
+                branch_context_id="integration-context",
+                agent_branch="agents/lead/integration-task",
+                commit_sha=candidate_commit,
+                submitted_commit_sha=candidate_commit,
+            ),
+            dependency_composition_manifest=manifest,
+            created_at=NOW,
+        )
+        state.git_promotions["release-promotion"] = GitPromotionRecord(
+            id="release-promotion",
+            project_id="project",
+            release_package_id="release-composed",
+            actor_agent_id="lead",
+            source_branch="team/team/features/integration-task-lead",
+            sources=[
+                {
+                    "source_branch": "team/team/features/integration-task-lead",
+                    "expected_commit_sha": candidate_commit,
+                }
+            ],
+            target_branch="team/team/releases/release-composed",
+            promotion_kind="release",
+            git_base_branch="main",
+            base_commit_sha=composed_checkout,
+            state="succeeded",
+            commit_sha=candidate_commit,
+            created_at=NOW,
+            updated_at=NOW,
+        )
+        if schema_71_partial:
+            state.git_promotions["schema-71-retired-canonical"] = GitPromotionRecord(
+                id="schema-71-retired-canonical",
+                project_id="project",
+                release_package_id="release-composed",
+                actor_agent_id="lead",
+                source_branch="team/team/releases/release-composed",
+                sources=[
+                    {
+                        "source_branch": "team/team/releases/release-composed",
+                        "expected_commit_sha": candidate_commit,
+                    }
+                ],
+                target_branch="releases/project/release-composed",
+                promotion_kind="canonical_push",
+                git_base_branch="main",
+                base_commit_sha=composed_checkout,
+                state="retired",
+                created_at=NOW,
+                updated_at=NOW,
+            )
+        state.git_promotions["canonical-promotion"] = GitPromotionRecord(
+            id="canonical-promotion",
+            project_id="project",
+            release_package_id="release-composed",
+            actor_agent_id="lead",
+            source_branch="team/team/releases/release-composed",
+            sources=[
+                {
+                    "source_branch": "team/team/releases/release-composed",
+                    "expected_commit_sha": candidate_commit,
+                }
+            ],
+            target_branch="releases/project/release-composed",
+            promotion_kind="canonical_push",
+            git_base_branch="main",
+            base_commit_sha=(composition_root if schema_71_partial else composed_checkout),
+            state="failed",
+            error="destination_base_mismatch",
+            created_at=NOW,
+            updated_at=NOW,
+        )
+        if configuration_retry:
+            state.release_packages["configuration-failed-predecessor"] = ReleasePackage(
+                id="configuration-failed-predecessor",
+                project_id="project",
+                deliverable_ids=["integration-deliverable"],
+                release_branch="team/team/releases/configuration-failed-predecessor",
+                canonical_branch="releases/project/release-composed",
+                git_base_branch="main",
+                base_commit_sha=composed_checkout,
+                canonical_base_commit_sha=composed_checkout,
+                state=TeamRecordState.REJECTED,
+                gate_failure=ReleaseGateFailure(
+                    stage="configuration",
+                    kind="configuration",
+                    message="release policy was temporarily unavailable",
+                ),
+                created_at=NOW,
+                updated_at=NOW,
+            )
+        state.release_packages["release-composed"] = ReleasePackage(
+            id="release-composed",
+            project_id="project",
+            supersedes_release_package_id=(
+                "configuration-failed-predecessor" if configuration_retry else None
+            ),
+            deliverable_ids=["integration-deliverable"],
+            release_branch="team/team/releases/release-composed",
+            canonical_branch="releases/project/release-composed",
+            git_base_branch="main",
+            base_commit_sha=(composition_root if schema_71_partial else composed_checkout),
+            canonical_base_commit_sha=(
+                composition_root if schema_71_partial else composed_checkout
+            ),
+            candidate_commit_sha=candidate_commit,
+            approved_commit_sha=candidate_commit,
+            git_promotion_record_ids=["release-promotion", "canonical-promotion"],
+            policy_version=2,
+            scope_validation=ReleaseScopeValidation(state="passed"),
+            state=TeamRecordState.BLOCKED,
+            error="destination_base_mismatch",
+            created_at=NOW,
+            updated_at=NOW,
+        )
+        state.projects["project"].git = (
+            ProjectGitConfig(
+                managed_repo_id=f"mr_{'2' * 20}",
+                directory_path="root",
+                base_branch="main",
+            )
+            if project_git_mode == "changed"
+            else None
+        )
+        return state
+
+    repository.update(_seed_legacy_release)
+    expired_claim_time = datetime(2000, 1, 1, tzinfo=UTC)
+    stale_outbox = repository.enqueue_outbox_record(
+        TeamOutboxRecord(
+            id="outbox-canonical-promotion",
+            intent_type="team.git.promotion_requested",
+            aggregate_type="git_promotion",
+            aggregate_id="canonical-promotion",
+            idempotency_key="team-addon:git-promotion:canonical-promotion",
+            payload={
+                "event_type": "team.git.promotion_requested",
+                "payload": {"promotion_id": "canonical-promotion"},
+            },
+            available_at=expired_claim_time,
+        )
+    )
+    [claimed_outbox] = repository.claim_outbox_records(
+        worker_id="crashed-schema-71-publisher",
+        record_ids=[stale_outbox.id],
+        claim_ttl_seconds=1,
+        now=expired_claim_time,
+    )
+    assert claimed_outbox.status == TeamOutboxStatus.CLAIMED
+    with sqlite3.connect(repository.store.path) as connection:
+        connection.execute(
+            "UPDATE team_state_metadata SET value = ? WHERE key = 'sqlite_schema_version'",
+            (str(SQLITE_SCHEMA_VERSION - 1),),
+        )
+
+    migrated_repository = TeamStateRepository(tmp_path)
+    migrated = migrated_repository.read()
+    release = migrated.release_packages["release-composed"]
+    assert release.base_commit_sha == composition_root
+    assert release.canonical_base_commit_sha == composition_root
+    assert release.state == TeamRecordState.PENDING
+    assert release.error is None
+    assert migrated.git_promotions["release-promotion"].base_commit_sha == composed_checkout
+    assert migrated.git_promotions["canonical-promotion"].state == "retired"
+
+    replacement_ids = [
+        promotion_id
+        for promotion_id in release.git_promotion_record_ids
+        if promotion_id not in {"release-promotion", "canonical-promotion"}
+    ]
+    assert len(replacement_ids) == 1
+    replacement = migrated.git_promotions[replacement_ids[0]]
+    assert replacement.promotion_kind == "canonical_push"
+    assert replacement.state == "pending"
+    assert replacement.base_commit_sha == composition_root
+    assert replacement.sources[0].expected_commit_sha == candidate_commit
+
+    outbox = migrated_repository.list_outbox_records(
+        aggregate_type="git_promotion",
+        aggregate_id=replacement.id,
+    )
+    assert len(outbox) == 1
+    assert outbox[0].payload["payload"]["managed_repo_id"] == MANAGED_REPO_ID
+    assert outbox[0].payload["payload"]["directory_path"] == "root"
+    assert outbox[0].payload["payload"]["base_commit_sha"] == composition_root
+    assert outbox[0].payload["payload"]["expected_commit_sha"] == candidate_commit
+    [retired_outbox] = migrated_repository.list_outbox_records(
+        aggregate_type="git_promotion",
+        aggregate_id="canonical-promotion",
+    )
+    assert retired_outbox.status == TeamOutboxStatus.COMPLETED
+
+    replay_repository = TeamStateRepository(tmp_path)
+    replay = replay_repository.read()
+    assert replay.release_packages["release-composed"] == release
+    assert len(
+        replay_repository.list_outbox_records(
+            aggregate_type="git_promotion",
+            aggregate_id=replacement.id,
+        )
+    ) == 1
 
 
 def test_repository_round_trips_sealed_release_review_cohort_without_legacy_backfill(
