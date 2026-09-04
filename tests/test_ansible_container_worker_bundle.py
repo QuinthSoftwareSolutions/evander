@@ -226,8 +226,17 @@ def test_worker_egress_policy_defaults_expose_private_control_plane_endpoints() 
     assert "evander_worker_egress_policy_script_path" in worker_defaults
     assert "evander_worker_egress_policy_source_cidrs: []" in worker_defaults
     assert '"169.254.0.0/16"' in worker_defaults
+    assert "evander_worker_private_ip" in worker_defaults
+    assert "evander_worker_private_cidr" in worker_defaults
+    assert r"[0-9]{1,3}\." in worker_defaults
+    assert r"[0-9]{1,3}\\." not in worker_defaults
     assert "evander_worker_egress_policy_allow_tcp_endpoints" in defaults
     assert "evander_worker_egress_policy_extra_allow_tcp_endpoints: []" in defaults
+    allowed_clients = defaults.split("evander_codex_egress_proxy_allowed_client_cidrs:", 1)[
+        1
+    ].split("# Control-plane apt cache", 1)[0]
+    assert "evander_worker_private_cidr" in allowed_clients
+    assert "ansible_host" not in allowed_clients
     assert 'evander_git_host: "{{ evander_control_plane_private_ip }}"' in defaults
     assert "name: control-plane git ssh" in defaults
     assert 'host: "{{ evander_git_host }}"' in defaults
@@ -245,7 +254,13 @@ def test_worker_egress_policy_defaults_expose_private_control_plane_endpoints() 
     assert "port: 11666" in defaults
     assert "port: 11777" in defaults
     assert "port: 11881" in defaults
-    assert 'port: "{{ evander_codex_egress_proxy_port }}"' in defaults
+    proxy_endpoint = defaults.split("- name: control-plane Codex egress proxy", 1)[1].split(
+        "- name: control-plane npm audit facade", 1
+    )[0]
+    assert "evander_worker_codex_egress_proxy_url | urlsplit('hostname')" in proxy_endpoint
+    assert "evander_worker_codex_egress_proxy_url | urlsplit('port')" in proxy_endpoint
+    assert "default(80, true)" in proxy_endpoint
+    assert "evander_control_plane_private_ip" not in proxy_endpoint
     assert 'port: "{{ evander_nexus_port }}"' in defaults
     assert 'port: "{{ evander_apt_cache_port }}"' in defaults
     assert 'host: "{{ evander_control_plane_private_ip }}"' in defaults
@@ -254,14 +269,30 @@ def test_worker_egress_policy_defaults_expose_private_control_plane_endpoints() 
     assert "evander_worker_egress_policy_enabled: true" in azure_inventory
 
     worker = (ROOT / "ansible" / "worker.yml").read_text(encoding="utf-8")
+    site = (ROOT / "ansible" / "site.yml").read_text(encoding="utf-8")
     verification = (
         ROOT / "ansible" / "roles" / "container_worker_verification" / "tasks" / "main.yml"
     ).read_text(encoding="utf-8")
     assert "Assert networked Codex authentication has a restricted proxy" in worker
+    assert "Assert Codex egress proxy worker addresses are numeric" in site
+    assert "Set it explicitly when" in site
     assert "Resolve Codex egress proxy verification endpoint" in verification
+    probe_endpoint = verification.split("Resolve Codex egress proxy verification endpoint", 1)[
+        1
+    ].split("Wait for the private Codex egress proxy", 1)[0]
+    assert "urlsplit('port') | default(80, true)" in probe_endpoint
     assert "Verify a runner container reaches only the private Codex proxy health surface" in (
         verification
     )
+
+
+def test_codex_egress_proxy_reference_uses_runtime_environment_names() -> None:
+    reference = (ROOT / "docs" / "configuration-reference.md").read_text(encoding="utf-8")
+
+    assert "`EVANDER_CODEX_EGRESS_PROXY_ALLOWED_HOSTS`" in reference
+    assert "`EVANDER_CODEX_EGRESS_PROXY_ALLOWED_CLIENT_CIDRS`" in reference
+    assert "`EVANDER_CODEX_EGRESS_ALLOWED_HOSTS`" not in reference
+    assert "`EVANDER_CODEX_EGRESS_ALLOWED_CLIENT_CIDRS`" not in reference
 
 
 def test_worker_container_egress_policy_role_applies_docker_user_default_deny() -> None:

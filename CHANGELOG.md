@@ -22,6 +22,7 @@
 - Added workflow-configurable Azure DevOps mentions to the work-item comment effect.
 - Added optional target-scoped idempotency keys, non-rendered remote correlation markers, and
   read-before-retry reconciliation so ambiguous provider success does not duplicate a comment.
+- Preserved resolved mention identities in outputs reconstructed after an ambiguous remote success.
 - Rejected same-target idempotency-key reuse when the comment or mention set differs.
 
 ## 2026-09-04 - Durable Codex Subscription Egress
@@ -31,6 +32,8 @@
   access.
 - Wired the control-plane proxy, worker URL, Docker egress allowlist, Azure NSG port, deployment
   verification, and operator documentation into the supported Ansible deployment path.
+- Corrected DNS-worker client CIDRs, proxy-derived firewall endpoints, implicit HTTP port probing,
+  and the documented proxy allowlist environment names.
 - Preserved actionable Codex App Server failures as sanitized worker gateway errors instead of
   leaking through as opaque HTTP 500 responses.
 

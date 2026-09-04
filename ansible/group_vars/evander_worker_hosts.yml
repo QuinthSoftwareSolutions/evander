@@ -73,6 +73,28 @@ evander_worker_egress_policy_script_path: "/usr/local/sbin/evander-worker-egress
 evander_worker_egress_policy_source_cidrs: []
 evander_worker_egress_policy_block_cidrs:
   - "169.254.0.0/16"
+# The control-plane proxy allowlist requires a numeric source address even when
+# Ansible connects to this worker through a DNS name. Numeric ansible_host values
+# remain a convenient default; DNS inventories must set this explicitly.
+evander_worker_private_ip: >-
+  {{
+    ansible_default_ipv4.address
+    | default(
+        ansible_host
+        if (
+          (ansible_host | default('') | string | trim)
+          is match('^(?:(?:[0-9]{1,3}\.){3}[0-9]{1,3}|[0-9A-Fa-f:]+)$')
+        )
+        else ''
+      )
+  }}
+evander_worker_private_cidr: >-
+  {{
+    (evander_worker_private_ip | string | trim)
+    ~ ('/128' if ':' in (evander_worker_private_ip | string) else '/32')
+    if (evander_worker_private_ip | string | trim | length) > 0
+    else ''
+  }}
 evander_worker_read_only_rootfs: false
 evander_worker_tmpfs: []
 # Optional worker-owned ChatGPT subscription support. The same runner image hosts

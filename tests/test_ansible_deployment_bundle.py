@@ -748,7 +748,12 @@ def test_ansible_worker_egress_policy_defaults_are_private_control_plane_endpoin
     assert "port: 11666" in defaults
     assert "port: 11777" in defaults
     assert "port: 11881" in defaults
-    assert 'port: "{{ evander_codex_egress_proxy_port }}"' in defaults
+    proxy_endpoint = defaults.split("- name: control-plane Codex egress proxy", 1)[1].split(
+        "- name: control-plane npm audit facade", 1
+    )[0]
+    assert "evander_worker_codex_egress_proxy_url | urlsplit('hostname')" in proxy_endpoint
+    assert "evander_worker_codex_egress_proxy_url | urlsplit('port')" in proxy_endpoint
+    assert "default(80, true)" in proxy_endpoint
     assert 'port: "{{ evander_nexus_port }}"' in defaults
     assert 'port: "{{ evander_apt_cache_port }}"' in defaults
     assert 'host: "{{ evander_control_plane_private_ip }}"' in defaults

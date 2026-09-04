@@ -1670,8 +1670,8 @@ tokens remain in worker-owned auth homes and never appear in configuration or Ad
 |---|---|---|
 | `EVANDER_CODEX_EGRESS_PROXY_HOST` | `127.0.0.1` | Private control-plane listener address. Ansible binds this to the control-plane private IP for networked workers. |
 | `EVANDER_CODEX_EGRESS_PROXY_PORT` | `11889` | Private worker-facing CONNECT proxy port. It is not part of the guest firewall allowlist. |
-| `EVANDER_CODEX_EGRESS_ALLOWED_HOSTS` | OpenAI/ChatGPT host allowlist | Comma-separated destination hostnames accepted for HTTPS CONNECT on port 443. |
-| `EVANDER_CODEX_EGRESS_ALLOWED_CLIENT_CIDRS` | `127.0.0.1/32` in the example | Comma-separated source networks accepted by the proxy. Networked Ansible deployments derive worker `/32` entries from inventory. |
+| `EVANDER_CODEX_EGRESS_PROXY_ALLOWED_HOSTS` | OpenAI/ChatGPT host allowlist | Comma-separated destination hostnames accepted for HTTPS CONNECT on port 443. |
+| `EVANDER_CODEX_EGRESS_PROXY_ALLOWED_CLIENT_CIDRS` | `127.0.0.1/32` in the example | Comma-separated source networks accepted by the proxy. Networked Ansible deployments derive worker CIDRs from numeric `evander_worker_private_ip` inventory values. |
 
 The control-plane Ansible playbook renders these values and verifies the service listener and
 `/healthz`. The worker playbook derives

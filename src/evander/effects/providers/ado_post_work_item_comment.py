@@ -148,11 +148,19 @@ class AdoPostWorkItemCommentEffectProvider(EffectProviderBase):
                 idempotency_key=idempotency_key,
             )
             if matched_comment is not None:
+                resolved_mentions = (
+                    issue_service.resolve_ado_comment_mentions(
+                        directory_path=directory_path,
+                        mentions=mentions,
+                    )
+                    if mentions
+                    else []
+                )
                 result = {
                     "provider": "azure_devops",
                     "remote_issue_id": work_item_id,
                     "comment": matched_comment,
-                    "resolved_mentions": [],
+                    "resolved_mentions": resolved_mentions,
                 }
                 output = self._output_from_result(
                     result=result,

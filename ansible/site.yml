@@ -42,6 +42,21 @@
         success_msg: Restricted Codex egress proxy configuration is complete.
       when: evander_services.get('codex_egress_proxy', false) | bool
 
+    - name: Assert Codex egress proxy worker addresses are numeric
+      ansible.builtin.assert:
+        that:
+          - (hostvars[item].evander_worker_private_ip | default('') | string | trim | length) > 0
+          - >-
+            (hostvars[item].evander_worker_private_ip | string | trim)
+            is match('^(?:(?:[0-9]{1,3}\.){3}[0-9]{1,3}|[0-9A-Fa-f:]+)$')
+        fail_msg: >-
+          Worker {{ item }} needs a numeric evander_worker_private_ip for the
+          Codex egress proxy client allowlist. Set it explicitly when
+          ansible_host is a DNS name.
+        success_msg: Worker Codex egress proxy client address is numeric.
+      loop: "{{ groups.get('evander_worker_hosts', []) }}"
+      when: evander_services.get('codex_egress_proxy', false) | bool
+
     - name: Assert the runtime directory matches the repo-native service layout
       ansible.builtin.assert:
         that:

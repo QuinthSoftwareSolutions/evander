@@ -460,6 +460,7 @@ evander_codex_egress_proxy_allowed_client_cidrs:
 # Worker inventory.
 evander_worker_docker_network: "bridge"
 evander_worker_egress_policy_enabled: true
+evander_worker_private_ip: "<worker-private-ip>"  # Required when ansible_host is DNS.
 evander_worker_codex_auth_image: "evander-runner:latest"
 evander_worker_codex_egress_proxy_url: "http://<control-plane-private-ip>:11889"
 evander_worker_codex_egress_proxy_bind_host: ""

@@ -1284,6 +1284,23 @@ class AzureDevOpsIssueAdapter:
                 "resolved_mentions": [mention.audit_payload() for mention in resolved_mentions],
             }
 
+    def resolve_comment_mentions(
+        self,
+        *,
+        directory_path: str,
+        mentions: list[str] | None,
+    ) -> list[dict[str, str]]:
+        """Resolve mention references without posting a comment."""
+        organization_url, _project, pat = self._resolve_connection(directory_path)
+        with httpx.Client(timeout=self.timeout_seconds) as client:
+            resolved_mentions = resolve_ado_mentions(
+                client=client,
+                organization_url=organization_url,
+                pat=pat,
+                mention_refs=mentions,
+            )
+        return [mention.audit_payload() for mention in resolved_mentions]
+
     def update_issue(
         self,
         *,
@@ -3177,6 +3194,20 @@ class IssueService:
             mentions=mentions,
             attachments=attachments,
             correlation_marker=correlation_marker,
+        )
+
+    def resolve_ado_comment_mentions(
+        self,
+        *,
+        directory_path: str,
+        mentions: list[str] | None,
+    ) -> list[dict[str, str]]:
+        adapter = self.adapters["azure_devops"]
+        if not isinstance(adapter, AzureDevOpsIssueAdapter):
+            raise RuntimeError("Azure DevOps issue adapter is unavailable")
+        return adapter.resolve_comment_mentions(
+            directory_path=directory_path,
+            mentions=mentions,
         )
 
     def update_remote_issue(

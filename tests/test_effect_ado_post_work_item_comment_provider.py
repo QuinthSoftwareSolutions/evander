@@ -149,10 +149,17 @@ def test_ado_post_work_item_comment_passes_normalized_mentions(
 
 
 class _RetrySafeIssueServiceStub:
-    def __init__(self, *, fail_after_post_once: bool = False) -> None:
+    def __init__(
+        self,
+        *,
+        fail_after_post_once: bool = False,
+        resolved_mentions: list[dict[str, str]] | None = None,
+    ) -> None:
         self.fail_after_post_once = fail_after_post_once
+        self.resolved_mentions = resolved_mentions or []
         self.read_calls: list[dict[str, Any]] = []
         self.post_calls: list[dict[str, Any]] = []
+        self.resolve_mention_calls: list[dict[str, Any]] = []
         self.comments: list[dict[str, Any]] = []
 
     def read_remote_issue(self, **kwargs: Any) -> dict[str, Any]:
@@ -175,8 +182,12 @@ class _RetrySafeIssueServiceStub:
             "provider": "azure_devops",
             "remote_issue_id": kwargs["remote_issue_id"],
             "comment": posted,
-            "resolved_mentions": [],
+            "resolved_mentions": list(self.resolved_mentions),
         }
+
+    def resolve_ado_comment_mentions(self, **kwargs: Any) -> list[dict[str, str]]:
+        self.resolve_mention_calls.append(kwargs)
+        return list(self.resolved_mentions)
 
 
 def test_ado_post_work_item_comment_idempotency_reuses_local_result(
@@ -212,7 +223,17 @@ def test_ado_post_work_item_comment_recovers_ambiguous_remote_success(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    service = _RetrySafeIssueServiceStub(fail_after_post_once=True)
+    resolved_mentions = [
+        {
+            "input": "owner@example.com",
+            "id": "identity-1",
+            "display_name": "Owner",
+        }
+    ]
+    service = _RetrySafeIssueServiceStub(
+        fail_after_post_once=True,
+        resolved_mentions=resolved_mentions,
+    )
     monkeypatch.setattr(provider_module, "IssueService", lambda resolver: service)
     provider = _provider(
         tmp_path,
@@ -220,6 +241,7 @@ def test_ado_post_work_item_comment_recovers_ambiguous_remote_success(
         project="Example Industry APP",
         work_item_id="123",
         comment="Which tolerance applies?",
+        mentions=["owner@example.com"],
         idempotency_key="clarification:123:round-2",
     )
 
@@ -229,8 +251,15 @@ def test_ado_post_work_item_comment_recovers_ambiguous_remote_success(
 
     assert recovered["status"] == "deduplicated"
     assert recovered["comment_id"] == "1"
+    assert recovered["resolved_mentions"] == resolved_mentions
     assert len(service.read_calls) == 2
     assert len(service.post_calls) == 1
+    assert service.resolve_mention_calls == [
+        {
+            "directory_path": "root/example/truman",
+            "mentions": ["owner@example.com"],
+        }
+    ]
 
 
 def test_ado_post_work_item_comment_rejects_idempotency_payload_conflict(
