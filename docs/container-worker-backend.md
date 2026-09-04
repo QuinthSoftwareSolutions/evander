@@ -320,6 +320,7 @@ The default allowlist is intentionally small and private:
 - control-plane Git SSH on `22`
 - control-plane MCP gateway on `8000`
 - control-plane OpenAI relay on `11434`
+- control-plane Codex subscription egress proxy on `11889`
 - control-plane NuGet relay on `11666`
 - control-plane HTTP target relay on `11777`
 - control-plane HTTP target browser proxy on `11778`
@@ -443,24 +444,36 @@ from being interpreted as project-local provider configuration. Repository-owned
 remain visible. The runner image also installs the system `bubblewrap` package so Codex does not
 need to warn and fall back to its bundled helper.
 
-Set the worker's runner image and restricted proxy settings in inventory. The URL must use an
-address that runner containers can reach; do not use loopback unless the containers share that
-network namespace:
+Deploy the restricted proxy on the control plane and point the worker at its private address. The
+default Ansible inventory derives the worker URL from `evander_git_host` whenever the worker uses
+a networked Docker mode; an explicit override remains available. The listener must not be exposed
+to public networks:
 
 ```yaml
+# Control-plane inventory.
+evander_services:
+  codex_egress_proxy: true
+evander_codex_egress_proxy_bind_host: "<control-plane-private-ip>"
+evander_codex_egress_proxy_allowed_client_cidrs:
+  - "<worker-private-ip>/32"
+
+# Worker inventory.
 evander_worker_docker_network: "bridge"
 evander_worker_egress_policy_enabled: true
 evander_worker_codex_auth_image: "evander-runner:latest"
-evander_worker_codex_egress_proxy_bind_host: "172.17.0.1"
-evander_worker_codex_egress_proxy_port: 11889
-evander_worker_codex_egress_proxy_url: "http://172.17.0.1:11889"
+evander_worker_codex_egress_proxy_url: "http://<control-plane-private-ip>:11889"
+evander_worker_codex_egress_proxy_bind_host: ""
 ```
 
 The job container receives that URL only as `HTTP_PROXY`/`HTTPS_PROXY`. The worker proxy accepts
-HTTPS `CONNECT` requests only to its configured OpenAI/ChatGPT hostname allowlist and port 443.
+HTTPS `CONNECT` requests only from configured worker CIDRs and only to its configured
+OpenAI/ChatGPT hostname allowlist on port 443. Azure and equivalent cloud network policy must
+allow private TCP `11889` from the worker subnet to the control plane.
 The existing `DOCKER-USER` default-deny policy must permit containers to reach the proxy endpoint
 but must not grant them direct public egress. Keep the proxy's allowlist narrow and review it when
-Codex's service endpoints change.
+Codex's service endpoints change. The daemon's older in-process worker-local proxy remains
+available as an explicit override for worker hosts that themselves have deliberately restricted
+public egress, but it is not the networked deployment default.
 
 After deployment, sign in to Admin Web as an Admin with `admin.owner` permission at `root`, unlock
 privileged operations, and open **Subscriptions**. Create a profile, start device login, complete

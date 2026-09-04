@@ -550,6 +550,7 @@ Those default endpoints are:
 - control-plane Git SSH on `22`
 - control-plane MCP gateway on `8000`
 - control-plane OpenAI relay on `11434`
+- control-plane Codex subscription egress proxy on `11889`
 - control-plane NuGet relay on `11666`
 - control-plane HTTP target relay on `11777`
 - control-plane npm audit facade on `11881`
@@ -559,6 +560,13 @@ Those default endpoints are:
 The single-worker override is intentionally narrow. It does not grant public internet egress, and
 it does not replace the worker-host SQL Server rules that already manage container-to-host SQL
 access when `worker_mssql` is enabled.
+
+For a networked worker, the default inventory derives
+`evander_worker_codex_egress_proxy_url` from the control-plane private address, enables
+`evander-codex-egress-proxy.service`, and derives its allowed client `/32` entries from the worker
+inventory. The control-plane verifier checks the private listener and `/healthz`; the worker
+verifier checks the same endpoint from a disposable runner container. The Azure template admits
+TCP `11889` only through the existing worker-subnet ingress rule.
 
 Example inventory override and worker-side verification:
 

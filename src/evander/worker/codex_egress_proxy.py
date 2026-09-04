@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+import argparse
 import logging
+import os
 import select
+import signal
 import socket
 import socketserver
 import threading
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
+from ipaddress import IPv4Network, IPv6Network, ip_address, ip_network
 from urllib.parse import urlsplit
 
 logger = logging.getLogger(__name__)
@@ -17,6 +21,8 @@ DEFAULT_CODEX_EGRESS_HOSTS = (
     "*.openai.com",
     "*.chatgpt.com",
 )
+DEFAULT_CODEX_EGRESS_PROXY_HOST = "127.0.0.1"
+DEFAULT_CODEX_EGRESS_PROXY_PORT = 11889
 
 
 class RestrictedCodexEgressProxy:
@@ -28,6 +34,7 @@ class RestrictedCodexEgressProxy:
         host: str,
         port: int,
         allowed_hosts: Iterable[str] = DEFAULT_CODEX_EGRESS_HOSTS,
+        allowed_client_cidrs: Iterable[str] | None = None,
         connect_timeout_seconds: float = 15.0,
         tunnel_idle_timeout_seconds: float = 300.0,
         max_connections: int = 64,
@@ -41,6 +48,9 @@ class RestrictedCodexEgressProxy:
         self.allowed_hosts = tuple(_normalize_allowed_host(item) for item in allowed_hosts)
         if not self.allowed_hosts:
             raise ValueError("at least one Codex egress host must be allowed")
+        self.allowed_client_networks = tuple(
+            _normalize_allowed_client_cidr(item) for item in (allowed_client_cidrs or ())
+        )
         self.connect_timeout_seconds = max(0.1, float(connect_timeout_seconds))
         self.tunnel_idle_timeout_seconds = max(0.1, float(tunnel_idle_timeout_seconds))
         self.max_connections = int(max_connections)
@@ -61,7 +71,7 @@ class RestrictedCodexEgressProxy:
 
         class Handler(socketserver.BaseRequestHandler):
             def handle(self) -> None:
-                proxy._handle_connection(self.request)
+                proxy._handle_connection(self.request, client_address=self.client_address)
 
         server = _ThreadingTcpServer(
             (self.host, self.port),
@@ -88,12 +98,23 @@ class RestrictedCodexEgressProxy:
             thread.join(timeout=5)
         self._thread = None
 
-    def _handle_connection(self, client: socket.socket) -> None:
+    def _handle_connection(
+        self,
+        client: socket.socket,
+        *,
+        client_address: object | None = None,
+    ) -> None:
         client.settimeout(self.connect_timeout_seconds)
         try:
+            if not self._client_allowed(client_address):
+                _send_response(client, 403, "client not allowed")
+                return
             header = _read_http_header(client)
             request_line = header.split(b"\r\n", 1)[0].decode("ascii", errors="replace")
             parts = request_line.split()
+            if len(parts) == 3 and parts[0].upper() == "GET" and parts[1] == "/healthz":
+                _send_response(client, 200, "ok")
+                return
             if len(parts) != 3 or parts[0].upper() != "CONNECT":
                 _send_response(client, 405, "CONNECT required")
                 return
@@ -121,6 +142,17 @@ class RestrictedCodexEgressProxy:
             )
         finally:
             upstream.close()
+
+    def _client_allowed(self, client_address: object | None) -> bool:
+        if not self.allowed_client_networks:
+            return True
+        if not isinstance(client_address, tuple) or not client_address:
+            return False
+        try:
+            client_ip = ip_address(str(client_address[0]))
+        except ValueError:
+            return False
+        return any(client_ip in network for network in self.allowed_client_networks)
 
     def _host_allowed(self, host: str) -> bool:
         normalized = host.rstrip(".").casefold()
@@ -179,6 +211,95 @@ def _normalize_allowed_host(value: object) -> str:
     if "*" in text and not text.startswith("*."):
         raise ValueError(f"invalid Codex egress wildcard rule: {value!r}")
     return text
+
+
+def _normalize_allowed_client_cidr(value: object) -> IPv4Network | IPv6Network:
+    text = str(value or "").strip()
+    if not text:
+        raise ValueError("Codex egress client CIDR must not be empty")
+    try:
+        return ip_network(text, strict=False)
+    except ValueError as exc:
+        raise ValueError(f"invalid Codex egress client CIDR: {value!r}") from exc
+
+
+def _environment_list(name: str, fallback: Iterable[str] = ()) -> list[str]:
+    value = str(os.environ.get(name) or "").replace(",", " ")
+    parsed = [item for item in value.split() if item]
+    return parsed or list(fallback)
+
+
+def build_codex_egress_proxy_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        description="Run the source- and destination-restricted Codex HTTPS CONNECT proxy."
+    )
+    parser.add_argument(
+        "--host",
+        default=os.environ.get(
+            "EVANDER_CODEX_EGRESS_PROXY_HOST", DEFAULT_CODEX_EGRESS_PROXY_HOST
+        ),
+    )
+    parser.add_argument(
+        "--port",
+        type=int,
+        default=int(
+            os.environ.get(
+                "EVANDER_CODEX_EGRESS_PROXY_PORT", str(DEFAULT_CODEX_EGRESS_PROXY_PORT)
+            )
+        ),
+    )
+    parser.add_argument(
+        "--allowed-host",
+        action="append",
+        default=None,
+        help="Allowed HTTPS destination hostname or wildcard; repeat as needed.",
+    )
+    parser.add_argument(
+        "--allowed-client-cidr",
+        action="append",
+        default=None,
+        help="Allowed proxy-client address or CIDR; repeat as needed.",
+    )
+    return parser
+
+
+def main(argv: Sequence[str] | None = None) -> None:
+    args = build_codex_egress_proxy_parser().parse_args(argv)
+    allowed_hosts = args.allowed_host or _environment_list(
+        "EVANDER_CODEX_EGRESS_PROXY_ALLOWED_HOSTS", DEFAULT_CODEX_EGRESS_HOSTS
+    )
+    allowed_client_cidrs = args.allowed_client_cidr or _environment_list(
+        "EVANDER_CODEX_EGRESS_PROXY_ALLOWED_CLIENT_CIDRS"
+    )
+    if not allowed_client_cidrs:
+        raise SystemExit(
+            "at least one --allowed-client-cidr or "
+            "EVANDER_CODEX_EGRESS_PROXY_ALLOWED_CLIENT_CIDRS value is required"
+        )
+    proxy = RestrictedCodexEgressProxy(
+        host=args.host,
+        port=args.port,
+        allowed_hosts=allowed_hosts,
+        allowed_client_cidrs=allowed_client_cidrs,
+    )
+    stopped = threading.Event()
+
+    def stop(_signum: int, _frame: object) -> None:
+        stopped.set()
+
+    signal.signal(signal.SIGINT, stop)
+    signal.signal(signal.SIGTERM, stop)
+    proxy.start()
+    logger.info(
+        "Codex egress proxy listening on %s:%s for %s client network(s)",
+        args.host,
+        proxy.bound_port,
+        len(proxy.allowed_client_networks),
+    )
+    try:
+        stopped.wait()
+    finally:
+        proxy.close()
 
 
 def _read_http_header(client: socket.socket, *, limit: int = 65536) -> bytes:

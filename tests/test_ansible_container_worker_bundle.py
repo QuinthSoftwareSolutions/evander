@@ -194,6 +194,7 @@ def test_worker_group_vars_define_docker_and_durable_state_contract() -> None:
     assert "evander_worker_codex_auth_image" in text
     assert "evander_worker_codex_egress_proxy_url" in text
     assert "evander_worker_codex_egress_proxy_bind_host" in text
+    assert "evander_codex_egress_proxy_port" in text
     assert '"*.chatgpt.com"' in text
 
 
@@ -232,6 +233,7 @@ def test_worker_egress_policy_defaults_expose_private_control_plane_endpoints() 
     assert 'host: "{{ evander_git_host }}"' in defaults
     assert "name: control-plane mcp gateway" in defaults
     assert "name: control-plane openai relay" in defaults
+    assert "name: control-plane Codex egress proxy" in defaults
     assert "name: control-plane nuget relay" in defaults
     assert "name: control-plane http target relay" in defaults
     assert "name: control-plane npm audit facade" in defaults
@@ -243,12 +245,23 @@ def test_worker_egress_policy_defaults_expose_private_control_plane_endpoints() 
     assert "port: 11666" in defaults
     assert "port: 11777" in defaults
     assert "port: 11881" in defaults
+    assert 'port: "{{ evander_codex_egress_proxy_port }}"' in defaults
     assert 'port: "{{ evander_nexus_port }}"' in defaults
     assert 'port: "{{ evander_apt_cache_port }}"' in defaults
     assert 'host: "{{ evander_control_plane_private_ip }}"' in defaults
     assert "<control-plane-private-ip>" not in defaults
     assert 'evander_worker_docker_network: "bridge"' in azure_inventory
     assert "evander_worker_egress_policy_enabled: true" in azure_inventory
+
+    worker = (ROOT / "ansible" / "worker.yml").read_text(encoding="utf-8")
+    verification = (
+        ROOT / "ansible" / "roles" / "container_worker_verification" / "tasks" / "main.yml"
+    ).read_text(encoding="utf-8")
+    assert "Assert networked Codex authentication has a restricted proxy" in worker
+    assert "Resolve Codex egress proxy verification endpoint" in verification
+    assert "Verify a runner container reaches only the private Codex proxy health surface" in (
+        verification
+    )
 
 
 def test_worker_container_egress_policy_role_applies_docker_user_default_deny() -> None:

@@ -29,6 +29,8 @@
         unit: evander-http-target-relay.service
       - key: http_target_browser_proxy
         unit: evander-http-target-browser-proxy.service
+      - key: codex_egress_proxy
+        unit: evander-codex-egress-proxy.service
       - key: ado_worker
         unit: evander-ado-worker.service
       - key: proxy_issue_sync
@@ -181,6 +183,9 @@
       port: 11777
     - key: http_target_browser_proxy
       port: 11778
+    - key: codex_egress_proxy
+      port: "{{ evander_codex_egress_proxy_port }}"
+      host: "{{ evander_codex_egress_proxy_bind_host }}"
     - key: teams_notifications
       port: "{{ evander_teams_notifications_listener_port }}"
       host: "{{ evander_teams_notifications_listener_host }}"
@@ -211,6 +216,8 @@
       url: "http://127.0.0.1:11777/healthz"
     - key: http_target_browser_proxy
       url: "http://127.0.0.1:11778/healthz"
+    - key: codex_egress_proxy
+      url: "http://{{ evander_codex_egress_proxy_bind_host }}:{{ evander_codex_egress_proxy_port }}/healthz"
     - key: teams_notifications
       url: "http://{{ evander_teams_notifications_listener_endpoint_host }}:{{ evander_teams_notifications_listener_port }}/healthz"
   when: evander_services.get(item.key, false) | bool

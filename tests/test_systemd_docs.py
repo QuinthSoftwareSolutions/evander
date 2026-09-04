@@ -11,6 +11,8 @@ def test_operations_doc_mentions_firewall_service() -> None:
     assert "config/firewall.env" in text
     assert "config/admin-web.env" in text
     assert "evander-npm-audit-facade.service" in text
+    assert "evander-codex-egress-proxy.service" in text
+    assert "config/codex-egress-proxy.env" in text
     assert "config/npm-audit-facade.env" in text
     assert "evander-http-target-relay.service" in text
     assert "evander-http-target-browser-proxy.service" in text

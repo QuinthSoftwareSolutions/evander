@@ -6,6 +6,7 @@ from starlette.testclient import TestClient
 
 from evander.codex_auth import CodexSubscriptionDeferral, CodexSubscriptionDeferredError
 from evander.worker.api import create_app
+from evander.worker.codex_auth_broker import CodexAuthBrokerError
 
 
 class FakeBroker:
@@ -41,6 +42,7 @@ class FakeProfileRegistry:
     def __init__(self) -> None:
         self.closed = False
         self.defer_jobs = False
+        self.device_login_error: str | None = None
         self.profiles = {
             "default": {
                 "profile_id": "default",
@@ -72,6 +74,8 @@ class FakeProfileRegistry:
         return dict(self.profiles[profile_id])
 
     def start_device_login(self, profile_id):
+        if self.device_login_error is not None:
+            raise CodexAuthBrokerError(self.device_login_error)
         return {"profile_id": profile_id, "login_id": "login-1", "status": "pending"}
 
     def device_login_status(self, profile_id, login_id):
@@ -191,6 +195,27 @@ def test_worker_codex_auth_profile_endpoints_and_default_aliases(tmp_path: Path)
         assert client.delete("/v1/codex-auth/profiles/team-a", headers=headers).status_code == 405
 
     assert registry.closed is True
+
+
+def test_worker_profile_device_login_returns_actionable_gateway_error(tmp_path: Path) -> None:
+    registry = FakeProfileRegistry()
+    registry.device_login_error = "failed to request device code"
+    app = create_app(
+        runtime_dir=tmp_path / "runtime",
+        worker_root=tmp_path / "worker-root",
+        container_runtime=object(),  # type: ignore[arg-type]
+        codex_auth_registry=registry,  # type: ignore[arg-type]
+        token="worker-secret",
+    )
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/v1/codex-auth/profiles/default/device-login",
+            headers={"Authorization": "Bearer worker-secret"},
+        )
+
+    assert response.status_code == 502
+    assert response.json() == {"error": "failed to request device code"}
 
 
 def test_worker_subscription_preflight_defers_without_starting_a_metered_job(

@@ -13,6 +13,8 @@ Guest and worker-container networking is default-deny. Reachability is limited t
   list/import/delete grants, descriptor-relative traversal, artifact-backed imports, and
   recoverable quarantine deletes. Agent and trigger payloads never expose configured roots.
 - OpenAI relay: a separate host service that exposes an OpenAI-compatible `/v1` endpoint to guests while keeping the real API key on the host.
+- Codex subscription egress proxy: a control-plane CONNECT proxy that accepts only configured
+  worker source CIDRs and forwards only to the configured OpenAI/ChatGPT hosts on port 443.
 - Container-worker subscription registry: worker-owned named ChatGPT profiles, per-profile Codex
   App Server brokers, durable auth homes, and safe account/capacity status. Control-plane
   directories select a worker but never own its profiles or credentials.
@@ -39,7 +41,9 @@ timestamps. The reserved `default` record points at the legacy `codex-auth/auth.
 profiles use `codex-auth/profiles/<profile-id>/`. Each profile lazily owns an independent broker,
 file lock, and managed App Server process, so refreshes may run concurrently across profiles while
 remaining serialized within one profile. All broker processes share the same restricted OpenAI
-egress proxy.
+egress proxy. In a networked worker deployment that proxy runs on the control plane, the cloud
+network admits its private port only from the worker subnet, and the worker's `DOCKER-USER` policy
+allows containers to reach that endpoint without granting them direct public egress.
 
 The profile identifier, never its credentials, flows from `effect:agent:create` into the session,
 Codex turn, worker job metadata, agent summaries, and durable prompt queue. Assignment is

@@ -40,6 +40,7 @@ The trigger worker illustrates why the distinction matters: its persistent unit 
 | `evander-gateway.service` | `evander-gateway` | MCP gateway, identity, policy, approval, and audit boundary | Agents need host tools |
 | `evander-admin-web.service` | `evander-admin-web` | Operator UI and Admin API | Operators need the supported GUI/API |
 | `evander-openai-relay.service` | `evander-openai-relay` | Host-owned OpenAI/Anthropic-compatible model access | Agents need configured models |
+| `evander-codex-egress-proxy.service` | `evander-codex-egress-proxy` | Source- and destination-restricted subscription egress | Networked container workers use ChatGPT subscriptions |
 | `evander-nuget-relay.service` | `evander-nuget-relay` | Allowlisted NuGet feeds and cache | .NET workloads need packages |
 | `evander-npm-audit-facade.service` | `evander-npm-audit-facade` | Narrow npm audit/package-cache surface | Front-end workloads need it |
 | `evander-http-target-relay.service` | `evander-http-target-relay` | Session-scoped, allowlisted external HTTP targets | A workflow grants an HTTP target |
@@ -61,7 +62,7 @@ The container worker is intentionally absent from this list. `evander-worker-dae
 
 ## 28.3 Default guest-reachable ports
 
-The firewall's checked-in default is `ALLOWED_TCP_PORTS="22 8000 11434 11666 11777 11778 11881 8081 3142"`. Allowing a port makes a narrow host surface reachable; it does not grant arbitrary host access.
+The firewall's checked-in default is `ALLOWED_TCP_PORTS="22 8000 11434 11666 11777 11778 11881 8081 3142"`. Allowing a port makes a narrow host surface reachable; it does not grant arbitrary host access. The Codex subscription proxy on `11889` is instead admitted only by the deployment's worker-to-control-plane network policy and is intentionally absent from this guest list.
 
 | Port | Surface | Typical guest use | Important qualification |
 |---:|---|---|---|

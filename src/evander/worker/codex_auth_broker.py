@@ -160,8 +160,7 @@ class CodexAuthBroker:
     def start_device_login(self) -> dict[str, Any]:
         with self._lock:
             self._drain_login_notifications_locked()
-            client = self._ensure_client()
-            result = client.request("account/login/start", {"type": "chatgptDeviceCode"})
+            result = self._request("account/login/start", {"type": "chatgptDeviceCode"})
             login_id = str(result.get("loginId") or "").strip()
             verification_url = str(result.get("verificationUrl") or "").strip()
             user_code = str(result.get("userCode") or "").strip()
@@ -192,7 +191,7 @@ class CodexAuthBroker:
             record = self._device_logins.get(str(login_id).strip())
             if record is None:
                 raise CodexAuthBrokerError("device login not found")
-            self._ensure_client().request("account/login/cancel", {"loginId": login_id})
+            self._request("account/login/cancel", {"loginId": login_id})
             record["status"] = "cancelled"
             # Completion may race cancellation. Apply any notification that the
             # app-server reader queued while the request was in flight last.
@@ -201,7 +200,7 @@ class CodexAuthBroker:
 
     def logout(self) -> dict[str, Any]:
         with self._lock:
-            self._ensure_client().request("account/logout", {})
+            self._request("account/logout", {})
             return self.status()
 
     def external_tokens(
@@ -264,9 +263,22 @@ class CodexAuthBroker:
         return client
 
     def _account_read(self, *, refresh: bool) -> dict[str, Any]:
+        return self._request(
+            "account/read", {"refreshToken": refresh}, timeout_seconds=30.0
+        )
+
+    def _request(
+        self,
+        method: str,
+        params: dict[str, Any],
+        *,
+        timeout_seconds: float | None = None,
+    ) -> dict[str, Any]:
         try:
             return self._ensure_client().request(
-                "account/read", {"refreshToken": refresh}, timeout_seconds=30.0
+                method,
+                params,
+                timeout_seconds=timeout_seconds,
             )
         except CodexAppServerError as exc:
             raise CodexAuthBrokerError(str(exc)) from exc

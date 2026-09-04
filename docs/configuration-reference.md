@@ -750,6 +750,7 @@ Type-specific keys:
 | `effect:issue:upsert-ado-proxy` | one of `item`, `items` | `directory_path`, `organization_url`, `project`, `managed_repo_id`, transient `repo_source`, `yaml_output_dir`, `outputs` |
 | `effect:ado:add-work-item-tag` | `directory_path`, `project`, `work_item_id`, `tag` | `sync_proxy_cache`, `outputs` |
 | `effect:ado:remove-work-item-tag` | `directory_path`, `project`, `work_item_id`, `tag` | `sync_proxy_cache`, `outputs` |
+| `effect:ado:post-work-item-comment` | `directory_path`, `project`, `work_item_id`, `comment` | `mentions`, `idempotency_key`, `outputs` |
 | `effect:ado:pipeline-run` | `directory_path`, `pipeline_id` | `project`, `branch`, `variables`, `template_parameters`, `timeout_seconds`, `poll_interval_seconds`, `check`, `outputs` |
 | `effect:ado:sync-activity-index` | `since` | `until`, `directory_path`, `scope`, `actor`, `project`, `repo`, `states`, `types`, `tags_any`, `statuses`, `include_system_comments`, `outputs` |
 | `effect:pull-request:add-tag` | `provider`, `repo`, `pr_id`, `tag` | `directory_path`, `ado_organization`, `project`, `outputs` |
@@ -1163,6 +1164,17 @@ does not use agent MCP tool permissions or approval policy.
 Azure DevOps comment tools with `mentions` also use the configured ADO PAT to
 call the identities API; that PAT must be allowed to read identities, equivalent
 to Azure DevOps OAuth `vso.identity`.
+
+`effect:ado:post-work-item-comment` accepts the same Azure DevOps identity IDs,
+descriptors, email addresses, or names in `mentions`. Set a stable
+`idempotency_key` for any comment that may be retried. The key is scoped to the
+resolved Azure DevOps organization, project, and work item. The effect records
+the completed result locally and appends a non-rendered correlation marker to
+the remote HTML comment. Before an uncached retry posts, it reads recent
+work-item comments and reuses a matching marked comment. Reusing the same key on
+the same target with a different comment or mention set fails without posting.
+Omitting the key retains the legacy one-shot behavior and does not provide retry
+reconciliation.
 
 Azure DevOps PR tag filters are applied client-side after the PR list call. The
 `tags` filter accepts tag names with case-insensitive `and`, `or`, `not`, and
@@ -1641,6 +1653,21 @@ login, and logout require both an unlocked privileged-operations session and `ad
 permission at `root`, even when the worker connection is resolved from another directory's
 provider configuration. Profile metadata contains identity and timestamps only; access and refresh
 tokens remain in worker-owned auth homes and never appear in configuration or Admin responses.
+
+### Codex subscription egress proxy keys
+
+| Key | Default | Purpose |
+|---|---|---|
+| `EVANDER_CODEX_EGRESS_PROXY_HOST` | `127.0.0.1` | Private control-plane listener address. Ansible binds this to the control-plane private IP for networked workers. |
+| `EVANDER_CODEX_EGRESS_PROXY_PORT` | `11889` | Private worker-facing CONNECT proxy port. It is not part of the guest firewall allowlist. |
+| `EVANDER_CODEX_EGRESS_ALLOWED_HOSTS` | OpenAI/ChatGPT host allowlist | Comma-separated destination hostnames accepted for HTTPS CONNECT on port 443. |
+| `EVANDER_CODEX_EGRESS_ALLOWED_CLIENT_CIDRS` | `127.0.0.1/32` in the example | Comma-separated source networks accepted by the proxy. Networked Ansible deployments derive worker `/32` entries from inventory. |
+
+The control-plane Ansible playbook renders these values and verifies the service listener and
+`/healthz`. The worker playbook derives
+`EVANDER_WORKER_CODEX_EGRESS_PROXY_URL=http://<control-plane-private-ip>:11889`, inserts only that
+private endpoint in the container egress allowlist, and verifies it from a disposable runner
+container. Cloud network policy must likewise admit `11889` only from the worker subnet.
 
 ### OpenAI relay keys
 
