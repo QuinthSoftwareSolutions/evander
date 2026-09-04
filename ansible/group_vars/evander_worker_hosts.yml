@@ -77,10 +77,19 @@ evander_worker_read_only_rootfs: false
 evander_worker_tmpfs: []
 # Optional worker-owned ChatGPT subscription support. The same runner image hosts
 # the managed auth app-server, but only its dedicated codex-auth directory is
-# mounted. Set the proxy URL/bind address to an address reachable on the selected
-# private Docker network before selecting chatgpt_subscription for a session.
+# mounted. Networked workers use the control plane's restricted proxy by default;
+# isolated workers keep the URL empty until an operator selects a reachable proxy.
 evander_worker_codex_auth_image: "{{ evander_runner_image_name }}"
-evander_worker_codex_egress_proxy_url: ""
+evander_worker_codex_egress_proxy_url: >-
+  {{
+    'http://' ~ evander_git_host ~ ':' ~ (evander_codex_egress_proxy_port | string)
+    if (
+      (evander_worker_docker_network | default('none') | string | trim | lower)
+      not in ['', 'none']
+      and (evander_git_host | default('') | string | trim | length) > 0
+    )
+    else ''
+  }}
 evander_worker_codex_egress_proxy_bind_host: ""
 evander_worker_codex_egress_proxy_port: 11889
 evander_worker_codex_egress_hosts:

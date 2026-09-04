@@ -33,6 +33,13 @@ The security model is:
   - The streaming path intentionally keeps the upstream client alive for the full stream and
     forwards raw SSE bytes.
 
+- Codex subscription egress proxy:
+  - Entry point: `evander-codex-egress-proxy`
+  - Code: `src/evander/worker/codex_egress_proxy.py`
+  - Default private worker-facing port: `11889`
+  - Restricts both worker source CIDRs and OpenAI/ChatGPT destination hosts. This port belongs in
+    the worker-to-control-plane deployment policy, not the guest firewall defaults.
+
 - NuGet relay:
   - Entry point: `evander-nuget-relay`
   - Code: `src/evander/relays/nuget.py`
@@ -148,6 +155,7 @@ The current install script renders and enables:
 - `evander-gateway.service`
 - `evander-admin-web.service`
 - `evander-openai-relay.service`
+- `evander-codex-egress-proxy.service`
 - `evander-didww-sip-bridge.service`
 - `evander-nuget-relay.service`
 - `evander-npm-audit-facade.service`
@@ -227,6 +235,7 @@ Before install/start, populate the required local config and secret files for th
    sudo systemctl start evander-gateway.service
    sudo systemctl start evander-admin-web.service
    sudo systemctl start evander-openai-relay.service
+   sudo systemctl start evander-codex-egress-proxy.service
    sudo systemctl start evander-nuget-relay.service
    sudo systemctl start evander-http-target-relay.service
    sudo systemctl start evander-http-target-browser-proxy.service

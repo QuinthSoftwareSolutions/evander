@@ -63,6 +63,7 @@ def test_install_systemd_units_preflight_checks_for_mssql_worker_password_when_e
     assert "evander-didww-sip-bridge.service" in text
     assert "evander-admin-web.service" in text
     assert "evander-npm-audit-facade.service" in text
+    assert "evander-codex-egress-proxy.service" in text
     assert "evander-managed-git-refresh.service" in text
 
 
@@ -159,6 +160,9 @@ def test_service_templates_use_optional_shared_secrets_env() -> None:
     openai = (repo / "systemd" / "evander-openai-relay.service.template").read_text(
         encoding="utf-8"
     )
+    codex_egress = (
+        repo / "systemd" / "evander-codex-egress-proxy.service.template"
+    ).read_text(encoding="utf-8")
     nuget = (repo / "systemd" / "evander-nuget-relay.service.template").read_text(encoding="utf-8")
     npm_audit_facade = (repo / "systemd" / "evander-npm-audit-facade.service.template").read_text(
         encoding="utf-8"
@@ -209,6 +213,9 @@ def test_service_templates_use_optional_shared_secrets_env() -> None:
     )
     assert "EnvironmentFile=-__PROJECT_DIR__/config/openai-relay.env" in openai
     assert "EnvironmentFile=-__PROJECT_DIR__/secrets.env" in openai
+    assert "EnvironmentFile=-__PROJECT_DIR__/config/codex-egress-proxy.env" in codex_egress
+    assert "ExecStart=__PROJECT_DIR__/.venv/bin/evander-codex-egress-proxy" in codex_egress
+    assert "EVANDER_CODEX_EGRESS_PROXY_ALLOWED_CLIENT_CIDRS=127.0.0.1/32" in codex_egress
     assert "EnvironmentFile=-__PROJECT_DIR__/config/nuget-relay.env" in nuget
     assert "EnvironmentFile=-__PROJECT_DIR__/secrets.env" in nuget
     assert "EnvironmentFile=-__PROJECT_DIR__/config/npm-audit-facade.env" in npm_audit_facade

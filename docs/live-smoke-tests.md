@@ -22,6 +22,16 @@ enabling send flows or touching non-test destinations.
   - one dedicated Microsoft Graph test mailbox
 - Email send remains disabled.
 
+## Optional Codex Subscription Egress Smoke
+
+For deployments with a networked container worker and ChatGPT subscription profiles, first verify
+`evander-codex-egress-proxy.service` on the control plane and the worker deployment's disposable
+container health check. Then start device login for a test profile in Admin Web, confirm the
+request returns the OpenAI verification URL and user code, and cancel the pending login unless the
+test intentionally completes it. Confirm that an allowlisted OpenAI hostname tunnels through the
+proxy while an unrelated hostname receives HTTP 403. Do not grant the worker or its containers
+direct public egress to make this smoke pass.
+
 ## Prerequisites
 
 - Host services are running:

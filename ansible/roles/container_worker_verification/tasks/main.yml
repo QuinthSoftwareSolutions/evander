@@ -106,6 +106,43 @@
     return_content: true
     status_code: 200
 
+- name: Resolve Codex egress proxy verification endpoint
+  ansible.builtin.set_fact:
+    evander_worker_codex_egress_proxy_probe_host: >-
+      {{ evander_worker_codex_egress_proxy_url | urlsplit('hostname') }}
+    evander_worker_codex_egress_proxy_probe_port: >-
+      {{ evander_worker_codex_egress_proxy_url | urlsplit('port') }}
+  when: (evander_worker_codex_egress_proxy_url | default('') | string | trim | length) > 0
+
+- name: Wait for the private Codex egress proxy
+  ansible.builtin.wait_for:
+    host: "{{ evander_worker_codex_egress_proxy_probe_host }}"
+    port: "{{ evander_worker_codex_egress_proxy_probe_port }}"
+    timeout: 30
+  when: (evander_worker_codex_egress_proxy_url | default('') | string | trim | length) > 0
+
+- name: Verify a runner container reaches only the private Codex proxy health surface
+  ansible.builtin.command:
+    argv:
+      - docker
+      - run
+      - --rm
+      - --network
+      - "{{ evander_worker_docker_network }}"
+      - "{{ evander_worker_codex_auth_image }}"
+      - curl
+      - --fail
+      - --silent
+      - --show-error
+      - --max-time
+      - "10"
+      - "http://{{ evander_worker_codex_egress_proxy_probe_host }}:{{ evander_worker_codex_egress_proxy_probe_port }}/healthz"
+  become_user: "{{ evander_run_user }}"
+  changed_when: false
+  when:
+    - (evander_worker_codex_egress_proxy_url | default('') | string | trim | length) > 0
+    - (evander_worker_docker_network | default('none') | string | trim | lower) not in ['', 'none']
+
 - name: Resolve MSSQL seed sidecar verification host
   ansible.builtin.set_fact:
     evander_worker_mssql_seed_sidecar_probe_host: "{{ '127.0.0.1' if evander_worker_mssql_seed_sidecar_bind_host in ['', '0.0.0.0', '::'] else evander_worker_mssql_seed_sidecar_bind_host }}"
@@ -143,4 +180,5 @@
       - "sandbox profile: {{ evander_worker_sandbox_profile }}"
       - "container user: {{ evander_effective_worker_container_user }}"
       - "worker egress policy: {{ evander_worker_egress_policy_enabled }}"
+      - "Codex egress proxy: {{ evander_worker_codex_egress_proxy_url | default('disabled', true) }}"
       - "mssql seed sidecar: {{ evander_worker_mssql_seed_sidecar_enabled | default(false) }}"

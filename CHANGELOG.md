@@ -16,6 +16,16 @@
   read-before-retry reconciliation so ambiguous provider success does not duplicate a comment.
 - Rejected same-target idempotency-key reuse when the comment or mention set differs.
 
+## 2026-09-04 - Durable Codex Subscription Egress
+
+- Added a control-plane-managed, source- and destination-restricted HTTPS CONNECT proxy so
+  private container workers can perform Codex device login without receiving general internet
+  access.
+- Wired the control-plane proxy, worker URL, Docker egress allowlist, Azure NSG port, deployment
+  verification, and operator documentation into the supported Ansible deployment path.
+- Preserved actionable Codex App Server failures as sanitized worker gateway errors instead of
+  leaking through as opaque HTTP 500 responses.
+
 ## 2026-09-03 - Immediate Operator Directive Wakes
 
 - Made operator directives from the Admin API, workflow effects, and governance MCP commands

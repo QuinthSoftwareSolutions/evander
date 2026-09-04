@@ -1664,6 +1664,21 @@ permission at `root`, even when the worker connection is resolved from another d
 provider configuration. Profile metadata contains identity and timestamps only; access and refresh
 tokens remain in worker-owned auth homes and never appear in configuration or Admin responses.
 
+### Codex subscription egress proxy keys
+
+| Key | Default | Purpose |
+|---|---|---|
+| `EVANDER_CODEX_EGRESS_PROXY_HOST` | `127.0.0.1` | Private control-plane listener address. Ansible binds this to the control-plane private IP for networked workers. |
+| `EVANDER_CODEX_EGRESS_PROXY_PORT` | `11889` | Private worker-facing CONNECT proxy port. It is not part of the guest firewall allowlist. |
+| `EVANDER_CODEX_EGRESS_ALLOWED_HOSTS` | OpenAI/ChatGPT host allowlist | Comma-separated destination hostnames accepted for HTTPS CONNECT on port 443. |
+| `EVANDER_CODEX_EGRESS_ALLOWED_CLIENT_CIDRS` | `127.0.0.1/32` in the example | Comma-separated source networks accepted by the proxy. Networked Ansible deployments derive worker `/32` entries from inventory. |
+
+The control-plane Ansible playbook renders these values and verifies the service listener and
+`/healthz`. The worker playbook derives
+`EVANDER_WORKER_CODEX_EGRESS_PROXY_URL=http://<control-plane-private-ip>:11889`, inserts only that
+private endpoint in the container egress allowlist, and verifies it from a disposable runner
+container. Cloud network policy must likewise admit `11889` only from the worker subnet.
+
 ### OpenAI relay keys
 
 | Key | Found in | Consumed by |

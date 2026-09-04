@@ -3311,6 +3311,15 @@ design.</p>
 </thead>
 <tbody>
 <tr class="odd">
+<td>Codex subscription egress proxy</td>
+<td><code>evander-codex-egress-proxy</code></td>
+<td style="text-align: right;"><code>127.0.0.1:11889</code>; private
+control-plane IP under Ansible</td>
+<td>Configured container workers</td>
+<td>Restricts worker source CIDRs and OpenAI/ChatGPT destinations; it is
+not a guest firewall surface.</td>
+</tr>
+<tr class="even">
 <td>NuGet relay</td>
 <td><code>evander-nuget-relay</code></td>
 <td style="text-align: right;"><code>0.0.0.0:11666</code></td>
@@ -3318,7 +3327,7 @@ design.</p>
 <td>Narrow NuGet package surface; <code>/healthz</code> is
 available.</td>
 </tr>
-<tr class="even">
+<tr class="odd">
 <td>HTTP target relay</td>
 <td><code>evander-http-target-relay</code></td>
 <td style="text-align: right;"><code>0.0.0.0:11777</code></td>
@@ -3326,14 +3335,14 @@ available.</td>
 <td>Constrains external HTTP targets; forwards guest-managed
 authentication rather than injecting a host secret.</td>
 </tr>
-<tr class="odd">
+<tr class="even">
 <td>npm audit facade</td>
 <td><code>evander-npm-audit-facade</code></td>
 <td style="text-align: right;"><code>0.0.0.0:11881</code></td>
 <td>Workspace npm tooling</td>
 <td>Narrow audit compatibility surface.</td>
 </tr>
-<tr class="even">
+<tr class="odd">
 <td>DIDWW SIP bridge</td>
 <td><code>evander-didww-sip-bridge</code></td>
 <td style="text-align: right;">Configurable; example is loopback
@@ -3342,7 +3351,7 @@ authentication rather than injecting a host secret.</td>
 <td>Host-local integration; do not confuse its example port with the
 worker daemon on a separate host.</td>
 </tr>
-<tr class="odd">
+<tr class="even">
 <td>Worker daemon</td>
 <td><code>evander-worker-daemon</code></td>
 <td style="text-align: right;">CLI default <code>127.0.0.1:11888</code>;
@@ -3492,10 +3501,10 @@ bootstraps.</p>
 reference: installation and shared state</h2>
 <p>On a systemd-based host,
 <code>scripts/install_systemd_units.sh</code> renders and enables the
-firewall, gateway, Admin Web, OpenAI relay, DIDWW bridge, NuGet relay,
-npm audit facade, HTTP target relay, ADO and proxy workers, Discord
-ingest and wake, scheduled wake, Teams ingest and meeting ingest, and
-both orchestrators.</p>
+firewall, gateway, Admin Web, OpenAI relay, Codex subscription egress
+proxy, DIDWW bridge, NuGet relay, npm audit facade, HTTP target relay,
+ADO and proxy workers, Discord ingest and wake, scheduled wake, Teams
+ingest and meeting ingest, and both orchestrators.</p>
 <blockquote>
 <p><span class="sidebar-kicker">Administrator note</span>
 <strong>Enabled does not mean configured or healthy</strong></p>
@@ -6307,7 +6316,9 @@ successful device login pins the OpenAI account ID. Every disposable job
 authenticates its own App Server from an in-memory external-token
 snapshot; it receives no account-file mount, token environment variable,
 command-line token, or persisted token metadata. All profiles share the
-worker&#39;s allowlisted CONNECT proxy while ordinary container egress
+control plane&#39;s allowlisted CONNECT proxy. Cloud policy accepts its
+private port only from worker addresses, and the worker&#39;s container
+egress policy admits only that endpoint while ordinary container egress
 remains default-deny.</p>
 <p>This path queues and fails closed. Preflight or mid-turn capacity
 exhaustion persists the original prompt indefinitely with profile,
@@ -6372,10 +6383,10 @@ never change the configured default backend.</p>
 <p>For subscription-mode Codex, a root owner should also open
 <strong>Subscriptions</strong>, verify the selected profile status and
 pinned account, and complete device login when required. Verify that
-worker egress policy allows only the configured subscription proxy and
-that the proxy&#39;s OpenAI/ChatGPT hostname allowlist is current. Do not
-copy the broker&#39;s account file into a job for diagnosis; a missing login
-is meant to fail closed.</p>
+cloud and worker egress policies allow only the configured control-plane
+subscription proxy and that the proxy&#39;s OpenAI/ChatGPT hostname
+allowlist is current. Do not copy the broker&#39;s account file into a job
+for diagnosis; a missing login is meant to fail closed.</p>
 <p>When cleanup fails:</p>
 <ol type="1">
 <li>Record the session ID, execution ID, worker job ID, last observed
@@ -6514,8 +6525,8 @@ checks the session, selects the configured provider, removes guest
 transport credentials, adds the host&#39;s provider credential, and records
 available usage information. An explicitly selected public-OpenAI
 subscription turn on a container worker instead receives in-memory
-authentication from the worker broker and uses its restricted public
-proxy.</li>
+authentication from the worker broker and uses the control plane&#39;s
+restricted public proxy.</li>
 <li>A package restore goes through the appropriate relay or cache. The
 route may serve a public feed, add a host-held private-feed credential,
 or use already prepared package content.</li>
@@ -6792,8 +6803,10 @@ Codex route, not a new credential accepted by every provider. A
 the turn&#39;s model provider mode is <code>openai_public</code>. The
 disposable job gets an in-memory token snapshot from the selected worker
 profile broker and reaches only allowlisted OpenAI/ChatGPT HTTPS hosts
-through the worker&#39;s CONNECT proxy; it receives neither the broker&#39;s
-<code>auth.json</code> nor direct public egress.</p>
+through the control plane&#39;s source-restricted CONNECT proxy; it receives
+neither the broker&#39;s <code>auth.json</code> nor direct public egress.
+Cloud ingress and the worker&#39;s <code>DOCKER-USER</code> rules allow only
+the private worker-to-proxy path.</p>
 <p>For <code>local_openai</code> and <code>azure_openai</code>, Evander
 deliberately computes the turn as <code>metered_api</code> and keeps the
 configured private endpoint and API-key/relay behavior. It leaves the
@@ -16726,80 +16739,86 @@ explicit start commands; installation itself does not start them.</p>
 <td>Agents need configured models</td>
 </tr>
 <tr class="odd">
+<td><code>evander-codex-egress-proxy.service</code></td>
+<td><code>evander-codex-egress-proxy</code></td>
+<td>Source- and destination-restricted subscription egress</td>
+<td>Networked container workers use ChatGPT subscriptions</td>
+</tr>
+<tr class="even">
 <td><code>evander-nuget-relay.service</code></td>
 <td><code>evander-nuget-relay</code></td>
 <td>Allowlisted NuGet feeds and cache</td>
 <td>.NET workloads need packages</td>
 </tr>
-<tr class="even">
+<tr class="odd">
 <td><code>evander-npm-audit-facade.service</code></td>
 <td><code>evander-npm-audit-facade</code></td>
 <td>Narrow npm audit/package-cache surface</td>
 <td>Front-end workloads need it</td>
 </tr>
-<tr class="odd">
+<tr class="even">
 <td><code>evander-http-target-relay.service</code></td>
 <td><code>evander-http-target-relay</code></td>
 <td>Session-scoped, allowlisted external HTTP targets</td>
 <td>A workflow grants an HTTP target</td>
 </tr>
-<tr class="even">
+<tr class="odd">
 <td><code>evander-http-target-browser-proxy.service</code></td>
 <td><code>evander-http-target-browser-proxy</code></td>
 <td>Authenticated browser access to session HTTP target origins</td>
 <td>Seeded browser automation is used</td>
 </tr>
-<tr class="odd">
+<tr class="even">
 <td><code>evander-didww-sip-bridge.service</code></td>
 <td><code>evander-didww-sip-bridge</code></td>
 <td>DIDWW/ARI telephony and realtime voice bridge</td>
 <td>Telephony is configured</td>
 </tr>
-<tr class="even">
+<tr class="odd">
 <td><code>evander-ado-worker.service</code></td>
 <td><code>evander-ado-worker</code></td>
 <td>Azure DevOps PR-feedback and completion polling</td>
 <td>ADO PR automation is configured; work-item intake is
 workflow-owned</td>
 </tr>
-<tr class="odd">
+<tr class="even">
 <td><code>evander-proxy-issue-sync.service</code></td>
 <td><code>evander-proxy-issue-sync</code></td>
 <td>Refreshes proxy issue status</td>
 <td>Proxy issue providers are configured</td>
 </tr>
-<tr class="even">
+<tr class="odd">
 <td><code>evander-discord-ingest.service</code></td>
 <td><code>evander-discord-ingest</code></td>
 <td>Ingests allowlisted Discord commands/messages</td>
 <td>Discord is configured</td>
 </tr>
-<tr class="odd">
+<tr class="even">
 <td><code>evander-discord-wake.service</code></td>
 <td><code>evander-discord-wake</code></td>
 <td>Turns eligible Discord inbox activity into wakes</td>
 <td>Discord wake is enabled</td>
 </tr>
-<tr class="even">
+<tr class="odd">
 <td><code>evander-scheduled-wake.service</code></td>
 <td><code>evander-scheduled-wake</code></td>
 <td>Resumes sessions whose scheduled wake is due</td>
 <td>Scheduled work is enabled</td>
 </tr>
-<tr class="odd">
+<tr class="even">
 <td><code>evander-managed-git-refresh.service</code></td>
 <td><code>evander-managed-git-refresh</code></td>
 <td>Refreshes the exact authorized managed repository before Git
 reads</td>
 <td>Agents clone, fetch, or pull managed repositories</td>
 </tr>
-<tr class="even">
+<tr class="odd">
 <td><code>evander-teams-ingest.service</code></td>
 <td><code>evander-cli teams-ingest</code> via its runner script</td>
 <td>Ingests Microsoft Teams messages</td>
 <td>Teams is configured</td>
 </tr>
-<tr class="odd">
+<tr class="even">
 <td><code>evander-teams-notifications.service</code></td>
 <td><code>evander-teams-notifications</code></td>
 <td>Receives loopback-proxied Microsoft Graph message and lifecycle
@@ -16807,20 +16826,20 @@ callbacks</td>
 <td>Teams notifications are installed; public routing is configured only
 when enabled</td>
 </tr>
-<tr class="even">
+<tr class="odd">
 <td><code>evander-teams-meeting-ingest.service</code></td>
 <td><code>evander-teams-meeting-ingest</code></td>
 <td>Ingests queued meeting transcript and speech-status events</td>
 <td>Meeting integration is configured</td>
 </tr>
-<tr class="odd">
+<tr class="even">
 <td><code>evander-trigger-orchestrator.service</code></td>
 <td><code>evander-cli trigger-orchestrator</code></td>
 <td>Polls trigger providers, validates/deduplicates, and publishes
 durable trigger events</td>
 <td>Workflow triggers are enabled</td>
 </tr>
-<tr class="even">
+<tr class="odd">
 <td><code>evander-effect-orchestrator.service</code></td>
 <td><code>evander-effect-orchestrator</code></td>
 <td>Traverses downstream workflow nodes and executes gates, queries, and
@@ -16838,7 +16857,10 @@ ports</h2>
 <p>The firewall&#39;s checked-in default is
 <code>ALLOWED_TCP_PORTS=&quot;22 8000 11434 11666 11777 11778 11881 8081 3142&quot;</code>.
 Allowing a port makes a narrow host surface reachable; it does not grant
-arbitrary host access.</p>
+arbitrary host access. The Codex subscription proxy on
+<code>11889</code> is instead admitted only by the deployment&#39;s
+worker-to-control-plane network policy and is intentionally absent from
+this guest list.</p>
 <table>
 <thead>
 <tr class="header">

@@ -27,6 +27,21 @@
         success_msg: Guest firewall is disabled for control-plane-only profile.
       when: evander_service_profile == 'control_plane_only'
 
+    - name: Assert the restricted Codex egress proxy configuration is complete
+      ansible.builtin.assert:
+        that:
+          - (evander_codex_egress_proxy_bind_host | string | trim | length) > 0
+          - (evander_codex_egress_proxy_port | int) > 0
+          - (evander_codex_egress_proxy_port | int) <= 65535
+          - (evander_codex_egress_proxy_allowed_client_cidrs | length) > 0
+          - (evander_codex_egress_proxy_allowed_hosts | length) > 0
+        fail_msg: >-
+          The Codex egress proxy requires a private bind address, a valid TCP
+          port, at least one worker client CIDR, and at least one HTTPS
+          destination rule.
+        success_msg: Restricted Codex egress proxy configuration is complete.
+      when: evander_services.get('codex_egress_proxy', false) | bool
+
     - name: Assert the runtime directory matches the repo-native service layout
       ansible.builtin.assert:
         that:

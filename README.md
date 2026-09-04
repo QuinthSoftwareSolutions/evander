@@ -12,6 +12,7 @@ package, Git, and HTTP relays.
 - Directory-scoped Host Directories for relative listing, bounded artifact import, recoverable
   deletion, and settled new-file workflow triggers without exposing absolute host roots
 - A host-side OpenAI relay that keeps the API key on the host, exposes an OpenAI-compatible endpoint to guests, and session-gates hosted web search plus image generation/editing
+- A source- and destination-restricted Codex subscription egress proxy for container workers
 - A provider-neutral model usage store and query node for persisted, privacy-preserving usage records
 - An optional host-side DIDWW SIP/OpenAI Realtime bridge for projected and fixed inbound phone calls
 - An optional Teams meeting media bridge with Azure Speech or OpenAI Realtime speech modes
@@ -266,6 +267,7 @@ $EDITOR config/firewall.env
 sudo systemctl restart evander-team-runtime.target evander-gateway.service evander-admin-web.service evander-trigger-orchestrator.service evander-effect-orchestrator.service
 sudo systemctl start evander-firewall.service
 sudo systemctl start evander-openai-relay.service
+sudo systemctl start evander-codex-egress-proxy.service
 sudo systemctl start evander-didww-sip-bridge.service
 sudo systemctl start evander-nuget-relay.service
 sudo systemctl start evander-npm-audit-facade.service
@@ -1078,6 +1080,9 @@ sessions and the existing `<worker-root>/codex-auth/auth.json` login compatible.
 
 Each named profile has an independent auth broker and credential home. Disposable jobs receive
 only an in-memory external-token snapshot and never mount `auth.json` or persist token metadata.
+Worker hosts and subscription containers reach OpenAI only through the control plane's restricted
+Codex egress proxy; deployments allow the worker subnet to reach that private listener without
+granting direct public egress to worker containers.
 Signed-out, disabled, unavailable, and rate-limited profiles defer prompts into durable,
 per-profile FIFO queues without consuming the ordinary retry ledger or falling back to metered
 API. Other profiles may continue dispatching concurrently, and queued work resumes through its

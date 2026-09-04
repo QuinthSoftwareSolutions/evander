@@ -829,6 +829,7 @@ Admin Web deliberately defaults to loopback. Exposing it through a reverse proxy
 
 | Surface | Entry point or service | Default bind/port | Intended caller | Notes |
 |---|---|---:|---|---|
+| Codex subscription egress proxy | `evander-codex-egress-proxy` | `127.0.0.1:11889`; private control-plane IP under Ansible | Configured container workers | Restricts worker source CIDRs and OpenAI/ChatGPT destinations; it is not a guest firewall surface. |
 | NuGet relay | `evander-nuget-relay` | `0.0.0.0:11666` | Workspace package client | Narrow NuGet package surface; `/healthz` is available. |
 | HTTP target relay | `evander-http-target-relay` | `0.0.0.0:11777` | Session with a configured target alias | Constrains external HTTP targets; forwards guest-managed authentication rather than injecting a host secret. |
 | npm audit facade | `evander-npm-audit-facade` | `0.0.0.0:11881` | Workspace npm tooling | Narrow audit compatibility surface. |
@@ -882,7 +883,7 @@ There is no current `evander-host-heartbeat.service`. Older references to it are
 
 ## Administrator reference: installation and shared state
 
-On a systemd-based host, `scripts/install_systemd_units.sh` renders and enables the firewall, gateway, Admin Web, OpenAI relay, DIDWW bridge, NuGet relay, npm audit facade, HTTP target relay, ADO and proxy workers, Discord ingest and wake, scheduled wake, Teams ingest and meeting ingest, and both orchestrators.
+On a systemd-based host, `scripts/install_systemd_units.sh` renders and enables the firewall, gateway, Admin Web, OpenAI relay, Codex subscription egress proxy, DIDWW bridge, NuGet relay, npm audit facade, HTTP target relay, ADO and proxy workers, Discord ingest and wake, scheduled wake, Teams ingest and meeting ingest, and both orchestrators.
 
 > <span class="sidebar-kicker">Administrator note</span> **Enabled does not mean configured or healthy**
 >
@@ -2618,7 +2619,9 @@ Profile refreshes can run concurrently, but operations within one profile remain
 first successful device login pins the OpenAI account ID. Every disposable job authenticates its
 own App Server from an in-memory external-token snapshot; it receives no account-file mount, token
 environment variable, command-line token, or persisted token metadata. All profiles share the
-worker's allowlisted CONNECT proxy while ordinary container egress remains default-deny.
+control plane's allowlisted CONNECT proxy. Cloud policy accepts its private port only from worker
+addresses, and the worker's container egress policy admits only that endpoint while ordinary
+container egress remains default-deny.
 
 This path queues and fails closed. Preflight or mid-turn capacity exhaustion persists the original
 prompt indefinitely with profile, reason, and reset-aware retry time; per-profile FIFO does not
@@ -2672,8 +2675,8 @@ evander-cli execution logs <execution-or-session-id>
 `execution start-container-job` and `smoke-container-worker` explicitly construct the container backend. The generic `status`, `logs`, `stop`, and `destroy` commands infer it only when the target is present in the container execution mapping, unless `--backend container_worker_vm` is supplied. These commands never change the configured default backend.
 
 For subscription-mode Codex, a root owner should also open **Subscriptions**, verify the selected
-profile status and pinned account, and complete device login when required. Verify
-that worker egress policy allows only the configured subscription proxy and that the proxy's
+profile status and pinned account, and complete device login when required. Verify that cloud and
+worker egress policies allow only the configured control-plane subscription proxy and that the proxy's
 OpenAI/ChatGPT hostname allowlist is current. Do not copy the broker's account file into a job for
 diagnosis; a missing login is meant to fail closed.
 
@@ -2734,7 +2737,7 @@ The host resolves the session and directory rules, supplies an upstream credenti
 
 Suppose the implementation agent for Northstar Platform needs to test telemetry retry behavior.
 
-- A model request normally goes to Evander's model relay. Evander checks the session, selects the configured provider, removes guest transport credentials, adds the host's provider credential, and records available usage information. An explicitly selected public-OpenAI subscription turn on a container worker instead receives in-memory authentication from the worker broker and uses its restricted public proxy.
+- A model request normally goes to Evander's model relay. Evander checks the session, selects the configured provider, removes guest transport credentials, adds the host's provider credential, and records available usage information. An explicitly selected public-OpenAI subscription turn on a container worker instead receives in-memory authentication from the worker broker and uses the control plane's restricted public proxy.
 - A package restore goes through the appropriate relay or cache. The route may serve a public feed, add a host-held private-feed credential, or use already prepared package content.
 - A request to the provisioned `mission-control` environment uses a session alias such as `mission-control-api`. The agent supplies its legitimate application credential; the relay confines the destination and does not turn that URL into general internet permission.
 
@@ -2834,7 +2837,9 @@ ChatGPT subscription authentication is an optional container-worker Codex route,
 credential accepted by every provider. A `chatgpt_subscription` preference becomes effective only
 when the turn's model provider mode is `openai_public`. The disposable job gets an in-memory token
 snapshot from the selected worker profile broker and reaches only allowlisted OpenAI/ChatGPT HTTPS hosts through
-the worker's CONNECT proxy; it receives neither the broker's `auth.json` nor direct public egress.
+the control plane's source-restricted CONNECT proxy; it receives neither the broker's `auth.json`
+nor direct public egress. Cloud ingress and the worker's `DOCKER-USER` rules allow only the private
+worker-to-proxy path.
 
 For `local_openai` and `azure_openai`, Evander deliberately computes the turn as `metered_api` and
 keeps the configured private endpoint and API-key/relay behavior. It leaves the stored session
@@ -8668,6 +8673,7 @@ The trigger worker illustrates why the distinction matters: its persistent unit 
 | `evander-gateway.service` | `evander-gateway` | MCP gateway, identity, policy, approval, and audit boundary | Agents need host tools |
 | `evander-admin-web.service` | `evander-admin-web` | Operator UI and Admin API | Operators need the supported GUI/API |
 | `evander-openai-relay.service` | `evander-openai-relay` | Host-owned OpenAI/Anthropic-compatible model access | Agents need configured models |
+| `evander-codex-egress-proxy.service` | `evander-codex-egress-proxy` | Source- and destination-restricted subscription egress | Networked container workers use ChatGPT subscriptions |
 | `evander-nuget-relay.service` | `evander-nuget-relay` | Allowlisted NuGet feeds and cache | .NET workloads need packages |
 | `evander-npm-audit-facade.service` | `evander-npm-audit-facade` | Narrow npm audit/package-cache surface | Front-end workloads need it |
 | `evander-http-target-relay.service` | `evander-http-target-relay` | Session-scoped, allowlisted external HTTP targets | A workflow grants an HTTP target |
@@ -8689,7 +8695,7 @@ The container worker is intentionally absent from this list. `evander-worker-dae
 
 ## 28.3 Default guest-reachable ports
 
-The firewall's checked-in default is `ALLOWED_TCP_PORTS="22 8000 11434 11666 11777 11778 11881 8081 3142"`. Allowing a port makes a narrow host surface reachable; it does not grant arbitrary host access.
+The firewall's checked-in default is `ALLOWED_TCP_PORTS="22 8000 11434 11666 11777 11778 11881 8081 3142"`. Allowing a port makes a narrow host surface reachable; it does not grant arbitrary host access. The Codex subscription proxy on `11889` is instead admitted only by the deployment's worker-to-control-plane network policy and is intentionally absent from this guest list.
 
 | Port | Surface | Typical guest use | Important qualification |
 |---:|---|---|---|

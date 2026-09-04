@@ -70,6 +70,7 @@ EVANDER_UNITS=(
   evander-npm-audit-facade.service
   evander-http-target-relay.service
   evander-http-target-browser-proxy.service
+  evander-codex-egress-proxy.service
   evander-ado-worker.service
   evander-proxy-issue-sync.service
   evander-discord-ingest.service
@@ -504,6 +505,10 @@ render_unit \
   "${SYSTEMD_DIR}/evander-http-target-browser-proxy.service"
 
 render_unit \
+  "${ROOT_DIR}/systemd/evander-codex-egress-proxy.service.template" \
+  "${SYSTEMD_DIR}/evander-codex-egress-proxy.service"
+
+render_unit \
   "${ROOT_DIR}/systemd/evander-ado-worker.service.template" \
   "${SYSTEMD_DIR}/evander-ado-worker.service"
 
@@ -565,6 +570,7 @@ Installed systemd units:
   evander-npm-audit-facade.service
   evander-http-target-relay.service
   evander-http-target-browser-proxy.service
+  evander-codex-egress-proxy.service
   evander-ado-worker.service
   evander-proxy-issue-sync.service
   evander-discord-ingest.service
@@ -587,13 +593,14 @@ Next steps:
   6. Populate ${ROOT_DIR}/config/didww-sip-bridge.env from the example file if you want OpenAI Realtime/DIDWW phone calls.
   7. Export the required host secrets in the service manager environment, source ${ROOT_DIR}/secrets.env if you keep one there, or put host-local secrets in ${LOCAL_SECRETS_FILE}.
   8. Populate ${ROOT_DIR}/config/admin-web.env from the example file and keep Admin Web password/session secrets in ${LOCAL_SECRETS_FILE} or another service-manager secret source.
-  9. Optionally edit ${ROOT_DIR}/config/firewall.env to change allowed host ports.
-  10. Start the Team control plane as one generation:
+  9. Populate ${ROOT_DIR}/config/codex-egress-proxy.env from its example when a private worker uses ChatGPT subscription authentication.
+  10. Optionally edit ${ROOT_DIR}/config/firewall.env to change allowed host ports.
+  11. Start the Team control plane as one generation:
      sudo systemctl restart evander-team-runtime.target evander-gateway.service evander-admin-web.service evander-trigger-orchestrator.service evander-effect-orchestrator.service
-  11. Verify every Team component loaded the current checkout generation:
+  12. Verify every Team component loaded the current checkout generation:
      ${ROOT_DIR}/.venv/bin/evander-cli status --runtime-dir ${ROOT_DIR}/runtime --json
      Continue only when runtime_generation.state is coherent and stale_components is empty.
-  12. Start any additional services you use:
+  13. Start any additional services you use:
      sudo systemctl start evander-firewall.service
      sudo systemctl start evander-openai-relay.service
      sudo systemctl start evander-didww-sip-bridge.service
@@ -601,6 +608,7 @@ Next steps:
      sudo systemctl start evander-npm-audit-facade.service
      sudo systemctl start evander-http-target-relay.service
      sudo systemctl start evander-http-target-browser-proxy.service
+     sudo systemctl start evander-codex-egress-proxy.service
      sudo systemctl start evander-ado-worker.service
      sudo systemctl start evander-proxy-issue-sync.service
      sudo systemctl start evander-discord-ingest.service
