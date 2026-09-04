@@ -49,6 +49,13 @@ test("shared mobile record card CSS hides paired tables below 720px", () => {
   assert.match(styles, /@media \(max-width: 720px\) \{[\s\S]*\.mobile-record-list \{[\s\S]*display: grid;/);
 });
 
+test("mobile add-on frames retain a usable viewport height", () => {
+  assert.match(
+    styles,
+    /@media \(max-width: 980px\) \{[\s\S]*\.admin-addon-frame \{[\s\S]*height: max\(42rem, calc\(100dvh - 10rem\)\);[\s\S]*min-height: max\(42rem, calc\(100dvh - 10rem\)\);/,
+  );
+});
+
 test("artifacts keep the desktop table and add selectable mobile cards", () => {
   assertPairedTableAndMobileList(
     artifactsPage,

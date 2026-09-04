@@ -2264,6 +2264,11 @@ select {
     padding: 0.65rem 0.65rem max(4.4rem, calc(0.65rem + env(safe-area-inset-bottom)));
   }
 
+  .admin-addon-frame {
+    height: max(42rem, calc(100dvh - 10rem));
+    min-height: max(42rem, calc(100dvh - 10rem));
+  }
+
   .admin-workflow-panel {
     height: auto;
     min-height: 70vh;

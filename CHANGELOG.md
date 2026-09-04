@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-09-04 - Mobile Team Chat
+
+- Reworked Team Chat into a mobile conversation-list and message-thread flow so agent messages,
+  thread actions, and the composer retain a usable full-height viewport on phones.
+- Replaced the multi-row Team navigation wall with a compact horizontal tab strip on small screens.
+- Kept embedded add-on frames tall enough to remain usable when the Admin shell switches to its
+  document-scrolling mobile layout.
+
 ## 2026-09-04 - Named Workflow Validation
 
 - Added a generic `gate:validate` primitive that evaluates all ordered named predicates and routes
