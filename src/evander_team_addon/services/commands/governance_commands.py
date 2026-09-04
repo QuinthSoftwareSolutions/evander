@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from evander.models import utc_now
 from typing import Any
-from uuid import uuid4
 from .types import (
     TeamCommandApplyResult,
     TeamCommandContext,
@@ -10,12 +9,9 @@ from .types import (
     _ResolvedTeamCommandContext,
 )
 from ...models import (
-    AgentInboxItem,
     AgentStatus,
     GovernanceAgendaItem,
     GovernanceAgendaItemState,
-    TeamInboxItemType,
-    TeamInboxPriority,
     TeamState,
 )
 from ..domain.agent_access import _agent_for_session
@@ -24,9 +20,7 @@ from ..domain.common import (
     _require_present,
     _required_text,
 )
-from ..domain.work_due import (
-    _mark_agent_work_due,
-)
+from ..domain.operator_directives import append_operator_directive
 
 from .executor import TeamCommandExecutor
 
@@ -232,36 +226,22 @@ class TeamGovernanceCommandService(TeamCommandExecutor):
                     )
 
             now = utc_now()
-            payload: dict[str, Any] = {
-                "title": normalized_title or "Operator directive",
-                "message": normalized_message,
-                "team_id": team.id,
-                "requesting_session_id": normalized_session_id,
-            }
-            if effective_project_id is not None:
-                payload["project_id"] = effective_project_id
-            if normalized_source is not None:
-                payload["source"] = normalized_source
-            if normalized_source_message_id is not None:
-                payload["source_message_id"] = normalized_source_message_id
-            if normalized_created_by is not None:
-                payload["created_by"] = normalized_created_by
-
-            inbox_id = f"inbox-{uuid4().hex}"
-            item = AgentInboxItem(
-                id=inbox_id,
+            wake_result: dict[str, Any] = {"events": []}
+            item = append_operator_directive(
+                state_model,
+                team_id=team.id,
                 recipient_agent_id=recipient.id,
-                sender_agent_id=None,
+                message=normalized_message,
+                result=wake_result,
+                now=now,
+                project_id=effective_project_id,
                 task_id=normalized_task_id,
-                item_type=TeamInboxItemType.OPERATOR_DIRECTIVE,
-                response_requested=True,
-                priority=TeamInboxPriority.NORMAL,
-                payload=payload,
-                created_at=now,
-                updated_at=now,
+                title=normalized_title,
+                source=normalized_source,
+                source_message_id=normalized_source_message_id,
+                created_by=normalized_created_by,
+                requesting_session_id=normalized_session_id,
             )
-            state_model.inbox[inbox_id] = item
-            _mark_agent_work_due(state_model, agent_id=recipient.id, now=now)
             return TeamCommandApplyResult(
                 response_payload={
                     "inbox_item_id": item.id,
@@ -272,6 +252,7 @@ class TeamGovernanceCommandService(TeamCommandExecutor):
                     "operator_directive": item.model_dump(mode="json"),
                     "governance_group_id": group.id,
                     "progress_made": True,
+                    "events": wake_result["events"],
                 },
                 created_domain_ids=[item.id],
             )

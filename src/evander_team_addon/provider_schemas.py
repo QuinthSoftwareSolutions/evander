@@ -643,6 +643,12 @@ TEAM_OUTPUT_SCHEMAS: dict[str, dict[str, dict[str, Any]]] = {
         "project_id": {"type": ["string", "null"]},
         "task_id": {"type": ["string", "null"]},
         "error": {"type": ["string", "null"]},
+        "outbox_record_ids": {"type": "array"},
+        "published_event_ids": {"type": "array"},
+        "completed_outbox_record_ids": {"type": "array"},
+        "outbox_publication_wake": {"type": ["object", "null"]},
+        "event_publish_error": {"type": ["string", "null"]},
+        "outbox_ack_error": {"type": ["string", "null"]},
     },
     "effect:team:create-review-request": {
         "success": {"type": "boolean"},

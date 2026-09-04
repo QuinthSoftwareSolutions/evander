@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-09-03 - Immediate Operator Directive Wakes
+
+- Made operator directives from the Admin API, workflow effects, and governance MCP commands
+  atomically record a debounced Team wake alongside the inbox item.
+- Added immediate post-commit wake publication with outbox acknowledgement, diagnostics, and
+  periodic recovery when publication is unavailable.
+
 ## 2026-09-03 - Workflow Pull-Request Feedback Replies
 
 - Added a generic workflow effect that posts a host-owned, idempotent reply to a GitHub or Azure

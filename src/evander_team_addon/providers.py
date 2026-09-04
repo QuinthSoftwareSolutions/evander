@@ -232,7 +232,10 @@ from .provider_schemas import (
     TeamWakeGovernanceManagersEffectDefinition,
 )
 from .repository import TeamStateConflictError, TeamStateRepository
-from .outbox_publication import request_team_outbox_publication_for_records
+from .outbox_publication import (
+    publish_team_wake_events_with_outbox_recovery,
+    request_team_outbox_publication_for_records,
+)
 from .sqlite_store import ADDON_ID, STATE_DB_FILE, TeamIdempotencyConflictError
 from .services.agent_action_service import TeamAgentActionService
 from .services.admin_service import TeamAdminService
@@ -4375,7 +4378,7 @@ class TeamCreateOperatorDirectiveEffectProvider(EffectProviderBase):
             payload.update(dict(resolved_config))
         repo = TeamStateRepository(_runtime_dir(self.runtime_context))
         try:
-            state, item = TeamAdminService(repo).create_operator_directive(
+            state, item, wake_result = TeamAdminService(repo).create_operator_directive(
                 team_id=_required_text(payload.get("team_id"), "team_id"),
                 message=_required_text(payload.get("message"), "message"),
                 recipient_agent_id=_optional_text(payload.get("recipient_agent_id")),
@@ -4412,6 +4415,13 @@ class TeamCreateOperatorDirectiveEffectProvider(EffectProviderBase):
                 "task_id": _optional_text(payload.get("task_id")),
                 "error": str(exc),
             }
+        wake_delivery = publish_team_wake_events_with_outbox_recovery(
+            self.runtime_context,
+            repository=repo,
+            events=wake_result.get("events"),
+            outbox_record_ids=wake_result.get("outbox_record_ids") or [],
+            publish_events=lambda events: _publish_team_events(self.runtime_context, events),
+        )
         project_id = item.payload.get("project_id")
         return {
             "success": True,
@@ -4422,6 +4432,7 @@ class TeamCreateOperatorDirectiveEffectProvider(EffectProviderBase):
             "project_id": project_id if isinstance(project_id, str) else None,
             "task_id": item.task_id,
             "error": None,
+            **wake_delivery,
         }
 
 

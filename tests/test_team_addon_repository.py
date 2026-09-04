@@ -16031,7 +16031,7 @@ def test_create_operator_directive_wakes_manager_inbox(tmp_path: Path) -> None:
         created_by_agent_id="manager",
     )
 
-    state, item = _team_admin_service(repo).create_operator_directive(
+    state, item, wake_result = _team_admin_service(repo).create_operator_directive(
         team_id="team",
         message="Ask the lead for a status report on next Team dispatch.",
         title="Status report request",
@@ -16065,6 +16065,47 @@ def test_create_operator_directive_wakes_manager_inbox(tmp_path: Path) -> None:
     assert [lease["agent"]["id"] for lease in leases] == ["manager"]
     assert leases[0]["reason"] == "inbox"
     assert leases[0]["inbox"][0]["id"] == item.id
+    assert len(wake_result["events"]) == 1
+    assert len(wake_result["outbox_record_ids"]) == 1
+    [wake_event] = wake_result["events"]
+    assert wake_event["event_type"] == AGENT_WAKE_REQUESTED_EVENT_TYPE
+    assert wake_event["payload"] == {
+        "team_id": "team",
+        "agent_id": "manager",
+        "session_id": "session-manager",
+        "reason": "inbox",
+    }
+    assert wake_event["delay_seconds"] == DEFAULT_AGENT_WAKE_REQUEST_DEBOUNCE_SECONDS
+    [wake_outbox] = repo.list_outbox_records(intent_type=AGENT_WAKE_REQUESTED_EVENT_TYPE)
+    assert wake_outbox.id == wake_result["outbox_record_ids"][0]
+    assert wake_outbox.status == TeamOutboxStatus.PENDING
+    assert wake_outbox.payload["event_type"] == AGENT_WAKE_REQUESTED_EVENT_TYPE
+
+
+def test_create_operator_directive_rolls_back_when_wake_outbox_write_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    before = repo.read()
+
+    def _fail_outbox_write(*_args, **_kwargs):
+        raise RuntimeError("outbox unavailable")
+
+    monkeypatch.setattr(repo.store, "_insert_outbox_record", _fail_outbox_write)
+
+    with pytest.raises(RuntimeError, match="outbox unavailable"):
+        _team_admin_service(repo).create_operator_directive(
+            team_id="team",
+            message="This directive must be atomic with its wake.",
+        )
+
+    after = repo.read()
+    assert after.revision == before.revision
+    assert not any(
+        item.item_type == TeamInboxItemType.OPERATOR_DIRECTIVE for item in after.inbox.values()
+    )
+    assert repo.list_outbox_records(intent_type=AGENT_WAKE_REQUESTED_EVENT_TYPE) == []
 
 
 def test_task_scoped_operator_directive_authorizes_owned_non_actionable_task(
@@ -16086,7 +16127,7 @@ def test_task_scoped_operator_directive_authorizes_owned_non_actionable_task(
         return state
 
     repo.update(_park_task_for_reconciliation)
-    _state, item = _team_admin_service(repo).create_operator_directive(
+    _state, item, _wake_result = _team_admin_service(repo).create_operator_directive(
         team_id="team",
         message="Repair the selected task without bypassing its release gate.",
         project_id="project",
@@ -16142,7 +16183,7 @@ def test_task_scoped_operator_directive_keeps_terminal_task_and_project_out_of_s
         return state
 
     repo.update(_mark_terminal)
-    _state, item = _team_admin_service(repo).create_operator_directive(
+    _state, item, _wake_result = _team_admin_service(repo).create_operator_directive(
         team_id="team",
         message="Inspect the already completed task without reopening it.",
         project_id="project",
@@ -16254,7 +16295,7 @@ def test_task_scoped_operator_directive_does_not_authorize_another_owner_task(
         description="Must not be granted to the manager by an inbox reference.",
         created_by_agent_id="manager",
     )
-    _state, item = _team_admin_service(repo).create_operator_directive(
+    _state, item, _wake_result = _team_admin_service(repo).create_operator_directive(
         team_id="team",
         message="Review the selected task status.",
         project_id="project",
@@ -16293,7 +16334,7 @@ def test_other_owner_directive_rejects_stale_project_scope_before_activation(
         description="Grant the manager only the directive's project context.",
         created_by_agent_id="manager",
     )
-    _state, item = _team_admin_service(repo).create_operator_directive(
+    _state, item, _wake_result = _team_admin_service(repo).create_operator_directive(
         team_id="team",
         message="Review the selected task status.",
         project_id="project",
@@ -16359,7 +16400,7 @@ def test_reopened_other_owner_directive_rejects_new_project_scope_before_activat
         return state
 
     repo.update(_finish_referenced_task)
-    _state, item = _team_admin_service(repo).create_operator_directive(
+    _state, item, _wake_result = _team_admin_service(repo).create_operator_directive(
         team_id="team",
         message="Review the selected task status.",
         project_id="project",
@@ -16410,7 +16451,7 @@ def test_terminal_other_owner_directive_clears_obsolete_inbox_preparation_blocke
         description="Require project preparation only while the task is active.",
         created_by_agent_id="manager",
     )
-    _state, item = _team_admin_service(repo).create_operator_directive(
+    _state, item, _wake_result = _team_admin_service(repo).create_operator_directive(
         team_id="team",
         message="Review the selected task status.",
         project_id="project",
@@ -16478,7 +16519,7 @@ def test_terminal_other_owner_directive_keeps_independently_required_project_sco
         description="Supplies no authority to the manager after becoming terminal.",
         created_by_agent_id="manager",
     )
-    _state, item = admin.create_operator_directive(
+    _state, item, _wake_result = admin.create_operator_directive(
         team_id="team",
         message="Review the selected task status while completing your own work.",
         project_id="project",
@@ -16520,6 +16561,12 @@ def test_create_operator_directive_rejects_non_manager_session(tmp_path: Path) -
             requesting_session_id="session-lead",
         )
 
+    assert not any(
+        item.item_type == TeamInboxItemType.OPERATOR_DIRECTIVE
+        for item in repo.read().inbox.values()
+    )
+    assert repo.list_outbox_records(intent_type=AGENT_WAKE_REQUESTED_EVENT_TYPE) == []
+
 
 def test_create_operator_directive_accepts_governance_manager_session(
     tmp_path: Path,
@@ -16538,7 +16585,7 @@ def test_create_operator_directive_accepts_governance_manager_session(
         expected_revision=repo.read().revision,
     )
 
-    state, item = _team_admin_service(repo).create_operator_directive(
+    state, item, _wake_result = _team_admin_service(repo).create_operator_directive(
         team_id="team",
         message="Confirm the exact blocker and avoid retrying failed promotion.",
         title="Governance blocker check",
