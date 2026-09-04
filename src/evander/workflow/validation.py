@@ -250,6 +250,21 @@ def _derive_workflow_node_output_schema(
             if upstream_ids
             else {}
         )
+    elif node_type == "gate:validate":
+        upstream_ids = _collect_direct_upstream_node_ids(edges, node_id)
+        schema = (
+            _derive_workflow_node_output_schema(
+                node_id=upstream_ids[0],
+                nodes_by_id=nodes_by_id,
+                edges=edges,
+                cache=cache,
+                visiting=visiting,
+            )
+            if upstream_ids
+            else {}
+        )
+        schema = _copy_output_schema(schema)
+        schema.update(_copy_output_schema(effective_node_output_schema(output_node)))
     elif node_type == "gate:counter":
         upstream_ids = _collect_direct_upstream_node_ids(edges, node_id)
         schema = (

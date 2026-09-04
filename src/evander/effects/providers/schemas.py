@@ -995,6 +995,17 @@ class AdoPostWorkItemCommentEffectDefinition(EffectDefinition):
     project: ConfigValue
     work_item_id: ConfigValue
     comment: ConfigValue
+    mentions: ConfigValue | None = None
+    idempotency_key: ConfigValue | None = None
+
+    @field_validator("mentions")
+    @classmethod
+    def validate_mentions(cls, value: ConfigValue | None) -> ConfigValue | None:
+        if value is None or isinstance(value, (str, list)):
+            return value
+        raise ValueError(
+            "effect:ado:post-work-item-comment mentions must be a string or list"
+        )
 
 
 class AdoPipelineRunEffectDefinition(EffectDefinition):

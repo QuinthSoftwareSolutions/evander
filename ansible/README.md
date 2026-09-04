@@ -435,6 +435,8 @@ The worker inventory group is `evander_worker_hosts`. Worker defaults live in
 - `evander_repo_ssh_private_key` when the repo is private
 - `evander_worker_token`
 - `evander_git_host` with the control-plane private IP or DNS name
+- `evander_worker_private_ip` with the worker's numeric private address when
+  `ansible_host` is a DNS name
 - `evander_git_user`, `evander_git_root`, and `evander_git_ssh_alias` when they
   differ from the control-plane issue-setup Git settings
 
@@ -550,6 +552,7 @@ Those default endpoints are:
 - control-plane Git SSH on `22`
 - control-plane MCP gateway on `8000`
 - control-plane OpenAI relay on `11434`
+- control-plane Codex subscription egress proxy on `11889`
 - control-plane NuGet relay on `11666`
 - control-plane HTTP target relay on `11777`
 - control-plane npm audit facade on `11881`
@@ -559,6 +562,15 @@ Those default endpoints are:
 The single-worker override is intentionally narrow. It does not grant public internet egress, and
 it does not replace the worker-host SQL Server rules that already manage container-to-host SQL
 access when `worker_mssql` is enabled.
+
+For a networked worker, the default inventory derives
+`evander_worker_codex_egress_proxy_url` from the control-plane private address, enables
+`evander-codex-egress-proxy.service`, and derives its allowed client CIDRs from each worker's
+numeric `evander_worker_private_ip`. Numeric `ansible_host` values supply the default; DNS-based
+inventories must set `evander_worker_private_ip` explicitly. The control-plane verifier checks the
+private listener and `/healthz`; the worker
+verifier checks the same endpoint from a disposable runner container. The Azure template admits
+TCP `11889` only through the existing worker-subnet ingress rule.
 
 Example inventory override and worker-side verification:
 

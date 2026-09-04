@@ -7666,6 +7666,72 @@ test("team add-on Chat keeps recent conversations in an internal scroll region",
   );
 });
 
+test("team add-on Chat uses a usable mobile conversation and thread flow", async (t) => {
+  const { port } = await createTeamAddonServer(t, {
+    initialState: seededLongChatState(),
+  });
+  const page = await openBrowserPage(t, port, { viewport: { width: 390, height: 844 } });
+
+  await waitForRevision(page, 9);
+  await page.locator("#team-view-chat-tab").click();
+  await page.locator('[data-chat-conversation-id="conversation-alpha-lead"]').waitFor({
+    state: "visible",
+  });
+
+  const chatPage = page.locator("#team-chat-page");
+  const sidebar = page.locator(".chat-sidebar");
+  const main = page.locator(".chat-main");
+  const tabMetrics = await page.locator(".team-view-tabs").evaluate((element) => ({
+    clientWidth: element.clientWidth,
+    scrollWidth: element.scrollWidth,
+    height: element.getBoundingClientRect().height,
+  }));
+  assert.ok(tabMetrics.scrollWidth > tabMetrics.clientWidth, "expected mobile tabs to scroll horizontally");
+  assert.ok(tabMetrics.height < 60, `expected a single-row mobile tab strip: ${JSON.stringify(tabMetrics)}`);
+  assert.equal(await sidebar.isVisible(), true);
+  assert.equal(await main.isVisible(), false);
+  assert.equal(await chatPage.evaluate((element) => element.scrollWidth <= element.clientWidth + 1), true);
+
+  await page.locator('[data-chat-conversation-id="conversation-alpha-lead"]').click();
+  await page.locator(".chat-message--agent").last().waitFor({ state: "visible" });
+  assert.equal(await sidebar.isVisible(), false);
+  assert.equal(await main.isVisible(), true);
+
+  const threadMetrics = await page.locator(".chat-thread").evaluate((thread) => {
+    const messageList = thread.querySelector(".chat-message-list");
+    const composer = thread.querySelector(".chat-composer");
+    if (!(messageList instanceof HTMLElement) || !(composer instanceof HTMLElement)) {
+      return null;
+    }
+    const threadBox = thread.getBoundingClientRect();
+    const messageBox = messageList.getBoundingClientRect();
+    const composerBox = composer.getBoundingClientRect();
+    return {
+      threadHeight: threadBox.height,
+      messageHeight: messageBox.height,
+      composerBottom: composerBox.bottom,
+      threadBottom: threadBox.bottom,
+    };
+  });
+  assert.ok(threadMetrics, "expected mobile chat thread metrics");
+  assert.ok(
+    threadMetrics.threadHeight >= 500,
+    `expected a full-height mobile chat thread: ${JSON.stringify(threadMetrics)}`,
+  );
+  assert.ok(
+    threadMetrics.messageHeight >= 150,
+    `expected agent messages to have a usable scroll region: ${JSON.stringify(threadMetrics)}`,
+  );
+  assert.ok(
+    threadMetrics.composerBottom <= threadMetrics.threadBottom + 2,
+    `expected the composer to remain inside the chat thread: ${JSON.stringify(threadMetrics)}`,
+  );
+
+  await page.locator("[data-chat-mobile-conversations]").click();
+  assert.equal(await sidebar.isVisible(), true);
+  assert.equal(await main.isVisible(), false);
+});
+
 test("team add-on Chat panel fast-loads the selected thread, stays bounded, and loads older messages", async (t) => {
   const { port, requests, chatRequests } = await createTeamAddonServer(t, {
     initialState: seededLongChatState(),

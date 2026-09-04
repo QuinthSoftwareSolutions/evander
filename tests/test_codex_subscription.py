@@ -261,6 +261,52 @@ def test_restricted_proxy_rejects_unlisted_connect_destination() -> None:
         proxy.close()
 
 
+def test_restricted_proxy_health_check_accepts_allowlisted_client() -> None:
+    proxy = RestrictedCodexEgressProxy(
+        host="127.0.0.1",
+        port=0,
+        allowed_client_cidrs=["127.0.0.1/32"],
+    )
+    proxy.start()
+    try:
+        with socket.create_connection(("127.0.0.1", proxy.bound_port), timeout=2) as client:
+            client.sendall(b"GET /healthz HTTP/1.1\r\nHost: proxy\r\n\r\n")
+            response = client.recv(4096)
+        assert response.startswith(b"HTTP/1.1 200")
+        assert response.endswith(b"ok\n")
+    finally:
+        proxy.close()
+
+
+def test_restricted_proxy_rejects_client_outside_allowlist() -> None:
+    proxy = RestrictedCodexEgressProxy(
+        host="127.0.0.1",
+        port=0,
+        allowed_hosts=["api.openai.com"],
+        allowed_client_cidrs=["192.0.2.0/24"],
+    )
+    proxy.start()
+    try:
+        with socket.create_connection(("127.0.0.1", proxy.bound_port), timeout=2) as client:
+            client.sendall(
+                b"CONNECT api.openai.com:443 HTTP/1.1\r\nHost: api.openai.com\r\n\r\n"
+            )
+            response = client.recv(4096)
+        assert response.startswith(b"HTTP/1.1 403")
+        assert b"client not allowed" in response
+    finally:
+        proxy.close()
+
+
+def test_restricted_proxy_rejects_invalid_client_cidr() -> None:
+    with pytest.raises(ValueError, match="invalid Codex egress client CIDR"):
+        RestrictedCodexEgressProxy(
+            host="127.0.0.1",
+            port=0,
+            allowed_client_cidrs=["not-a-network"],
+        )
+
+
 def test_completion_marker_does_not_follow_agent_symlink(tmp_path: Path) -> None:
     victim = tmp_path / "auth.json"
     victim.write_text("keep-me", encoding="utf-8")

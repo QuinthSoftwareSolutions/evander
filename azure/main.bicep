@@ -594,6 +594,7 @@ resource networkSecurityGroups_truman_control_center_nsg_name_WorkerPorts 'Micro
       '11777'
       '8081'
       '3142'
+      '11889'
     ]
     sourceAddressPrefixes: []
     destinationAddressPrefixes: []

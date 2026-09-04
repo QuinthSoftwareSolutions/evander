@@ -27,6 +27,36 @@
         success_msg: Guest firewall is disabled for control-plane-only profile.
       when: evander_service_profile == 'control_plane_only'
 
+    - name: Assert the restricted Codex egress proxy configuration is complete
+      ansible.builtin.assert:
+        that:
+          - (evander_codex_egress_proxy_bind_host | string | trim | length) > 0
+          - (evander_codex_egress_proxy_port | int) > 0
+          - (evander_codex_egress_proxy_port | int) <= 65535
+          - (evander_codex_egress_proxy_allowed_client_cidrs | length) > 0
+          - (evander_codex_egress_proxy_allowed_hosts | length) > 0
+        fail_msg: >-
+          The Codex egress proxy requires a private bind address, a valid TCP
+          port, at least one worker client CIDR, and at least one HTTPS
+          destination rule.
+        success_msg: Restricted Codex egress proxy configuration is complete.
+      when: evander_services.get('codex_egress_proxy', false) | bool
+
+    - name: Assert Codex egress proxy worker addresses are numeric
+      ansible.builtin.assert:
+        that:
+          - (hostvars[item].evander_worker_private_ip | default('') | string | trim | length) > 0
+          - >-
+            (hostvars[item].evander_worker_private_ip | string | trim)
+            is match('^(?:(?:[0-9]{1,3}\.){3}[0-9]{1,3}|[0-9A-Fa-f:]+)$')
+        fail_msg: >-
+          Worker {{ item }} needs a numeric evander_worker_private_ip for the
+          Codex egress proxy client allowlist. Set it explicitly when
+          ansible_host is a DNS name.
+        success_msg: Worker Codex egress proxy client address is numeric.
+      loop: "{{ groups.get('evander_worker_hosts', []) }}"
+      when: evander_services.get('codex_egress_proxy', false) | bool
+
     - name: Assert the runtime directory matches the repo-native service layout
       ansible.builtin.assert:
         that:

@@ -145,6 +145,21 @@
         success_msg: Worker Docker network is paired with an egress policy.
       when: evander_worker_docker_network_normalized not in ['', 'none']
 
+    - name: Assert networked Codex authentication has a restricted proxy
+      ansible.builtin.assert:
+        that:
+          - (evander_worker_codex_egress_proxy_url | default('') | string | trim | length) > 0
+          - (evander_worker_codex_egress_proxy_url | string) is match('^http://[^/]+(:[0-9]+)?$')
+        fail_msg: >-
+          Networked Codex authentication requires an HTTP CONNECT proxy URL.
+          Set evander_worker_codex_egress_proxy_url to the private control-plane
+          proxy endpoint; do not grant the worker or containers general internet
+          access.
+        success_msg: Networked Codex authentication has a restricted proxy endpoint.
+      when:
+        - evander_worker_docker_network_normalized not in ['', 'none']
+        - (evander_worker_codex_auth_image | default('') | string | trim | length) > 0
+
     - name: Assert worker egress allowlist endpoints are concrete
       ansible.builtin.assert:
         that:

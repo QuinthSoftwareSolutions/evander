@@ -203,7 +203,9 @@ Profile refreshes can run concurrently, but operations within one profile remain
 first successful device login pins the OpenAI account ID. Every disposable job authenticates its
 own App Server from an in-memory external-token snapshot; it receives no account-file mount, token
 environment variable, command-line token, or persisted token metadata. All profiles share the
-worker's allowlisted CONNECT proxy while ordinary container egress remains default-deny.
+control plane's allowlisted CONNECT proxy. Cloud policy accepts its private port only from worker
+addresses, and the worker's container egress policy admits only that endpoint while ordinary
+container egress remains default-deny.
 
 This path queues and fails closed. Preflight or mid-turn capacity exhaustion persists the original
 prompt indefinitely with profile, reason, and reset-aware retry time; per-profile FIFO does not
@@ -257,8 +259,8 @@ evander-cli execution logs <execution-or-session-id>
 `execution start-container-job` and `smoke-container-worker` explicitly construct the container backend. The generic `status`, `logs`, `stop`, and `destroy` commands infer it only when the target is present in the container execution mapping, unless `--backend container_worker_vm` is supplied. These commands never change the configured default backend.
 
 For subscription-mode Codex, a root owner should also open **Subscriptions**, verify the selected
-profile status and pinned account, and complete device login when required. Verify
-that worker egress policy allows only the configured subscription proxy and that the proxy's
+profile status and pinned account, and complete device login when required. Verify that cloud and
+worker egress policies allow only the configured control-plane subscription proxy and that the proxy's
 OpenAI/ChatGPT hostname allowlist is current. Do not copy the broker's account file into a job for
 diagnosis; a missing login is meant to fail closed.
 

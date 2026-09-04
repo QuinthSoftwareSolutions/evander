@@ -472,6 +472,14 @@ The worker integration relies on the
 per-profile auth-home ownership requirements are in
 [`container-worker-backend.md`](container-worker-backend.md#codex-chatgpt-subscription-authentication).
 
+For networked workers, populate `config/codex-egress-proxy.env`, deploy
+`evander-codex-egress-proxy.service` on the control plane, and set the worker daemon's
+`EVANDER_WORKER_CODEX_EGRESS_PROXY_URL` to its private URL. The deployment
+must admit TCP `11889` only from worker addresses, while the worker `DOCKER-USER` policy admits
+containers only to that endpoint. The proxy independently restricts client CIDRs and destination
+hosts. A device-login HTTP 500 should be traced through the worker broker and this proxy path
+before changing profile state.
+
 ## Operator Steering
 
 When inspecting a workflow run in Admin Web, agent links that include both a
@@ -3051,6 +3059,7 @@ This creates:
 - `evander-firewall.service`
 - `evander-gateway.service`
 - `evander-openai-relay.service`
+- `evander-codex-egress-proxy.service`
 - `evander-didww-sip-bridge.service`
 - `evander-nuget-relay.service`
 - `evander-npm-audit-facade.service`

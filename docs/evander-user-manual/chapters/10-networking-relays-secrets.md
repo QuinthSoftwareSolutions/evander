@@ -26,7 +26,7 @@ The host resolves the session and directory rules, supplies an upstream credenti
 
 Suppose the implementation agent for Northstar Platform needs to test telemetry retry behavior.
 
-- A model request normally goes to Evander's model relay. Evander checks the session, selects the configured provider, removes guest transport credentials, adds the host's provider credential, and records available usage information. An explicitly selected public-OpenAI subscription turn on a container worker instead receives in-memory authentication from the worker broker and uses its restricted public proxy.
+- A model request normally goes to Evander's model relay. Evander checks the session, selects the configured provider, removes guest transport credentials, adds the host's provider credential, and records available usage information. An explicitly selected public-OpenAI subscription turn on a container worker instead receives in-memory authentication from the worker broker and uses the control plane's restricted public proxy.
 - A package restore goes through the appropriate relay or cache. The route may serve a public feed, add a host-held private-feed credential, or use already prepared package content.
 - A request to the provisioned `mission-control` environment uses a session alias such as `mission-control-api`. The agent supplies its legitimate application credential; the relay confines the destination and does not turn that URL into general internet permission.
 
@@ -126,7 +126,9 @@ ChatGPT subscription authentication is an optional container-worker Codex route,
 credential accepted by every provider. A `chatgpt_subscription` preference becomes effective only
 when the turn's model provider mode is `openai_public`. The disposable job gets an in-memory token
 snapshot from the selected worker profile broker and reaches only allowlisted OpenAI/ChatGPT HTTPS hosts through
-the worker's CONNECT proxy; it receives neither the broker's `auth.json` nor direct public egress.
+the control plane's source-restricted CONNECT proxy; it receives neither the broker's `auth.json`
+nor direct public egress. Cloud ingress and the worker's `DOCKER-USER` rules allow only the private
+worker-to-proxy path.
 
 For `local_openai` and `azure_openai`, Evander deliberately computes the turn as `metered_api` and
 keeps the configured private endpoint and API-key/relay behavior. It leaves the stored session

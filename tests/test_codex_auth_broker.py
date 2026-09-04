@@ -137,6 +137,19 @@ class UsageUnavailableClient(FakeManagedClient):
         return super().request(method, params, timeout_seconds=timeout_seconds)
 
 
+class DeviceLoginUnavailableClient(FakeManagedClient):
+    def request(
+        self,
+        method: str,
+        params: dict[str, Any] | None = None,
+        *,
+        timeout_seconds: float | None = None,
+    ) -> dict[str, Any]:
+        if method == "account/login/start":
+            raise CodexAppServerError("failed to request device code")
+        return super().request(method, params, timeout_seconds=timeout_seconds)
+
+
 def test_broker_has_one_durable_auth_file_and_one_owner(tmp_path: Path) -> None:
     broker = CodexAuthBroker(auth_home=tmp_path / "codex-auth", client_factory=lambda *a, **k: None)
     try:
@@ -204,6 +217,21 @@ def test_device_login_exposes_only_operator_instructions_and_status(tmp_path: Pa
         }
         clients[0].complete_login()
         assert broker.device_login_status("login-1")["status"] == "completed"
+    finally:
+        broker.close()
+
+
+def test_device_login_wraps_app_server_transport_failure(tmp_path: Path) -> None:
+    auth_home = tmp_path / "codex-auth"
+    broker = CodexAuthBroker(
+        auth_home=auth_home,
+        client_factory=lambda *args, **kwargs: DeviceLoginUnavailableClient(
+            auth_home / "auth.json", **kwargs
+        ),
+    )
+    try:
+        with pytest.raises(CodexAuthBrokerError, match="failed to request device code"):
+            broker.start_device_login()
     finally:
         broker.close()
 

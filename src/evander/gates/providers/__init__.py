@@ -16,6 +16,7 @@ __all__ = [
     "MergeGateProvider",
     "SwitchGateProvider",
     "ThrottleGateProvider",
+    "ValidateGateProvider",
     "WhileGateProvider",
 ]
 
@@ -32,6 +33,7 @@ _EXPORT_MODULES = {
     "MergeGateProvider": ".merge_gate",
     "SwitchGateProvider": ".switch_gate",
     "ThrottleGateProvider": ".throttle_gate",
+    "ValidateGateProvider": ".validate_gate",
     "WhileGateProvider": ".while_gate",
 }
 

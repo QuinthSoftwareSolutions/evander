@@ -1522,6 +1522,10 @@ button.team-record-kind-tab strong {
   justify-content: flex-end;
 }
 
+.chat-mobile-conversations-button {
+  display: none;
+}
+
 .chat-call-strip {
   grid-row: 2;
   justify-content: flex-end;
@@ -7144,7 +7148,6 @@ label textarea {
 
 @media (max-width: 1180px) {
   .team-layout,
-  .chat-layout,
   .content-grid,
   .people-layout,
   .projects-workbench,
@@ -7244,6 +7247,69 @@ label textarea {
   .org-focus-node-card {
     width: clamp(17rem, 76vw, 22rem);
     min-width: 17rem;
+  }
+}
+
+@media (max-width: 760px) {
+  .team-view-tabs {
+    display: flex;
+    width: 100%;
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    overflow-y: hidden;
+    overscroll-behavior-x: contain;
+    scrollbar-width: thin;
+  }
+
+  button.team-view-tab {
+    flex: 0 0 auto;
+  }
+
+  .chat-layout {
+    grid-template-columns: minmax(0, 1fr);
+    height: max(38rem, calc(100dvh - 10.5rem));
+    min-height: 38rem;
+  }
+
+  .chat-layout .chat-sidebar,
+  .chat-layout .chat-main {
+    height: 100%;
+  }
+
+  .chat-layout:not(.is-conversation-list-open) .chat-sidebar,
+  .chat-layout.is-conversation-list-open .chat-main {
+    display: none;
+  }
+
+  .chat-thread-header {
+    display: grid;
+    align-items: stretch;
+  }
+
+  .chat-thread-actions {
+    flex-wrap: nowrap;
+    justify-content: flex-start;
+    overflow-x: auto;
+    overscroll-behavior-x: contain;
+    scrollbar-width: thin;
+  }
+
+  .chat-thread-actions > * {
+    flex: 0 0 auto;
+  }
+
+  .chat-mobile-conversations-button {
+    display: inline-flex;
+    flex: 0 0 auto;
+    align-items: center;
+  }
+
+  .chat-message-bubble {
+    max-width: 92%;
+  }
+
+  .chat-composer textarea {
+    min-height: 3.75rem;
   }
 }
 

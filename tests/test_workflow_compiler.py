@@ -557,6 +557,64 @@ def test_collect_domain_validation_diagnostics_reports_switch_bad_inbound_count(
     )
 
 
+def test_collect_domain_validation_diagnostics_rejects_validate_unknown_port(
+    tmp_path: Path,
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    worker_config = canonical_worker_config(
+        {
+            "runtime_dir": runtime_dir,
+            "triggers": [
+                {
+                    "id": "cron-1",
+                    "display_name": "Every minute",
+                    "type": "trigger:cron",
+                    "expression": "* * * * *",
+                }
+            ],
+            "gates": [
+                {
+                    "id": "validate-1",
+                    "display_name": "Validate",
+                    "type": "gate:validate",
+                    "checks": [
+                        {
+                            "code": "candidate.present",
+                            "message": "Candidate is required.",
+                            "when": {"left": "candidate", "equals": "candidate"},
+                        }
+                    ],
+                }
+            ],
+            "effects": [
+                {
+                    "id": "effect-1",
+                    "display_name": "Prompt",
+                    "type": "effect:agent:prompt",
+                    "session_id": "session-1",
+                    "prompt": "continue",
+                }
+            ],
+            "edges": [
+                {"source_id": "cron-1", "target_id": "validate-1"},
+                {
+                    "source_id": "validate-1",
+                    "source_port": "maybe",
+                    "target_id": "effect-1",
+                },
+            ],
+        }
+    )
+
+    diagnostics = collect_domain_validation_diagnostics(worker_config)
+
+    assert any(
+        item.code == "node_capability"
+        and "gate:validate validate-1 uses invalid source_port value(s): maybe" in item.message
+        for item in diagnostics
+    )
+
+
 def test_collect_domain_validation_diagnostics_allows_body_for_gate_with_loopback(
     tmp_path: Path,
 ) -> None:

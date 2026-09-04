@@ -1136,6 +1136,10 @@ def test_container_worker_pack_validates_ticket_created_agent_branch() -> None:
         auto_dev_owner_comment["config"]["work_item_id"]
         == "${{gate-dedupe-auto-dev-missing-owner-comment-1.current_element.id}}"
     )
+    assert auto_dev_owner_comment["config"]["idempotency_key"].startswith(
+        "auto-dev-missing-owner:${{gate-dedupe-auto-dev-missing-owner-comment-1."
+        "current_element.id}}:"
+    )
     assert "System.AssignedTo" in auto_dev_owner_comment["config"]["comment"]
     auto_dev_claim = container_effects["effect-ado-update-work-item-auto-dev-1"]
     assert auto_dev_claim["type"] == "effect:ado:update-work-item"

@@ -224,6 +224,7 @@ let showHandledGovernanceAgenda = false;
 const initialHumanReviewDeepLink = readHumanReviewDeepLink();
 const initialChatDeepLink = readChatDeepLink();
 let selectedChatConversationId = initialChatDeepLink.conversationId || null;
+let chatMobileConversationListOpen = !selectedChatConversationId;
 let activeTeamView =
   initialHumanReviewDeepLink.enabled
     ? "delivery"
@@ -372,6 +373,7 @@ const elements = {
   orgFocusSummary: document.querySelector("#org-focus-summary"),
   orgFocusTeamTabs: document.querySelector("#org-focus-team-tabs"),
   orgFocusView: document.querySelector("#org-focus-view"),
+  chatPage: document.querySelector("#team-chat-page"),
   chatConversationsView: document.querySelector("#chat-conversations-view"),
   chatThreadView: document.querySelector("#chat-thread-view"),
   chatNewPicker: document.querySelector("#chat-new-picker"),
@@ -2048,6 +2050,7 @@ function bindForms() {
     selectedChatOperatorUserId = text(select.value) || null;
     selectedChatConversationId = null;
     chatNewPickerOpen = false;
+    chatMobileConversationListOpen = true;
     closeChatStream();
     void loadConversations({ preserveSelection: false });
   });
@@ -2300,6 +2303,15 @@ function bindRecordEditing() {
       return;
     }
 
+    const chatMobileConversationsButton = event.target.closest("[data-chat-mobile-conversations]");
+    if (chatMobileConversationsButton) {
+      event.preventDefault();
+      rememberCurrentChatComposerDraft();
+      chatMobileConversationListOpen = true;
+      renderChat();
+      return;
+    }
+
     const chatAgentButton = event.target.closest("[data-chat-agent-id]");
     if (chatAgentButton) {
       event.preventDefault();
@@ -2312,6 +2324,7 @@ function bindRecordEditing() {
       event.preventDefault();
       rememberCurrentChatComposerDraft();
       selectedChatConversationId = chatConversationButton.dataset.chatConversationId || null;
+      chatMobileConversationListOpen = false;
       markChatConversationRead(selectedChatConversationId, { rerender: false });
       renderChat();
       if (selectedChatConversationId) {
@@ -4924,6 +4937,7 @@ async function createOrFocusChat(agentId) {
     selectedChatOperatorUserId = text(chatState.selected_operator?.user_id) || selectedChatOperatorUserId;
     selectedChatConversationId = text(payload.selected_conversation_id) || firstConversationId();
     chatNewPickerOpen = false;
+    chatMobileConversationListOpen = false;
     const selectedMessagesLoaded = chatConversationHasLoadedMessages(selectedChatConversationId);
     if (selectedMessagesLoaded) {
       scheduleChatScrollToBottom(selectedChatConversationId);
@@ -9427,8 +9441,17 @@ function renderChat() {
   renderChatOperatorView();
   renderChatConversationList();
   renderChatThread();
+  syncChatMobilePane();
   updateTeamViewTabs();
   applyLockedMutationControls();
+}
+
+function syncChatMobilePane() {
+  if (!elements.chatPage) {
+    return;
+  }
+  const showConversationList = chatMobileConversationListOpen || !selectedChatConversation();
+  elements.chatPage.classList.toggle("is-conversation-list-open", showConversationList);
 }
 
 function readChatReadMarkers() {
@@ -9872,6 +9895,12 @@ function renderChatThreadHeader(conversation, agent, label, readOnly) {
   return `
     <header class="chat-thread-header">
       <div class="chat-thread-title">
+        <button
+          type="button"
+          class="chat-mobile-conversations-button"
+          data-chat-mobile-conversations
+          aria-label="Back to conversations"
+        >Chats</button>
         ${renderChatAvatar(agent)}
         <div>
           <h2>${escapeHtml(label)}</h2>

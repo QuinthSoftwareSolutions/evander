@@ -272,6 +272,47 @@ def test_post_comment_formats_markdownish_body_as_explicit_ado_html(
     assert calls[0]["json"]["text"] == "<p>Summary</p><ul><li>First item</li></ul>"
 
 
+def test_post_comment_appends_correlation_marker_after_rendering_body(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter = AzureDevOpsIssueAdapter(config_resolver=object())
+    monkeypatch.setattr(
+        adapter,
+        "_resolve_connection",
+        lambda directory_path: ("https://dev.azure.com/example", "project-x", "pat"),
+    )
+    calls: list[dict[str, object]] = []
+    responses = [
+        httpx.Response(
+            200,
+            json={
+                "id": 5,
+                "text": "Comment",
+                "_links": {"web": {"href": "https://dev.azure.com/comment/5"}},
+            },
+        ),
+    ]
+    monkeypatch.setattr(
+        "evander.issues.service.httpx.Client",
+        lambda timeout: _RecordingClient(calls, responses.copy()),
+    )
+    marker = (
+        "<!-- evander:ado-work-item-comment:v1:"
+        f"key={'a' * 64};payload={'b' * 64} -->"
+    )
+
+    adapter.post_comment(
+        directory_path="root",
+        remote_issue_id="77",
+        comment="Summary\n- First item",
+        correlation_marker=marker,
+    )
+
+    assert calls[0]["json"]["text"] == (
+        "<p>Summary</p><ul><li>First item</li></ul>\n" + marker
+    )
+
+
 def test_post_comment_uploads_artifact_appends_image_and_links_relation(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -394,6 +435,51 @@ def test_post_comment_resolves_ado_mentions_before_posting(
         "<p>Comment</p>"
     )
     assert result["resolved_mentions"] == [
+        {
+            "input": "ada@example.com",
+            "id": "11111111-1111-1111-1111-111111111111",
+            "display_name": "Ada Lovelace",
+            "unique_name": "ada@example.com",
+        }
+    ]
+
+
+def test_resolve_comment_mentions_returns_audit_payloads(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter = AzureDevOpsIssueAdapter(config_resolver=object())
+    monkeypatch.setattr(
+        adapter,
+        "_resolve_connection",
+        lambda directory_path: ("https://dev.azure.com/example", "project-x", "pat"),
+    )
+    calls: list[dict[str, object]] = []
+    responses = [
+        httpx.Response(
+            200,
+            json={
+                "value": [
+                    {
+                        "id": "11111111-1111-1111-1111-111111111111",
+                        "providerDisplayName": "Ada Lovelace",
+                        "uniqueName": "ada@example.com",
+                    }
+                ]
+            },
+        )
+    ]
+    monkeypatch.setattr(
+        "evander.issues.service.httpx.Client",
+        lambda timeout: _RecordingClient(calls, responses.copy()),
+    )
+
+    result = adapter.resolve_comment_mentions(
+        directory_path="root",
+        mentions=["ada@example.com"],
+    )
+
+    assert calls[0]["url"] == "https://vssps.dev.azure.com/example/_apis/identities"
+    assert result == [
         {
             "input": "ada@example.com",
             "id": "11111111-1111-1111-1111-111111111111",

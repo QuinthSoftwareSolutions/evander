@@ -666,6 +666,37 @@ def test_ansible_browser_proxy_runtime_and_verification_contract() -> None:
     assert "http://127.0.0.1:11778/healthz" in verification
 
 
+def test_ansible_codex_egress_proxy_runtime_and_verification_contract() -> None:
+    repo = Path(__file__).resolve().parents[1]
+    defaults = (repo / "ansible" / "group_vars" / "all" / "defaults.yml").read_text(
+        encoding="utf-8"
+    )
+    service_config = (
+        repo / "ansible" / "roles" / "service_config" / "tasks" / "main.yml"
+    ).read_text(encoding="utf-8")
+    service_runtime = (
+        repo / "ansible" / "roles" / "service_runtime" / "tasks" / "main.yml"
+    ).read_text(encoding="utf-8")
+    verification = (
+        repo / "ansible" / "roles" / "verification" / "tasks" / "main.yml"
+    ).read_text(encoding="utf-8")
+    site = (repo / "ansible" / "site.yml").read_text(encoding="utf-8")
+    azure = (repo / "azure" / "main.bicep").read_text(encoding="utf-8")
+
+    assert "codex_egress_proxy: true" in defaults
+    assert "evander_codex_egress_proxy_port: 11889" in defaults
+    assert "evander_codex_egress_proxy_allowed_client_cidrs" in defaults
+    assert "groups.get('evander_worker_hosts', [])" in defaults
+    assert 'path: "config/codex-egress-proxy.env"' in service_config
+    assert "key: codex_egress_proxy" in service_runtime
+    assert "unit: evander-codex-egress-proxy.service" in service_runtime
+    assert "key: codex_egress_proxy" in verification
+    assert 'host: "{{ evander_codex_egress_proxy_bind_host }}"' in verification
+    assert "evander_codex_egress_proxy_port }}/healthz" in verification
+    assert "Assert the restricted Codex egress proxy configuration is complete" in site
+    assert "'11889'" in azure
+
+
 def test_ansible_azure_inventory_maps_nexus_password_from_vault() -> None:
     repo = Path(__file__).resolve().parents[1]
     azure = (repo / "ansible" / "group_vars" / "azure.example.yml").read_text(encoding="utf-8")
@@ -705,6 +736,7 @@ def test_ansible_worker_egress_policy_defaults_are_private_control_plane_endpoin
     assert 'host: "{{ evander_git_host }}"' in defaults
     assert "name: control-plane mcp gateway" in defaults
     assert "name: control-plane openai relay" in defaults
+    assert "name: control-plane Codex egress proxy" in defaults
     assert "name: control-plane nuget relay" in defaults
     assert "name: control-plane http target relay" in defaults
     assert "name: control-plane npm audit facade" in defaults
@@ -716,6 +748,12 @@ def test_ansible_worker_egress_policy_defaults_are_private_control_plane_endpoin
     assert "port: 11666" in defaults
     assert "port: 11777" in defaults
     assert "port: 11881" in defaults
+    proxy_endpoint = defaults.split("- name: control-plane Codex egress proxy", 1)[1].split(
+        "- name: control-plane npm audit facade", 1
+    )[0]
+    assert "evander_worker_codex_egress_proxy_url | urlsplit('hostname')" in proxy_endpoint
+    assert "evander_worker_codex_egress_proxy_url | urlsplit('port')" in proxy_endpoint
+    assert "default(80, true)" in proxy_endpoint
     assert 'port: "{{ evander_nexus_port }}"' in defaults
     assert 'port: "{{ evander_apt_cache_port }}"' in defaults
     assert 'host: "{{ evander_control_plane_private_ip }}"' in defaults

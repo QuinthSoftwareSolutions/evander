@@ -32,6 +32,7 @@ evander_repo_managed_tracked_config_paths: >-
 evander_repo_managed_base_untracked_config_paths:
   - config/admin-web.env
   - config/ado-worker.env
+  - config/codex-egress-proxy.env
   - config/didww-sip-bridge.env
   - config/firewall.env
   - config/gateway.env
@@ -107,6 +108,30 @@ evander_base_allowed_tcp_ports:
   - 11777
   - 11778
 evander_control_plane_private_ip: "{{ ansible_default_ipv4.address | default('127.0.0.1') }}"
+evander_codex_egress_proxy_port: 11889
+evander_codex_egress_proxy_bind_host: "{{ evander_control_plane_private_ip }}"
+evander_codex_egress_proxy_allowed_hosts:
+  - "auth.openai.com"
+  - "api.openai.com"
+  - "chatgpt.com"
+  - "*.openai.com"
+  - "*.chatgpt.com"
+evander_codex_egress_proxy_allowed_client_cidrs: >-
+  {{
+    (
+      ['127.0.0.1/32', evander_control_plane_private_ip ~ '/32']
+      + (
+        groups.get('evander_worker_hosts', [])
+        | map('extract', hostvars, 'evander_worker_private_cidr')
+        | map('string')
+        | map('trim')
+        | reject('equalto', '')
+        | list
+      )
+    )
+    | unique
+    | list
+  }}
 
 # Control-plane apt cache for worker VM provisioning. This is intentionally
 # separate from Nexus, which only proxies PyPI and npm.
@@ -215,6 +240,10 @@ evander_worker_egress_policy_allow_tcp_endpoints:
   - name: control-plane HTTP target browser proxy
     host: "{{ evander_control_plane_private_ip }}"
     port: 11778
+  - name: control-plane Codex egress proxy
+    host: "{{ evander_worker_codex_egress_proxy_url | urlsplit('hostname') }}"
+    port: >-
+      {{ evander_worker_codex_egress_proxy_url | urlsplit('port') | default(80, true) }}
   - name: control-plane npm audit facade
     host: "{{ evander_control_plane_private_ip }}"
     port: "{{ evander_npm_audit_facade_port }}"
@@ -346,6 +375,12 @@ evander_shared_secrets_env: {}
 # Per-service environment files.
 evander_firewall_env:
   ALLOWED_TCP_PORTS: "{{ evander_allowed_tcp_ports | join(' ') }}"
+
+evander_codex_egress_proxy_env:
+  EVANDER_CODEX_EGRESS_PROXY_HOST: "{{ evander_codex_egress_proxy_bind_host }}"
+  EVANDER_CODEX_EGRESS_PROXY_PORT: "{{ evander_codex_egress_proxy_port }}"
+  EVANDER_CODEX_EGRESS_PROXY_ALLOWED_CLIENT_CIDRS: "{{ evander_codex_egress_proxy_allowed_client_cidrs | join(' ') }}"
+  EVANDER_CODEX_EGRESS_PROXY_ALLOWED_HOSTS: "{{ evander_codex_egress_proxy_allowed_hosts | join(' ') }}"
 
 evander_gateway_env:
   AZURE_DEVOPS_PR_PAT: ""
@@ -523,6 +558,7 @@ evander_services:
   semantic_store: true
   http_target_relay: true
   http_target_browser_proxy: true
+  codex_egress_proxy: true
   ado_worker: true
   proxy_issue_sync: true
   discord_ingest: true

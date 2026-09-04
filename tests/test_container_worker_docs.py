@@ -85,6 +85,8 @@ def test_container_worker_docs_describe_codex_home_preservation() -> None:
     assert "never\nfalls back from subscription mode to metered usage" in docs
     assert "experimental external-auth API" in docs
     assert "evander_worker_codex_egress_proxy_url" in docs
+    assert "control plane" in docs
+    assert "11889" in docs
     assert "HTTP_PROXY`/`HTTPS_PROXY" in docs
     assert "DELETE /v1/codex-auth" in docs
 

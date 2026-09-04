@@ -630,6 +630,7 @@
         "config": {
           "comment": "Truman auto-dev cannot claim this work item until System.AssignedTo is set to a human owner with a usable email address. Please assign the work item to the developer who will own the change, then leave it in New or To Do.",
           "directory_path": "root/example/truman",
+          "idempotency_key": "auto-dev-missing-owner:${{gate-dedupe-auto-dev-missing-owner-comment-1.current_element.id}}:${{gate-dedupe-auto-dev-missing-owner-comment-1.current_element.rev ?? gate-dedupe-auto-dev-missing-owner-comment-1.current_element.changed_at ?? gate-dedupe-auto-dev-missing-owner-comment-1.current_index}}",
           "project": "Example Industry APP",
           "work_item_id": "${{gate-dedupe-auto-dev-missing-owner-comment-1.current_element.id}}"
         },

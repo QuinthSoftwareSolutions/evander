@@ -166,6 +166,7 @@ Admin Web deliberately defaults to loopback. Exposing it through a reverse proxy
 
 | Surface | Entry point or service | Default bind/port | Intended caller | Notes |
 |---|---|---:|---|---|
+| Codex subscription egress proxy | `evander-codex-egress-proxy` | `127.0.0.1:11889`; private control-plane IP under Ansible | Configured container workers | Restricts worker source CIDRs and OpenAI/ChatGPT destinations; it is not a guest firewall surface. |
 | NuGet relay | `evander-nuget-relay` | `0.0.0.0:11666` | Workspace package client | Narrow NuGet package surface; `/healthz` is available. |
 | HTTP target relay | `evander-http-target-relay` | `0.0.0.0:11777` | Session with a configured target alias | Constrains external HTTP targets; forwards guest-managed authentication rather than injecting a host secret. |
 | npm audit facade | `evander-npm-audit-facade` | `0.0.0.0:11881` | Workspace npm tooling | Narrow audit compatibility surface. |
@@ -219,7 +220,7 @@ There is no current `evander-host-heartbeat.service`. Older references to it are
 
 ## Administrator reference: installation and shared state
 
-On a systemd-based host, `scripts/install_systemd_units.sh` renders and enables the firewall, gateway, Admin Web, OpenAI relay, DIDWW bridge, NuGet relay, npm audit facade, HTTP target relay, ADO and proxy workers, Discord ingest and wake, scheduled wake, Teams ingest and meeting ingest, and both orchestrators.
+On a systemd-based host, `scripts/install_systemd_units.sh` renders and enables the firewall, gateway, Admin Web, OpenAI relay, Codex subscription egress proxy, DIDWW bridge, NuGet relay, npm audit facade, HTTP target relay, ADO and proxy workers, Discord ingest and wake, scheduled wake, Teams ingest and meeting ingest, and both orchestrators.
 
 > <span class="sidebar-kicker">Administrator note</span> **Enabled does not mean configured or healthy**
 >

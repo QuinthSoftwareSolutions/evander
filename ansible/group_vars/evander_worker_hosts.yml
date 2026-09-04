@@ -73,14 +73,45 @@ evander_worker_egress_policy_script_path: "/usr/local/sbin/evander-worker-egress
 evander_worker_egress_policy_source_cidrs: []
 evander_worker_egress_policy_block_cidrs:
   - "169.254.0.0/16"
+# The control-plane proxy allowlist requires a numeric source address even when
+# Ansible connects to this worker through a DNS name. Numeric ansible_host values
+# remain a convenient default; DNS inventories must set this explicitly.
+evander_worker_private_ip: >-
+  {{
+    ansible_default_ipv4.address
+    | default(
+        ansible_host
+        if (
+          (ansible_host | default('') | string | trim)
+          is match('^(?:(?:[0-9]{1,3}\.){3}[0-9]{1,3}|[0-9A-Fa-f:]+)$')
+        )
+        else ''
+      )
+  }}
+evander_worker_private_cidr: >-
+  {{
+    (evander_worker_private_ip | string | trim)
+    ~ ('/128' if ':' in (evander_worker_private_ip | string) else '/32')
+    if (evander_worker_private_ip | string | trim | length) > 0
+    else ''
+  }}
 evander_worker_read_only_rootfs: false
 evander_worker_tmpfs: []
 # Optional worker-owned ChatGPT subscription support. The same runner image hosts
 # the managed auth app-server, but only its dedicated codex-auth directory is
-# mounted. Set the proxy URL/bind address to an address reachable on the selected
-# private Docker network before selecting chatgpt_subscription for a session.
+# mounted. Networked workers use the control plane's restricted proxy by default;
+# isolated workers keep the URL empty until an operator selects a reachable proxy.
 evander_worker_codex_auth_image: "{{ evander_runner_image_name }}"
-evander_worker_codex_egress_proxy_url: ""
+evander_worker_codex_egress_proxy_url: >-
+  {{
+    'http://' ~ evander_git_host ~ ':' ~ (evander_codex_egress_proxy_port | string)
+    if (
+      (evander_worker_docker_network | default('none') | string | trim | lower)
+      not in ['', 'none']
+      and (evander_git_host | default('') | string | trim | length) > 0
+    )
+    else ''
+  }}
 evander_worker_codex_egress_proxy_bind_host: ""
 evander_worker_codex_egress_proxy_port: 11889
 evander_worker_codex_egress_hosts:

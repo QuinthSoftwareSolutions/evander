@@ -733,6 +733,7 @@ _WORKFLOW_EDITOR_NODE_DESCRIPTIONS: dict[str, str] = {
     "trigger:agent:run:completed": "Start when an agent run completion event is recorded.",
     "gate:filter": "Allow only matching events to continue downstream.",
     "gate:switch": "Route each activation to the first matching branch or a default route.",
+    "gate:validate": ("Evaluate named predicates and route with structured validation failures."),
     "gate:debounce": "Wait for a quiet period, then forward the latest activation.",
     "gate:buffer": "Collect activations by key and release them as a batch by count or timeout.",
     "gate:throttle": (
@@ -802,7 +803,8 @@ _WORKFLOW_EDITOR_NODE_DESCRIPTIONS: dict[str, str] = {
         "Remove a tag from an Azure DevOps work item when it is present."
     ),
     "effect:ado:post-work-item-comment": (
-        "Post an HTML-formatted comment to an Azure DevOps work item."
+        "Post an HTML-formatted Azure DevOps work-item comment with optional mentions and "
+        "retry-safe idempotency."
     ),
     "effect:pull-request:update": (
         "Update pull request metadata or tags with an optional status guard."
@@ -1580,6 +1582,84 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
                 "json",
                 read_only=True,
                 description="Derived from the single upstream node and passed through unchanged on the selected route.",
+            ),
+        ],
+    ),
+    WorkflowEditorNodeCatalogEntry(
+        kind="gate",
+        type="gate:validate",
+        label="Validate",
+        fields=[
+            _field(
+                "checks",
+                "Checks",
+                "object_list",
+                required=True,
+                description=(
+                    "Ordered named predicates. Every check is evaluated and each failed code "
+                    "and message is emitted in the same order."
+                ),
+                item_fields=[
+                    _field(
+                        "code",
+                        "Code",
+                        "string",
+                        required=True,
+                        description="Stable unique failure code.",
+                        placeholder="description.checklist_prefix",
+                    ),
+                    _field(
+                        "message",
+                        "Message",
+                        "string",
+                        required=True,
+                        description="Operator-authored diagnostic emitted when the check fails.",
+                    ),
+                    _field(
+                        "when",
+                        "When",
+                        "json",
+                        required=True,
+                        bindable=True,
+                        description=(
+                            "Structured predicate using workflow bindings; the check passes when "
+                            "the predicate evaluates to true."
+                        ),
+                    ),
+                ],
+            ),
+            _field(
+                "outputs",
+                "Outputs",
+                "json",
+                read_only=True,
+                default_value={
+                    "valid": {"type": "boolean"},
+                    "failure_count": {"type": "integer"},
+                    "failed_codes": {"type": "array", "items": {"type": "string"}},
+                    "failures": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "code": {"type": "string"},
+                                "message": {"type": "string"},
+                            },
+                            "required": ["code", "message"],
+                        },
+                    },
+                },
+                description=(
+                    "Passes through upstream outputs and adds aggregate validation results."
+                ),
+            ),
+        ],
+        output_ports=[
+            _port("valid", "Valid", description="All configured checks passed."),
+            _port(
+                "invalid",
+                "Invalid",
+                description="One or more checks failed; structured failures are available.",
             ),
         ],
     ),
@@ -3684,6 +3764,24 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
             _field("project", "Project", "string", required=True, bindable=True),
             _field("work_item_id", "Work item ID", "string", required=True, bindable=True),
             _field("comment", "Comment", "string", required=True, bindable=True, multiline=True),
+            _field(
+                "mentions",
+                "Mentions",
+                "string_list",
+                bindable=True,
+                default_value=[],
+                description="Azure DevOps identity IDs, descriptors, email addresses, or names.",
+            ),
+            _field(
+                "idempotency_key",
+                "Idempotency key",
+                "string",
+                bindable=True,
+                description=(
+                    "Use a stable target-specific key to reconcile ambiguous retries without "
+                    "posting a duplicate comment."
+                ),
+            ),
         ],
     ),
     WorkflowEditorNodeCatalogEntry(

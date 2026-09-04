@@ -670,6 +670,22 @@ _GATE_OUTPUT_SCHEMAS = {
         "item_count": {"type": "integer"},
         "is_done": {"type": "boolean"},
     },
+    "gate:validate": {
+        "valid": {"type": "boolean"},
+        "failure_count": {"type": "integer"},
+        "failed_codes": {"type": "array", "items": {"type": "string"}},
+        "failures": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "code": {"type": "string"},
+                    "message": {"type": "string"},
+                },
+                "required": ["code", "message"],
+            },
+        },
+    },
     "gate:while": {
         "iteration_index": {"type": "integer"},
         "iteration_count": {"type": "integer"},
@@ -1089,11 +1105,15 @@ _EFFECT_OUTPUT_SCHEMAS = {
     },
     "effect:ado:post-work-item-comment": {
         "success": {"type": "boolean"},
+        "status": {"type": "string"},
         "provider": {"type": "string"},
         "work_item_id": {"type": "string"},
         "comment_id": {"type": ["string", "null"]},
         "comment_url": {"type": ["string", "null"]},
         "comment": {"type": "object"},
+        "resolved_mentions": {"type": "array"},
+        "idempotency_key": {"type": ["string", "null"]},
+        "correlation_marker": {"type": ["string", "null"]},
         "message": {"type": "string"},
     },
     "effect:ado:update-work-item": {

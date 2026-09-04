@@ -13,6 +13,8 @@ Guest and worker-container networking is default-deny. Reachability is limited t
   list/import/delete grants, descriptor-relative traversal, artifact-backed imports, and
   recoverable quarantine deletes. Agent and trigger payloads never expose configured roots.
 - OpenAI relay: a separate host service that exposes an OpenAI-compatible `/v1` endpoint to guests while keeping the real API key on the host.
+- Codex subscription egress proxy: a control-plane CONNECT proxy that accepts only configured
+  worker source CIDRs and forwards only to the configured OpenAI/ChatGPT hosts on port 443.
 - Container-worker subscription registry: worker-owned named ChatGPT profiles, per-profile Codex
   App Server brokers, durable auth homes, and safe account/capacity status. Control-plane
   directories select a worker but never own its profiles or credentials.
@@ -39,7 +41,9 @@ timestamps. The reserved `default` record points at the legacy `codex-auth/auth.
 profiles use `codex-auth/profiles/<profile-id>/`. Each profile lazily owns an independent broker,
 file lock, and managed App Server process, so refreshes may run concurrently across profiles while
 remaining serialized within one profile. All broker processes share the same restricted OpenAI
-egress proxy.
+egress proxy. In a networked worker deployment that proxy runs on the control plane, the cloud
+network admits its private port only from the worker subnet, and the worker's `DOCKER-USER` policy
+allows containers to reach that endpoint without granting them direct public egress.
 
 The profile identifier, never its credentials, flows from `effect:agent:create` into the session,
 Codex turn, worker job metadata, agent summaries, and durable prompt queue. Assignment is
@@ -337,14 +341,16 @@ Execution model:
    forward the original payload with its current `count`.
 10. `gate:switch` nodes evaluate ordered cases, forward the first matching branch through the case
    `source_port`, and fall back to `default_port` when present.
-11. `gate:merge` nodes behave like a Reactive Extensions `merge`: each inbound event is forwarded
+11. `gate:validate` nodes evaluate every named predicate, route to `valid` or `invalid`, and add
+   ordered failure codes and messages to the forwarded payload.
+12. `gate:merge` nodes behave like a Reactive Extensions `merge`: each inbound event is forwarded
    independently as it arrives, while the gate records the latest payload seen from every upstream
    source for debugging and conflict inspection.
 
-The complete built-in gate catalog is `gate:filter`, `gate:map`, `gate:deserialize`, `gate:serialize`, `gate:dedupe`, `gate:throttle`, `gate:counter`, `gate:switch`, `gate:merge`, `gate:debounce`, `gate:buffer`, `gate:aggregate`, `gate:await-agent`, `gate:for`, and `gate:while`.
-12. Effects consume the post-gate payload and still resolve `${{node.output_name}}` bindings against the
+The complete built-in gate catalog is `gate:filter`, `gate:map`, `gate:deserialize`, `gate:serialize`, `gate:dedupe`, `gate:throttle`, `gate:counter`, `gate:switch`, `gate:validate`, `gate:merge`, `gate:debounce`, `gate:buffer`, `gate:aggregate`, `gate:await-agent`, `gate:for`, and `gate:while`.
+13. Effects consume the post-gate payload and still resolve `${{node.output_name}}` bindings against the
     upstream event payload.
-13. On success, the effect publishes a completion event whose `trigger_id` is the effect id so
+14. On success, the effect publishes a completion event whose `trigger_id` is the effect id so
     downstream edges can continue the chain.
 
 Safety/idempotency guarantees:

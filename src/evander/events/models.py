@@ -195,6 +195,43 @@ class GateSwitchDefinition(GateDefinition):
         return self
 
 
+class GateValidateCheckDefinition(BaseModel):
+    code: Annotated[
+        str,
+        StringConstraints(
+            strip_whitespace=True,
+            min_length=1,
+            max_length=128,
+            pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]*$",
+        ),
+    ]
+    message: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
+    when: ConfigValue
+
+    @field_validator("when")
+    @classmethod
+    def validate_when_expression(cls, value: ConfigValue) -> ConfigValue:
+        validate_filter_when_expression(value, context="gate:validate check when")
+        return value
+
+
+class GateValidateDefinition(GateDefinition):
+    type: Literal["gate:validate"]
+    checks: list[GateValidateCheckDefinition]
+
+    @model_validator(mode="after")
+    def validate_checks(self) -> "GateValidateDefinition":
+        if not self.checks:
+            raise ValueError("gate:validate requires at least one check")
+        codes = [check.code for check in self.checks]
+        duplicate_codes = sorted({code for code in codes if codes.count(code) > 1})
+        if duplicate_codes:
+            raise ValueError(
+                "gate:validate check codes must be unique: " + ", ".join(duplicate_codes)
+            )
+        return self
+
+
 class GateMapDefinition(GateDefinition):
     type: Literal["gate:map"]
     template: ConfigValue
@@ -576,6 +613,7 @@ def _builtin_node_schema_resolvers() -> dict[str, Any]:
         "trigger:agent:prompt:new": provider_models.AgentPromptNewTriggerDefinition,
         "gate:filter": GateFilterDefinition,
         "gate:switch": GateSwitchDefinition,
+        "gate:validate": GateValidateDefinition,
         "gate:map": GateMapDefinition,
         "gate:aggregate": GateAggregateDefinition,
         "gate:deserialize": GateDeserializeDefinition,
