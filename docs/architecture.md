@@ -337,14 +337,16 @@ Execution model:
    forward the original payload with its current `count`.
 10. `gate:switch` nodes evaluate ordered cases, forward the first matching branch through the case
    `source_port`, and fall back to `default_port` when present.
-11. `gate:merge` nodes behave like a Reactive Extensions `merge`: each inbound event is forwarded
+11. `gate:validate` nodes evaluate every named predicate, route to `valid` or `invalid`, and add
+   ordered failure codes and messages to the forwarded payload.
+12. `gate:merge` nodes behave like a Reactive Extensions `merge`: each inbound event is forwarded
    independently as it arrives, while the gate records the latest payload seen from every upstream
    source for debugging and conflict inspection.
 
-The complete built-in gate catalog is `gate:filter`, `gate:map`, `gate:deserialize`, `gate:serialize`, `gate:dedupe`, `gate:throttle`, `gate:counter`, `gate:switch`, `gate:merge`, `gate:debounce`, `gate:buffer`, `gate:aggregate`, `gate:await-agent`, `gate:for`, and `gate:while`.
-12. Effects consume the post-gate payload and still resolve `${{node.output_name}}` bindings against the
+The complete built-in gate catalog is `gate:filter`, `gate:map`, `gate:deserialize`, `gate:serialize`, `gate:dedupe`, `gate:throttle`, `gate:counter`, `gate:switch`, `gate:validate`, `gate:merge`, `gate:debounce`, `gate:buffer`, `gate:aggregate`, `gate:await-agent`, `gate:for`, and `gate:while`.
+13. Effects consume the post-gate payload and still resolve `${{node.output_name}}` bindings against the
     upstream event payload.
-13. On success, the effect publishes a completion event whose `trigger_id` is the effect id so
+14. On success, the effect publishes a completion event whose `trigger_id` is the effect id so
     downstream edges can continue the chain.
 
 Safety/idempotency guarantees:

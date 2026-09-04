@@ -670,6 +670,22 @@ _GATE_OUTPUT_SCHEMAS = {
         "item_count": {"type": "integer"},
         "is_done": {"type": "boolean"},
     },
+    "gate:validate": {
+        "valid": {"type": "boolean"},
+        "failure_count": {"type": "integer"},
+        "failed_codes": {"type": "array", "items": {"type": "string"}},
+        "failures": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "code": {"type": "string"},
+                    "message": {"type": "string"},
+                },
+                "required": ["code", "message"],
+            },
+        },
+    },
     "gate:while": {
         "iteration_index": {"type": "integer"},
         "iteration_count": {"type": "integer"},

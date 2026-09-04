@@ -546,7 +546,7 @@ no query string. Repeated query keys are encoded as arrays in request order.
 The webhook trigger stores the durable event as `external.webhook.<slug>` by default, exposes the
 webhook envelope downstream with the signature and timestamp headers, and leaves payload shaping to
 gates such as `gate:filter`,
-`gate:map`, `gate:deserialize`, and `gate:dedupe`.
+`gate:validate`, `gate:map`, `gate:deserialize`, and `gate:dedupe`.
 
 ```bash
 WEBHOOK_BODY='{"target":"demo"}'

@@ -82,6 +82,7 @@ def test_default_registry_includes_all_known_gate_types() -> None:
         "gate:serialize",
         "gate:switch",
         "gate:throttle",
+        "gate:validate",
         "gate:while",
     }
 

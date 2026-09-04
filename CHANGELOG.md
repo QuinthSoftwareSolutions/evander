@@ -1,5 +1,14 @@
 # Changelog
 
+## 2026-09-04 - Named Workflow Validation
+
+- Added a generic `gate:validate` primitive that evaluates all ordered named predicates and routes
+  through explicit `valid` or `invalid` ports.
+- Preserved upstream outputs while emitting deterministic `valid`, `failure_count`, `failed_codes`,
+  and structured `failures` diagnostics for downstream correction workflows.
+- Added workflow editor metadata, output-schema inference, graph-port validation, documentation,
+  and focused runtime and configuration coverage.
+
 ## 2026-09-04 - Retry-Safe ADO Work-Item Comments
 
 - Added workflow-configurable Azure DevOps mentions to the work-item comment effect.

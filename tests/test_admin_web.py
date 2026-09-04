@@ -1510,6 +1510,35 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
     assert switch_case_fields["match"]["bindable"]
     assert not switch_gate["fields"][1]["required"]
     assert switch_gate["fields"][2]["read_only"]
+    validate_gate = next(
+        node for node in catalog_payload["nodes"] if node["type"] == "gate:validate"
+    )
+    assert validate_gate["output_ports"] == [
+        {"key": "valid", "label": "Valid", "description": "All configured checks passed."},
+        {
+            "key": "invalid",
+            "label": "Invalid",
+            "description": "One or more checks failed; structured failures are available.",
+        },
+        {
+            "key": "error",
+            "label": "Error",
+            "description": "Gate validation or runtime failure handled by an error route.",
+        },
+    ]
+    assert [field["key"] for field in validate_gate["fields"]] == ["checks", "outputs"]
+    validate_check_fields = validate_gate["fields"][0]
+    assert validate_check_fields["kind"] == "object_list"
+    assert validate_check_fields["required"]
+    assert [field["key"] for field in validate_check_fields["item_fields"]] == [
+        "code",
+        "message",
+        "when",
+    ]
+    assert validate_check_fields["item_fields"][2]["bindable"]
+    assert validate_gate["fields"][1]["read_only"]
+    assert validate_gate["fields"][1]["default_value"]["valid"] == {"type": "boolean"}
+    assert validate_gate["fields"][1]["default_value"]["failures"]["type"] == "array"
     issue_get = next(node for node in catalog_payload["nodes"] if node["type"] == "query:issue:get")
     assert [field["key"] for field in issue_get["fields"]] == ["issue_id"]
     semantic_status = next(

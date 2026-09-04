@@ -603,6 +603,7 @@ Type-specific keys:
 |---|---|---|
 | `gate:filter` | `predicate` | `outputs` |
 | `gate:switch` | `cases` | `default_port`, `outputs` |
+| `gate:validate` | `checks` | `outputs` |
 | `gate:for` | `items` | `outputs` |
 | `gate:while` | `when`, `max_iterations` | `outputs` |
 | `gate:map` | `mapping` | `outputs` |
@@ -648,6 +649,15 @@ to the same downstream branch. When no case matches, `default_port` receives the
 is present; otherwise the gate records the activation as dropped. The runtime passes through the
 upstream payload unchanged apart from runtime-only bookkeeping fields, and branch selection is
 published downstream through `source_port`.
+
+`gate:validate` evaluates every entry in its ordered `checks` array. Each check requires a stable,
+unique `code`, a non-blank operator-authored `message`, and a `when` predicate using the same
+structured expression shape as `gate:filter.when`. The gate routes to `valid` when every predicate
+passes and to `invalid` when any predicate fails. Both routes preserve the upstream payload and add
+`valid`, `failure_count`, `failed_codes`, and `failures`; each item in `failures` contains the
+failed check's `code` and `message`, in configuration order. These four gate-owned fields replace
+incoming fields with the same names. Predicate configuration or runtime evaluation errors use the
+standard `error` lifecycle route instead of being reported as business-validation failures.
 
 `gate:while` evaluates its `when` predicate on each activation and routes to `body` while the
 predicate is true and `max_iterations` has not been reached. It routes to `done` when the predicate

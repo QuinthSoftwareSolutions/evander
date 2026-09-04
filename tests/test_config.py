@@ -1430,6 +1430,100 @@ def test_trigger_orchestrator_filter_gate_accepts_string_operators() -> None:
     }
 
 
+def test_trigger_orchestrator_validate_gate_accepts_named_checks() -> None:
+    config = _validate_trigger_config(
+        {
+            "runtime_dir": "/tmp/evander-runtime",
+            "gates": [
+                {
+                    "id": "gate-validate",
+                    "display_name": "Validate candidate",
+                    "type": "gate:validate",
+                    "checks": [
+                        {
+                            "code": "description.prefix",
+                            "message": "Description must use the required prefix.",
+                            "when": {
+                                "left": "${{trigger-1.description}}",
+                                "starts_with": "---\n\n",
+                            },
+                        }
+                    ],
+                }
+            ],
+        }
+    )
+
+    gate = materialize_node_definition(config.gates[0])
+    assert gate.type == "gate:validate"
+    assert gate.checks[0].code == "description.prefix"
+    assert gate.checks[0].message == "Description must use the required prefix."
+    assert gate.checks[0].when == {
+        "left": "${{trigger-1.description}}",
+        "starts_with": "---\n\n",
+    }
+
+
+@pytest.mark.parametrize(
+    ("checks", "message"),
+    [
+        ([], "gate:validate requires at least one check"),
+        (
+            [
+                {
+                    "code": "description.prefix",
+                    "message": "First",
+                    "when": {"left": "value", "equals": "value"},
+                },
+                {
+                    "code": "description.prefix",
+                    "message": "Second",
+                    "when": {"left": "value", "equals": "value"},
+                },
+            ],
+            "gate:validate check codes must be unique: description.prefix",
+        ),
+        (
+            [
+                {
+                    "code": "invalid code",
+                    "message": "Invalid code",
+                    "when": {"left": "value", "equals": "value"},
+                }
+            ],
+            "String should match pattern",
+        ),
+        (
+            [
+                {
+                    "code": "description.prefix",
+                    "message": "Invalid predicate",
+                    "when": {"left": "value"},
+                }
+            ],
+            "gate:validate check when must contain a logical operator or one of",
+        ),
+    ],
+)
+def test_trigger_orchestrator_validate_gate_rejects_invalid_checks(
+    checks: list[dict[str, object]], message: str
+) -> None:
+    with pytest.raises(ValueError, match=message):
+        _validate_trigger_config(
+            {
+                "runtime_dir": "/tmp/evander-runtime",
+                "gates": [
+                    {
+                        "id": "gate-validate",
+                        "display_name": "Validate candidate",
+                        "type": "gate:validate",
+                        "checks": checks,
+                    }
+                ],
+            }
+        )
+
+
 def test_trigger_orchestrator_switch_gate_accepts_cases_and_duplicate_ports() -> None:
     config = _validate_trigger_config(
         {

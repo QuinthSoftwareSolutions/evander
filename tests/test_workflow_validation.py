@@ -579,6 +579,74 @@ def test_binding_diagnostics_accept_switch_derived_outputs_with_duplicate_case_p
     assert diagnostics == []
 
 
+def test_binding_diagnostics_accept_validate_results_and_passed_through_outputs() -> None:
+    config = {
+        "triggers": [
+            {
+                "id": "trigger-ticket-created-main",
+                "display_name": "Ticket created",
+                "type": "trigger:ticket:created",
+                "directories": ["root"],
+            }
+        ],
+        "gates": [
+            {
+                "id": "gate-validate-1",
+                "display_name": "Validate ticket",
+                "type": "gate:validate",
+                "checks": [
+                    {
+                        "code": "ticket.body.present",
+                        "message": "Ticket body is required.",
+                        "when": {
+                            "left": "${{trigger-ticket-created-main.ticket.body}}",
+                            "is_not_null": True,
+                        },
+                    }
+                ],
+            }
+        ],
+        "effects": [
+            {
+                "id": "prompt-agent",
+                "display_name": "Prompt agent",
+                "type": "effect:agent:prompt",
+                "session_id": "session-1",
+                "prompt": (
+                    "Review ${{gate-validate-1.ticket.body}}; "
+                    "valid=${{gate-validate-1.valid}}; "
+                    "failures=${{gate-validate-1.failure_count}}"
+                ),
+            }
+        ],
+        "edges": [
+            {"source_id": "trigger-ticket-created-main", "target_id": "gate-validate-1"},
+            {
+                "source_id": "gate-validate-1",
+                "source_port": "invalid",
+                "target_id": "prompt-agent",
+            },
+        ],
+    }
+
+    output_schemas = derive_workflow_output_schemas(config)
+    diagnostics = validate_workflow_binding_diagnostics(config)
+
+    validate_schema = output_schemas["gate-validate-1"]
+    assert validate_schema["ticket"]["properties"]["body"] == {"type": "string"}
+    assert validate_schema["valid"] == {"type": "boolean"}
+    assert validate_schema["failure_count"] == {"type": "integer"}
+    assert validate_schema["failed_codes"] == {
+        "type": "array",
+        "items": {"type": "string"},
+    }
+    assert validate_schema["failures"]["items"]["properties"] == {
+        "code": {"type": "string"},
+        "message": {"type": "string"},
+    }
+    assert diagnostics == []
+
+
 def test_binding_diagnostics_accept_merge_derived_outputs() -> None:
     config = {
         "triggers": [

@@ -19,6 +19,7 @@ from evander.events.models import (
     GateSerializeDefinition,
     GateSwitchDefinition,
     GateThrottleDefinition,
+    GateValidateDefinition,
     GateWhileDefinition,
 )
 from evander.schema_bootstrap import _GATE_OUTPUT_SCHEMAS
@@ -39,6 +40,7 @@ _GATE_MODEL_BY_TYPE = {
     "gate:await-agent": GateAwaitAgentDefinition,
     "gate:for": GateForDefinition,
     "gate:switch": GateSwitchDefinition,
+    "gate:validate": GateValidateDefinition,
     "gate:while": GateWhileDefinition,
 }
 
