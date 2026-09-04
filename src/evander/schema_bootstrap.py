@@ -1089,11 +1089,15 @@ _EFFECT_OUTPUT_SCHEMAS = {
     },
     "effect:ado:post-work-item-comment": {
         "success": {"type": "boolean"},
+        "status": {"type": "string"},
         "provider": {"type": "string"},
         "work_item_id": {"type": "string"},
         "comment_id": {"type": ["string", "null"]},
         "comment_url": {"type": ["string", "null"]},
         "comment": {"type": "object"},
+        "resolved_mentions": {"type": "array"},
+        "idempotency_key": {"type": ["string", "null"]},
+        "correlation_marker": {"type": ["string", "null"]},
         "message": {"type": "string"},
     },
     "effect:ado:update-work-item": {

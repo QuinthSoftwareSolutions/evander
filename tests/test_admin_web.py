@@ -831,8 +831,13 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
         "project",
         "work_item_id",
         "comment",
+        "mentions",
+        "idempotency_key",
     ]
-    assert ado_comment["fields"][-1]["multiline"] is True
+    ado_comment_fields = {field["key"]: field for field in ado_comment["fields"]}
+    assert ado_comment_fields["comment"]["multiline"] is True
+    assert ado_comment_fields["mentions"]["default_value"] == []
+    assert ado_comment_fields["idempotency_key"]["required"] is False
     pr_update = next(
         node for node in catalog_payload["nodes"] if node["type"] == "effect:pull-request:update"
     )

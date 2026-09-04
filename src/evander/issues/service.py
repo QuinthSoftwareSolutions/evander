@@ -443,6 +443,7 @@ class IssueProviderAdapter(Protocol):
         project: str | None = None,
         mentions: list[str] | None = None,
         attachments: list[dict[str, Any]] | None = None,
+        correlation_marker: str | None = None,
     ) -> dict[str, Any]: ...
 
     def update_issue(
@@ -1215,6 +1216,7 @@ class AzureDevOpsIssueAdapter:
         project: str | None = None,
         mentions: list[str] | None = None,
         attachments: list[dict[str, Any]] | None = None,
+        correlation_marker: str | None = None,
     ) -> dict[str, Any]:
         organization_url, configured_project, pat = self._resolve_connection(directory_path)
         normalized_project = str(project or configured_project).strip()
@@ -1240,6 +1242,8 @@ class AzureDevOpsIssueAdapter:
                 _format_ado_html_field(comment) or "",
                 resolved_mentions,
             )
+            if correlation_marker:
+                formatted_comment = f"{formatted_comment}\n{correlation_marker.strip()}"
             if uploaded_attachments:
                 formatted_comment = (
                     _append_html_attachment_links(formatted_comment, uploaded_attachments) or ""
@@ -3160,6 +3164,7 @@ class IssueService:
         project: str | None = None,
         mentions: list[str] | None = None,
         attachments: list[dict[str, Any]] | None = None,
+        correlation_marker: str | None = None,
     ) -> dict[str, Any]:
         adapter = self.adapters.get(provider)
         if adapter is None:
@@ -3171,6 +3176,7 @@ class IssueService:
             project=project,
             mentions=mentions,
             attachments=attachments,
+            correlation_marker=correlation_marker,
         )
 
     def update_remote_issue(

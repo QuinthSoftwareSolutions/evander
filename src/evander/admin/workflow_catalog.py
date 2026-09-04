@@ -802,7 +802,8 @@ _WORKFLOW_EDITOR_NODE_DESCRIPTIONS: dict[str, str] = {
         "Remove a tag from an Azure DevOps work item when it is present."
     ),
     "effect:ado:post-work-item-comment": (
-        "Post an HTML-formatted comment to an Azure DevOps work item."
+        "Post an HTML-formatted Azure DevOps work-item comment with optional mentions and "
+        "retry-safe idempotency."
     ),
     "effect:pull-request:update": (
         "Update pull request metadata or tags with an optional status guard."
@@ -3684,6 +3685,24 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
             _field("project", "Project", "string", required=True, bindable=True),
             _field("work_item_id", "Work item ID", "string", required=True, bindable=True),
             _field("comment", "Comment", "string", required=True, bindable=True, multiline=True),
+            _field(
+                "mentions",
+                "Mentions",
+                "string_list",
+                bindable=True,
+                default_value=[],
+                description="Azure DevOps identity IDs, descriptors, email addresses, or names.",
+            ),
+            _field(
+                "idempotency_key",
+                "Idempotency key",
+                "string",
+                bindable=True,
+                description=(
+                    "Use a stable target-specific key to reconcile ambiguous retries without "
+                    "posting a duplicate comment."
+                ),
+            ),
         ],
     ),
     WorkflowEditorNodeCatalogEntry(

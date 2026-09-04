@@ -750,6 +750,7 @@ Type-specific keys:
 | `effect:issue:upsert-ado-proxy` | one of `item`, `items` | `directory_path`, `organization_url`, `project`, `managed_repo_id`, transient `repo_source`, `yaml_output_dir`, `outputs` |
 | `effect:ado:add-work-item-tag` | `directory_path`, `project`, `work_item_id`, `tag` | `sync_proxy_cache`, `outputs` |
 | `effect:ado:remove-work-item-tag` | `directory_path`, `project`, `work_item_id`, `tag` | `sync_proxy_cache`, `outputs` |
+| `effect:ado:post-work-item-comment` | `directory_path`, `project`, `work_item_id`, `comment` | `mentions`, `idempotency_key`, `outputs` |
 | `effect:ado:pipeline-run` | `directory_path`, `pipeline_id` | `project`, `branch`, `variables`, `template_parameters`, `timeout_seconds`, `poll_interval_seconds`, `check`, `outputs` |
 | `effect:ado:sync-activity-index` | `since` | `until`, `directory_path`, `scope`, `actor`, `project`, `repo`, `states`, `types`, `tags_any`, `statuses`, `include_system_comments`, `outputs` |
 | `effect:pull-request:add-tag` | `provider`, `repo`, `pr_id`, `tag` | `directory_path`, `ado_organization`, `project`, `outputs` |
@@ -1163,6 +1164,17 @@ does not use agent MCP tool permissions or approval policy.
 Azure DevOps comment tools with `mentions` also use the configured ADO PAT to
 call the identities API; that PAT must be allowed to read identities, equivalent
 to Azure DevOps OAuth `vso.identity`.
+
+`effect:ado:post-work-item-comment` accepts the same Azure DevOps identity IDs,
+descriptors, email addresses, or names in `mentions`. Set a stable
+`idempotency_key` for any comment that may be retried. The key is scoped to the
+resolved Azure DevOps organization, project, and work item. The effect records
+the completed result locally and appends a non-rendered correlation marker to
+the remote HTML comment. Before an uncached retry posts, it reads recent
+work-item comments and reuses a matching marked comment. Reusing the same key on
+the same target with a different comment or mention set fails without posting.
+Omitting the key retains the legacy one-shot behavior and does not provide retry
+reconciliation.
 
 Azure DevOps PR tag filters are applied client-side after the PR list call. The
 `tags` filter accepts tag names with case-insensitive `and`, `or`, `not`, and

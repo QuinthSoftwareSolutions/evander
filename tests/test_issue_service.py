@@ -272,6 +272,47 @@ def test_post_comment_formats_markdownish_body_as_explicit_ado_html(
     assert calls[0]["json"]["text"] == "<p>Summary</p><ul><li>First item</li></ul>"
 
 
+def test_post_comment_appends_correlation_marker_after_rendering_body(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter = AzureDevOpsIssueAdapter(config_resolver=object())
+    monkeypatch.setattr(
+        adapter,
+        "_resolve_connection",
+        lambda directory_path: ("https://dev.azure.com/example", "project-x", "pat"),
+    )
+    calls: list[dict[str, object]] = []
+    responses = [
+        httpx.Response(
+            200,
+            json={
+                "id": 5,
+                "text": "Comment",
+                "_links": {"web": {"href": "https://dev.azure.com/comment/5"}},
+            },
+        ),
+    ]
+    monkeypatch.setattr(
+        "evander.issues.service.httpx.Client",
+        lambda timeout: _RecordingClient(calls, responses.copy()),
+    )
+    marker = (
+        "<!-- evander:ado-work-item-comment:v1:"
+        f"key={'a' * 64};payload={'b' * 64} -->"
+    )
+
+    adapter.post_comment(
+        directory_path="root",
+        remote_issue_id="77",
+        comment="Summary\n- First item",
+        correlation_marker=marker,
+    )
+
+    assert calls[0]["json"]["text"] == (
+        "<p>Summary</p><ul><li>First item</li></ul>\n" + marker
+    )
+
+
 def test_post_comment_uploads_artifact_appends_image_and_links_relation(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-09-04 - Retry-Safe ADO Work-Item Comments
+
+- Added workflow-configurable Azure DevOps mentions to the work-item comment effect.
+- Added optional target-scoped idempotency keys, non-rendered remote correlation markers, and
+  read-before-retry reconciliation so ambiguous provider success does not duplicate a comment.
+- Rejected same-target idempotency-key reuse when the comment or mention set differs.
+
 ## 2026-09-03 - Immediate Operator Directive Wakes
 
 - Made operator directives from the Admin API, workflow effects, and governance MCP commands
