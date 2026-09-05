@@ -13,6 +13,8 @@ from uuid import uuid4
 
 import httpx
 
+from evander.admin.services.ado_user_connections import AdoUserConnectionService
+
 from evander.agent_control import AgentControlStore
 from evander.addons import (
     AddonContext,
@@ -246,6 +248,7 @@ class AdminRuntimeComponents:
     vm_agent_support: VmAgentAdminSupport
     issue_git_admin: IssueGitAdminService
     managed_git_admin: ManagedGitAdminService
+    ado_user_connections: AdoUserConnectionService
     managed_git_maintenance: ManagedGitMaintenanceService
     managed_git_repository_refresh: ManagedGitRepositoryRefreshService
     managed_git_refresh_authorization: ManagedGitRefreshAuthorizationService
@@ -433,6 +436,7 @@ def _build_admin_runtime_components(
         runtime=runtime,
         project_dir=project_dir,
     )
+    ado_user_connections = managed_git_admin.ado_user_connections
     managed_git_maintenance = ManagedGitMaintenanceService(managed_git_admin)
     managed_git_repository_refresh = ManagedGitRepositoryRefreshService(managed_git_admin)
     directory_service = DirectoryService(directory_store)
@@ -796,6 +800,7 @@ def _build_admin_runtime_components(
         vm_agent_support=vm_agent_support,
         issue_git_admin=issue_git_admin,
         managed_git_admin=managed_git_admin,
+        ado_user_connections=ado_user_connections,
         managed_git_maintenance=managed_git_maintenance,
         managed_git_repository_refresh=managed_git_repository_refresh,
         managed_git_refresh_authorization=managed_git_refresh_authorization,

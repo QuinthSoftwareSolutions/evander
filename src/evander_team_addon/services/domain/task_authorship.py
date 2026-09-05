@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 
-from ...models import ProjectGitIdentity, TeamState
+from ...models import AdoWorkItemAttribution, ProjectGitIdentity, TeamState
 
 
 def task_author_identity(value: object) -> ProjectGitIdentity | None:
@@ -55,3 +55,49 @@ def common_deliverable_author(
             for deliverable_id in deliverable_ids
         ),
     )
+
+
+def inherited_work_item_attributions(
+    state: TeamState,
+    *,
+    project_id: str,
+    originating_task_id: str | None = None,
+    parent_task_id: str | None = None,
+) -> list[AdoWorkItemAttribution] | None:
+    for source_id in (originating_task_id, parent_task_id):
+        source = state.tasks.get(source_id or "")
+        if source is not None and source.project_id == project_id:
+            return (
+                [item.model_copy(deep=True) for item in source.work_item_attributions]
+                if source.work_item_attributions
+                else None
+            )
+    return None
+
+
+def combined_deliverable_attributions(
+    state: TeamState, deliverable_ids: Iterable[str]
+) -> list[AdoWorkItemAttribution] | None:
+    results: list[AdoWorkItemAttribution] = []
+    visited: set[str] = set()
+    pending = list(deliverable_ids)
+    while pending:
+        deliverable_id = pending.pop()
+        if deliverable_id in visited:
+            continue
+        visited.add(deliverable_id)
+        deliverable = state.deliverables.get(deliverable_id)
+        task = state.tasks.get(deliverable.task_id) if deliverable else None
+        if task is None or not task.work_item_attributions:
+            return None
+        for item in task.work_item_attributions:
+            if item not in results:
+                results.append(item.model_copy(deep=True))
+        if deliverable is not None:
+            pending.extend(deliverable.source_deliverable_ids)
+            if deliverable.dependency_composition_manifest:
+                pending.extend(
+                    source.deliverable_id
+                    for source in deliverable.dependency_composition_manifest.dependency_git_sources
+                )
+    return results or None

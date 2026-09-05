@@ -1,5 +1,15 @@
 # Changelog
 
+## 2026-09-05 - ADO assignee attribution (0.25.0)
+
+- Added personal Azure DevOps PAT connections for signed-in Admin Web users, with encrypted
+  host-only storage, validated ADO identity, and replace/remove controls.
+- Captured work-item assignees on task intake and preserved their attribution through task
+  handoffs, corrections, and nested release contributions.
+- Created release PRs through the assignee's personal connection when available; mixed-owner
+  releases and unavailable or rejected PATs use the bot, with recorded attribution and fallback reasons.
+- Added commit-bound publication contexts and durable reconciliation for uncertain PR creation.
+
 ## 2026-09-05 - Per-task Git authors (0.24.0)
 
 - Added optional task `authored_by` name/email settings through the operator UI, API, Team tools,

@@ -12989,3 +12989,19 @@ button.mobile-record-card:focus-visible,
     font-size: 0.82rem;
   }
 }
+
+.personal-ado-dialog {
+  width: min(42rem, calc(100vw - 2rem));
+  max-height: calc(100vh - 2rem);
+  overflow: auto;
+  padding: 1.5rem;
+  color: var(--text-primary, #e6e8ec);
+  background: var(--surface, #17202b);
+  border: 1px solid #687787;
+  border-radius: 12px;
+}
+.personal-ado-dialog::backdrop { background: rgb(0 0 0 / 55%); }
+.personal-ado-dialog label { display: grid; gap: .4rem; margin: 1rem 0; }
+.personal-ado-dialog input { padding: .6rem; }
+.personal-ado-dialog li { margin: 1rem 0; }
+.personal-ado-dialog button { margin: .3rem; }

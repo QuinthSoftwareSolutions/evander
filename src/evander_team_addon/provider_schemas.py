@@ -173,6 +173,8 @@ class TeamCreateTaskEffectDefinition(EffectDefinition):
     parent_task_id: ConfigValue | None = None
     originating_task_id: ConfigValue | None = None
     authored_by: ConfigValue | None = None
+    ado_work_item_id: ConfigValue | None = None
+    ado_project: ConfigValue | None = None
     git_base_branch: ConfigValue | None = None
     dependency_task_ids: ConfigValue | None = None
     integration_boundary: ConfigValue | None = None
@@ -848,6 +850,7 @@ TEAM_OUTPUT_SCHEMAS: dict[str, dict[str, dict[str, Any]]] = {
     },
     "effect:team:mark-release-published": {
         "success": {"type": "boolean"},
+        "publication_context_id": {"type": ["string", "null"]},
         "revision": {"type": "integer"},
         "release_package_id": {"type": "string"},
         "state": {"type": ["string", "null"]},

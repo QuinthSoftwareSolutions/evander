@@ -465,6 +465,9 @@ def admin_user_routes(
             user = user_store.delete_user(login)
             if user is None:
                 return json_error("Admin web user not found", status_code=404)
+            connections = getattr(service, "ado_user_connections", None)
+            if connections is not None:
+                connections.remove_user(user.login)
             if service.config.enable_directory_scoped_config:
                 _write_user_contact_link(
                     service,

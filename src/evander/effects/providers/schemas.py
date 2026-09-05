@@ -1347,6 +1347,7 @@ class PrCreateEffectDefinition(EffectDefinition):
     base_branch: ConfigValue | None = None
     session_id: ConfigValue | None = None
     work_item_id: ConfigValue | None = None
+    publication_context_id: ConfigValue | None = None
     title: ConfigValue | None = None
     fallback_title: ConfigValue | None = None
     body: ConfigValue | None = None

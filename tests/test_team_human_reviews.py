@@ -24,6 +24,7 @@ from evander_team_addon.models import (
     Project,
     ProjectGitConfig,
     ProjectGitIdentity,
+    AdoWorkItemAttribution,
     ProjectReleasePolicy,
     ReleaseCandidateDeliverableEvidence,
     ReleaseCandidateManifest,
@@ -2874,6 +2875,8 @@ def test_release_wide_human_correction_keeps_common_source_author() -> None:
     state, release, promotion = _human_state(eligible_user_ids=["reviewer"])
     author = ProjectGitIdentity(name="Delegating User", email="user@example.test")
     state.tasks["source-task"].authored_by = author
+    attribution = [AdoWorkItemAttribution(organization="org", work_item_id="123", assignee_id="alice")]
+    state.tasks["source-task"].work_item_attributions = attribution
     advance_release_gates(
         state, release=release, release_promotion=promotion, result={"events": []}
     )
@@ -2893,3 +2896,4 @@ def test_release_wide_human_correction_keeps_common_source_author() -> None:
     )
     finding = next(iter(state.human_review_findings.values()))
     assert state.tasks[finding.correction_task_id].authored_by == author
+    assert state.tasks[finding.correction_task_id].work_item_attributions == attribution

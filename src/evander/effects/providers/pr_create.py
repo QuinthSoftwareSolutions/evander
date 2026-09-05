@@ -43,6 +43,8 @@ class PrCreateEffectProvider(EffectProviderBase):
             base_branch=self._normalize_optional_string(payload.get("base_branch")),
             session_id=self._normalize_optional_string(payload.get("session_id")),
             work_item_id=self._normalize_optional_string(payload.get("work_item_id")),
+            **({"publication_context_id": self._normalize_optional_string(payload.get("publication_context_id"))}
+               if payload.get("publication_context_id") else {}),
             title=title,
             body=self._normalize_optional_string(payload.get("body")),
             draft=self._as_optional_bool(payload.get("draft")),
@@ -68,6 +70,7 @@ class PrCreateEffectProvider(EffectProviderBase):
             "base_branch",
             "session_id",
             "work_item_id",
+            "publication_context_id",
             "title",
             "fallback_title",
             "body",

@@ -343,6 +343,7 @@ def start_dependency_composition_recovery(
         parent_task_id=target.id,
         originating_task_id=target.id,
         authored_by=target.authored_by.model_copy(deep=True) if target.authored_by else None,
+        work_item_attributions=[item.model_copy(deep=True) for item in target.work_item_attributions] if target.work_item_attributions else None,
         git_base_branch=recovery.base_branch,
         git_base_commit_sha=recovery.base_commit_sha,
         dependency_task_ids=contribution_task_ids,

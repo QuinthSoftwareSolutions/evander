@@ -61,6 +61,7 @@ from evander.admin.web.skills import skill_routes
 from evander.admin.web.user_store import AdminWebUserStore
 from evander.admin.web.user_notifications import user_notification_routes
 from evander.admin.web.users import admin_user_routes
+from evander.admin.web.ado_connections import ado_connection_routes
 from evander.admin.web.vms_issues import vm_issue_routes
 from evander.admin.web.workflow import workflow_routes, workflow_run_events
 from evander.admin.web.workflow_events import workflow_event_routes
@@ -607,6 +608,7 @@ def create_app(service: AdminRuntimeComponents) -> Starlette:
     routes.extend(tool_visibility_routes(service))
     routes.extend(worker_config_routes(service, auth, dashboard_cache))
     routes.extend(admin_user_routes(admin_user_store, auth, service))
+    routes.extend(ado_connection_routes(service, auth, admin_user_store))
     routes.extend(user_notification_routes(service, auth))
     routes.extend(pr_integration_routes(service, auth))
     routes.extend(report_routes(service, auth, dashboard_cache))

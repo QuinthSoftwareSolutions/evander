@@ -93,6 +93,8 @@ from evander.workflow.catalog import (
 from evander.workflow.contracts import register_node_output_schema
 from evander.workflow.plugins import ProviderPluginRegistration
 
+from .services.ado_attribution import capture_work_item_attribution, release_publication_context
+
 from .git_naming import validate_branch_name
 from .costs import TeamCostService
 from .chat_attachments import TeamChatAttachmentPolicyService, TeamChatAttachmentStorage
@@ -1279,6 +1281,10 @@ _TEAM_WORKFLOW_EDITOR_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
                 "string",
                 description="Optional parent task in the same project.",
             ),
+            _catalog_field("ado_work_item_id", "ADO work item ID", "string",
+                description="Capture Assigned To from this work item on initial task creation; inherited by follow-ups."),
+            _catalog_field("ado_project", "ADO project", "string",
+                description="Optional Azure DevOps project for work-item intake."),
             _catalog_field(
                 "authored_by",
                 "Task commit author",
@@ -4733,6 +4739,8 @@ class TeamCreateTaskEffectProvider(EffectProviderBase):
             "parent_task_id",
             "originating_task_id",
             "authored_by",
+            "ado_work_item_id",
+            "ado_project",
             "git_base_branch",
             "dependency_task_ids",
             "integration_boundary",
@@ -4796,6 +4804,15 @@ class TeamCreateTaskEffectProvider(EffectProviderBase):
                 definition_fields=definition_fields,
                 resolved_fields=resolved_fields,
             )
+            attributions = None
+            ado_work_item_id = _optional_text(payload.get("ado_work_item_id"))
+            if ado_work_item_id and task_id not in current_state.tasks:
+                attributions, author = capture_work_item_attribution(
+                    self.runtime_context,
+                    directory_path=current_state.projects[normalized_project_id].directory_path,
+                    work_item_id=ado_work_item_id, project=_optional_text(payload.get("ado_project")),
+                )
+                payload["authored_by"] = author.model_dump(mode="json") if author else None
             state, effective_task_id, created = TeamAdminService(
                 repo,
                 managed_git_admin=getattr(
@@ -4818,6 +4835,7 @@ class TeamCreateTaskEffectProvider(EffectProviderBase):
                 set_parent_task_id=parent_configured,
                 originating_task_id=_optional_text(payload.get("originating_task_id")),
                 authored_by=payload.get("authored_by"),
+                work_item_attributions=attributions,
                 set_authored_by=_payload_field_configured(
                     "authored_by",
                     definition_fields=definition_fields,
@@ -6258,6 +6276,11 @@ class TeamMarkReleasePublishedEffectProvider(EffectProviderBase):
         published_event_ids = _publish_team_events(self.runtime_context, result.get("events"))
         if published_event_ids:
             result["published_event_ids"] = published_event_ids
+        if result.get("success") and not result.get("error"):
+            result["publication_context_id"] = release_publication_context(
+                _state, release_package_id=payload["release_package_id"],
+                managed_git_admin=getattr(getattr(self.runtime_context, "admin_service", None), "managed_git_admin", None),
+            )
         return result
 
 

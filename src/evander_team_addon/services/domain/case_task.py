@@ -6,6 +6,7 @@ from datetime import datetime
 from typing import Any, Protocol
 from ...models import (
     AgentTask,
+    AdoWorkItemAttribution,
     PersistentAgent,
     ProjectGitIdentity,
     RolePermission,
@@ -46,7 +47,7 @@ from .common import (
     task_state_can_wake_owner,
     utc_now,
 )
-from .task_authorship import inherited_task_author, task_author_identity
+from .task_authorship import inherited_task_author, task_author_identity, inherited_work_item_attributions
 from .work_due import _mark_agent_work_due
 from .task_assessment import assess_task
 from .case_events import append_case_closed_event
@@ -83,6 +84,7 @@ class _TaskCreationPlan:
     integration_boundary: bool
     deliverable_contract: TaskDeliverableContract | None
     authored_by: ProjectGitIdentity | None = None
+    work_item_attributions: list[AdoWorkItemAttribution] | None = None
 
 
 class TaskGitBaseValidationError(ValueError):
@@ -371,8 +373,20 @@ def _resolve_task_creation_plan_git_bases(
         authors[plan.task_id] = identity.model_copy(deep=True) if identity else None
         return authors[plan.task_id]
 
+    def _resolve_attribution(plan: _TaskCreationPlan, seen: frozenset[str] = frozenset()) -> list[AdoWorkItemAttribution] | None:
+        if plan.task_id in seen:
+            raise ValueError("task attribution lineage cycle")
+        source_plan = plans_by_id.get(plan.originating_task_id or plan.parent_task_id or "")
+        if source_plan:
+            if source_plan.project_id != plan.project_id:
+                raise ValueError("task attribution source belongs to another project")
+            return _resolve_attribution(source_plan, seen | {plan.task_id})
+        return inherited_work_item_attributions(state, project_id=plan.project_id,
+            originating_task_id=plan.originating_task_id, parent_task_id=plan.parent_task_id)
+
     return [
-        replace(plan, git_base_branch=_resolve(plan), authored_by=_resolve_author(plan))
+        replace(plan, git_base_branch=_resolve(plan), authored_by=_resolve_author(plan),
+                work_item_attributions=_resolve_attribution(plan))
         for plan in plans
     ]
 
@@ -1077,6 +1091,7 @@ def _apply_task_creation_plan(
         parent_task_id=plan.parent_task_id,
         originating_task_id=plan.originating_task_id,
         authored_by=plan.authored_by,
+        work_item_attributions=plan.work_item_attributions,
         git_base_branch=plan.git_base_branch,
         dependency_task_ids=plan.dependency_task_ids,
         created_at=now,

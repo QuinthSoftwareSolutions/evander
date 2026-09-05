@@ -1,5 +1,42 @@
 # Operations
 
+## Personal Azure DevOps PR connections
+
+Users manage personal PATs through **My ADO connection** in Admin Web. Use an
+organization-scoped PAT with Code: Read & write and replace it before expiration.
+The existing directory `azure_devops_pr_pat_env` remains the bot fallback. Personal
+connections affect PR publication; existing host Git push and issue-intake credentials
+continue to serve those operations. If a workflow requests work-item linking through
+the same personal credential, it also needs the corresponding Work Items permissions.
+
+The host stores encrypted PATs and publication audit records in
+`runtime/ado-user-connections/connections.db`, with a separate encryption key in
+`runtime/secrets/ado-user-connections.key`. Both files are restricted to the service user.
+Back up the database and key separately, retain ownership when restoring, and never
+copy them into guest bundles. Removing a connection stops future credential selection;
+an ADO request already in flight may finish. Removal does not revoke the PAT in ADO.
+
+Publication results record the requested and actual creator, credential source, and
+fallback reason. A timeout or uncertain POST leaves a durable guard in `pr_attempts`.
+Subsequent publication attempts reconcile by querying ADO and reuse a discovered PR.
+If ADO continues to report no PR, publication remains pending for operator investigation;
+do not blindly clear the guard or recreate the PR. Verify the source/target branches
+and provider result before an operator resolves an unconfirmed attempt.
+
+After deploying version 0.25.0 or later on the control plane and compatible worker code,
+preview the operator-owned APP workflow migration:
+
+```bash
+./.venv/bin/python scripts/update_app_ado_attribution_workflow.py --runtime-dir runtime
+```
+
+Add `--apply` to save through the Admin workflow service. The script validates current
+documents, honors revisions and locks, preserves deduplication state, and reads back each
+saved revision. It links the ADO directive to a deterministic intake task, preserves the
+planning handoff's origin, and carries publication context through both PR paths.
+It does not backfill tasks or change previously created commits and PRs. Check the trigger
+orchestrator's successful configuration reload after saving.
+
 ## Host Packages
 
 Install these packages on the Ubuntu host before using the scripts:

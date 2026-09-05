@@ -1045,6 +1045,7 @@ TEAM_RUNTIME_V1: dict[str, Any] = {
                             "managed_repo_id": "${{team-git-promotion-requested.payload.managed_repo_id}}",
                             "project_id": "${{team-git-promotion-requested.payload.project_id}}",
                             "publication_revision": "${{team-mark-release-published.revision}}",
+                            "publication_context_id": "${{team-mark-release-published.publication_context_id ?? null}}",
                             "published_commit_sha": "${{team-push-canonical-branch.commit_sha}}",
                             "release_package_id": "${{team-git-promotion-requested.payload.release_package_id}}",
                             "source_ref": "${{team-git-promotion-requested.payload.source_branch}}",

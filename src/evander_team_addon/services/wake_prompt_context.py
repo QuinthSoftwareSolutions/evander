@@ -1123,6 +1123,7 @@ def _compact_manager_fallback_summary(summary: Mapping[str, Any]) -> dict[str, A
                     "artifact_ref_count",
                     "reviewed_commit_sha",
                     "authored_by",
+                    "work_item_attributions",
                     "git_base_branch",
                 ),
             )

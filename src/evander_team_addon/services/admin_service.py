@@ -103,7 +103,7 @@ from .domain.agent_access import (
     _validate_role_assignment,
     _validate_role_filter_assignment,
 )
-from .domain.task_authorship import inherited_task_author, task_author_identity
+from .domain.task_authorship import inherited_task_author, task_author_identity, inherited_work_item_attributions
 from .domain.case_task import (
     _correction_case_git_base_branch,
     _case_can_link_task,
@@ -3553,6 +3553,7 @@ class TeamAdminService:
         parent_task_id: str | None = None,
         originating_task_id: str | None = None,
         authored_by: object = None,
+        work_item_attributions: object = None,
         set_authored_by: bool = False,
         git_base_branch: str | None = None,
         git_base_commit_sha: str | None = None,
@@ -3582,6 +3583,7 @@ class TeamAdminService:
             parent_task_id=parent_task_id,
             originating_task_id=originating_task_id,
             authored_by=authored_by,
+            work_item_attributions=work_item_attributions,
             set_authored_by=set_authored_by,
             git_base_branch=git_base_branch,
             git_base_commit_sha=git_base_commit_sha,
@@ -3615,6 +3617,7 @@ class TeamAdminService:
         parent_task_id: str | None = None,
         originating_task_id: str | None = None,
         authored_by: object = None,
+        work_item_attributions: object = None,
         set_authored_by: bool = False,
         git_base_branch: str | None = None,
         git_base_commit_sha: str | None = None,
@@ -3954,6 +3957,10 @@ class TeamAdminService:
                 created_by_actor=created_by_actor,
                 parent_task_id=normalized_parent_task_id,
                 originating_task_id=normalized_originating_task_id,
+                work_item_attributions=work_item_attributions if work_item_attributions is not None else inherited_work_item_attributions(
+                    state_model, project_id=normalized_project_id,
+                    originating_task_id=normalized_originating_task_id, parent_task_id=normalized_parent_task_id,
+                ),
                 authored_by=inherited_task_author(
                     state_model,
                     project_id=normalized_project_id,
@@ -4038,6 +4045,7 @@ class TeamAdminService:
         parent_task_id: str | None = None,
         set_parent_task_id: bool = False,
         authored_by: object = None,
+        work_item_attributions: object = None,
         set_authored_by: bool = False,
         git_base_branch: str | None = None,
         set_git_base_branch: bool = False,
