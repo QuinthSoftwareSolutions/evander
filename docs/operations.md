@@ -5,12 +5,13 @@
 Users manage Microsoft OAuth and personal PATs through **My ADO connection** in Admin Web.
 Both methods can be connected together, and must identify the same ADO account for a given
 organization and directory. OAuth is preferred within the most specific matching directory
-connection, followed by that connection's PAT, then the bot. Use an
-organization-scoped PAT with Code: Read & write and replace it before expiration.
+connection, followed by that connection's PAT, then the bot. Use an organization-scoped PAT
+with Code: Read & write and, for issue-driven linking, Work Items: Read & write; replace it
+before expiration.
 The existing directory `azure_devops_pr_pat_env` remains the bot fallback. Personal
 connections affect PR publication; existing host Git push and issue-intake credentials
-continue to serve those operations. If a workflow requests work-item linking through
-the same personal credential, it also needs the corresponding Work Items permissions.
+continue to serve those operations. The Work Items permission lets issue-driven PR publication
+associate the PR with its source work item through the same personal credential.
 
 The host stores encrypted PATs and publication audit records in
 `runtime/ado-user-connections/connections.db`, with a separate encryption key in
@@ -25,9 +26,9 @@ Deleting the platform user also removes their stored credentials and pending con
 Use a confidential Microsoft Entra **Web** app. The existing Microsoft SSO app can be reused;
 connecting ADO is a separate consent operation and does not change normal sign-in scopes.
 Register `https://<admin-host>/api/admin/me/ado-connections/oauth/callback` as an additional
-Web redirect URI. Add Azure DevOps delegated permissions `vso.code_write` and `vso.profile`,
-and grant consent according to the tenant's policy. The flow requests those permissions and
-`offline_access`, uses PKCE, and verifies the ADO account through `connectionData`.
+Web redirect URI. Add Azure DevOps delegated permissions `vso.code_write`, `vso.profile`, and
+`vso.work_write`, and grant consent according to the tenant's policy. The flow requests those
+permissions and `offline_access`, uses PKCE, and verifies the ADO account through `connectionData`.
 See [Microsoft's Entra ADO guidance](https://learn.microsoft.com/en-us/azure/devops/integrate/get-started/authentication/entra-oauth?view=azure-devops).
 
 Configure these host environment variables through the operator-owned CI/CD deployment:

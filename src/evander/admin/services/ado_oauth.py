@@ -12,7 +12,15 @@ import httpx
 
 CALLBACK_PATH = "/api/admin/me/ado-connections/oauth/callback"
 ADO_RESOURCE = "499b84ac-1321-427f-aa17-267ca6975798"
-SCOPES = f"offline_access {ADO_RESOURCE}/vso.code_write {ADO_RESOURCE}/vso.profile"
+ADO_SCOPES = ("vso.code_write", "vso.profile", "vso.work_write")
+SCOPES = "offline_access " + " ".join(f"{ADO_RESOURCE}/{scope}" for scope in ADO_SCOPES)
+
+
+def has_required_scopes(scope: object) -> bool:
+    if not isinstance(scope, str):
+        return False
+    granted = {item.rsplit("/", 1)[-1] for item in scope.split()}
+    return set(ADO_SCOPES).issubset(granted)
 
 
 class AdoOAuthError(ValueError):
@@ -124,7 +132,7 @@ def exchange_token(
             or any(c.isspace() for c in access)
             or not isinstance(refresh, str)
             or not refresh
-            or "vso.code_write" not in {s.rsplit("/", 1)[-1] for s in scope.split()}
+            or not has_required_scopes(scope)
         ):
             raise AdoOAuthError(reconnect=True)
         lifetime = int(payload["expires_in"])

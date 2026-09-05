@@ -13,6 +13,7 @@ import pytest
 
 from evander.admin.services import ado_user_connections as module
 from evander.admin.services.ado_oauth import (
+    ADO_RESOURCE,
     AdoOAuthConfig,
     AdoOAuthError,
     CALLBACK_PATH,
@@ -187,6 +188,38 @@ def test_refresh_rotates_once_across_service_instances(tmp_path, oauth, monkeypa
     )
 
 
+def test_oauth_binding_change_marks_connection_for_reconnect(tmp_path, oauth, monkeypatch):
+    service = AdoUserConnectionService(tmp_path)
+    _save(service, directory="root/app")
+    connect(service, oauth, monkeypatch)
+    context = _context(service)
+
+    monkeypatch.setenv("EVANDER_ADO_OAUTH_CLIENT_ID", "replacement-client-id")
+
+    result, auth = _resolve(service, context)
+    assert auth.startswith("Basic ")
+    assert result["credential_source"] == "personal_pat"
+    assert result["fallback_reason"] == "personal_oauth_reconnect_required"
+    assert service.list_for_user("alice")[0]["oauth_status"] == "reconnect_required"
+
+
+def test_existing_oauth_without_work_item_scope_requires_reconnect(tmp_path, oauth, monkeypatch):
+    service = AdoUserConnectionService(tmp_path)
+    connect(service, oauth, monkeypatch)
+    context = _context(service)
+    with service._database() as db:
+        row = db.execute("SELECT encrypted_oauth FROM connections").fetchone()
+        saved = json.loads(service._cipher().decrypt(row["encrypted_oauth"].encode()))
+        saved["scope"] = f"{ADO_RESOURCE}/vso.code_write {ADO_RESOURCE}/vso.profile"
+        encrypted = service._cipher().encrypt(json.dumps(saved).encode()).decode()
+        db.execute("UPDATE connections SET encrypted_oauth=?", (encrypted,))
+
+    result, auth = _resolve(service, context)
+    assert auth is None
+    assert result["fallback_reason"] == "personal_oauth_reconnect_required"
+    assert service.list_for_user("alice")[0]["oauth_status"] == "reconnect_required"
+
+
 @pytest.mark.parametrize(
     "failure", ["revoked", "temporary", "identity_changed", "deleted", "all_deleted"]
 )
@@ -266,6 +299,24 @@ def test_exchange_uses_confidential_pkce_and_sanitizes_provider_errors(oauth, mo
     assert calls[0][1]["data"]["client_secret"] == "client-secret"
     assert calls[1][1]["data"]["refresh_token"] == "opaque-refresh"
     assert calls[1][1]["data"]["scope"] == first["scope"]
+    monkeypatch.setattr(
+        httpx,
+        "post",
+        lambda url, **k: httpx.Response(
+            200,
+            request=httpx.Request("POST", url),
+            json={
+                "access_token": "opaque-access",
+                "refresh_token": "opaque-refresh",
+                "token_type": "Bearer",
+                "expires_in": 3600,
+                "scope": (f"{ADO_RESOURCE}/vso.code_write {ADO_RESOURCE}/vso.profile"),
+            },
+        ),
+    )
+    with pytest.raises(AdoOAuthError) as missing_scope:
+        exchange_token(oauth, code="one-use-code", verifier="pkce-secret")
+    assert missing_scope.value.reconnect
     monkeypatch.setattr(
         httpx,
         "post",

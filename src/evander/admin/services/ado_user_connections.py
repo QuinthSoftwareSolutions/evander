@@ -22,7 +22,13 @@ from urllib.parse import urlencode
 import httpx
 from cryptography.fernet import Fernet, InvalidToken
 
-from .ado_oauth import AdoOAuthConfig, AdoOAuthError, SCOPES, exchange_token
+from .ado_oauth import (
+    AdoOAuthConfig,
+    AdoOAuthError,
+    SCOPES,
+    exchange_token,
+    has_required_scopes,
+)
 
 
 class AdoConnectionError(ValueError):
@@ -419,7 +425,10 @@ class AdoUserConnectionService:
                 raise AdoOAuthError(reconnect=True)
             config = AdoOAuthConfig.from_env()
             token = json.loads(self._cipher().decrypt(row["encrypted_oauth"].encode()))
-            if token["client_binding"] != config.binding:
+            if token["client_binding"] != config.binding or not has_required_scopes(
+                token.get("scope")
+            ):
+                self._mark_oauth_reconnect(row)
                 raise AdoOAuthError(reconnect=True)
             if token["expires_at"] <= time.time() + 120:
                 try:
