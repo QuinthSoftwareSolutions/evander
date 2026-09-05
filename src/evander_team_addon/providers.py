@@ -1280,6 +1280,21 @@ _TEAM_WORKFLOW_EDITOR_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
                 description="Optional parent task in the same project.",
             ),
             _catalog_field(
+                "authored_by",
+                "Task commit author",
+                "json",
+                description=(
+                    "Optional {name, email}; inherited by child and follow-up tasks. "
+                    "Unset uses the project author."
+                ),
+            ),
+            _catalog_field(
+                "originating_task_id",
+                "Originating task ID",
+                "string",
+                description="Optional source task for follow-up author and work lineage.",
+            ),
+            _catalog_field(
                 "git_base_branch",
                 "Git base branch",
                 "string",
@@ -4716,6 +4731,8 @@ class TeamCreateTaskEffectProvider(EffectProviderBase):
             "case_id",
             "state",
             "parent_task_id",
+            "originating_task_id",
+            "authored_by",
             "git_base_branch",
             "dependency_task_ids",
             "integration_boundary",
@@ -4799,6 +4816,13 @@ class TeamCreateTaskEffectProvider(EffectProviderBase):
                 state=TeamTaskState(_optional_text(payload.get("state")) or "pending"),
                 parent_task_id=_optional_text(payload.get("parent_task_id")),
                 set_parent_task_id=parent_configured,
+                originating_task_id=_optional_text(payload.get("originating_task_id")),
+                authored_by=payload.get("authored_by"),
+                set_authored_by=_payload_field_configured(
+                    "authored_by",
+                    definition_fields=definition_fields,
+                    resolved_fields=resolved_fields,
+                ),
                 git_base_branch=_optional_text(payload.get("git_base_branch")),
                 set_git_base_branch=git_base_configured,
                 dependency_task_ids=(
@@ -9595,6 +9619,12 @@ def _create_project_repo_git_work_contexts(
         agent_id=agent_id,
     ):
         task_id = _required_text(task.get("id"), "task.id")
+        task_record = state.tasks.get(task_id)
+        task_author = (
+            _resolved_project_git_identity(task_record.authored_by)
+            if task_record is not None and task_record.authored_by is not None
+            else dependency_merge_author_identity
+        )
         managed_repo_id = _required_text(
             project_repo.get("managed_repo_id"),
             "managed_repo_id",
@@ -9913,7 +9943,8 @@ def _create_project_repo_git_work_contexts(
                     dependency_composition_recovery_id=(dependency_composition_recovery_id),
                     resolved_dependency_branch=resolved_dependency_branch,
                     resolved_dependency_commit_sha=resolved_dependency_commit_sha,
-                    dependency_merge_author_identity=dependency_merge_author_identity,
+                    dependency_merge_author_identity=task_author,
+                    task_author_identity=task_author,
                     composition_result=composition_result,
                     preparation_receipt_result=preparation_receipt_result,
                 )
@@ -11099,6 +11130,7 @@ def _prepare_project_repo_task_worktree(
     dependency_composition_recovery_id: str | None = None,
     resolved_dependency_branch: str | None = None,
     resolved_dependency_commit_sha: str | None = None,
+    task_author_identity: GitIdentity | None = None,
     dependency_merge_author_identity: GitIdentity = DEFAULT_AGENT_GIT_IDENTITY,
     composition_result: dict[str, Any] | None = None,
     preparation_receipt_result: dict[str, Any] | None = None,
@@ -11160,6 +11192,13 @@ def _prepare_project_repo_task_worktree(
                     else {}
                 ),
                 **dependency_composition_kwargs,
+                **(
+                    {
+                        "git_author_name": task_author_identity.name,
+                        "git_author_email": task_author_identity.email,
+                    }
+                    if task_author_identity is not None else {}
+                ),
             )
         except ContainerWorkerClientError as exc:
             payload = exc.payload or {}
@@ -11827,6 +11866,15 @@ def _prepare_project_repo_task_worktree(
         '--exit-code --heads origin "refs/heads/$branch" >/dev/null 2>&1; then',
         '  git -C "$target" push origin "HEAD:refs/heads/$branch"',
         "fi",
+        *(
+            [
+                'git -C "$target" config --worktree author.name '
+                + shlex.quote(task_author_identity.name),
+                'git -C "$target" config --worktree author.email '
+                + shlex.quote(task_author_identity.email),
+            ]
+            if task_author_identity is not None else []
+        ),
         'echo "EVANDER_BASE_COMMIT=$base_commit"',
         'echo "EVANDER_COMPOSITION_ROOT_COMMIT=$composition_root_commit"',
         'echo "EVANDER_COMPOSED_COMMIT=$composed_commit"',

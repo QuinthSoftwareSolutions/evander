@@ -3,6 +3,7 @@ from __future__ import annotations
 from hashlib import sha256
 from typing import Any
 from uuid import uuid4
+from .task_authorship import common_deliverable_author
 from ...git_naming import (
     canonical_release_branch,
     feature_branch,
@@ -1344,6 +1345,7 @@ def _materialize_merge_recovery_task(
             id=task_id,
             owner_agent_id=owner_agent_id,
             project_id=release.project_id,
+            authored_by=common_deliverable_author(state, release.deliverable_ids),
             git_base_branch=release.git_base_branch,
             priority=0,
             state=TeamTaskState.PENDING,

@@ -2131,6 +2131,19 @@ class WorkerDaemon:
                 capture_output=True,
                 text=True,
             )
+        if request.git_author_name is not None and request.git_author_email is not None:
+            for key, value in (
+                ("author.name", request.git_author_name),
+                ("author.email", request.git_author_email),
+            ):
+                subprocess.run(
+                    ["git", "config", "--worktree", key, value],
+                    cwd=target_dir,
+                    env=env,
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                )
         self._reconcile_task_worktree_helpers(
             trusted_root=paths.agent_home,
             helper_source=repo_dir / ".evander",
@@ -2185,6 +2198,10 @@ class WorkerDaemon:
     ) -> str:
         payload = request.model_dump(mode="json", exclude_none=True)
         payload.pop("preparation_attempt_id", None)
+        # Author configuration is reconciled on resume without changing the
+        # checkout's immutable preparation provenance or existing commits.
+        payload.pop("git_author_name", None)
+        payload.pop("git_author_email", None)
         # A later Team dispatch may add the already-receipted base as an
         # explicit expectation. The receipt itself pins that value, so this
         # strengthening must not create a different physical-attempt identity.

@@ -914,6 +914,12 @@ with a `deferral` object containing `profile_id`, `reason`, and optional `retry_
 configured allowed Git source prefix. Repository-specific managed Git SSH aliases are accepted
 only for their corresponding managed repository beneath that prefix.
 
+Task worktree requests also accept paired `git_author_name` and `git_author_email`
+values. The worker writes them with `git config --worktree` for new and retained
+checkouts. These settings affect future commits without changing the shared clone,
+the committer, or preparation provenance. Team resolves the task's `authored_by`
+first, then the project author, and passes the effective identity on each preparation.
+
 Task-worktree cleanup requires the deterministic target path, branch, and full expected commit.
 Task-worktree preparation may also carry ordered `dependency_git_sources`. The worker fetches
 each named managed branch, requires its tip to equal the accepted full commit ID, and composes

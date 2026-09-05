@@ -2851,3 +2851,33 @@ def test_team_addon_mcp_rejects_directives_outside_governance_scope(
         "team_not_in_governance_group",
         "governance_group_required",
     }
+
+
+def test_team_task_author_mcp_can_set_and_clear_identity(tmp_path: Path) -> None:
+    context = _runtime(tmp_path, allowed_tools=[])
+    repo = _seed_planning_state(context.config.runtime_dir)
+    _team_admin_service(repo).create_or_reprioritize_task(
+        task_id="task",
+        owner_agent_id="backend",
+        project_id="project",
+        priority=1,
+        title="Work",
+        description="Delegated work",
+        created_by_agent_id="lead",
+    )
+    _upsert_session(context, session_id="session-backend", allowed_tools=[TEAM_UPDATE_TASK_TOOL])
+    _lease_agent(repo, agent_id="backend", dispatch_id="dispatch-task-author")
+    server = create_server(context)
+    for request_id, fields in (
+        ("set-author", {"authored_by": {"name": "Delegating User", "email": "user@example.test"}}),
+        ("clear-author", {"clear_authored_by": True}),
+    ):
+        result = _call_tool_with_context(
+            server,
+            TEAM_UPDATE_TASK_TOOL,
+            {"task_id": "task", "request_id": request_id, **fields},
+            _make_request_context(session_id="session-backend"),
+        )
+        assert result["success"] is True, result
+        identity = repo.read().tasks["task"].authored_by
+        assert (identity.model_dump(mode="json") if identity else None) == fields.get("authored_by")

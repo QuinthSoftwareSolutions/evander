@@ -18,6 +18,7 @@ from ...models import (
     TeamTaskState,
     _unique_text_list,
 )
+from ..domain.task_authorship import task_author_identity
 from ..domain.case_task import (
     _TaskCreationPlan,
     _plan_task_creation,
@@ -124,6 +125,7 @@ def _normalize_task_creation_command_payload(
     state: TeamTaskState | str,
     parent_task_id: str | None,
     originating_task_id: str | None,
+    authored_by: Mapping[str, Any] | None = None,
     git_base_branch: str | None,
     dependency_task_ids: Sequence[str] | None,
     task_kind: str = "support",
@@ -143,6 +145,7 @@ def _normalize_task_creation_command_payload(
             "state": state.value if isinstance(state, TeamTaskState) else state,
             "parent_task_id": parent_task_id,
             "originating_task_id": originating_task_id,
+            "authored_by": authored_by,
             "git_base_branch": git_base_branch,
             "dependency_task_ids": list(dependency_task_ids or []),
             "task_kind": task_kind,
@@ -174,6 +177,7 @@ def _normalize_task_creation_mapping(
         "state": _optional_text(item.get("state")) or TeamTaskState.PENDING.value,
         "parent_task_id": _optional_text(item.get("parent_task_id")),
         "originating_task_id": _optional_text(item.get("originating_task_id")),
+        **({"authored_by": item["authored_by"]} if item.get("authored_by") is not None else {}),
         "git_base_branch": _optional_text(item.get("git_base_branch")),
         "dependency_task_ids": _unique_text_list(
             item.get("dependency_task_ids") or [],
@@ -274,6 +278,9 @@ def _normalize_task_update_command_fields(**fields: object) -> dict[str, Any]:
             normalized[name] = value
         elif name in {"title", "description", "owner_agent_id"}:
             normalized[name] = _optional_text(value)
+        elif name == "authored_by":
+            identity = task_author_identity(value)
+            normalized[name] = identity.model_dump(mode="json") if identity else None
         elif name == "git_base_branch":
             text = _optional_text(value)
             normalized[name] = validate_branch_name(text) if text is not None else None

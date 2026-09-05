@@ -23,6 +23,7 @@ from evander_team_addon.models import (
     PersistentAgent,
     Project,
     ProjectGitConfig,
+    ProjectGitIdentity,
     ProjectReleasePolicy,
     ReleaseCandidateDeliverableEvidence,
     ReleaseCandidateManifest,
@@ -696,6 +697,7 @@ def test_changes_requested_routes_recursive_contribution_finding_to_owner() -> N
         owner_agent_id="owner",
         project_id="project",
         parent_task_id="source-task",
+        authored_by=ProjectGitIdentity(name="Child Author", email="child@example.test"),
         priority=1,
         state=TeamTaskState.FINISHED,
         title="Child contribution",
@@ -746,6 +748,7 @@ def test_changes_requested_routes_recursive_contribution_finding_to_owner() -> N
     correction_task = state.tasks[finding.correction_task_id]
     assert finding.target_deliverable_ids == ["child-deliverable"]
     assert correction_task.originating_task_id == "child-task"
+    assert correction_task.authored_by == state.tasks["child-task"].authored_by
     assert correction_task.owner_agent_id == "owner"
 
 
@@ -1555,6 +1558,9 @@ def test_human_gate_uses_current_directory_eligibility_not_stale_snapshot() -> N
 
 def test_changes_requested_is_deterministic_and_preserves_history() -> None:
     state, release, promotion = _human_state(eligible_user_ids=["reviewer"])
+    state.tasks["source-task"].authored_by = ProjectGitIdentity(
+        name="Delegating User", email="delegating@example.test",
+    )
     advance_release_gates(
         state,
         release=release,
@@ -1600,6 +1606,8 @@ def test_changes_requested_is_deterministic_and_preserves_history() -> None:
     assert correction.description == finding.text
     assert correction.parent_task_id == case.metadata["human_correction_aggregation_task_id"]
     assert correction.originating_task_id == "source-task"
+    assert correction.authored_by == original_task.authored_by
+    assert state.tasks[correction.parent_task_id].authored_by == original_task.authored_by
     assert correction.owner_agent_id == "owner"
     assert case.source_ref == request.id
     assert len(state.inbox) == 1
@@ -2860,3 +2868,28 @@ def test_post_release_feedback_requires_evidence_and_evidenced_case_closure() ->
     assert closed.metadata["post_release_feedback_resolution"]["evidence_refs"] == ["test:recovery"]
     assert release.state == TeamRecordState.ACCEPTED
     assert release.published_at == original_published_at
+
+
+def test_release_wide_human_correction_keeps_common_source_author() -> None:
+    state, release, promotion = _human_state(eligible_user_ids=["reviewer"])
+    author = ProjectGitIdentity(name="Delegating User", email="user@example.test")
+    state.tasks["source-task"].authored_by = author
+    advance_release_gates(
+        state, release=release, release_promotion=promotion, result={"events": []}
+    )
+    request = next(iter(state.human_review_requests.values()))
+    record_human_review_decision(
+        state,
+        human_review_request_id=request.id,
+        reviewer_user_id="reviewer",
+        reviewer_display_name="Reviewer",
+        decision="changes_requested",
+        request_id="release-wide-author",
+        expected_revision=request.revision,
+        checklist_results={"smoke": False},
+        summary="Correct the release behavior.",
+        findings=[{"text": "Correct release-wide behavior.", "target_scope": "release_candidate"}],
+        result={"events": []},
+    )
+    finding = next(iter(state.human_review_findings.values()))
+    assert state.tasks[finding.correction_task_id].authored_by == author

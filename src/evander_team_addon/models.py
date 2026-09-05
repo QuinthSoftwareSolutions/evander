@@ -1734,6 +1734,7 @@ class AgentTask(TeamModel):
     created_by_actor: str | None = None
     parent_task_id: str | None = None
     originating_task_id: str | None = None
+    authored_by: ProjectGitIdentity | None = None
     release_base_package_id: str | None = None
     work_lineage_id: str | None = None
     git_base_branch: str | None = None

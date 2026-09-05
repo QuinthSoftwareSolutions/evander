@@ -7,6 +7,7 @@ from typing import Any, Protocol
 from ...models import (
     AgentTask,
     PersistentAgent,
+    ProjectGitIdentity,
     RolePermission,
     TeamCase,
     TeamCaseStatus,
@@ -45,6 +46,7 @@ from .common import (
     task_state_can_wake_owner,
     utc_now,
 )
+from .task_authorship import inherited_task_author, task_author_identity
 from .work_due import _mark_agent_work_due
 from .task_assessment import assess_task
 from .case_events import append_case_closed_event
@@ -80,6 +82,7 @@ class _TaskCreationPlan:
     outcome_contract: TaskOutcomeContract | None
     integration_boundary: bool
     deliverable_contract: TaskDeliverableContract | None
+    authored_by: ProjectGitIdentity | None = None
 
 
 class TaskGitBaseValidationError(ValueError):
@@ -285,7 +288,7 @@ def _resolve_task_creation_plan_git_bases(
     *,
     git_default_branch_resolver: TaskGitDefaultBranchResolver | None = None,
 ) -> list[_TaskCreationPlan]:
-    """Resolve explicit, parent, then project-default task Git bases atomically."""
+    """Resolve Git bases and inherited task authors across a creation batch atomically."""
 
     plans_by_id = {plan.task_id: plan for plan in plans}
     resolved: dict[str, str | None] = {}
@@ -340,7 +343,38 @@ def _resolve_task_creation_plan_git_bases(
         resolved[plan.task_id] = _normalized_task_git_base_branch(value)
         return resolved[plan.task_id]
 
-    return [replace(plan, git_base_branch=_resolve(plan)) for plan in plans]
+    authors: dict[str, ProjectGitIdentity | None] = {}
+    resolving_authors: set[str] = set()
+
+    def _resolve_author(plan: _TaskCreationPlan) -> ProjectGitIdentity | None:
+        if plan.task_id in authors:
+            return authors[plan.task_id]
+        if plan.task_id in resolving_authors:
+            raise ValueError(f"task authorship lineage cycle includes {plan.task_id}")
+        resolving_authors.add(plan.task_id)
+        identity = plan.authored_by
+        if identity is None:
+            source_id = plan.originating_task_id or plan.parent_task_id
+            source_plan = plans_by_id.get(source_id or "")
+            if source_plan is not None:
+                if source_plan.project_id != plan.project_id:
+                    raise ValueError("task author source belongs to another project")
+                identity = _resolve_author(source_plan)
+            else:
+                identity = inherited_task_author(
+                    state,
+                    project_id=plan.project_id,
+                    originating_task_id=plan.originating_task_id,
+                    parent_task_id=plan.parent_task_id,
+                )
+        resolving_authors.remove(plan.task_id)
+        authors[plan.task_id] = identity.model_copy(deep=True) if identity else None
+        return authors[plan.task_id]
+
+    return [
+        replace(plan, git_base_branch=_resolve(plan), authored_by=_resolve_author(plan))
+        for plan in plans
+    ]
 
 
 def _validate_case_status_transition(
@@ -976,6 +1010,7 @@ def _plan_task_creation(
         outcome_contract=outcome_contract,
         integration_boundary=integration_boundary,
         deliverable_contract=deliverable_contract,
+        authored_by=task_author_identity(creation.get("authored_by")),
     )
 
 
@@ -1041,6 +1076,7 @@ def _apply_task_creation_plan(
         created_by_agent_id=actor.id,
         parent_task_id=plan.parent_task_id,
         originating_task_id=plan.originating_task_id,
+        authored_by=plan.authored_by,
         git_base_branch=plan.git_base_branch,
         dependency_task_ids=plan.dependency_task_ids,
         created_at=now,

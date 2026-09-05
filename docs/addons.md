@@ -1149,6 +1149,25 @@ committer; a single or dominant dependency is adopted without an artificial comm
 The multi-parent commit is reproducible: its author and committer dates are the
 newest final-parent committer timestamp plus one second in UTC, so both execution
 backends produce the same object ID for the same tree, parents, message, and identities.
+
+Tasks can override the author with `authored_by: {"name": "...", "email": "..."}`.
+Set it in Task Board → Create task or Edit → Commit author, through the task API,
+`team_create_task`, `team_create_task_for_role`, `team_create_tasks`, or
+`effect:team:create-task`. Creation copies an explicit identity, otherwise the originating
+source task's identity (for follow-ups/corrections), otherwise the parent's identity.
+Batch creation also resolves parents created in the same batch. Unset identities remain
+unset and use `project.git.agent_author_identity`, then the default bot identity.
+Automatic corrections and recovery tasks retain their source author; aggregate work
+with several different source authors uses the project fallback.
+
+`team_update_task` accepts `authored_by` or `clear_authored_by=true`. The operator task
+PATCH API accepts `authored_by: null` to restore the project fallback. Updates affect
+future commits after repository preparation on the next resume; existing commits and
+already-created descendants retain their identities. Author configuration is local to
+each task worktree, so tasks for different users can share a session and repository.
+The committer remains the project's configured agent committer. User-to-author mapping
+is supplied by the delegating operator or workflow; it is not inferred from an agent name.
+
 Host-side feature, release, and recovery consolidations remain
 governed separately by the managed repository's host commit identity.
 

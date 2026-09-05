@@ -8567,8 +8567,9 @@ def test_wake_due_agents_provider_cost_guard_blocks_queued_chat(
     assert runtime is None or runtime.wake_leased_until is None
 
 
+@pytest.mark.parametrize("task_authored_by", [None, {"name": "Task User", "email": "task@example.test"}])
 def test_wake_due_agents_provider_prepares_project_repo_when_configured(
-    tmp_path: Path,
+    tmp_path: Path, task_authored_by: dict[str, str] | None,
 ) -> None:
     repo = _seed_team(tmp_path)
 
@@ -8585,12 +8586,14 @@ def test_wake_due_agents_provider_prepares_project_repo_when_configured(
                 email="evander@quinth.se",
             ),
         )
+        state.tasks["task"].authored_by = ProjectGitIdentity(**task_authored_by) if task_authored_by else None
         return state
 
     repo.update(_set_git)
     resumer = FakeResumer()
     session_store = FakeSessionStore()
     repo_cloner = FakeRepoCloner()
+    executor = FakeVmExecutor()
     provider = TeamWakeDueAgentsEffectProvider()
     provider.initialize(
         TeamWakeDueAgentsEffectDefinition(
@@ -8603,7 +8606,7 @@ def test_wake_due_agents_provider_prepares_project_repo_when_configured(
             agent_resumer=resumer,
             vm_file_copier=FakeFileCopier(),
             vm_repo_cloner=repo_cloner,
-            vm_executor=FakeVmExecutor(),
+            vm_executor=executor,
             session_lookup=session_store,
             session_metadata_updater=session_store,
         ),
@@ -8612,6 +8615,10 @@ def test_wake_due_agents_provider_prepares_project_repo_when_configured(
     result = provider.execute()
 
     assert result["success"] is True
+    author = task_authored_by or {"name": "Jonathan Quinth", "email": "operator@example.invalid"}
+    worktree_commands = [str(call["command"]) for call in executor.calls]
+    assert any("config --worktree author.name" in command and author["name"] in command for command in worktree_commands)
+    assert any("config --worktree author.email" in command and author["email"] in command for command in worktree_commands)
     assert repo_cloner.calls == [
         {
             "vm_name": "vm-backend",
@@ -9144,6 +9151,7 @@ def test_libvirt_dependency_git_composition_command_is_valid_shell() -> None:
                 "commit_sha": "e" * 40,
             },
         ],
+        task_author_identity=ProjectGitIdentity(name="Task O'Connor", email="task@example.test"),
         dependency_merge_author_identity=ProjectGitIdentity(
             name="Jonathan Quinth",
             email="operator@example.invalid",
@@ -9159,6 +9167,8 @@ def test_libvirt_dependency_git_composition_command_is_valid_shell() -> None:
         check=False,
     )
     assert syntax.returncode == 0, syntax.stderr
+    assert "config --worktree author.name" in command
+    assert "config --worktree author.email task@example.test" in command
     assert "export GIT_AUTHOR_NAME='Jonathan Quinth'" in command
     assert "export GIT_AUTHOR_EMAIL=operator@example.invalid" in command
     assert 'ls-remote --exit-code --heads origin "refs/heads/$branch"' in command
@@ -13187,6 +13197,7 @@ def test_create_task_effect_creates_operator_authored_task(tmp_path: Path) -> No
             case_id="case",
             state="pending",
             parent_task_id="task",
+            authored_by={"name": "Workflow User", "email": "workflow@example.test"},
             git_base_branch="feature/workflow",
             dependency_task_ids=["workflow-dependency"],
             integration_boundary=True,
@@ -13215,6 +13226,7 @@ def test_create_task_effect_creates_operator_authored_task(tmp_path: Path) -> No
     task = reread.tasks["workflow-task"]
     assert task.case_id == "case"
     assert task.parent_task_id == "task"
+    assert task.authored_by == ProjectGitIdentity(name="Workflow User", email="workflow@example.test")
     assert task.git_base_branch == "feature/workflow"
     assert task.dependency_task_ids == ["workflow-dependency"]
     assert task.integration_boundary is True

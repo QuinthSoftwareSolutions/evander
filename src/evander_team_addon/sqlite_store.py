@@ -31,7 +31,7 @@ from .models import (
 
 ADDON_ID = "team-addon"
 STATE_DB_FILE = "state.db"
-SQLITE_SCHEMA_VERSION = 72
+SQLITE_SCHEMA_VERSION = 73
 _SQLITE_WAL_ENABLE_TIMEOUT_SECONDS = 5.0
 
 T = TypeVar("T")
@@ -1518,6 +1518,7 @@ class TeamStateSqliteStore:
                     ("integration_boundary", "INTEGER NOT NULL DEFAULT 0"),
                     ("deliverable_contract_json", "TEXT"),
                     ("completion_json", "TEXT"),
+                    ("authored_by_json", "TEXT"),
                     ("originating_task_id", "TEXT"),
                     ("release_base_package_id", "TEXT"),
                     ("cancellation_json", "TEXT"),
@@ -3162,6 +3163,10 @@ class TeamStateSqliteStore:
                 "created_by_agent_id": row["created_by_agent_id"],
                 "created_by_actor": row["created_by_actor"],
                 "parent_task_id": row["parent_task_id"],
+                "authored_by": (
+                    _json_loads(row["authored_by_json"])
+                    if row["authored_by_json"] is not None else None
+                ),
                 "originating_task_id": row["originating_task_id"],
                 "release_base_package_id": row["release_base_package_id"],
                 "work_lineage_id": row["work_lineage_id"],
@@ -3194,7 +3199,7 @@ class TeamStateSqliteStore:
                 INSERT INTO team_tasks(
                     id, owner_agent_id, project_id, case_id, priority, state, title, description,
                     state_entered_at, created_by_agent_id, created_by_actor, parent_task_id,
-                    originating_task_id, release_base_package_id,
+                    authored_by_json, originating_task_id, release_base_package_id,
                     work_lineage_id,
                     git_base_branch, git_base_commit_sha,
                     mutation_policy_json, cancellation_json, task_kind,
@@ -3202,7 +3207,7 @@ class TeamStateSqliteStore:
                     deliverable_contract_json, completion_json, created_at, updated_at,
                     source_evidence_snapshot_ids_json
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     task["id"],
@@ -3217,6 +3222,7 @@ class TeamStateSqliteStore:
                     task.get("created_by_agent_id"),
                     task.get("created_by_actor"),
                     task.get("parent_task_id"),
+                    _json_dumps(task["authored_by"]) if task.get("authored_by") is not None else None,
                     task.get("originating_task_id"),
                     task.get("release_base_package_id"),
                     task.get("work_lineage_id"),
@@ -8535,6 +8541,7 @@ CREATE TABLE IF NOT EXISTS team_tasks (
     created_by_agent_id TEXT,
     created_by_actor TEXT,
     parent_task_id TEXT,
+    authored_by_json TEXT,
     originating_task_id TEXT,
     release_base_package_id TEXT,
     work_lineage_id TEXT,

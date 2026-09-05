@@ -103,6 +103,7 @@ from .domain.agent_access import (
     _validate_role_assignment,
     _validate_role_filter_assignment,
 )
+from .domain.task_authorship import inherited_task_author, task_author_identity
 from .domain.case_task import (
     _correction_case_git_base_branch,
     _case_can_link_task,
@@ -3551,6 +3552,8 @@ class TeamAdminService:
         state: TeamTaskState = TeamTaskState.PENDING,
         parent_task_id: str | None = None,
         originating_task_id: str | None = None,
+        authored_by: object = None,
+        set_authored_by: bool = False,
         git_base_branch: str | None = None,
         git_base_commit_sha: str | None = None,
         set_git_base_branch: bool = False,
@@ -3578,6 +3581,8 @@ class TeamAdminService:
             state=state,
             parent_task_id=parent_task_id,
             originating_task_id=originating_task_id,
+            authored_by=authored_by,
+            set_authored_by=set_authored_by,
             git_base_branch=git_base_branch,
             git_base_commit_sha=git_base_commit_sha,
             set_git_base_branch=set_git_base_branch,
@@ -3609,6 +3614,8 @@ class TeamAdminService:
         state: TeamTaskState = TeamTaskState.PENDING,
         parent_task_id: str | None = None,
         originating_task_id: str | None = None,
+        authored_by: object = None,
+        set_authored_by: bool = False,
         git_base_branch: str | None = None,
         git_base_commit_sha: str | None = None,
         set_git_base_branch: bool = False,
@@ -3631,6 +3638,7 @@ class TeamAdminService:
         normalized_project_id = _required_text(project_id, "project_id")
         normalized_parent_task_id = _optional_text(parent_task_id)
         normalized_originating_task_id = _optional_text(originating_task_id)
+        normalized_authored_by = task_author_identity(authored_by)
         normalized_git_base_branch = _optional_text(git_base_branch)
         if normalized_git_base_branch is not None:
             normalized_git_base_branch = validate_branch_name(normalized_git_base_branch)
@@ -3843,6 +3851,8 @@ class TeamAdminService:
                 if deliverable_policy_edit:
                     task.integration_boundary = proposed_integration_boundary
                     task.deliverable_contract = proposed_deliverable_contract
+                if set_authored_by or authored_by is not None:
+                    task.authored_by = normalized_authored_by
                 if set_git_base_branch or git_base_branch is not None:
                     _set_task_git_base_branch(
                         state_model,
@@ -3944,6 +3954,13 @@ class TeamAdminService:
                 created_by_actor=created_by_actor,
                 parent_task_id=normalized_parent_task_id,
                 originating_task_id=normalized_originating_task_id,
+                authored_by=inherited_task_author(
+                    state_model,
+                    project_id=normalized_project_id,
+                    authored_by=normalized_authored_by,
+                    originating_task_id=normalized_originating_task_id,
+                    parent_task_id=normalized_parent_task_id,
+                ),
                 git_base_branch=_resolve_new_task_git_base_branch(
                     state_model,
                     project_id=normalized_project_id,
@@ -4020,6 +4037,8 @@ class TeamAdminService:
         set_case_id: bool = False,
         parent_task_id: str | None = None,
         set_parent_task_id: bool = False,
+        authored_by: object = None,
+        set_authored_by: bool = False,
         git_base_branch: str | None = None,
         set_git_base_branch: bool = False,
         dependency_task_ids: list[str] | None = None,
@@ -4034,6 +4053,7 @@ class TeamAdminService:
         normalized_task_id = _required_text(task_id, "task_id")
         normalized_case_id = _optional_text(case_id)
         normalized_parent_task_id = _optional_text(parent_task_id)
+        normalized_authored_by = task_author_identity(authored_by)
         normalized_git_base_branch = _optional_text(git_base_branch)
         if normalized_git_base_branch is not None:
             normalized_git_base_branch = validate_branch_name(normalized_git_base_branch)
@@ -4237,6 +4257,8 @@ class TeamAdminService:
             if deliverable_policy_edit:
                 task.integration_boundary = proposed_integration_boundary
                 task.deliverable_contract = proposed_deliverable_contract
+            if set_authored_by or authored_by is not None:
+                task.authored_by = normalized_authored_by
             if set_git_base_branch:
                 _set_task_git_base_branch(
                     state_model,

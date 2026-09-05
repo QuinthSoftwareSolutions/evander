@@ -6919,3 +6919,84 @@ def test_job_store_omits_secret_fields_and_rejects_raw_environment(tmp_path: Pat
     assert row is not None
     assert "Bearer secret" not in row[0]
     assert "OPENAI_API_KEY" not in row[0]
+
+
+def test_task_worktree_authors_are_isolated_and_reconciled_before_future_commits(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    for key in ("GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL", "GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL"):
+        monkeypatch.delenv(key, raising=False)
+
+    def git(path, *args):
+        return subprocess.run(
+            ["git", *args], cwd=path, check=True, capture_output=True, text=True
+        ).stdout.strip()
+
+    source = tmp_path / "source"
+    source.mkdir()
+    git(source, "init", "-q", "-b", "main")
+    git(source, "config", "user.name", "Source")
+    git(source, "config", "user.email", "source@example.test")
+    git(source, "commit", "--allow-empty", "-qm", "base")
+    daemon = WorkerDaemon(
+        runtime_dir=tmp_path / "runtime",
+        worker_root=tmp_path / "worker-root",
+        container_runtime=FakeContainerRuntime(),
+        token="test-token",
+        allowed_git_source_prefixes=[str(tmp_path)],
+    )
+    daemon.clone_repo(
+        "session-1", WorkerRepoCloneRequest(repo_source=str(source), repo_name="repo")
+    )
+    paths = WorkerSessionPaths.resolve(daemon.worker_root, "session-1")
+    clone = paths.repo_root / "repo"
+    for key, value in {
+        "author.name": "Project",
+        "author.email": "project@example.test",
+        "committer.name": "Automation",
+        "committer.email": "bot@example.test",
+    }.items():
+        git(clone, "config", key, value)
+    requests = {}
+    records = {}
+    for task, author in (("alice", "Alice"), ("bob", "Bob")):
+        request = WorkerTaskWorktreeRequest(
+            repo_name="repo",
+            worktree_name=task,
+            branch=f"agents/session-1/tasks/{task}",
+            base_ref="main",
+            git_author_name=author,
+            git_author_email=f"{task}@example.test",
+        )
+        records[task] = daemon.prepare_task_worktree("session-1", request)
+        requests[task] = request
+        checkout = paths.agent_home / "worktrees" / "repo" / task
+        git(checkout, "commit", "--allow-empty", "-qm", "task work")
+        assert (
+            git(checkout, "log", "-1", "--format=%an|%ae|%cn|%ce")
+            == f"{author}|{task}@example.test|Automation|bot@example.test"
+        )
+    assert git(clone, "config", "author.name") == "Project"
+    alice = paths.agent_home / "worktrees" / "repo" / "alice"
+    original_commit = git(alice, "rev-parse", "HEAD")
+    (alice / "dirty.txt").write_text("retained work\n")
+    daemon.prepare_task_worktree(
+        "session-1",
+        requests["alice"].model_copy(
+            update={
+                "expected_base_commit_sha": records["alice"].base_commit_sha,
+                "git_author_name": "Project",
+                "git_author_email": "project@example.test",
+            }
+        ),
+    )
+    assert git(alice, "rev-parse", "HEAD") == original_commit
+    assert (alice / "dirty.txt").read_text() == "retained work\n"
+    git(alice, "add", "dirty.txt")
+    git(alice, "commit", "-qm", "next work")
+    assert (
+        git(alice, "log", "-1", "--format=%an|%ae|%cn") == "Project|project@example.test|Automation"
+    )
+    assert git(alice, "log", "-1", "--format=%an", original_commit) == "Alice"
+    assert git(paths.agent_home / "worktrees" / "repo" / "bob", "config", "author.name") == "Bob"

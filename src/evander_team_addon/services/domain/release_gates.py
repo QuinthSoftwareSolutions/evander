@@ -5,6 +5,7 @@ from hashlib import sha256
 from typing import Any
 from uuid import uuid4
 
+from .task_authorship import common_deliverable_author
 from ...models import (
     AgentStatus,
     AgentTask,
@@ -669,6 +670,7 @@ def _materialize_candidate_verification_correction(
             id=task_id,
             owner_agent_id=owner_agent_id,
             project_id=release.project_id,
+            authored_by=common_deliverable_author(state, release.deliverable_ids),
             release_base_package_id=release.id,
             git_base_branch=_candidate_correction_git_base(release),
             priority=0,
@@ -1047,6 +1049,7 @@ def materialize_release_review_rejection_correction(
             id=task_id,
             owner_agent_id=owner_agent_id,
             project_id=release.project_id,
+            authored_by=common_deliverable_author(state, release.deliverable_ids),
             release_base_package_id=release.id,
             git_base_branch=_candidate_correction_git_base(release),
             priority=0,

@@ -453,6 +453,8 @@ class WorkerTaskWorktreeRequest(BaseModel):
     dependency_composition_recovery_id: str | None = None
     resolved_dependency_branch: str | None = None
     resolved_dependency_commit_sha: str | None = None
+    git_author_name: str | None = None
+    git_author_email: str | None = None
     dependency_merge_author_name: str | None = None
     dependency_merge_author_email: str | None = None
     dependency_composition_commit_message: str | None = None
@@ -516,6 +518,8 @@ class WorkerTaskWorktreeRequest(BaseModel):
         return text
 
     @field_validator(
+        "git_author_name",
+        "git_author_email",
         "dependency_merge_author_name",
         "dependency_merge_author_email",
         "dependency_composition_commit_message",
@@ -534,6 +538,8 @@ class WorkerTaskWorktreeRequest(BaseModel):
 
     @model_validator(mode="after")
     def validate_dependency_merge_author(self) -> "WorkerTaskWorktreeRequest":
+        if bool(self.git_author_name) != bool(self.git_author_email):
+            raise ValueError("git_author_name and git_author_email must both be set")
         if bool(self.dependency_merge_author_name) != bool(self.dependency_merge_author_email):
             raise ValueError(
                 "dependency_merge_author_name and dependency_merge_author_email must both be set"

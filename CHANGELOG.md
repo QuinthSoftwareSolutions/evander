@@ -1,5 +1,14 @@
 # Changelog
 
+## 2026-09-05 - Per-task Git authors (0.24.0)
+
+- Added optional task `authored_by` name/email settings through the operator UI, API, Team tools,
+  and task-creation workflows, with the project author as fallback.
+- Copied authors into child, follow-up, correction, and recovery tasks; mixed-author aggregate
+  corrections use the project default.
+- Applied authors independently to task worktrees on both execution backends, including retained
+  checkouts, without rewriting existing commits or changing the project committer.
+
 ## 2026-09-04 - Mobile Team Chat
 
 - Reworked Team Chat into a mobile conversation-list and message-thread flow so agent messages,

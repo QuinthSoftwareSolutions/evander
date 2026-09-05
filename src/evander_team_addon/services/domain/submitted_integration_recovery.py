@@ -400,6 +400,7 @@ def apply_submitted_integration_boundary_recovery(
         created_by_actor=actor_id if actor_kind == "operator" else None,
         parent_task_id=integration.parent_task_id,
         originating_task_id=integration.id,
+        authored_by=integration.authored_by.model_copy(deep=True) if integration.authored_by else None,
         git_base_branch=plan.git_base_branch,
         git_base_commit_sha=plan.git_base_commit_sha,
         mutation_policy=(

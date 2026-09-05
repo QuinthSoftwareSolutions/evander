@@ -13,6 +13,7 @@ from evander_team_addon.models import (
     GitWorkContext,
     GitWorkContextState,
     ProjectGitConfig,
+    ProjectGitIdentity,
     ProjectGoal,
     TaskCancellation,
     TeamDispatch,
@@ -2713,6 +2714,7 @@ def test_container_preparation_records_pinned_base_separately_from_task_head(
         base_ref="team/team/releases/release-1234",
         pinned_base_commit=_BASE_COMMIT,
         pinned_base_tree="3" * 40,
+        task_author_identity=ProjectGitIdentity(name="Task Author", email="task@example.test"),
     )
 
     assert path == _WORKTREE_PATH
@@ -2733,6 +2735,8 @@ def test_container_preparation_records_pinned_base_separately_from_task_head(
             "dependency_composition_recovery_id": None,
             "resolved_dependency_branch": None,
             "resolved_dependency_commit_sha": None,
+            "git_author_name": "Task Author",
+            "git_author_email": "task@example.test",
             "dependency_merge_author_name": "Evander Bot",
             "dependency_merge_author_email": "evander@quinth.se",
         }

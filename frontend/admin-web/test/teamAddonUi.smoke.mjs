@@ -11315,6 +11315,8 @@ test("team add-on task board coordinates hierarchy focus and bounds completed hi
   await createTaskForm.locator('[name="owner_agent_id"]').selectOption("alpha-lead");
   await createTaskForm.locator('[name="title"]').fill("Feature workstream task");
   await createTaskForm.locator('[name="description"]').fill("Keep this task on feature/demo.");
+  await createTaskForm.locator('[name="task_author_name"]').fill("Alice Example");
+  await createTaskForm.locator('[name="task_author_email"]').fill("alice@example.test");
   await createTaskForm.locator('[name="git_base_branch"]').fill("feature/demo");
   await createTaskForm.locator('[name="parent_task_id"]').selectOption("task-planned");
   await createTaskForm.locator('[name="require_git_provenance"]').check();
@@ -11333,6 +11335,7 @@ test("team add-on task board coordinates hierarchy focus and bounds completed hi
     && request.payload?.title === "Feature workstream task"
   ));
   assert.equal(createRequest.payload.git_base_branch, "feature/demo");
+  assert.deepEqual(createRequest.payload.authored_by, { name: "Alice Example", email: "alice@example.test" });
   assert.equal(createRequest.payload.parent_task_id, "task-planned");
   assert.equal(createRequest.payload.integration_boundary, false);
   assert.deepEqual(createRequest.payload.deliverable_contract, {
@@ -12804,7 +12807,7 @@ test("team add-on project editor keeps human release policy in bounded controls"
 });
 
 test("team add-on Task board exposes the existing task editor", async (t) => {
-  const { port } = await createTeamAddonServer(t, {
+  const { port, requests } = await createTeamAddonServer(t, {
     initialState: seededGitState(),
   });
   const page = await openBrowserPage(t, port);
@@ -12825,8 +12828,19 @@ test("team add-on Task board exposes the existing task editor", async (t) => {
     await taskEditForm.locator('[name="title"]').inputValue(),
     "Draft pending delivery",
   );
-  await taskEditForm.getByRole("button", { name: "Cancel", exact: true }).click();
+  await taskEditForm.locator('[name="task_author_name"]').fill("Alice Example");
+  await taskEditForm.locator('[name="task_author_email"]').fill("alice@example.test");
+  await taskEditForm.getByRole("button", { name: "Save changes", exact: true }).click();
   await taskEditForm.waitFor({ state: "hidden" });
+  const updates = () => requests.filter((request) => request.method === "PATCH" && request.pathname.endsWith("/tasks/task-pending"));
+  assert.deepEqual(updates().at(-1).payload.authored_by, { name: "Alice Example", email: "alice@example.test" });
+  await editableTaskCard.getByRole("button", { name: "Edit", exact: true }).click();
+  assert.equal(await taskEditForm.locator('[name="task_author_name"]').inputValue(), "Alice Example");
+  await taskEditForm.locator('[name="task_author_name"]').fill("");
+  await taskEditForm.locator('[name="task_author_email"]').fill("");
+  await taskEditForm.getByRole("button", { name: "Save changes", exact: true }).click();
+  await taskEditForm.waitFor({ state: "hidden" });
+  assert.equal(updates().at(-1).payload.authored_by, null);
 });
 
 test("team add-on task cancellation is explicit audited and lifecycle-aware", async (t) => {

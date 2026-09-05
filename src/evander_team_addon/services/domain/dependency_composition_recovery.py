@@ -342,6 +342,7 @@ def start_dependency_composition_recovery(
         created_by_actor=DEPENDENCY_COMPOSITION_RECOVERY_ACTOR,
         parent_task_id=target.id,
         originating_task_id=target.id,
+        authored_by=target.authored_by.model_copy(deep=True) if target.authored_by else None,
         git_base_branch=recovery.base_branch,
         git_base_commit_sha=recovery.base_commit_sha,
         dependency_task_ids=contribution_task_ids,

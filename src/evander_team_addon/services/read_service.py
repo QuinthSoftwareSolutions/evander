@@ -793,6 +793,7 @@ class TeamReadService:
             "priority": task.priority,
             "owner_agent_id": task.owner_agent_id,
             "project_id": task.project_id,
+            "authored_by": task.authored_by.model_dump(mode="json") if task.authored_by else None,
             "git_base_branch": task.git_base_branch,
             "git_base_commit_sha": task.git_base_commit_sha,
             "case_id": task.case_id,
