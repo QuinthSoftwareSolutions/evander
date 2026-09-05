@@ -370,6 +370,11 @@ Azure SSO env vars:
 - `EVANDER_ADMIN_WEB_AZURE_POST_LOGIN_REDIRECT`
   Default: `/`
 
+Personal Azure DevOps connections support PATs and a separate Microsoft OAuth consent flow.
+The OAuth flow can reuse this SSO app with an additional redirect URI and delegated ADO
+permissions. See [personal ADO connection setup](docs/operations.md#enabling-microsoft-oauth-through-cicd)
+for shared host configuration, token refresh, and fallback behavior.
+
 Azure SSO is optional and disabled by default. To enable it:
 
 1. Register a confidential Microsoft Entra web application.

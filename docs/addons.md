@@ -1183,12 +1183,14 @@ Child, originating, correction, and recovery tasks inherit attribution. Workflow
 must supply `parent_task_id` or `originating_task_id`; a dependency alone expresses ordering,
 not attribution. Aggregate corrections preserve their source work-item references.
 
-Registered Admin Web users can choose **My ADO connection** in the header to save an
-organization-scoped PAT with **Code: Read & write**. Validation records the authenticated
-ADO identity rather than trusting a supplied display name or email. Users can replace or
-remove their own connections; tokens are never returned by the profile API. Connections
-apply to the selected directory and its descendants. Microsoft SSO authenticates the
-platform login separately and does not require additional permissions for this PAT flow.
+Registered Admin Web users can choose **My ADO connection** to connect Microsoft OAuth,
+save an organization-scoped PAT with **Code: Read & write**, or keep both for the same ADO
+account. Validation records the authenticated ADO identity rather than trusting a supplied
+display name or email. Users can disconnect each method independently; tokens are never
+returned by the profile API. Connections apply to the selected directory and its descendants.
+OAuth is preferred within the most specific matching connection, then PAT, then the bot.
+Microsoft SSO authenticates the platform login separately; the OAuth option adds an explicit
+consent flow and encrypted refresh tokens. See [OAuth setup](operations.md#enabling-microsoft-oauth-through-cicd).
 
 `effect:team:mark-release-published` produces an optional `publication_context_id` for
 Azure DevOps releases. Carry it through custom release events into `effect:pr:create`.

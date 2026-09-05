@@ -2861,36 +2861,45 @@ class ManagedGitAdminService:
         pat_env = str(getattr(config, "azure_devops_pr_pat_env", "") or "AZURE_DEVOPS_PR_PAT")
         bot_pat = os.environ.get(pat_env, "").strip()
         bot_auth = "Basic " + base64.b64encode(f":{bot_pat}".encode()).decode() if bot_pat else None
+        binding = dict(
+            managed_repo_id=record["managed_repo_id"], commit_sha=expected_commit_sha,
+            directory_path=publication_directory_path or record["directory_path"],
+            organization=organization,
+        ) if publication_context_id else {}
         context: dict[str, Any] = {}
-        personal_auth = None
-        if publication_context_id:
-            context, personal_auth = self.ado_user_connections.resolve_publication(
-                publication_context_id, managed_repo_id=record["managed_repo_id"],
-                commit_sha=expected_commit_sha,
-                directory_path=publication_directory_path or record["directory_path"],
-                organization=organization)
-        auth = personal_auth or bot_auth
-        if not auth:
-            raise RuntimeError(f"Azure DevOps PR credentials are unavailable in {pat_env}")
-        reason = context.get("fallback_reason")
-        credential_source = "personal_pat" if personal_auth else "bot"
+        excluded: set[str] = set()
+        reasons: list[str] = []
         arguments = dict(destination_branch=destination_branch, base_branch=base_branch,
                          expected_commit_sha=expected_commit_sha, title=title, body=body,
                          draft=draft, title_explicit=title_explicit, work_item_id=work_item_id)
-        try:
-            result = self._create_or_reuse_azure_pr_using_auth(record, auth=auth, **arguments)
-        except AzurePrRequestError as exc:
-            if not personal_auth or exc.status_code not in {401, 403} or not bot_auth:
-                raise
-            reason = "personal_pat_rejected" if exc.status_code == 401 else "personal_pat_permission_denied"
-            credential_source = "bot"
-            result = self._create_or_reuse_azure_pr_using_auth(record, auth=bot_auth, **arguments)
-        except AzurePrCreationUncertain:
-            # Read back using the bot if possible; the durable attempt prevents a second POST.
-            credential_source = "bot" if bot_auth else credential_source
-            result = self._create_or_reuse_azure_pr_using_auth(record, auth=bot_auth or auth, **arguments)
+        while True:
+            personal_auth = None
+            if publication_context_id:
+                context, personal_auth = self.ado_user_connections.resolve_publication(
+                    publication_context_id, **binding, excluded_methods=frozenset(excluded))
+            reason = context.get("fallback_reason")
+            if reason and reason not in reasons:
+                reasons.append(reason)
+            auth = personal_auth or bot_auth
+            if not auth:
+                raise RuntimeError(f"Azure DevOps PR credentials are unavailable in {pat_env}")
+            credential_source = context.get("credential_source", "personal_pat") if personal_auth else "bot"
+            try:
+                result = self._create_or_reuse_azure_pr_using_auth(record, auth=auth, **arguments)
+                break
+            except AzurePrRequestError as exc:
+                if not personal_auth or exc.status_code not in {401, 403}:
+                    raise
+                reasons.append(credential_source + ("_rejected" if exc.status_code == 401 else "_permission_denied"))
+                excluded.add(credential_source)
+                # Each personal method is tried at most once. A definitive authorization
+                # failure permits fallback; an uncertain POST remains guarded below.
+            except AzurePrCreationUncertain:
+                credential_source = "bot" if bot_auth else credential_source
+                result = self._create_or_reuse_azure_pr_using_auth(record, auth=bot_auth or auth, **arguments)
+                break
         result.update(intended_creator_id=context.get("identity_id"),
-                      credential_source=credential_source, fallback_reason=reason)
+                      credential_source=credential_source, fallback_reason=";".join(reasons) or None)
         self.ado_user_connections.record_publication(publication_context_id, result)
         return result
 

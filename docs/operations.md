@@ -2,7 +2,10 @@
 
 ## Personal Azure DevOps PR connections
 
-Users manage personal PATs through **My ADO connection** in Admin Web. Use an
+Users manage Microsoft OAuth and personal PATs through **My ADO connection** in Admin Web.
+Both methods can be connected together, and must identify the same ADO account for a given
+organization and directory. OAuth is preferred within the most specific matching directory
+connection, followed by that connection's PAT, then the bot. Use an
 organization-scoped PAT with Code: Read & write and replace it before expiration.
 The existing directory `azure_devops_pr_pat_env` remains the bot fallback. Personal
 connections affect PR publication; existing host Git push and issue-intake credentials
@@ -14,7 +17,42 @@ The host stores encrypted PATs and publication audit records in
 `runtime/secrets/ado-user-connections.key`. Both files are restricted to the service user.
 Back up the database and key separately, retain ownership when restoring, and never
 copy them into guest bundles. Removing a connection stops future credential selection;
-an ADO request already in flight may finish. Removal does not revoke the PAT in ADO.
+an ADO request already in flight may finish. Removal does not revoke the PAT or app consent in ADO/Entra.
+Deleting the platform user also removes their stored credentials and pending connections.
+
+### Enabling Microsoft OAuth through CI/CD
+
+Use a confidential Microsoft Entra **Web** app. The existing Microsoft SSO app can be reused;
+connecting ADO is a separate consent operation and does not change normal sign-in scopes.
+Register `https://<admin-host>/api/admin/me/ado-connections/oauth/callback` as an additional
+Web redirect URI. Add Azure DevOps delegated permissions `vso.code_write` and `vso.profile`,
+and grant consent according to the tenant's policy. The flow requests those permissions and
+`offline_access`, uses PKCE, and verifies the ADO account through `connectionData`.
+See [Microsoft's Entra ADO guidance](https://learn.microsoft.com/en-us/azure/devops/integrate/get-started/authentication/entra-oauth?view=azure-devops).
+
+Configure these host environment variables through the operator-owned CI/CD deployment:
+
+- `EVANDER_ADO_OAUTH_ENABLED=true`
+- `EVANDER_ADO_OAUTH_TENANT_ID`: a concrete tenant ID or domain.
+- `EVANDER_ADO_OAUTH_CLIENT_ID` and `EVANDER_ADO_OAUTH_CLIENT_SECRET`.
+- `EVANDER_ADO_OAUTH_REDIRECT_URI`: the exact callback registered above.
+
+Tenant/client/secret default to the corresponding `EVANDER_ADMIN_WEB_AZURE_*` variables.
+The redirect defaults to `EVANDER_ADMIN_WEB_PUBLIC_BASE_URL` plus the callback path.
+All settings, including the secret, must be available to **Admin Web and every host process
+that creates PRs**, particularly the effect orchestrator and gateway. Supplying them only
+in `admin-web.env` will enable connection setup but prevent background token refresh.
+Use the shared service secret environment managed by CI/CD; never copy these values to workers
+or agent guests. No remote checkout mutation or manual service rollout is needed.
+
+OAuth stays disabled until configured; PATs continue to work. Once enabled, a registered user
+(Microsoft SSO or local-password sign-in) selects an organization and chooses **Connect with
+Microsoft**. Access and refresh tokens are encrypted with the same host key as PATs. Refresh is
+serialized across host processes, rotated tokens are persisted, and revoked grants show
+**Reconnect required**. **Disconnect Microsoft** and **Remove PAT** operate independently.
+After changing the OAuth tenant/client/redirect, reconnect existing accounts. Secret rotation
+within the same app only requires updating the shared deployment secret.
+Actual tenant consent and a human-owned PR require verification after CI/CD deployment.
 
 Publication results record the requested and actual creator, credential source, and
 fallback reason. A timeout or uncertain POST leaves a durable guard in `pr_attempts`.
@@ -23,7 +61,7 @@ If ADO continues to report no PR, publication remains pending for operator inves
 do not blindly clear the guard or recreate the PR. Verify the source/target branches
 and provider result before an operator resolves an unconfirmed attempt.
 
-After deploying version 0.25.0 or later on the control plane and compatible worker code,
+After CI/CD deploys version 0.25.0 or later on the control plane and compatible worker code,
 preview the operator-owned APP workflow migration:
 
 ```bash

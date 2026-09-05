@@ -2,8 +2,10 @@
 
 ## 2026-09-05 - ADO assignee attribution (0.25.0)
 
-- Added personal Azure DevOps PAT connections for signed-in Admin Web users, with encrypted
-  host-only storage, validated ADO identity, and replace/remove controls.
+- Added personal Azure DevOps PAT and Microsoft Entra OAuth connections for signed-in Admin Web
+  users, with encrypted host-only storage, verified ADO identity, and independent disconnect controls.
+- Added browser-bound OAuth consent and automatic token refresh; publication prefers OAuth,
+  then a saved PAT for the same account, then the bot, without duplicating uncertain PR creation.
 - Captured work-item assignees on task intake and preserved their attribution through task
   handoffs, corrections, and nested release contributions.
 - Created release PRs through the assignee's personal connection when available; mixed-owner
