@@ -4125,6 +4125,7 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
             _field("base_branch", "Base branch", "string", bindable=True),
             _field("session_id", "Session ID", "string", bindable=True),
             _field("work_item_id", "Work item ID", "string", bindable=True),
+            _field("publication_context_id", "Release publishing identity", "string", bindable=True),
             _field("title", "Title", "string", bindable=True),
             _field("fallback_title", "Fallback title", "string", bindable=True),
             _field("body", "Body", "string", bindable=True, multiline=True),

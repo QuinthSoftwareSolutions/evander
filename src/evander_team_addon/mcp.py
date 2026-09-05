@@ -1526,6 +1526,7 @@ def _register_slice6_tools(
         state: str = "pending",
         parent_task_id: str | None = None,
         originating_task_id: str | None = None,
+        authored_by: dict[str, str] | None = None,
         git_base_branch: str | None = None,
         dependency_task_ids: list[str] | None = None,
         task_kind: str = "support",
@@ -1554,6 +1555,7 @@ def _register_slice6_tools(
                 state=state,
                 parent_task_id=parent_task_id,
                 originating_task_id=originating_task_id,
+                authored_by=authored_by,
                 git_base_branch=git_base_branch,
                 dependency_task_ids=dependency_task_ids,
                 task_kind=task_kind,
@@ -1581,7 +1583,9 @@ def _register_slice6_tools(
             "with no contribution task IDs when it must resolve through an accepted "
             "deliverable. git_base_branch optionally selects this task's immutable "
             "starting workstream; otherwise a child inherits its parent and a root "
-            "snapshots the project default. originating_task_id records lineage only and does not "
+            "snapshots the project default. authored_by optionally supplies {name, email}; "
+            "otherwise the originating task or parent author is copied, with project fallback. "
+            "originating_task_id does not "
             "seed Git content; when a correction must edit accepted predecessor "
             "content, also put that predecessor in dependency_task_ids so its exact "
             "accepted commit is verified and composed before work starts."
@@ -1600,6 +1604,7 @@ def _register_slice6_tools(
         state: str = "pending",
         parent_task_id: str | None = None,
         originating_task_id: str | None = None,
+        authored_by: dict[str, str] | None = None,
         git_base_branch: str | None = None,
         dependency_task_ids: list[str] | None = None,
         task_kind: str = "support",
@@ -1629,6 +1634,7 @@ def _register_slice6_tools(
                 state=state,
                 parent_task_id=parent_task_id,
                 originating_task_id=originating_task_id,
+                authored_by=authored_by,
                 git_base_branch=git_base_branch,
                 dependency_task_ids=dependency_task_ids,
                 task_kind=task_kind,
@@ -1844,6 +1850,8 @@ def _register_slice6_tools(
         description: str | None = None,
         owner_agent_id: str | None = None,
         dependency_task_ids: list[str] | None = None,
+        authored_by: dict[str, str] | None = None,
+        clear_authored_by: bool = False,
         git_base_branch: str | None = None,
         integration_boundary: bool | None = None,
         deliverable_contract: dict[str, Any] | None = None,
@@ -1866,6 +1874,7 @@ def _register_slice6_tools(
             "description": description,
             "owner_agent_id": owner_agent_id,
             "dependency_task_ids": dependency_task_ids,
+            "authored_by": authored_by,
             "git_base_branch": git_base_branch,
             "integration_boundary": integration_boundary,
             "deliverable_contract": deliverable_contract,
@@ -1873,6 +1882,10 @@ def _register_slice6_tools(
         }.items():
             if value is not None:
                 updates[name] = value
+        if clear_authored_by:
+            if authored_by is not None:
+                raise ToolError("Use authored_by or clear_authored_by, not both")
+            updates["authored_by"] = None
         try:
             _state, result = task_update_commands.update_task_command(
                 session_id=caller.session_id,
@@ -1895,7 +1908,9 @@ def _register_slice6_tools(
             "Before any deliverable submission, an authorized task-graph editor "
             "can supply a deliverable_contract to require accepted work, and can "
             "also designate a composite as an integration boundary with "
-            "integration_boundary=true. git_base_branch may be changed only before "
+            "integration_boundary=true. authored_by sets the author of future task commits; "
+            "clear_authored_by restores the project fallback. "
+            "git_base_branch may be changed only before "
             "Git preparation, deliverable submission, or promotion creation."
         ),
     )

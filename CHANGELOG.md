@@ -1,5 +1,26 @@
 # Changelog
 
+## 2026-09-05 - ADO assignee attribution (0.25.0)
+
+- Added personal Azure DevOps PAT and Microsoft Entra OAuth connections for signed-in Admin Web
+  users, with encrypted host-only storage, verified ADO identity, and independent disconnect controls.
+- Added browser-bound OAuth consent and automatic token refresh; publication prefers OAuth,
+  then a saved PAT for the same account, then the bot, without duplicating uncertain PR creation.
+- Captured work-item assignees on task intake and preserved their attribution through task
+  handoffs, corrections, and nested release contributions.
+- Created release PRs through the assignee's personal connection when available; mixed-owner
+  releases and unavailable or rejected PATs use the bot, with recorded attribution and fallback reasons.
+- Added commit-bound publication contexts and durable reconciliation for uncertain PR creation.
+
+## 2026-09-05 - Per-task Git authors (0.24.0)
+
+- Added optional task `authored_by` name/email settings through the operator UI, API, Team tools,
+  and task-creation workflows, with the project author as fallback.
+- Copied authors into child, follow-up, correction, and recovery tasks; mixed-author aggregate
+  corrections use the project default.
+- Applied authors independently to task worktrees on both execution backends, including retained
+  checkouts, without rewriting existing commits or changing the project committer.
+
 ## 2026-09-04 - Mobile Team Chat
 
 - Reworked Team Chat into a mobile conversation-list and message-thread flow so agent messages,

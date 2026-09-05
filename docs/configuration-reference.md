@@ -17,6 +17,23 @@ if a file is absent. Runtime configuration comes from `runtime/host-config.json`
 `runtime/directory-config/root/...`, and secret values can also be supplied through the service
 manager environment or optional repo-root `secrets.env`.
 
+### Personal ADO OAuth (shared host environment)
+
+These settings are documented in `config/admin-web.env.example`, but must be supplied through
+CI/CD to Admin Web and host PR publishers (effect orchestrator and gateway). They are not guest
+or container-worker settings. PAT connections work without OAuth configuration.
+
+| Parameter | Default / purpose |
+|---|---|
+| `EVANDER_ADO_OAUTH_ENABLED` | `false`; explicitly enables delegated Microsoft ADO connections. |
+| `EVANDER_ADO_OAUTH_TENANT_ID` | Falls back to `EVANDER_ADMIN_WEB_AZURE_TENANT_ID`; requires a concrete tenant. |
+| `EVANDER_ADO_OAUTH_CLIENT_ID` | Falls back to `EVANDER_ADMIN_WEB_AZURE_CLIENT_ID`. |
+| `EVANDER_ADO_OAUTH_CLIENT_SECRET` | Falls back to `EVANDER_ADMIN_WEB_AZURE_CLIENT_SECRET`; host secret required for consent and background refresh. |
+| `EVANDER_ADO_OAUTH_REDIRECT_URI` | Defaults to `EVANDER_ADMIN_WEB_PUBLIC_BASE_URL` plus `/api/admin/me/ado-connections/oauth/callback`; register this exact Web redirect in Entra. |
+
+See [OAuth setup and lifecycle](operations.md#enabling-microsoft-oauth-through-cicd) for delegated
+permissions, encrypted storage, token refresh, and independent OAuth/PAT removal.
+
 ## `config/managed-git-refresh.env.example`
 
 | Parameter | Found in | Consumed by |

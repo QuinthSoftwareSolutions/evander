@@ -1,5 +1,7 @@
 import { FormEvent, lazy, Suspense, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 
+import { PersonalAdoConnections } from "./features/users/PersonalAdoConnections";
+
 import companyLogoDark from "../branding/qss-dark.png";
 import companyLogoLight from "../branding/qss-light.png";
 import logoDark from "../branding/evander-logo-dark.png";
@@ -2167,6 +2169,7 @@ export default function AdminRoot() {
           </div>
           <div className="admin-shell-actions">
             <div className="admin-shell-action-group">
+              {session.auth_mode !== "none" ? <PersonalAdoConnections directoryPath={selectedDirectoryPath} /> : null}
               <button
                 type="button"
                 className="admin-shell-button admin-shell-button-muted admin-theme-toggle-button"

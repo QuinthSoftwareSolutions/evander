@@ -686,6 +686,8 @@ const fieldTooltips = {
   managed_repo_id: "Stable Evander managed repository ID stored with the project.",
   base_branch: "Default base branch captured by newly created root tasks. Existing tasks keep their own snapshot when this changes.",
   canonical_release_branch_prefix: "Prefix used when constructing canonical release branch names.",
+  task_author_name: "Name recorded as the author of this task’s future Git commits. Blank inherits on creation and uses the project default after clearing.",
+  task_author_email: "Email recorded for this task’s commit author. Child and follow-up tasks copy this identity.",
   agent_author_name: "Human or service identity recorded as the author of Team agent commits.",
   agent_author_email: "Email recorded for the configured Team agent commit author.",
   agent_committer_name: "Automation identity recorded as the committer of Team agent commits.",
@@ -12870,6 +12872,8 @@ function renderTaskBoardCreateForm(project, projectTasks) {
           <label>Priority <input name="priority" type="number" min="0" value="0" required /></label>
           <label>Title <input name="title" required /></label>
           <label>Description <textarea name="description" rows="3" required></textarea></label>
+          <label>Commit author name <input name="task_author_name" placeholder="Inherit task or project author" /></label>
+          <label>Commit author email <input name="task_author_email" type="email" placeholder="Inherit task or project author" /></label>
           <label>Git base branch
             <input name="git_base_branch" placeholder="Inherit parent or ${escapeAttr(project.git?.base_branch || "project default")}" />
           </label>
@@ -13813,6 +13817,7 @@ function renderTaskBoardTechnicalDetails(task, unresolvedIds, worktreeContexts) 
     ["Hierarchy depth", String(taskHierarchyDepth(task))],
     ["Parent task ID", text(task.parent_task_id)],
     ["Originating task ID", text(task.originating_task_id)],
+    ["Commit author", task.authored_by ? `${task.authored_by.name} <${task.authored_by.email}>` : "Project default"],
     ["Git base branch", text(task.git_base_branch)],
     ["Git base commit pin", text(task.git_base_commit_sha)],
     ["Dependency task IDs", (task.dependency_task_ids || []).map(text).filter(Boolean).join(", ")],
@@ -21031,6 +21036,9 @@ async function submitTaskUpdate(form) {
   if (title) payload.title = title;
   if (description) payload.description = description;
   payload.parent_task_id = parentTaskId || null;
+  if (form.elements.task_author_name) {
+    payload.authored_by = taskAuthoredByForForm(data);
+  }
   if (form.elements.git_base_branch) {
     payload.git_base_branch = text(data.git_base_branch) || null;
   }
@@ -23075,6 +23083,8 @@ function payloadForForm(form, data = formData(form)) {
       description: text(data.description),
       created_by_agent_id: text(data.created_by_agent_id),
     };
+    const authoredBy = taskAuthoredByForForm(data);
+    if (authoredBy) payload.authored_by = authoredBy;
     const caseId = text(data.case_id);
     if (caseId) {
       payload.case_id = caseId;
@@ -23201,6 +23211,12 @@ function gitConfigForForm(data) {
     git.agent_committer_identity = { name: committerName, email: committerEmail };
   }
   return git;
+}
+
+function taskAuthoredByForForm(data) {
+  const name = text(data.task_author_name);
+  const email = text(data.task_author_email);
+  return name || email ? { name, email } : null;
 }
 
 function releasePolicyForForm(data, form = null) {
@@ -24004,6 +24020,8 @@ function renderEditFields(type, record) {
       ${numberField("Priority", "priority", record.priority ?? 0, { min: 0, required: true })}
       ${textField("Title", "title", record.title, { required: true })}
       ${textareaField("Description", "description", record.description, { rows: 3, required: true })}
+      ${textField("Commit author name", "task_author_name", record.authored_by?.name || "", { placeholder: "Project author" })}
+      ${textField("Commit author email", "task_author_email", record.authored_by?.email || "", { placeholder: "Project author" })}
       ${gitBaseLocked
         ? readonlyField("Git base branch (locked)", record.git_base_branch || "Not recorded (legacy task)")
         : textField("Git base branch", "git_base_branch", record.git_base_branch || "", { placeholder: "Inherit project default" })}
@@ -24247,6 +24265,10 @@ function editPayloadForForm(type, form) {
       dependency_task_ids: splitList(data.dependency_task_ids),
     };
     const currentTask = state.tasks?.[text(form.dataset.editId)];
+    const authoredBy = taskAuthoredByForForm(data);
+    if (JSON.stringify(authoredBy) !== JSON.stringify(currentTask?.authored_by || null)) {
+      payload.authored_by = authoredBy;
+    }
     if (form.elements.git_base_branch) {
       const nextGitBaseBranch = text(data.git_base_branch) || null;
       if (!currentTask || nextGitBaseBranch !== (currentTask.git_base_branch || null)) {

@@ -37,6 +37,7 @@ from ..domain.agent_access import (
     _is_team_manager,
     _supervises,
 )
+from ..domain.task_authorship import task_author_identity
 from ..domain.case_task import (
     TaskGitBaseValidationError,
     _apply_goal_update,
@@ -1357,6 +1358,7 @@ class TeamTaskUpdateCommandService(TeamCommandExecutor):
         description: object = _UNSET,
         owner_agent_id: object = _UNSET,
         dependency_task_ids: object = _UNSET,
+        authored_by: object = _UNSET,
         git_base_branch: object = _UNSET,
         integration_boundary: object = _UNSET,
         deliverable_contract: object = _UNSET,
@@ -1375,6 +1377,7 @@ class TeamTaskUpdateCommandService(TeamCommandExecutor):
             description=description,
             owner_agent_id=owner_agent_id,
             dependency_task_ids=dependency_task_ids,
+            authored_by=authored_by,
             git_base_branch=git_base_branch,
             integration_boundary=integration_boundary,
             deliverable_contract=deliverable_contract,
@@ -1428,6 +1431,7 @@ class TeamTaskUpdateCommandService(TeamCommandExecutor):
             has_state = "state" in normalized_updates
             has_priority = "priority" in normalized_updates
             has_title = "title" in normalized_updates
+            has_authored_by = "authored_by" in normalized_updates
             has_description = "description" in normalized_updates
             new_owner_id = normalized_updates.get("owner_agent_id")
             has_owner_reassignment = (
@@ -1520,6 +1524,7 @@ class TeamTaskUpdateCommandService(TeamCommandExecutor):
                 and not has_priority
                 and not has_title
                 and not has_description
+                and not has_authored_by
                 and not has_deliverable_policy_edit
                 and _subordinate_task_finish_allowed(
                     state_model,
@@ -1530,7 +1535,10 @@ class TeamTaskUpdateCommandService(TeamCommandExecutor):
                 )
             )
             if (
-                (has_state or has_priority or has_title or has_description or has_completion)
+                (
+                    has_state or has_priority or has_title or has_description
+                    or has_completion or has_authored_by
+                )
                 and not is_owner
                 and not subordinate_finish_allowed
             ):
@@ -1779,6 +1787,11 @@ class TeamTaskUpdateCommandService(TeamCommandExecutor):
                     changed = True
                 if task.deliverable_contract != next_deliverable_contract:
                     task.deliverable_contract = next_deliverable_contract
+                    changed = True
+            if has_authored_by:
+                identity = task_author_identity(normalized_updates["authored_by"])
+                if task.authored_by != identity:
+                    task.authored_by = identity
                     changed = True
             if has_git_base_edit:
                 try:

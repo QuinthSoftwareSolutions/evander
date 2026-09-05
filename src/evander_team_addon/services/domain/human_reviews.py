@@ -6,6 +6,7 @@ from datetime import datetime
 from typing import Any
 from urllib.parse import parse_qsl, urlsplit
 
+from .task_authorship import combined_deliverable_attributions, common_deliverable_author
 from ...models import (
     AgentStatus,
     AgentInboxItem,
@@ -807,6 +808,8 @@ def ensure_human_correction_aggregation(
             ),
             parent_task_id=None,
             originating_task_id=None,
+            authored_by=common_deliverable_author(state, release.deliverable_ids),
+            work_item_attributions=combined_deliverable_attributions(state, release.deliverable_ids),
             release_base_package_id=None,
             git_base_branch=(_release_candidate_branch(release) or release.git_base_branch),
             now=effective_now,
@@ -992,6 +995,8 @@ def report_post_release_feedback(
         description=case.description,
         parent_task_id=None,
         originating_task_id=None,
+        authored_by=common_deliverable_author(state, release.deliverable_ids),
+        work_item_attributions=combined_deliverable_attributions(state, release.deliverable_ids),
         release_base_package_id=None,
         git_base_branch=(_release_candidate_branch(release) or release.git_base_branch),
         now=effective_now,
@@ -1123,6 +1128,8 @@ def _apply_changes_requested(
             description=text,
             parent_task_id=aggregation_task.id,
             originating_task_id=origin_task_id,
+            authored_by=common_deliverable_author(state, target_ids or release.deliverable_ids),
+            work_item_attributions=combined_deliverable_attributions(state, target_ids or release.deliverable_ids),
             release_base_package_id=release.id,
             git_base_branch=(_release_candidate_branch(release) or release.git_base_branch),
             now=now,
@@ -1390,6 +1397,8 @@ def _ensure_system_task(
     release_base_package_id: str | None,
     git_base_branch: str | None,
     now: datetime,
+    authored_by: object = None,
+    work_item_attributions: object = None,
 ) -> AgentTask:
     existing = state.tasks.get(task_id)
     if existing is not None:
@@ -1407,6 +1416,8 @@ def _ensure_system_task(
         created_by_actor="system:human-review",
         parent_task_id=parent_task_id,
         originating_task_id=originating_task_id,
+        authored_by=authored_by,
+        work_item_attributions=work_item_attributions,
         release_base_package_id=release_base_package_id,
         git_base_branch=git_base_branch,
         created_at=now,

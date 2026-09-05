@@ -1715,6 +1715,16 @@ class TaskAssessment(TeamModel):
         return _unique_text_list(value or [], info.field_name)
 
 
+class AdoWorkItemAttribution(TeamModel):
+    """An intake snapshot, written by the host and inherited by task descendants."""
+
+    organization: str
+    work_item_id: str
+    assignee_id: str | None = None
+    display_name: str | None = None
+    email: str | None = None
+
+
 class AgentTask(TeamModel):
     id: str
     owner_agent_id: str
@@ -1734,6 +1744,8 @@ class AgentTask(TeamModel):
     created_by_actor: str | None = None
     parent_task_id: str | None = None
     originating_task_id: str | None = None
+    authored_by: ProjectGitIdentity | None = None
+    work_item_attributions: list[AdoWorkItemAttribution] | None = None
     release_base_package_id: str | None = None
     work_lineage_id: str | None = None
     git_base_branch: str | None = None

@@ -4,11 +4,12 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "evander"
-version = "0.23.1"
+version = "0.25.0"
 description = "Host-side MCP gateway and libvirt orchestration for isolated agent VMs."
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
+  "cryptography>=43.0.0",
   "croniter>=6.2.2",
   "httpx>=0.28.1",
   "jsonschema>=4.26.0",

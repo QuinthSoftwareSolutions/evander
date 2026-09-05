@@ -8626,6 +8626,7 @@ def test_team_addon_admin_api_operator_target_and_git_config(tmp_path: Path) -> 
             "owner_agent_id": "lead",
             "project_id": "project",
             "priority": 1,
+            "authored_by": {"name": "Task Author", "email": "task@example.test"},
             "title": "Snapshot the default",
             "description": "Exercise task Git-base API projection.",
             "created_by_agent_id": "lead",
@@ -8634,16 +8635,19 @@ def test_team_addon_admin_api_operator_target_and_git_config(tmp_path: Path) -> 
     )
     assert response.status_code == 201
     assert response.json()["tasks"]["task"]["git_base_branch"] == "develop"
+    assert response.json()["tasks"]["task"]["authored_by"] == {"name": "Task Author", "email": "task@example.test"}
 
     response = client.patch(
         "/api/addons/team-addon/tasks/task",
         json={
+            "authored_by": None,
             "git_base_branch": "feature/foo",
             "expected_revision": 7,
         },
     )
     assert response.status_code == 200
     assert response.json()["tasks"]["task"]["git_base_branch"] == "feature/foo"
+    assert response.json()["tasks"]["task"]["authored_by"] is None
 
     response = client.post(
         "/api/addons/team-addon/projects",

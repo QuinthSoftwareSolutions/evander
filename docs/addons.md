@@ -1149,8 +1149,63 @@ committer; a single or dominant dependency is adopted without an artificial comm
 The multi-parent commit is reproducible: its author and committer dates are the
 newest final-parent committer timestamp plus one second in UTC, so both execution
 backends produce the same object ID for the same tree, parents, message, and identities.
+
+Tasks can override the author with `authored_by: {"name": "...", "email": "..."}`.
+Set it in Task Board → Create task or Edit → Commit author, through the task API,
+`team_create_task`, `team_create_task_for_role`, `team_create_tasks`, or
+`effect:team:create-task`. Creation copies an explicit identity, otherwise the originating
+source task's identity (for follow-ups/corrections), otherwise the parent's identity.
+Batch creation also resolves parents created in the same batch. Unset identities remain
+unset and use `project.git.agent_author_identity`, then the default bot identity.
+Automatic corrections and recovery tasks retain their source author; aggregate work
+with several different source authors uses the project fallback.
+
+`team_update_task` accepts `authored_by` or `clear_authored_by=true`. The operator task
+PATCH API accepts `authored_by: null` to restore the project fallback. Updates affect
+future commits after repository preparation on the next resume; existing commits and
+already-created descendants retain their identities. Author configuration is local to
+each task worktree, so tasks for different users can share a session and repository.
+The committer remains the project's configured agent committer. User-to-author mapping
+is supplied by the delegating operator or workflow; it is not inferred from an agent name.
+
 Host-side feature, release, and recovery consolidations remain
 governed separately by the managed repository's host commit identity.
+
+For Azure DevOps intake, `effect:team:create-task` accepts `ado_work_item_id` and
+optional `ado_project`. The host fetches the work item in the Team project's directory
+and captures `System.AssignedTo` on initial creation. Its display name and email become
+the task Git author when both are available. The read-only `work_item_attributions`
+field retains the organization, work-item ID, and assignee identity independently of
+editable `authored_by`. Replaying intake or reassigning the ADO item does not change
+this snapshot. Missing name/email uses the project Git author without preventing intake.
+
+Child, originating, correction, and recovery tasks inherit attribution. Workflow handoffs
+must supply `parent_task_id` or `originating_task_id`; a dependency alone expresses ordering,
+not attribution. Aggregate corrections preserve their source work-item references.
+
+Registered Admin Web users can choose **My ADO connection** to connect Microsoft OAuth,
+save an organization-scoped PAT with **Code: Read & write** plus **Work Items: Read & write**
+for issue linking, or keep both for the same ADO account. Validation records the authenticated
+ADO identity rather than trusting a supplied display name or email. Users can disconnect each
+method independently; tokens are never returned by the profile API. Connections apply to the
+selected directory and its descendants. OAuth is preferred within the most specific matching
+connection, then PAT, then the bot.
+Microsoft SSO authenticates the platform login separately; the OAuth option adds an explicit
+consent flow and encrypted refresh tokens. See [OAuth setup](operations.md#enabling-microsoft-oauth-through-cicd).
+
+`effect:team:mark-release-published` produces an optional `publication_context_id` for
+Azure DevOps releases. Carry it through custom release events into `effect:pr:create`.
+The reference is bound to the managed repository, directory, and exact published SHA.
+The host checks all included deliverables and recursive contributions: one shared assignee
+selects that person's connection; mixed or missing attribution selects the existing bot.
+An unavailable PAT or ADO HTTP 401/403 also falls back to the bot. Git author edits cannot
+select another person's credentials. Existing PRs retain their actual creator.
+
+PR results expose `intended_creator_id`, `actual_creator`, `credential_source`, and
+`fallback_reason`. The host also records these fields durably. An uncertain creation
+response is reconciled by reading ADO before any retry; an unresolved attempt prevents a
+second POST across process restarts. Invalid requests and transient read errors do not
+silently switch identities.
 
 The Team Add-on setup, project-create, and project-edit forms include an
 `Import Git repo` action beside the Git fields. It accepts a local checkout or

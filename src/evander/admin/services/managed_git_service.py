@@ -21,6 +21,8 @@ from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 from uuid import uuid4
 
+from evander.admin.services.ado_user_connections import AdoUserConnectionService
+
 from evander.admin.services.managed_git_common import (
     DEFAULT_STALE_WORKTREE_SECONDS,
     ManagedGitConflictError,
@@ -164,6 +166,16 @@ def _manifest_path_names(entries: list[str]) -> set[str]:
     return paths
 
 
+class AzurePrRequestError(RuntimeError):
+    def __init__(self, status_code: int | None = None):
+        self.status_code = status_code
+        super().__init__(f"Azure DevOps PR request failed with HTTP {status_code}" if status_code else "Azure DevOps PR request failed")
+
+
+class AzurePrCreationUncertain(RuntimeError):
+    pass
+
+
 class ManagedGitAdminService:
     """Owns Evander-managed bare repositories and their transient worktrees.
 
@@ -179,6 +191,7 @@ class ManagedGitAdminService:
         if not runtime_dir.is_absolute():
             runtime_dir = self.project_dir / runtime_dir
         self.runtime_dir = runtime_dir.resolve(strict=False)
+        self.ado_user_connections = AdoUserConnectionService(self.runtime_dir)
         self._managed_root = self.runtime_dir / "managed-git"
         self._worktree_root = self.runtime_dir / "git-worktrees"
         self._lock_root = self.runtime_dir / "managed-git-locks"
@@ -2600,6 +2613,7 @@ class ManagedGitAdminService:
         body: str | None = None,
         draft: bool | None = None,
         fill: bool = True,
+        publication_context_id: str | None = None,
     ) -> dict[str, Any]:
         record = self._require_scoped_record(managed_repo_id, directory_path)
         destination = _normalize_branch(destination_branch, field_name="destination_branch")
@@ -2618,6 +2632,13 @@ class ManagedGitAdminService:
             raise ValueError(
                 f"Managed PR creation is unsupported for provider {provider or 'generic'}"
             )
+        if publication_context_id:
+            if provider != "azure_devops":
+                raise ValueError("Personal PR attribution requires an Azure DevOps repository")
+            self.ado_user_connections.resolve_publication(publication_context_id,
+                managed_repo_id=managed_repo_id, commit_sha=expected,
+                directory_path=directory_path,
+                organization=self._azure_repository_parts(record["canonical_repository_url"])[0])
         tracking_session = self._resolve_pr_tracking_session(normalized_session_id)
         if provider == "azure_devops":
             normalized_work_item_id = self._azure_work_item_id(
@@ -2658,6 +2679,8 @@ class ManagedGitAdminService:
                     draft=bool(draft),
                     title_explicit=title_explicit,
                     work_item_id=normalized_work_item_id,
+                    **({"publication_context_id": publication_context_id,
+                        "publication_directory_path": directory_path} if publication_context_id else {}),
                 )
             self._persist_pr_tracking(
                 record,
@@ -2830,18 +2853,73 @@ class ManagedGitAdminService:
         draft: bool,
         title_explicit: bool = True,
         work_item_id: str = "",
+        publication_context_id: str | None = None,
+        publication_directory_path: str | None = None,
+    ) -> dict[str, Any]:
+        organization, _, _ = self._azure_repository_parts(str(record["canonical_repository_url"]))
+        config = self._resolved_config_for_record(record)
+        pat_env = str(getattr(config, "azure_devops_pr_pat_env", "") or "AZURE_DEVOPS_PR_PAT")
+        bot_pat = os.environ.get(pat_env, "").strip()
+        bot_auth = "Basic " + base64.b64encode(f":{bot_pat}".encode()).decode() if bot_pat else None
+        binding = dict(
+            managed_repo_id=record["managed_repo_id"], commit_sha=expected_commit_sha,
+            directory_path=publication_directory_path or record["directory_path"],
+            organization=organization,
+        ) if publication_context_id else {}
+        context: dict[str, Any] = {}
+        excluded: set[str] = set()
+        reasons: list[str] = []
+        arguments = dict(destination_branch=destination_branch, base_branch=base_branch,
+                         expected_commit_sha=expected_commit_sha, title=title, body=body,
+                         draft=draft, title_explicit=title_explicit, work_item_id=work_item_id)
+        while True:
+            personal_auth = None
+            if publication_context_id:
+                context, personal_auth = self.ado_user_connections.resolve_publication(
+                    publication_context_id, **binding, excluded_methods=frozenset(excluded))
+            reason = context.get("fallback_reason")
+            if reason and reason not in reasons:
+                reasons.append(reason)
+            auth = personal_auth or bot_auth
+            if not auth:
+                raise RuntimeError(f"Azure DevOps PR credentials are unavailable in {pat_env}")
+            credential_source = context.get("credential_source", "personal_pat") if personal_auth else "bot"
+            try:
+                result = self._create_or_reuse_azure_pr_using_auth(record, auth=auth, **arguments)
+                break
+            except AzurePrRequestError as exc:
+                if not personal_auth or exc.status_code not in {401, 403}:
+                    raise
+                reasons.append(credential_source + ("_rejected" if exc.status_code == 401 else "_permission_denied"))
+                excluded.add(credential_source)
+                # Each personal method is tried at most once. A definitive authorization
+                # failure permits fallback; an uncertain POST remains guarded below.
+            except AzurePrCreationUncertain:
+                credential_source = "bot" if bot_auth else credential_source
+                result = self._create_or_reuse_azure_pr_using_auth(record, auth=bot_auth or auth, **arguments)
+                break
+        result.update(intended_creator_id=context.get("identity_id"),
+                      credential_source=credential_source, fallback_reason=";".join(reasons) or None)
+        self.ado_user_connections.record_publication(publication_context_id, result)
+        return result
+
+    def _create_or_reuse_azure_pr_using_auth(
+        self,
+        record: Mapping[str, Any],
+        *,
+        auth: str,
+        destination_branch: str,
+        base_branch: str,
+        expected_commit_sha: str,
+        title: str,
+        body: str,
+        draft: bool,
+        title_explicit: bool = True,
+        work_item_id: str = "",
     ) -> dict[str, Any]:
         organization, project, repository = self._azure_repository_parts(
             str(record["canonical_repository_url"])
         )
-        resolved_config = self._resolved_config_for_record(record)
-        pat_env = (
-            str(getattr(resolved_config, "azure_devops_pr_pat_env", "") or "").strip()
-            or "AZURE_DEVOPS_PR_PAT"
-        )
-        token = os.environ.get(pat_env, "").strip()
-        if not token:
-            raise RuntimeError(f"Azure DevOps PR credentials are unavailable in {pat_env}")
         api_root = (
             "https://dev.azure.com/"
             f"{quote(organization, safe='')}/{quote(project, safe='')}/_apis/git/"
@@ -2853,11 +2931,12 @@ class ManagedGitAdminService:
             f"&searchCriteria.targetRefName={quote(f'refs/heads/{base_branch}', safe='')}"
             "&api-version=7.1"
         )
-        auth = "Basic " + base64.b64encode(f":{token}".encode()).decode()
+        attempt_key = json.dumps([record.get("managed_repo_id") or record["canonical_repository_url"], destination_branch, base_branch])
         bounded_body, truncation = self._bounded_azure_pr_description(body)
         existing = self._azure_request_json(api_root + query, auth=auth)
         values = existing.get("value") if isinstance(existing, dict) else None
         if isinstance(values, list) and values:
+            self.ado_user_connections.mark_attempt(attempt_key, confirmed=True)
             item = values[0]
             if not isinstance(item, Mapping):
                 raise RuntimeError("Azure DevOps PR API returned an invalid response")
@@ -2892,20 +2971,35 @@ class ManagedGitAdminService:
                 "pr_id": pr_id,
                 "pr_url": self._azure_pr_web_url(item),
                 "created": False,
+                "actual_creator": self._azure_pr_creator(item),
                 **truncation,
                 **link_result,
             }
-        created = self._azure_request_json(
-            api_root + "?api-version=7.1",
-            auth=auth,
-            payload={
-                "sourceRefName": f"refs/heads/{destination_branch}",
-                "targetRefName": f"refs/heads/{base_branch}",
-                "title": title,
-                "description": bounded_body,
-                "isDraft": draft,
-            },
-        )
+        if self.ado_user_connections.has_unconfirmed_attempt(attempt_key):
+            raise AzurePrCreationUncertain("A previous PR creation has an uncertain result; awaiting ADO reconciliation. No duplicate PR was created.")
+        self.ado_user_connections.mark_attempt(attempt_key)
+        try:
+            created = self._azure_request_json(
+                api_root + "?api-version=7.1",
+                auth=auth,
+                payload={
+                    "sourceRefName": f"refs/heads/{destination_branch}",
+                    "targetRefName": f"refs/heads/{base_branch}",
+                    "title": title,
+                    "description": bounded_body,
+                    "isDraft": draft,
+                },
+            )
+        except AzurePrRequestError as exc:
+            if exc.status_code is not None and 400 <= exc.status_code < 500 and exc.status_code not in {408, 409, 429}:
+                self.ado_user_connections.mark_attempt(attempt_key, confirmed=True)
+                raise
+            raise AzurePrCreationUncertain("ADO PR creation requires reconciliation") from exc
+        except (TimeoutError, ValueError) as exc:
+            raise AzurePrCreationUncertain("ADO PR creation requires reconciliation") from exc
+        if not created.get("pullRequestId"):
+            raise AzurePrCreationUncertain("ADO returned no PR identity; reconciliation required")
+        self.ado_user_connections.mark_attempt(attempt_key, confirmed=True)
         source_commit = created.get("lastMergeSourceCommit")
         try:
             self._verify_provider_pr_source_commit(
@@ -2945,9 +3039,16 @@ class ManagedGitAdminService:
             "pr_id": str(created.get("pullRequestId") or ""),
             "pr_url": self._azure_pr_web_url(created),
             "created": True,
+            "actual_creator": self._azure_pr_creator(created),
             **truncation,
             **link_result,
         }
+
+    @staticmethod
+    def _azure_pr_creator(pr: Mapping[str, Any]) -> dict[str, Any]:
+        identity = pr.get("createdBy") or {}
+        return {"id": identity.get("id"), "display_name": identity.get("displayName"),
+                "unique_name": identity.get("uniqueName")}
 
     def _confirm_existing_azure_pr_source_commit(
         self,
@@ -3285,9 +3386,9 @@ class ManagedGitAdminService:
             with urlopen(request, timeout=timeout_seconds) as response:
                 parsed = json.loads(response.read().decode("utf-8"))
         except HTTPError as exc:
-            raise RuntimeError(f"Azure DevOps PR request failed with HTTP {exc.code}") from exc
+            raise AzurePrRequestError(exc.code) from exc
         except URLError as exc:
-            raise RuntimeError("Azure DevOps PR request failed") from exc
+            raise AzurePrRequestError() from exc
         if not isinstance(parsed, dict):
             raise RuntimeError("Azure DevOps PR API returned an invalid response")
         return parsed

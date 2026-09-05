@@ -1424,6 +1424,10 @@ _EFFECT_OUTPUT_SCHEMAS = {
         "pr_url": {"type": "string"},
         "provider": {"type": "string"},
         "created": {"type": "boolean"},
+        "intended_creator_id": {"type": ["string", "null"]},
+        "actual_creator": {"type": "object"},
+        "credential_source": {"type": "string"},
+        "fallback_reason": {"type": ["string", "null"]},
     },
 }
 

@@ -338,6 +338,16 @@ actual secret only to the control-plane/effect-worker process. GitHub publicatio
 `gh` credential integration; Azure DevOps publication sends the configured PAT in an HTTP
 authorization header.
 
+Team releases may pass `publication_context_id` to `effect:pr:create` to use the captured
+ADO work-item assignee's Microsoft OAuth connection or personal PAT. Registered users manage these connections through
+**My ADO connection** in Admin Web. The context is bound to the repository, directory, and
+approved commit; task Git author metadata cannot select credentials. OAuth is preferred, with
+the same account's saved PAT as fallback. Mixed-owner releases and
+missing or rejected personal credentials use the configured bot. Publication reports the
+intended and actual creator and any fallback reason; existing PR creators remain unchanged.
+See [Personal Azure DevOps PR connections](operations.md#personal-azure-devops-pr-connections)
+for storage, rotation, and reconciliation behavior.
+
 ## Maintenance, retention, and deletion
 
 Long-lived managed repositories and unpublished refs are retained when issues, sessions, or Team

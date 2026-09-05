@@ -4,6 +4,7 @@ import hashlib
 from datetime import datetime
 from typing import Any
 
+from .domain.task_authorship import combined_deliverable_attributions, common_deliverable_author
 from ..models import (
     AgentStatus,
     AgentTask,
@@ -537,6 +538,8 @@ def _open_aggregation_blocker(
                 id=task_id,
                 owner_agent_id=lead.id,
                 project_id=project.id,
+                authored_by=common_deliverable_author(state, predecessor.deliverable_ids),
+                work_item_attributions=combined_deliverable_attributions(state, predecessor.deliverable_ids),
                 case_id=case.id,
                 priority=0,
                 state=TeamTaskState.PENDING,

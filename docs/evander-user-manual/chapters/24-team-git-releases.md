@@ -672,3 +672,12 @@ After release:
 - <code>src/evander/admin/services/managed_git_service.py</code> and core Git effects — managed bare repositories, operation worktrees, leases, compare-and-swap, and remote push.
 - <code>docs/addons.md</code> and <code>docs/git-remotes.md</code> — Team release and core managed-Git contracts.
 - <code>tests/test_team_addon_git_effects.py</code>, <code>tests/test_team_addon_mcp.py</code>, and <code>tests/test_team_addon_runtime.py</code> — promotion, scope, gates, retry, recovery, and publication behavior.
+
+### Task commit authors
+
+Set **Commit author name** and **Commit author email** on a task to attribute its Git
+commits to the delegating user. The `authored_by` identity is copied to child and
+follow-up tasks and to corrections of that work. With no task identity, the project
+author is used. Aggregate corrections involving different authors also use the project
+default. Clearing the two task fields restores that fallback. Changes apply to future
+commits after the task next resumes, and do not rewrite history or existing descendants.
