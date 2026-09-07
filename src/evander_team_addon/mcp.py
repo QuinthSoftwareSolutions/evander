@@ -1653,10 +1653,11 @@ def _register_slice6_tools(
         team_create_task_for_role,
         name=TEAM_CREATE_TASK_FOR_ROLE_TOOL,
         description=(
-            "Create one Team task for the least-loaded eligible holder of an exact "
-            "team or project role. Selection is atomic, preserves ordinary task "
-            "creation authority, excludes stood-down agents, and returns the "
-            "selected concrete owner plus the audited candidate scores."
+            "Queue one pending Team task for an exact team or project role. "
+            "The owner is null until dependencies are satisfied and an eligible "
+            "agent has execution capacity. The platform atomically assigns an owner "
+            "when reserving the dispatch and audits candidate scores. Existing "
+            "task creation authority applies; request-id retries are idempotent."
         ),
     )
 

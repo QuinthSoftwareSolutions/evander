@@ -26,7 +26,7 @@ from evander_team_addon.git_naming import (
     validate_branch_name,
 )
 
-SCHEMA_VERSION = 21
+SCHEMA_VERSION = 22
 DEFAULT_TEAM_COST_WARNING_RATIO = Decimal("0.8")
 WORKTREE_CLEANUP_INVENTORY_SAMPLE_LIMIT = 200
 TEAM_CHAT_ATTACHMENT_DEFAULT_MIME_TYPES = (
@@ -1727,7 +1727,10 @@ class AdoWorkItemAttribution(TeamModel):
 
 class AgentTask(TeamModel):
     id: str
-    owner_agent_id: str
+    owner_agent_id: str | None
+    assignment_mode: Literal["agent", "role"] = "agent"
+    assignment_role_id: str | None = None
+    assignment_started_at: datetime | None = None
     project_id: str
     case_id: str | None = None
     priority: int = Field(ge=0)
@@ -1768,7 +1771,6 @@ class AgentTask(TeamModel):
 
     @field_validator(
         "id",
-        "owner_agent_id",
         "project_id",
         "title",
         "description",
@@ -1779,6 +1781,8 @@ class AgentTask(TeamModel):
         return _required_text(value, info.field_name)
 
     @field_validator(
+        "owner_agent_id",
+        "assignment_role_id",
         "case_id",
         "created_by_agent_id",
         "created_by_actor",
@@ -1826,6 +1830,22 @@ class AgentTask(TeamModel):
 
     @model_validator(mode="after")
     def _validate_self_links(self) -> "AgentTask":
+        if self.assignment_mode == "agent":
+            if self.owner_agent_id is None or self.assignment_role_id is not None:
+                raise ValueError("agent assignment requires an owner and no role target")
+        elif self.assignment_role_id is None:
+            raise ValueError("role assignment requires assignment_role_id")
+        if self.owner_agent_id is None and (
+            self.assignment_started_at is not None
+            or self.state
+            in {
+                TeamTaskState.IN_PROGRESS,
+                TeamTaskState.WAITING_FOR_REVIEW,
+                TeamTaskState.FINISHED,
+                TeamTaskState.ACCEPTED,
+            }
+        ):
+            raise ValueError("executed tasks require a concrete owner")
         if self.created_by_agent_id is None and self.created_by_actor is None:
             raise ValueError("task creator is required")
         if self.parent_task_id == self.id:
@@ -3332,6 +3352,8 @@ class TeamDispatch(TeamModel):
     cause_id: str | None = None
     work_lineage_id: str | None = None
     task_ids: list[str] = Field(default_factory=list)
+    # Only this dispatch may release these claims after a pre-submission failure.
+    claimed_role_task_ids: list[str] = Field(default_factory=list)
     blocker_ids: list[str] = Field(default_factory=list)
     review_request_ids: list[str] = Field(default_factory=list)
     inbox_item_ids: list[str] = Field(default_factory=list)
@@ -3395,6 +3417,7 @@ class TeamDispatch(TeamModel):
 
     @field_validator(
         "task_ids",
+        "claimed_role_task_ids",
         "blocker_ids",
         "review_request_ids",
         "inbox_item_ids",
@@ -5813,8 +5836,20 @@ class TeamState(TeamModel):
         for task in self.tasks.values():
             task_is_terminal = task.state in terminal_task_states
             owner = self.agents.get(task.owner_agent_id)
-            if owner is None:
+            if owner is None and task.owner_agent_id is not None:
                 errors.append(f"task {task.id} references missing owner {task.owner_agent_id}")
+            if task.assignment_mode == "role":
+                assignment_role = self.roles.get(task.assignment_role_id or "")
+                assignment_project = self.projects.get(task.project_id)
+                if (
+                    assignment_role is None
+                    or assignment_project is None
+                    or (
+                        assignment_role.team_id != assignment_project.team_id
+                        or assignment_role.project_id not in {None, task.project_id}
+                    )
+                ):
+                    errors.append(f"task {task.id} has an invalid assignment role")
             project = self.projects.get(task.project_id)
             if project is None:
                 errors.append(f"task {task.id} references missing project {task.project_id}")
@@ -7400,6 +7435,12 @@ def task_payload_with_derived(state: TeamState, task: AgentTask) -> dict[str, An
     payload["blocked_by_task_ids"] = state.blocked_by_task_ids(task.id)
     payload["subtask_counts"] = state.subtask_counts(task.id)
     payload["waiting_reason"] = _task_waiting_reason(state, task)
+    if task.assignment_mode == "role":
+        from .services.domain.role_task_queue import role_queue_wait_reason
+
+        payload["assignment_wait_reason"] = role_queue_wait_reason(state, task)
+        role = state.roles.get(task.assignment_role_id or "")
+        payload["assignment_role_name"] = role.name if role is not None else task.assignment_role_id
     return payload
 
 

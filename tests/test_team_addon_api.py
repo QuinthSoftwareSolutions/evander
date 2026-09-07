@@ -10075,3 +10075,67 @@ def test_team_addon_admin_api_rejects_stale_revision(tmp_path: Path) -> None:
 
     assert response.status_code == 409
     assert response.json()["current_revision"] == 1
+
+
+@pytest.mark.parametrize("operation", ["task", "agent", "role", "register"])
+def test_role_queue_admin_edits_prompt_outbox_publication(tmp_path: Path, operation: str) -> None:
+    from test_team_addon_repository import _seed_hierarchy, _lease_agent_dispatch, _command_service
+
+    client = _client(tmp_path)
+    repo = _seed_hierarchy(tmp_path / "runtime")
+    _lease_agent_dispatch(repo, agent_id="lead")
+    _, result = _command_service(repo).create_task_for_role_command(
+        session_id="session-lead",
+        task_id="queued",
+        project_id="project",
+        role_id="project__backend",
+        priority=1,
+        title="Queued task",
+        description="Waiting for an exact-role execution slot",
+        request_id="queue-task",
+    )
+    assert result["success"], result
+    if operation == "register":
+        response = client.post(
+            "/api/addons/team-addon/agents",
+            json={
+                "id": "new-backend",
+                "session_id": "session-new-backend",
+                "team_id": "team",
+                "project_id": "project",
+                "role_id": "project__backend",
+                "reports_to_agent_id": "lead",
+                "expected_revision": repo.read().revision,
+            },
+        )
+        assert response.status_code == 201, response.text
+    else:
+        path, fields = {
+            "task": ("tasks/queued", {"title": "Edited queued task"}),
+            "agent": ("agents/backend", {"status": "active"}),
+            "role": ("roles/project__backend", {"archived": False}),
+        }[operation]
+        response = client.patch(
+            f"/api/addons/team-addon/{path}",
+            json={
+                **fields,
+                "expected_revision": repo.read().revision,
+            },
+        )
+        assert response.status_code == 200, response.text
+    publication = response.json()["role_queue_outbox_publication"]
+    assert publication["event_ids"]
+    assert publication["outbox_record_ids"]
+    assert repo.read().tasks["queued"].owner_agent_id is None
+    events = InternalEventBus(default_orchestration_database_path(repo.runtime_dir)).list_events()
+    assert any(event.event_type == TEAM_OUTBOX_PUBLISH_REQUESTED_EVENT_TYPE for event in events)
+    if operation == "task":
+        response = client.patch(
+            "/api/addons/team-addon/tasks/queued",
+            json={
+                "state": "in_progress",
+                "expected_revision": repo.read().revision,
+            },
+        )
+        assert response.status_code == 400
+        assert repo.read().tasks["queued"].state == TeamTaskState.PENDING

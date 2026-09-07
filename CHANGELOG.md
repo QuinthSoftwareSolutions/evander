@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-09-07 - Dispatch-time role task assignment (0.26.0)
+
+- Queue new role-based tasks until their dependencies are ready and an eligible agent has capacity.
+- Reserve one new role task per agent atomically with its dispatch, preserving ownership after execution starts.
+- Route child acceptance to the producer's superior while a parent is queued,
+  retain uncertain delivery claims across retries, and select peers whose wake interval is due.
+- Show role targets and queue reasons in Team task views; retain all existing concrete-owner assignments.
+
 ## 2026-09-07 - ADO Markdown image access (0.25.2)
 
 - Recognize Markdown images in Azure DevOps work-item fields and comments, including

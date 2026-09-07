@@ -2334,6 +2334,16 @@ def _team_internal_event(
 
 _TEAM_INTERNAL_EVENT_CATALOG: tuple[WorkflowInternalEventCatalogEntry, ...] = (
     _team_internal_event(
+        "team.role_queue.wake_requested",
+        "Team role queue wake requested",
+        "Ready role work or available capacity should trigger a project-scoped dispatch scan.",
+    ),
+    _team_internal_event(
+        "team.task.role_assigned",
+        "Team role task assigned",
+        "A role task and its concrete owner were reserved atomically with a dispatch and candidate scores.",
+    ),
+    _team_internal_event(
         CHAT_MESSAGE_QUEUED_EVENT_TYPE,
         "Team chat message queued",
         "Published when an operator chat message is queued for a Team agent.",
@@ -2825,6 +2835,7 @@ class TeamWakeDueAgentsEffectProvider(EffectProviderBase):
         preparation_blocker_ids: list[str] = []
         for lease_index, lease in enumerate(leases):
             agent = lease["agent"]
+            prompt_submission_attempted = False
             try:
                 lease = {
                     **lease,
@@ -3021,6 +3032,7 @@ class TeamWakeDueAgentsEffectProvider(EffectProviderBase):
                 )
                 resume_thread_id = work_lineage_resume_thread_id(lease)
                 try:
+                    prompt_submission_attempted = True
                     result = _enqueue_team_agent_prompt(
                         resumer,
                         target=agent["session_id"],
@@ -3076,7 +3088,12 @@ class TeamWakeDueAgentsEffectProvider(EffectProviderBase):
                         result_payload = _coerce_mapping(result)
                 if _result_reports_failure(result_payload):
                     error = _resume_failure_message(result_payload)
-                    state = _record_wake_failure(repo, lease=lease, error=error)
+                    state = _record_wake_failure(
+                        repo,
+                        lease=lease,
+                        error=error,
+                        delivery_not_started=not prompt_submission_attempted,
+                    )
                     errors.append(f"{agent['id']}: {error}")
                     continue
                 if bool(result_payload.get("queued")):
@@ -3191,7 +3208,12 @@ class TeamWakeDueAgentsEffectProvider(EffectProviderBase):
             except Exception as exc:  # pragma: no cover - exercised by provider tests with fakes
                 error = str(exc)
                 try:
-                    state = _record_wake_failure(repo, lease=lease, error=error)
+                    state = _record_wake_failure(
+                        repo,
+                        lease=lease,
+                        error=error,
+                        delivery_not_started=not prompt_submission_attempted,
+                    )
                     if isinstance(exc, DependencyGitPreparationError):
                         state = _record_dependency_git_preparation_blocker(
                             repo,
@@ -13041,6 +13063,7 @@ def _record_wake_failure(
     *,
     lease: Mapping[str, Any],
     error: str,
+    delivery_not_started: bool = False,
 ) -> Any:
     agent_id = _required_text(lease["agent"].get("id"), "agent_id")
     dispatch_id = _required_text(lease.get("dispatch_id"), "dispatch_id")
@@ -13050,12 +13073,14 @@ def _record_wake_failure(
             agent_id=agent_id,
             dispatch_id=dispatch_id,
             error=error,
+            delivery_not_started=delivery_not_started,
         )
     if current_dispatch is not None and current_dispatch.status.value == "preparing":
         return TeamRuntimeService(repo).fail_agent_dispatch(
             agent_id=agent_id,
             dispatch_id=dispatch_id,
             error=error,
+            delivery_not_started=delivery_not_started,
         )
     state, _result = TeamAgentActionService(repo).apply_agent_action(
         action={},
@@ -13069,6 +13094,7 @@ def _record_wake_failure(
             agent_id=agent_id,
             dispatch_id=dispatch_id,
             error=error,
+            delivery_not_started=delivery_not_started,
         )
     return state
 

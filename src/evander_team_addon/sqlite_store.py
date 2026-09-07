@@ -31,7 +31,7 @@ from .models import (
 
 ADDON_ID = "team-addon"
 STATE_DB_FILE = "state.db"
-SQLITE_SCHEMA_VERSION = 74
+SQLITE_SCHEMA_VERSION = 75
 _SQLITE_WAL_ENABLE_TIMEOUT_SECONDS = 5.0
 
 T = TypeVar("T")
@@ -1157,6 +1157,7 @@ class TeamStateSqliteStore:
                     if state_schema_version_row is not None
                     else 0
                 )
+                _migrate_role_task_queue(connection)
                 _ensure_column(
                     connection,
                     table_name="team_projects",
@@ -1253,6 +1254,12 @@ class TeamStateSqliteStore:
                     table_name="team_inbox",
                     column_name="response_requested",
                     definition="INTEGER NOT NULL DEFAULT 1",
+                )
+                _ensure_column(
+                    connection,
+                    table_name="team_dispatches",
+                    column_name="claimed_role_task_ids_json",
+                    definition="TEXT NOT NULL DEFAULT '[]'",
                 )
                 _ensure_column(
                     connection,
@@ -3135,6 +3142,9 @@ class TeamStateSqliteStore:
             payload["tasks"][row["id"]] = {
                 "id": row["id"],
                 "owner_agent_id": row["owner_agent_id"],
+                "assignment_mode": row["assignment_mode"],
+                "assignment_role_id": row["assignment_role_id"],
+                "assignment_started_at": row["assignment_started_at"],
                 "project_id": row["project_id"],
                 "case_id": row["case_id"],
                 "priority": row["priority"],
@@ -3166,11 +3176,13 @@ class TeamStateSqliteStore:
                 "parent_task_id": row["parent_task_id"],
                 "work_item_attributions": (
                     _json_loads(row["work_item_attributions_json"])
-                    if row["work_item_attributions_json"] is not None else None
+                    if row["work_item_attributions_json"] is not None
+                    else None
                 ),
                 "authored_by": (
                     _json_loads(row["authored_by_json"])
-                    if row["authored_by_json"] is not None else None
+                    if row["authored_by_json"] is not None
+                    else None
                 ),
                 "originating_task_id": row["originating_task_id"],
                 "release_base_package_id": row["release_base_package_id"],
@@ -3210,9 +3222,9 @@ class TeamStateSqliteStore:
                     mutation_policy_json, cancellation_json, task_kind,
                     outcome_contract_json, integration_boundary,
                     deliverable_contract_json, completion_json, created_at, updated_at,
-                    source_evidence_snapshot_ids_json
+                    source_evidence_snapshot_ids_json, assignment_mode, assignment_role_id, assignment_started_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     task["id"],
@@ -3227,8 +3239,12 @@ class TeamStateSqliteStore:
                     task.get("created_by_agent_id"),
                     task.get("created_by_actor"),
                     task.get("parent_task_id"),
-                    _json_dumps(task["authored_by"]) if task.get("authored_by") is not None else None,
-                    _json_dumps(task["work_item_attributions"]) if task.get("work_item_attributions") is not None else None,
+                    _json_dumps(task["authored_by"])
+                    if task.get("authored_by") is not None
+                    else None,
+                    _json_dumps(task["work_item_attributions"])
+                    if task.get("work_item_attributions") is not None
+                    else None,
                     task.get("originating_task_id"),
                     task.get("release_base_package_id"),
                     task.get("work_lineage_id"),
@@ -3264,6 +3280,9 @@ class TeamStateSqliteStore:
                     task["created_at"],
                     task["updated_at"],
                     _json_dumps(task.get("source_evidence_snapshot_ids", [])),
+                    task.get("assignment_mode", "agent"),
+                    task.get("assignment_role_id"),
+                    task.get("assignment_started_at"),
                 ),
             )
             _insert_position_values(
@@ -4894,6 +4913,7 @@ class TeamStateSqliteStore:
                 "cause_id": row["cause_id"],
                 "work_lineage_id": row["work_lineage_id"],
                 "task_ids": scope_values["task_ids"].get(dispatch_id, []),
+                "claimed_role_task_ids": _json_loads(row["claimed_role_task_ids_json"] or "[]"),
                 "blocker_ids": scope_values["blocker_ids"].get(dispatch_id, []),
                 "review_request_ids": scope_values["review_request_ids"].get(dispatch_id, []),
                 "inbox_item_ids": scope_values["inbox_item_ids"].get(dispatch_id, []),
@@ -4942,6 +4962,7 @@ class TeamStateSqliteStore:
                 """
                 INSERT INTO team_dispatches(
                     id, agent_id, session_id, cause_kind, cause_id, work_lineage_id,
+                    claimed_role_task_ids_json,
                     chat_message_ids_json,
                     review_routing_authorities_json,
                     initial_release_decision_deliverable_ids_json,
@@ -4955,7 +4976,7 @@ class TeamStateSqliteStore:
                     source_evidence_snapshot_ids_json,
                     prepared_at, leased_at, lease_expires_at,
                     completed_at, error
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     dispatch["id"],
@@ -4964,6 +4985,7 @@ class TeamStateSqliteStore:
                     dispatch["cause_kind"],
                     dispatch.get("cause_id"),
                     dispatch.get("work_lineage_id"),
+                    _json_dumps(dispatch.get("claimed_role_task_ids", [])),
                     _json_dumps(dispatch.get("chat_message_ids", [])),
                     _json_dumps(dispatch.get("review_routing_authorities", [])),
                     _json_dumps(dispatch.get("initial_release_decision_deliverable_ids", [])),
@@ -7839,6 +7861,53 @@ def _migrate_legacy_outcome_kind_definitions(
         )
 
 
+def _migrate_role_task_queue(connection: sqlite3.Connection) -> None:
+    columns = {row["name"]: row for row in connection.execute("PRAGMA table_info(team_tasks)")}
+    if not columns["owner_agent_id"]["notnull"] and {
+        "assignment_mode",
+        "assignment_role_id",
+        "assignment_started_at",
+    }.issubset(columns):
+        return
+    connection.execute("SAVEPOINT role_task_queue_migration")
+    try:
+        _migrate_role_task_queue_columns(connection)
+    except Exception:
+        connection.execute("ROLLBACK TO role_task_queue_migration")
+        raise
+    finally:
+        connection.execute("RELEASE role_task_queue_migration")
+
+
+def _migrate_role_task_queue_columns(connection: sqlite3.Connection) -> None:
+    columns = list(connection.execute("PRAGMA table_info(team_tasks)"))
+    owner = next(row for row in columns if row["name"] == "owner_agent_id")
+    if owner["notnull"]:
+        sql = connection.execute(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='team_tasks'"
+        ).fetchone()[0]
+        indexes = [
+            row[0]
+            for row in connection.execute(
+                "SELECT sql FROM sqlite_master WHERE type='index' AND tbl_name='team_tasks' AND sql IS NOT NULL"
+            )
+        ]
+        sql = sql.replace("team_tasks", "team_tasks_role_queue", 1)
+        sql = sql.replace("owner_agent_id TEXT NOT NULL", "owner_agent_id TEXT")
+        connection.execute(sql)
+        connection.execute("INSERT INTO team_tasks_role_queue SELECT * FROM team_tasks")
+        connection.execute("DROP TABLE team_tasks")
+        connection.execute("ALTER TABLE team_tasks_role_queue RENAME TO team_tasks")
+        for index in indexes:
+            connection.execute(index)
+    for name, definition in (
+        ("assignment_mode", "TEXT NOT NULL DEFAULT 'agent'"),
+        ("assignment_role_id", "TEXT"),
+        ("assignment_started_at", "TEXT"),
+    ):
+        _ensure_column(connection, table_name="team_tasks", column_name=name, definition=definition)
+
+
 def _ensure_column(
     connection: sqlite3.Connection,
     *,
@@ -8536,7 +8605,10 @@ CREATE INDEX IF NOT EXISTS idx_team_cases_source ON team_cases(source, source_re
 
 CREATE TABLE IF NOT EXISTS team_tasks (
     id TEXT PRIMARY KEY,
-    owner_agent_id TEXT NOT NULL,
+    owner_agent_id TEXT,
+    assignment_mode TEXT NOT NULL DEFAULT 'agent',
+    assignment_role_id TEXT,
+    assignment_started_at TEXT,
     project_id TEXT NOT NULL,
     case_id TEXT,
     priority INTEGER NOT NULL,
@@ -9211,6 +9283,7 @@ CREATE TABLE IF NOT EXISTS team_dispatches (
     cause_kind TEXT NOT NULL,
     cause_id TEXT,
     work_lineage_id TEXT,
+    claimed_role_task_ids_json TEXT NOT NULL DEFAULT '[]',
     chat_message_ids_json TEXT NOT NULL DEFAULT '[]',
     review_routing_authorities_json TEXT NOT NULL DEFAULT '[]',
     initial_release_decision_deliverable_ids_json TEXT NOT NULL DEFAULT '[]',

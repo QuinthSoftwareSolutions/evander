@@ -2028,7 +2028,7 @@ def test_team_addon_mcp_slice6_tools_use_command_implementation(
             "role_id": "project__backend",
             "request_id": "request-mcp-role-reassign",
         },
-        _make_request_context(session_id="session-backend"),
+        _make_request_context(session_id="session-lead"),
     )
     _lease_agent(
         repo,
@@ -2079,7 +2079,10 @@ def test_team_addon_mcp_slice6_tools_use_command_implementation(
     assert updated_case["updated_case_ids"] == ["case-mcp"]
     assert closed_case["updated_case_ids"] == ["case-mcp"]
     assert closed_case["outbox_publication_wake"]["wake_notified"] is True
-    assert publication_requests == [closed_case["outbox_record_ids"]]
+    assert publication_requests == [
+        closed_case["outbox_record_ids"],
+        created_role_task["outbox_record_ids"],
+    ]
     assert created_task["created_task_ids"] == ["task-mcp"]
     assert created_task["published_event_ids"]
     assert created_task["outbox_record_ids"]
@@ -2108,9 +2111,9 @@ def test_team_addon_mcp_slice6_tools_use_command_implementation(
         "task-mcp-batch-b",
     ]
     assert created_role_task["created_task_ids"] == ["task-mcp-role"]
-    assert created_role_task["assignment_policy"] == "work_aware_least_loaded_v1"
-    assert created_role_task["selected_owner_agent_id"] == "backend"
-    assert reassigned_role_task["assignment_outcome"] == "unchanged"
+    assert created_role_task["assignment_policy"] == "role_queue_v1"
+    assert created_role_task["selected_owner_agent_id"] is None
+    assert reassigned_role_task["assignment_outcome"] == "reassigned"
     assert reassigned_role_task["selected_owner_agent_id"] == "backend"
     assert updated_task["updated_task_ids"] == ["task-mcp"]
     assert updated_goal["updated_goal_ids"] == ["goal"]

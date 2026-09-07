@@ -7648,7 +7648,7 @@ def test_repository_create_tasks_command_allows_sibling_dependencies(
     assert replay_state.revision == state.revision
 
 
-def test_repository_create_task_for_role_selects_least_loaded_effective_role(
+def test_repository_create_task_for_role_queues_effective_project_role(
     tmp_path: Path,
 ) -> None:
     repo = _seed_hierarchy(tmp_path)
@@ -7674,15 +7674,12 @@ def test_repository_create_task_for_role_selects_least_loaded_effective_role(
     )
 
     assert result["success"] is True
-    assert result["assignment_outcome"] == "created"
-    assert result["assignment_policy"] == "work_aware_least_loaded_v1"
-    assert result["selected_owner_agent_id"] == "backend-peer"
-    assert result["eligible_candidate_count"] == 2
-    assert [row["agent_id"] for row in result["candidate_scores"]] == [
-        "backend-peer",
-        "backend",
-    ]
-    assert state.tasks["role-created"].owner_agent_id == "backend-peer"
+    assert result["assignment_outcome"] == "queued"
+    assert result["assignment_policy"] == "role_queue_v1"
+    assert result["selected_owner_agent_id"] is None
+    assert result["candidate_scores"] == []
+    assert state.tasks["role-created"].owner_agent_id is None
+    assert state.tasks["role-created"].assignment_role_id == "project__backend"
 
     replay_state, replay = service.create_task_for_role_command(
         session_id="session-lead",
@@ -7698,7 +7695,7 @@ def test_repository_create_task_for_role_selects_least_loaded_effective_role(
     assert replay_state.revision == state.revision
 
 
-def test_repository_create_task_for_role_excludes_unavailable_agents_atomically(
+def test_repository_create_task_for_role_queues_for_unavailable_agents(
     tmp_path: Path,
 ) -> None:
     repo = _seed_hierarchy(tmp_path)
@@ -7729,13 +7726,10 @@ def test_repository_create_task_for_role_excludes_unavailable_agents_atomically(
         request_id="request-role-no-candidate",
     )
 
-    assert result["success"] is False
-    assert result["errors"][0]["code"] == "role_assignment_no_eligible_agent"
-    reasons = result["correction_context"]["exclusion_reason_counts"]
-    assert reasons["agent_not_active"] == 1
-    assert reasons["agent_stood_down"] == 1
-    assert "unassigned-role-task" not in state.tasks
-    assert state.revision == before.revision
+    assert result["success"] is True
+    assert state.tasks["unassigned-role-task"].owner_agent_id is None
+    assert state.tasks["unassigned-role-task"].assignment_role_id == "project__backend"
+    assert state.revision > before.revision
 
 
 def test_repository_reassign_task_for_role_changes_owner_and_finalizes_git_context(

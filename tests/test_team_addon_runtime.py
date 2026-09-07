@@ -475,6 +475,7 @@ def test_team_runtime_pack_loads_as_current_workflow_pack(tmp_path: Path) -> Non
         "team-agent-run-completed",
         "team-chat-message-queued",
         "team-external-chat-reply-requested",
+        "team-role-queue-wake-requested",
         "team-agent-wake-requested",
         "team-governance-wake-requested",
         "team-outbox-publish-requested",

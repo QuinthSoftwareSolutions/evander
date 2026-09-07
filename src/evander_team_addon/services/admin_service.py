@@ -2594,6 +2594,8 @@ class TeamAdminService:
         archived: bool | None = None,
         expected_revision: int | None = None,
     ) -> TeamState:
+        wake_result: dict[str, Any] = {"events": []}
+
         def _mutate(state: TeamState) -> TeamState:
             role = _require_present(state.roles, role_id, "role")
             if name is not None:
@@ -2626,9 +2628,22 @@ class TeamAdminService:
             for profile in state.review_profiles.values():
                 if role.id in profile.applicable_role_ids:
                     _validate_role_filter_assignment(role, profile=profile)
+            from .domain.role_task_queue import append_role_queue_wake_events
+
+            if role.team_id is not None:
+                append_role_queue_wake_events(
+                    state,
+                    result=wake_result,
+                    now=role.updated_at,
+                    team_id=role.team_id,
+                )
             return state
 
-        return self._repository.update(_mutate, expected_revision=expected_revision)
+        return self._repository.update_with_outbox(
+            _mutate,
+            outbox_records=lambda: _team_event_outbox_records(wake_result["events"]),
+            expected_revision=expected_revision,
+        )
 
     def register_agent(
         self,
@@ -2650,6 +2665,8 @@ class TeamAdminService:
         normalized_session_id = _required_text(session_id, "session_id")
         normalized_reports_to_agent_id = _optional_text(reports_to_agent_id)
         normalized_display_name = _optional_text(display_name)
+
+        wake_result: dict[str, Any] = {"events": []}
 
         def _mutate(state: TeamState) -> TeamState:
             generated_agent_labels = (
@@ -2743,9 +2760,22 @@ class TeamAdminService:
                     superior.subordinate_agent_ids,
                     agent.id,
                 )
+            from .domain.role_task_queue import append_role_queue_wake_events
+
+            if agent.team_id is not None:
+                append_role_queue_wake_events(
+                    state,
+                    result=wake_result,
+                    now=utc_now(),
+                    team_id=agent.team_id,
+                )
             return state
 
-        return self._repository.update(_mutate, expected_revision=expected_revision)
+        return self._repository.update_with_outbox(
+            _mutate,
+            outbox_records=lambda: _team_event_outbox_records(wake_result["events"]),
+            expected_revision=expected_revision,
+        )
 
     def update_agent(
         self,
@@ -2980,6 +3010,16 @@ class TeamAdminService:
                     team_id=agent.team_id,
                     project_ids=agent_project_ids(state, agent.id),
                 )
+            if (
+                status is not None
+                or set_role_id
+                or set_project_id
+                or set_team_id
+                or set_reports_to_agent_id
+            ):
+                from .domain.role_task_queue import append_role_queue_wake_events
+
+                append_role_queue_wake_events(state, result=idle_rotation_result, now=now)
             return state
 
         return self._repository.update_with_outbox(
@@ -4090,6 +4130,13 @@ class TeamAdminService:
                 task.id,
             )
             now = utc_now()
+            if task.owner_agent_id is None and state in {
+                TeamTaskState.IN_PROGRESS,
+                TeamTaskState.WAITING_FOR_REVIEW,
+                TeamTaskState.FINISHED,
+                TeamTaskState.ACCEPTED,
+            }:
+                raise ValueError("role task must be assigned before execution or completion")
             previous_state = task.state
             crosses_blocked_boundary = (
                 state is not None
@@ -4406,6 +4453,14 @@ class TeamAdminService:
                     sender_agent_id=task.owner_agent_id,
                     now=now,
                 )
+            from .domain.role_task_queue import append_role_queue_wake_events
+
+            append_role_queue_wake_events(
+                state_model,
+                result=blocker_result,
+                now=now,
+                project_id=task.project_id,
+            )
             return state_model
 
         return self._repository.update_with_outbox(

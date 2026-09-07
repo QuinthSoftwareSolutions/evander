@@ -13621,3 +13621,45 @@ test("team add-on Planning skips review for resolved support tasks", async (t) =
     1,
   );
 });
+
+test("team add-on task board shows and filters queued role assignments", async (t) => {
+  const initialState = seededGitState();
+  const task = initialState.tasks["task-pending"];
+  Object.assign(task, {
+    owner_agent_id: null,
+    state: "pending",
+    deliverable_ids: [],
+    assignment_mode: "role",
+    assignment_role_id: "role-senior",
+    assignment_role_name: "Senior Developer",
+    assignment_wait_reason: "waiting_for_dependencies",
+  });
+  const { port, requests } = await createTeamAddonServer(t, { initialState });
+  const page = await openBrowserPage(t, port);
+  await waitForRevision(page, 4);
+  await page.getByRole("tab", { name: "Task board" }).click();
+  await page.locator("#task-board-team-select").selectOption("team-alpha");
+  await page.locator("#task-board-project-select").selectOption("alpha-project");
+  const card = page.locator('.task-board-card[data-task-board-task-id="task-pending"]');
+  assert.match(await card.innerText(), /Waiting for Senior Developer/);
+  assert.doesNotMatch(await card.innerText(), /Unavailable assignee/);
+  assert.match(await card.innerText(), /Waiting for dependencies/);
+  await card.getByRole("button", { name: "Edit", exact: true }).click();
+  const form = page.locator("#edit-record-form");
+  await form.waitFor({ state: "visible" });
+  assert.equal(await form.getByLabel("Assigned to", { exact: true }).inputValue(), "Waiting for Senior Developer");
+  assert.equal(await form.locator('select[name="state"]').count(), 0);
+  await form.locator('[name="title"]').fill("Updated queued task");
+  await form.getByRole("button", { name: "Save changes", exact: true }).click();
+  await form.waitFor({ state: "hidden" });
+  const patch = requests.find((request) => request.method === "PATCH" && request.pathname.endsWith("/tasks/task-pending"));
+  assert.equal(patch.payload.state, "pending");
+  assert.equal(patch.payload.title, "Updated queued task");
+  assert.equal("owner_agent_id" in patch.payload, false);
+
+  await page.locator('[data-task-board-filter="assignee"]').selectOption("role:role-senior");
+  assert.equal(await page.locator(".task-board-card").count(), 1);
+  await page.locator('[data-task-board-mode="hierarchy"]').click();
+  const branch = page.locator('.task-board-hierarchy-branch[data-task-board-task-id="task-pending"]');
+  assert.match(await branch.innerText(), /Waiting for Senior Developer/);
+});

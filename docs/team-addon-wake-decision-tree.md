@@ -6,6 +6,7 @@ durable paths that can lead to inference:
 - debounced persistent-agent wake requests,
 - queued Team Chat claims, which consume capacity before ordinary leases,
 - normal persistent-agent wake leasing,
+- role tasks assigned atomically with a dispatch when exact-role capacity is free,
 - bounded `context_handoff` preparation before manual or idle rotation, and
 - governance-manager wake leasing.
 
@@ -24,12 +25,14 @@ flowchart TD
 
     start --> cron["team-cron<br/>default: every 15 minutes"]
     start --> wake_event["team.agent.wake_requested event<br/>default debounce: 1s"]
+    start --> role_event["team.role_queue.wake_requested event<br/>creation, dependencies ready, capacity available"]
     start --> chat_event["team.chat.message_queued event"]
     start --> gov_event["team.governance.wake_requested event"]
     start --> outbox_request["team.outbox.publish_requested event<br/>exact record IDs when known"]
 
     cron --> normal_effect["effect:team:wake-due-agents<br/>limit 10, lease 900s, interval 900s"]
     wake_event --> requested_effect["effect:team:wake-due-agents<br/>agent_id from wake event, limit 1<br/>respect_wake_interval=false"]
+    role_event --> role_effect["effect:team:wake-due-agents<br/>project and team from event, limit 10<br/>respect_wake_interval=false"]
     chat_event --> chat_effect["effect:team:wake-due-agents<br/>agent_id from chat event, limit 1"]
     cron --> gov_effect["effect:team:wake-governance-managers<br/>limit 10, lease 900s, interval 3600s"]
     gov_event --> gov_requested_effect["effect:team:wake-governance-managers<br/>group from event, limit 1"]
@@ -38,6 +41,7 @@ flowchart TD
 
     normal_effect --> wake_invocation
     requested_effect --> wake_invocation
+    role_effect --> wake_invocation
     chat_effect --> wake_invocation
     wake_invocation["One wake-due-agents invocation"] --> cost_guard{"Team cost cap<br/>reached?"}
     cost_guard -->|Yes| cost_skip["Skip Team-agent wakes<br/>queued chat remains queued"]
@@ -81,6 +85,22 @@ stays exact to the claimed message and leaves that ordinary reset pending, even
 when the underlying session uses `new_context`.
 
 ## Normal Persistent-Agent Wake Leasing
+
+Before evaluating ordinary agents, the scheduler considers pending ownerless role
+tasks in priority, creation-time, and ID order. A task needs satisfied dependencies,
+passing execution gates, and an authorized active creator. Candidates must hold the
+exact role in the project and pass the existing availability and authorization
+checks, including the wake interval when the scan respects it. Existing ready tasks,
+inbox responses, reviews, and recovery work take precedence for that agent. Each
+dispatch can claim at most one new role task.
+
+The provisional owner is retained only when that task enters the reserved dispatch;
+both records and the scored assignment event commit in the same transaction.
+Remaining tasks stay queued. Delivered tasks retain their owners across subsequent
+wakes. A confirmed preparation failure before prompt submission can return only a
+task newly claimed by that dispatch to the queue. Uncertain delivery and started
+work retain ownership across later failed attempts. The periodic
+scan remains the recovery path for missed queue wakes.
 
 ```mermaid
 flowchart TD

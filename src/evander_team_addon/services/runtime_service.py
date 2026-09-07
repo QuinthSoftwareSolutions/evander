@@ -14,6 +14,10 @@ from evander.events.internal import (
 )
 from evander.orchestration.internal_events import build_internal_event_bus_for_runtime
 
+from .domain.role_task_queue import (
+    plan_role_task_allocations,
+    append_role_queue_wake_events,
+)
 from .domain import common as _team_common
 from ..repository import (
     TeamStateConflictError,
@@ -366,6 +370,7 @@ class TeamRuntimeService:
                     delay_seconds=0,
                     idempotency_suffix=idempotency_suffix,
                 )
+            append_role_queue_wake_events(state, result=wake_result, now=now)
             return state
 
         state = self._repository.update_with_outbox(
@@ -395,9 +400,8 @@ class TeamRuntimeService:
             return
         records_by_idempotency_key = {
             record.idempotency_key: record
-            for record in self._repository.list_outbox_records(
-                intent_type=AGENT_WAKE_REQUESTED_EVENT_TYPE
-            )
+            for intent_type in (AGENT_WAKE_REQUESTED_EVENT_TYPE, "team.role_queue.wake_requested")
+            for record in self._repository.list_outbox_records(intent_type=intent_type)
             if record.idempotency_key is not None
         }
         bus = self._event_bus
@@ -682,7 +686,26 @@ class TeamRuntimeService:
                 ):
                     teams_with_lease.add(agent.team_id)
             blocker_routing_events.extend(idle_rotation_result.get("events") or [])
-            for agent in sorted(state_model.agents.values(), key=lambda item: item.id):
+            role_allocations = plan_role_task_allocations(
+                state_model,
+                now=effective_now,
+                limit=normalized_limit,
+                team_id=normalized_team_id,
+                project_id=normalized_project_id,
+                agent_id=normalized_agent_id,
+                blocked_team_ids=blocked_teams,
+                max_no_progress_count=max_no_progress_count,
+                session_is_busy=session_is_busy,
+                respect_wake_interval=respect_wake_interval,
+            )
+            allocation_order = {
+                row["selected_owner_agent_id"]: index
+                for index, row in enumerate(role_allocations.values())
+            }
+            for agent in sorted(
+                state_model.agents.values(),
+                key=lambda item: (allocation_order.get(item.id, len(allocation_order)), item.id),
+            ):
                 if normalized_limit and len(leases) >= normalized_limit:
                     break
                 if agent.status != AgentStatus.ACTIVE:
@@ -1166,6 +1189,12 @@ class TeamRuntimeService:
                     ),
                     **(dispatch_scope.model_fields() if dispatch_scope is not None else {}),
                 )
+                durable_dispatch.claimed_role_task_ids = [
+                    task_id
+                    for task_id in durable_dispatch.task_ids
+                    if task_id in role_allocations
+                    and role_allocations[task_id]["selected_owner_agent_id"] == agent.id
+                ]
                 state_model.dispatches[dispatch_id] = durable_dispatch
                 if (
                     runtime.context_clearing_policy == AgentContextClearingPolicy.EVERY_WAKE
@@ -1320,8 +1349,29 @@ class TeamRuntimeService:
                 if agent.team_id is not None:
                     teams_with_lease.add(agent.team_id)
 
-            if normalized_limit and len(leases) >= normalized_limit:
-                return state_model
+            for task_id, allocation in role_allocations.items():
+                assignment_lease = next(
+                    (
+                        lease
+                        for lease in leases
+                        if lease["agent"]["id"] == allocation["selected_owner_agent_id"]
+                        and task_id in lease["dispatch"]["task_ids"]
+                    ),
+                    None,
+                )
+                if assignment_lease is None:
+                    state_model.tasks[task_id].owner_agent_id = None
+                    continue
+                allocation["dispatch_id"] = assignment_lease["dispatch_id"]
+                assignment_lease.setdefault("role_task_allocations", []).append(allocation)
+                blocker_routing_events.append(
+                    {
+                        "event_type": "team.task.role_assigned",
+                        "correlation_key": task_id,
+                        "idempotency_key": f"role-assignment:{assignment_lease['dispatch_id']}:{task_id}",
+                        "payload": allocation,
+                    }
+                )
 
             for team in sorted(state_model.teams.values(), key=lambda item: item.id):
                 if normalized_limit and len(leases) >= normalized_limit:
@@ -2124,6 +2174,16 @@ class TeamRuntimeService:
                 runtime.work_lineage_thread_ids[dispatch.work_lineage_id] = normalized_thread_id
                 runtime.last_thread_id = normalized_thread_id
 
+            for task_id in dispatch.task_ids:
+                task = state.tasks.get(task_id)
+                if (
+                    task is not None
+                    and task.assignment_mode == "role"
+                    and task.owner_agent_id == dispatch.agent_id
+                    and task.assignment_started_at is None
+                ):
+                    task.assignment_started_at = effective_now
+                    task.updated_at = effective_now
             dispatch.activation_completed_at = effective_now
             runtime.updated_at = effective_now
             return state
@@ -2435,11 +2495,13 @@ class TeamRuntimeService:
         dispatch_id: str,
         error: str,
         now: datetime | None = None,
+        delivery_not_started: bool = False,
     ) -> TeamState:
         normalized_agent_id = _required_text(agent_id, "agent_id")
         normalized_dispatch_id = _required_text(dispatch_id, "dispatch_id")
         normalized_error = _required_text(error, "error")
         effective_now = _ensure_utc(now or utc_now())
+        result: dict[str, Any] = {"events": []}
 
         def _mutate(state: TeamState) -> TeamState:
             dispatch = _require_present(
@@ -2464,9 +2526,35 @@ class TeamRuntimeService:
                 error=normalized_error,
                 completed_at=effective_now,
             )
+            if delivery_not_started:
+                # A retry cannot release an earlier claim: an earlier delivery
+                # may have executed even when activation was never confirmed.
+                for task_id in dispatch.claimed_role_task_ids:
+                    task = state.tasks.get(task_id)
+                    if (
+                        task is not None
+                        and task.assignment_mode == "role"
+                        and task.assignment_started_at is None
+                        and task.state.value == "pending"
+                        and task.owner_agent_id == dispatch.agent_id
+                        and not task.deliverable_ids
+                    ):
+                        task.owner_agent_id = None
+                        task.updated_at = effective_now
+                append_role_queue_wake_events(
+                    state,
+                    result=result,
+                    now=effective_now,
+                    team_id=agent.team_id
+                    if (agent := state.agents.get(dispatch.agent_id))
+                    else None,
+                )
             return state
 
-        return self._repository.update(_mutate)
+        return self._repository.update_with_outbox(
+            _mutate,
+            outbox_records=lambda: _team_event_outbox_records(result["events"]),
+        )
 
     def record_agent_mcp_capability_preparation_failure(
         self,
@@ -2580,6 +2668,12 @@ class TeamRuntimeService:
                 diagnostic=normalized_diagnostic,
                 result=result,
                 now=effective_now,
+            )
+            append_role_queue_wake_events(
+                state,
+                result=result,
+                now=effective_now,
+                team_id=agent.team_id,
             )
             stored_outbox_records = [
                 tx.enqueue_outbox_record(record)
@@ -3191,6 +3285,12 @@ class TeamRuntimeService:
                     completed_dispatch_id=normalized_dispatch_id,
                     progress_made=progress_made,
                 )
+            append_role_queue_wake_events(
+                state,
+                result=result,
+                now=completed_at,
+                team_id=agent.team_id,
+            )
             stored_outbox_records = [
                 tx.enqueue_outbox_record(record)
                 for record in _team_event_outbox_records(result.get("events") or [])

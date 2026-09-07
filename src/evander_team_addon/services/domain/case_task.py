@@ -68,7 +68,7 @@ _POST_RELEASE_PROVENANCE_METADATA_KEYS = frozenset(
 @dataclass(frozen=True)
 class _TaskCreationPlan:
     task_id: str
-    owner_id: str
+    owner_id: str | None
     project_id: str
     case_id: str | None
     task_state: TeamTaskState
@@ -1072,11 +1072,14 @@ def _apply_task_creation_plan(
     actor: PersistentAgent,
     chat_source_refs: list[Any] | None = None,
     assign_work_lineage: bool = True,
+    assignment_role_id: str | None = None,
 ) -> str:
     now = utc_now()
     state.tasks[plan.task_id] = AgentTask(
         id=plan.task_id,
         owner_agent_id=plan.owner_id,
+        assignment_mode="role" if assignment_role_id else "agent",
+        assignment_role_id=assignment_role_id,
         project_id=plan.project_id,
         case_id=plan.case_id,
         priority=plan.priority,
@@ -1105,7 +1108,7 @@ def _apply_task_creation_plan(
         )
     if plan.case_id is not None:
         _link_task_to_case(state, task_id=plan.task_id, case_id=plan.case_id, now=now)
-    if task_state_can_wake_owner(plan.task_state):
+    if plan.owner_id is not None and task_state_can_wake_owner(plan.task_state):
         _mark_agent_work_due(state, agent_id=plan.owner_id, now=now)
     return plan.task_id
 
@@ -1119,10 +1122,17 @@ def _task_owner_reassignment_error(
 ) -> str | None:
     if task.state not in _NON_TERMINAL_TASK_STATES:
         return f"task {task.id} is terminal and cannot be reassigned"
-    if actor.id != task.owner_agent_id and not _supervises(
-        state,
-        actor.id,
-        task.owner_agent_id,
+    from .role_task_queue import can_manage_unclaimed_role_task
+
+    queue_manager = can_manage_unclaimed_role_task(state, task, actor.id)
+    if (
+        not queue_manager
+        and actor.id != task.owner_agent_id
+        and not _supervises(
+            state,
+            actor.id,
+            task.owner_agent_id,
+        )
     ):
         return f"agent {actor.id} is not permitted to reassign task {task.id}"
     new_owner = state.agents.get(new_owner_id)

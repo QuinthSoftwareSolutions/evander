@@ -22,9 +22,11 @@ def _clear_idle_context_tracking(runtime: AgentRuntime) -> None:
 def _mark_agent_work_due(
     state: TeamState,
     *,
-    agent_id: str,
+    agent_id: str | None,
     now: datetime,
 ) -> None:
+    if agent_id is None:
+        return
     runtime = state.agent_runtimes.setdefault(agent_id, AgentRuntime(agent_id=agent_id))
     _clear_completed_chat_dispatch_lease(state, runtime, now=now)
     if not _agent_has_open_execution_stall(state, agent_id=agent_id):
