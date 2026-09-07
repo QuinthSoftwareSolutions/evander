@@ -32,16 +32,12 @@ TEAM_RUNTIME_V1: dict[str, Any] = {
                 "team-publish-outbox-events",
                 "team-outbox-publish-requested",
                 "team-publish-outbox-on-request",
-                "team-publish-outbox-after-dispatch",
                 "team-ephemeral-requested",
                 "team-create-ephemeral-agent",
                 "team-mark-ephemeral-spawned",
                 "team-ephemeral-spawned",
                 "team-prompt-ephemeral-agent",
-                "team-agent-run-completed",
                 "team-route-completed-session",
-                "team-completed-persistent",
-                "team-finalize-persistent-dispatch",
                 "team-completed-ephemeral",
                 "team-destroy-ephemeral-agent",
                 "team-mark-ephemeral-cleaned-up",
@@ -89,14 +85,6 @@ TEAM_RUNTIME_V1: dict[str, Any] = {
                     "display_name": "Team runtime tick",
                     "type": "trigger:cron",
                     "config": {"expression": "*/15 * * * *"},
-                }
-            },
-            {
-                "node": {
-                    "id": "team-agent-run-completed",
-                    "display_name": "Team agent run completed",
-                    "type": "trigger:agent:run:completed",
-                    "config": {},
                 }
             },
             {
@@ -207,23 +195,6 @@ TEAM_RUNTIME_V1: dict[str, Any] = {
                     "display_name": "Team deliverable acceptance verification requested",
                     "type": "trigger:event",
                     "config": {"event_type": "team.deliverable.acceptance_verification_requested"},
-                }
-            },
-            {
-                "node": {
-                    "id": "team-completed-persistent",
-                    "display_name": "Persistent team session completed",
-                    "type": "gate:filter",
-                    "config": {
-                        "when": {
-                            "all": [
-                                {
-                                    "equals": True,
-                                    "left": "${{team-route-completed-session.persistent}}",
-                                }
-                            ]
-                        }
-                    },
                 }
             },
             {
@@ -348,8 +319,8 @@ TEAM_RUNTIME_V1: dict[str, Any] = {
                     "display_name": "Route completed team session",
                     "type": "query:team:session-routing",
                     "config": {
-                        "session_id": "${{team-agent-run-completed.session_ids.0 ?? null}}",
-                        "dispatch_id": "${{team-agent-run-completed.dispatch_id ?? null}}",
+                        "session_id": "${{team-prompt-ephemeral-agent.session_id ?? null}}",
+                        "dispatch_id": "${{team-prompt-ephemeral-agent.dispatch_id ?? null}}",
                     },
                 }
             },
@@ -498,19 +469,6 @@ TEAM_RUNTIME_V1: dict[str, Any] = {
             },
             {
                 "node": {
-                    "id": "team-publish-outbox-after-dispatch",
-                    "display_name": "Publish Team outbox after dispatch",
-                    "type": "effect:team:publish-outbox-events",
-                    "config": {
-                        "limit": 25,
-                        "claim_ttl_seconds": 300,
-                        "retry_after_seconds": 60,
-                        "worker_id": "team-outbox-after-dispatch",
-                    },
-                }
-            },
-            {
-                "node": {
                     "id": "team-create-ephemeral-agent",
                     "display_name": "Create ephemeral team agent",
                     "type": "effect:agent:create",
@@ -560,18 +518,6 @@ TEAM_RUNTIME_V1: dict[str, Any] = {
                     "config": {
                         "session_id": "${{team-ephemeral-requested.payload.session_id}}",
                         "prompt": "${{team-ephemeral-requested.payload.prompt}}",
-                    },
-                }
-            },
-            {
-                "node": {
-                    "id": "team-finalize-persistent-dispatch",
-                    "display_name": "Finalize persistent Team dispatch",
-                    "type": "effect:team:finalize-agent-dispatch",
-                    "config": {
-                        "session_id": "${{team-route-completed-session.session_id}}",
-                        "dispatch_id": "${{team-route-completed-session.dispatch_id}}",
-                        "agent_id": "${{team-route-completed-session.agent_id ?? null}}",
                     },
                 }
             },
@@ -1112,15 +1058,10 @@ TEAM_RUNTIME_V1: dict[str, Any] = {
             },
             {"source_id": "team-mark-ephemeral-spawned", "target_id": "team-ephemeral-spawned"},
             {"source_id": "team-ephemeral-spawned", "target_id": "team-prompt-ephemeral-agent"},
-            {"source_id": "team-agent-run-completed", "target_id": "team-route-completed-session"},
-            {"source_id": "team-route-completed-session", "target_id": "team-completed-persistent"},
             {
-                "source_id": "team-completed-persistent",
-                "target_id": "team-finalize-persistent-dispatch",
-            },
-            {
-                "source_id": "team-finalize-persistent-dispatch",
-                "target_id": "team-publish-outbox-after-dispatch",
+                "source_id": "team-prompt-ephemeral-agent",
+                "source_port": "completed",
+                "target_id": "team-route-completed-session",
             },
             {"source_id": "team-route-completed-session", "target_id": "team-completed-ephemeral"},
             {"source_id": "team-completed-ephemeral", "target_id": "team-destroy-ephemeral-agent"},
@@ -1238,13 +1179,11 @@ TEAM_RUNTIME_V1: dict[str, Any] = {
 
 
 _TEAM_RUNTIME_V1_LAYOUT_NODE_POSITIONS: tuple[tuple[str, float, float], ...] = (
-    ("team-agent-run-completed", 0.0, -80.0),
     ("team-agent-wake-requested", 0.0, 520.0),
     ("team-role-queue-wake-requested", 0.0, 2320.0),
     ("team-wake-role-queue", 360.0, 2320.0),
     ("team-chat-message-queued", 0.0, 180.0),
     ("team-completed-ephemeral", 720.0, 20.0),
-    ("team-completed-persistent", 720.0, -140.0),
     ("team-consolidate-correction-branches", 720.0, 1360.0),
     ("team-consolidate-feature-branches", 720.0, 1240.0),
     ("team-consolidate-release-branches", 720.0, 1480.0),
@@ -1254,7 +1193,6 @@ _TEAM_RUNTIME_V1_LAYOUT_NODE_POSITIONS: tuple[tuple[str, float, float], ...] = (
     ("team-ephemeral-requested", 0.0, 820.0),
     ("team-ephemeral-spawned", 1080.0, 820.0),
     ("team-external-chat-reply-requested", 0.0, 340.0),
-    ("team-finalize-persistent-dispatch", 1080.0, -140.0),
     ("team-git-promote-review-branch", 720.0, 1120.0),
     ("team-git-promotion-canonical", 360.0, 1600.0),
     ("team-git-promotion-correction-aggregate", 360.0, 1360.0),
@@ -1278,7 +1216,6 @@ _TEAM_RUNTIME_V1_LAYOUT_NODE_POSITIONS: tuple[tuple[str, float, float], ...] = (
     ("team-outbox-publish-requested", 0.0, 40.0),
     ("team-promote-release-recovery-branch", 360.0, 1940.0),
     ("team-prompt-ephemeral-agent", 1440.0, 820.0),
-    ("team-publish-outbox-after-dispatch", 1440.0, -140.0),
     ("team-publish-outbox-events", 360.0, -240.0),
     ("team-publish-outbox-on-request", 360.0, 40.0),
     ("team-push-canonical-branch", 720.0, 1600.0),
@@ -1292,7 +1229,7 @@ _TEAM_RUNTIME_V1_LAYOUT_NODE_POSITIONS: tuple[tuple[str, float, float], ...] = (
     ("team-record-review-promotion", 1080.0, 1120.0),
     ("team-release-verification-requested", 0.0, 1800.0),
     ("team-deliverable-acceptance-verification-requested", 0.0, 2200.0),
-    ("team-route-completed-session", 360.0, -80.0),
+    ("team-route-completed-session", 1800.0, 820.0),
     ("team-send-external-chat-reply", 360.0, 340.0),
     ("team-verify-release-candidate", 360.0, 1800.0),
     ("team-verify-deliverable-acceptance", 360.0, 2200.0),

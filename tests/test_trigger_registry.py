@@ -6,6 +6,7 @@ import pytest
 
 from evander.config import GatewayConfig
 from evander.events.provider_models import (
+    AgentRunCompletedTriggerDefinition,
     CommunicationNewMessageTriggerDefinition,
     CronTriggerDefinition,
 )
@@ -14,6 +15,9 @@ from evander.messaging.targets import (
     communication_targets_db_path,
 )
 from evander.triggers.providers.base import TriggerProviderBase
+from evander.triggers.providers.agent_run_completed_event import (
+    AgentRunCompletedEventTriggerProvider,
+)
 from evander.triggers.registry import (
     DEFAULT_TRIGGER_PROVIDER_REGISTRY,
     TriggerProviderFactory,
@@ -117,6 +121,23 @@ def test_factory_exposes_vm_inventory_metadata_alias() -> None:
     assert provider.runtime_context is not None
     assert provider.runtime_context.metadata["admin_service"] is runtime
     assert callable(getattr(provider.runtime_context.metadata["vm_inventory"], "list_vms", None))
+
+
+def test_agent_completion_event_source_does_not_poll_vm_inventory() -> None:
+    trigger = AgentRunCompletedTriggerDefinition(
+        id="agent-completed",
+        display_name="Agent completed",
+        type="trigger:agent:run:completed",
+    )
+
+    factory = TriggerProviderFactory(
+        provider_config_resolver=_ResolverStub(),
+        admin_service=_RuntimeStub(),
+    )
+    provider = factory.build(trigger)
+
+    assert isinstance(provider, AgentRunCompletedEventTriggerProvider)
+    assert provider.poll() == []
 
 
 def test_factory_rejects_non_read_communication_targets_during_provider_setup(

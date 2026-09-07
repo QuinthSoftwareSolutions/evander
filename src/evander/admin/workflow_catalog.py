@@ -730,7 +730,6 @@ _WORKFLOW_EDITOR_NODE_DESCRIPTIONS: dict[str, str] = {
     "trigger:review:new-request": "Start when a review request is queued for orchestration.",
     "trigger:approval:pending-created": "Start when a pending approval request is created.",
     "trigger:git:push": "Start from Git push events captured by the host-side bare-repo hook.",
-    "trigger:agent:run:completed": "Start when an agent run completion event is recorded.",
     "gate:filter": "Allow only matching events to continue downstream.",
     "gate:switch": "Route each activation to the first matching branch or a default route.",
     "gate:validate": ("Evaluate named predicates and route with structured validation failures."),
@@ -1500,14 +1499,6 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
                 "string",
                 bindable=True,
             ),
-        ],
-    ),
-    WorkflowEditorNodeCatalogEntry(
-        kind="trigger",
-        type="trigger:agent:run:completed",
-        label="Agent run completed",
-        fields=[
-            _field("vm_user", "VM user", "string"),
         ],
     ),
     WorkflowEditorNodeCatalogEntry(

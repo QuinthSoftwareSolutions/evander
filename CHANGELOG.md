@@ -2,6 +2,8 @@
 
 ## 2026-09-07 - Team, ADO and runtime improvements (0.26.0)
 
+- Replace host-wide completion polling with events from the prompt effect or wake monitor;
+  route ephemeral cleanup from prompt completion and preserve legacy transform names as no-ops.
 - Add the permission-gated `update_ado_backlog_state` MCP tool for updating a work item's
   state through the host-owned ADO connection, with an optional atomic expected-state guard.
 - Expose the tool in Admin Web permission controls; existing sessions require an explicit grant.

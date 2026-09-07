@@ -6,7 +6,7 @@ from typing import Any
 __all__ = [
     "CiRunCompletedTriggerProvider",
     "AdoWorkItemCommentCreatedTriggerProvider",
-    "AgentRunCompletedTriggerProvider",
+    "AgentRunCompletedEventTriggerProvider",
     "AgentArtifactStagedTriggerProvider",
     "ApprovalPendingCreatedTriggerProvider",
     "CronTriggerProvider",
@@ -34,7 +34,7 @@ __all__ = [
 _EXPORT_MODULES = {
     "CiRunCompletedTriggerProvider": ".ci_run_completed",
     "AdoWorkItemCommentCreatedTriggerProvider": ".ado_work_item_comment_created",
-    "AgentRunCompletedTriggerProvider": ".agent_run_completed",
+    "AgentRunCompletedEventTriggerProvider": ".agent_run_completed_event",
     "AgentArtifactStagedTriggerProvider": ".agent_artifact_staged",
     "ApprovalPendingCreatedTriggerProvider": ".approval_pending_created",
     "CronTriggerProvider": ".cron",

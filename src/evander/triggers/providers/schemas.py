@@ -907,8 +907,9 @@ class GitPushTriggerDefinition(TriggerDefinition):
 
 
 class AgentRunCompletedTriggerDefinition(TriggerDefinition):
+    """Internal completion event source retained for existing workflow packs."""
+
     type: Literal["trigger:agent:run:completed"]
-    vm_user: str | None = "agent"
 
 
 class AgentPromptNewTriggerDefinition(TriggerDefinition):

@@ -472,7 +472,6 @@ def test_team_runtime_pack_loads_as_current_workflow_pack(tmp_path: Path) -> Non
 
     assert _node_ids(config.triggers) == [
         "team-cron",
-        "team-agent-run-completed",
         "team-chat-message-queued",
         "team-external-chat-reply-requested",
         "team-role-queue-wake-requested",
@@ -509,12 +508,7 @@ def test_team_runtime_pack_loads_as_current_workflow_pack(tmp_path: Path) -> Non
     }
     assert document.output_schemas["team-route-completed-session"]["ignored"] == {"type": "boolean"}
     assert "team-read-persistent-action" not in document.output_schemas
-    assert document.output_schemas["team-finalize-persistent-dispatch"]["finalized"] == {
-        "type": "boolean"
-    }
-    assert document.output_schemas["team-finalize-persistent-dispatch"]["progress_made"] == {
-        "type": "boolean"
-    }
+    assert "team-finalize-persistent-dispatch" not in document.output_schemas
     assert document.output_schemas["team-record-external-chat-delivery"]["status"] == {
         "type": "string"
     }
@@ -14380,7 +14374,7 @@ def test_team_runtime_pack_wires_ephemeral_event_flow() -> None:
     assert "team-apply-ephemeral-action" not in effects
     assert queries["team-route-completed-session"]["type"] == "query:team:session-routing"
     assert queries["team-route-completed-session"]["dispatch_id"] == (
-        "${{team-agent-run-completed.dispatch_id ?? null}}"
+        "${{team-prompt-ephemeral-agent.dispatch_id ?? null}}"
     )
     assert gates["team-completed-ephemeral"]["when"]["all"][0] == {
         "equals": True,
@@ -14395,12 +14389,13 @@ def test_team_runtime_pack_wires_ephemeral_event_flow() -> None:
     assert ("team-mark-ephemeral-spawned", "team-ephemeral-spawned") in edges
     assert ("team-ephemeral-spawned", "team-prompt-ephemeral-agent") in edges
     assert ("team-mark-ephemeral-spawned", "team-prompt-ephemeral-agent") not in edges
+    assert ("team-prompt-ephemeral-agent", "team-route-completed-session") in edges
     assert ("team-completed-ephemeral", "team-destroy-ephemeral-agent") in edges
     assert ("team-read-ephemeral-action", "team-apply-ephemeral-action") not in edges
     assert ("team-destroy-ephemeral-agent", "team-mark-ephemeral-cleaned-up") in edges
 
 
-def test_team_runtime_pack_flushes_outbox_after_persistent_dispatch() -> None:
+def test_team_runtime_pack_uses_event_and_scheduled_outbox_publishers() -> None:
     pack = _team_runtime_sections()
     triggers = {node["id"]: node for node in pack["triggers"]}
     effects = {node["id"]: node for node in pack["effects"]}
@@ -14418,10 +14413,8 @@ def test_team_runtime_pack_flushes_outbox_after_persistent_dispatch() -> None:
     assert effects["team-publish-outbox-on-request"]["outbox_record_ids"] == (
         "${{team-outbox-publish-requested.payload.outbox_record_ids ?? null}}"
     )
-    assert (
-        "team-finalize-persistent-dispatch",
-        "team-publish-outbox-after-dispatch",
-    ) in edges
+    assert "team-finalize-persistent-dispatch" not in effects
+    assert "team-publish-outbox-after-dispatch" not in effects
 
 
 def test_team_runtime_pack_routes_operator_escalation_to_communication() -> None:
