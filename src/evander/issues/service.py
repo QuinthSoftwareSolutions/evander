@@ -13,6 +13,8 @@ from typing import Any, Protocol
 from urllib.parse import parse_qs, quote, unquote, urlparse
 
 import httpx
+from markdown_it import MarkdownIt
+from markdown_it.token import Token
 
 from evander.ado_query_mode import ADO_QUERY_MODE_MANUAL_WIQL, validate_ado_query_mode
 from evander.ado_mentions import (
@@ -31,7 +33,7 @@ from evander.models import InlineMediaRef
 from evander.provider_config import ProviderConfigResolver
 from evander.text_formatting import looks_like_html, render_markdownish_text_to_html
 
-_ADO_HTML_MEDIA_FIELDS = (
+_ADO_RICH_TEXT_MEDIA_FIELDS = (
     "System.Description",
     "Microsoft.VSTS.TCM.ReproSteps",
     "Microsoft.VSTS.TCM.SystemInfo",
@@ -188,15 +190,40 @@ def extract_ado_html_image_refs(
     field_reference_name: str | None = None,
     comment_id: str | None = None,
 ) -> list[dict[str, Any]]:
-    parser = _AdoHtmlImageParser()
-    parser.feed(html or "")
+    """Extract ADO rich-text images, including Markdown and embedded HTML.
+
+    Keep the existing media IDs for HTML fields. Parsing Markdown tokens also
+    handles reference images, escaped destinations and code examples correctly.
+    URL authorization remains the download provider's responsibility.
+    """
+    images: list[dict[str, str]] = []
+
+    def collect(tokens: list[Token]) -> None:
+        for token in tokens:
+            if token.type == "image":
+                images.append(
+                    {
+                        "url": str(token.attrGet("src") or ""),
+                        "alt": token.content,
+                        "title": str(token.attrGet("title") or ""),
+                        "source": "markdown_image",
+                    }
+                )
+            elif token.type in {"html_inline", "html_block"}:
+                parser = _AdoHtmlImageParser()
+                parser.feed(token.content)
+                images.extend({**image, "source": "html_image"} for image in parser.images)
+            elif token.children:
+                collect(token.children)
+
+    collect(MarkdownIt("commonmark").parse(html or ""))
     refs: list[dict[str, Any]] = []
-    for index, item in enumerate(parser.images):
+    for index, item in enumerate(images):
         fallback = item.get("alt") or item.get("title") or f"ado-inline-image-{index}"
         url = item["url"]
         filename = _filename_from_media_url(url, fallback=fallback)
         metadata = {
-            "source": "html_image",
+            "source": item["source"],
             "alt": item.get("alt", ""),
             "title": item.get("title", ""),
         }
@@ -220,7 +247,7 @@ def extract_ado_field_inline_media_refs(
     fields: dict[str, Any], *, provider: str, resource_id: str
 ) -> list[dict[str, Any]]:
     refs: list[dict[str, Any]] = []
-    for field_name in _ADO_HTML_MEDIA_FIELDS:
+    for field_name in _ADO_RICH_TEXT_MEDIA_FIELDS:
         value = fields.get(field_name)
         if not isinstance(value, str) or not value.strip():
             continue

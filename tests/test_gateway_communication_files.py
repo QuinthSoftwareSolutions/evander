@@ -1,12 +1,15 @@
 import asyncio
 import base64
 import json
+from io import BytesIO
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 import pytest
+import httpx
 from mcp.server.fastmcp.exceptions import ToolError
+from PIL import Image
 
 from evander import gateway
 from evander.communication_artifact_links import (
@@ -18,6 +21,7 @@ from evander.directory_config import DirectoryConfigStore
 from evander.directories import DirectoryService
 from evander.gateway import create_server
 from evander.models import SessionManifest, ToolName
+from evander.issues.service import AzureDevOpsIssueAdapter
 from evander.runtime import build_runtime
 
 
@@ -671,6 +675,149 @@ def test_inline_media_ado_backlog_uses_issue_service_and_content_policy(
     assert artifact["metadata"]["source_kind"] == "ado_backlog"
     staged = CommunicationArtifactStore(tmp_path).get(artifact["artifact_id"])
     assert staged.blob_path.read_bytes() == b"jpeg-bytes"
+
+
+def test_ado_markdown_images_download_and_copy_as_viewable_workspace_files(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    images = {}
+    for name, size in (("first", (3, 2)), ("second", (4, 3))):
+        buffer = BytesIO()
+        Image.new("RGB", size, "blue").save(buffer, format="PNG")
+        images[name] = buffer.getvalue()
+    base_url = "https://dev.azure.com/example/_apis/wit/attachments/"
+    description = (
+        f"Operator dialog\n![image.png]({base_url}first?fileName=image.png)\n\n"
+        f"Admin report\n![image.png]({base_url}second?fileName=image.png)"
+    )
+    download_requests = []
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        assert request.headers["Authorization"] == AzureDevOpsIssueAdapter._auth_header("host-pat")
+        if "/attachments/" in request.url.path:
+            download_requests.append(str(request.url))
+            return httpx.Response(
+                200,
+                content=images[request.url.path.rsplit("/", 1)[-1]],
+                headers={"content-type": "image/png"},
+            )
+        if request.url.path.endswith("/comments"):
+            return httpx.Response(200, json={"comments": []})
+        assert request.url.path.endswith("/workitems/101")
+        return httpx.Response(
+            200,
+            json={
+                "id": 101,
+                "fields": {"System.Description": description},
+                "relations": [],
+            },
+        )
+
+    client_type = httpx.Client
+    monkeypatch.setattr(
+        httpx,
+        "Client",
+        lambda **kwargs: client_type(transport=httpx.MockTransport(respond), **kwargs),
+    )
+    monkeypatch.setattr(
+        AzureDevOpsIssueAdapter,
+        "_resolve_connection",
+        lambda self, directory: ("https://dev.azure.com/example", "Project", "host-pat"),
+    )
+
+    class IssueService:
+        def __init__(self, provider_config: object) -> None:
+            self.adapter = AzureDevOpsIssueAdapter(provider_config)
+
+        def get_remote_backlog_item_by_id(self, *, provider: str, **kwargs: object):
+            return self.adapter.get_backlog_item_by_id(**kwargs)
+
+    class CopyFiles(FakeAgentCopyFilesEffectProvider):
+        def execute(self) -> dict[str, object]:
+            for item in self.effect_definition.files:
+                destination = (
+                    tmp_path / "workspace" / Path(item.destination_path).relative_to("/home/agent")
+                )
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                destination.write_bytes(Path(item.source_path).read_bytes())
+            return super().execute()
+
+    monkeypatch.setattr(gateway, "IssueService", IssueService)
+    monkeypatch.setattr(gateway, "AgentCopyFilesEffectProvider", CopyFiles)
+    context = make_context(tmp_path)
+    context.session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-1",
+            allowed_tools=[
+                ToolName.GET_ADO_BACKLOG_ITEM,
+                ToolName.LIST_INLINE_MEDIA,
+                ToolName.DOWNLOAD_INLINE_MEDIA,
+                ToolName.COMMUNICATION_COPY_ARTIFACT_TO_WORKSPACE,
+            ],
+            communication_file_receive_enabled=True,
+            communication_file_max_bytes=1024,
+            communication_file_allowed_mime_types=["image/png"],
+            communication_file_allowed_extensions=[".png"],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        )
+    )
+    server = create_server(context)
+    item = call_tool(
+        server,
+        "get_ado_backlog_item",
+        {
+            "session_id": "session-1",
+            "id": "101",
+            "project": "Project",
+            "include_comments": False,
+            "include_relations": False,
+        },
+    )
+    assert len(item["inline_media"]) == 2
+    assert item["metadata"]["inline_media_access"]["unavailable_tools"] == {}
+    media_request = {
+        "session_id": "session-1",
+        "source_kind": "ado_backlog",
+        "provider": "azure_devops",
+        "resource_id": "101",
+        "project": "Project",
+    }
+    listed = call_tool(server, "list_inline_media", media_request)
+    assert [media["media_id"] for media in listed["media"]] == [
+        media["media_id"] for media in item["inline_media"]
+    ]
+    destinations = []
+    for index, media in enumerate(listed["media"]):
+        downloaded = call_tool(
+            server,
+            "download_inline_media",
+            {
+                **media_request,
+                "media_id": media["media_id"],
+            },
+        )
+        copied = call_tool(
+            server,
+            "communication_copy_artifact_to_workspace",
+            {
+                "session_id": "session-1",
+                "artifact_id": downloaded["artifact"]["artifact_id"],
+                "destination_filename": f"work-item-101-{index}.png",
+            },
+        )
+        destination = (
+            tmp_path / "workspace" / Path(copied["destination_path"]).relative_to("/home/agent")
+        )
+        destinations.append(destination)
+    for index, destination in enumerate(destinations):
+        with Image.open(destination) as image:
+            assert image.size == (3 + index, 2 + index)
+            assert image.getpixel((0, 0)) == (0, 0, 255)
+    assert len(download_requests) == 2
+    audit = (tmp_path / "audit.jsonl").read_text()
+    assert "host-pat" not in audit
+    assert base64.b64encode(images["first"]).decode() not in audit
 
 
 def test_ado_backlog_inline_media_does_not_duplicate_aggregate_comment_media(
