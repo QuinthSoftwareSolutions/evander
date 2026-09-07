@@ -2571,12 +2571,16 @@ def test_manager_fallback_scopes_unattended_support_task_for_supervision(
     assert lease["dispatch"]["task_ids"] == ["support-task"]
     assert lease["dispatch"]["project_ids"] == []
     assert lease["dispatch"]["wake_work_record_fingerprints"]["open_work:support-task"]
+    # Losing the supervision fingerprint invalidates both task ownership and project scope.
     unfingerprinted = repo.read().dispatches[dispatch_id].model_copy(deep=True)
     unfingerprinted.wake_work_record_fingerprints = {}
     assert _dispatch_staleness_errors(
         repo.read(),
         dispatch=unfingerprinted,
-    ) == ["task support-task is now assigned to support"]
+    ) == [
+        "task support-task is now assigned to support",
+        "project scope changed during dispatch preparation",
+    ]
 
     activated, _activation = runtime.activate_delivered_agent_dispatch(
         dispatch_id=dispatch_id,
@@ -14768,6 +14772,7 @@ def test_team_runtime_pack_routes_git_promotion_kinds() -> None:
         "managed_repo_id": "${{team-git-promotion-requested.payload.managed_repo_id}}",
         "project_id": "${{team-git-promotion-requested.payload.project_id}}",
         "publication_revision": "${{team-mark-release-published.revision}}",
+        "publication_context_id": "${{team-mark-release-published.publication_context_id ?? null}}",
         "published_commit_sha": "${{team-push-canonical-branch.commit_sha}}",
         "release_package_id": "${{team-git-promotion-requested.payload.release_package_id}}",
         "source_ref": "${{team-git-promotion-requested.payload.source_branch}}",
