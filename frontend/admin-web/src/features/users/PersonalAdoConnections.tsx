@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { fetchJson } from "../admin/api";
+import { ApiError, fetchJson } from "../admin/api";
 
 type Connection = {
   organization: string;
@@ -17,9 +17,11 @@ const endpoint = "/api/admin/me/ado-connections";
 
 export function PersonalAdoConnections({ directoryPath }: { directoryPath: string }) {
   const dialog = useRef<HTMLDialogElement>(null);
+  const errorPanel = useRef<HTMLDivElement>(null);
   const [open, setOpen] = useState(false);
   const [connections, setConnections] = useState<Connection[]>([]);
   const [organization, setOrganization] = useState("");
+  const [organizationInvalid, setOrganizationInvalid] = useState(false);
   const [pat, setPat] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -53,14 +55,37 @@ export function PersonalAdoConnections({ directoryPath }: { directoryPath: strin
     return () => { active = false; };
   }, [open]);
 
+  useEffect(() => {
+    if (error) {
+      errorPanel.current?.focus();
+      errorPanel.current?.scrollIntoView({ block: "nearest" });
+    }
+  }, [error]);
+
   function close() {
     dialog.current?.close();
     setOpen(false);
     setPat("");
     setError("");
     setNotice("");
+    setOrganizationInvalid(false);
+  }
+  function validatedOrganization(value: string): string | null {
+    const name = value.trim().replace(/\/+$/, "").replace(/^https:\/\/dev\.azure\.com\//, "");
+    if (/^[A-Za-z0-9][A-Za-z0-9-]{0,99}$/.test(name)) {
+      setOrganizationInvalid(false);
+      return name.toLowerCase();
+    }
+    setOrganizationInvalid(true);
+    setNotice("");
+    setError("Enter your Azure DevOps organization name, for example contoso from dev.azure.com/contoso. An email address cannot be used here.");
+    errorPanel.current?.focus();
+    errorPanel.current?.scrollIntoView({ block: "nearest" });
+    return null;
   }
   async function save() {
+    const selectedOrganization = validatedOrganization(organization);
+    if (!selectedOrganization) return;
     setBusy(true);
     setError("");
     setNotice("");
@@ -69,21 +94,30 @@ export function PersonalAdoConnections({ directoryPath }: { directoryPath: strin
     try {
       const result = await fetchJson<{ connection: Connection }>(endpoint, {
         method: "PUT",
-        body: JSON.stringify({ organization, directory_path: directoryPath, pat: submittedPat }),
+        body: JSON.stringify({ organization: selectedOrganization, directory_path: directoryPath, pat: submittedPat }),
       });
-      setNotice(`Connected as ${result.connection.display_name}.`);
-      await refresh();
+      setNotice(`PAT saved. Connected as ${result.connection.display_name}.`);
+      await refresh().catch(() => {
+        setError("Your PAT was saved, but the connection list could not be refreshed. Close and reopen this dialog to reload it.");
+      });
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Unable to validate the PAT.");
+      if (cause instanceof ApiError && cause.status < 500) {
+        setError(`PAT was not saved. ${cause.message.replace(/[.!?]$/, "")}. Re-enter the PAT to try again.`);
+      } else {
+        setError("Could not confirm whether the PAT was saved. Close and reopen this dialog to check your saved connections before trying again.");
+      }
     } finally { setBusy(false); }
   }
   async function connectMicrosoft(selectedOrganization = organization) {
+    const organizationName = validatedOrganization(selectedOrganization);
+    if (!organizationName) return;
     setBusy(true);
     setError("");
+    setNotice("");
     setPat("");
     try {
       const result = await fetchJson<{ authorization_url: string }>(endpoint + "/oauth/start", {
-        method: "POST", body: JSON.stringify({ organization: selectedOrganization, directory_path: directoryPath }),
+        method: "POST", body: JSON.stringify({ organization: organizationName, directory_path: directoryPath }),
       });
       window.location.assign(result.authorization_url);
     } catch (cause) {
@@ -114,16 +148,31 @@ export function PersonalAdoConnections({ directoryPath }: { directoryPath: strin
       <p>Allow the platform to create pull requests as your ADO account when you own the work item.</p>
       <p>This connection applies to <strong>{directoryPath}</strong> and its subdirectories.</p>
       <p>Microsoft OAuth is preferred when connected. A saved PAT is the fallback, followed by the bot.</p>
-      {error ? <p role="alert">{error}</p> : null}
-      {notice ? <p role="status">{notice}</p> : null}
-      <form onSubmit={(event) => { event.preventDefault(); void save(); }}>
-        <label>Organization
-          <input required value={organization} onChange={(event) => setOrganization(event.target.value)}
-            placeholder="Your ADO organization" disabled={busy} />
-        </label>
+      {error ? <div ref={errorPanel} id="personal-ado-error" className="error-box personal-ado-error" role="alert" tabIndex={-1}>
+        <strong>Connection error</strong>
+        <p>{error}</p>
+      </div> : null}
+      {notice ? <p className="personal-ado-notice" role="status">{notice}</p> : null}
+      <label>Azure DevOps organization (required)
+        <input required type="text" name="ado-organization" autoComplete="off" autoCapitalize="none"
+          spellCheck={false} data-1p-ignore="true" data-lpignore="true"
+          aria-invalid={organizationInvalid}
+          aria-describedby={`personal-ado-organization-help${organizationInvalid ? " personal-ado-error" : ""}`}
+          value={organization} onChange={(event) => {
+            setOrganization(event.target.value);
+            if (organizationInvalid) { setOrganizationInvalid(false); setError(""); }
+          }} placeholder="contoso" disabled={busy} />
+      </label>
+      <p id="personal-ado-organization-help">Required for both Microsoft OAuth and a personal access token.
+        Use the organization from your Azure DevOps URL: https://dev.azure.com/<strong>contoso</strong>.</p>
+      <div className="personal-ado-method">
+        <h3>Microsoft OAuth</h3>
         <button type="button" className="admin-shell-button" disabled={busy || !organization || !oauthAvailable}
           onClick={() => void connectMicrosoft()}>Connect with Microsoft</button>
         {!oauthAvailable ? <p>Microsoft connections need to be enabled by your platform administrator. You can use a PAT now.</p> : null}
+      </div>
+      <form className="personal-ado-method" autoComplete="off" onSubmit={(event) => { event.preventDefault(); void save(); }}>
+        <h3>Personal access token (PAT)</h3>
         <label>Personal access token
           <input required type="password" autoComplete="off" value={pat}
             onChange={(event) => setPat(event.target.value)} disabled={busy} />
@@ -134,6 +183,7 @@ export function PersonalAdoConnections({ directoryPath }: { directoryPath: strin
           {busy ? "Working…" : "Validate and save PAT"}
         </button>
       </form>
+      <h3>Saved connections</h3>
       <ul>{connections.map((connection) => <li key={`${connection.organization}:${connection.directory_path}`}>
         <strong>{connection.display_name}</strong> — {connection.organization} ({connection.directory_path})
         {connection.has_oauth ? <p>Microsoft OAuth: {connection.oauth_status === "reconnect_required" ? "Reconnect required" : "Connected"}</p> : null}

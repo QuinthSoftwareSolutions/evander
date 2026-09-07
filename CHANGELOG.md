@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-09-07 - Personal ADO connection feedback (0.25.1)
+
+- Clarified that the Azure DevOps organization is required for both PAT and Microsoft OAuth
+  connections, with an organization URL example and password-manager autofill hints.
+- Reject invalid organization values before submitting credentials and show prominent,
+  focused error messages and explicit PAT save confirmation.
+
 ## 2026-09-05 - ADO assignee attribution (0.25.0)
 
 - Added personal Azure DevOps PAT and Microsoft Entra OAuth connections for signed-in Admin Web

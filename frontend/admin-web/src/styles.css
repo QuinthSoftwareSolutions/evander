@@ -13005,3 +13005,12 @@ button.mobile-record-card:focus-visible,
 .personal-ado-dialog input { padding: .6rem; }
 .personal-ado-dialog li { margin: 1rem 0; }
 .personal-ado-dialog button { margin: .3rem; }
+.personal-ado-method { border-top: 1px solid #687787; margin-top: 1.25rem; padding-top: .25rem; }
+.personal-ado-error { margin: 1rem 0; padding: 1rem; border-left: 4px solid #b42318; }
+.personal-ado-error p { margin: .5rem 0 0; }
+.personal-ado-error:focus { outline: 2px solid currentColor; outline-offset: 3px; }
+.personal-ado-dialog input[aria-invalid="true"] { border: 2px solid #b42318; }
+.personal-ado-notice { padding: 1rem; border: 1px solid #32835b; border-left-width: 4px; background: #edf8f0; color: #175c36; }
+:root[data-theme="dark"] .personal-ado-notice { background: #143324; color: #b5efca; }
+:root[data-theme="dark"] .personal-ado-error,
+:root[data-theme="dark"] .personal-ado-dialog input[aria-invalid="true"] { border-color: #ffb6aa; }
