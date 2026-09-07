@@ -1209,6 +1209,20 @@ A transport-terminated warning without client-visible failure can be expected fo
   - Optional MCP argument: `project`.
   - The tool trims `title`, rejects blank or whitespace-only values, and writes the result to
     `System.Title`.
+- Gateway tool name: `update_ado_backlog_state`.
+  - Policy-gated with `update_ado_backlog_state`; grant it explicitly in the agent's session or
+    provisioning configuration. Existing ADO read/comment grants do not imply this permission.
+  - Required MCP arguments: positive numeric `id`, non-empty `state`.
+  - Optional MCP arguments: `project`, `expected_state`.
+  - Uses the session directory's host-owned ADO connection and updates only `System.State`.
+    State names are trimmed and must be valid for the item's ADO process.
+  - Supplying `expected_state` adds an atomic JSON Patch test before the state mutation. ADO
+    rejects mismatches; the gateway propagates the error and does not retry without the guard.
+    Omitting it sends an unconditional state update.
+  - Example: after implementation tasks have been assigned, call with `state="In Progress"`
+    and `expected_state="Committed"`, then verify with `get_ado_backlog_item`. If the item is
+    already in the target state, no update is needed. After a conflict or timeout, read back
+    before retrying, and preserve later states rather than moving them backwards.
 - Gateway tool name: `update_ado_backlog_tags`.
   - Policy-gated with `update_ado_backlog_tags`.
   - Required MCP argument: `id`; at least one tag must be present in `add_tags` or `remove_tags`.

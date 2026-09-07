@@ -110,6 +110,9 @@ _TOOL_DESCRIPTIONS: dict[ToolName, str] = {
         "Update Azure DevOps backlog description or acceptance criteria text."
     ),
     ToolName.UPDATE_ADO_BACKLOG_TITLE: "Update the title of an Azure DevOps backlog item.",
+    ToolName.UPDATE_ADO_BACKLOG_STATE: (
+        "Update an Azure DevOps backlog item's state, optionally requiring its expected current state."
+    ),
     ToolName.UPDATE_ADO_BACKLOG_TAGS: "Add or remove Azure DevOps backlog item tags.",
     ToolName.RESOLVE_ADO_IDENTITY: "Resolve an Azure DevOps user identity for reporting filters.",
     ToolName.QUERY_ADO_WORK_ITEM_ACTIVITY: (

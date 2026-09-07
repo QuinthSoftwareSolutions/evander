@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-09-07 - Agent ADO state updates (0.27.0)
+
+- Add the permission-gated `update_ado_backlog_state` MCP tool for updating a work item's
+  state through the host-owned ADO connection, with an optional atomic expected-state guard.
+- Expose the tool in Admin Web permission controls; existing sessions require an explicit grant.
+
 ## 2026-09-07 - Dispatch-time role task assignment (0.26.0)
 
 - Give accepted dependency merge recoveries distinct, retry-stable Git branches and worktrees,

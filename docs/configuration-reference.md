@@ -1149,6 +1149,14 @@ For ADO work-item discovery, `query_mode=structured_filters` uses the structured
 while `query_mode=manual_wiql` uses the explicit WIQL text and ignores structured filters. Omitted
 `query_mode` preserves legacy behavior by inferring Manual WIQL when `wiql` is set.
 
+The session-scoped `update_ado_backlog_state` MCP tool accepts `id`, `state`, optional `project`,
+and optional `expected_state`. It updates only `System.State` using the caller's directory-owned
+ADO connection. State names must be non-empty and valid for the item's ADO process. A supplied
+`expected_state` is checked atomically by ADO before updating; mismatches fail without an
+unconditional retry. Omitting it sends an unconditional update. Grant the tool explicitly in
+`allowed_tools`; normal `approval_required_tools`, `mcp_tool_policies`, and tool-argument policies
+apply. Existing sessions and provisioning defaults are not automatically granted this tool.
+
 The session-scoped `update_pull_request` MCP tool exposes Azure DevOps PR title, description,
 status, and tag updates to explicitly authorized agents. It accepts `azure_devops`,
 `azure-devops`, or `ado`, always resolves the organization and PAT from the caller's directory,

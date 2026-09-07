@@ -81,6 +81,7 @@ class ToolName(str, Enum):
     DELETE_ADO_BACKLOG_ITEM = "delete_ado_backlog_item"
     UPDATE_ADO_BACKLOG_TEXT = "update_ado_backlog_text"
     UPDATE_ADO_BACKLOG_TITLE = "update_ado_backlog_title"
+    UPDATE_ADO_BACKLOG_STATE = "update_ado_backlog_state"
     UPDATE_ADO_BACKLOG_TAGS = "update_ado_backlog_tags"
     CREATE_LOCAL_ISSUE = "create_local_issue"
     LIST_ISSUES = "list_issues"
@@ -2466,6 +2467,43 @@ class AdoBacklogTitleUpdateRequest(BaseModel):
         if not normalized:
             raise ValueError("title cannot be empty")
         return normalized
+
+
+class AdoBacklogStateUpdateRequest(BaseModel):
+    id: int | str
+    project: str | None = None
+    state: str
+    expected_state: str | None = None
+
+    @field_validator("id", mode="before")
+    @classmethod
+    def normalize_id(cls, value: object) -> str:
+        if value is None:
+            raise ValueError("id is required")
+        if isinstance(value, bool):
+            raise ValueError("id must be an integer")
+        normalized = str(value).strip()
+        if not normalized or not normalized.isascii() or not normalized.isdigit():
+            raise ValueError("id must be a numeric backlog item id")
+        if int(normalized) <= 0:
+            raise ValueError("id must be positive")
+        return normalized
+
+    @field_validator("project", mode="before")
+    @classmethod
+    def trim_project(cls, value: object) -> str | None:
+        if value is None:
+            return None
+        return str(value).strip() or None
+
+    @field_validator("state", "expected_state", mode="before")
+    @classmethod
+    def trim_state(cls, value: object, info) -> str | None:
+        if value is None and info.field_name == "expected_state":
+            return None
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError(f"{info.field_name} must be a non-empty string")
+        return value.strip()
 
 
 class AdoBacklogTagsUpdateRequest(BaseModel):

@@ -26,6 +26,7 @@ from evander.models import (
     AdoBacklogGetResponse,
     AdoBacklogQueryRequest,
     AdoBacklogQueryResponse,
+    AdoBacklogStateUpdateRequest,
     AdoBacklogTagsUpdateRequest,
     AdoBacklogTextUpdateRequest,
     AdoBacklogTitleUpdateRequest,
@@ -675,6 +676,73 @@ def register_ado_tools(
             audit_failure(
                 session_id,
                 ToolName.UPDATE_ADO_BACKLOG_TITLE,
+                args,
+                str(exc),
+                decision="error",
+                error_class="unexpected_error",
+            )
+            raise
+
+    @server.tool()
+    def update_ado_backlog_state(
+        id: int | str,
+        state: str,
+        project: str | None = None,
+        expected_state: str | None = None,
+        *,
+        session_id: str | None = None,
+        ctx: Context | None = None,
+    ) -> dict[str, Any]:
+        """Update only System.State using the session's host-owned ADO connection.
+
+        Use a state name valid for this item's ADO process. Pass expected_state to
+        atomically reject an update if the item has moved to another state. For
+        example, state="In Progress", expected_state="Committed". On a conflict
+        or uncertain result, read the item with get_ado_backlog_item before
+        retrying; do not retry unconditionally. This tool requires its own grant.
+        """
+        session_id = _resolve_session_id_from_context(
+            session_id, ctx, transport_session_map=transport_session_map
+        )
+        request_model = AdoBacklogStateUpdateRequest(
+            id=id,
+            project=project,
+            state=state,
+            expected_state=expected_state,
+        )
+        args = {"session_id": session_id, **request_model.model_dump(mode="json")}
+        try:
+            session = context.policy.require_tool(session_id, ToolName.UPDATE_ADO_BACKLOG_STATE)
+            result = deps.issue_service_factory().update_remote_issue(
+                provider="azure_devops",
+                remote_issue_id=request_model.id,
+                directory_path=session.directory_path,
+                project=request_model.project,
+                state=request_model.state,
+                expected_state=request_model.expected_state,
+                fields=None,
+            )
+            response = {**result, "work_item_id": request_model.id}
+            audit_success(
+                session_id,
+                ToolName.UPDATE_ADO_BACKLOG_STATE,
+                args,
+                {
+                    "work_item_id": request_model.id,
+                    "project": request_model.project,
+                    "state": result.get("state"),
+                    "expected_state": request_model.expected_state,
+                    "updated": result.get("updated"),
+                },
+            )
+            return response
+        except PolicyError as exc:
+            audit_failure(session_id, ToolName.UPDATE_ADO_BACKLOG_STATE, args, str(exc))
+            raise
+        except Exception as exc:
+            audit_failure(
+                session_id,
+                ToolName.UPDATE_ADO_BACKLOG_STATE,
                 args,
                 str(exc),
                 decision="error",
