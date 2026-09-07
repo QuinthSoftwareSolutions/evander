@@ -36,7 +36,12 @@ from evander_bokio_addon.mcp import (
     READ_TOOLS,
     register_mcp_tools,
 )
-from evander_bokio_addon.operations import BokioOperationError, BokioOperationStore
+from evander_bokio_addon.operations import (
+    BokioOperationError,
+    BokioOperationStore,
+    bokio_error_payload,
+    bokio_operator_error_message,
+)
 from evander_bokio_addon.providers import BokioCompanyQueryProvider
 from evander_bokio_addon.state import PreparedActionStore, upload_staging_dir
 
@@ -84,6 +89,48 @@ def test_bokio_client_normalizes_api_errors(monkeypatch) -> None:
     assert payload["status_code"] == 403
     assert payload["plan_warning"] == "plan warning"
     assert payload["payload"]["error"] == "price_plan_feature_required"
+
+
+def test_bokio_error_payload_explains_validation_and_partial_evidence_failure() -> None:
+    error = bokio_error_payload(
+        BokioApiError(
+            "Validation failed with 1 error",
+            status_code=400,
+            payload={
+                "code": "validation-error",
+                "errors": [
+                    {
+                        "field": "#/journalEntryId",
+                        "message": "Journal entry is already connected to an upload",
+                    }
+                ],
+            },
+        )
+    )
+
+    assert error["operator_message"] == (
+        "Bokio validation failed (HTTP 400): #/journalEntryId - Journal entry is already "
+        "connected to an upload."
+    )
+
+    error.update(
+        {
+            "journal_entry_created": True,
+            "evidence_operation": {
+                "journal_entry_id": "journal-entry-1",
+                "result": {"journalEntryNumber": "V466"},
+                "associations": [
+                    {"status": "attached"},
+                    {"status": "failed"},
+                ],
+            },
+        }
+    )
+    message = bokio_operator_error_message(error)
+
+    assert "Journal entry V466 (journal-entry-1) was created" in message
+    assert "1 evidence file was attached and 1 failed" in message
+    assert "will not create another journal entry" in message
 
 
 def test_bokio_client_lists_and_gets_customers_and_suppliers(monkeypatch) -> None:
@@ -2523,10 +2570,17 @@ def test_bokio_ui_tracks_live_privilege_and_executing_recovery_state() -> None:
     assert 'appendJsonSection(els.actionDetail, "Evidence result"' in ui_js
     assert 'action.status === "needs_attention" || action.status === "executing"' in ui_js
     assert 'runActionMutation(action, "retry", { confirm_not_created: true })' in ui_js
+    assert "function bokioFailureMessage(error)" in ui_js
+    assert "only evidence attachment failed" in ui_js
+    assert "await refresh({ preserveNotice: true });" in ui_js
     failed_controls = ui_js.split('} else if (action.status === "failed") {', 1)[1].split(
         '} else if (action.status === "needs_attention"', 1
     )[0]
-    assert 'mutationButton("Retry"' in failed_controls
+    assert (
+        'const retryLabel = action.error?.journal_entry_created ? "Retry evidence attachment" : "Retry";'
+        in failed_controls
+    )
+    assert "mutationButton(retryLabel" in failed_controls
     assert "rejectionButton(action)" in failed_controls
 
 

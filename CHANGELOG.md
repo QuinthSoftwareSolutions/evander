@@ -2,6 +2,8 @@
 
 ## 2026-09-07 - Team, ADO and runtime improvements (0.26.0)
 
+- Explain Bokio validation failures with upstream field details and retain structured audit data.
+- Show partial journal-entry outcomes, attachment counts, and the scope of evidence retries.
 - Replace host-wide completion polling with events from the prompt effect or wake monitor;
   route ephemeral cleanup from prompt completion and preserve legacy transform names as no-ops.
 - Add the permission-gated `update_ado_backlog_state` MCP tool for updating a work item's
