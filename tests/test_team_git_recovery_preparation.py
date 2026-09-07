@@ -16,9 +16,11 @@ from evander_team_addon.models import (
     Deliverable,
     DeliverableGitRefs,
     DependencyCompositionRecoveryState,
+    GitWorkContextState,
     ProjectGitConfig,
     TeamGitPreparationAttemptState,
     TeamState,
+    TeamTaskState,
 )
 from evander_team_addon.providers import (
     DependencyGitPreparationError,
@@ -258,6 +260,12 @@ def test_conflicted_task_adopts_reviewed_recovery_in_distinct_retryable_worktree
         state, _ = runtime.activate_delivered_agent_dispatch(dispatch_id=recovery_dispatch)
         assert state.tasks["task"].assignment_started_at is not None
 
+    def start_task(state: TeamState) -> None:
+        state.tasks["task"].state = TeamTaskState.IN_PROGRESS
+        state.git_work_contexts[work_context.id].state = GitWorkContextState.ABANDONED
+
+    repo.update(start_task)
+
     (checkout / "implementation.txt").write_text("Agent implementation.\n")
     _git(checkout, "add", "implementation.txt")
     _git(checkout, "commit", "-qm", "Continue recovered task")
@@ -278,6 +286,144 @@ def test_conflicted_task_adopts_reviewed_recovery_in_distinct_retryable_worktree
     assert (checkout / "shared.txt").read_text() == "Uncommitted agent work.\n"
     assert _git(original_checkout, "rev-parse", "HEAD") == base_commit
     assert (original_checkout / "operator-notes.txt").read_text() == "Preserve this checkout.\n"
+
+
+def test_explicit_contribution_contract_prepares_fresh_worktree_after_inputs_accumulate(
+    tmp_path, monkeypatch,
+):
+    source = tmp_path / "source"
+    source.mkdir()
+    _git(source, "init", "-q", "-b", "main")
+    _git(source, "config", "user.email", "test@example.invalid")
+    _git(source, "config", "user.name", "Recovery Test")
+    (source / "base.txt").write_text("base\n")
+    _git(source, "add", ".")
+    _git(source, "commit", "-qm", "Base")
+    base = _git(source, "rev-parse", "HEAD")
+    contributions = []
+    for name in ("first", "second"):
+        branch = f"agents/source/{name}"
+        _git(source, "checkout", "-q", "-b", branch, "main")
+        (source / f"{name}.txt").write_text(f"{name}\n")
+        _git(source, "add", ".")
+        _git(source, "commit", "-qm", name)
+        contributions.append({
+            "dependency_task_id": f"task-{name}", "deliverable_id": f"deliverable-{name}",
+            "branch": branch, "commit_sha": _git(source, "rev-parse", "HEAD"),
+            "pinned_ref": None, "relationship_kind": "required_contribution",
+        })
+    _git(source, "checkout", "-q", "main")
+    repo = _seed_team(tmp_path / "team-runtime")
+
+    def seed_git(state):
+        state.projects["project"].git = ProjectGitConfig(
+            managed_repo_id="mr_0123456789abcdefabcd", base_branch="main",
+        )
+        state.tasks["task"].git_base_branch = "main"
+
+    repo.update(seed_git)
+    daemon = WorkerDaemon(
+        runtime_dir=tmp_path / "worker-runtime", worker_root=tmp_path / "worker-root",
+        allowed_git_source_prefixes=[str(tmp_path)], container_runtime=SimpleNamespace(),
+    )
+    daemon.clone_repo(
+        "session-backend", WorkerRepoCloneRequest(repo_source=str(source), repo_name="repo"),
+    )
+    requests = []
+
+    def prepare(*, session_id, **kwargs):
+        request = WorkerTaskWorktreeRequest(**kwargs)
+        requests.append(request)
+        return daemon.prepare_task_worktree(session_id, request)
+
+    monkeypatch.setattr(
+        "evander_team_addon.providers.container_backend",
+        lambda *_args: SimpleNamespace(prepare_task_worktree=prepare),
+    )
+    sources = []
+    monkeypatch.setattr(
+        "evander_team_addon.providers._project_repo_task_dependency_git_sources",
+        lambda *_args, **_kwargs: list(sources),
+    )
+    context = EffectRuntimeContext(
+        resolved_config={"runtime_dir": str(repo.runtime_dir)},
+        admin_service=SimpleNamespace(managed_git_admin=None),
+    )
+
+    def prepare_task(dispatch_id):
+        repo.update(lambda state: setattr(
+            state.agent_runtimes["backend"], "active_dispatch_id", dispatch_id,
+        ))
+        state = repo.read()
+        return _create_project_repo_git_work_contexts(
+            context, repo, state=state, agent_id="backend", session_id="session-backend",
+            project_id="project", dispatch_id=dispatch_id,
+            project_repo={
+                "managed_repo_id": "mr_0123456789abcdefabcd", "guest_repo_name": "repo",
+                "target_dir": "/home/agent/repo", "execution_backend": "container_worker_vm",
+            },
+            tasks=[state.tasks["task"].model_dump(mode="json")], base_branch="main",
+        )
+
+    prepare_task("dispatch-empty")
+    sources.append(contributions[0])
+    prepare_task("dispatch-first-child")
+    checkout = (
+        tmp_path / "worker-root/sessions/session-backend/agent_home/worktrees/repo"
+        / requests[-1].worktree_name
+    )
+    assert _git(checkout, "rev-parse", "HEAD") == contributions[0]["commit_sha"]
+    sources.append(contributions[1])
+    with pytest.raises(DependencyGitPreparationError, match="provenance is ambiguous"):
+        prepare_task("dispatch-expanded-implicit-inputs")
+    original_checkout = checkout
+    (original_checkout / "operator-notes.txt").write_text("Preserve prior preparation.\n")
+
+    def record_accepted_children(state):
+        for contribution in contributions:
+            state.tasks[contribution["dependency_task_id"]] = AgentTask(
+                id=contribution["dependency_task_id"], owner_agent_id="backend",
+                project_id="project", priority=1, title="Accepted child",
+                description="Completed contribution", state=TeamTaskState.FINISHED,
+                deliverable_ids=[contribution["deliverable_id"]],
+                created_by_agent_id="lead",
+                parent_task_id="task",
+            )
+            state.deliverables[contribution["deliverable_id"]] = Deliverable(
+                id=contribution["deliverable_id"], task_id=contribution["dependency_task_id"],
+                producer_agent_id="backend", summary="Accepted contribution", state="accepted",
+                git_refs=DeliverableGitRefs(
+                    agent_branch=contribution["branch"], commit_sha=contribution["commit_sha"],
+                ),
+            )
+    repo.update(record_accepted_children)
+    TeamAdminService(repo).update_task(
+        task_id="task",
+        integration_boundary=True,
+        deliverable_contract={
+            "require_git_provenance": True,
+            "required_contribution_task_ids": [c["dependency_task_id"] for c in contributions],
+        },
+        expected_revision=repo.read().revision,
+    )
+    state, rows, _ = prepare_task("dispatch-second-child")
+    [row] = rows
+    assert len({request.worktree_name for request in requests}) == 2
+    assert len(state.git_preparation_attempts) == 2
+    checkout = original_checkout.parent / requests[-1].worktree_name
+    for contribution in contributions:
+        _git(checkout, "merge-base", "--is-ancestor", contribution["commit_sha"], "HEAD")
+    composed = _git(checkout, "rev-parse", "HEAD")
+    assert state.git_work_contexts[row["branch_context_id"]].base_commit == composed
+    assert {c.base_commit for c in state.git_work_contexts.values()} == {
+        base, contributions[0]["commit_sha"], composed,
+    }
+    (checkout / "implementation.txt").write_text("Preserved agent work.\n")
+    prepare_task("dispatch-repeat")
+    assert _git(checkout, "rev-parse", "HEAD") == composed
+    assert (checkout / "implementation.txt").read_text() == "Preserved agent work.\n"
+    assert _git(original_checkout, "rev-parse", "HEAD") == contributions[0]["commit_sha"]
+    assert (original_checkout / "operator-notes.txt").read_text() == "Preserve prior preparation.\n"
 
 
 def test_preparation_attempt_rejects_changed_worktree_path(tmp_path: Path) -> None:

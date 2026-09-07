@@ -188,6 +188,48 @@ def test_explicit_reassignment_still_invalidates_accepted_recovery(recovered_rol
     assert state.dependency_composition_recoveries["recovery"].model_dump() == original
 
 
+@pytest.mark.parametrize(
+    "changed",
+    ["task", "dependency", "owner", "project_git", "context_base", "context_sources", "context_id"],
+)
+def test_retained_recovery_context_does_not_bypass_changed_provenance(recovered_role_repo, changed):
+    from evander_team_addon.models import GitWorkContext, GitWorkContextState
+    from evander_team_addon.services.domain.preparation_failures import (
+        task_git_work_context_generation,
+    )
+
+    state, _ = lease(recovered_role_repo, agent_id="backend")
+    recovery = current_recovery(state)
+    context = GitWorkContext(
+        id="retained", task_id="recovered", agent_id="backend",
+        agent_branch="agents/backend/recovered", base_branch="main",
+        base_commit=recovery.resolved_commit_sha,
+        dependency_composition_recovery_id=recovery.id,
+        dependency_git_sources=recovery.dependency_git_sources,
+        preparation_generation=task_git_work_context_generation(state, "recovered"),
+        state=GitWorkContextState.ABANDONED,
+    )
+    state.git_work_contexts[context.id] = context
+    state.tasks["recovered"].state = TeamTaskState.IN_PROGRESS
+    assert recovery.preparation_generation != task_preparation_generation(state, "recovered")
+    assert current_recovery(state) is recovery
+    if changed == "task":
+        state.tasks["recovered"].description = "Changed requirements"
+    elif changed == "dependency":
+        state.deliverables["source-deliverable"].git_refs.commit_sha = "e" * 40
+    elif changed == "owner":
+        state.tasks["recovered"].owner_agent_id = "backend-peer"
+    elif changed == "project_git":
+        state.projects["project"].git.base_branch = "release"
+    elif changed == "context_base":
+        context.base_commit = "d" * 40
+    elif changed == "context_sources":
+        context.dependency_git_sources = []
+    else:
+        context.dependency_composition_recovery_id = "unrelated-recovery"
+    assert current_recovery(state) is None
+
+
 def test_role_queue_roundtrip_and_dispatch_capacity(role_repo):
     for task_id in ["one", "two", "three"]:
         state, result = create_role_task(role_repo, task_id)
