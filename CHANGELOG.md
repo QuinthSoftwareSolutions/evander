@@ -1,12 +1,10 @@
 # Changelog
 
-## 2026-09-07 - Agent ADO state updates (0.27.0)
+## 2026-09-07 - Team, ADO and runtime improvements (0.26.0)
 
 - Add the permission-gated `update_ado_backlog_state` MCP tool for updating a work item's
   state through the host-owned ADO connection, with an optional atomic expected-state guard.
 - Expose the tool in Admin Web permission controls; existing sessions require an explicit grant.
-
-## 2026-09-07 - Dispatch-time role task assignment (0.26.0)
 
 - Give accepted dependency merge recoveries distinct, retry-stable Git branches and worktrees,
   preserving checkouts left by failed preparation; reject preparation reuse with a changed path.
@@ -23,6 +21,9 @@
 - Include bounded conversation history and reply links when operator follow-ups interrupt ongoing work.
 - Reject unlinked notifications to an operator awaiting an active Team Chat reply, returning the
   correct reply tool and message IDs before posting.
+- Expose description and acceptance criteria in ADO queries, detail reads, and batch summaries,
+  preserving raw fields and supplying empty strings for absent optional content.
+- Keep matching-work-item trigger content bindings valid when descriptions or criteria are absent.
 
 ## 2026-09-07 - ADO Markdown image access (0.25.2)
 
