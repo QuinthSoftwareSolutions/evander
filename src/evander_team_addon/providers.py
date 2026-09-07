@@ -9548,6 +9548,7 @@ def _ensure_project_repo_git_preparation_attempt(
             "managed_repo_id",
             "directory_path",
             "execution_backend",
+            "worktree_path",
             "branch",
             "base_ref",
             "preparation_generation",
@@ -9864,17 +9865,22 @@ def _create_project_repo_git_work_contexts(
             task_id=task_id,
             effective_base_branch=effective_base_branch,
         )
+        # A failed automatic composition may already own a worktree and branch,
+        # even though it never produced a preparation receipt. Give the reviewed
+        # recovery its own stable identity on both backends, preserving that
+        # checkout and keeping retries of the same recovery on the same branch.
+        candidate_identity_commit = (
+            continuation_identity_commit
+            if continuation_identity_commit is not None
+            else correction_source.candidate_commit_sha
+            if correction_source is not None
+            else resolved_dependency_commit_sha
+        )
         agent_branch = _project_repo_agent_branch(
             session_id,
             task_id=task_id,
             preparation_generation=preparation_generation,
-            candidate_commit_sha=(
-                continuation_identity_commit
-                if continuation_identity_commit is not None
-                else correction_source.candidate_commit_sha
-                if correction_source is not None
-                else None
-            ),
+            candidate_commit_sha=candidate_identity_commit,
         )
         try:
             if dependency_recovery is None:
@@ -9905,7 +9911,7 @@ def _create_project_repo_git_work_contexts(
         worktree_name = _project_repo_task_worktree_name(
             task_id=task_id,
             preparation_generation=preparation_generation,
-            identity_commit=(continuation_identity_commit or pinned_base_commit),
+            identity_commit=(candidate_identity_commit or pinned_base_commit),
         )
         directory_path = (
             _optional_text(
@@ -9959,6 +9965,11 @@ def _create_project_repo_git_work_contexts(
             and prior_base_commit is None
         ):
             prior_base_commit = preparation_attempt.base_commit_sha
+        recovery_already_committed = (
+            dependency_composition_mode == "adopt_resolved"
+            and preparation_attempt.state == TeamGitPreparationAttemptState.COMMITTED
+            and prior_base_commit == resolved_dependency_commit_sha
+        )
         with team_task_worktree_cleanup_lock(
             runtime_dir=_runtime_dir(context),
             session_id=session_id,
@@ -9978,16 +9989,28 @@ def _create_project_repo_git_work_contexts(
                     preparation_attempt_id=(
                         preparation_attempt_id if use_preparation_receipt else None
                     ),
-                    worktree_identity_commit=(continuation_identity_commit),
+                    worktree_identity_commit=candidate_identity_commit,
                     preparation_generation=preparation_generation,
                     prior_base_commit=prior_base_commit,
                     pinned_base_commit=pinned_base_commit,
                     pinned_base_tree=pinned_base_tree,
                     dependency_git_sources=composition_git_sources,
-                    dependency_composition_mode=dependency_composition_mode,
-                    dependency_composition_recovery_id=(dependency_composition_recovery_id),
-                    resolved_dependency_branch=resolved_dependency_branch,
-                    resolved_dependency_commit_sha=resolved_dependency_commit_sha,
+                    # After adoption has committed, validate the retained task
+                    # checkout normally so later agent work is never reset to
+                    # the recovery candidate. Keep the recovery on the Team
+                    # context below, where it remains part of the provenance.
+                    dependency_composition_mode=(
+                        "automatic" if recovery_already_committed else dependency_composition_mode
+                    ),
+                    dependency_composition_recovery_id=(
+                        None if recovery_already_committed else dependency_composition_recovery_id
+                    ),
+                    resolved_dependency_branch=(
+                        None if recovery_already_committed else resolved_dependency_branch
+                    ),
+                    resolved_dependency_commit_sha=(
+                        None if recovery_already_committed else resolved_dependency_commit_sha
+                    ),
                     dependency_merge_author_identity=task_author,
                     task_author_identity=task_author,
                     composition_result=composition_result,
@@ -11196,7 +11219,15 @@ def _prepare_project_repo_task_worktree(
     )
     execution_backend = _optional_text(project_repo.get("execution_backend")) or selected_backend
     if execution_backend == "container_worker_vm":
-        expected_base_commit = prior_base_commit or pinned_base_commit
+        # An uncommitted adoption retries the original worker request. Its
+        # receipt supplies the composed base after validating the pinned root;
+        # sending that composed base here would change the receipt fingerprint.
+        expected_base_commit = (
+            pinned_base_commit
+            if dependency_composition_mode == "adopt_resolved"
+            and preparation_attempt_id is not None
+            else prior_base_commit or pinned_base_commit
+        )
         # A composed retained base has a different tree from its pinned root.
         # The worker validates that root through its composition record below.
         expected_base_tree = (

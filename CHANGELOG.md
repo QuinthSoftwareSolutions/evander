@@ -2,6 +2,8 @@
 
 ## 2026-09-07 - Dispatch-time role task assignment (0.26.0)
 
+- Give accepted dependency merge recoveries distinct, retry-stable Git branches and worktrees,
+  preserving checkouts left by failed preparation; reject preparation reuse with a changed path.
 - Queue new role-based tasks until their dependencies are ready and an eligible agent has capacity.
 - Reserve one new role task per agent atomically with its dispatch, preserving ownership after execution starts.
 - Route child acceptance to the producer's superior while a parent is queued,
