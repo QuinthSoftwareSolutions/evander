@@ -575,6 +575,7 @@ def test_create_server_registers_schedule_resume_and_cancel_scheduled_wake_tools
         "delete_ado_backlog_item",
         "update_ado_backlog_text",
         "update_ado_backlog_title",
+        "update_ado_backlog_state",
         "update_ado_backlog_tags",
         "query_ado_backlog_items",
         "get_ado_backlog_item",
