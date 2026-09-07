@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-09-07 - ADO work-item content fields (0.26.1)
+
+- Expose description and acceptance criteria in Azure DevOps work-item queries, detail reads,
+  and batch summaries, with empty strings for missing optional content and raw fields preserved.
+- Prevent matching work-item triggers from failing downstream directive bindings when workflows
+  reference the normalized description or acceptance criteria.
+
 ## 2026-09-07 - Dispatch-time role task assignment (0.26.0)
 
 - Give accepted dependency merge recoveries distinct, retry-stable Git branches and worktrees,
