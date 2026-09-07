@@ -1564,26 +1564,48 @@ Async-intent tools may record durable intent while external work is still
 pending. Their result reports the recorded intent and pending effect state
 rather than claiming the external operation completed synchronously.
 
-`team_create_task_for_role` creates one task after resolving `role_id` to a
-concrete owner. `team_reassign_task_for_role` applies the same allocation to an
-existing non-terminal task. An agent is eligible only when it is active,
-assigned to the target project, not under an active stand-down, within the
-caller's existing task-assignment authority, and has the exact role either as
-its base role or on its target-project assignment. A live dispatch or wake lease
-makes a candidate busy but does not make it ineligible.
+`team_create_task_for_role` creates a pending role-owned task with
+`assignment_mode: role`, `assignment_role_id`, and a null `owner_agent_id`.
+The command returns `assignment_outcome: queued` and no selected owner;
+request-id replay returns that original receipt even after the task starts.
+Creation requires a matching project member within the caller's delegation
+boundary, but that member may currently be busy, paused, or stood down.
 
-Both tools use the fixed `work_aware_least_loaded_v1` ordering: fewest ready
-obligations (ready tasks, pending reviews, due blockers, and pending
-response-required inbox items), idle before busy, fewest total non-terminal
-tasks, oldest `last_wake_at` with never-woken agents first, then agent id. The
-selection and mutation are one transaction. If no candidate is eligible, the
-tool fails atomically and leaves the task unchanged; reassignment may instead
-succeed without a task mutation when the current owner still ranks first.
-Responses include the policy, selected owner,
-candidate count, and candidate scores for command audit and idempotent replay.
-The role is not stored on the task and does not cause later automatic movement;
-the existing concrete-owner tools remain unchanged. Role-based batch creation is
-not supported.
+The runtime rechecks exact role membership, project assignment, creator authority,
+execution gates, and capacity before assigning work. Ready tasks sort by priority,
+creation time, and ID. An available agent receives at most one new role task in a
+dispatch; existing ready work and response/recovery obligations take precedence.
+Remaining tasks stay ownerless. Owner selection and dispatch reservation commit
+atomically with a `team.task.role_assigned` event containing candidate scores.
+`assignment_started_at` records first delivered execution; subsequent wakes retain
+the owner. Team task views display the requested role and the queue's waiting reason.
+Periodic allocation checks each candidate's wake interval before selecting an owner.
+Only the dispatch that claimed a task may return it to the queue after a confirmed
+failure before submission; uncertain delivery retains ownership across retries.
+When a queued parent has no owner, child acceptance and parent transition notices
+fall back to the child producer's superior so the children can resolve.
+
+The built-in runtime pack handles `team.role_queue.wake_requested` with a
+project-scoped wake, without an agent filter. Creation, dependency readiness,
+and dispatch completion publish queue wakes; periodic runtime scans recover missed
+events. Operator-maintained runtime packs need the corresponding trigger and edge
+added through the revision-checked workflow editor/API.
+
+Existing tasks remain fixed to their current owners after migration. Named-owner
+creation tools and `team_reassign_task_for_role` remain explicit immediate-owner
+operations; a manual owner override removes a task from automatic role scheduling.
+Role-based batch creation and automatic substitution of a senior for a junior
+role are not supported.
+
+Rollout requires the new gateway, Admin Web, and Team runtime code together.
+Back up the Team SQLite database with SQLite's backup API before upgrading;
+the schema migration makes task ownership nullable and preserves all existing
+owners. Refresh the built-in runtime pack through **Add-ons → Refresh runtime
+pack**, or merge the queue trigger into a customized pack through the revision-
+checked editor. Do not run older code against a database containing ownerless
+tasks. To roll back, stop the upgraded services and restore the pre-upgrade
+database and matching code; a database restore also discards subsequent changes.
+No migration redistributes existing work.
 
 `team_report_blocker` records a durable blocker for an explicit dependency or a
 blocked task, deliverable, review request, or release package. The nearest

@@ -50,7 +50,11 @@ def task_acceptance_recipient_agent_id(
 
     producer = state.agents.get(producer_agent_id)
     parent = parent_task_for_child(state, task)
-    if parent is not None and parent.owner_agent_id != producer_agent_id:
+    if (
+        parent is not None
+        and parent.owner_agent_id is not None
+        and parent.owner_agent_id != producer_agent_id
+    ):
         return parent.owner_agent_id
     return producer.reports_to_agent_id if producer is not None else None
 
@@ -77,6 +81,13 @@ def queue_parent_task_transition(
     if summary is None:
         raise ValueError(f"unsupported parent task transition {transition}")
     recipient_agent_id = parent.owner_agent_id
+    if recipient_agent_id is None:
+        # Queued parents cannot execute until their children resolve. Keep
+        # supervision with the child's superior until a parent owner is claimed.
+        producer = state.agents.get(child.owner_agent_id or "")
+        recipient_agent_id = producer.reports_to_agent_id if producer is not None else None
+    if recipient_agent_id is None:
+        return None
     effective_sender_id = (
         sender_agent_id if sender_agent_id in state.agents else child.owner_agent_id
     )

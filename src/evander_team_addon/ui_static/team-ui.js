@@ -6088,7 +6088,7 @@ function workspaceAttentionItems({
       meta: [
         taskStateLabel(task),
         project ? project.name || project.id : text(task.project_id),
-        owner ? agentLabel(owner) : text(task.owner_agent_id),
+        taskAssignmentLabel(task),
       ].filter(Boolean).join(" - "),
       severity: task.state === "blocked" ? "warning" : "info",
       view: "task-board",
@@ -12895,14 +12895,37 @@ function renderTaskBoardCreateForm(project, projectTasks) {
   `;
 }
 
+function taskAssignmentKey(task) {
+  return text(task.owner_agent_id) || (task.assignment_mode === "role" ? `role:${task.assignment_role_id}` : "");
+}
+
+function taskAssignmentLabel(task) {
+  const owner = state.agents[text(task.owner_agent_id)];
+  if (owner) return agentLabel(owner);
+  if (task.assignment_mode === "role" && !task.owner_agent_id) {
+    const roleName = task.assignment_role_name || state.roles?.[task.assignment_role_id]?.name || task.assignment_role_id;
+    return `Waiting for ${roleName}`;
+  }
+  return text(task.owner_agent_id) || "Unavailable assignee";
+}
+
+function renderRoleTaskQueueStatus(task) {
+  if (task.owner_agent_id || !task.assignment_wait_reason || task.state !== "pending") return "";
+  const reasons = {
+    waiting_for_dependencies: "Waiting for dependencies",
+    waiting_for_execution_gates: "Waiting for execution prerequisites",
+    waiting_for_assignment_authority: "Waiting for an authorized assignment",
+    waiting_for_eligible_role_holder: "No eligible role holder",
+    waiting_for_execution_capacity: "Waiting for an available agent",
+  };
+  const reason = reasons[task.assignment_wait_reason] || humanizeToken(task.assignment_wait_reason);
+  return `<span class="state-pill neutral">${escapeHtml(reason)}</span>`;
+}
+
 function renderTaskBoardControls(projectTasks, hierarchy, terminalCount) {
-  const assignees = [
-    ...new Set(projectTasks.map((task) => text(task.owner_agent_id)).filter(Boolean)),
-  ]
-    .map((agentId) => {
-      const agent = state.agents[agentId] || null;
-      return [agentId, agent ? agentLabel(agent) : "Unavailable assignee"];
-    })
+  const assignees = [...new Map(projectTasks
+    .filter((task) => taskAssignmentKey(task))
+    .map((task) => [taskAssignmentKey(task), taskAssignmentLabel(task)])).entries()]
     .sort((left, right) => left[1].localeCompare(right[1]) || left[0].localeCompare(right[0]));
   const rootOptions = hierarchy.roots.map((task) => [
     task.id,
@@ -13008,7 +13031,7 @@ function renderTaskBoardControls(projectTasks, hierarchy, terminalCount) {
 }
 
 function taskMatchesTaskBoardFilters(task, hierarchy) {
-  if (taskBoardAssigneeId && text(task.owner_agent_id) !== taskBoardAssigneeId) {
+  if (taskBoardAssigneeId && taskAssignmentKey(task) !== taskBoardAssigneeId) {
     return false;
   }
   if (taskBoardStateFilter && text(task.state) !== taskBoardStateFilter) {
@@ -13040,7 +13063,6 @@ function taskMatchesTaskBoardFilters(task, hierarchy) {
   if (!taskBoardQuery) {
     return true;
   }
-  const owner = state.agents[text(task.owner_agent_id)] || null;
   const parent = hierarchy.byId.get(hierarchy.parentById.get(text(task.id))) || null;
   const root = hierarchy.byId.get(hierarchy.rootByTaskId.get(text(task.id))) || null;
   const linkedCase = state.cases[text(task.case_id)] || null;
@@ -13053,7 +13075,8 @@ function taskMatchesTaskBoardFilters(task, hierarchy) {
     task.title,
     task.description,
     task.owner_agent_id,
-    owner ? agentLabel(owner) : "",
+    task.assignment_role_id,
+    taskAssignmentLabel(task),
     parent?.title,
     root?.title,
     linkedCase?.title,
@@ -13372,8 +13395,7 @@ function renderTaskBoardHierarchyNode(task, hierarchy, focus, display, path) {
     (expandedTaskBoardTaskIds.has(taskId) || display.forceExpandedIds.has(taskId));
   const childLimit = taskBoardHierarchyChildLimits.get(taskId) || taskBoardHierarchyPageSize;
   const visibleChildren = expanded ? childTasks.slice(0, childLimit) : [];
-  const owner = state.agents[text(task.owner_agent_id)] || null;
-  const assignedTo = owner ? agentLabel(owner) : "Unavailable assignee";
+  const assignedTo = taskAssignmentLabel(task);
   const readiness = taskBoardReadiness(task);
   const assessment = task.assessment || {};
   const resolution = text(task.resolution_status || assessment.resolution_status) || "unknown";
@@ -13419,6 +13441,7 @@ function renderTaskBoardHierarchyNode(task, hierarchy, focus, display, path) {
           <span class="state-pill ${escapeAttr(taskResolutionPill(resolution))}">Resolution: ${escapeHtml(humanizeToken(resolution))}</span>
           <span class="state-pill ${integrationReady ? "accepted" : "neutral"}">Integration: ${integrationReady ? "ready" : "not ready"}</span>
           ${renderTaskBoardDependencyWaitBadge(task)}
+        ${renderRoleTaskQueueStatus(task)}
           ${
             blockerCount
               ? `<span class="state-pill blocked">${blockerCount} assigned blocker${blockerCount === 1 ? "" : "s"}</span>`
@@ -13686,8 +13709,7 @@ function renderTaskBoardLanePager(laneId, page, pageCount, startIndex, total) {
 }
 
 function renderTaskBoardCard(task, focus) {
-  const owner = state.agents[task.owner_agent_id] || null;
-  const assignedTo = owner ? agentLabel(owner) : text(task.owner_agent_id);
+  const assignedTo = taskAssignmentLabel(task);
   const blocked = isTaskBoardBlocked(task);
   const stateLabel = taskStateLabel(task);
   const laneEntered = taskBoardLaneEnteredText(task);
@@ -13717,6 +13739,7 @@ function renderTaskBoardCard(task, focus) {
       <div class="task-board-card-badges">
         ${blocked && task.state !== "blocked" ? `<span class="state-pill blocked">Blocked</span>` : ""}
         ${renderTaskBoardDependencyWaitBadge(task)}
+        ${renderRoleTaskQueueStatus(task)}
         ${relation ? `<span class="task-board-relation-badge">${escapeHtml(relation)}</span>` : ""}
       </div>
       <div class="task-board-card-meta">Priority ${Number(task.priority ?? 0)}</div>
@@ -14680,7 +14703,7 @@ function renderTaskHierarchyRow(
       ${editButton("task", task.id)}
       ${taskCancellationButton(task)}
     </div>
-    <div class="meta-line">${escapeHtml(task.id)} - priority ${Number(task.priority ?? 0)} - owner ${escapeHtml(task.owner_agent_id)}</div>
+    <div class="meta-line">${escapeHtml(task.id)} - priority ${Number(task.priority ?? 0)} - owner ${escapeHtml(taskAssignmentLabel(task))}</div>
     ${renderTaskGraph(task)}
     <div class="meta-line">${escapeHtml(task.description)}</div>
   `;
@@ -14691,7 +14714,7 @@ function renderTaskHierarchyRow(
           <summary class="compact-record-summary">
             <span class="compact-record-main">
               <strong>${escapeHtml(task.title)}</strong>
-              <span>${escapeHtml(task.id)} - owner ${escapeHtml(task.owner_agent_id)} - depth ${depth}</span>
+              <span>${escapeHtml(task.id)} - owner ${escapeHtml(taskAssignmentLabel(task))} - depth ${depth}</span>
             </span>
             <span class="state-pill ${escapeHtml(task.state)}">${escapeHtml(taskStateLabel(task))}</span>
           </summary>
@@ -14710,7 +14733,7 @@ function renderTaskHierarchyRow(
           ${taskCancellationButton(task)}
         </div>
       </div>
-      <div class="meta-line">${escapeHtml(task.id)} - priority ${Number(task.priority ?? 0)} - owner ${escapeHtml(task.owner_agent_id)}</div>
+      <div class="meta-line">${escapeHtml(task.id)} - priority ${Number(task.priority ?? 0)} - owner ${escapeHtml(taskAssignmentLabel(task))}</div>
       ${renderTaskGraph(task)}
       <div class="meta-line">${escapeHtml(task.description)}</div>
     </li>
@@ -15127,7 +15150,10 @@ function renderPlanningTaskTechnicalDetails(task) {
     ${renderTechnicalDetails([
       ["Task ID", task.id],
       ["Project ID", task.project_id],
+      ["Assigned to", taskAssignmentLabel(task)],
       ["Owner ID", task.owner_agent_id],
+      ["Assignment role", task.assignment_role_id],
+      ["Assignment wait reason", task.assignment_wait_reason],
       ["Case ID", task.case_id],
       ["Parent task ID", task.parent_task_id],
       ["Originating task ID", task.originating_task_id],
@@ -15244,8 +15270,7 @@ function renderPlanningTaskCancellation(cancellation, task) {
 }
 
 function renderStructuredPlanningTask(task, { depth = 0, hierarchyWarning = "" } = {}) {
-  const owner = state.agents?.[task.owner_agent_id];
-  const ownerName = owner ? agentLabel(owner) : "Unavailable owner";
+  const ownerName = taskAssignmentLabel(task);
   const assessment = task.assessment || {};
   const reason = planningTaskLifecycleReason(task);
   const readiness = text(task.readiness || assessment.readiness || "unknown");
@@ -23642,7 +23667,7 @@ function openTaskCancellationDialog(taskId) {
   }
   if (elements.taskCancellationSubject) {
     elements.taskCancellationSubject.textContent =
-      `${task.title} · ${taskStateLabel(task)} · owner ${agentLabel(state.agents?.[task.owner_agent_id]) || task.owner_agent_id}`;
+      `${task.title} · ${taskStateLabel(task)} · owner ${taskAssignmentLabel(task)}`;
   }
   const successorSelect = form.elements.successor_task_id;
   if (successorSelect instanceof HTMLSelectElement) {
@@ -24014,7 +24039,7 @@ function renderEditFields(type, record) {
     return `
       ${readonlyField("Task ID", record.id)}
       ${readonlyField("Project", record.project_id)}
-      ${readonlyField("Owner", record.owner_agent_id)}
+      ${readonlyField("Assigned to", taskAssignmentLabel(record))}
       ${taskEditStateField(record)}
       ${selectField("Case", "case_id", "cases", record.case_id || "", { placeholder: "No case" })}
       ${numberField("Priority", "priority", record.priority ?? 0, { min: 0, required: true })}
@@ -24063,7 +24088,7 @@ function renderEditFields(type, record) {
 
 function taskEditStateField(task) {
   const stateValue = text(task?.state) || "pending";
-  if (directlyEditableTaskStates.includes(stateValue)) {
+  if (task.owner_agent_id && directlyEditableTaskStates.includes(stateValue)) {
     return selectField(
       "State",
       "state",

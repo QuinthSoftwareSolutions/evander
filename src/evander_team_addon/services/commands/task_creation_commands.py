@@ -5,6 +5,7 @@ from collections.abc import (
     Sequence,
 )
 from typing import Any
+from dataclasses import replace
 
 from evander.models import utc_now
 
@@ -288,12 +289,18 @@ class TeamTaskCreationCommandService(TeamCommandExecutor):
             resolved: _ResolvedTeamCommandContext,
         ) -> TeamCommandApplyResult:
             agent = _require_command_agent(resolved, "team_create_task_for_role")
+            if creation.get("state") not in {None, "pending"}:
+                raise TeamCommandValidationError(
+                    code="role_task_requires_pending_state",
+                    message="new role tasks must start pending until dispatch assigns an owner",
+                )
             try:
                 selection = select_role_task_owner(
                     state_model,
                     actor=agent,
                     project_id=normalized_project_id,
                     role_id=normalized_role_id,
+                    allow_unavailable=True,
                     candidate_authorization_error=lambda candidate: (
                         _task_creation_owner_assignment_error(
                             state_model,
@@ -348,29 +355,27 @@ class TeamTaskCreationCommandService(TeamCommandExecutor):
                 )
             created_id = _apply_task_creation_plan(
                 state_model,
-                plan=plan,
+                plan=replace(plan, owner_id=None),
+                assignment_role_id=normalized_role_id,
                 actor=agent,
-                chat_source_refs=chat_source_refs_for_dispatch(
-                    state_model, resolved.dispatch_id
-                ),
+                chat_source_refs=chat_source_refs_for_dispatch(state_model, resolved.dispatch_id),
             )
             _recalculate_project_status(state_model, plan.project_id)
             response_payload = {
                 "task_id": created_id,
                 "created_task_ids": [created_id],
                 "progress_made": True,
-                **selection.response_payload(
-                    outcome="created",
-                    previous_owner_agent_id=None,
-                ),
+                "assignment_outcome": "queued",
+                "assignment_policy": "role_queue_v1",
+                "assignment_role_id": normalized_role_id,
+                "selected_owner_agent_id": None,
+                "previous_owner_agent_id": None,
+                "candidate_scores": [],
             }
-            _append_agent_wake_requested_event(
-                state_model,
-                agent_id=plan.owner_id,
-                result=response_payload,
-                reason="task_ready",
-                now=utc_now(),
-                delay_seconds=DEFAULT_AGENT_WAKE_REQUEST_DEBOUNCE_SECONDS,
+            from ..domain.role_task_queue import append_role_queue_wake_events
+
+            append_role_queue_wake_events(
+                state_model, result=response_payload, now=utc_now(), project_id=plan.project_id
             )
             return TeamCommandApplyResult(
                 response_payload=response_payload,

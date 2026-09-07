@@ -36,6 +36,10 @@ from .repository import (
 )
 from .outbox_publication import request_team_outbox_publication_for_records
 from .operator_chat_steering import reconcile_operator_chat_steering_deliveries
+from .operator_chat_context import (
+    OPERATOR_CHAT_CONTEXT_GUIDANCE,
+    operator_chat_conversation_context,
+)
 from .chat_attachments import (
     PreparedChatAttachment,
     TeamChatAttachmentPolicyService,
@@ -1184,6 +1188,8 @@ def _register_slice5_tools(
         description=(
             "Send a Team Chat message to an operator in the caller's existing direct "
             "conversation. Requires recipient_operator_user_id, body, and request_id. "
+            "For the current Team Chat batch, use team_reply_to_chat instead; unlinked "
+            "messages to that operator are rejected while its reply is outstanding. "
             "When responding to operator attention injected during this dispatch, pass "
             "the exact source_message_ids from the attention notice so those messages are "
             "atomically marked replied."
@@ -1653,10 +1659,11 @@ def _register_slice6_tools(
         team_create_task_for_role,
         name=TEAM_CREATE_TASK_FOR_ROLE_TOOL,
         description=(
-            "Create one Team task for the least-loaded eligible holder of an exact "
-            "team or project role. Selection is atomic, preserves ordinary task "
-            "creation authority, excludes stood-down agents, and returns the "
-            "selected concrete owner plus the audited candidate scores."
+            "Queue one pending Team task for an exact team or project role. "
+            "The owner is null until dependencies are satisfied and an eligible "
+            "agent has execution capacity. The platform atomically assigns an owner "
+            "when reserving the dispatch and audits candidate scores. Existing "
+            "task creation authority applies; request-id retries are idempotent."
         ),
     )
 
@@ -4425,6 +4432,7 @@ def _team_mcp_result_with_attention(
             "team_send_operator_chat_message and the exact source_message_ids, or acknowledge "
             "acted-without-reply messages with team_acknowledge_operator_chat_messages."
         ),
+        "context_guidance": OPERATOR_CHAT_CONTEXT_GUIDANCE,
         "messages": [
             {
                 "message_id": message.id,
@@ -4438,6 +4446,7 @@ def _team_mcp_result_with_attention(
                     message.conversation_id
                 ].operator_display_name,
                 "status": message.status,
+                "recent_conversation": operator_chat_conversation_context(state, message),
             }
             for message in messages
         ],

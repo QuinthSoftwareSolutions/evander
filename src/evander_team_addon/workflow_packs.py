@@ -18,6 +18,8 @@ TEAM_RUNTIME_V1: dict[str, Any] = {
                 "team-chat-message-queued",
                 "team-external-chat-reply-requested",
                 "team-agent-wake-requested",
+                "team-role-queue-wake-requested",
+                "team-wake-role-queue",
                 "team-governance-wake-requested",
                 "team-wake-due-agents",
                 "team-wake-queued-chat-message",
@@ -115,6 +117,28 @@ TEAM_RUNTIME_V1: dict[str, Any] = {
             },
             {
                 "node": {
+                    "id": "team-role-queue-wake-requested",
+                    "display_name": "Team role queue capacity requested",
+                    "type": "trigger:event",
+                    "config": {"event_type": "team.role_queue.wake_requested"},
+                }
+            },
+            {
+                "node": {
+                    "id": "team-wake-role-queue",
+                    "display_name": "Dispatch ready role tasks",
+                    "type": "effect:team:wake-due-agents",
+                    "config": {
+                        "team_id": "${{team-role-queue-wake-requested.payload.team_id}}",
+                        "project_id": "${{team-role-queue-wake-requested.payload.project_id}}",
+                        "limit": 10,
+                        "respect_wake_interval": False,
+                        "run_global_maintenance": False,
+                    },
+                }
+            },
+            {
+                "node": {
                     "id": "team-agent-wake-requested",
                     "display_name": "Team agent wake requested",
                     "type": "trigger:event",
@@ -182,9 +206,7 @@ TEAM_RUNTIME_V1: dict[str, Any] = {
                     "id": "team-deliverable-acceptance-verification-requested",
                     "display_name": "Team deliverable acceptance verification requested",
                     "type": "trigger:event",
-                    "config": {
-                        "event_type": "team.deliverable.acceptance_verification_requested"
-                    },
+                    "config": {"event_type": "team.deliverable.acceptance_verification_requested"},
                 }
             },
             {
@@ -466,8 +488,7 @@ TEAM_RUNTIME_V1: dict[str, Any] = {
                     "config": {
                         "limit": 25,
                         "outbox_record_ids": (
-                            "${{team-outbox-publish-requested.payload."
-                            "outbox_record_ids ?? null}}"
+                            "${{team-outbox-publish-requested.payload.outbox_record_ids ?? null}}"
                         ),
                         "claim_ttl_seconds": 300,
                         "retry_after_seconds": 60,
@@ -1040,7 +1061,7 @@ TEAM_RUNTIME_V1: dict[str, Any] = {
                         "payload": {
                             "base_commit_sha": "${{team-git-promotion-requested.payload.base_commit_sha}}",
                             "canonical_branch": "${{team-git-promotion-requested.payload.target_branch}}",
-                            "directory_path": "${{team-git-promotion-requested.payload.directory_path ?? \"root\"}}",
+                            "directory_path": '${{team-git-promotion-requested.payload.directory_path ?? "root"}}',
                             "expected_commit_sha": "${{team-git-promotion-requested.payload.expected_commit_sha}}",
                             "managed_repo_id": "${{team-git-promotion-requested.payload.managed_repo_id}}",
                             "project_id": "${{team-git-promotion-requested.payload.project_id}}",
@@ -1073,6 +1094,7 @@ TEAM_RUNTIME_V1: dict[str, Any] = {
                 "target_id": "team-record-external-chat-delivery-failure",
             },
             {"source_id": "team-agent-wake-requested", "target_id": "team-wake-requested-agent"},
+            {"source_id": "team-role-queue-wake-requested", "target_id": "team-wake-role-queue"},
             {
                 "source_id": "team-governance-wake-requested",
                 "target_id": "team-wake-requested-governance",
@@ -1218,6 +1240,8 @@ TEAM_RUNTIME_V1: dict[str, Any] = {
 _TEAM_RUNTIME_V1_LAYOUT_NODE_POSITIONS: tuple[tuple[str, float, float], ...] = (
     ("team-agent-run-completed", 0.0, -80.0),
     ("team-agent-wake-requested", 0.0, 520.0),
+    ("team-role-queue-wake-requested", 0.0, 2320.0),
+    ("team-wake-role-queue", 360.0, 2320.0),
     ("team-chat-message-queued", 0.0, 180.0),
     ("team-completed-ephemeral", 720.0, 20.0),
     ("team-completed-persistent", 720.0, -140.0),

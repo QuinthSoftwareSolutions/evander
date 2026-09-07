@@ -2456,6 +2456,98 @@ def test_repository_send_operator_chat_message_command_uses_existing_conversatio
     assert message.metadata["recipient_operator_display_name"] == "Operator Alice"
 
 
+@pytest.mark.parametrize("batch_size", [1, 2])
+def test_active_chat_rejects_unlinked_answer_then_records_one_durable_reply(
+    tmp_path: Path,
+    batch_size: int,
+) -> None:
+    repo = _seed_hierarchy(tmp_path)
+    chat = _team_chat_service(repo)
+    state, conversation, _ = chat.create_or_get_conversation(
+        agent_id="backend",
+        operator_user_id="operator-alice",
+        expected_revision=repo.read().revision,
+    )
+    message_ids = []
+    for body in ["Can we implement the pilot?", "Keep splitting default-off."][:batch_size]:
+        state, message = chat.record_operator_chat_message(
+            conversation_id=conversation.id,
+            body=body,
+            mutation_authorization=_authorized_chat_mutation(repo, "backend"),
+            expected_revision=state.revision,
+        )
+        message_ids.append(message.id)
+        state, _ = chat.queue_chat_message_dispatch(
+            message_id=message.id,
+            dispatch_id=f"team-chat:{message.id}",
+        )
+    state, claims = chat.claim_pending_chat_message_dispatches(agent_id="backend")
+    assert len(claims) == 1
+    dispatch_id = claims[0]["dispatch_id"]
+    assert claims[0]["message_ids"] == message_ids
+    before = repo.read()
+
+    state, rejected = _command_service(repo).send_operator_chat_message_command(
+        session_id="session-backend",
+        recipient_operator_user_id="operator-alice",
+        body="Yes, a configuration-driven pilot.",
+        request_id="unlinked-pilot-answer",
+    )
+
+    assert rejected["success"] is False
+    error = rejected["errors"][0]
+    assert error["code"] == "chat_reply_required"
+    assert error["correction_context"] == {
+        "tool_name": "team_reply_to_chat",
+        "conversation_id": conversation.id,
+        "message_ids": message_ids,
+        "active_dispatch_id": dispatch_id,
+    }
+    assert state.conversation_messages == before.conversation_messages
+    assert state.external_chat_deliveries == before.external_chat_deliveries
+    assert state.conversations == before.conversations
+
+    state, _, _ = chat.create_or_get_conversation(
+        agent_id="backend",
+        operator_user_id="operator-bob",
+        expected_revision=state.revision,
+    )
+    state, notification = _command_service(repo).send_operator_chat_message_command(
+        session_id="session-backend",
+        recipient_operator_user_id="operator-bob",
+        body="A separate status update.",
+        request_id="other-operator-notification",
+    )
+    assert notification["success"] is True
+    assert all(state.conversation_messages[item_id].status == "running" for item_id in message_ids)
+
+    arguments = dict(
+        session_id="session-backend",
+        conversation_id=conversation.id,
+        message_ids=message_ids,
+        body="Yes, a configuration-driven pilot.",
+        request_id="linked-pilot-answer",
+    )
+    state, reply = _command_service(repo).reply_to_chat_command(**arguments)
+    state, replay = _command_service(repo).reply_to_chat_command(**arguments)
+    assert reply["success"] is True
+    assert replay == reply
+    replies = [
+        item
+        for item in state.conversation_messages.values()
+        if item.sender == "agent" and item.conversation_id == conversation.id
+    ]
+    assert len(replies) == 1
+    assert replies[0].source_message_ids == message_ids
+    assert all(state.conversation_messages[item_id].status == "replied" for item_id in message_ids)
+    state, _ = _team_runtime_service(repo).finalize_agent_dispatch_from_activity(
+        session_id="session-backend",
+        dispatch_id=dispatch_id,
+    )
+    assert state.dispatches[dispatch_id].status == TeamDispatchStatus.COMPLETED
+    assert all(state.conversation_messages[item_id].status == "replied" for item_id in message_ids)
+
+
 def test_repository_send_operator_chat_message_rejects_unknown_operator(
     tmp_path: Path,
 ) -> None:
@@ -7648,7 +7740,7 @@ def test_repository_create_tasks_command_allows_sibling_dependencies(
     assert replay_state.revision == state.revision
 
 
-def test_repository_create_task_for_role_selects_least_loaded_effective_role(
+def test_repository_create_task_for_role_queues_effective_project_role(
     tmp_path: Path,
 ) -> None:
     repo = _seed_hierarchy(tmp_path)
@@ -7674,15 +7766,12 @@ def test_repository_create_task_for_role_selects_least_loaded_effective_role(
     )
 
     assert result["success"] is True
-    assert result["assignment_outcome"] == "created"
-    assert result["assignment_policy"] == "work_aware_least_loaded_v1"
-    assert result["selected_owner_agent_id"] == "backend-peer"
-    assert result["eligible_candidate_count"] == 2
-    assert [row["agent_id"] for row in result["candidate_scores"]] == [
-        "backend-peer",
-        "backend",
-    ]
-    assert state.tasks["role-created"].owner_agent_id == "backend-peer"
+    assert result["assignment_outcome"] == "queued"
+    assert result["assignment_policy"] == "role_queue_v1"
+    assert result["selected_owner_agent_id"] is None
+    assert result["candidate_scores"] == []
+    assert state.tasks["role-created"].owner_agent_id is None
+    assert state.tasks["role-created"].assignment_role_id == "project__backend"
 
     replay_state, replay = service.create_task_for_role_command(
         session_id="session-lead",
@@ -7698,7 +7787,7 @@ def test_repository_create_task_for_role_selects_least_loaded_effective_role(
     assert replay_state.revision == state.revision
 
 
-def test_repository_create_task_for_role_excludes_unavailable_agents_atomically(
+def test_repository_create_task_for_role_queues_for_unavailable_agents(
     tmp_path: Path,
 ) -> None:
     repo = _seed_hierarchy(tmp_path)
@@ -7729,13 +7818,10 @@ def test_repository_create_task_for_role_excludes_unavailable_agents_atomically(
         request_id="request-role-no-candidate",
     )
 
-    assert result["success"] is False
-    assert result["errors"][0]["code"] == "role_assignment_no_eligible_agent"
-    reasons = result["correction_context"]["exclusion_reason_counts"]
-    assert reasons["agent_not_active"] == 1
-    assert reasons["agent_stood_down"] == 1
-    assert "unassigned-role-task" not in state.tasks
-    assert state.revision == before.revision
+    assert result["success"] is True
+    assert state.tasks["unassigned-role-task"].owner_agent_id is None
+    assert state.tasks["unassigned-role-task"].assignment_role_id == "project__backend"
+    assert state.revision > before.revision
 
 
 def test_repository_reassign_task_for_role_changes_owner_and_finalizes_git_context(
