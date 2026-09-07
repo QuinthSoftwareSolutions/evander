@@ -40,7 +40,10 @@ def normalize_organization(value: str) -> str:
     if value.startswith("https://dev.azure.com/"):
         value = value.removeprefix("https://dev.azure.com/")
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9-]{0,99}", value):
-        raise AdoConnectionError("Select an Azure DevOps organization")
+        raise AdoConnectionError(
+            "Enter your Azure DevOps organization name, for example contoso from "
+            "dev.azure.com/contoso. An email address cannot be used here."
+        )
     return value.lower()
 
 
