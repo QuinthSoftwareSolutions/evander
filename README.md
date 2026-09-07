@@ -1447,6 +1447,11 @@ access.
 
 ## Communication File Transfer
 
+For screenshots embedded in Azure DevOps work-item descriptions or comments, see
+[View images in Azure DevOps work items](docs/operations.md#view-images-in-azure-devops-work-items).
+HTML and Markdown image references use the same host-download and workspace-copy path, with
+explicit session tool grants and inbound file reception.
+
 Communication file transfer is intentionally host-mediated. Guests never receive Discord, Teams,
 Gmail, or Microsoft Graph credentials; they call MCP tools on the host gateway, and the host
 adapters perform provider API calls under the active session policy.

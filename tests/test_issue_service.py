@@ -7,7 +7,12 @@ import httpx
 import pytest
 
 from evander.ado_reports import DEFAULT_EFFORT_FIELDS
-from evander.issues.service import AzureDevOpsIssueAdapter, IssueService
+from evander.issues.service import (
+    AzureDevOpsIssueAdapter,
+    IssueService,
+    extract_ado_field_inline_media_refs,
+    extract_ado_html_image_refs,
+)
 
 
 class _DummyClient:
@@ -296,10 +301,7 @@ def test_post_comment_appends_correlation_marker_after_rendering_body(
         "evander.issues.service.httpx.Client",
         lambda timeout: _RecordingClient(calls, responses.copy()),
     )
-    marker = (
-        "<!-- evander:ado-work-item-comment:v1:"
-        f"key={'a' * 64};payload={'b' * 64} -->"
-    )
+    marker = f"<!-- evander:ado-work-item-comment:v1:key={'a' * 64};payload={'b' * 64} -->"
 
     adapter.post_comment(
         directory_path="root",
@@ -308,9 +310,7 @@ def test_post_comment_appends_correlation_marker_after_rendering_body(
         correlation_marker=marker,
     )
 
-    assert calls[0]["json"]["text"] == (
-        "<p>Summary</p><ul><li>First item</li></ul>\n" + marker
-    )
+    assert calls[0]["json"]["text"] == ("<p>Summary</p><ul><li>First item</li></ul>\n" + marker)
 
 
 def test_post_comment_uploads_artifact_appends_image_and_links_relation(
@@ -1243,8 +1243,10 @@ def test_get_backlog_item_by_id_url_encodes_project_name(monkeypatch: pytest.Mon
     assert calls[0]["url"] == "https://dev.azure.com/example/My%20Project/_apis/wit/workitems/101"
 
 
+@pytest.mark.parametrize("markdown", [False, True])
 def test_get_backlog_item_extracts_inline_media_from_fields_comments_and_relations(
     monkeypatch: pytest.MonkeyPatch,
+    markdown: bool,
 ) -> None:
     adapter = AzureDevOpsIssueAdapter(config_resolver=object())
     monkeypatch.setattr(
@@ -1264,7 +1266,9 @@ def test_get_backlog_item_extracts_inline_media_from_fields_comments_and_relatio
                     "System.TeamProject": "My Project",
                     "System.Title": "Bug with screenshots",
                     "System.Description": (
-                        '<p>See <img alt="main shot" '
+                        "![main shot](https://dev.azure.com/example/_apis/wit/attachments/desc?fileName=desc.png)"
+                        if markdown
+                        else '<p>See <img alt="main shot" '
                         'src="https://dev.azure.com/example/_apis/wit/attachments/desc?fileName=desc.png" /></p>'
                     ),
                 },
@@ -1289,7 +1293,9 @@ def test_get_backlog_item_extracts_inline_media_from_fields_comments_and_relatio
                     {
                         "id": 7,
                         "text": (
-                            '<div>Comment <img title="comment shot" '
+                            '![comment shot](https://dev.azure.com/example/_apis/wit/attachments/comment?fileName=comment.gif "comment shot")'
+                            if markdown
+                            else '<div>Comment <img title="comment shot" '
                             'src="https://dev.azure.com/example/_apis/wit/attachments/comment?fileName=comment.gif" /></div>'
                         ),
                         "createdBy": {"displayName": "Ada"},
@@ -1324,11 +1330,76 @@ def test_get_backlog_item_extracts_inline_media_from_fields_comments_and_relatio
     assert field_media["metadata"]["field_reference_name"] == "System.Description"
     assert relation_media["metadata"]["source"] == "work_item_relation"
     assert item["relations"][0]["inline_media"]["filename"] == "attached.jpg"
-    assert item["comments"][0]["html"].startswith("<div>Comment")
-    assert item["comments"][0]["raw_text"].startswith("<div>Comment")
+    assert item["comments"][0]["html"].startswith("![" if markdown else "<div>Comment")
+    assert item["comments"][0]["raw_text"].startswith("![" if markdown else "<div>Comment")
     assert item["comments"][0]["created_by_identity"]["displayName"] == "Ada"
     assert item["comments"][0]["inline_media"][0]["filename"] == "comment.gif"
     assert comment_media["comment_id"] == "7"
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        "System.Description",
+        "Microsoft.VSTS.TCM.ReproSteps",
+        "Microsoft.VSTS.TCM.SystemInfo",
+        "Microsoft.VSTS.Common.AcceptanceCriteria",
+    ],
+)
+def test_ado_markdown_images_are_extracted_from_rich_text_fields(field: str) -> None:
+    url = "https://dev.azure.com/example/_apis/wit/attachments/"
+    text = (
+        f"Operator dialog\n![image.png]({url}first?fileName=image.png)\n\n"
+        f"Admin report\n![image.png]({url}second?fileName=image.png)"
+    )
+    refs = extract_ado_field_inline_media_refs(
+        {field: text}, provider="azure_devops", resource_id="101"
+    )
+    assert len(refs) == 2
+    assert [ref["url"] for ref in refs] == [
+        f"{url}first?fileName=image.png",
+        f"{url}second?fileName=image.png",
+    ]
+    assert len({ref["media_id"] for ref in refs}) == 2
+    assert all(ref["filename"] == "image.png" for ref in refs)
+    assert all(ref["metadata"]["field_reference_name"] == field for ref in refs)
+    assert all(ref["metadata"]["source"] == "markdown_image" for ref in refs)
+
+
+def test_ado_markdown_images_handle_references_escapes_html_and_code() -> None:
+    text = r"""
+![dialog][shot]
+
+[shot]: <https://dev.azure.com/example/dialog(1).png?x=1&y=2> "Dialog title"
+
+![report](https://dev.azure.com/example/report\(2\).png)
+
+Inline <img src="https://dev.azure.com/example/legacy.png?a=1&amp;b=2" alt="Legacy">.
+
+`![code](https://dev.azure.com/example/code.png)`
+
+```markdown
+![fenced](https://dev.azure.com/example/fenced.png)
+<img src="https://dev.azure.com/example/fenced-html.png">
+```
+
+    ![indented](https://dev.azure.com/example/indented.png)
+
+\![escaped](https://dev.azure.com/example/escaped.png)
+[ordinary link](https://dev.azure.com/example/link.png)
+![unresolved][missing]
+"""
+    refs = extract_ado_html_image_refs(
+        text, provider="azure_devops", resource_id="101", media_id_prefix="test-image"
+    )
+    assert [ref["url"] for ref in refs] == [
+        "https://dev.azure.com/example/dialog(1).png?x=1&y=2",
+        "https://dev.azure.com/example/report(2).png",
+        "https://dev.azure.com/example/legacy.png?a=1&b=2",
+    ]
+    assert [ref["media_id"] for ref in refs] == ["test-image-0", "test-image-1", "test-image-2"]
+    assert refs[0]["metadata"]["title"] == "Dialog title"
+    assert refs[2]["metadata"]["source"] == "html_image"
 
 
 def test_query_work_item_activity_filters_created_comments_and_updates(

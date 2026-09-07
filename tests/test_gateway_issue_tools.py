@@ -585,6 +585,85 @@ def test_create_ado_backlog_item_requires_permission(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize(
+    "receive,granted,denied",
+    [
+        (False, False, False),
+        (False, True, False),
+        (True, False, False),
+        (True, True, False),
+        (True, True, True),
+    ],
+)
+def test_ado_image_access_reports_effective_gates_without_changing_grants(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    receive: bool,
+    granted: bool,
+    denied: bool,
+) -> None:
+    context = make_context(tmp_path)
+    media_tools = [
+        ToolName.LIST_INLINE_MEDIA,
+        ToolName.DOWNLOAD_INLINE_MEDIA,
+        ToolName.COMMUNICATION_COPY_ARTIFACT_TO_WORKSPACE,
+    ]
+    session = SessionManifest(
+        session_id="session-1",
+        directory_path="root/team-a",
+        allowed_tools=[ToolName.GET_ADO_BACKLOG_ITEM] + (media_tools if granted else []),
+        expires_at=datetime.now(UTC) + timedelta(hours=1),
+    )
+    context.session_repository.upsert_session(session)
+    write_root_policy_overlay(
+        context.config,
+        {
+            "communication_file_receive_enabled": receive,
+            "mcp_tool_policies": {"download_inline_media": {"denied": True}} if denied else {},
+        },
+    )
+
+    class StubIssueService:
+        def __init__(self, provider_config: object) -> None:
+            pass
+
+        def get_remote_backlog_item_by_id(self, **kwargs: object) -> dict[str, object]:
+            return {
+                "provider": "azure_devops",
+                "id": "101",
+                "project": "Project",
+                "inline_media": [
+                    {
+                        "source_kind": "ado_backlog",
+                        "provider": "azure_devops",
+                        "resource_id": "101",
+                        "media_id": "field-image-0",
+                        "filename": "image.png",
+                        "url": "https://dev.azure.com/example/image.png",
+                    }
+                ],
+            }
+
+    monkeypatch.setattr("evander.gateway.IssueService", StubIssueService)
+    result = call_tool(
+        create_server(context),
+        "get_ado_backlog_item",
+        {
+            "session_id": "session-1",
+            "id": 101,
+        },
+    )
+    access = result["metadata"]["inline_media_access"]
+    assert access["receive_enabled"] is receive
+    expected_unavailable = {tool.value for tool in media_tools} if not granted else set()
+    if denied:
+        expected_unavailable.add("download_inline_media")
+    assert set(access["unavailable_tools"]) == expected_unavailable
+    assert "destination_path" in access["instructions"]
+    assert "unique" in access["instructions"]
+    assert context.session_repository.get_session("session-1") == session
+
+
+@pytest.mark.parametrize(
     ("arguments", "error_match"),
     [
         (

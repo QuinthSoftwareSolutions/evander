@@ -1640,6 +1640,12 @@ def register_communication_tools(
         channel_id: str | None = None,
         channel_target: str | None = None,
     ) -> dict[str, Any]:
+        """List image references from ADO work items, PR feedback or communications.
+
+        For work items use source_kind=ado_backlog, provider=azure_devops,
+        resource_id=<work item ID> and project. Requires file reception to be enabled.
+        Download a returned media_id with download_inline_media to inspect its contents.
+        """
         request = ListInlineMediaRequest(
             session_id=session_id,
             source_kind=source_kind,
@@ -1721,6 +1727,13 @@ def register_communication_tools(
         channel_id: str | None = None,
         channel_target: str | None = None,
     ) -> dict[str, Any]:
+        """Download one referenced image into the host artifact store.
+
+        Requires this tool grant and communication_file_receive_enabled. This returns
+        artifact metadata, not visible image content. Copy artifact.artifact_id with
+        communication_copy_artifact_to_workspace, choosing a unique destination_filename
+        for each image, then open its destination_path with your local image viewer.
+        """
         request = DownloadInlineMediaRequest(
             session_id=session_id,
             source_kind=source_kind,
@@ -2166,6 +2179,12 @@ def register_communication_tools(
         destination_filename: str | None = None,
         overwrite: bool = True,
     ) -> dict[str, Any]:
+        """Copy a session-owned downloaded artifact into the agent workspace.
+
+        Open the returned destination_path with your local image viewer to inspect
+        screenshots. Use a unique destination_filename for each image when provider
+        filenames repeat. Requires file reception and this tool's session grant.
+        """
         request = CommunicationCopyArtifactToWorkspaceRequest(
             session_id=session_id,
             artifact_id=artifact_id,

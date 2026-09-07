@@ -42,7 +42,7 @@ from evander.models import (
     ResolveAdoIdentityResponse,
     ToolName,
 )
-from evander.policy import PolicyError
+from evander.policy import PolicyEngine, PolicyError
 from evander.gateway.session_context import _resolve_session_id_from_context
 
 AdoMentionRefsArgument = Annotated[
@@ -55,6 +55,43 @@ AdoMentionRefsArgument = Annotated[
         )
     ),
 ]
+
+
+def _ado_inline_media_access(policy: PolicyEngine, session_id: str) -> dict[str, Any]:
+    """Explain the existing image receive gates without granting capabilities."""
+    required_tools = (
+        ToolName.LIST_INLINE_MEDIA,
+        ToolName.DOWNLOAD_INLINE_MEDIA,
+        ToolName.COMMUNICATION_COPY_ARTIFACT_TO_WORKSPACE,
+    )
+    unavailable_tools: dict[str, str] = {}
+    for tool in required_tools:
+        try:
+            policy.require_tool(session_id, tool)
+        except PolicyError as exc:
+            unavailable_tools[tool.value] = str(exc)
+    receive_enabled = True
+    try:
+        policy.require_inline_media_receive_enabled(
+            policy.get_session(session_id), source_kind="ado_backlog"
+        )
+    except PolicyError:
+        receive_enabled = False
+    return {
+        "receive_enabled": receive_enabled,
+        "required_tools": [tool.value for tool in required_tools],
+        "unavailable_tools": unavailable_tools,
+        "instructions": (
+            "These are image references, not image contents. If receive_enabled is false, ask an "
+            "operator to enable communication_file_receive_enabled. If unavailable_tools is not "
+            "empty, ask an operator to grant access to those tools before retrieval. "
+            "Use download_inline_media with source_kind=ado_backlog, provider=azure_devops, "
+            "resource_id, project and a returned media_id; then use "
+            "communication_copy_artifact_to_workspace with the returned artifact_id and a unique "
+            "destination_filename for each image. Open the returned destination_path with your "
+            "local image viewer. File size, type and tool argument policies still apply."
+        ),
+    }
 
 
 def _normalize_ado_tag_list(value: Any) -> list[str]:
@@ -844,6 +881,12 @@ def register_ado_tools(
         session_id: str | None = None,
         ctx: Context | None = None,
     ) -> dict[str, Any]:
+        """Read an ADO work item, including HTML/Markdown image references.
+
+        inline_media contains references, not image bytes. When images are present,
+        metadata.inline_media_access explains permissions and the download/copy/view
+        steps. Reading the item does not enable file reception or grant media tools.
+        """
         session_id = _resolve_session_id_from_context(
             session_id, ctx, transport_session_map=transport_session_map
         )
@@ -877,6 +920,10 @@ def register_ado_tools(
             )
             response_model = AdoBacklogGetResponse.model_validate(remote_payload)
             payload = response_model.model_dump(mode="json")
+            if payload.get("inline_media"):
+                payload["metadata"]["inline_media_access"] = _ado_inline_media_access(
+                    context.policy, session_id
+                )
             audit_success(
                 session_id,
                 ToolName.GET_ADO_BACKLOG_ITEM,

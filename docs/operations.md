@@ -2095,6 +2095,38 @@ When a call violates argument policy, the gateway writes a `tool_call` audit eve
 constraint id/path, and a redacted argument summary. The agent receives a clear `ToolError`, and the
 denial is visible in Admin Web -> Tool Calls. Approval requests are not created for these denials.
 
+## View images in Azure DevOps work items
+
+`get_ado_backlog_item` recognizes both HTML and Markdown images in Description, Repro Steps,
+System Info and Acceptance Criteria, plus requested comments and attachment relations. It returns
+image references in `inline_media`; it does not send image bytes to the model. Markdown inline
+and reference-style images are supported; images written as Markdown code examples are ignored.
+
+For an agent that should inspect these images, use **Sessions → the agent's session** to grant
+`list_inline_media`, `download_inline_media`, and `communication_copy_artifact_to_workspace`.
+Enable `communication_file_receive_enabled` in its policy and retain appropriate file size,
+MIME and extension limits. Use the session setting when only one agent needs access. Reading ADO
+text alone does not grant file reception, and directory tool denials still apply.
+Work-item responses with images include `metadata.inline_media_access` with the effective receive
+flag, unavailable tools and viewing instructions. File-specific and argument policies are checked
+when the agent actually downloads/copies a selected image.
+
+The agent can use `inline_media` directly or refresh it with `list_inline_media`:
+
+1. Use `source_kind="ado_backlog"`, `provider="azure_devops"`, `resource_id="<work item ID>"`
+   and `project="<ADO project>"` when listing or downloading.
+2. Call `download_inline_media` with a returned `media_id`. The host authenticates to ADO and
+   stages the bytes under an opaque `artifact.artifact_id`.
+3. Call `communication_copy_artifact_to_workspace` with that `artifact_id` and a unique
+   `destination_filename` per image, such as `work-item-101-dialog.png`. ADO commonly names every
+   screenshot `image.png`; using the same destination would overwrite the preceding image.
+4. Open the returned `destination_path` with the agent's local image viewer. The copy works with
+   both VM and container-worker sessions; credentials remain on the host.
+
+An empty media list means no supported references were found in the requested fields/comments/
+relations. Disabled reception or missing tools are access restrictions, not missing images.
+There is no need to enable image generation or general guest internet access to inspect them.
+
 ## Communication File Transfer Runbook
 
 Use this runbook only for dedicated operator channels/mailboxes that are already covered by the

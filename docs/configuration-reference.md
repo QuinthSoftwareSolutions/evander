@@ -1,5 +1,10 @@
 # Configuration Reference
 
+For Azure DevOps work-item images, the session needs `list_inline_media`, `download_inline_media`
+and `communication_copy_artifact_to_workspace`, plus `communication_file_receive_enabled: true`
+in its session or effective directory policy. Existing file size/type limits apply. See the
+[image viewing runbook](operations.md#view-images-in-azure-devops-work-items) for the full flow.
+
 This document lists the **user-configurable parameters** in this repository, where each parameter is defined, and where it is consumed.
 
 Scope included:

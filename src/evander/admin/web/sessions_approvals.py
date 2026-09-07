@@ -143,10 +143,11 @@ _TOOL_DESCRIPTIONS: dict[ToolName, str] = {
         "Download an inbound attachment into the host communication artifact store."
     ),
     ToolName.LIST_INLINE_MEDIA: (
-        "List inline media references available from an inbound communication item."
+        "List images in Azure DevOps work items, PR feedback, or inbound communications; "
+        "requires file reception."
     ),
     ToolName.DOWNLOAD_INLINE_MEDIA: (
-        "Download inline media into the host communication artifact store."
+        "Download a referenced image to the host; copy the artifact to the workspace to view it."
     ),
     ToolName.STAGE_ARTIFACT: (
         "Copy a file or directory from the agent workspace into the session artifacts folder."

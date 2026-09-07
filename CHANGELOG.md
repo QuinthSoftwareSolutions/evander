@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-09-07 - ADO Markdown image access (0.25.2)
+
+- Recognize Markdown images in Azure DevOps work-item fields and comments, including
+  reference-style images and mixed HTML, while ignoring Markdown code examples.
+- Explain image-retrieval permissions in work-item responses and the existing host-download,
+  workspace-copy and local-view steps in tool guidance. File reception remains opt-in.
+
 ## 2026-09-07 - Personal ADO connection feedback (0.25.1)
 
 - Clarified that the Azure DevOps organization is required for both PAT and Microsoft OAuth
