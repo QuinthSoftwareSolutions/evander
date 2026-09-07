@@ -31,6 +31,7 @@ from evander_team_addon.services.admin_service import TeamAdminService
 from evander_team_addon.services.domain.dependency_composition_recovery import (
     accept_dependency_composition_recovery,
 )
+from evander_team_addon.services.runtime_service import TeamRuntimeService
 from test_team_addon_runtime import _seed_team
 
 
@@ -41,10 +42,12 @@ def _git(path: Path, *args: str) -> str:
 
 
 @pytest.mark.parametrize("pinned_first_attempt", [False, True])
+@pytest.mark.parametrize("assignment_mode", ["agent", "role"])
 def test_conflicted_task_adopts_reviewed_recovery_in_distinct_retryable_worktree(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     pinned_first_attempt: bool,
+    assignment_mode: str,
 ) -> None:
     source = tmp_path / "source"
     source.mkdir()
@@ -76,11 +79,27 @@ def test_conflicted_task_adopts_reviewed_recovery_in_distinct_retryable_worktree
             managed_repo_id="mr_0123456789abcdefabcd", base_branch="main",
         )
         state.tasks["task"].git_base_branch = "main"
+        if assignment_mode == "role":
+            state.tasks["task"].assignment_mode = "role"
+            state.tasks["task"].assignment_role_id = "project__backend"
+            state.tasks["task"].owner_agent_id = None
         if pinned_first_attempt:
             state.tasks["task"].git_base_commit_sha = base_commit
-        state.agent_runtimes["backend"].active_dispatch_id = "dispatch-first"
+        if assignment_mode == "agent":
+            state.agent_runtimes["backend"].active_dispatch_id = "dispatch-first"
 
     repo.update(seed_git)
+    runtime = TeamRuntimeService(repo)
+
+    def claim_role_task() -> str:
+        state, leases = runtime.lease_due_agents(
+            agent_id="backend", defer_activation=True, respect_wake_interval=False,
+        )
+        [lease] = [item for item in leases if "task" in item["dispatch"]["task_ids"]]
+        assert state.tasks["task"].owner_agent_id == "backend"
+        return lease["dispatch_id"]
+
+    first_dispatch = claim_role_task() if assignment_mode == "role" else "dispatch-first"
     daemon = WorkerDaemon(
         runtime_dir=tmp_path / "worker-runtime",
         worker_root=tmp_path / "worker-root",
@@ -133,7 +152,7 @@ def test_conflicted_task_adopts_reviewed_recovery_in_distinct_retryable_worktree
         )
 
     with pytest.raises(DependencyGitPreparationError) as failure:
-        prepare_task("dispatch-first")
+        prepare_task(first_dispatch)
     assert failure.value.conflict is not None
     assert failure.value.conflict["conflict_paths"] == ["shared.txt"]
     [original_attempt] = repo.read().git_preparation_attempts.values()
@@ -146,6 +165,12 @@ def test_conflicted_task_adopts_reviewed_recovery_in_distinct_retryable_worktree
     assert original_attempt.state == TeamGitPreparationAttemptState.PENDING
     # Operator-authored material left after a failed attempt must survive recovery.
     (original_checkout / "operator-notes.txt").write_text("Preserve this checkout.\n")
+    if assignment_mode == "role":
+        state = runtime.fail_agent_dispatch(
+            agent_id="backend", dispatch_id=first_dispatch, error=str(failure.value),
+            delivery_not_started=True,
+        )
+        assert state.tasks["task"].owner_agent_id is None
     _record_dependency_git_preparation_blocker(
         repo, lease={"agent": {"id": "backend"}}, task_id="task",
         error=str(failure.value), conflict=failure.value.conflict,
@@ -169,6 +194,7 @@ def test_conflicted_task_adopts_reviewed_recovery_in_distinct_retryable_worktree
             id="recovery-task", owner_agent_id="backend", project_id="project",
             priority=1, title="Resolve dependencies", description="Reviewed recovery",
             parent_task_id="task", created_by_actor="system:dependency-composition-recovery",
+            state="finished", deliverable_ids=["recovery-deliverable"],
         )
         deliverable = Deliverable(
             id="recovery-deliverable", task_id=task.id, producer_agent_id="backend",
@@ -190,6 +216,9 @@ def test_conflicted_task_adopts_reviewed_recovery_in_distinct_retryable_worktree
         )
 
     repo.update(accept_recovery)
+    recovery_dispatch = (
+        claim_role_task() if assignment_mode == "role" else "dispatch-recovery"
+    )
     original_create_context = TeamAdminService.create_git_work_context_with_id
     conflicts_remaining = 3
 
@@ -202,14 +231,14 @@ def test_conflicted_task_adopts_reviewed_recovery_in_distinct_retryable_worktree
 
     monkeypatch.setattr(TeamAdminService, "create_git_work_context_with_id", create_context)
     with pytest.raises(TeamStateConflictError):
-        prepare_task("dispatch-recovery")
+        prepare_task(recovery_dispatch)
     first, adopted = requests
     assert repo.read().git_preparation_attempts[adopted.preparation_attempt_id].state == (
         TeamGitPreparationAttemptState.PREPARED
     )
     # The worker succeeded, but committing the Team context failed. Replay its
     # exact receipt and request before permitting any agent to use the checkout.
-    state, rows, _ = prepare_task("dispatch-recovery")
+    state, rows, _ = prepare_task(recovery_dispatch)
     assert len(rows) == 1
     assert requests[-1] == adopted
     assert adopted.branch != first.branch
@@ -225,6 +254,9 @@ def test_conflicted_task_adopts_reviewed_recovery_in_distinct_retryable_worktree
     assert work_context.base_commit == resolved_commit
     assert work_context.agent_branch == adopted.branch
     assert work_context.dependency_composition_recovery_id is not None
+    if assignment_mode == "role":
+        state, _ = runtime.activate_delivered_agent_dispatch(dispatch_id=recovery_dispatch)
+        assert state.tasks["task"].assignment_started_at is not None
 
     (checkout / "implementation.txt").write_text("Agent implementation.\n")
     _git(checkout, "add", "implementation.txt")

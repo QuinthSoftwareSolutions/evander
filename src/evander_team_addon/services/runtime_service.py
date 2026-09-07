@@ -17,6 +17,7 @@ from evander.orchestration.internal_events import build_internal_event_bus_for_r
 from .domain.role_task_queue import (
     plan_role_task_allocations,
     append_role_queue_wake_events,
+    set_unstarted_role_task_owner,
 )
 from .domain import common as _team_common
 from ..repository import (
@@ -1360,7 +1361,9 @@ class TeamRuntimeService:
                     None,
                 )
                 if assignment_lease is None:
-                    state_model.tasks[task_id].owner_agent_id = None
+                    set_unstarted_role_task_owner(
+                        state_model, task=state_model.tasks[task_id], owner_agent_id=None,
+                    )
                     continue
                 allocation["dispatch_id"] = assignment_lease["dispatch_id"]
                 assignment_lease.setdefault("role_task_allocations", []).append(allocation)
@@ -2539,7 +2542,7 @@ class TeamRuntimeService:
                         and task.owner_agent_id == dispatch.agent_id
                         and not task.deliverable_ids
                     ):
-                        task.owner_agent_id = None
+                        set_unstarted_role_task_owner(state, task=task, owner_agent_id=None)
                         task.updated_at = effective_now
                 append_role_queue_wake_events(
                     state,

@@ -9,6 +9,7 @@ from typing import Any
 from ...models import (
     AgentStatus,
     AgentTask,
+    DependencyCompositionRecoveryState,
     TeamState,
     TeamTaskState,
     TaskAssessmentReadiness,
@@ -16,11 +17,44 @@ from ...models import (
 )
 from .case_task import _task_creation_owner_assignment_error
 from .dispatch_scope import actionable_dispatch_tasks
+from .preparation_failures import task_preparation_generation
 from .role_task_allocation import RoleTaskAllocationError, select_role_task_owner
 from .task_assessment import TaskAssessmentService
 
 ROLE_QUEUE_WAKE_EVENT = "team.role_queue.wake_requested"
 ROLE_QUEUE_POLICY = "role_queue_v1"
+
+
+def set_unstarted_role_task_owner(
+    state: TeamState, *, task: AgentTask, owner_agent_id: str | None,
+) -> None:
+    """Carry current accepted recovery provenance across a reversible role claim.
+
+    A claim changes the owner in the preparation fingerprint without changing the
+    reviewed source. Preserve only recoveries valid before that change; stale
+    recoveries and explicit task reassignments must still fail provenance checks.
+    Use this for both reservation and release before execution starts.
+    """
+    if task.assignment_mode != "role" or task.assignment_started_at is not None:
+        raise ValueError("Only an unstarted role task can change its reserved owner")
+    if task.owner_agent_id == owner_agent_id:
+        return
+    accepted = [
+        recovery for recovery in state.dependency_composition_recoveries.values()
+        if recovery.target_task_id == task.id
+        and recovery.state == DependencyCompositionRecoveryState.ACCEPTED
+    ]
+    if accepted:
+        generation = task_preparation_generation(state, task.id)
+        accepted = [
+            recovery for recovery in accepted
+            if recovery.preparation_generation == generation
+        ]
+    task.owner_agent_id = owner_agent_id
+    if accepted:
+        generation = task_preparation_generation(state, task.id)
+        for recovery in accepted:
+            recovery.preparation_generation = generation
 
 
 def queued_role_tasks(state: TeamState) -> list[AgentTask]:
@@ -156,7 +190,9 @@ def plan_role_task_allocations(
             )
         except RoleTaskAllocationError:
             continue
-        task.owner_agent_id = selection.selected_owner_agent_id
+        set_unstarted_role_task_owner(
+            state, task=task, owner_agent_id=selection.selected_owner_agent_id,
+        )
         reserved_agents.add(task.owner_agent_id)
         selections[task.id] = {
             **selection.response_payload(outcome="reserved", previous_owner_agent_id=None),

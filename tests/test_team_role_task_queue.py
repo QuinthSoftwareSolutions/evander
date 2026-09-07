@@ -11,6 +11,10 @@ from evander_team_addon.models import (
     task_payload_with_derived,
 )
 from evander_team_addon.repository import TeamStateRepository
+from evander_team_addon.services.domain.dependency_composition_recovery import (
+    accepted_recovery_for_target,
+)
+from evander_team_addon.services.domain.preparation_failures import task_preparation_generation
 from evander_team_addon.services.runtime_service import TeamRuntimeService
 from test_team_addon_repository import (
     _command_service,
@@ -18,6 +22,7 @@ from test_team_addon_repository import (
     _register_backend_peer,
     _seed_hierarchy,
     _seed_task,
+    _team_agent_action_service,
 )
 
 
@@ -50,6 +55,137 @@ def lease(repo, **fields):
         defer_activation=True,
         **fields,
     )
+
+
+@pytest.fixture
+def recovered_role_repo(role_repo):
+    from evander_team_addon.models import (
+        Deliverable,
+        DeliverableGitRefs,
+        DependencyCompositionRecovery,
+        ProjectGitConfig,
+    )
+
+    _seed_task(role_repo, task_id="source")
+    create_role_task(role_repo, "recovered", dependency_task_ids=["source"])
+
+    def seed(state):
+        state.projects["project"].git = ProjectGitConfig(
+            managed_repo_id="mr_0123456789abcdefabcd", base_branch="main",
+        )
+        state.tasks["source"].state = TeamTaskState.FINISHED
+        state.tasks["source"].deliverable_ids = ["source-deliverable"]
+        state.deliverables["source-deliverable"] = Deliverable(
+            id="source-deliverable", task_id="source", producer_agent_id="backend",
+            state="accepted", summary="Source contribution",
+            git_refs=DeliverableGitRefs(agent_branch="agents/source", commit_sha="b" * 40),
+        )
+        state.tasks["recovered"].git_base_branch = "main"
+        state.tasks["recovered"].git_base_commit_sha = "c" * 40
+        state.dependency_composition_recoveries["recovery"] = DependencyCompositionRecovery(
+            id="recovery", blocker_id="resolved-blocker", target_task_id="recovered",
+            project_id="project", managed_repo_id="mr_0123456789abcdefabcd",
+            directory_path="root", base_branch="main", base_commit_sha="a" * 40,
+            base_tree_hash="d" * 40, source_fingerprint="f" * 64,
+            preparation_generation=task_preparation_generation(state, "recovered"),
+            dependency_git_sources=[{
+                "dependency_task_id": "source", "deliverable_id": "source-deliverable",
+                "branch": "agents/source", "commit_sha": "b" * 40,
+            }],
+            failed_dependency_task_id="source", failed_deliverable_id="source-deliverable",
+            recovery_task_id="resolver-task", verified_deliverable_id="reviewed-merge",
+            verified_commit_sha="c" * 40, verified_at=utc_now(),
+            accepted_deliverable_id="reviewed-merge", resolved_commit_sha="c" * 40,
+            resolved_at=utc_now(), state="accepted",
+        )
+
+    role_repo.update(seed)
+    return role_repo
+
+
+def current_recovery(state):
+    recovery = state.dependency_composition_recoveries["recovery"]
+    return accepted_recovery_for_target(
+        state, target_task_id="recovered",
+        dependency_git_sources=recovery.dependency_git_sources,
+    )
+
+
+def test_role_queue_keeps_accepted_recovery_across_release_and_peer_claim(recovered_role_repo):
+    repo = recovered_role_repo
+    original = current_recovery(repo.read()).model_dump()
+    state, leases = lease(repo, agent_id="backend")
+    assert state.tasks["recovered"].owner_agent_id == "backend"
+    assert current_recovery(state) is not None
+    state = TeamRuntimeService(repo).fail_agent_dispatch(
+        agent_id="backend", dispatch_id=leases[0]["dispatch_id"],
+        error="Worker unavailable before delivery", delivery_not_started=True,
+    )
+    assert state.tasks["recovered"].owner_agent_id is None
+    assert current_recovery(state).model_dump() == original
+
+    reopened = TeamStateRepository(repo.runtime_dir)
+    state, leases = lease(reopened, agent_id="backend-peer", respect_wake_interval=False)
+    assert state.tasks["recovered"].owner_agent_id == "backend-peer"
+    assert current_recovery(state) is not None
+    state, _ = TeamRuntimeService(reopened).activate_delivered_agent_dispatch(
+        dispatch_id=leases[0]["dispatch_id"],
+    )
+    assert state.tasks["recovered"].assignment_started_at is not None
+    assert current_recovery(state).model_dump(exclude={"preparation_generation"}) == {
+        key: value for key, value in original.items() if key != "preparation_generation"
+    }
+
+
+def test_role_queue_restores_recovery_when_tentative_claim_is_discarded(recovered_role_repo):
+    original = current_recovery(recovered_role_repo.read()).model_dump()
+    checks = 0
+
+    def becomes_busy(session_id):
+        nonlocal checks
+        assert session_id == "session-backend"
+        checks += 1
+        return checks > 1
+
+    state, leases = lease(
+        recovered_role_repo, agent_id="backend", session_is_busy=becomes_busy,
+    )
+    assert checks >= 2  # Available during selection, busy before dispatch reservation.
+    assert not leases
+    assert state.tasks["recovered"].owner_agent_id is None
+    assert current_recovery(state).model_dump() == original
+
+
+@pytest.mark.parametrize("changed", ["task", "dependency", "project_git"])
+def test_role_queue_does_not_revive_stale_accepted_recovery(recovered_role_repo, changed):
+    original = current_recovery(recovered_role_repo.read()).model_dump()
+
+    def change_input(state):
+        if changed == "task":
+            state.tasks["recovered"].description = "Changed requirements"
+        elif changed == "dependency":
+            state.deliverables["source-deliverable"].git_refs.commit_sha = "e" * 40
+        else:
+            state.projects["project"].git.base_branch = "release"
+
+    recovered_role_repo.update(change_input)
+    state, leases = lease(recovered_role_repo, agent_id="backend")
+    assert leases
+    assert state.tasks["recovered"].owner_agent_id == "backend"
+    assert current_recovery(state) is None
+    assert state.dependency_composition_recoveries["recovery"].model_dump() == original
+
+
+def test_explicit_reassignment_still_invalidates_accepted_recovery(recovered_role_repo):
+    original = current_recovery(recovered_role_repo.read()).model_dump()
+    state, result = _command_service(recovered_role_repo).update_task_command(
+        session_id="session-lead", task_id="recovered", owner_agent_id="backend-peer",
+        request_id="manual-owner",
+    )
+    assert result["success"], result
+    assert state.tasks["recovered"].assignment_mode == "agent"
+    assert current_recovery(state) is None
+    assert state.dependency_composition_recoveries["recovery"].model_dump() == original
 
 
 def test_role_queue_roundtrip_and_dispatch_capacity(role_repo):
@@ -530,3 +666,49 @@ def test_role_queue_selects_candidate_that_can_pass_wake_interval(role_repo, res
     assert leases[0]["agent"]["id"] == expected_owner
     assert leases[0]["dispatch"]["task_ids"] == ["one"]
     assert state.tasks["one"].owner_agent_id == expected_owner
+
+
+@pytest.mark.parametrize("parent_owner", [None, "backend"])
+def test_reassigned_child_blocker_uses_parent_owner_or_new_owners_superior(role_repo, parent_owner):
+    from evander_team_addon.models import TeamBlockerRoute, TeamInboxItemState
+    from evander_team_addon.services.domain.blockers import open_or_get_blocker
+
+    create_role_task(role_repo, "parent")
+    _seed_task(role_repo, task_id="child", owner_agent_id="worker")
+
+    def seed_blocker(state):
+        state.tasks["parent"].owner_agent_id = parent_owner
+        state.tasks["child"].parent_task_id = "parent"
+        state.tasks["child"].state = TeamTaskState.BLOCKED
+        open_or_get_blocker(
+            state, source_kind="task", source_id="child", task_id="child",
+            summary="Needs supervisor help", reporter_agent_id="worker",
+            team_id="team", project_id="project", result={"events": []},
+        )
+
+    before = role_repo.update(seed_blocker)
+    [blocker] = list(before.blockers.values())
+    assert blocker.owner_agent_id == "backend"
+    old_inbox_ids = [
+        item.id for item in before.inbox.values()
+        if item.payload.get("blocker_id") == blocker.id
+        and item.state == TeamInboxItemState.PENDING
+    ]
+    assert old_inbox_ids
+    state, result = _team_agent_action_service(role_repo).apply_agent_action(
+        action={
+            "agent_id": "lead",
+            "task_updates": [{"task_id": "child", "owner_agent_id": "backend-peer"}],
+        },
+    )
+    assert result["success"], result
+    assert state.blockers[blocker.id].route == TeamBlockerRoute.OWNED
+    assert state.blockers[blocker.id].owner_agent_id == (parent_owner or "lead")
+    assert all(state.inbox[item_id].state == TeamInboxItemState.HANDLED for item_id in old_inbox_ids)
+    [notification] = [
+        item for item in state.inbox.values()
+        if item.payload.get("blocker_id") == blocker.id
+        and item.state == TeamInboxItemState.PENDING
+    ]
+    assert notification.recipient_agent_id == (parent_owner or "lead")
+    assert notification.payload["kind"] == "blocker_owner_transferred"
